@@ -4,6 +4,7 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
+from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
     REDACTED_PLACEHOLDER,
@@ -43,7 +44,6 @@ from app.api.routes.toolsets import router as toolsets_router
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
 from app.connectors.api.connector_resolvers import (
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,

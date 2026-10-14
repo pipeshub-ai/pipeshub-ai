@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -26,7 +26,11 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -64,7 +68,9 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleAuthError,
     GoogleMailError,
+    is_missing_scope_error,
 )
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
@@ -82,11 +88,13 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    USER_EMAIL_PLACEHOLDER,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -107,6 +115,7 @@ _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Gmail",
@@ -247,12 +256,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.config = {"credentials": config}
 
             # Extract auth configuration
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
-                self.logger.error("Gmail oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "Gmail has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -318,6 +330,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.info("✅ Google Gmail connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail connector: {ex}", exc_info=True)
             raise
@@ -529,7 +543,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -844,6 +858,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                             f"✅ Fetched Drive file metadata for {drive_file_id}: {filename} ({size} bytes, {mime_type})"
                         )
                 except Exception as e:
+                    if is_missing_scope_error(e):
+                        # A record here could never be downloaded, so it would only
+                        # sit in the index as a failed file.
+                        self.logger.info(
+                            f"Skipping the Google Drive file {drive_file_id} linked from message "
+                            f"{message_id}: this Gmail connection is allowed to read mail but "
+                            "not Google Drive, so the file can't be opened. The email itself "
+                            "is still indexed."
+                        )
+                        return None
                     self.logger.warning(
                         f"⚠️ Failed to fetch Drive file metadata for {drive_file_id}: {str(e)}"
                     )
@@ -885,7 +909,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -1183,30 +1207,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 )
                 drive_service = user_drive_client.get_client()
                 self.logger.info("Using user OAuth credentials for Drive access")
+            # A personal connection has no service account to fall back on.
+            except GoogleAuthError as e:
+                self.logger.error(f"Failed to create Drive client: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail="Couldn't connect to Google Drive to download this file. Reconnect the Gmail connector, then try again."
+                ) from e
             except Exception as e:
-                self.logger.warning(f"Failed to create Drive client: {e}, falling back to service account")
-                # Fallback to service account if user OAuth failed
-                if not self.config or "credentials" not in self.config:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Credentials not available for Drive access"
-                    )
-
-                from google.oauth2 import service_account
-                credentials_json = self.config.get("credentials", {}).get("auth", {})
-                if not credentials_json:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Service account credentials not found for Drive access"
-                    )
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_json
-                )
-                drive_service = configure_google_http_timeout(
-                    build("drive", "v3", credentials=credentials)
-                )
-                self.logger.info("Using service account credentials for Drive access")
+                self.logger.error(f"Failed to load the Drive client's settings: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Couldn't load the Gmail connector's settings to download this file. Try again in a moment; if it keeps failing, check the connector's configuration."
+                ) from e
 
             drive_data_source = GoogleDriveDataSource(
                 drive_service,
@@ -1215,7 +1228,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download from Drive to temp file
                     with open(temp_file_path, "wb") as f:
@@ -1502,7 +1515,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Write attachment data to temp file
                     with open(temp_file_path, "wb") as f:

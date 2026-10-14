@@ -2,7 +2,10 @@ import { Request, Response, NextFunction } from 'express'
 import { injectable, inject } from 'inversify'
 import { Logger } from '../../../libs/services/logger.service'
 import { OAuthTokenService } from '../services/oauth_token.service'
-import { ScopeValidatorService } from '../services/scope.validator.service'
+import {
+  ScopeValidatorService,
+  parseScopeString,
+} from '../services/scope.validator.service';
 import { OAuthTokenPayload } from '../types/oauth.types'
 import {
   InvalidTokenError,
@@ -80,15 +83,19 @@ export class OAuthAuthMiddleware {
         return
       }
 
-      const token = authHeader.substring(7)
-      const payload = await this.oauthTokenService.verifyAccessToken(token)
+      const token = authHeader.substring(7);
+      const payload = await this.oauthTokenService.verifyAccessToken(token);
+      const scopes = parseScopeString(payload.scope);
+      if (scopes.length === 0) {
+        throw new InvalidTokenError('Token carries no scopes');
+      }
 
       // Attach OAuth info to request
       req.oauth = {
         clientId: payload.client_id,
         userId: payload.userId,
         orgId: payload.orgId,
-        scopes: payload.scope.split(' '),
+        scopes,
         payload,
       }
 
@@ -296,8 +303,15 @@ export function scopeCheck(
         const token = authHeader.substring(7)
 
         try {
-          const payload = await oauthTokenService.verifyAccessToken(token)
-          const tokenScopes = payload.scope.split(' ')
+          const payload = await oauthTokenService.verifyAccessToken(token);
+          const tokenScopes = parseScopeString(payload.scope);
+          if (tokenScopes.length === 0) {
+            res.status(401).json({
+              error: 'invalid_token',
+              error_description: 'Token carries no scopes',
+            });
+            return;
+          }
 
           const hasAllScopes = scopeValidatorService.hasAllScopes(
             tokenScopes,
@@ -323,8 +337,20 @@ export function scopeCheck(
 
           next()
           return
-        } catch {
-          // Not an OAuth token, continue to next auth method
+        } catch (error) {
+          // verifyAccessToken throws this before returning a payload, so the
+          // empty-scope check above never runs for the real token service.
+          // Other verification failures still fall through.
+          if (
+            error instanceof InvalidTokenError &&
+            error.message === 'Token carries no scopes'
+          ) {
+            res.status(401).json({
+              error: 'invalid_token',
+              error_description: error.message,
+            });
+            return;
+          }
         }
       }
 

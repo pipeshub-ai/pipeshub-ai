@@ -10,7 +10,8 @@ export const constructSyncConnectorEvent = (
   userId?: string,
 ) : Event => {
 
-  const eventType = connector.replace(' ', '').toLowerCase() + '.resync';
+  // Global replace, matching Python's str.replace which strips every space.
+  const eventType = connector.replace(/ /g, '').toLowerCase() + '.resync';
 
   const payload: ConnectorSyncEvent = {
     orgId: orgId,

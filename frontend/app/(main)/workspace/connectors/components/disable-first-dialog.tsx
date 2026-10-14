@@ -2,12 +2,14 @@
 
 import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Dialog, Button, Flex } from '@radix-ui/themes';
+import { Dialog, Button, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useToastStore } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
 import { useConnectorsStore } from '../store';
 import { ConnectorsApi } from '../api';
+import { localFsDesktopToast, readDesktopRefusal } from '../utils/local-fs-helpers';
 
 // ========================================
 // Types
@@ -29,6 +31,12 @@ export interface DisableFirstDialogProps {
    * E.g. "remove this connector instance" or "save configuration changes".
    */
   actionLabel: string;
+
+  /**
+   * Source name (e.g. "Slack"). Set it when the connector stays disabled after
+   * the action, so the admin learns its records stay searchable with frozen access.
+   */
+  disabledNoticeSource?: string;
 
   /**
    * Called immediately after the connector has been successfully disabled.
@@ -64,6 +72,7 @@ export function DisableFirstDialog({
   connectorId,
   connectorName,
   actionLabel,
+  disabledNoticeSource,
   onProceed,
   container,
 }: DisableFirstDialogProps) {
@@ -77,14 +86,21 @@ export function DisableFirstDialog({
       await ConnectorsApi.toggleConnector(connectorId, 'sync');
     } catch (err: unknown) {
       setIsBusy(false);
-      const message =
-        err instanceof Error
-          ? err.message
-          : t('workspace.connectors.disableFirstDialog.errorFallback');
+      // The interceptor exempts desktop refusals from its toast, so they are worded here.
+      const refusal = readDesktopRefusal(err);
+      if (refusal) {
+        addToast(localFsDesktopToast(refusal));
+        return;
+      }
+      // Every other API error has already been toasted by the axios interceptor.
+      if (isProcessedError(err)) return;
       addToast({
         variant: 'error',
         title: t('workspace.connectors.disableFirstDialog.errorTitle'),
-        description: message,
+        description: getUserFacingErrorMessage(
+          err,
+          t('workspace.connectors.disableFirstDialog.errorFallback')
+        ),
       });
       return;
     }
@@ -156,6 +172,16 @@ export function DisableFirstDialog({
               })
             : t('workspace.connectors.disableFirstDialog.messageNoName', { action: actionLabel })}
         </Dialog.Description>
+
+        {disabledNoticeSource ? (
+          <Text
+            as="p"
+            size="2"
+            style={{ color: 'var(--slate-11)', lineHeight: '20px', marginTop: 'var(--space-3)' }}
+          >
+            {t('workspace.connectors.disabledSearchNotice', { source: disabledNoticeSource })}
+          </Text>
+        ) : null}
 
         <Flex justify="end" gap="2" mt="4">
           <Button

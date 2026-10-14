@@ -96,6 +96,10 @@ export const listProjectsQuerySchema = z.object({
       .enum(['true', 'false'])
       .optional()
       .transform((v) => v === 'true'),
+    isArchived: z
+      .enum(['true', 'false'])
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v === 'true')),
   }),
 });
 

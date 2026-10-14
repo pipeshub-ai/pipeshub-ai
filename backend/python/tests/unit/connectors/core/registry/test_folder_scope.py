@@ -8,11 +8,15 @@ import pytest
 from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.filters import Filter, FilterCollection, FilterType, ListOperator
 from app.connectors.core.registry.folder_scope import (
+    _PAGE_SIZE,
     CleanupResult,
     FolderScope,
     clean_up_scope,
+    listed_record_ids,
+    remove_records_not_listed,
     remove_records_outside_scope,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
 
 
 def folders(values, operator=ListOperator.IN) -> FilterCollection:
@@ -107,9 +111,34 @@ class TestRemoveRecordsOutsideScope:
             processor, "conn-1", "b1", FolderScope(("reports/2026/",)), logging.getLogger("t")
         )
 
-        processor.get_records_in_record_group.assert_awaited_once_with("conn-1", "b1", 500, None)
+        processor.get_records_in_record_group.assert_awaited_once_with(
+            "conn-1", "b1", 500, None, visibility=RecordVisibility.ALL
+        )
         deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
         assert sorted(deleted) == ["drop-file", "drop-folder"]
+        assert removed == CleanupResult(removed=2, failed=0)
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_outside_the_scope_is_removed_too(self) -> None:
+        trashed = self.record("trashed-file", "b1/legal/old.pdf")
+        trashed.is_deleted = True
+        live = self.record("live-file", "b1/legal/new.pdf")
+        live.is_deleted = False
+        processor = MagicMock()
+        # Answers as both graph stores do: live records only unless asked for more.
+        processor.get_records_in_record_group = AsyncMock(
+            side_effect=lambda *_a, visibility=RecordVisibility.LIVE: [
+                r for r in (live, trashed) if matches_visibility(r, visibility)
+            ]
+        )
+        processor.on_record_deleted = AsyncMock()
+
+        removed = await remove_records_outside_scope(
+            processor, "conn-1", "b1", FolderScope(("reports/",)), logging.getLogger("t")
+        )
+
+        deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
+        assert sorted(deleted) == ["live-file", "trashed-file"]
         assert removed == CleanupResult(removed=2, failed=0)
 
     @pytest.mark.asyncio
@@ -168,7 +197,7 @@ class TestCleanUpScope:
     @staticmethod
     def processor(delete_side_effect=None):
         processor = MagicMock()
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [
             MagicMock(id="r1", external_record_id="b1/other/x.pdf", mime_type="application/pdf"),
         ])
         processor.on_record_deleted = AsyncMock(side_effect=delete_side_effect)
@@ -199,6 +228,85 @@ class TestCleanUpScope:
         assert processor.on_record_deleted.await_count == 2
         assert saved == {"FILE/folder_scope/b1": {"scope": scope.key()}}
 
+    @staticmethod
+    def real_processor(group_lookup=None, pages=None):
+        """A real DataSourceEntitiesProcessor over a mocked store.
+
+        Paging goes through the processor's own ``get_records_in_record_group``,
+        which looks the record group up again on every page. A mock on the
+        processor would skip that lookup, and the lookup is where a failure
+        turns into an empty page.
+        """
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            DataSourceEntitiesProcessor,
+        )
+
+        tx = AsyncMock()
+        tx.get_record_group_by_external_id = AsyncMock(
+            side_effect=group_lookup or (lambda **kw: MagicMock(id="rg-key"))
+        )
+        tx.get_records_by_status = AsyncMock(side_effect=pages or (lambda **kw: []))
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        store = MagicMock()
+        store.transaction.return_value = ctx
+        processor = DataSourceEntitiesProcessor(MagicMock(), store, AsyncMock())
+        processor.org_id = "org-1"
+        processor.messaging_producer = AsyncMock()
+        processor.on_record_deleted = AsyncMock()
+        return processor
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_that_could_not_be_read_does_not_record_the_scope(self):
+        """The failure arrives where the record group is looked up, not at the listing.
+
+        That lookup used to answer None on a database failure, which reads as
+        "there is no such group", so the page came back empty, the bucket looked
+        clean, and the scope was written. Every later sync then skipped it, and
+        records outside the chosen folders stayed indexed for ever.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        sync_points, saved = self.sync_points()
+        processor = self.real_processor(
+            group_lookup=GraphQueryError("connection refused")
+        )
+        scope = FolderScope(("reports/",))
+
+        with pytest.raises(GraphQueryError):
+            await clean_up_scope(
+                processor, sync_points, "c", "b1", scope, logging.getLogger("t")
+            )
+
+        assert saved == {}
+        sync_points.update_sync_point.assert_not_awaited()
+        processor.on_record_deleted.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_could_not_be_read_does_not_record_the_scope(self):
+        """A full first page, then a failure: the scope is not finished."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        sync_points, saved = self.sync_points()
+        full_page = [
+            MagicMock(id=f"r{n}", external_record_id=f"b1/reports/{n}.pdf",
+                      mime_type="application/pdf")
+            for n in range(_PAGE_SIZE)
+        ]
+        processor = self.real_processor(
+            pages=[full_page, GraphQueryError("connection refused")]
+        )
+        scope = FolderScope(("reports/",))
+
+        with pytest.raises(GraphQueryError):
+            await clean_up_scope(
+                processor, sync_points, "c", "b1", scope, logging.getLogger("t")
+            )
+
+        assert saved == {}
+        sync_points.update_sync_point.assert_not_awaited()
+
     @pytest.mark.asyncio
     async def test_runs_again_when_the_scope_differs_from_the_recorded_one(self):
         sync_points, saved = self.sync_points(
@@ -227,6 +335,33 @@ class TestCleanUpScope:
         # A folder name holding the separator must not collide with two folders.
         assert FolderScope(("a/", "b/")).key() != FolderScope(("a/|b/",)).key()
         assert FolderScope(("a/", "b/")).key() != FolderScope(("a/", "b/"), exclude=True).key()
+
+
+class TestRemoveRecordsNotListed:
+    def test_a_listed_object_keeps_the_folders_above_it(self) -> None:
+        assert listed_record_ids("b1", "a/b/c.txt") == {"b1/a", "b1/a/b", "b1/a/b/c.txt"}
+        assert listed_record_ids("b1", "a/b/") == {"b1/a", "b1/a/b", "b1/a/b/"}
+        assert listed_record_ids("b1", "/top.txt") == {"b1/top.txt"}
+        assert listed_record_ids("b1", "") == set()
+
+    @pytest.mark.asyncio
+    async def test_removes_only_what_the_listed_prefix_no_longer_holds(self) -> None:
+        record = TestRemoveRecordsOutsideScope.record
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[
+            record("kept", "b1/reports/q1.pdf"),
+            record("kept-folder", "b1/reports", folder=True),
+            record("gone", "b1/reports/q2.pdf"),
+            record("other-prefix", "b1/legal/contract.pdf"),
+            record("other-folder", "b1/other/x.pdf"),
+        ])
+        processor.on_record_deleted = AsyncMock()
+        listed = listed_record_ids("b1", "reports/q1.pdf")
+
+        result = await remove_records_not_listed(processor, "c", "b1", ["reports/"], listed, logging.getLogger("t"))
+
+        assert [c.args[0] for c in processor.on_record_deleted.await_args_list] == ["gone"]
+        assert result == CleanupResult(removed=1, failed=0)
 
 
 class TestFilterField:

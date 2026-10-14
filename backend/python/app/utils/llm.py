@@ -6,6 +6,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.aimodels import (
     STTAdapter,
     TTSAdapter,
@@ -14,6 +15,27 @@ from app.utils.aimodels import (
     get_tts_model,
     is_local_cpu_embedding_provider,
 )
+
+# Users read these as a file's failure reason or a chat error, so each says what to do next.
+LLM_MISSING_FOR_FILE = (
+    "No AI model is set up for this workspace yet, so this file couldn't be processed. "
+    "An admin can add one in Workspace → AI Models, then reindex the file."
+)
+LLM_MISSING_FOR_CHAT = (
+    "No AI model is set up for this workspace yet. "
+    "An admin can add one in Workspace → AI Models, then you can send your message again."
+)
+
+
+class LLMNotConfiguredError(DocumentProcessingError, ValueError):
+    """No language model is configured for the org.
+
+    A DocumentProcessingError so indexing passes the message through as the
+    record's failure reason instead of prefixing it with "Failed to process document".
+    """
+
+    def __init__(self, message: str = LLM_MISSING_FOR_FILE) -> None:
+        super().__init__(message)
 
 
 async def _load_ai_models(config_service: ConfigurationService) -> dict:
@@ -37,7 +59,7 @@ async def _instantiate_llm_from_configs(
 ) -> Tuple[BaseChatModel, dict]:
     """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
-        raise ValueError("No LLM configurations found")
+        raise LLMNotConfiguredError()
 
     for config in llm_configs:
         if config.get("isDefault", False):
@@ -94,7 +116,7 @@ async def get_llm(
 ) -> Tuple[BaseChatModel, dict]:
     if not llm_configs:
         ai_models = await _load_ai_models(config_service)
-        llm_configs = ai_models["llm"]
+        llm_configs = ai_models.get("llm")
     return await _instantiate_llm_from_configs(llm_configs, reasoning_effort=reasoning_effort)
 
 

@@ -5,7 +5,8 @@
  * Critical invariants tested:
  *   - 404 from the KB endpoint → NotFoundError BEFORE any storage interaction
  *   - 403 from the KB endpoint → ForbiddenError BEFORE any storage interaction
- *   - Non-200/404/403 from the KB endpoint → InternalServerError
+ *   - 500/502 from the KB endpoint → InternalServerError
+ *   - 503 from the KB endpoint → ServiceUnavailableError, keeping Retry-After
  *   - 200 with userRole = READER → ForbiddenError (Blocker 2: read-only users blocked)
  *   - 200 with userRole = COMMENTER → ForbiddenError
  *   - 200 with userRole = undefined/null → ForbiddenError
@@ -27,6 +28,7 @@ import {
   ForbiddenError,
   InternalServerError,
   NotFoundError,
+  ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors'
 
 // ---------------------------------------------------------------------------
@@ -111,7 +113,9 @@ const SINGLE_FILE = [
  * Stub ConnectorServiceCommand.execute() for the first n calls.
  * Each entry in `responses` is returned in order.
  */
-function stubConnectorCalls(responses: Array<{ statusCode: number; data?: any }>) {
+function stubConnectorCalls(
+  responses: Array<{ statusCode: number; data?: any; headers?: Record<string, string> }>,
+) {
   const stub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
   responses.forEach((r, i) => {
     stub.onCall(i).resolves(r)
@@ -199,8 +203,14 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
   })
 
-  it('throws InternalServerError when KB endpoint returns 503', async () => {
-    stubConnectorCalls([{ statusCode: 503 }])
+  it('keeps a 503 from the KB endpoint retryable, with its Retry-After', async () => {
+    stubConnectorCalls([
+      {
+        statusCode: 503,
+        data: { detail: "We couldn't confirm your sign-in just now. Please try again in a few seconds." },
+        headers: { 'retry-after': '5' },
+      },
+    ])
 
     const handler = uploadRecords(createMockKeyValueStore(), createMockAppConfig())
     const req = createMockRequest({
@@ -212,7 +222,10 @@ describe('uploadRecords — KB existence and write-permission pre-check', () => 
     await handler(req, createMockResponse(), next)
 
     expect(next.calledOnce).to.be.true
-    expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
+    const err = next.firstCall.args[0] as ServiceUnavailableError
+    expect(err).to.be.instanceOf(ServiceUnavailableError)
+    expect(err.message).to.equal("We couldn't confirm your sign-in just now. Please try again in a few seconds.")
+    expect(err.metadata).to.deep.equal({ retryAfter: '5' })
   })
 
   // -- Role-based write-permission check (Blocker 2) ----------------------

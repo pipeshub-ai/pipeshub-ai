@@ -9,8 +9,10 @@ import {
   azureBlobConfigSchema,
   providerType,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
   configurationSchema,
   githubAuthConfigSchema,
+  rotateConnectionCredentialsSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -315,6 +317,67 @@ describe('configuration_manager/validator/validators', () => {
         expect(result.data.project).to.equal('gcp-project-123')
         expect(result.data.location).to.equal('us-central1')
         expect(result.data.serviceAccountJson).to.equal('{"type":"service_account"}')
+      }
+    })
+  })
+
+  describe('batch and rotate configuration', () => {
+    it('accepts a shared friendly name and drops it before the single-model rule', () => {
+      const result = batchAddModelsRequestSchema.safeParse({
+        body: {
+          modelType: 'llm',
+          provider: 'openAI',
+          configuration: { apiKey: 'sk', modelFriendlyName: 'Shared' },
+          models: [{ model: 'gpt-4o', modelFriendlyName: 'Bee' }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.configuration.modelFriendlyName).to.equal(undefined)
+        expect(result.data.body.configuration.apiKey).to.equal('sk')
+        expect(result.data.body.models[0].modelFriendlyName).to.equal('Bee')
+      }
+    })
+
+    it('rejects an endpoint on credential rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new', endpoint: 'https://attacker.example/v1' } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts a credential-only rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new' } },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
+  describe('configurationSchema defaultReasoningEffort', () => {
+    it('should keep a valid default so it is saved with the model', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'low' })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.defaultReasoningEffort).to.equal('low')
+      }
+    })
+
+    it('should accept an empty or null default, which means none is set', () => {
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: '' }).success).to.be.true
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: null }).success).to.be.true
+    })
+
+    it('should reject an unknown effort with a message naming the valid choices', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'extreme' })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0].path).to.deep.equal(['defaultReasoningEffort'])
+        expect(result.error.issues[0].message).to.equal(
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+        )
       }
     })
   })

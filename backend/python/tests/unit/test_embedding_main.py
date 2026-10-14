@@ -415,14 +415,18 @@ class TestEmbeddingServerEdgeCases:
         mock_manager.list_loaded_models.side_effect = RuntimeError("db down")
         mock_manager.warmup = AsyncMock()
 
-        with patch("app.embedding_main.model_manager", mock_manager):
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main.logger"
+        ) as mock_logger:
             with TestClient(app) as test_client:
                 response = test_client.get("/health")
 
         assert response.status_code == 500
         body = response.json()
         assert body["status"] == "unhealthy"
-        assert "db down" in body["error"]
+        assert body["error"] == "Health check failed"
+        assert "db down" not in response.text
+        mock_logger.exception.assert_called_once_with("Health check failed")
 
     def test_list_models_fallback_when_none_loaded(self):
         mock_manager = MagicMock(spec=ModelManager)

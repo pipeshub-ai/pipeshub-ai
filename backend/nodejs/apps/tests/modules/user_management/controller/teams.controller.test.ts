@@ -393,7 +393,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
 
     it('should handle fetch failed error message', async () => {
@@ -406,7 +406,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
 
     it('should handle error with statusCode 400', async () => {
@@ -518,7 +518,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
   });
 
@@ -912,7 +912,9 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Internal error');
+      // A 5xx describes our internals, so the reader gets the plain sentence.
+      expect(next.firstCall.args[0].message).to.include('Something went wrong');
+      expect(next.firstCall.args[0].message).to.not.include('Internal error');
     });
 
     it('should handle default unknown status code', async () => {
@@ -926,7 +928,8 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Backend error');
+      expect(next.firstCall.args[0].message).to.include('Something went wrong');
+      expect(next.firstCall.args[0].message).to.not.include('Backend error');
     });
 
     it('should handle fetch failed error without ECONNREFUSED cause', async () => {
@@ -938,7 +941,9 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('AI Service is currently unavailable');
+      expect(next.firstCall.args[0].message).to.include('trouble reaching one of its services');
+      // The fault is on the server, so it never asks the reader to check their network.
+      expect(next.firstCall.args[0].message).to.not.match(/your (network|internet)/i);
     });
   });
 

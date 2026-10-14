@@ -16,6 +16,7 @@ from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     PSEUDO_USER_GROUP_PREFIX,
     TIME_OFFSET_HOURS,
     ConfluenceDataCenterConnector,
+    ContentListing,
 )
 from app.models.entities import (
     AppUser,
@@ -28,23 +29,13 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 import uuid
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     CommentRecord,
     FileRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    WebpageRecord,
 )
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator, SyncFilterKey
-from app.connectors.sources.atlassian.confluence_datacenter.connector import (
-    PSEUDO_USER_GROUP_PREFIX,
-    ConfluenceDataCenterConnector,
-)
 
 
 # ===========================================================================
@@ -668,7 +659,7 @@ class TestRunSync:
             connector._sync_users = AsyncMock()
             connector._sync_user_groups = AsyncMock()
             connector._sync_spaces = AsyncMock(return_value=[mock_space])
-            connector._sync_content = AsyncMock()
+            connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
 
             await connector.run_sync()
@@ -1073,15 +1064,15 @@ class TestFetchPermissionAuditContentIds:
         assert content_ids == ["131103"]
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
-        """Return empty list when API call fails."""
+    async def test_api_failure_returns_none(self):
+        """A failed read is reported as None, not as 'no changes'."""
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_auditing_events_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         content_ids = await connector._fetch_permission_audit_content_ids(1000, 2000)
-        assert content_ids == []
+        assert content_ids is None
 
 
 # ===========================================================================
@@ -1122,7 +1113,7 @@ class TestFetchSpacePermissions:
         assert len(permissions) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_space_permissions_v1 = AsyncMock(return_value=_make_mock_response(500, {}))
@@ -1130,7 +1121,7 @@ class TestFetchSpacePermissions:
         connector._get_server_version = AsyncMock(return_value=(9, 1, 0))
 
         permissions = await connector._fetch_space_permissions("ENG", "Engineering", space_id="1")
-        assert permissions == []
+        assert permissions is None
 
 
 # ===========================================================================
@@ -1170,7 +1161,7 @@ class TestFetchPagePermissions:
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_empty(self):
+    async def test_api_failure_returns_none(self):
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
@@ -1179,7 +1170,7 @@ class TestFetchPagePermissions:
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
         permissions = await connector._fetch_page_permissions("page-1")
-        assert permissions == []
+        assert permissions is None
 
 
 # ===========================================================================
@@ -2374,14 +2365,14 @@ class TestFetchGroupMembers:
         mock_ds.get_group_members_by_name = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
         emails = await c._fetch_group_members("g1", "G")
-        assert emails == []
+        assert emails is None
 
 
 # ===========================================================================
@@ -2408,11 +2399,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -3366,7 +3357,7 @@ class TestRunSyncCoverage:
         space.short_name = "TEST"
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
-        c._sync_content = AsyncMock()
+        c._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()
@@ -4054,7 +4045,7 @@ class TestFetchGroupMembersFullCoverage:
         mock_ds = MagicMock()
         mock_ds.get_group_members_by_name = AsyncMock(return_value=_resp(500, {}))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        assert await c._fetch_group_members("g1", "devs") == []
+        assert await c._fetch_group_members("g1", "devs") is None
 
     @pytest.mark.asyncio
     async def test_skips_no_email(self):
@@ -4084,10 +4075,11 @@ class TestGetAppUsersByEmailsFullCoverage:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrlFullCoverage:

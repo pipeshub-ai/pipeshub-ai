@@ -2,13 +2,34 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
   SALT_ROUNDS,
+  SIGN_IN_SESSION_EXPIRED,
+  OAUTH_SIGN_IN_FAILED,
+  SAML_HAS_ITS_OWN_SIGN_IN,
+  EMAIL_MISMATCH,
+  OTP_SEND_FAILED,
+  OTP_ALREADY_USED,
+  SIGN_IN_CODE_REQUESTED,
+  WRONG_EMAIL_OR_PASSWORD,
+  WRONG_SIGN_IN_CODE,
+  ACCOUNT_NO_LONGER_ACTIVE,
+  RESET_LINK_ALREADY_USED,
+  RESET_LINK_NOT_CHECKED,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
+import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
+import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
+import { jwtGeneratorForForgotPasswordLink } from '../../../../src/libs/utils/createJwt';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
+
+type ClaimedCredentials = Awaited<ReturnType<typeof UserCredentials.findOneAndUpdate>>;
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
@@ -17,9 +38,41 @@ import {
   NotFoundError,
   UnauthorizedError,
   InternalServerError,
-  GoneError,
   ForbiddenError,
+  ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
+
+// The account-locked email is sent in the background; this lets it run.
+const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+// Behaves like the collection's unique index on linkHash: a second insert of
+// the same hash is refused with Mongo's duplicate-key error.
+function fakeUsedResetLinks(): Set<string> {
+  const used = new Set<string>();
+  sinon.stub(UsedPasswordResetLink, 'init').resolves();
+  sinon.stub(UsedPasswordResetLink, 'create').callsFake((async (doc: any) => {
+    if (used.has(doc.linkHash)) {
+      throw Object.assign(new Error('E11000 duplicate key error'), { code: 11000 });
+    }
+    used.add(doc.linkHash);
+    return doc;
+  }) as any);
+  sinon.stub(UsedPasswordResetLink, 'deleteOne').callsFake(((filter: any) => {
+    used.delete(filter.linkHash);
+    return Promise.resolve({ acknowledged: true, deletedCount: 1 });
+  }) as any);
+  return used;
+}
+
+function resetLinkRequest(password: string, token = 'reset-link-token'): any {
+  return {
+    body: { password },
+    headers: { authorization: `Bearer ${token}` },
+    verifiedToken: token,
+    tokenPayload: { orgId: 'o1', userId: 'u1', exp: Math.floor(Date.now() / 1000) + 1200 },
+    ip: '127.0.0.1',
+  };
+}
 
 describe('UserAccountController', () => {
   let controller: UserAccountController;
@@ -30,6 +83,7 @@ describe('UserAccountController', () => {
   let mockConfigService: any;
   let mockLogger: any;
   let mockJitService: any;
+  let mockEventService: any;
   let res: any;
   let next: sinon.SinonStub;
 
@@ -40,6 +94,7 @@ describe('UserAccountController', () => {
       frontendUrl: 'http://frontend:3000',
       jwtSecret: 'test-jwt-secret',
       scopedJwtSecret: 'test-scoped-secret',
+      connectorBackend: 'http://connectors:8088',
       cookieSecret: 'test-cookie-secret',
       rsAvailable: 'false',
       skipDomainCheck: false,
@@ -85,6 +140,12 @@ describe('UserAccountController', () => {
       extractSamlUserDetails: sinon.stub(),
     };
 
+    mockEventService = {
+      start: sinon.stub().resolves(),
+      publishEvent: sinon.stub().resolves(),
+      stop: sinon.stub().resolves(),
+    };
+
     controller = new UserAccountController(
       mockConfig,
       mockIamService,
@@ -93,6 +154,7 @@ describe('UserAccountController', () => {
       mockConfigService,
       mockLogger,
       mockJitService,
+      mockEventService,
     );
 
     res = {
@@ -232,21 +294,19 @@ describe('UserAccountController', () => {
   });
 
   describe('verifyOTP', () => {
-    it('should throw BadRequestError when userCredentials not found', async () => {
+    it('answers like a wrong code when no code was ever requested', async () => {
       sinon.stub(UserCredentials, 'findOne').resolves(null);
 
       try {
         await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal(
-          'Please request OTP before login',
-        );
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
 
-    it('should throw BadRequestError when account is blocked and cooldown is active', async () => {
+    it('answers a locked account like a wrong code while the lock lasts', async () => {
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: true,
         blockExpiresAt: new Date(Date.now() + 60_000),
@@ -258,10 +318,8 @@ describe('UserAccountController', () => {
         await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include(
-          'account has been disabled',
-        );
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
 
@@ -278,6 +336,9 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 5,
         save: saveStub,
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
 
@@ -297,11 +358,11 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
-        expect((error as UnauthorizedError).message).to.include('Invalid OTP');
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
 
-    it('should throw GoneError when OTP has expired', async () => {
+    it('answers an expired code like a wrong code', async () => {
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: false,
         hashedOTP: 'somehash',
@@ -312,8 +373,8 @@ describe('UserAccountController', () => {
         await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(GoneError);
-        expect((error as GoneError).message).to.include('OTP has expired');
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
 
@@ -328,9 +389,61 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const claim = sinon
+        .stub(UserCredentials, 'findOneAndUpdate')
+        .resolves({ wrongCredentialCount: 1 } as unknown as ClaimedCredentials);
 
       const result = await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
       expect(result.statusCode).to.equal(200);
+      // The claim matches on the code alone, so a concurrent reservation
+      // cannot stop a correct code being used.
+      expect(claim.firstCall.args[0]).to.deep.equal({
+        userId: 'u1',
+        orgId: 'o1',
+        isDeleted: false,
+        hashedOTP,
+      });
+      expect(claim.firstCall.args[1]).to.deep.equal({
+        $unset: { hashedOTP: '', otpValidity: '' },
+      });
+      // The counter is reset afterwards, and only if nothing else was counted.
+      expect(release.calledAfter(claim)).to.be.true;
+      expect(release.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+
+    it('should refuse a matching OTP that another request has already used', async () => {
+      const otp = '123456';
+      const hashedOTP = await bcrypt.hash(otp, 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 0,
+        save: sinon.stub().resolves(),
+      } as unknown as ClaimedCredentials);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      const release = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+
+      try {
+        await controller.verifyOTP('u1', 'o1', otp, 'test@test.com', '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as Error).message).to.equal(OTP_ALREADY_USED);
+      }
+      expect(release.called).to.be.false;
     });
 
     it('should throw UnauthorizedError when OTP does not match', async () => {
@@ -344,19 +457,107 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
 
-      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+      const reserve = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedOTP,
         wrongCredentialCount: 2,
       } as any);
 
-      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       try {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
-        expect((error as UnauthorizedError).message).to.include('Invalid OTP');
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
+      // Only the reservation: a wrong code is never claimed.
+      expect(reserve.calledOnce).to.be.true;
+      expect(activity.calledWith(sinon.match({ activityType: 'WRONG OTP' }))).to.be.true;
+    });
+
+    it('counts the attempt before it compares the code', async () => {
+      const hashedOTP = await bcrypt.hash('654321', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedOTP);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real code when no attempt is left', async () => {
+      const hashedOTP = await bcrypt.hash('123456', 4);
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        isBlocked: false,
+        hashedOTP,
+        otpValidity: Date.now() + 600000,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.verifyOTP('u1', 'o1', '123456', 'test@test.com', '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedOTP)).to.be.false;
+    });
+  });
+
+  describe('releaseCredentialAttempt', () => {
+    it('resets the counter only while it still reads what this request reserved and the account is unlocked', async () => {
+      const update = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+
+      await controller.releaseCredentialAttempt('u1', 'o1', 3);
+
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 3,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+  });
+
+  describe('reserveCredentialAttempt', () => {
+    it('takes an attempt in one conditional write, only while unlocked and under the limit', async () => {
+      const reserved = { wrongCredentialCount: 3 };
+      const update = sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(reserved as any);
+
+      expect(await controller.reserveCredentialAttempt('u1', 'o1')).to.equal(reserved);
+      expect(update.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: { $lt: 5 },
+        },
+        { $inc: { wrongCredentialCount: 1 } },
+        { new: true },
+      ]);
     });
   });
 
@@ -882,11 +1083,8 @@ describe('UserAccountController', () => {
     });
 
     it('should call next(NotFoundError) when user not found by ID', async () => {
-      const req: any = {
-        body: { password: 'NewPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 404,
@@ -901,7 +1099,7 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken', () => {
-    it('should call next(NotFoundError) when user not found', async () => {
+    it('should call next(UnauthorizedError) when the lookup finds no user', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
         ip: '127.0.0.1',
@@ -916,7 +1114,8 @@ describe('UserAccountController', () => {
       await controller.getAccessTokenFromRefreshToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
     });
 
     it('should call next(BadRequestError) when user is blocked', async () => {
@@ -1009,7 +1208,7 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
       expect(next.firstCall.args[0].message).to.equal(
-        'SessionInfo not found',
+        SIGN_IN_SESSION_EXPIRED,
       );
     });
 
@@ -1020,7 +1219,7 @@ describe('UserAccountController', () => {
           userId: 'u1',
           email: 'test@test.com',
           authConfig: [
-            { allowedMethods: [{ type: 'password' }] },
+            { allowedMethods: [{ type: 'otp' }] },
           ],
           currentStep: 0,
         },
@@ -1037,10 +1236,8 @@ describe('UserAccountController', () => {
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(
-        'Please request OTP before login',
-      );
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(WRONG_SIGN_IN_CODE);
     });
 
     it('should call next(BadRequestError) for unsupported auth method', async () => {
@@ -1096,8 +1293,8 @@ describe('UserAccountController', () => {
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal('User not found');
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal(WRONG_EMAIL_OR_PASSWORD);
     });
 
     it('should handle JIT user with method not enabled for JIT', async () => {
@@ -1125,10 +1322,8 @@ describe('UserAccountController', () => {
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal(
-        'User not found',
-      );
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal(WRONG_EMAIL_OR_PASSWORD);
     });
   });
 
@@ -1246,7 +1441,7 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
       expect(next.firstCall.args[0].message).to.equal(
-        'Missing required OAuth parameters',
+        OAUTH_SIGN_IN_FAILED,
       );
     });
 
@@ -1340,6 +1535,34 @@ describe('UserAccountController', () => {
   });
 
   describe('sendForgotPasswordEmail', () => {
+    it('tells the reader the configured lifetime, a bare number read as seconds', async () => {
+      const original = process.env.PASSWORD_RESET_LINK_EXPIRY;
+      process.env.PASSWORD_RESET_LINK_EXPIRY = '90';
+      try {
+        sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+        mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+        await controller.sendForgotPasswordEmail({
+          _id: 'u1',
+          email: 'user@example.com',
+          orgId: 'o1',
+          fullName: 'Test User',
+        });
+
+        const { templateData } = mockMailService.sendMail.firstCall.args[0];
+        expect(templateData.linkLifetime).to.equal('90 seconds');
+        const token = templateData.link.split('#token=')[1];
+        const claims = jwt.decode(token) as { iat: number; exp: number };
+        expect(claims.exp - claims.iat).to.equal(90);
+      } finally {
+        if (original === undefined) {
+          delete process.env.PASSWORD_RESET_LINK_EXPIRY;
+        } else {
+          process.env.PASSWORD_RESET_LINK_EXPIRY = original;
+        }
+      }
+    });
+
     it('should send email and return status 200', async () => {
       const user = {
         _id: 'u1',
@@ -1455,7 +1678,7 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('should throw NotFoundError when user not found', async () => {
+    it('answers an unknown email as if a code was sent, without sending one', async () => {
       const req: any = {
         body: { email: 'nonexistent@test.com' },
         ip: '127.0.0.1',
@@ -1464,14 +1687,30 @@ describe('UserAccountController', () => {
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockIamService.getUserByEmail.resolves({
         statusCode: 404,
-        data: 'Not found',
+        data: { message: 'Account not found' },
       });
+
+      await controller.getLoginOtp(req, res);
+
+      expect(res.status.calledWith(200)).to.be.true;
+      expect(res.send.calledWith(SIGN_IN_CODE_REQUESTED)).to.be.true;
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+  });
+
+  describe('getLoginOtp - account lookup failures', () => {
+    it('does not tell the person to get invited when the lookup itself failed', async () => {
+      const req: any = { body: { email: 'someone@test.com' }, ip: '127.0.0.1' };
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      mockIamService.getUserByEmail.resolves({ statusCode: 500, data: { message: 'upstream exploded' } });
 
       try {
         await controller.getLoginOtp(req, res);
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error).to.be.instanceOf(InternalServerError);
+        expect((error as InternalServerError).message).to.equal(OTP_SEND_FAILED);
+        expect((error as InternalServerError).message).not.to.include('invite');
       }
     });
   });
@@ -1498,7 +1737,7 @@ describe('UserAccountController', () => {
   });
 
   describe('getAccessTokenFromRefreshToken (additional)', () => {
-    it('should call next(NotFoundError) when user data is null', async () => {
+    it('should call next(UnauthorizedError) when user data is null', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1', userId: 'u1' },
         ip: '127.0.0.1',
@@ -1513,7 +1752,8 @@ describe('UserAccountController', () => {
       await controller.getAccessTokenFromRefreshToken(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
     });
   });
 
@@ -1522,6 +1762,7 @@ describe('UserAccountController', () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedOTP,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1548,7 +1789,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(UnauthorizedError);
-        expect((error as UnauthorizedError).message).to.include('Too many login attempts');
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
         expect(saveStub.calledOnce).to.be.true;
         expect(updatedCredential.isBlocked).to.equal(true);
         expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
@@ -1556,44 +1797,36 @@ describe('UserAccountController', () => {
           createStub.calledWith(sinon.match({ activityType: 'ACCOUNT BLOCKED' })),
         ).to.be.true;
       }
+      await settle();
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
     });
   });
 
   describe('correctEmailFromToken', () => {
+    const correct = (claims: Record<string, unknown>, target: Record<string, unknown>, trusted = true) =>
+      (controller as any).correctEmailFromToken(claims, target, 'test', trusted);
+
     it('should not modify target when tokenEmail is undefined', async () => {
       const target = { email: 'user@test.com' };
-      // Access the private method via any cast
-      await (controller as any).correctEmailFromToken({}, target, 'test');
+      await correct({}, target);
       expect(target.email).to.equal('user@test.com');
     });
 
     it('should not modify target when tokenEmail matches existing email', async () => {
       const target = { email: 'user@test.com' };
-      await (controller as any).correctEmailFromToken(
-        { email: 'user@test.com' },
-        target,
-        'test'
-      );
+      await correct({ email: 'user@test.com' }, target);
       expect(target.email).to.equal('user@test.com');
     });
 
     it('should not modify target when tokenEmail matches (case insensitive)', async () => {
       const target = { email: 'User@Test.com' };
-      await (controller as any).correctEmailFromToken(
-        { email: 'user@test.com' },
-        target,
-        'test'
-      );
+      await correct({ email: 'user@test.com' }, target);
       expect(target.email).to.equal('User@Test.com');
     });
 
     it('should update email on target without _id (no DB update)', async () => {
       const target = { email: 'upn@test.com' };
-      await (controller as any).correctEmailFromToken(
-        { email: 'mail@test.com' },
-        target,
-        'test'
-      );
+      await correct({ email: 'mail@test.com', upn: 'upn@test.com' }, target);
       expect(target.email).to.equal('mail@test.com');
     });
 
@@ -1601,11 +1834,7 @@ describe('UserAccountController', () => {
       sinon.stub(Users, 'updateOne').resolves({} as any);
 
       const target = { _id: 'user-id', email: 'upn@test.com' };
-      await (controller as any).correctEmailFromToken(
-        { email: 'mail@test.com' },
-        target,
-        'test'
-      );
+      await correct({ email: 'mail@test.com', preferred_username: 'UPN@test.com' }, target);
       expect(target.email).to.equal('mail@test.com');
       expect((Users.updateOne as sinon.SinonStub).calledOnce).to.be.true;
     });
@@ -1614,13 +1843,25 @@ describe('UserAccountController', () => {
       sinon.stub(Users, 'updateOne').rejects(new Error('Duplicate key'));
 
       const target = { _id: 'user-id', email: 'upn@test.com' };
-      await (controller as any).correctEmailFromToken(
-        { email: 'mail@test.com' },
-        target,
-        'test'
-      );
+      await correct({ email: 'mail@test.com', upn: 'upn@test.com' }, target);
       // Email should NOT be updated when DB fails
       expect(target.email).to.equal('upn@test.com');
+    });
+
+    it('should not change an email the token cannot vouch for', async () => {
+      const update = sinon.stub(Users, 'updateOne').resolves({} as any);
+      const target = { _id: 'user-id', email: 'upn@test.com' };
+      await correct({ email: 'other@elsewhere.test', upn: 'upn@test.com' }, target, false);
+      expect(target.email).to.equal('upn@test.com');
+      expect(update.called).to.be.false;
+    });
+
+    it("should never move another account's email", async () => {
+      const update = sinon.stub(Users, 'updateOne').resolves({} as any);
+      const target = { _id: 'member-id', email: 'member@test.com' };
+      await correct({ email: 'someone@test.com', upn: 'someone-else@test.com' }, target);
+      expect(target.email).to.equal('member@test.com');
+      expect(update.called).to.be.false;
     });
   });
 
@@ -1712,11 +1953,11 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Incorrect password');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
 
-    it('should throw BadRequestError when account is blocked and cooldown is active', async () => {
+    it('answers a locked account like a wrong password while the lock lasts', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
@@ -1731,7 +1972,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('account has been disabled');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
 
@@ -1749,6 +1990,10 @@ describe('UserAccountController', () => {
         blockExpiresAt: new Date(Date.now() - 60_000),
         save: saveStub,
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
@@ -1769,6 +2014,7 @@ describe('UserAccountController', () => {
         save: sinon.stub().resolves(),
       } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({
+        hashedPassword,
         wrongCredentialCount: 1,
         isBlocked: false,
         save: sinon.stub().resolves(),
@@ -1780,7 +2026,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Incorrect password');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
 
@@ -1796,11 +2042,75 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      const reset = sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const result = await controller.authenticateWithPassword(user, password, '127.0.0.1');
 
       expect(result.statusCode).to.equal(200);
+      // The reserved attempt is given back only while nothing else was counted
+      // since and the account is not locked.
+      expect(reset.firstCall.args).to.deep.equal([
+        {
+          userId: 'u1',
+          orgId: 'o1',
+          isDeleted: false,
+          isBlocked: { $ne: true },
+          wrongCredentialCount: 1,
+        },
+        { $set: { wrongCredentialCount: 0 } },
+      ]);
+    });
+
+    it('counts the attempt before it compares the password', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const hashedPassword = await bcrypt.hash('CorrectPass1!', 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 0,
+      } as any);
+      const reserve = sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      await controller
+        .authenticateWithPassword(user, 'WrongPass1!', '127.0.0.1')
+        .catch(() => undefined);
+
+      const real = compare.getCalls().find((c) => c.args[1] === hashedPassword);
+      expect(real).to.exist;
+      expect(reserve.firstCall.calledBefore(real!)).to.be.true;
+    });
+
+    it('never compares against the real password when no attempt is left', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      const password = 'CorrectPass1!';
+      const hashedPassword = await bcrypt.hash(password, 4);
+
+      sinon.stub(UserCredentials, 'findOne').resolves({
+        hashedPassword,
+        isBlocked: false,
+        wrongCredentialCount: 4,
+      } as any);
+      // Another request took the last attempt between the read and this one.
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(null);
+      const compare = sinon.spy(bcrypt, 'compare');
+
+      try {
+        await controller.authenticateWithPassword(user, password, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(BadRequestError);
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
+      }
+      expect(compare.getCalls().some((c) => c.args[1] === hashedPassword)).to.be.false;
     });
 
     it('should block account after 5 wrong passwords, set cooldown expiry and send mail', async () => {
@@ -1808,6 +2118,7 @@ describe('UserAccountController', () => {
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
       const saveStub = sinon.stub().resolves();
       const updatedCredential: any = {
+        hashedPassword,
         wrongCredentialCount: 5,
         isBlocked: false,
         blockExpiresAt: null,
@@ -1823,6 +2134,8 @@ describe('UserAccountController', () => {
       } as any);
       sinon.stub(UserCredentials, 'findOneAndUpdate').resolves(updatedCredential);
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any);
+      sinon.stub(Users, 'findOne').callsFake((() =>
+        Promise.resolve({ fullName: 'Test User' })) as unknown as typeof Users.findOne);
       mockMailService.sendMail.resolves({ statusCode: 200 });
 
       try {
@@ -1833,11 +2146,16 @@ describe('UserAccountController', () => {
         expect(saveStub.calledOnce).to.be.true;
         expect(updatedCredential.isBlocked).to.equal(true);
         expect(updatedCredential.blockExpiresAt).to.be.instanceOf(Date);
-        expect(mockMailService.sendMail.calledOnce).to.be.true;
         expect(
           createStub.calledWith(sinon.match({ activityType: 'ACCOUNT BLOCKED' })),
         ).to.be.true;
       }
+      await settle();
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall.args[0].templateData).to.deep.equal({
+        orgName: 'TestOrg',
+        name: 'Test User',
+      });
     });
   });
 
@@ -1854,6 +2172,9 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       // Should not throw
@@ -1870,7 +2191,8 @@ describe('UserAccountController', () => {
         await controller.authenticateWithOtp(user, '123456', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
   });
@@ -1909,6 +2231,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
 
@@ -1956,6 +2282,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.completeAuthentication.resolves();
       mockIamService.updateUser.resolves({ statusCode: 200 });
@@ -2004,6 +2334,10 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon
+        .stub(controller, 'reserveCredentialAttempt')
+        .resolves({ hashedPassword, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
       sinon.stub(UserActivities, 'create').resolves({} as any);
       mockSessionService.updateSession.resolves();
 
@@ -2018,7 +2352,7 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('should handle SAML SSO method (pass-through)', async () => {
+    it('refuses SAML and points to the SAML sign-in route', async () => {
       const req: any = {
         body: {
           method: 'samlSso',
@@ -2038,10 +2372,10 @@ describe('UserAccountController', () => {
 
       await controller.authenticate(req, res, next);
 
-      // SAML SSO now does an early return without writing any response
-      expect(res.status.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal(SAML_HAS_ITS_OWN_SIGN_IN);
       expect(res.json.called).to.be.false;
-      expect(next.called).to.be.false;
     });
   });
 
@@ -2243,13 +2577,186 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('resetPasswordViaEmailLink - one use per link', () => {
+    const newResponse = () => ({
+      status: sinon.stub().returnsThis(),
+      send: sinon.stub().returnsThis(),
+    });
+
+    beforeEach(() => {
+      // Slow enough that both requests are in flight together, as they are
+      // when a link is opened twice at once.
+      mockIamService.getUserById.callsFake(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ statusCode: 200, data: { _id: 'u1', orgId: 'o1' } }),
+              20,
+            ),
+          ),
+      );
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(UserCredentials.prototype, 'save').resolves({});
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
+    it('lets exactly one of two simultaneous uses of the same link through', async () => {
+      fakeUsedResetLinks();
+      const first = { res: newResponse(), next: sinon.stub() };
+      const second = { res: newResponse(), next: sinon.stub() };
+
+      await Promise.all([
+        controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), first.res as any, first.next),
+        controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), second.res as any, second.next),
+      ]);
+
+      const outcomes = [first, second];
+      const succeeded = outcomes.filter((o) => o.res.status.calledWith(200));
+      const refused = outcomes.filter((o) => o.next.called);
+      expect(succeeded).to.have.lengthOf(1);
+      expect(refused).to.have.lengthOf(1);
+      const error = refused[0]!.next.firstCall.args[0];
+      expect(error).to.be.instanceOf(UnauthorizedError);
+      expect(error.message).to.equal(RESET_LINK_ALREADY_USED);
+      // The refused request stopped before any reset work.
+      expect(mockIamService.getUserById.calledOnce).to.be.true;
+      expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('refuses the reset, changing nothing, when the one-use index cannot be built', async () => {
+      sinon.stub(UsedPasswordResetLink, 'init').rejects(new Error('index options conflict'));
+      sinon.stub(UsedPasswordResetLink, 'ensureIndexes').rejects(new Error('index options conflict'));
+      const create = sinon.stub(UsedPasswordResetLink, 'create').resolves({} as any);
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(RESET_LINK_NOT_CHECKED);
+      expect(create.called).to.be.false;
+      expect(mockIamService.getUserById.called).to.be.false;
+      expect((UserActivities.create as sinon.SinonStub).called).to.be.false;
+    });
+
+    it('builds the one-use index again after an earlier build failed', async () => {
+      const used = fakeUsedResetLinks();
+      (UsedPasswordResetLink.init as sinon.SinonStub).rejects(new Error('mongo was briefly down'));
+      const rebuild = sinon.stub(UsedPasswordResetLink, 'ensureIndexes').resolves();
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+      expect(rebuild.calledOnce).to.be.true;
+      expect(next.called).to.be.false;
+      expect(used.size).to.equal(1);
+    });
+
+    it('refuses a link that was already used', async () => {
+      fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+
+      expect(next.called).to.be.false;
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+    });
+
+    it('hands the link back when the new password is refused', async () => {
+      const used = fakeUsedResetLinks();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('weak'), res, next);
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(used.size).to.equal(0);
+
+      const retry = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('StrongEnough1!'), retry.res as any, retry.next);
+      expect(retry.next.called).to.be.false;
+      expect(retry.res.status.calledWith(200)).to.be.true;
+    });
+
+    it('counts two header spellings of the same link as one link', async () => {
+      fakeUsedResetLinks();
+      const scopedSecret = 'test-scoped-secret';
+      const { passwordResetToken } = jwtGeneratorForForgotPasswordLink(
+        'user@example.com', 'u1', 'o1', scopedSecret,
+      );
+      sinon.stub(UserActivities, 'findOne').returns({
+        sort: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(null),
+      } as any);
+      const middleware = new AuthMiddleware(
+        mockLogger,
+        new AuthTokenService('test-jwt-secret', scopedSecret),
+      ).scopedTokenValidator(TokenScopes.PASSWORD_RESET);
+
+      // The middleware reads only the second space-separated part, so all of
+      // these carry the same verified link.
+      const spellings = [
+        `Bearer ${passwordResetToken}`,
+        `Bearer ${passwordResetToken} `,
+        `Bearer ${passwordResetToken} trailing`,
+      ];
+      const outcomes = [];
+      for (const authorization of spellings) {
+        const req: any = { headers: { authorization }, body: { password: 'FirstValid1!' }, ip: '127.0.0.1' };
+        const passed = sinon.stub();
+        await middleware(req, {} as any, passed);
+        expect(passed.firstCall.args, authorization).to.deep.equal([]);
+        const outcome = { res: newResponse(), next: sinon.stub() };
+        await controller.resetPasswordViaEmailLink(req, outcome.res as any, outcome.next);
+        outcomes.push(outcome);
+      }
+
+      expect(outcomes[0]!.res.status.calledWith(200)).to.be.true;
+      for (const later of outcomes.slice(1)) {
+        expect(later.next.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+      }
+    });
+
+    for (const [failure, arrange] of [
+      ['the account lookup throws', () => mockIamService.getUserById.rejects(new Error('socket hang up'))],
+      ['the account lookup finds nobody', () => mockIamService.getUserById.resolves({ statusCode: 404 })],
+      ['reading the credentials throws', () => (UserCredentials.findOne as sinon.SinonStub).rejects(new Error('mongo down'))],
+      ['saving the password throws', () => (UserCredentials.prototype.save as sinon.SinonStub).rejects(new Error('write failed'))],
+    ] as const) {
+      it(`hands the link back when ${failure} before the password is saved`, async () => {
+        const used = fakeUsedResetLinks();
+        arrange();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        expect(next.calledOnce).to.be.true;
+        expect(used.size, 'the link is usable again').to.equal(0);
+      });
+    }
+
+    it('keeps the link spent once the password is saved, even if recording the change fails', async () => {
+      const used = fakeUsedResetLinks();
+      (UserActivities.create as sinon.SinonStub).rejects(new Error('insert failed'));
+
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+      expect(next.calledOnce).to.be.true;
+      expect((UserCredentials.prototype.save as sinon.SinonStub).calledOnce).to.be.true;
+      expect(used.size, 'the link stays used').to.equal(1);
+
+      const again = sinon.stub();
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!'), newResponse() as any, again);
+      expect(again.firstCall.args[0].message).to.equal(RESET_LINK_ALREADY_USED);
+    });
+
+    it('lets two different links for the same account each work', async () => {
+      fakeUsedResetLinks();
+      const a = { res: newResponse(), next: sinon.stub() };
+      const b = { res: newResponse(), next: sinon.stub() };
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!', 'link-a'), a.res as any, a.next);
+      await controller.resetPasswordViaEmailLink(resetLinkRequest('SecondValid1!', 'link-b'), b.res as any, b.next);
+      expect(a.next.called || b.next.called).to.be.false;
+    });
+  });
+
   describe('resetPasswordViaEmailLink - success', () => {
     it('should reset password successfully via email link', async () => {
-      const req: any = {
-        body: { password: 'NewValidPass1!' },
-        tokenPayload: { orgId: 'o1', userId: 'u1' },
-        ip: '127.0.0.1',
-      };
+      fakeUsedResetLinks();
+      const req = resetLinkRequest('NewValidPass1!');
 
       mockIamService.getUserById.resolves({
         statusCode: 200,
@@ -2360,10 +2867,10 @@ describe('UserAccountController', () => {
       await controller.authenticate(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      // New behavior: unknown_jit_method is not an external provider,
-      // so it falls through to user lookup which fails with NotFoundError
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal('User not found');
+      // unknown_jit_method is not an external provider, so it falls through to
+      // the account lookup and gets the same refusal as a wrong password.
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(next.firstCall.args[0].message).to.equal(WRONG_EMAIL_OR_PASSWORD);
     });
   });
 
@@ -2805,7 +3312,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(BadRequestError) when no oauth config data', async () => {
@@ -2831,7 +3338,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
   });
 
@@ -2877,6 +3384,9 @@ describe('UserAccountController', () => {
         wrongCredentialCount: 0,
         save: sinon.stub().resolves(),
       } as any);
+      sinon.stub(controller, 'reserveCredentialAttempt').resolves({ hashedOTP, wrongCredentialCount: 1 } as any);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserCredentials, 'findOneAndUpdate').resolves({} as unknown as ClaimedCredentials);
       sinon.stub(UserActivities, 'create').resolves({} as any);
 
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
@@ -2886,8 +3396,8 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('verifyOTP - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when incrementWrongCredentialCount returns null', async () => {
+  describe('verifyOTP - no attempt could be reserved', () => {
+    it('answers like a wrong code when the reservation finds no credential', async () => {
       const hashedOTP = await bcrypt.hash('654321', 10);
 
       sinon.stub(UserCredentials, 'findOne').resolves({
@@ -2904,14 +3414,14 @@ describe('UserAccountController', () => {
         await controller.verifyOTP('u1', 'o1', '000000', 'test@test.com', '127.0.0.1');
         expect.fail('Should have thrown');
       } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(WRONG_SIGN_IN_CODE);
       }
     });
   });
 
-  describe('authenticateWithPassword - incrementWrongCredentialCount returns null', () => {
-    it('should throw BadRequestError when increment returns null', async () => {
+  describe('authenticateWithPassword - no attempt could be reserved', () => {
+    it('answers like a wrong password when the reservation finds no credential', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
       const hashedPassword = await bcrypt.hash('CorrectPass1!', 10);
 
@@ -2930,7 +3440,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal('Please request OTP before login');
+        expect((error as BadRequestError).message).to.equal(WRONG_EMAIL_OR_PASSWORD);
       }
     });
   });
@@ -3016,7 +3526,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Email mismatch');
+        expect((error as BadRequestError).message).to.equal(EMAIL_MISMATCH);
       }
     });
 
@@ -3046,7 +3556,7 @@ describe('UserAccountController', () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       mockConfigService.getConfig.resolves({
-        data: { tenantId: 'tenant-1' },
+        data: { clientId: 'client-1', tenantId: 'tenant-1' },
       });
 
       // We need to stub validateAzureAdUser
@@ -3059,6 +3569,28 @@ describe('UserAccountController', () => {
       await controller.authenticateWithMicrosoft(user, { idToken: 'token' }, '127.0.0.1');
       expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
     });
+
+    it('should refuse a token for a different account than the one signing in', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'member@test.com' };
+      mockConfigService.getConfig.resolves({
+        data: { clientId: 'client-1', tenantId: 'common' },
+      });
+      const azureAdModule = require('../../../../src/modules/auth/utils/azureAdTokenValidation');
+      sinon.stub(azureAdModule, 'validateAzureAdUser').resolves({
+        tid: 'other-tenant',
+        email: 'member@test.com',
+        preferred_username: 'other@elsewhere.test',
+      });
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
+
+      try {
+        await controller.authenticateWithMicrosoft(user, { idToken: 'token' }, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+      expect(activity.called).to.be.false;
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -3069,7 +3601,7 @@ describe('UserAccountController', () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
       mockConfigService.getConfig.resolves({
-        data: { tenantId: 'tenant-1' },
+        data: { clientId: 'client-1', tenantId: 'tenant-1' },
       });
 
       const azureAdModule = require('../../../../src/modules/auth/utils/azureAdTokenValidation');
@@ -3080,6 +3612,28 @@ describe('UserAccountController', () => {
 
       await controller.authenticateWithAzureAd(user, { idToken: 'token' }, '127.0.0.1');
       expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('should refuse a token for a different account than the one signing in', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'member@test.com' };
+      mockConfigService.getConfig.resolves({
+        data: { clientId: 'client-1', tenantId: 'common' },
+      });
+      const azureAdModule = require('../../../../src/modules/auth/utils/azureAdTokenValidation');
+      sinon.stub(azureAdModule, 'validateAzureAdUser').resolves({
+        tid: 'other-tenant',
+        email: 'member@test.com',
+        preferred_username: 'other@elsewhere.test',
+      });
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
+
+      try {
+        await controller.authenticateWithAzureAd(user, { idToken: 'token' }, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+      }
+      expect(activity.called).to.be.false;
     });
   });
 
@@ -3099,7 +3653,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('Access token is required');
+        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
       }
     });
 
@@ -3115,7 +3669,7 @@ describe('UserAccountController', () => {
         expect.fail('Should have thrown');
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.include('User info endpoint');
+        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
       }
     });
   });
@@ -3309,23 +3863,24 @@ describe('UserAccountController', () => {
   // generateAndSendLoginOtp - mail send failure
   // -----------------------------------------------------------------------
   describe('generateAndSendLoginOtp - mail failure', () => {
-    it('should throw when mail service returns non-200', async () => {
+    it('logs a send that the mail service refuses, after the code is stored', async () => {
+      const save = sinon.stub().resolves();
       sinon.stub(UserCredentials, 'findOne').resolves({
         isBlocked: false,
         hashedOTP: 'old',
         otpValidity: Date.now(),
-        save: sinon.stub().resolves(),
+        save,
       } as any);
       sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
 
       mockMailService.sendMail.resolves({ statusCode: 500, data: 'SMTP error' });
 
-      try {
-        await controller.generateAndSendLoginOtp('u1', 'o1', 'Test', 'test@test.com', '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect((error as Error).message).to.equal('SMTP error');
-      }
+      const result = await controller.generateAndSendLoginOtp('u1', 'o1', 'Test', 'test@test.com', '127.0.0.1');
+      await settle();
+
+      expect(result.statusCode).to.equal(200);
+      expect(save.calledOnce).to.be.true;
+      expect(mockLogger.error.calledWith("The sign-in code email couldn't be sent")).to.be.true;
     });
   });
 
@@ -3393,7 +3948,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(BadRequestError) when oauth config has no tokenEndpoint', async () => {
@@ -3419,7 +3974,7 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('not properly configured');
+      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
 
     it('should call next(NotFoundError) when JIT not enabled', async () => {
@@ -3531,6 +4086,26 @@ describe('UserAccountController', () => {
   // authenticateWithOAuth - success and error paths
   // -----------------------------------------------------------------------
   describe('authenticateWithOAuth - additional paths', () => {
+    it('shows a plain message, not the network error, when the provider cannot be reached', async () => {
+      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
+      mockConfigService.getConfig.resolves({
+        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
+      });
+      const originalFetch = global.fetch;
+      global.fetch = sinon.stub().rejects(new TypeError('fetch failed: getaddrinfo ENOTFOUND provider.com')) as any;
+
+      try {
+        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
+        expect.fail('Should have thrown');
+      } catch (error) {
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect((error as UnauthorizedError).message).to.equal(OAUTH_SIGN_IN_FAILED);
+      } finally {
+        global.fetch = originalFetch;
+      }
+    });
+
+
     it('should throw UnauthorizedError when fetch response is not ok', async () => {
       const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
 
@@ -3760,9 +4335,14 @@ describe('UserAccountController', () => {
   });
 
   describe('validateEmailChange', () => {
+    const verifiedUser = { _id: 'u1', orgId: 'org1', fullName: 'Ada Lovelace', email: 'new@example.com' }
+    beforeEach(() => {
+      sinon.stub(controller as any, 'syncVerifiedEmailToGraph').resolves()
+    })
+
     it('should update email successfully when new email is not in use', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
       sinon.stub(UserActivities, 'create').resolves({} as any)
 
       const req: any = {
@@ -3775,6 +4355,12 @@ describe('UserAccountController', () => {
       expect(res.status.calledWith(200)).to.be.true
       expect(res.json.firstCall.args[0].message).to.equal('Email updated successfully')
       expect((Users.findByIdAndUpdate as any).calledWith('u1', sinon.match({ email: 'new@example.com' }))).to.be.true
+      expect((controller as any).syncVerifiedEmailToGraph.calledOnce).to.be.true
+      expect((controller as any).syncVerifiedEmailToGraph.firstCall.args).to.deep.equal([
+        'u1',
+        'org1',
+        'new@example.com',
+      ])
     })
 
     it('should throw BadRequestError when email is already in use', async () => {
@@ -3792,6 +4378,23 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.include('already in use')
     })
 
+    it('does not sync the graph when Mongo has no user for the token', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(null)
+
+      const req: any = {
+        tokenPayload: { userId: 'u1', newEmail: 'new@example.com', orgId: 'org1' },
+        ip: '127.0.0.1',
+      }
+
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect((controller as any).syncVerifiedEmailToGraph.called).to.be.false
+      expect(res.status.called).to.be.false
+    })
+
     it('should call next on unexpected error', async () => {
       sinon.stub(Users, 'findOne').rejects(new Error('DB error'))
 
@@ -3805,9 +4408,47 @@ describe('UserAccountController', () => {
       expect(next.calledOnce).to.be.true
     })
 
+    it('tells the graph about the new address once the change is verified', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'New@Example.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      const event = mockEventService.publishEvent.firstCall.args[0]
+      expect(event.eventType).to.equal('userUpdated')
+      expect(event.payload).to.include({ userId: 'u1', orgId: 'org1', email: 'new@example.com' })
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('fails when the event cannot be recorded, and opening the link again records it', async () => {
+      const findOne = sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      mockEventService.publishEvent.onFirstCall().rejects(new Error('outbox write failed'))
+      mockEventService.publishEvent.onSecondCall().resolves()
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'New@Example.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('outbox write failed')
+      expect(res.status.called).to.be.false
+
+      // The address is now this user's own, so the uniqueness check skips them.
+      expect(findOne.firstCall.args[0]).to.deep.equal({ email: 'new@example.com', _id: { $ne: 'u1' } })
+      await controller.validateEmailChange(req, res, next)
+
+      expect(mockEventService.publishEvent.calledTwice).to.be.true
+      expect(mockEventService.publishEvent.secondCall.args[0].payload).to.include({ userId: 'u1', email: 'new@example.com' })
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
     it('should log activity with PASSWORD_CHANGED type', async () => {
       sinon.stub(Users, 'findOne').resolves(null)
-      sinon.stub(Users, 'findByIdAndUpdate').resolves({} as any)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves(verifiedUser as any)
       const createStub = sinon.stub(UserActivities, 'create').resolves({} as any)
 
       const req: any = {
@@ -3822,6 +4463,181 @@ describe('UserAccountController', () => {
       expect(activityArg.orgId).to.equal('org1')
       expect(activityArg.userId).to.equal('u1')
       expect(activityArg.ipAddress).to.equal('10.0.0.1')
+    })
+  });
+
+  describe('syncVerifiedEmailToGraph', () => {
+    const sync = () => (controller as any).syncVerifiedEmailToGraph('u1', 'org1', 'new@email.com') as Promise<void>
+
+    it('PATCHes the connectors service with only the email, signed as an entity:user:write token', async () => {
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200 } as any)
+
+      await sync()
+
+      const [uri, method, headers, body] = execute.firstCall.args
+      expect(uri).to.equal('http://connectors:8088/api/v1/entity/user/email')
+      expect(method).to.equal('PATCH')
+      expect(body).to.deep.equal({ email: 'new@email.com' })
+      const claims = jwt.verify(headers.Authorization.replace('Bearer ', ''), 'test-scoped-secret') as Record<string, unknown>
+      expect(claims).to.include({ userId: 'u1', orgId: 'org1' })
+      expect(claims.scopes).to.deep.equal(['entity:user:write'])
+    })
+
+    it('warns and carries on when the graph has no login node for the user', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404 } as any)
+
+      await sync()
+
+      expect(mockLogger.warn.calledWith('Graph user not found while syncing verified email')).to.be.true
+    })
+
+    for (const statusCode of [409, 500]) {
+      it(`fails the request when the graph answers ${statusCode}`, async () => {
+        sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+          statusCode,
+          data: { detail: 'graph refused' },
+        } as any)
+
+        let error: Error | undefined
+        try {
+          await sync()
+        } catch (e) {
+          error = e as Error
+        }
+
+        expect(error).to.be.instanceOf(Error)
+      })
+    }
+
+    it('fails the request when the connectors service gives no answer', async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves(undefined as any)
+
+      let error: Error | undefined
+      try {
+        await sync()
+      } catch (e) {
+        error = e as Error
+      }
+
+      expect(error).to.be.instanceOf(Error)
+    })
+
+    it('verify returns the graph error to the caller and Mongo keeps the new email', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      const update = sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 409,
+        data: { detail: 'Email already belongs to another login user in the graph' },
+      } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'New@Email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(update.calledOnce).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(res.status.called).to.be.false
+    })
+
+    it('does not publish the user event when the graph refuses the address', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 409,
+        data: { detail: 'Email already belongs to another login user in the graph' },
+      } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(mockEventService.publishEvent.called).to.be.false
+      expect(res.status.called).to.be.false
+    })
+
+    for (const response of [{ statusCode: 500, data: { detail: 'graph down' } }, undefined]) {
+      it(`publishes the user event and still fails the request when the graph answers ${response ? response.statusCode : 'nothing'}`, async () => {
+        sinon.stub(Users, 'findOne').resolves(null)
+        sinon.stub(Users, 'findByIdAndUpdate').resolves({
+          _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+        } as any)
+        sinon.stub(UserActivities, 'create').resolves({} as any)
+        sinon.stub(connectorUtils, 'executeConnectorCommand').resolves(response as any)
+
+        const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+        await controller.validateEmailChange(req, res, next)
+
+        expect(mockEventService.publishEvent.calledOnce).to.be.true
+        expect(mockEventService.publishEvent.firstCall.args[0].payload).to.include({ userId: 'u1', email: 'new@email.com' })
+        expect(next.calledOnce).to.be.true
+        expect(res.status.called).to.be.false
+      })
+    }
+
+    it('fails with the event error, not the graph one, when both fail', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 500 } as any)
+      mockEventService.publishEvent.rejects(new Error('outbox write failed'))
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.equal('outbox write failed')
+    })
+
+    it('still publishes the user event when the graph has no login node (404)', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 404 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(mockEventService.publishEvent.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('records the activity before the graph call so a refused sync still ends old sessions', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      const activity = sinon.stub(UserActivities, 'create').resolves({} as any)
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 500 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com', orgId: 'org1' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(activity.calledOnce).to.be.true
+      expect(activity.calledBefore(execute)).to.be.true
+    })
+
+    it('verify skips the graph call when the token has no orgId', async () => {
+      sinon.stub(Users, 'findOne').resolves(null)
+      sinon.stub(Users, 'findByIdAndUpdate').resolves({
+        _id: 'u1', orgId: 'org1', fullName: 'Ada', email: 'new@email.com',
+      } as any)
+      sinon.stub(UserActivities, 'create').resolves({} as any)
+      const execute = sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({ statusCode: 200 } as any)
+
+      const req: any = { tokenPayload: { userId: 'u1', newEmail: 'new@email.com' }, ip: '127.0.0.1' }
+      await controller.validateEmailChange(req, res, next)
+
+      expect(execute.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   });
 });

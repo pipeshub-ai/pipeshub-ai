@@ -27,7 +27,7 @@ def _make_orchestrator(*, previous_record=None):
     vector_store.apply = AsyncMock(return_value=True)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value={"indexingStatus": "NOT_STARTED"})
-    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     orchestrator = SinkOrchestrator(
         graphdb=AsyncMock(),
         blob_storage=blob_storage,

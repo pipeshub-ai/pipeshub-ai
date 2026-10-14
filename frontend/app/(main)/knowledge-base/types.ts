@@ -230,6 +230,8 @@ export interface KnowledgeHubNode {
   parentId: string | null;
   origin: NodeOrigin;
   connector?: string;
+  /** Connector instance a CONNECTOR-origin node belongs to; marks demo records. `null` otherwise. */
+  connectorId?: string | null;
   hasChildren: boolean;
   permission: NodePermission;
   sharingStatus: SharingStatus;
@@ -289,6 +291,8 @@ export interface NodePermissions {
   canEdit: boolean;
   canDelete: boolean;
   canManagePermissions: boolean;
+  /** The user's own role on the collection this node is in, the same at every level inside it; null outside a collection. */
+  collectionRole?: string | null;
 }
 
 /**
@@ -361,6 +365,8 @@ export interface KnowledgeHubApiResponse {
   breadcrumbs?: Breadcrumb[];
   counts?: NodeCounts;
   permissions?: NodePermissions;
+  /** Deepest a collection folder may be nested; a folder directly in the collection is depth 1. */
+  maxFolderDepth?: number;
 }
 
 /**
@@ -519,6 +525,8 @@ export interface RecordDetailsResponse {
     isArchived: boolean;
     indexingStatus: IndexingStatus;
     reason?: string;
+    // Set while the record waits out its source's rate limit (epoch ms).
+    retryNotBefore?: number | null;
     connectorName?: string;
     hideWeburl?: boolean;
     previewRenderable?: boolean;

@@ -58,19 +58,20 @@ export const listProjects =
       const orgId = req.user?.orgId as string;
       // ValidationMiddleware replaces req.query with the Zod-parsed/coerced
       // result, so page/limit are already numbers and includeArchived a boolean.
-      const { page, limit, search, scope, includeArchived } =
+      const { page, limit, search, scope, includeArchived, isArchived } =
         req.query as unknown as {
           page: number;
           limit: number;
           search?: string;
           scope: 'mine' | 'shared' | 'all';
           includeArchived: boolean;
+          isArchived?: boolean;
         };
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived },
+        { page, limit, search, scope, includeArchived, isArchived },
         callerTeamIds,
       );
       res.status(200).json({
@@ -366,7 +367,7 @@ async function teamExists(
 ): Promise<boolean> {
   try {
     const command = new AIServiceCommand<unknown>({
-      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${teamId}`,
+      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
       method: HttpMethod.GET,
       headers: req.headers as Record<string, string>,
     });
@@ -414,7 +415,7 @@ export const upsertProjectMembers =
           }
           try {
             const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${member.principalId}`,
+              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(member.principalId)}`,
               method: HttpMethod.GET,
               headers: req.headers as Record<string, string>,
             });

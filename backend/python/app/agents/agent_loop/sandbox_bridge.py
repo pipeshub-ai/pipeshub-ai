@@ -176,17 +176,18 @@ _SCRATCH_FILES_SLOT: StateSlot[list[dict[str, Any]]] = StateSlot(
 def sandbox_network_enabled() -> bool:
     """Whether `run_code`'s sandbox may reach the network — read once per
     call so tests/operators can flip `SANDBOX_ALLOW_NETWORK` without a
-    process restart. Defaults to enabled: writing code that calls a public
-    REST API for live data (then analyzing the response in the same
-    program) is the whole point of giving the agent this tool alongside
-    `web_search`/`fetch_url` — see `factory.py`, which reads this once per
-    request and threads the SAME resolved value into the sandbox manager,
-    the `run_code` tool, the package-policy deny message, the planner's
-    upfront-plan steering, and the system prompt, so every surface the
-    model sees agrees on whether network is on."""
+    process restart. Defaults to disabled: the code is model-written, and
+    a prompt-injected document can steer it, so outbound access is an
+    operator opt-in (even then each Docker container firewalls private,
+    link-local and metadata addresses — see `egress_firewall`).
+    `factory.py` reads this once per request and threads the SAME resolved
+    value into the sandbox manager, the `run_code` tool, the package-policy
+    deny message, the planner's upfront-plan steering, and the system
+    prompt, so every surface the model sees agrees on whether network is
+    on."""
     raw = os.environ.get(_ENV_ALLOW_NETWORK)
     if raw is None:
-        return True
+        return False
     return raw.strip().lower() not in _FALSY_ENV_VALUES
 
 _LANGUAGE_TO_SANDBOX_LANGUAGE: dict[str, SandboxLanguage] = {

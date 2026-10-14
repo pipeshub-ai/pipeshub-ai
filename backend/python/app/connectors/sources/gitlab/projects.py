@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Any
 
 from gitlab.v4.objects import GroupMember, Project
 
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
 from app.models.entities import AppUserGroup, RecordGroup, RecordGroupType
 from app.models.permission import EntityType, Permission, PermissionType
@@ -528,6 +528,7 @@ class ProjectsSync:
                 org_id=c.data_entities_processor.org_id,
                 name="Work items",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-work-items",
@@ -546,6 +547,7 @@ class ProjectsSync:
                 org_id=c.data_entities_processor.org_id,
                 name="Merge requests",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-merge-requests",
@@ -555,6 +557,7 @@ class ProjectsSync:
                 org_id=c.data_entities_processor.org_id,
                 name="Code repository",
                 group_type=RecordGroupType.PROJECT.value,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 connector_name=c.connector_name,
                 connector_id=c.connector_id,
                 external_group_id=f"{project.id}-code-repository",

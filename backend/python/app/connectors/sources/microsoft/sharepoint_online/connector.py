@@ -91,6 +91,7 @@ from app.connectors.sources.microsoft.sharepoint_online.utils import (
     get_sharepoint_auth_notification,
     sanitize_azure_error,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppUser,
     AppUserGroup,
@@ -1383,7 +1384,14 @@ class SharePointConnector(BaseConnector):
                 # Check content changes for files
                 if hasattr(item, 'file') and item.file and hasattr(item.file, 'hashes') and item.file.hashes:
                     current_hash = getattr(item.file.hashes, 'quick_xor_hash', None)
-                    if getattr(existing_record, 'quick_xor_hash', None) != current_hash:
+                    # The lookup above returns a base Record, which has no file hashes. If the file
+                    # node is missing or can't be read, the content can't be shown to be unchanged, so re-index.
+                    try:
+                        existing_file_record = await self.data_entities_processor.get_file_record_by_id(existing_record.id)
+                    except GraphQueryError as read_error:
+                        self.logger.warning(f"Re-indexing {item_id}: its stored file record could not be read: {read_error}")
+                        existing_file_record = None
+                    if existing_file_record is None or existing_file_record.quick_xor_hash != current_hash:
                         content_changed = True
                         is_updated = True
 
@@ -3286,7 +3294,10 @@ class SharePointConnector(BaseConnector):
             )
             sync_point = await self.user_group_sync_point.read_sync_point(sync_point_key)
 
-            delta_link = sync_point.get('deltaLink') if sync_point else None
+            # A run stopped mid-delta leaves only nextLink. Resuming there reads the page
+            # it stopped on again; a full sync would start a new delta link past it, and
+            # past the group deletions on the remaining pages.
+            delta_link = (sync_point.get('deltaLink') or sync_point.get('nextLink')) if sync_point else None
 
             if delta_link is None:
                 self.logger.info("No sync point found, performing initial full sync...")
@@ -3444,9 +3455,9 @@ class SharePointConnector(BaseConnector):
                 success = await self._handle_group_create(group)
                 if not success:
                     self.logger.error(f"❌ Error handling group create for {group.id}")
-                    continue
 
-                # Handle MEMBER changes
+                # Applied even when the save above failed: a removal listed here needs no
+                # member read, and is lost for good once the delta link moves past this page.
                 member_changes = (group.additional_data or {}).get('members@delta', [])
 
                 if member_changes:
@@ -3485,6 +3496,8 @@ class SharePointConnector(BaseConnector):
 
         if '@removed' in member_change:
             self.logger.info(f"    -> [DELTA] 👤⛔ REMOVING member: {email} ({user_id}) from group {group_id}")
+            # Not caught: a removal that fails must stop this page, so the delta link
+            # is not saved past it and the next run reads the removal again.
             success = await self.data_entities_processor.on_user_group_member_removed(
                 external_group_id=group_id,
                 user_email=email,

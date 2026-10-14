@@ -658,7 +658,7 @@ export function useAgentBuilderReconstruction(): {
             id: nodeId,
             type: 'web-search',
             label: agent.webSearch.providerLabel || agent.webSearch.provider,
-            description: t('Web Search'),
+            description: t('agentBuilder.webSearch'),
             icon: 'public',
             category: 'tools',
             config: {
@@ -723,7 +723,7 @@ export function useAgentBuilderReconstruction(): {
           const displayName = mcpServer.displayName || mcpServer.name || t('agentBuilder.mcpServerDefaultName');
           const mcpTools = (mcpServer.tools || []).map((tool) => ({
             name: tool.name,
-            fullName: tool.fullName || `${mcpServer.name}.${tool.name}`,
+            fullName: tool.fullName || '',
             description: tool.description || '',
           }));
 
@@ -747,7 +747,9 @@ export function useAgentBuilderReconstruction(): {
                 name: mcpServer.name,
                 displayName,
                 typeId: mcpServer.typeId || undefined,
+                allTools: mcpServer.allTools === true,
                 tools: mcpTools,
+                availableTools: mcpTools,
                 isAuthenticated: true,
               },
               inputs: [],
@@ -777,6 +779,7 @@ export function useAgentBuilderReconstruction(): {
             instructions: agent.instructions ?? '',
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
             defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
+            sendUserContext: agent.sendUserContext !== false,
             routing: 'auto',
             allowMultipleLLMs: true,
           },

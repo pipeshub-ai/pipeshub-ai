@@ -22,6 +22,8 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
@@ -87,7 +89,10 @@ async def notion_source_helper() -> AsyncGenerator[NotionSourceHelper, None]:
     """Notion API helper for creating/deleting test resources."""
     token = _env(ENV_TOKEN)
     if not token:
-        pytest.skip(f"Notion credentials not set ({ENV_TOKEN}).")
+        source_unavailable(
+            "The Notion workspace this suite syncs from is not configured.",
+            secrets=[ENV_TOKEN],
+        )
     helper = NotionSourceHelper(token)
     try:
         yield helper
@@ -119,14 +124,17 @@ async def notion_connector(
             root_page_id = candidates[0]
             logger.info("SETUP: discovered IT root page %s", root_page_id)
         elif not candidates:
-            pytest.skip(
-                "No page is shared with the Notion integration. Share one top-level page with "
-                f"it (or set {ENV_ROOT_PAGE_ID}) — the suite builds its fixture tree under it."
+            source_unavailable(
+                "No page is shared with the Notion integration, so this suite has "
+                "nothing to build its fixture tree under. Share one top-level page "
+                "with the integration.",
+                secrets=[ENV_ROOT_PAGE_ID],
             )
         else:
-            pytest.skip(
-                f"{len(candidates)} shared root pages found ({candidates}); set "
-                f"{ENV_ROOT_PAGE_ID} to pick one."
+            source_unavailable(
+                f"{len(candidates)} shared root pages found, so this suite cannot "
+                "tell which one to use. Name the one it should build under.",
+                secrets=[ENV_ROOT_PAGE_ID],
             )
 
     root_database_id = normalize_notion_id(_env(ENV_ROOT_DATABASE_ID) or "") or None

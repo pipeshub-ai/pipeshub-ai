@@ -34,6 +34,9 @@ export interface GeneratedTokens {
 export interface GenerateTokensOptions {
   accessTokenLifetimeOverrideSeconds?: number
   name?: string
+  // User grants only: PAT and service pseudo-apps store allowedScopes once
+  // and validate against MCP_SCOPES instead.
+  recheckAppScopes?: boolean
 }
 
 // Token Response (RFC 6749 compliant)
@@ -54,7 +57,7 @@ export interface AuthorizeRequest {
   scope: string
   state: string
   code_challenge?: string
-  code_challenge_method?: 'S256' | 'plain'
+  code_challenge_method?: 'S256'
   nonce?: string
 }
 
@@ -185,6 +188,12 @@ export interface ConsentData {
     isDynamic?: boolean
   }
   scopes: Array<{
+    name: string
+    description: string
+    category: string
+  }>
+  // Requested but outside the app's allowed scopes; shown, never granted.
+  notGrantedScopes?: Array<{
     name: string
     description: string
     category: string

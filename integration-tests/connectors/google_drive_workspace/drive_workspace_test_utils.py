@@ -4,15 +4,20 @@
 
 from __future__ import annotations
 
+import asyncio
+import inspect
 import json
 import logging
 import os
 import re
+import time
 import uuid
-from typing import Any, Optional
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Optional
 
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
+from googleapiclient.errors import HttpError  # type: ignore[import-not-found]
 from pymongo import MongoClient  # type: ignore[import-not-found]
 
 from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]
@@ -20,6 +25,11 @@ from app.sources.external.google.drive.drive import (  # type: ignore[import-not
     GoogleDriveDataSource,
 )
 from helper.config import MONGO_DB_NAME, MONGO_URI  # type: ignore[import-not-found]
+from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+
+if TYPE_CHECKING:
+    from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
+    from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
 logger = logging.getLogger("drive-workspace-test-utils")
 
@@ -30,6 +40,8 @@ FULL_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
 ENV_SA_JSON = "GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON"
 ENV_ADMIN_EMAIL = "GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL"
 ENV_TEST_USER = "GOOGLE_DRIVE_WORKSPACE_TEST_USER_EMAIL"
+# A second Workspace member in the same domain, to share files with.
+ENV_SECOND_USER = "GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL"
 
 # A freshly created Shared Drive lags its create call twice over: in the member
 # drives.list the connector discovers drives through, and in the drive-wide
@@ -561,6 +573,130 @@ async def create_shared_drive_folder_filter_fixtures(
     return fixtures
 
 
+def _create_permission(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    body: dict[str, Any],
+    **params: Any,
+) -> str:
+    """permissions.create with a body (the typed wrapper takes none); return its id."""
+    created = drive.client.permissions().create(  # type: ignore[attr-defined]
+        fileId=file_id,
+        body=body,
+        supportsAllDrives=True,
+        fields="id",
+        **params,
+    ).execute()
+    permission_id = created.get("id")
+    if not permission_id:
+        raise RuntimeError(f"permissions.create returned no id for {file_id}: {created}")
+    return str(permission_id)
+
+
+def share_drive_item_with_user(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    email: str,
+    role: str = "reader",
+) -> str:
+    """Share with one person, without the notification email; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "user", "role": role, "emailAddress": email},
+        sendNotificationEmail=False,
+    )
+    logger.info("Shared Drive item %s with %s as %s", file_id, email, role)
+    return permission_id
+
+
+def share_drive_item_with_domain(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    domain: str,
+    role: str = "reader",
+) -> str:
+    """Share with everyone in ``domain``; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "domain", "role": role, "domain": domain},
+    )
+    logger.info("Shared Drive item %s with domain %s as %s", file_id, domain, role)
+    return permission_id
+
+
+async def unshare_drive_item(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    permission_id: str,
+) -> None:
+    await drive.permissions_delete(
+        fileId=file_id, permissionId=permission_id, supportsAllDrives=True
+    )
+    logger.info("Removed permission %s from Drive item %s", permission_id, file_id)
+
+
+async def create_permission_fixtures(
+    drive: GoogleDriveDataSource,
+    second_user_email: str,
+    domain: str,
+) -> dict[str, str]:
+    """One file per way of sharing, all owned by the impersonated user.
+
+    Layout::
+
+        {root}/
+          private.txt          owner only
+          shared-reader.txt    + second user as reader
+          revoke.txt           + second user as reader (a test takes it away)
+          domain.txt           + everyone in the domain as reader
+
+    ``domain_share_error`` is set instead of ``domain_permission_id`` when the
+    Workspace sharing policy refuses domain-wide shares, so only that case skips.
+    """
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"pipeshub-it-drive-perm-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+
+    # The caller only learns root_id from the return value, so a failure part-way
+    # through must clean up here or the tree is left in Drive.
+    try:
+        fixtures: dict[str, str] = {"root_folder_id": root_id, "root_folder_name": root_name}
+        for key, name in (
+            ("private", "private.txt"),
+            ("shared", "shared-reader.txt"),
+            ("revoke", "revoke.txt"),
+            ("domain", "domain.txt"),
+        ):
+            fixtures[f"{key}_file_id"] = await create_drive_text_file(
+                drive, name, parent_id=root_id, content=f"pipeshub drive permission it: {name}\n"
+            )
+            fixtures[f"{key}_file_name"] = name
+
+        fixtures["shared_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["shared_file_id"], second_user_email
+        )
+        fixtures["revoke_permission_id"] = share_drive_item_with_user(
+            drive, fixtures["revoke_file_id"], second_user_email
+        )
+        try:
+            fixtures["domain_permission_id"] = share_drive_item_with_domain(
+                drive, fixtures["domain_file_id"], domain
+            )
+        except HttpError as e:
+            if e.resp.status != 403:
+                raise
+            fixtures["domain_share_error"] = f"HTTP {e.resp.status}: {e}"
+            logger.warning("Domain-wide share refused for %s: %s", domain, e)
+    except BaseException:
+        await delete_drive_folder(drive, root_id)
+        raise
+
+    logger.info("Created Drive permission fixtures: %s", fixtures)
+    return fixtures
+
+
 async def delete_drive_folder(
     drive: GoogleDriveDataSource,
     folder_id: Optional[str],
@@ -722,3 +858,130 @@ def ensure_pipeshub_user_exists(users_client: Any, email: str) -> tuple[str, boo
         logger.info("Marked Pipeshub user %s active (hasLoggedIn=true)", email)
 
     return user_id, created
+
+
+_SYNC_TIMEOUT_SEC = int(os.getenv("GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT", "300"))
+
+_RESTART_SYNC_PAUSE_SEC = (5, 8)
+
+_RESYNC_INTERVAL_SEC = 15
+_GRAPH_POLL_INTERVAL_SEC = 10
+
+# The longest a sync wait can take on a quiet connector: it spends the whole
+# sync_start_timeout failing to see the sync start, then asks for twice the
+# settle polls. A shorter timeout makes it raise before it can settle. Read from
+# the helper's own defaults so the two cannot drift apart.
+_WAIT_DEFAULTS = inspect.signature(wait_for_sync_completion).parameters
+_SYNC_WAIT_FLOOR_SEC = (
+    _WAIT_DEFAULTS["sync_start_timeout"].default
+    + 2 * _WAIT_DEFAULTS["settle_checks"].default * _WAIT_DEFAULTS["settle_interval"].default
+)
+
+
+def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
+    """Disable then re-enable the connector to trigger a fresh incremental sync."""
+    pipeshub_client.toggle_sync(connector_id, enable=False)
+    pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[0])
+    pipeshub_client.toggle_sync(connector_id, enable=True)
+    pipeshub_client.wait(_RESTART_SYNC_PAUSE_SEC[1])
+
+
+async def sync_and_wait(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    *,
+    timeout: float | None = None,
+) -> None:
+    _restart_sync(pipeshub_client, connector_id)
+    await wait_for_sync_completion(
+        pipeshub_client,
+        graph_provider,
+        connector_id,
+        timeout=_SYNC_TIMEOUT_SEC if timeout is None else timeout,
+    )
+
+
+def record_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str
+) -> Callable[[], Awaitable[bool]]:
+    async def _present() -> bool:
+        return (
+            await graph_provider.get_record_by_external_id(connector_id, external_id)
+            is not None
+        )
+
+    return _present
+
+
+def record_absent(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str
+) -> Callable[[], Awaitable[bool]]:
+    async def _absent() -> bool:
+        return (
+            await graph_provider.get_record_by_external_id(connector_id, external_id)
+            is None
+        )
+
+    return _absent
+
+
+async def sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    check: Callable[[], Awaitable[bool]],
+    *,
+    description: str,
+) -> None:
+    """Sync, and sync again, until ``check`` holds.
+
+    An edit made through the Drive API can take a while to reach the changes
+    feed an incremental sync reads. A sync started straight after the edit may
+    see nothing and the next one will, so a single sync followed by a wait on
+    the graph fails whenever that first sync ran too early.
+    """
+    # One budget for the whole wait. A round starts only when what is left
+    # covers the restart pauses plus the slowest sync wait, and the wait is
+    # given what remains after the restart. When no round fits any more, the
+    # graph is still polled until the deadline.
+    deadline = time.monotonic() + _SYNC_TIMEOUT_SEC
+    restart_sec = sum(_RESTART_SYNC_PAUSE_SEC)
+    round_sec = restart_sec + _SYNC_WAIT_FLOOR_SEC
+    if round_sec > _SYNC_TIMEOUT_SEC:
+        raise ValueError(
+            f"sync timeout {_SYNC_TIMEOUT_SEC}s is shorter than one sync round "
+            f"({round_sec}s); raise GOOGLE_DRIVE_WORKSPACE_SYNC_TIMEOUT"
+        )
+    last_sync_error: TimeoutError | None = None
+    # Set when the pause was shortened to keep a round: re-measuring after the
+    # pause would find a few milliseconds short and skip the round it kept.
+    round_kept = False
+    while True:
+        if round_kept or deadline - time.monotonic() >= round_sec:
+            round_kept = False
+            try:
+                await sync_and_wait(
+                    pipeshub_client,
+                    graph_provider,
+                    connector_id,
+                    timeout=deadline - time.monotonic() - restart_sec,
+                )
+            except TimeoutError as exc:
+                # The graph decides, not whether the sync wait saw it settle.
+                last_sync_error = exc
+        if await check():
+            return
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            detail = f" (last sync wait: {last_sync_error})" if last_sync_error else ""
+            raise TimeoutError(
+                f"Timed out waiting for {description} for connector {connector_id}: "
+                f"not seen within {_SYNC_TIMEOUT_SEC}s of re-syncing{detail}"
+            )
+        if remaining >= round_sec:
+            # Shortened if need be, so the pause never costs the last round.
+            await asyncio.sleep(min(_RESYNC_INTERVAL_SEC, remaining - round_sec))
+            round_kept = True
+        else:
+            await asyncio.sleep(min(_GRAPH_POLL_INTERVAL_SEC, remaining))

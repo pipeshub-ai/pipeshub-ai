@@ -26,6 +26,7 @@ It reuses the GitHub Teams tenant (same PAT and repos) and never writes to GitHu
 """
 
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,60 @@ from connectors.github_teams.github_block_utils import (  # noqa: E402
 )
 
 logger = logging.getLogger("github-personal-it")
+
+
+def _creator_email() -> str:
+    """The email the tests log in with, and so the creator's email in the graph."""
+    return os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
+
+
+def _redacted(email: str) -> str:
+    """Enough of an address to tell two accounts apart in a failure message.
+
+    CI logs for this repository are public, so the test account's address
+    never goes in one.
+    """
+    if not email:
+        return "not set"
+    _, _, domain = email.partition("@")
+    return f"an address at {domain}" if domain else "set"
+
+
+def _creator_ids(pipeshub_client: PipeshubClient) -> list[str]:
+    """The ids that can identify the account these tests act as, best first.
+
+    These tests normally authenticate as an OAuth app, so the token's userId
+    is the app's client id, and the human account's id is on ``createdBy`` --
+    which is the account the backend itself resolves the caller to, and the id
+    the graph stores. The same pattern is in the teams tests.
+    """
+    claims = pipeshub_client._claims()
+    ids: list[str] = []
+    created_by = claims.get("createdBy")
+    if created_by:
+        ids.append(str(created_by))
+    user_id = pipeshub_client.user_id
+    if user_id and user_id not in ids:
+        ids.append(user_id)
+    return ids
+
+
+async def _find_creator(
+    graph_provider: GraphProviderProtocol, pipeshub_client: PipeshubClient
+) -> dict[str, Any] | None:
+    """The user node for the account these tests act as.
+
+    Looks the account up by the ids the token carries, then by the email the
+    tests sign in with when one is configured.
+    """
+    for candidate in _creator_ids(pipeshub_client):
+        found = await graph_provider.graph_find_user_by_user_id(candidate)
+        if found:
+            return found
+    email = _creator_email()
+    if email:
+        return await graph_provider.graph_find_user_by_email(email)
+    return None
 
 pytestmark = [
     pytest.mark.integration,
@@ -197,8 +252,13 @@ class TestGitHubPersonalConnector:
             f"{app_users} users linked to the app; the personal connector syncs no GitHub "
             "user directory, so only the creator should be"
         )
-        creator = await graph_provider.graph_find_user_by_user_id(pipeshub_client.user_id)
-        assert creator is not None, "the connector's creator has no user node in the graph"
+        searched_ids = _creator_ids(pipeshub_client)
+        creator = await _find_creator(graph_provider, pipeshub_client)
+        assert creator is not None, (
+            "the connector's creator has no user node in the graph; searched by id for "
+            f"{searched_ids or 'no id on the token'} and by email for "
+            f"{_redacted(_creator_email())}"
+        )
         creator_key = creator.get("_key") or creator.get("id")
         creator_edges = await graph_provider.find_edges_between(
             CollectionNames.USERS.value, creator_key,

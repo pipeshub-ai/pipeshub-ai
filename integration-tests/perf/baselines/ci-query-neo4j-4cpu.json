@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "query",
+  "label": "ci-query-neo4j-4cpu",
+  "note": "Placeholder: no real CI run has been recorded yet. Replace this file with the query.json artifact of a trusted scheduled run on main (4-CPU runner, Neo4j, Redis broker, test OpenAI models, 120 seeded files, seed 1337, 4 users, 300s). Nothing was measured on a developer machine: a query benchmark needs the corpus indexed first, and a laptop's CPU model leaves that unfinished."
+}

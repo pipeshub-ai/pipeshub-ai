@@ -8,6 +8,7 @@ import { MaterialIcon } from '@/app/components/ui';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
 import { useKnowledgeBaseStore } from '../store';
 import { KnowledgeBaseApi } from '../api';
+import { kbSessionToken } from '../utils/kb-session';
 import { useToastStore } from '@/lib/store/toast-store';
 import type { IndexingStatus } from '../types';
 
@@ -35,20 +36,23 @@ export function CollectionStatsPanel() {
       if (!collectionId) return;
       const existingStats = collectionStats[collectionId];
       if (!force && existingStats) return;
+      const stillSignedIn = kbSessionToken();
       try {
         setCollectionStatsLoading(true);
         const response = await KnowledgeBaseApi.getCollectionStats(collectionId);
+        if (!stillSignedIn()) return;
         if (response.success && response.data) {
           setCollectionStats(collectionId, response.data);
         }
       } catch (error) {
+        if (!stillSignedIn()) return;
         console.error('Failed to fetch collection stats', { collectionId, error });
         addToast({
           variant: 'error',
           title: t('collections.stats.fetchError', { defaultValue: 'Failed to load indexing stats' }),
         });
       } finally {
-        setCollectionStatsLoading(false);
+        if (stillSignedIn()) setCollectionStatsLoading(false);
       }
     },
     [collectionId, collectionStats, setCollectionStats, setCollectionStatsLoading, addToast, t]

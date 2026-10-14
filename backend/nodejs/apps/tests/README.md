@@ -66,6 +66,17 @@ tests/
 - Tests run in parallel by default (4 workers) for speed
 - Coverage thresholds: **90%** lines/functions/statements, **80%** branches
 
+## Tests against real storage servers (`tests/stores/`)
+
+Files ending in `.itest.ts` talk to a real server instead of mocks, so `npm run test` skips them. The `Storage backends` workflow (`.github/workflows/storage-backends.yml`) runs them against MinIO (S3), Azurite (Azure Blob) and MongoDB, both as a replica set and as a single server. Each file's header lists the environment variables it needs. To run one locally:
+
+```bash
+docker run -d --name mongo-rs -p 27017:27017 mongo:8.0.17 mongod --replSet rs0 --bind_ip_all
+docker exec mongo-rs mongosh --quiet --eval 'rs.initiate({_id:"rs0",members:[{_id:0,host:"localhost:27017"}]})'
+MONGO_IT_URI='mongodb://localhost:27017/?replicaSet=rs0' REPLICA_SET_AVAILABLE=true \
+  TS_NODE_PROJECT=tsconfig.test.json npx mocha --no-config --require ts-node/register --exit tests/stores/mongo-transactions.itest.ts
+```
+
 ## Coverage Reports
 
 After running `npm run test:coverage`, reports are generated in:

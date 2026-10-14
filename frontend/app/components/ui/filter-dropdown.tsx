@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react';
 import { Flex, Box, Text, Badge, Button, Popover, Checkbox, RadioGroup, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -146,6 +148,7 @@ export function FilterDropdown({
   summaryBelowTrigger = false,
   selectionMode = 'multiple',
 }: FilterDropdownProps) {
+  const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   /** Labels for selected values — kept when server-side option lists refresh after close */
@@ -157,7 +160,7 @@ export function FilterDropdown({
   const hasSelection = selectedValues.length > 0;
   const isSingleSelect = selectionMode === 'single';
   const isServerSearch = !!onSearch;
-  const selectionVerb = isSingleSelect ? 'is' : 'is any of';
+  const selectionVerb = isSingleSelect ? t('filterDropdown.is') : t('filterDropdown.isAnyOf');
 
   // Remember labels at selection time so chips stay human-readable after paginated refetch
   useEffect(() => {
@@ -257,7 +260,7 @@ export function FilterDropdown({
       style={{ cursor: 'pointer', flexShrink: 0 }}
       onClick={clearSelection}
     >
-      Clear
+      {t('common.clear')}
     </Button>
   );
 
@@ -315,7 +318,7 @@ export function FilterDropdown({
               </Box>
               {!summaryBelowTrigger && hasSelection ? (
                 <Badge color="jade" variant="soft" size="1" radius="full" style={{ flexShrink: 0 }}>
-                  {selectedValues.length} selected
+                  {t('filterDropdown.selectedCount', { count: selectedValues.length })}
                 </Badge>
               ) : null}
             </Button>
@@ -324,7 +327,7 @@ export function FilterDropdown({
             <Flex direction="column" gap="2">
               <Flex align="center" gap="2" wrap="wrap" justify="between">
                 <Badge color="jade" variant="soft" size="1" radius="full">
-                  {selectedValues.length} selected
+                  {t('filterDropdown.selectedCount', { count: selectedValues.length })}
                 </Badge>
                 {clearSelectionButton()}
               </Flex>
@@ -504,7 +507,7 @@ export function FilterDropdown({
           <Box style={{ marginBottom: '8px' }}>
             <TextField.Root
               size="1"
-              placeholder="Search"
+              placeholder={t('form.search')}
               value={searchQuery}
               onChange={(e) => handleSearchChange(e.target.value)}
             >
@@ -528,7 +531,7 @@ export function FilterDropdown({
             <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
               <Spinner size={14} />
               <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                Loading options…
+                {t('filterDropdown.loadingOptions')}
               </Text>
             </Flex>
           ) : null}
@@ -545,7 +548,7 @@ export function FilterDropdown({
             >
               <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-11)' }}>
-                Refreshing options…
+                {t('filterDropdown.refreshingOptions')}
               </Text>
             </Flex>
           ) : null}
@@ -634,13 +637,13 @@ export function FilterDropdown({
             <Flex align="center" justify="center" gap="2" style={{ padding: '8px' }}>
               <Spinner size={12} />
               <Text size="1" style={{ color: 'var(--slate-9)' }}>
-                Loading more…
+                {t('filterDropdown.loadingMore')}
               </Text>
             </Flex>
           )}
           {filteredOptions.length === 0 && !isLoadingMore && !isLoadingOptions && (
             <Text size="2" style={{ color: 'var(--slate-9)', padding: '8px' }}>
-              {emptyMessage || 'No results found'}
+              {emptyMessage || t('message.noResults')}
             </Text>
           )}
         </Flex>

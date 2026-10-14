@@ -61,6 +61,9 @@ class Neo4jLabel(Enum):
     SUBCATEGORIES3 = "Subcategories3"
     LANGUAGES = "Languages"
     TOPICS = "Topics"
+    NAMED_ENTITIES = "NamedEntity"
+    VALUE_MENTIONS = "ValueMention"
+    NAMED_ENTITY_PERSIST_RETRIES = "NamedEntityPersistRetry"
 
     # Teams
     TEAMS = "Teams"
@@ -95,12 +98,14 @@ class Neo4jRelationshipType(Enum):
     INHERIT_PERMISSIONS = "INHERIT_PERMISSIONS"
     ENTITY_RELATIONS = "ENTITYRELATIONS"
     USER_APP_RELATION = "USER_APP_RELATION"
+    AUTHENTICATED_AS = "AUTHENTICATED_AS"
     ORG_APP_RELATION = "ORG_APP_RELATION"
     USER_DRIVE_RELATION = "USER_DRIVE_RELATION"
     BELONGS_TO_DEPARTMENT = "BELONGS_TO_DEPARTMENT"
     BELONGS_TO_CATEGORY = "BELONGS_TO_CATEGORY"
     BELONGS_TO_LANGUAGE = "BELONGS_TO_LANGUAGE"
     BELONGS_TO_TOPIC = "BELONGS_TO_TOPIC"
+    MENTIONS_ENTITY = "MENTIONS_ENTITY"
 
     # Agent Builder relationships
     AGENT_HAS_KNOWLEDGE = "AGENT_HAS_KNOWLEDGE"
@@ -164,6 +169,9 @@ COLLECTION_TO_LABEL: dict[str, str] = {
     CollectionNames.SUBCATEGORIES3.value: Neo4jLabel.SUBCATEGORIES3.value,
     CollectionNames.LANGUAGES.value: Neo4jLabel.LANGUAGES.value,
     CollectionNames.TOPICS.value: Neo4jLabel.TOPICS.value,
+    CollectionNames.NAMED_ENTITIES.value: Neo4jLabel.NAMED_ENTITIES.value,
+    CollectionNames.VALUE_MENTIONS.value: Neo4jLabel.VALUE_MENTIONS.value,
+    CollectionNames.NAMED_ENTITY_PERSIST_RETRIES.value: Neo4jLabel.NAMED_ENTITY_PERSIST_RETRIES.value,
     # Teams
     CollectionNames.TEAMS.value: Neo4jLabel.TEAMS.value,
     # Agent Builder collections
@@ -188,12 +196,14 @@ EDGE_COLLECTION_TO_RELATIONSHIP: dict[str, str] = {
     CollectionNames.INHERIT_PERMISSIONS.value: Neo4jRelationshipType.INHERIT_PERMISSIONS.value,
     CollectionNames.ENTITY_RELATIONS.value: Neo4jRelationshipType.ENTITY_RELATIONS.value,
     CollectionNames.USER_APP_RELATION.value: Neo4jRelationshipType.USER_APP_RELATION.value,
+    CollectionNames.AUTHENTICATED_AS.value: Neo4jRelationshipType.AUTHENTICATED_AS.value,
     CollectionNames.ORG_APP_RELATION.value: Neo4jRelationshipType.ORG_APP_RELATION.value,
     CollectionNames.USER_DRIVE_RELATION.value: Neo4jRelationshipType.USER_DRIVE_RELATION.value,
     CollectionNames.BELONGS_TO_DEPARTMENT.value: Neo4jRelationshipType.BELONGS_TO_DEPARTMENT.value,
     CollectionNames.BELONGS_TO_CATEGORY.value: Neo4jRelationshipType.BELONGS_TO_CATEGORY.value,
     CollectionNames.BELONGS_TO_LANGUAGE.value: Neo4jRelationshipType.BELONGS_TO_LANGUAGE.value,
     CollectionNames.BELONGS_TO_TOPIC.value: Neo4jRelationshipType.BELONGS_TO_TOPIC.value,
+    CollectionNames.MENTIONS_ENTITY.value: Neo4jRelationshipType.MENTIONS_ENTITY.value,
     # Agent Builder relationships
     CollectionNames.AGENT_HAS_KNOWLEDGE.value: Neo4jRelationshipType.AGENT_HAS_KNOWLEDGE.value,
     CollectionNames.AGENT_HAS_TOOLSET.value: Neo4jRelationshipType.AGENT_HAS_TOOLSET.value,

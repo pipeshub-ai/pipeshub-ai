@@ -16,6 +16,11 @@ fields:
   sourceUserId:
     required: false
     type: string
+  # Written on every user-app edge since #3115: true for someone who reached the app
+  # only through a share, false for an app member.
+  isExternalUser:
+    required: false
+    type: boolean
   createdAtTimestamp:
     required: false
     type: integer

@@ -11,15 +11,28 @@ import pytest_asyncio
 from connector_lifecycle import GCS_BUCKET_NAME, constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.gcs.gcs_storage_helper import GCSStorageHelper
+
+
+def gcs_connector_config() -> dict[str, Any]:
+    return {
+        "auth": {
+            "serviceAccountJson": os.getenv("GCS_SERVICE_ACCOUNT_JSON"),
+            "bucket": GCS_BUCKET_NAME,
+        }
+    }
 
 
 @pytest.fixture(scope="session")
 def gcs_storage():
     sa_json = os.getenv("GCS_SERVICE_ACCOUNT_JSON")
     if not sa_json:
-        pytest.skip("GCS_SERVICE_ACCOUNT_JSON not set.")
+        source_unavailable(
+            "The Google Cloud Storage bucket this suite syncs from is not configured.",
+            secrets=["GCS_SERVICE_ACCOUNT_JSON"],
+        )
     return GCSStorageHelper(service_account_json=sa_json)
 
 
@@ -30,14 +43,8 @@ async def gcs_connector(
     graph_provider: GraphProviderProtocol,
     sample_data_root,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    sa_json = os.getenv("GCS_SERVICE_ACCOUNT_JSON")
-    assert sa_json
-    config = {
-        "auth": {
-            "serviceAccountJson": sa_json,
-            "bucket": GCS_BUCKET_NAME,
-        }
-    }
+    assert os.getenv("GCS_SERVICE_ACCOUNT_JSON")
+    config = gcs_connector_config()
 
     state = await constructor(
         gcs_storage,

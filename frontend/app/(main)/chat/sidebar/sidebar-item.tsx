@@ -139,9 +139,15 @@ export function SidebarItem({
     </div>
   );
 
+  const iconSlot = icon ? (
+    <span style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}>
+      {icon}
+    </span>
+  ) : null;
+
   const content = (
     <>
-      {icon}
+      {iconSlot}
       {labelContent}
       {rightSlot}
     </>
@@ -178,7 +184,7 @@ export function SidebarItem({
               cursor: 'pointer',
             }}
           >
-            {icon}
+            {iconSlot}
             {labelContent}
           </Link>
           <span

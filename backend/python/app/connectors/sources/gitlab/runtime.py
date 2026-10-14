@@ -96,13 +96,15 @@ class RuntimeHelper:
     def _is_auth_error(response: GitLabResponse | None) -> bool:
         """True when a failed ``GitLabResponse`` indicates an OAuth auth failure.
 
-        Prefers ``isinstance(exc, GitlabAuthenticationError)`` when the original
-        exception is available.  Falls back to substring matching on the serialised
-        error string for responses produced by ``GitLabDataSource`` that already
-        caught and stringified the exception.
+        The HTTP status decides whenever the response carries one. Only a
+        response without a status (e.g. a failure part-way through a paged
+        listing) falls back to substring matching on the error text, which can
+        mention "401" in a project id or upload URL on an unrelated failure.
         """
         if response is None or response.success:
             return False
+        if response.status_code is not None:
+            return response.status_code == HttpStatusCode.UNAUTHORIZED.value
         err = (response.error or "").lower()
         return any(marker in err for marker in _AUTH_ERROR_MARKERS)
 
@@ -311,14 +313,24 @@ class RuntimeHelper:
         ``timeout`` applies independently to each attempt — a stuck first call
         that triggers a refresh-and-retry still gets the full budget on retry.
         """
+        token_sent = self._current_token()
         response = await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
         if not self._is_auth_error(response):
             return response
+
+        if token_sent and self._current_token() != token_sent:
+            # Sent with the old token, answered after another call had refreshed it.
+            self.logger.info("GitLab token was refreshed while this call was in flight; retrying with it.")
+            return await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
 
         self.logger.info("GitLab API returned auth error; refreshing OAuth token and retrying once.")
         if not await self.force_refresh_oauth_token():
             return response
         return await self._execute_gitlab_op(op, timeout=timeout, op_label=op_label)
+
+    def _current_token(self) -> str | None:
+        client = self.c.external_client
+        return client.get_client().get_token() if client else None
 
     async def ds_call(
         self,

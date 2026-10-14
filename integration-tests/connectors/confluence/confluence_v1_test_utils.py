@@ -279,6 +279,33 @@ async def count_confluence_space_pages_v1_search(
     return len(seen)
 
 
+async def wait_for_space_page_count_at_least(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    minimum: int,
+    *,
+    timeout: float = CONFLUENCE_TEST_SETTLE_WAIT_SEC,
+    poll_interval: float = 30,
+) -> int:
+    """The space's v1 search page count once it reaches ``minimum``, or the last count read at the deadline.
+
+    A page created a moment ago can already be found by id while the space-wide
+    listing still leaves it out, so one read right after creating pages can
+    undercount them.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        count = await count_confluence_space_pages_v1_search(datasource, space_key)
+        remaining = deadline - time.monotonic()
+        if count >= minimum or remaining <= 0:
+            return count
+        logger.info(
+            "⏳ v1 page count for %s is %d, waiting for %d (%.0fs remaining)...",
+            space_key, count, minimum, remaining,
+        )
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
 async def assert_confluence_pages_match_graph_records(
     datasource: ConfluenceDataSource,
     graph_provider: "GraphProviderProtocol",
@@ -287,13 +314,20 @@ async def assert_confluence_pages_match_graph_records(
     *,
     phase: str,
 ) -> None:
-    """Assert v1 page count for the space equals graph Record count for the connector."""
+    """Assert v1 page count for the space equals the connector's page record count.
+
+    The v1 search returns pages only (``type=page``), while the connector also
+    stores the space's blog posts and folders as records, so the graph side
+    counts page records only.
+    """
     api_count = await count_confluence_space_pages_v1_search(datasource, space_key)
-    graph_count = await graph_provider.count_records(connector_id)
+    graph_count = await graph_provider.count_records_by_type(
+        connector_id, RecordType.CONFLUENCE_PAGE.value
+    )
     if api_count != graph_count:
         raise AssertionError(
             f"{phase}: Confluence v1 content/search page count ({api_count}) != "
-            f"graph Record count ({graph_count}) for connector {connector_id} "
+            f"graph page record count ({graph_count}) for connector {connector_id} "
             f"space_key={space_key!r}"
         )
 

@@ -26,22 +26,24 @@ since only it holds the `StorageService`.
 from __future__ import annotations
 
 import io
+import json
 import re
 import tarfile
 import zipfile
 from dataclasses import dataclass, field
 from http import HTTPStatus
-from typing import IO
+from typing import IO, Any
 
 from pydantic import BaseModel, ValidationError
 
 from app.agent_loop_lib.modules.providers.skills.loader import parse_skill_md
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError, SkillValidator
-from app.services.skills.npm_command_parser import PackageSpec, UrlSpec
+from app.services.skills.npm_command_parser import PackageSpec
 from app.utils.logger import create_logger
 from app.utils.public_http import (
     PublicFetchError,
     PublicFetchLimits,
+    PublicFetchResponse,
     PublicUrlFetcher,
     ResponseTooLargeError,
     UnsafeUrlError,
@@ -67,13 +69,22 @@ _MIB = 1024 * 1024
 _IGNORED_RESOURCE_DIR_NAMES = ("__pycache__", "node_modules", ".git")
 _NPM_REGISTRY_BASE = "https://registry.npmjs.org"
 
-# GitHub repo URL → downloadable archive.  The `/tarball/` endpoint
-# (api.github.com) redirects to the default-branch tarball without
-# needing to know the branch name.  The HTML-page pattern catches bare
-# `https://github.com/owner/repo` pastes (trailing .git stripped).
+# GitHub repo page → downloadable archive. Codeload serves a tarball for a
+# ref without an authenticated API hop; HEAD is GitHub's default-branch
+# alias. Trailing `.git` / slash / `#ref` are normalized; tree/blob/archive
+# paths are left alone so those can go through the Contents API instead.
 _GITHUB_REPO_RE = re.compile(
-    r"^https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)(?:\.git)?/?$",
+    r"^https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/?(?:#(?P<ref>[A-Za-z0-9._/-]+))?$",
 )
+_GITHUB_TREE_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+?)"
+    r"(?:\.git)?/tree/(?P<ref>[^/#]+)/(?P<subpath>.+?)/?$",
+)
+_GITHUB_OWNER_REPO_RE = re.compile(
+    r"^https?://github\.com/(?P<owner>[A-Za-z0-9._-]+)/(?P<repo>[A-Za-z0-9._-]+)",
+)
+_CATALOG_INSTALL_URL = "https://www.openagentskill.com/api/skills/{slug}/install"
 _MAX_MANIFEST_BYTES = 5 * _MIB
 _MAX_ARCHIVE_BYTES = 25 * _MIB  # a skill pack is markdown + small scripts, not a model checkpoint
 _MAX_EXTRACTED_BYTES = 4 * _MAX_ARCHIVE_BYTES
@@ -219,19 +230,50 @@ def _reject_unsafe_path(path: str) -> None:
         raise PackageImportError(f"Archive contains an unsafe path: {path!r}")
 
 
-def _files_to_preview(files: dict[str, bytes], *, source_label: str) -> ImportPreview:
+def _skill_id_from_path(path: str) -> str:
+    """Parent directory of a SKILL.md path; empty string for a root SKILL.md."""
+    if path == "SKILL.md":
+        return ""
+    return path.rsplit("/", 2)[-2]
+
+
+def _select_skill_md(paths: list[str], skill_filter: str | None) -> str:
+    if not paths:
+        raise PackageImportError(
+            "No SKILL.md found in the archive. Skills must include a SKILL.md file "
+            "at the root (see agentskills.io/specification)."
+        )
+    if skill_filter:
+        matches = [p for p in paths if _skill_id_from_path(p) == skill_filter]
+        if not matches:
+            available = sorted(_skill_id_from_path(p) or "SKILL.md" for p in paths)
+            raise PackageImportError(
+                f"Skill {skill_filter!r} was not found in the package. "
+                f"Available skills: {', '.join(available)}."
+            )
+        return matches[0]
+    if "SKILL.md" in paths:
+        return "SKILL.md"
+    if len(paths) > 1:
+        names = ", ".join(sorted(_skill_id_from_path(p) for p in paths))
+        raise PackageImportError(
+            f"This package contains multiple skills ({names}). "
+            "Pass --skill <name> to choose one."
+        )
+    return paths[0]
+
+
+def _files_to_preview(
+    files: dict[str, bytes], *, source_label: str, skill_filter: str | None = None,
+) -> ImportPreview:
     if not files:
         raise PackageImportError("Archive is empty.")
 
     prefix = _strip_common_prefix(list(files))
     stripped = {(p[len(prefix):] if prefix else p): content for p, content in files.items()}
 
-    skill_md_path = next((p for p in stripped if p == "SKILL.md" or p.endswith("/SKILL.md")), None)
-    if skill_md_path is None:
-        raise PackageImportError(
-            "No SKILL.md found in the archive. Skills must include a SKILL.md file "
-            "at the root (see agentskills.io/specification)."
-        )
+    skill_md_paths = [p for p in stripped if p == "SKILL.md" or p.endswith("/SKILL.md")]
+    skill_md_path = _select_skill_md(skill_md_paths, skill_filter)
     # A SKILL.md nested one level deeper (e.g. "my-skill/SKILL.md" inside an
     # already-stripped archive) means resource paths need that same prefix
     # stripped too, so 'scripts/foo.sh' resolves relative to SKILL.md, not the archive root.
@@ -300,18 +342,9 @@ class SkillPackageImporter:
     def __init__(self, fetcher: PublicUrlFetcher | None = None) -> None:
         self._fetcher = fetcher or PublicUrlFetcher()
 
-    async def _download(
-        self,
-        url: str,
-        limits: PublicFetchLimits,
-        label: str,
-        *,
-        not_found_message: str | None = None,
-    ) -> bytes:
-        """Fetch ``url`` through the SSRF-safe fetcher. Every failure becomes a
-        user-safe `PackageImportError`; internal details only reach the server log."""
+    async def _get(self, url: str, limits: PublicFetchLimits, label: str) -> PublicFetchResponse:
         try:
-            response = await self._fetcher.get(url, limits)
+            return await self._fetcher.get(url, limits)
         except UnsafeUrlError as e:
             logger.info("Blocked skill import download of %s: %s", redact_url(url), e)
             raise PackageImportError(_UNSAFE_URL_MESSAGE) from e
@@ -323,6 +356,17 @@ class SkillPackageImporter:
             logger.warning("Skill import download of %s failed: %s", redact_url(url), e)
             raise PackageImportError(f"Could not download {label}.") from e
 
+    async def _download(
+        self,
+        url: str,
+        limits: PublicFetchLimits,
+        label: str,
+        *,
+        not_found_message: str | None = None,
+    ) -> bytes:
+        """Fetch ``url`` through the SSRF-safe fetcher. Every failure becomes a
+        user-safe `PackageImportError`; internal details only reach the server log."""
+        response = await self._get(url, limits, label)
         status = response.status_code
         if status == HTTPStatus.NOT_FOUND and not_found_message:
             raise PackageImportError(not_found_message)
@@ -348,22 +392,118 @@ class SkillPackageImporter:
 
         data = await self._download(tarball_url, _ARCHIVE_LIMITS, "the package tarball")
         files = _extract_tar(data)
-        return _files_to_preview(files, source_label=f"npm:{spec.name}@{resolved_version}")
+        return _files_to_preview(
+            files, source_label=f"npm:{spec.name}@{resolved_version}", skill_filter=spec.skill_filter,
+        )
+
+    @staticmethod
+    def _codeload_url(owner: str, repo: str, ref: str = "HEAD") -> str:
+        return f"https://codeload.github.com/{owner}/{repo}/tar.gz/{ref}"
 
     @staticmethod
     def _normalize_url(url: str) -> str:
-        """Turn a GitHub repo page URL into its API tarball endpoint."""
+        """Turn a GitHub repo page URL into a codeload tarball URL."""
         m = _GITHUB_REPO_RE.match(url)
         if m:
-            return f"https://api.github.com/repos/{m['owner']}/{m['repo']}/tarball"
+            return SkillPackageImporter._codeload_url(m["owner"], m["repo"], m.group("ref") or "HEAD")
         return url
 
-    async def preview_url(self, url: str) -> ImportPreview:
+    async def _github_contents_files(
+        self, owner: str, repo: str, path: str, ref: str | None = None,
+    ) -> dict[str, bytes] | None:
+        """List a GitHub directory via the Contents API. Returns None on 403/404
+        so callers can fall back to a tarball (unauthenticated Contents is
+        rate-limited)."""
+        url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}" if path else (
+            f"https://api.github.com/repos/{owner}/{repo}/contents"
+        )
+        if ref and ref != "HEAD":
+            url += f"?ref={ref}"
+        response = await self._get(url, _MANIFEST_LIMITS, "the GitHub directory listing")
+        if response.status_code in (HTTPStatus.FORBIDDEN, HTTPStatus.NOT_FOUND):
+            return None
+        if not HTTPStatus.OK <= response.status_code < HTTPStatus.MULTIPLE_CHOICES:
+            raise PackageImportError(
+                f"Could not download the GitHub directory listing (HTTP {response.status_code})."
+            )
+        try:
+            payload = json.loads(response.content)
+        except json.JSONDecodeError as e:
+            raise PackageImportError("GitHub returned an invalid directory listing.") from e
+        items: list[dict[str, Any]]
+        if isinstance(payload, dict) and payload.get("type") == "file":
+            items = [payload]
+        elif isinstance(payload, list):
+            items = [item for item in payload if isinstance(item, dict)]
+        else:
+            return None
+
+        files: dict[str, bytes] = {}
+        for item in items:
+            item_path = item.get("path")
+            if not isinstance(item_path, str):
+                continue
+            if item.get("type") == "file" and item.get("download_url"):
+                files[item_path] = await self._download(
+                    str(item["download_url"]), _ARCHIVE_LIMITS, "a skill file",
+                )
+            elif item.get("type") == "dir":
+                nested = await self._github_contents_files(owner, repo, item_path, ref)
+                if nested:
+                    files.update(nested)
+        return files or None
+
+    async def preview_url(self, url: str, skill_filter: str | None = None) -> ImportPreview:
         if not url.lower().startswith(("https://", "http://")):
             raise PackageImportError("Only http(s) URLs are supported.")
+
+        tree = _GITHUB_TREE_RE.match(url)
+        if tree:
+            files = await self._github_contents_files(
+                tree["owner"], tree["repo"], tree["subpath"].rstrip("/"), tree["ref"],
+            )
+            if files:
+                return _files_to_preview(files, source_label=f"url:{url}", skill_filter=skill_filter)
+
+        repo = _GITHUB_REPO_RE.match(url)
+        if repo and skill_filter:
+            ref = repo.group("ref")
+            for subpath in (f"skills/{skill_filter}", skill_filter):
+                files = await self._github_contents_files(repo["owner"], repo["repo"], subpath, ref)
+                if files:
+                    return _files_to_preview(
+                        files, source_label=f"url:{url}", skill_filter=skill_filter,
+                    )
+
         download_url = self._normalize_url(url)
         data = await self._download(download_url, _ARCHIVE_LIMITS, "the archive")
-        return _files_to_preview(_extract_archive(data), source_label=f"url:{url}")
+        return _files_to_preview(
+            _extract_archive(data), source_label=f"url:{url}", skill_filter=skill_filter,
+        )
+
+    async def preview_catalog_slug(self, slug: str, skill_filter: str | None = None) -> ImportPreview:
+        raw = await self._download(
+            _CATALOG_INSTALL_URL.format(slug=slug),
+            _MANIFEST_LIMITS,
+            "the catalog entry",
+            not_found_message=f"Catalog skill {slug!r} was not found.",
+        )
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as e:
+            raise PackageImportError(f"Catalog returned an invalid entry for {slug!r}.") from e
+        repository = None
+        if isinstance(payload, dict):
+            urls = payload.get("urls")
+            if isinstance(urls, dict):
+                repository = urls.get("repository")
+        if not isinstance(repository, str) or not repository:
+            raise PackageImportError(f"Catalog entry for {slug!r} has no repository URL.")
+        gh = _GITHUB_OWNER_REPO_RE.match(repository)
+        source = (
+            f"https://github.com/{gh['owner']}/{gh['repo']}" if gh else repository
+        )
+        return await self.preview_url(source, skill_filter=skill_filter)
 
     def preview_upload(self, filename: str, data: bytes) -> ImportPreview:
         if len(data) > _MAX_ARCHIVE_BYTES:

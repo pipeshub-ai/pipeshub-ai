@@ -9,7 +9,6 @@ from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.edition_config import (
@@ -21,6 +20,7 @@ from app.edition_config import (
     sharing_router,
 )
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.modules.demo_data.router import demo_data_router
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-cs")
@@ -29,17 +29,33 @@ from app.agents.registry.toolset_registry import get_toolset_registry
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
-from app.config.constants.arangodb import AccountType, CollectionNames
+from app.config.configuration_service import ConfigurationService
+from app.config.constants.arangodb import AccountType, AppStatus, CollectionNames
 from app.config.constants.service import config_node_constants
-from app.connectors.core.base.data_processor.data_source_entities_processor import (
-    DataSourceEntitiesProcessor,
-)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.sync_dispatcher import (
+    SyncSpec,
+    get_dispatcher,
+    set_dispatcher,
+)
+from app.connectors.core.sync.sync_coordinator import (
+    executor_identity,
+    get_coordinator,
+    process_identity,
+    set_coordinator,
+)
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    join_cleanup_tasks,
+    resumes_interrupted_full_sync,
+)
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
+from app.connectors.api.artifacts_router import artifacts_router
 from app.connectors.sources.localKB.api.kb_router import kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
@@ -48,21 +64,30 @@ from app.connectors.sources.localKB.api.knowledge_hub_router import (
 from app.containers.connector import initialize_container
 from app.edition_containers import ConnectorAppContainer
 from app.edition_services import (
+    build_sync_dispatcher,
+    create_coordinator,
     get_connector_registry_cls,
     get_data_entities_processor_cls,
     get_oauth_config_registry,
     get_startup_extra_kwargs,
+    max_connector_workers,
     pre_sync_hook,
     register_extra_connectors,
     scope_org_resources,
+    start_sync_reaper,
+    stop_sync_reaper,
+    sync_executor_enabled,
 )
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic, get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_messages import SOMETHING_WENT_WRONG
 
 container = ConnectorAppContainer.init("connector_service")
 
@@ -116,6 +141,157 @@ async def refresh_toolset_tokens(app_container: ConnectorAppContainer) -> bool:
         return False
 
 
+async def initialize_sync_coordinator(
+    app_container: ConnectorAppContainer, logger: logging.Logger
+) -> None:
+    """Install the process's lease manager before anything can start a sync.
+
+    Always installed, so the start path is a single unconditional `begin` with
+    no window where nothing guards at all. Which implementation is installed
+    comes from `edition_services.create_coordinator`; here it is the in-process
+    one, exact because this build runs a single sync worker.
+    """
+    manager = await create_coordinator(logger, app_container.config_service())
+    set_coordinator(manager)
+    logger.info(
+        "✅ Sync lease manager: %s (ttl=%ss, heartbeat=%ss, instance=%s)",
+        type(manager).__name__, manager.ttl_sec, manager.heartbeat_sec,
+        manager.instance_id,
+    )
+
+
+async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None:
+    """Reset sync state left behind by a crash.
+
+    Anything holding a live lease is syncing right now on some process;
+    everything else marked SYNCING/FULL_SYNCING or isLocked=True is stale.
+    Without this, a crash mid-sync leaves a connector showing SYNCING forever,
+    and a crash inside the full-sync prep window leaves isLocked=True, which
+    409s resync/config/delete with no way back short of editing the database.
+
+    The lease filter is what makes this safe once syncs run outside this
+    process: the old premise was "single-process service, nothing can be syncing
+    at boot", and an API restart under that assumption would reset every sync
+    running elsewhere to IDLE — after which the start guard reads IDLE and lets a
+    second one begin.
+
+    Never touches DELETING — that doc is mid-deletion, not mid-sync.
+
+    A stale FULL_SYNCING also gets pendingFullSync. That sync's prep deleted the
+    connector's sync points before it was cut off, and what the source no longer
+    has is only unlinked once a full sync runs to the end. Reset to a bare IDLE,
+    the connector looked healthy and its next sync was incremental, which never
+    does that cleanup. With the flag, the boot resume below runs it again in full.
+
+    It also gets pendingResync: nothing finished that run, so the request it
+    was serving is still owed, and that is what lets the boot resume restart it
+    on a MANUAL connector too (see ``resumes_interrupted_full_sync``).
+    """
+    try:
+        # Both lookups go through get_nodes_by_field_in: it is the one that
+        # translates _key back to "id" on both providers (Arango stores _key,
+        # so a filters-based lookup would hand back {"id": None} there).
+        stuck = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.APPS.value,
+            "status",
+            [AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value],
+            ["id", "status"],
+        )
+        locked = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.APPS.value,
+            "isLocked",
+            [True],
+            ["id", "status"],
+        )
+
+        stuck_keys = {doc["id"] for doc in (stuck or []) if doc.get("id")}
+        full_sync_keys = {
+            doc["id"]
+            for doc in (stuck or [])
+            if doc.get("id") and doc.get("status") == AppStatus.FULL_SYNCING.value
+        }
+        # A locked doc mid-deletion keeps its DELETING status; only the stuck
+        # lock is released for it.
+        locked_only = {
+            doc["id"]: doc.get("status")
+            for doc in (locked or [])
+            if doc.get("id") and doc["id"] not in stuck_keys
+        }
+        if not stuck_keys and not locked_only:
+            return
+
+        # Skip anything genuinely running elsewhere.
+        coordinator = get_coordinator()
+        if coordinator is not None and not getattr(
+            coordinator, "reports_liveness", True
+        ):
+            # peek_many answers "nothing is live", not "nothing is". That is
+            # only good enough when this process is the only one that can sync;
+            # otherwise this would reset a sync running elsewhere to IDLE, and the
+            # start guard would then read IDLE and let a second one begin.
+            if max_connector_workers() > 1 or sync_executor_enabled():
+                logger.warning(
+                    "Startup sweep skipped: sync leases are unavailable, so a "
+                    "running sync on another process cannot be told from a stale one."
+                )
+                return
+        if coordinator is not None:
+            try:
+                live = await coordinator.peek_many(stuck_keys | set(locked_only))
+            except Exception as e:
+                # Fail safe: a sweep that cannot tell live from stale must not
+                # guess, or it clears the status of a running sync.
+                logger.error(f"Startup sweep could not read sync leases: {e}")
+                return
+            if live:
+                logger.info(
+                    f"Startup sweep skipping {len(live)} connector(s) syncing elsewhere: "
+                    f"{sorted(live)}"
+                )
+            stuck_keys -= live
+            locked_only = {k: v for k, v in locked_only.items() if k not in live}
+            if not stuck_keys and not locked_only:
+                return
+
+        now = get_epoch_timestamp_in_ms()
+        payloads = [
+            {
+                "id": key,
+                "status": AppStatus.IDLE.value,
+                "isLocked": False,
+                "updatedAtTimestamp": now,
+                **(
+                    {
+                        ConnectorStateKeys.PENDING_FULL_SYNC: True,
+                        ConnectorStateKeys.PENDING_RESYNC: True,
+                    }
+                    if key in full_sync_keys
+                    else {}
+                ),
+            }
+            for key in stuck_keys
+        ]
+        for key, status in locked_only.items():
+            payload = {"id": key, "isLocked": False, "updatedAtTimestamp": now}
+            if status != "DELETING":
+                payload["status"] = AppStatus.IDLE.value
+            payloads.append(payload)
+
+        await graph_provider.batch_upsert_nodes(payloads, CollectionNames.APPS.value)
+        reset_keys = sorted(stuck_keys | set(locked_only))
+        logger.warning(
+            f"Startup sweep reset stale sync state on {len(reset_keys)} connector(s): {reset_keys}"
+        )
+        owed = sorted(stuck_keys & full_sync_keys)
+        if owed:
+            logger.warning(
+                f"Startup sweep: full sync did not finish on {len(owed)} connector(s); "
+                f"they resume in full: {owed}"
+            )
+    except Exception as e:
+        logger.error(f"Startup sweep for stale sync state failed: {e}", exc_info=True)
+
+
 async def resume_sync_services(app_container: ConnectorAppContainer, data_store: GraphDataStore = None) -> bool:
     """Resume sync services for users with active sync states"""
     logger = app_container.logger()
@@ -166,11 +342,22 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
             # Initialize all enabled connectors in parallel so one slow
             # connector (e.g. a provider whose OAuth endpoint is slow) does
             # not gate the others on startup.
+            # When this process is not the one that runs syncs, it still
+            # builds the connector (routes need a warm one -- see
+            # _ensure_connector_initialized, which otherwise pays a full init
+            # plus a live connection test on the first record stream after every
+            # restart) and publishes a resync instead of starting one.
+            external = sync_executor_enabled()
+
             async def _init_app(app: dict) -> tuple[str, str, object | None]:
                 connector_id = app.get("_key")
                 scope = app.get("scope", "personal")
                 created_by = app.get("createdBy", "")
                 connector_name = app["type"].lower().replace(" ", "")
+                # Only the event path runs a full sync and clears the flag; started
+                # here, a connector owed one (queued at capacity before a restart)
+                # would sync incrementally and stay flagged.
+                publish = external or bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
                 # Same lock the lazy-init paths use, and publish as soon as the
                 # instance exists rather than after the whole gather: startup can
                 # take seconds, and a request arriving in that window used to build
@@ -190,6 +377,7 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                             org_id=org_id,
                             data_entities_processor_cls=get_data_entities_processor_cls(),
                             notification_service=app_container.connector_notification_service(),
+                            start_sync=not publish,
                         )
                     except Exception as e:
                         logger.error(
@@ -199,7 +387,21 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
                         return connector_name, connector_id, None
                     if connector:
                         app_container.connectors_map[connector_id] = connector
-                    return connector_name, connector_id, connector
+
+                # Outside the init lock: publishing goes to the broker, and the
+                # lock only needs to cover instance construction.
+                if publish and connector:
+                    await _publish_startup_resync(
+                        app_container,
+                        config_service,
+                        logger,
+                        connector_name=connector_name,
+                        connector_id=connector_id,
+                        org_id=org_id,
+                        app=app,
+                        graph_provider=graph_provider,
+                    )
+                return connector_name, connector_id, connector
 
             results = await asyncio.gather(
                 *[_init_app(app) for app in enabled_apps],
@@ -217,6 +419,93 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         logger.error("❌ Error during sync service resumption: %s", str(e))
         logger.error("❌ Detailed error traceback:\n%s", traceback.format_exc())
         return False
+
+
+async def _current_app(
+    graph_provider: IGraphDBProvider | None, logger: logging.Logger, connector_id: str, snapshot: dict | None
+) -> dict | None:
+    """The app doc as it is now, not as the boot traversal read it.
+
+    That read came before the connector's init (OAuth, a live connection test),
+    which can take seconds while the API already serves requests, and a stop in
+    that window clears pendingResync in the database, not in the snapshot.
+
+    If the read fails, the snapshot is used. Not resuming would leave the marks
+    set with nothing published until the next boot. Publishing is safe: the
+    event is marked bootResume, and the start handler reads the doc again
+    before it queues or deletes anything (``event_service._handle_start_sync``).
+    """
+    if graph_provider is None:
+        return snapshot
+    try:
+        # raise_on_error: by default a failed read answers None, which reads as
+        # "no such connector" and would skip a resume that is owed. None from
+        # here means the doc is gone, and nothing is resumed.
+        return await graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
+    except Exception as e:
+        logger.warning(
+            f"Could not re-read {connector_id} before resuming it; publishing the "
+            f"resume anyway, the start handler checks it again: {e}"
+        )
+        return snapshot
+
+
+async def _publish_startup_resync(
+    app_container: ConnectorAppContainer,
+    config_service,
+    logger: logging.Logger,
+    *,
+    connector_name: str,
+    connector_id: str,
+    org_id: str,
+    app: dict | None = None,
+    graph_provider: IGraphDBProvider | None = None,
+) -> None:
+    """Hand a startup sync to whichever process consumes sync events.
+
+    Respects the MANUAL strategy, which the event handler deliberately does not:
+    that path also carries the user's resync button, and MANUAL means "not on a
+    schedule", not "never". The one exception is a full sync a restart cut
+    short, which resumes (``resumes_interrupted_full_sync``).
+
+    Publishing rather than sharding by hash keeps this a single pass with no
+    shard-count to get wrong, and the consumer's capacity gate meters the
+    arrivals so a large fleet does not stampede one of them.
+    """
+    try:
+        manual = await ConnectorFactory.is_manual_sync_strategy(config_service, connector_id)
+        if manual:
+            if not resumes_interrupted_full_sync(app) or not resumes_interrupted_full_sync(
+                await _current_app(graph_provider, logger, connector_id, app)
+            ):
+                logger.info(
+                    f"Not resuming {connector_name} {connector_id}: sync strategy is MANUAL"
+                )
+                return
+            logger.info(
+                f"Resuming {connector_name} {connector_id}: sync strategy is MANUAL, "
+                "but a restart cut its full sync short"
+            )
+        dispatcher = get_dispatcher()
+        if dispatcher is None:
+            logger.warning(
+                f"No sync dispatcher configured; cannot resume {connector_id}"
+            )
+            return
+        result = await dispatcher.submit(
+            SyncSpec(
+                connector_id=connector_id,
+                connector_name=connector_name,
+                org_id=org_id,
+                boot_resume=manual,
+            )
+        )
+        logger.info(f"Startup resync for {connector_id}: {result.value}")
+    except Exception as e:
+        logger.error(f"Failed to publish startup resync for {connector_id}: {e}")
+
 
 async def initialize_connector_registry(app_container: ConnectorAppContainer):
     """Initialize and sync connector registry with database"""
@@ -264,6 +553,10 @@ async def start_messaging_producer(app_container: ConnectorAppContainer) -> None
 
         app_container.messaging_producer = messaging_producer
 
+        # Built here because it needs the producer; used by /sync/stop and by
+        # anything that triggers a sync from inside this process.
+        set_dispatcher(build_sync_dispatcher(logger, messaging_producer))
+
         # Wire the producer into KafkaService for connector operations
         kafka_service = app_container.kafka_service()
         kafka_service.set_producer(messaging_producer)
@@ -301,9 +594,28 @@ async def start_kafka_consumers(app_container: ConnectorAppContainer, graph_prov
         consumers.append(("entity", entity_consumer))
         logger.info("✅ Entity consumer started")
 
-        # 2. Create Sync Consumer
+        # 2. Create Sync Consumer — unless another process owns sync execution, in
+        # which case a consumer here would race them for every event.
+        if sync_executor_enabled():
+            logger.info(
+                "⏭️  Sync consumer not started: CONNECTOR_SYNC_MODE=external, "
+                "sync events are consumed by another process"
+            )
+            logger.info(f"✅ All {len(consumers)} consumers started successfully")
+            return consumers
+
         logger.info(f"🚀 Starting Sync Consumer (broker: {broker_type})...")
-        sync_config = await MessagingUtils.create_sync_consumer_config(app_container)
+        # uvicorn forks N workers sharing one HOSTNAME, so the default
+        # consumer name is identical in all of them. Redis Streams keys the
+        # pending-entries list by that name, so every worker would re-read its
+        # other processes' in-flight sync events on boot. Left alone for a single worker,
+        # where the name is already unique and stable across restarts.
+        sync_client_id = (
+            process_identity() if max_connector_workers() > 1 else executor_identity()
+        )
+        sync_config = await MessagingUtils.create_sync_consumer_config(
+            app_container, client_id=sync_client_id
+        )
         sync_consumer = MessagingFactory.create_consumer(
             broker_type=broker_type,
             logger=logger,
@@ -364,10 +676,23 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
     logger = container.logger()
 
     try:
-        # Cancel all running connector sync/reindex tasks first so they can clean up
+        try:
+            await stop_sync_reaper(getattr(container, "sync_reaper_task", None))
+        except Exception as e:
+            logger.warning(f"Error stopping sync reaper at shutdown: {e}")
+
+        # Consumers first. An event admitted during the cancel window takes a
+        # lease that coordinator.stop() then leaves un-renewed and un-signalled,
+        # so the sync runs on blind and the connector is pinned SYNCING until the
+        # TTL lapses. Stopping consumers first is what avoids that window.
+        await stop_kafka_consumers(container)
+
+        # Cancel all running connector sync/reindex tasks so they can clean up
         # gracefully before the database and messaging connections are torn down
         try:
-            await sync_task_manager.cancel_all()
+            coordinator = get_coordinator()
+            if coordinator is not None:
+                await coordinator.cancel_all()
         except Exception as e:
             logger.warning(f"Error cancelling sync tasks at shutdown: {e}")
 
@@ -376,8 +701,23 @@ async def shutdown_container_resources(container: ConnectorAppContainer) -> None
         except Exception as e:
             logger.warning(f"Error cancelling reindex tasks at shutdown: {e}")
 
-        # Stop message consumers
-        await stop_kafka_consumers(container)
+        # cancel_all only waits for the sync tasks; a finalizer detached by a
+        # second cancel is still writing IDLE, releasing its lease and
+        # publishing. Closing Redis and the producer under it is what leaves
+        # connectors SYNCING with a held lease after a restart.
+        try:
+            outstanding = await join_cleanup_tasks(timeout=30.0)
+            if outstanding:
+                logger.info("Waited on %d detached sync finalizer(s)", outstanding)
+        except Exception as e:
+            logger.warning(f"Error waiting for sync finalizers at shutdown: {e}")
+
+        try:
+            coordinator = get_coordinator()
+            if coordinator is not None:
+                await coordinator.stop()
+        except Exception as e:
+            logger.warning(f"Error stopping sync lease manager at shutdown: {e}")
 
         # Stop messaging producer
         await stop_messaging_producer(container)
@@ -430,6 +770,7 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
     # Initialize container
     app_container = await get_initialized_container()
     app.container = app_container  # type: ignore
@@ -444,16 +785,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Use the already-resolved graph_provider from data_store to avoid coroutine reuse
     logger = app_container.logger()
     graph_provider = data_store.graph_provider
-
-    # Shared KB entities processor: routes KB (Collections) CRUD through the same
-    # DataSourceEntitiesProcessor connectors use. Initialized once (sets up the Kafka
-    # producer). Org-agnostic — kb_service sets record.org_id from the request org.
-    kb_entities_processor = DataSourceEntitiesProcessor(
-        logger, data_store, app_container.config_service()
-    )
-    await kb_entities_processor.initialize()
-    app.state.kb_entities_processor = kb_entities_processor
-    logger.info("✅ KB entities processor initialized")
 
     # Sync completion and KB deletes happen here; both drop the query service's
     # cached accessible-record maps.
@@ -524,6 +855,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.oauth_config_registry = oauth_registry
     logger.info("✅ OAuth config registry initialized")
 
+    # Needs the connectors' OAuth registrations, so it runs after the registry is built.
+    try:
+        from app.migrations.connector_oauth_toolset_fields_migration import (
+            run_connector_oauth_toolset_fields_repair,
+        )
+
+        repair_result = await run_connector_oauth_toolset_fields_repair(
+            app_container.config_service(), oauth_registry, logger
+        )
+        if not repair_result.get("skipped"):
+            logger.info(
+                "Connector OAuth app repair: %s app(s) repaired, %s failure(s)",
+                repair_result.get("apps_repaired", 0),
+                repair_result.get("failures", 0),
+            )
+    except Exception as e:
+        logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
+
     logger.debug("🚀 Starting application")
 
     # Start messaging producer first
@@ -543,6 +892,28 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # contract: connectors_map must be populated before the sync consumer
     # begins processing events.
     async def _post_startup() -> None:
+        # Before anything can spawn a sync, and before the sweep — which needs
+        # leases to tell a live sync from a stale status.
+        try:
+            await initialize_sync_coordinator(app_container, logger)
+        except Exception as e:
+            # Without a coordinator nothing below can run safely, consumers
+            # included. This is a background task, so raising only hid it: the
+            # service kept answering /health 200 while consuming nothing.
+            logger.critical(f"❌ Sync coordinator init failed: {e}", exc_info=True)
+            # /health shows this to callers; the cause is in the log line above.
+            app.state.startup_error = "sync coordinator init failed"
+            return
+
+        # A resumed sync writes SYNCING as its first act, and this sweep must
+        # not clobber that write.
+        try:
+            await reset_stale_sync_state(graph_provider, logger)
+        except Exception as e:
+            logger.error(f"❌ Stale sync-state sweep failed: {e}", exc_info=True)
+
+        # Refreshes OAuth tokens, so it has to land before connector init() runs
+        # against credentials that expired during downtime.
         try:
             await pre_sync_hook(app_container, logger)
         except Exception as e:
@@ -557,11 +928,47 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             consumers = await start_kafka_consumers(app_container, graph_provider)
             app_container.kafka_consumers = consumers
             logger.info("✅ All message consumers started successfully")
+
+            coordinator = get_coordinator()
+            if coordinator is not None:
+                app_container.sync_reaper_task = start_sync_reaper(
+                    graph_provider, coordinator, logger
+                )
         except Exception as e:
             logger.error(f"❌ Failed to start message consumers: {str(e)}", exc_info=True)
 
+        # Anything parked at the concurrency limit when the process went down
+        # has no finishing sync to release it, so it would sit QUEUED forever.
+        try:
+            await drain_queued_syncs(graph_provider, logger)
+        except Exception as e:
+            logger.error(f"Could not release queued syncs at startup: {e}")
+
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
+
+    # Needs the producer started above; a Redis lease keeps it to one replica.
+    from app.connectors.services.trash_purge import run_trash_purge_loop
+    app.state.trash_purge_task = asyncio.create_task(
+        run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
+    )
+    # Retries the storage release of connector/KB deletes that did not finish it.
+    from app.connectors.services.storage_release import run_storage_release_loop
+    async def _org_config_service(org_id: str) -> ConfigurationService:
+        # The store connectors read their credentials from, so a release deletes them there.
+        config_service, _ = await scope_org_resources(app_container, data_store, org_id)
+        return config_service
+
+    app.state.storage_release_task = asyncio.create_task(
+        run_storage_release_loop(app_container, graph_provider, config_service_for=_org_config_service),
+        name="storage_release",
+    )
+
+    # Here, not in indexing: it publishes re-index events on this service's producer.
+    from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
+    app.state.stored_content_heal_task = asyncio.create_task(
+        run_stored_content_heal_loop(app_container, graph_provider), name="stored_content_heal"
+    )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
     # Avoid triggering another startup scan here to prevent duplicate scheduling attempts.
@@ -576,13 +983,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except (asyncio.CancelledError, Exception):
             pass
     logger.info("🔄 Shut down application started")
-    connector_metrics_task = getattr(app.state, "connector_metrics_task", None)
-    if connector_metrics_task is not None and not connector_metrics_task.done():
-        connector_metrics_task.cancel()
-        try:
-            await connector_metrics_task
-        except (asyncio.CancelledError, Exception):
-            pass
+    for task_name in ("connector_metrics_task", "trash_purge_task", "storage_release_task", "stored_content_heal_task"):
+        task = getattr(app.state, task_name, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
     if telemetry.pusher is not None:
         await telemetry.pusher.stop()
     try:
@@ -672,15 +1080,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         )
 
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
 # Telemetry: outermost metrics middleware; pusher started/stopped in lifespan.
@@ -690,6 +1089,16 @@ telemetry = setup_telemetry(app, service_name="connector_service")
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """Basic health check endpoint"""
+    startup_error = getattr(app.state, "startup_error", None)
+    if startup_error:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "fail",
+                "error": startup_error,
+                "timestamp": get_epoch_timestamp_in_ms(),
+            },
+        )
     try:
         return JSONResponse(
             status_code=200,
@@ -742,59 +1151,110 @@ async def graph_db_health_check(request: Request) -> JSONResponse:
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("ArangoDB health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"ArangoDB health check failed: {str(e)}",
+                    "error": "ArangoDB health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
 
     # ── Neo4j ─────────────────────────────────────────────────────────────────
+    # One RETURN 1 on the driver already open. execute_query can connect and
+    # rebuild that driver; a 3s wait_for cancelled mid-handshake would leave
+    # the new driver installed. A fresh Bolt handshake can also take longer
+    # than Node's 5s budget while Neo4j is still up.
     if data_store == "neo4j":
-        from neo4j import AsyncGraphDatabase
         from neo4j.exceptions import AuthError, ServiceUnavailable
 
-        uri = os.getenv("NEO4J_URI", "bolt://localhost:7687")
-        username = os.getenv("NEO4J_USERNAME", "neo4j")
-        password = os.getenv("NEO4J_PASSWORD", "")
+        # Under Node's 5s graph timeout, which is also the Helm probe budget.
+        # Acquisition is shorter than the wait so an idle-connection RESET
+        # fails inside the driver and releases the pool slot. wait_for
+        # cancelling that RESET would leave the slot checked out.
+        neo4j_probe_timeout_sec = 3.0
+        neo4j_acquire_timeout_sec = 2.0
 
-        driver = None
         try:
-            driver = AsyncGraphDatabase.driver(uri, auth=(username, password))
-            await driver.verify_connectivity()
+            graph_provider = getattr(request.app.state, "graph_provider", None)
+            if graph_provider is None:
+                container = request.app.container  # type: ignore[attr-defined]
+                graph_provider = await container.graph_provider()
+
+            client = getattr(graph_provider, "client", None)
+            driver = getattr(client, "driver", None) if client is not None else None
+            if driver is None:
+                request.app.container.logger().error(  # type: ignore[attr-defined]
+                    "Neo4j health check failed: provider has no driver"
+                )
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "unhealthy",
+                        "error": "Neo4j unavailable",
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+
+            database = getattr(client, "database", None)
+
+            async def _ping() -> None:
+                async with driver.session(
+                    database=database,
+                    connection_acquisition_timeout=neo4j_acquire_timeout_sec,
+                ) as session:
+                    result = await session.run("RETURN 1 AS n")
+                    await result.consume()
+
+            await asyncio.wait_for(_ping(), timeout=neo4j_probe_timeout_sec)
             return JSONResponse(
                 status_code=200,
                 content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
             )
-        except AuthError as e:
+        except TimeoutError:
+            request.app.container.logger().error(  # type: ignore[attr-defined]
+                "Neo4j health check timed out after %.1fs", neo4j_probe_timeout_sec
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j auth failed: {str(e)}",
+                    "error": "Neo4j health check timed out",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            )
+        except AuthError as e:
+            request.app.container.logger().error("Neo4j auth failed: %s", e)
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j auth failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
         except ServiceUnavailable as e:
+            request.app.container.logger().error("Neo4j unavailable: %s", e)
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
-                    "error": f"Neo4j unavailable: {str(e)}",
+                    "error": "Neo4j unavailable",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-        except Exception as e:
+        except Exception:
+            request.app.container.logger().error("Neo4j health check failed", exc_info=True)
             return JSONResponse(
                 status_code=503,
-                content={"status": "unhealthy", "error": str(e), "timestamp": get_epoch_timestamp_in_ms()},
+                content={
+                    "status": "unhealthy",
+                    "error": "Neo4j health check failed",
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
-        finally:
-            if driver:
-                await driver.close()
 
     # Unknown DATA_STORE value — treat as healthy so we don't block deployments.
     return JSONResponse(
@@ -850,16 +1310,22 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
                 },
             )
         else:
+            request.app.container.logger().warning(
+                "Vector DB (%s) reported unhealthy: %s", vector_db_type, result.message
+            )
             return JSONResponse(
                 status_code=503,
                 content={
                     "status": "unhealthy",
                     "provider": vector_db_type,
-                    "error": result.message or f"{vector_db_type} health check failed",
+                    "error": f"{vector_db_type} health check failed",
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },
             )
-    except Exception as e:
+    except Exception:
+        request.app.container.logger().error(
+            "Vector DB (%s) health check failed", vector_db_type, exc_info=True
+        )
         # Clear cached provider so next call retries connection
         request.app.state._vector_db_health_provider = None
         return JSONResponse(
@@ -867,7 +1333,7 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
             content={
                 "status": "unhealthy",
                 "provider": vector_db_type,
-                "error": f"Vector DB ({vector_db_type}) health check failed: {str(e)}",
+                "error": f"Vector DB ({vector_db_type}) health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -879,7 +1345,9 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
+app.include_router(demo_data_router)
 app.include_router(connector_router)
+app.include_router(artifacts_router)
 if oauth_apps_router is not None:
     app.include_router(oauth_apps_router)
 if sharing_router is not None:
@@ -896,34 +1364,36 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error("Global error: %s", str(exc), exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"status": "error", "message": str(exc), "path": request.url.path},
+        content={
+            "status": "error",
+            "message": SOMETHING_WENT_WRONG,
+            "path": request.url.path,
+        },
     )
 
 
 def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, reload: bool = True) -> None:
     """Run the application.
 
-    ``workers`` defaults to ``CONNECTOR_UVICORN_WORKERS`` (default ``1``,
-    matching docling/indexing/parsing's own env-var pattern). Raising this
-    above 1 gives the single-threaded event loop more headroom to serve
-    concurrent ``/stream/record`` requests during a large sync instead of
-    queuing behind it — but every uvicorn worker is a separate OS process,
-    and this service's cross-request dedup (``sync_task_manager`` /
-    ``reindex_task_manager`` in
-    ``app.connectors.core.sync.task_manager``) is an in-memory dict keyed
-    per process, not shared across workers. With >1 worker, a duplicate
-    sync/reindex request landing on a different worker than the in-flight
-    one will not be recognised as a duplicate and can run concurrently.
-    Only raise this if that is an acceptable tradeoff for your deployment,
-    or once that dedup is moved to a shared store (Redis lock/lease).
+    ``workers`` comes from the edition seam: this build always answers 1,
+    because running syncs in more than one process needs exclusion this build
+    does not have -- its own guard is a per-process dict plus a fail-open
+    database read.
+
+    Where the lease is active, syncs are excluded process-wide. Reindex is not
+    leased — its dedup (``reindex_task_manager``) is still an in-memory dict per
+    process, so a duplicate reindex landing on a different worker than the
+    in-flight one can still run concurrently.
     """
     if workers is None:
         try:
-            workers = max(1, int(os.getenv("CONNECTOR_UVICORN_WORKERS", "1")))
+            workers = max_connector_workers()
         except ValueError:
             workers = 1
     if reload and workers > 1:
         workers = 1
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     uvicorn.run(
         "app.connectors_main:app",
         host=host,
@@ -931,6 +1401,7 @@ def run(host: str = "0.0.0.0", port: int = 8088, workers: int | None = None, rel
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

@@ -1172,6 +1172,10 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
 
+  # Same for the private-address switch: dropping it on --reconfigure would let AI
+  # model endpoints reach internal addresses again without anyone noticing.
+  PIPESHUB_BLOCK_PRIVATE_ADDRESSES="$(get_existing_val PIPESHUB_BLOCK_PRIVATE_ADDRESSES "${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}")"
+
   # App container memory. An explicit APP_MEMORY_LIMIT always wins -- from the
   # environment for scripted installs, or from an existing .env so
   # --reconfigure never silently resizes a tuned deployment. Only a fresh
@@ -1326,6 +1330,10 @@ $(optional_env_line MONGO_MEMORY_LIMIT "$MONGO_MEMORY_LIMIT" "2G")
 $(optional_env_line APP_MEMORY_LIMIT "$APP_MEMORY_LIMIT" "10G")
 $(optional_env_line APP_MEMSWAP_LIMIT "$APP_MEMSWAP_LIMIT" "16G")
 
+# Set to true when organisations that don't trust each other share this deployment:
+# AI model endpoints on private or internal addresses are then refused.
+$(optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES "$PIPESHUB_BLOCK_PRIVATE_ADDRESSES" "true")
+
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
 
@@ -1362,6 +1370,10 @@ PIPESHUB_ACCESSIBLE_RECORDS_CACHE=
 PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=300
 # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
 PIPESHUB_SIGNED_URL_CACHE_SECONDS=0
+# Most characters one agent turn may stream (text, reasoning and tool-call
+# arguments together) before it is stopped as a runaway. Blank keeps the
+# built-in 1000000; 0 removes the limit.
+PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=
 
 # ── ML performance ───────────────────────────────────────────────────────────
 # Caps PyTorch / OpenBLAS / MKL thread fan-out per operation.

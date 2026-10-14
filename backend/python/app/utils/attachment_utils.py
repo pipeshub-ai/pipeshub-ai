@@ -16,6 +16,7 @@ from app.utils.image_admission import (
     ImageOrigin,
     admission_from_state,
 )
+from app.utils.record_access import caller_can_read_virtual_record
 
 # Base64 data-URI prefixes accepted by the multimodal LLM providers we support.
 _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
@@ -36,6 +37,9 @@ async def resolve_attachments(
     out_records: dict[str, dict[str, Any]] | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: "ImageAdmission | None" = None,
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
 ) -> list[dict[str, Any]]:
     """Fetch user-uploaded attachments and return LangChain content blocks.
 
@@ -117,6 +121,9 @@ async def resolve_attachments(
                 ),
                 image_budget=image_budget,
                 image_admission=admission,
+                user_id=user_id,
+                graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
             if img_content:
                 blocks.extend(img_content)
@@ -137,6 +144,9 @@ async def resolve_attachments(
                 fallback_block={"type": "text", "text": f"[Document attached by user: {record_name}]\n"},
                 image_budget=image_budget,
                 image_admission=admission,
+                user_id=user_id,
+                graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
             if doc_content:
                 blocks.extend(doc_content)
@@ -161,6 +171,9 @@ async def _resolve_attachment_content(
     empty_content_fallback: Callable[[dict[str, Any]], list[dict[str, Any]]] | None = None,
     image_budget: ImageBudget | None = None,
     image_admission: "ImageAdmission | None" = None,
+    user_id: str | None = None,
+    graph_provider: Any = None,
+    is_service_account: bool = False,
 ) -> tuple[list[dict[str, Any]], Any]:
     """Fetch a stored attachment record and convert it via ``record_to_message_content``.
 
@@ -174,6 +187,16 @@ async def _resolve_attachment_content(
     if blob_store is None:
         logger.warning(unavailable_log_msg, record_name)
         return [fallback_block], ref_mapper
+
+    if not await caller_can_read_virtual_record(
+        graph_provider,
+        user_id=user_id,
+        org_id=org_id,
+        virtual_record_id=virtual_record_id,
+        logger=logger,
+        is_service_account=is_service_account,
+    ):
+        return [], ref_mapper
 
     try:
         from app.utils.chat_helpers import record_to_message_content
@@ -385,6 +408,9 @@ async def ensure_attachment_blocks(state: dict, logger: logging.Logger) -> list:
             out_records=attachment_records,
             image_budget=image_budget,
             image_admission=admission_from_state(state),
+            user_id=state.get("user_id") or "",
+            graph_provider=state.get("graph_provider"),
+            is_service_account=bool(state.get("is_service_account")),
         )
 
         if attachment_records:

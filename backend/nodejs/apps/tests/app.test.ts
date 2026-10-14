@@ -3,6 +3,7 @@ import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
+import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -47,8 +48,10 @@ import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
+import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.routes';
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
+import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
@@ -59,6 +62,11 @@ import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.r
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
+import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
+import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
+import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +113,8 @@ function createMockAppConfig(): appConfigModule.AppConfig {
     mcpScopes: ['read', 'write'],
     skipDomainCheck: false,
     maxRequestsPerMinute: 1000,
+    maxAuthRequestsPerMinute: 10,
+    trustProxy: { value: false },
     maxOAuthClientRequestsPerMinute: 1000,
     deployment: {
       dataStoreType: 'arangodb',
@@ -163,8 +173,10 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
+  sandbox.stub(artifactsRoutes, 'createArtifactsRouter').returns(dummyRouter);
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
+  sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
@@ -176,6 +188,8 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
+  sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
+  sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
 }
 
 /**
@@ -213,6 +227,30 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     containers[name] = c;
     sandbox.stub(cls, 'initialize').resolves(c);
   }
+
+  // initialize() builds the outbox dispatcher, which takes the message
+  // producer from the user-manager container. Unlike the routers, that is not
+  // behind a factory the harness can stub, so the binding has to resolve here
+  // as it does in production.
+  containers.userManager!.bind('MessageProducer').toConstantValue({
+    isConnected: () => true,
+    connect: sandbox.stub().resolves(),
+    disconnect: sandbox.stub().resolves(),
+    publish: sandbox.stub().resolves(),
+    publishBatch: sandbox.stub().resolves(),
+    healthCheck: sandbox.stub().resolves(true),
+  } as any);
+
+  // configureRoutes joins the service-account and service-token services, which
+  // live in different containers, so both have to resolve here as they do in
+  // production. Unlike the routers, this wiring is not behind a factory the
+  // harness can stub.
+  containers.userManager!.bind('ServiceAccountsService').toConstantValue({
+    setTokenRevoker: sandbox.stub(),
+  } as any);
+  containers.oauth!.bind('ServiceTokenService').toConstantValue({
+    revokeAllForServiceAccount: sandbox.stub().resolves(),
+  } as any);
 
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
@@ -667,7 +705,9 @@ describe('Application', () => {
       '/api/v1/connectors',
       '/api/v1/oauth',
       '/api/v1/knowledgeBase',
+      '/api/v1/artifacts',
       '/api/v1/configurationManager',
+      '/v1',
       '/api/v1/toolsets',
       '/api/v1/mail',
       '/api/v1/crawlingManager',
@@ -845,6 +885,72 @@ describe('Application', () => {
       await app.stop();
     });
 
+    it('should finish in-flight requests before disposing containers', async () => {
+      (app as any).notificationContainer = new Container();
+      const order: string[] = [];
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
+      (app as any).mailServiceContainer = mailContainer;
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        res.on('finish', () => { order.push('response'); });
+        setTimeout(() => { res.end('ok'); }, 50);
+      });
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      const inFlight = new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/`, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await requestReceived;
+
+      await app.stop();
+
+      expect(await inFlight).to.equal('ok');
+      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
+      expect(server.listening).to.be.false;
+    });
+
+    it('should not let an idle keep-alive socket hold the drain open', async () => {
+      (app as any).notificationContainer = new Container();
+      let respondedAt = 0;
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
+      });
+      server.keepAliveTimeout = 65_000;
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      // A raw socket, because nock (loaded by other specs) rewrites http.get
+      // requests to Connection: close and would hide the keep-alive case.
+      const socket = net.connect(port, '127.0.0.1');
+      let received = '';
+      socket.on('data', (c) => { received += c; });
+      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      await requestReceived;
+
+      try {
+        await Promise.all([app.stop(), socketClosed]);
+      } finally {
+        socket.destroy();
+      }
+
+      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
+      expect(Date.now() - respondedAt).to.be.below(1000);
+      expect(server.listening).to.be.false;
+    });
+
     it('should throw if a container dispose fails', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
@@ -859,6 +965,27 @@ describe('Application', () => {
       } catch (err: any) {
         expect(err.message).to.equal('Redis disconnect error');
       }
+    });
+  });
+
+  describe('bootstrapMailBrokerConsumer()', () => {
+    it('subscribes from the start so mail queued before a new group exists is delivered', async () => {
+      const app = new Application();
+      (app as any).logger = mockLogger;
+      const consumer = {
+        start: sandbox.stub().resolves(),
+        subscribe: sandbox.stub().resolves(),
+        consume: sandbox.stub().resolves(),
+      };
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailConsumer).toConstantValue(consumer);
+      (app as any).mailServiceContainer = mailContainer;
+
+      (app as any).bootstrapMailBrokerConsumer();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(consumer.subscribe.calledOnceWithExactly([BrokerTopic.MAIL_EVENTS], true)).to.be.true;
+      expect(consumer.consume.calledOnce).to.be.true;
     });
   });
 

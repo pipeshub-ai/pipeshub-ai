@@ -45,7 +45,7 @@ from app.agent_loop_lib.modules.providers.skills.base import (
 )
 from app.agent_loop_lib.modules.providers.skills.loader import render_skill_md
 from app.agent_loop_lib.modules.providers.skills.manager import SkillManager
-from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
+from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError, SkillValidator
 from app.agents.agent_loop.skills.manager_factory import (
     build_management_skill_manager,
     get_builtin_seeder,
@@ -58,6 +58,7 @@ from app.config.constants.service import OAuthScopes
 from app.services.featureflag.platform_settings import is_skills_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.skills.npm_command_parser import (
+    CatalogSpec,
     NpmCommandParseError,
     UrlSpec,
     parse_npm_command,
@@ -147,6 +148,14 @@ class FinalizeImportRequest(BaseModel):
     resources: dict[str, str] = Field(default_factory=dict)
     category: str | None = None
     subcategory: str | None = None
+    name: str | None = Field(
+        default=None,
+        description=(
+            "Optional kebab-case name to persist as. Rewrites SKILL.md "
+            "frontmatter `name` so an import can avoid a reserved builtin "
+            "(e.g. anthropics/skills pptx → pptx-anthropic)."
+        ),
+    )
 
 
 def _metadata_to_dict(m: SkillMetadata) -> dict[str, Any]:
@@ -291,6 +300,57 @@ def _reject_if_builtin_name(name: str) -> None:
     seeder = get_builtin_seeder()
     if seeder is not None and name in seeder.pack_versions:
         raise HTTPException(status_code=409, detail=f"{name!r} is a built-in skill name.")
+
+
+def _annotate_reserved_import_name(preview: ImportPreview) -> ImportPreview:
+    seeder = get_builtin_seeder()
+    if seeder is None or preview.name not in seeder.pack_versions:
+        return preview
+    warning = (
+        f"{preview.name!r} is a built-in skill name. Choose a different name before importing."
+    )
+    warnings = list(preview.warnings or [])
+    if warning not in warnings:
+        warnings.append(warning)
+    preview.warnings = warnings
+    return preview
+
+
+def _apply_import_name(content: str, name_override: str | None) -> tuple[str, str]:
+    """Resolve the persisted skill name and keep SKILL.md frontmatter in sync."""
+    try:
+        frontmatter: dict[str, Any] = {}
+        body: str | None = None
+        if content.startswith("---"):
+            parts = content.split("---", 2)
+            if len(parts) >= 3:
+                loaded = yaml.safe_load(parts[1]) or {}
+                if not isinstance(loaded, dict):
+                    raise ValueError("YAML frontmatter must be a mapping of key: value pairs")
+                frontmatter = loaded
+                body = parts[2]
+        original = frontmatter.get("name")
+    except Exception as e:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Could not read 'name' from the imported SKILL.md: {e}",
+        ) from e
+
+    override = name_override.strip() if name_override else None
+    name = override or original
+    if isinstance(name, str):
+        name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Imported SKILL.md is missing a 'name' field.")
+    try:
+        SkillValidator().validate_name(name)
+    except SkillFormatError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if override and body is not None and name != original:
+        frontmatter["name"] = name
+        dumped = yaml.safe_dump(frontmatter, sort_keys=False)
+        content = f"---\n{dumped}---{body}"
+    return name, content
 
 
 async def _load_skill_metadata(manager: SkillManager, name: str) -> SkillMetadata:
@@ -740,12 +800,14 @@ async def preview_npm_import(request: Request, payload: NpmImportRequest) -> JSO
     try:
         importer = SkillPackageImporter()
         if isinstance(spec, UrlSpec):
-            preview = await importer.preview_url(spec.url)
+            preview = await importer.preview_url(spec.url, skill_filter=spec.skill_filter)
+        elif isinstance(spec, CatalogSpec):
+            preview = await importer.preview_catalog_slug(spec.slug, skill_filter=spec.skill_filter)
         else:
             preview = await importer.preview_npm(spec)
     except PackageImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return JSONResponse(status_code=200, content=_preview_to_dict(preview))
+    return JSONResponse(status_code=200, content=_preview_to_dict(_annotate_reserved_import_name(preview)))
 
 
 @router.post("/import/url/preview", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
@@ -755,7 +817,7 @@ async def preview_url_import(request: Request, payload: UrlImportRequest) -> JSO
         preview = await SkillPackageImporter().preview_url(payload.url)
     except PackageImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return JSONResponse(status_code=200, content=_preview_to_dict(preview))
+    return JSONResponse(status_code=200, content=_preview_to_dict(_annotate_reserved_import_name(preview)))
 
 
 @router.post("/import/upload/preview", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
@@ -766,7 +828,7 @@ async def preview_upload_import(request: Request, file: UploadFile = File(...)) 
         preview = SkillPackageImporter().preview_upload(file.filename or "upload.zip", data)
     except PackageImportError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return JSONResponse(status_code=200, content=_preview_to_dict(preview))
+    return JSONResponse(status_code=200, content=_preview_to_dict(_annotate_reserved_import_name(preview)))
 
 
 @router.post("/import/finalize", dependencies=[Depends(require_scopes(OAuthScopes.SKILL_WRITE))])
@@ -775,19 +837,13 @@ async def finalize_import(request: Request, payload: FinalizeImportRequest) -> J
     by design (DRY): the preview step already normalized npm/URL/upload
     into the same `content`/`resources` shape."""
     manager, _ctx = await _build_manager(request)
-    try:
-        frontmatter = yaml.safe_load(payload.content.split("---", 2)[1]) if payload.content.startswith("---") else {}
-        name = (frontmatter or {}).get("name")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read 'name' from the imported SKILL.md: {e}") from e
-    if not name:
-        raise HTTPException(status_code=400, detail="Imported SKILL.md is missing a 'name' field.")
+    name, content = _apply_import_name(payload.content, payload.name)
     _reject_if_builtin_name(name)
 
     try:
-        metadata = await manager.create(name, payload.content, payload.category, payload.subcategory)
-        for path, content in payload.resources.items():
-            await manager.write_resource(name, path, content)
+        metadata = await manager.create(name, content, payload.category, payload.subcategory)
+        for path, resource in payload.resources.items():
+            await manager.write_resource(name, path, resource)
     except RegistryError as e:
         raise _handle_registry_error(e) from e
     except SkillFormatError as e:

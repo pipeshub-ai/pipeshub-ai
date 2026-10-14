@@ -96,11 +96,9 @@ GOOGLE_SERVICE_SCOPES = {
         "https://www.googleapis.com/auth/calendar",
     ],
     "gmail": [
-        # Gmail API - optimized for common operations
+        "https://www.googleapis.com/auth/gmail.send",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/gmail.compose",
-        "https://www.googleapis.com/auth/gmail.send",
     ],
     "drive": [
         # Google Drive API - optimized for file operations
@@ -141,6 +139,45 @@ GOOGLE_SERVICE_SCOPES = {
         "https://www.googleapis.com/auth/forms.readonly",
         "https://www.googleapis.com/auth/forms",
     ],
+}
+
+# What each agent toolset's consent screen asks for, and so exactly what its token
+# refresh may ask for: google-auth sends a credential's scopes on every refresh, and
+# Google refuses (invalid_scope) a refresh naming a scope the user never approved. The
+# Gmail, Drive and Calendar toolset pages on docs.pipeshub.com list these for admins.
+GOOGLE_TOOLSET_SCOPES = {
+    "gmail": [
+        "https://www.googleapis.com/auth/gmail.send",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.modify",
+    ],
+    "drive": [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.metadata.readonly",
+    ],
+    # Invites go out through Calendar's own sendUpdates, so no Gmail scope is needed.
+    "calendar": [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+    ],
+    "meet": [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/meetings.space.created",
+        # meetings.space.created only covers meetings this app created; the conference-record tools read any.
+        "https://www.googleapis.com/auth/meetings.space.readonly",
+    ],
+}
+
+# What the Gmail Workspace connector's service account asks for when it impersonates a
+# mailbox. Google refuses the whole token request (unauthorized_client) if any scope here
+# is missing from the admin's domain-wide delegation grant, so this must match the grant
+# list in the Gmail Workspace setup docs. It only reads mail and the Drive files linked
+# from it.
+GMAIL_WORKSPACE_DELEGATED_SCOPES = {
+    "gmail": ["https://www.googleapis.com/auth/gmail.readonly"],
+    "drive": ["https://www.googleapis.com/auth/drive.readonly"],
 }
 
 # Services that need parser scopes (for document parsing functionality)

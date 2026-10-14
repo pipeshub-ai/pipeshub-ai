@@ -20,6 +20,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolCategory,
     ToolsetBuilder,
 )
+from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
@@ -190,11 +191,7 @@ class GetMeetingSummaryInput(BaseModel):
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.events",
-                    "https://www.googleapis.com/auth/meetings.space.created"
-                ]
+                agent=list(GOOGLE_TOOLSET_SCOPES["meet"]),
             ),
             token_access_type="offline",
             additional_params={

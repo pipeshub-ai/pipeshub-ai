@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Optional
 
 from app.services.featureflag.config.config import CONFIG
+from app.utils.env_utils import high_accuracy_mode
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
@@ -111,3 +112,32 @@ async def is_skills_enabled(config_service: Optional["ConfigurationService"] = N
     skills to run.
     """
     return await _platform_flag(config_service, CONFIG.ENABLE_SKILLS, default=True)
+
+
+async def is_named_entity_extraction_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Gate for typed named-entity extraction and the tools that read it: on when
+    the deployment sets ``HIGH_ACCURACY_MODE`` or the Labs flag is on. The flag is
+    read live and defaults to off; under ``HIGH_ACCURACY_MODE`` it is not read."""
+    if high_accuracy_mode():
+        return True
+    return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+
+
+async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether a record delete moves the record to the trash instead of removing it.
+
+    Read live on every delete. Defaults to DISABLED: off means today's hard delete.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_SOFT_DELETE, default=False)
+
+
+async def is_user_context_enabled(config_service: Optional["ConfigurationService"] = None) -> bool:
+    """Org-level gate for injecting user/org profile into the default
+    assistant and Universal Agent Mode system prompts. Source of truth is
+    the ``ENABLE_USER_CONTEXT`` platform feature flag. Defaults to ENABLED
+    — this is pre-existing prompt behaviour; admins may opt out from Labs.
+
+    Agent Builder agents do not use this flag. Each stored agent has its
+    own ``sendUserContext`` field.
+    """
+    return await _platform_flag(config_service, CONFIG.ENABLE_USER_CONTEXT, default=True)

@@ -100,6 +100,8 @@ export interface AgentConfiguredModel {
   isDefault: boolean;
   modelType: string;
   modelFriendlyName: string;
+  /** The model's own default effort, when the admin stored one. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** Tool definition nested under `toolsets[].tools[]`. */
@@ -148,6 +150,8 @@ export interface AgentMcpServer {
   displayName?: string;
   typeId?: string | null;
   instanceId: string;
+  /** Absent on attachments saved before it existed — those use exactly `tools`. */
+  allTools?: boolean;
   tools: AgentMcpTool[];
 }
 
@@ -183,6 +187,8 @@ export interface AgentDetail {
   _id: string;
   toolsets: AgentToolset[];
   mcpServers?: AgentMcpServer[];
+  /** The server couldn't read this agent's MCP servers, so `mcpServers` is empty but not the agent's. */
+  mcpServersUnavailable?: boolean;
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];
@@ -202,6 +208,8 @@ export interface AgentDetail {
   can_view: boolean;
   /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
+  /** When false, the agent system prompt omits user name/email/org. Defaults to true. */
+  sendUserContext?: boolean;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────

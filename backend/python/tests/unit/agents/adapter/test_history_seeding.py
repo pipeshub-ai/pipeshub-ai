@@ -253,6 +253,99 @@ class TestSeedConversationHistory:
         assert isinstance(messages[3], AssistantMessage) and not messages[3].tool_calls
         assert isinstance(messages[4], UserMessage)
 
+    async def test_keeps_the_ask_user_question_answers_in_history(self) -> None:
+        """A later turn ("what did I pick?") can only answer if the card's
+        answers are still in context — the questions payload alone reads as
+        an unanswered card."""
+        agent = _FakeAgent()
+        previous_conversations = [
+            {"role": "user_query", "content": "ask me a question"},
+            {"role": "bot_response", "content": ""},
+            {"role": "user_query", "content": 'User selections:\n1. "Which step?" → Quiet break'},
+            {"role": "bot_response", "content": "You picked the quiet break."},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(
+            agent, previous_conversations, _make_context()
+        )
+
+        messages = await agent.context.messages()
+        assert any(
+            isinstance(msg, UserMessage) and "Quiet break" in (msg.content or "")
+            for msg in messages
+        )
+
+    async def test_an_answered_approval_card_reads_as_one_call_with_one_result(self) -> None:
+        """The reply that answered the card repeats the stopped call, settled, under its id: the
+        result replaces the waiting one, the answer row and the waiting words go, and no call id
+        appears twice."""
+        agent = _FakeAgent()
+        waiting = "Waiting for your approval to run create_issue on Jira."
+        previous_conversations = [
+            {"role": "user_query", "content": "file a bug"},
+            {"role": "bot_response", "content": waiting, "tool_results": [
+                {"tool_name": "search", "result": "no duplicates", "status": "success", "tool_id": "c0", "args": {}},
+                {"tool_name": "mcp_jira_create_issue", "result": waiting, "status": "error", "tool_id": "c1", "args": {}},
+            ]},
+            {"role": "user_query", "content": "Tool approval: allow"},
+            {"role": "bot_response", "content": "Filed it as JIRA-7.", "tool_results": [
+                {"tool_name": "mcp_jira_create_issue", "result": "created JIRA-7", "status": "success", "tool_id": "c1", "args": {}},
+                {"tool_name": "mcp_jira_add_label", "result": "labelled", "status": "success", "tool_id": "c3", "args": {}},
+            ]},
+            {"role": "user_query", "content": "thanks"},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        messages = await agent.context.messages()
+        shape = [
+            (type(m).__name__, [c.id for c in m.tool_calls or []] if isinstance(m, AssistantMessage) else getattr(m, "tool_call_id", None))
+            for m in messages
+        ]
+        assert shape == [
+            ("UserMessage", None),
+            ("AssistantMessage", ["c0", "c1"]), ("ToolMessage", "c0"), ("ToolMessage", "c1"),
+            ("AssistantMessage", ["c3"]), ("ToolMessage", "c3"),
+            ("AssistantMessage", []),
+            ("UserMessage", None),
+        ]
+        assert (messages[3].content, messages[3].is_error) == ("created JIRA-7", False)
+        assert messages[6].text == "Filed it as JIRA-7."
+        assert not any("Tool approval:" in str(m.content) or waiting in str(m.content) for m in messages)
+
+    async def test_an_id_repeated_outside_an_answer_is_a_different_call(self) -> None:
+        """Some providers number call ids per response: the same id in two ordinary turns is two calls."""
+        agent = _FakeAgent()
+        previous_conversations = [
+            {"role": "user_query", "content": "one"},
+            {"role": "bot_response", "content": "a", "tool_results": [
+                {"tool_name": "search", "result": "first", "status": "success", "tool_id": "call_0"},
+            ]},
+            {"role": "user_query", "content": "two"},
+            {"role": "bot_response", "content": "b", "tool_results": [
+                {"tool_name": "search", "result": "second", "status": "success", "tool_id": "call_0"},
+            ]},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        results = [m.content for m in await agent.context.messages() if isinstance(m, ToolMessage)]
+        assert results == ["first", "second"]
+
+    async def test_ids_the_history_makes_up_are_never_folded(self) -> None:
+        agent = _FakeAgent()
+        previous_conversations = [
+            {"role": "user_query", "content": "one"},
+            {"role": "bot_response", "content": "a", "tool_results": [{"tool_name": "t", "result": "1", "status": "success"}]},
+            {"role": "user_query", "content": "two"},
+            {"role": "bot_response", "content": "b", "tool_results": [{"tool_name": "t", "result": "2", "status": "success"}]},
+        ]
+
+        await PipesHubAgentFactory._seed_conversation_history(agent, previous_conversations, _make_context())
+
+        results = [m.content for m in await agent.context.messages() if isinstance(m, ToolMessage)]
+        assert results == ["1", "2"]
+
     async def test_empty_history_yields_empty_context(self) -> None:
         agent = _FakeAgent()
 

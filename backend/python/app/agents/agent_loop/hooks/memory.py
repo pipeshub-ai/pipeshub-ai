@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.agents.agent_loop.parked_turn import VISIBLE_TOOLS
 from app.modules.agents.qna.conversation_memory import ConversationMemory
 
 if TYPE_CHECKING:
@@ -53,7 +54,7 @@ def conversation_enrichment(context: AgentContext) -> "Middleware[TurnContext]":
     return _middleware
 
 
-def _tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
+def tool_names_used_in_history(previous_conversations: list[dict[str, Any]]) -> set[str]:
     """Every `tool_name` recorded in each turn's `tool_results` (same shape
     `_convert_conversation_turn` replays into context — see
     `factory.py::_convert_conversation_turn`'s docstring for the field
@@ -103,28 +104,28 @@ def seed_visible_tools_from_history(context: AgentContext) -> "Middleware[TurnCo
             return
 
         run_scope = ctx.scope.run
-        if run_scope.visible_tools is not None:
-            await next_fn()
-            return
-
         registry = run_scope.runtime.tool_registry
         if registry is None or not registry.has_toolsets():
             await next_fn()
             return
 
         spec = run_scope.spec
-        prior_names = _tool_names_used_in_history(context.previous_conversations)
+        prior_names = tool_names_used_in_history(context.previous_conversations)
+        # What the turn an answered question stopped could see (`parked_turn.restore_question`).
+        prior_names |= set(context.tool_state.get(VISIBLE_TOOLS) or [])
         registered = set(registry.names())
         prior_names &= registered
         if spec.tool_names:
             prior_names &= set(spec.tool_names)
 
         if prior_names:
-            run_scope.visible_tools = initial_visible_tools(spec, run_scope.runtime) | prior_names
+            # Added to what PRE_AGENT already made visible (tool preloading sets it for every lazy
+            # agent), not skipped when it is set: otherwise a follow-up never sees them again.
+            run_scope.visible_tools = (run_scope.visible_tools or initial_visible_tools(spec, run_scope.runtime)) | prior_names
 
         await next_fn()
 
     return _middleware
 
 
-__all__ = ["conversation_enrichment", "seed_visible_tools_from_history"]
+__all__ = ["conversation_enrichment", "seed_visible_tools_from_history", "tool_names_used_in_history"]

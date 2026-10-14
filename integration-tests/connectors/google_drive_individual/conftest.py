@@ -18,6 +18,8 @@ from typing import Any, AsyncGenerator
 import pytest
 import pytest_asyncio
 
+from helper.source_credentials import source_unavailable
+
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.clients.users_client import UsersClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
@@ -63,7 +65,7 @@ async def drive_individual_datasource() -> GoogleDriveDataSource:
     try:
         client_id, client_secret, refresh_token, _test_user = require_drive_individual_env()
     except ValueError as e:
-        pytest.skip(str(e))
+        source_unavailable(f"The Google Drive account this suite syncs from is not configured. {e}")
 
     try:
         return await build_drive_datasource_from_refresh_token(

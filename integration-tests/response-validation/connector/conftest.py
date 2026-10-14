@@ -18,6 +18,7 @@ import pytest
 
 from helper.clients.kb_client import KBClient
 from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient
+from helper.http.session_client import SessionClient
 from messaging.test_e2e_record_pipeline import (
     TERMINAL_STATUSES,
     _extract_kb_id,
@@ -46,15 +47,18 @@ signed off by the on-call lead before the runbook is marked current.
 
 
 @pytest.fixture(scope="module")
-def token_without_connector_read(pipeshub_client: PipeshubClient) -> Iterator[str]:
+def token_without_connector_read(
+    pipeshub_client: PipeshubClient, user_session_client: SessionClient
+) -> Iterator[str]:
     """Access token from an OAuth app that deliberately omits `connector:read`.
 
     Minting a scope-restricted token for the *same* user isolates the scope check
     itself, and keeps this off the second-user path — that one seeds a password
     straight into MongoDB and needs TEST_MONGO_URI/TEST_MONGO_DB_NAME to match the
-    running stack, which the config defaults do not.
+    running stack, which the config defaults do not. Registering the app needs the
+    user's login session: OAuth client routes refuse OAuth tokens (#3626).
     """
-    apps = OAuthAppsClient(pipeshub_client)
+    apps = OAuthAppsClient(user_session_client)
     resp = apps.create_app(
         name=f"connector-content-it-noscope-{uuid4().hex[:8]}",
         allowedGrantTypes=["client_credentials"],

@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
+import { Button, Flex, Heading, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { toast } from '@/lib/store/toast-store';
@@ -13,7 +13,11 @@ import AuthHero from '../components/auth-hero';
 import FormPanel from '../components/form-panel';
 import { SingleProvider, MultipleProviders } from '../forms';
 import { AuthApi, type AuthMethod } from '../api';
-import { getOrgExists } from '@/lib/api/org-exists-public';
+import { getOrgExists, invalidateOrgExistsCache } from '@/lib/api/org-exists-public';
+import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
+import { isElectron } from '@/lib/electron';
+import { requestElectronServerUrlChange } from '@/lib/store/auth-store';
 
 // --- Auth step state machine --------------------------------------------------
 
@@ -28,20 +32,34 @@ type AuthStep =
     type: 'multiple';
     allowedMethods: AuthMethod[];
     authProviders: Record<string, Record<string, string>>;
-  };
+  }
+  | { type: 'error'; message: string };
 
-/** Backend SAML error codes → short user-facing descriptions. */
-const SAML_ERROR_DESCRIPTIONS: Record<string, string> = {
-  jit_Disabled: 'JIT provisioning is disabled for your organisation',
-  jit_disabled: 'JIT provisioning is disabled for your organisation',
-  Saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
-  saml_sso_disabled: 'SAML SSO is not enabled for your organisation',
-  auth_failed: 'SAML authentication failed. Please try again',
-  unknown: 'An unexpected error occurred during sign-in. Please try again',
-};
-
-function getSamlErrorDescription(code: string): string {
-  return SAML_ERROR_DESCRIPTIONS[code] ?? code.replace(/_/g, ' ');
+function LoadFailed({ message, onRetry }: { message: string; onRetry: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <Flex direction="column" gap="3" align="center" style={{ textAlign: 'center' }}>
+      <Heading size="4">{t('auth.login.loadFailedTitle')}</Heading>
+      <Text size="2" color="gray">
+        {message}
+      </Text>
+      <Flex gap="2">
+        <Button type="button" size="2" onClick={onRetry}>
+          {t('auth.login.retry')}
+        </Button>
+        {isElectron() && (
+          <Button
+            type="button"
+            size="2"
+            variant="soft"
+            onClick={() => requestElectronServerUrlChange()}
+          >
+            {t('electron.serverUrlSetup.changeServer')}
+          </Button>
+        )}
+      </Flex>
+    </Flex>
+  );
 }
 
 export default function LoginPage() {
@@ -53,7 +71,8 @@ export default function LoginPage() {
 
   // Prevents the initAuth call from running twice in React Strict Mode
   // (where mount effects are intentionally run twice in development).
-  const initAuthCalledRef = useRef(false);
+  const initAuthCalledRef = useRef(-1);
+  const [attempt, setAttempt] = useState(0);
   const samlErrorHandledRef = useRef(false);
   const emailVerifyHandledRef = useRef(false);
 
@@ -107,10 +126,8 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!isHydrated) return;
-    if (initAuthCalledRef.current) return;
-    initAuthCalledRef.current = true;
-
-    let cancelled = false;
+    if (initAuthCalledRef.current === attempt) return;
+    initAuthCalledRef.current = attempt;
 
     void getOrgExists()
       .then(({ exists }) => {
@@ -118,11 +135,10 @@ export default function LoginPage() {
           router.replace('/sign-up');
           return;
         }
-        // if (cancelled) return;
         return AuthApi.initAuth();
       })
       .then((response) => {
-        // if (cancelled || response === undefined) return;
+        if (response === undefined) return;
         const methods = response.allowedMethods ?? [];
         const providers = response.authProviders ?? {};
         if (methods.length <= 1) {
@@ -139,22 +155,27 @@ export default function LoginPage() {
           });
         }
       })
-      .catch(() => {
-        if (cancelled) return;
+      .catch((err: unknown) => {
+        // Not a password-only fallback: that hides an unreachable server behind
+        // a form that can only fail.
         setStep({
-          type: 'single',
-          method: 'password',
-          authProviders: {},
+          type: 'error',
+          message: getUserFacingErrorMessage(err, t('auth.login.loadFailedDescription')),
         });
       });
+  }, [isHydrated, router, attempt, t]);
 
-    return () => {
-      cancelled = true;
-    };
-  }, [isHydrated, router]);
+  const retry = () => {
+    invalidateOrgExistsCache();
+    setStep({ type: 'loading' });
+    setAttempt((n) => n + 1);
+  };
 
   function renderForm() {
     switch (step.type) {
+      case 'error':
+        return <LoadFailed message={step.message} onRetry={retry} />;
+
       case 'loading':
         // Avoid empty FormPanel (especially with narrow layout / AuthHero hidden === null).
         return <LoadingScreen />;

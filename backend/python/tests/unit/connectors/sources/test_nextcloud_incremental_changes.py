@@ -104,14 +104,15 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(return_value=_response({"ocs": {"data": [
             _activity(110, "file_created", {"59": "/Handbook", "60": "/Handbook/leave.txt"}),
         ]}}))
-        connector._process_modified_files = AsyncMock()
+        connector._process_modified_files = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 
         paths = connector._process_modified_files.await_args.args[0]
         assert sorted(paths) == ["/Handbook", "/Handbook/leave.txt"]
         connector.activity_sync_point.update_sync_point.assert_awaited_once_with(
-            "activity_cursor", {"cursor": "110"}
+            "activity_cursor",
+            {"cursor": "110", "held_attempts": 0, "pending_deletes": [], "pending_delete_paths": []}
         )
 
     @pytest.mark.asyncio
@@ -119,7 +120,7 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(return_value=_response({"ocs": {"data": [
             _activity(113, "file_deleted", {"61": "/a.txt", "62": "/b.txt"}),
         ]}}))
-        connector._process_deletions = AsyncMock()
+        connector._process_deletions = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 
@@ -132,7 +133,7 @@ class TestMergedActivities:
         connector.data_source.get_activities = AsyncMock(
             return_value=_response({"ocs": {"data": [activity]}})
         )
-        connector._process_modified_files = AsyncMock()
+        connector._process_modified_files = AsyncMock(return_value={})
 
         await connector._run_incremental_sync_internal()
 

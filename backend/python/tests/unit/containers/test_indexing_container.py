@@ -96,6 +96,7 @@ class TestInitializeContainer:
         logger = MagicMock()
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
+        mock_graph_provider.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -115,9 +116,41 @@ class TestInitializeContainer:
     async def test_stores_resolved_graph_provider(self, mock_sys_health, mock_conn_health):
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp
+
+    @pytest.mark.asyncio
+    @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
+    @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
+    async def test_ensures_the_schema_its_writes_depend_on(self, mock_sys_health, mock_conn_health):
+        """This service writes taxonomy and alias nodes whose constraints must
+        exist before the first write, whichever service starts first."""
+        container, logger = self._make_mock_container()
+        mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock()
+        container.graph_provider = AsyncMock(return_value=mock_gp)
+
+        await initialize_container(container)
+
+        mock_gp.ensure_schema.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
+    @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
+    async def test_a_failed_schema_bootstrap_warns_and_continues(self, mock_sys_health, mock_conn_health) -> None:
+        container, logger = self._make_mock_container()
+        mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock(return_value=False)
+        container.graph_provider = AsyncMock(return_value=mock_gp)
+
+        assert await initialize_container(container) is True
+
+        logger.warning.assert_called_once()
+        assert "schema" in logger.warning.call_args.args[0].lower()
+        assert not any("Schema ensured" in str(c.args[0]) for c in logger.info.call_args_list)
+        mock_sys_health.assert_awaited_once_with(container)
 
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
@@ -257,6 +290,7 @@ class TestInitializeContainerFullCoverage:
         logger = MagicMock()
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
+        mock_graph_provider.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -276,6 +310,7 @@ class TestInitializeContainerFullCoverage:
     async def test_stores_resolved_graph_provider(self, mock_sys_health, mock_conn_health):
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock()
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp

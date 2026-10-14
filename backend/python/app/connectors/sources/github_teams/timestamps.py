@@ -21,7 +21,7 @@ fields; a record fabricated via ``from_arango_record({}, node)`` silently
 loses type-document fields (``file_path`` -> the file pass no-ops,
 ``is_file`` -> folders flip into files on re-upsert). This module therefore
 never builds record objects at all: it patches only the named properties via
-``tx_store.batch_update_nodes`` (a partial merge on both providers), so
+``data_entities_processor.batch_update_nodes`` (a partial merge on both providers), so
 nothing outside the patch can be touched.
 """
 
@@ -200,10 +200,9 @@ class TimestampBackfill:
         if missing_dates_only:
             filters["sourceCreatedAtTimestamp"] = None
             filters["sourceLastModifiedTimestamp"] = None
-        async with self.c.data_store_provider.transaction() as tx_store:
-            nodes = await tx_store.get_nodes_by_filters(
-                collection=CollectionNames.RECORDS.value, filters=filters,
-            )
+        nodes = await self.c.data_entities_processor.get_nodes_by_filters(
+            collection=CollectionNames.RECORDS.value, filters=filters,
+        )
         return [n for n in nodes if not n.get("isDeleted")]
 
     async def _apply_patches(self, patches: list[dict[str, Any]], collection: str, *, context: str) -> None:
@@ -213,8 +212,7 @@ class TimestampBackfill:
         if not patches:
             return
         try:
-            async with self.c.data_store_provider.transaction() as tx_store:
-                await tx_store.batch_update_nodes(patches, collection)
+            await self.c.data_entities_processor.batch_update_nodes(patches, collection)
         except Exception as e:
             self.logger.warning(
                 "Failed to patch %s node(s) in %s for %s: %s", len(patches), collection, context, e,

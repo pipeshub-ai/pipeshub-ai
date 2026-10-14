@@ -36,14 +36,24 @@ from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.core.context import CancellationToken
+from app.agents.agent_loop.answer_rules import (
+    READ_RECORDS_IN_FULL_STATE_KEY,
+    answer_composition_rules_enabled,
+    thorough_retrieval_enabled,
+)
 from app.agents.agent_loop.answer_streamer import TerminalAnswerStreamer
 from app.agents.agent_loop.cancellation.registry import RunOwner
 from app.agents.agent_loop.clarification import emit_pre_run_clarification
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.factory import PipesHubAgentFactory
-from app.agents.agent_loop.hooks import CitationCollector, ensure_fetch_full_record_available
+from app.agents.agent_loop.hooks import (
+    CitationCollector,
+    ensure_fetch_full_record_available,
+)
+from app.agents.agent_loop.protocol.run_usage import emit_run_usage
 from app.agents.agent_loop.respond import AnswerFinalizer
+from app.agents.agent_loop.retrieval_ledger import emit_prefetch_retrieval_context
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
     _cancel_orphaned_agent_tasks,
@@ -55,16 +65,26 @@ from app.agents.chat_modes.attachments import resolve_attachments
 from app.agents.chat_modes.custom_instructions import (
     resolve_custom_instructions as _resolve_custom_instructions,
 )
+from app.agents.chat_modes.internal_search_prompt import internal_search_instructions
 from app.agents.chat_modes.policy import (
     INTERNAL_SEARCH_POLICY,
     ChatModePolicy,
     resolve_chat_mode_policy,
 )
-from app.agents.chat_modes.prefetch import prefetch_retrieval
+from app.agents.chat_modes.prefetch import filter_notice_constraint, prefetch_retrieval
 from app.config.constants.service import config_node_constants
+from app.modules.demo_data.chat import (
+    demo_exclusions_for_run,
+    exclude_from_query,
+    exclude_from_state,
+    note_org_real_data,
+)
+from app.modules.retrieval.provenance import note_retrieved_by
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
+from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
+from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -81,20 +101,9 @@ _DONE = object()
 # `get_model_config_for_mode()["system_prompt"]` per-mode framing, kept
 # short since the agent loop's own system prompt already covers tool usage,
 # citation rules, and the "Internal Knowledge First" section in detail.
+# `internal_search` is built by `internal_search_instructions`, whose text
+# depends on the answer-rule switches.
 _MODE_INSTRUCTIONS: dict[str, str] = {
-    "internal_search": (
-        "Answer ONLY from the organization's internal knowledge base / provided context and "
-        "attachments. Do not use your own training knowledge to answer factual questions. If the "
-        "answer is not present in the retrieved context, say so explicitly rather than guessing.\n\n"
-        "The context you are given contains the most relevant BLOCKS from each document — not "
-        "the full documents. For questions that can be answered by locating the right passage "
-        "(a date, a name, a number, a status), the blocks are sufficient. For questions that "
-        "need whole-document content — a summary, what the risks or key points are, a review, "
-        "a comparison, anything covering all of something — a handful of blocks cannot support "
-        "the answer. When a candidate list appears below the context blocks showing how much of "
-        "each record you hold (\"you have N of M blocks\"), call `knowledgegraph__fetch_record` "
-        "with those record IDs before answering."
-    ),
     "web_search": (
         "Use web search for this conversation. Do not use internal company knowledge or tools -- "
         "answer using publicly available information found via web_search/fetch_url."
@@ -108,13 +117,43 @@ _MODE_INSTRUCTIONS: dict[str, str] = {
 }
 
 
-def _with_mode_instructions(base_instructions: str | None, policy: ChatModePolicy) -> str:
-    addendum = _MODE_INSTRUCTIONS.get(policy.system_prompt_key, "")
+def _with_mode_instructions(
+    base_instructions: str | None,
+    policy: ChatModePolicy,
+    *,
+    composition: bool = False,
+    thorough: bool = False,
+    entity_tools: bool = False,
+) -> str:
+    if policy.system_prompt_key == "internal_search":
+        addendum = internal_search_instructions(
+            composition=composition, thorough=thorough, entity_tools=entity_tools,
+        )
+    else:
+        addendum = _MODE_INSTRUCTIONS.get(policy.system_prompt_key, "")
     if not addendum:
         return base_instructions or ""
     if base_instructions and base_instructions.strip():
         return f"{base_instructions.strip()}\n\n{addendum}"
     return addendum
+
+
+def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy) -> None:
+    """Fold the mode text into `chat_state["instructions"]`, and tell the
+    prompt builder whether its fetch policy must ask for full reads to match.
+
+    Reads each switch once, so the mode text and the fetch policy can never
+    disagree within a request. Entity tools are granted exactly when an
+    entity store is wired (`factory._initial_entity_tool_grant`)."""
+    internal_search = policy.system_prompt_key == "internal_search"
+    thorough = internal_search and thorough_retrieval_enabled()
+    chat_state["instructions"] = _with_mode_instructions(
+        chat_state.get("instructions"), policy,
+        composition=internal_search and answer_composition_rules_enabled(),
+        thorough=thorough,
+        entity_tools=bool(chat_state.get("entity_vector_store")),
+    )
+    chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
 
 
 async def _resolve_web_search_config(config_service: Any, logger: logging.Logger) -> dict[str, Any] | None:
@@ -196,15 +235,21 @@ async def _fetch_available_connectors(
 
 def _apply_policy_to_chat_state(
     chat_state: dict[str, Any], policy: ChatModePolicy, web_search_config: dict[str, Any] | None,
+    sql_connector_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Forces the tool-availability flags `PipesHubToolLoader`/`AgentContext.
     from_chat_state` read, per `policy.py`'s module docstring. Chat modes
     have no per-agent "knowledge scope" the way agents do, so SQL/Slack
     tool availability mirrors connector PRESENCE (`has_sql_connector`/
     `has_slack_connector`, already resolved by the caller), not a
-    knowledge-attachment concept that doesn't exist here."""
+    knowledge-attachment concept that doesn't exist here. For the same
+    reason the SQL tool's connector allowlist is the user's own SQL
+    connector instances (`sql_connector_ids`)."""
     chat_state["has_knowledge"] = policy.has_knowledge
     chat_state["has_sql_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_sql_connector"))
+    chat_state["allowed_sql_connector_ids"] = (
+        sql_connector_ids if chat_state["has_sql_knowledge"] else frozenset()
+    )
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
     chat_state["chat_mode"] = policy.name
@@ -269,15 +314,25 @@ async def _run_no_tools_degradation(
     blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)
 
     yield create_sse_event("status", {"status": "searching", "message": "Searching knowledge base..."})
-    prefetch = await prefetch_retrieval(
-        query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
-        retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
-        filters=query_info.get("filters"), limit=query_info.get("limit"),
-        is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
-        logger=log, force=True,
-    )
+    # The prefetch renders the record headers, so it runs in the user's time
+    # zone like the tool-calling path (see `_produce`). Set and restored
+    # around this one await, with no `yield` between, so the generator never
+    # leaves the zone set in its consumer's context.
+    zone_token = set_llm_time_zone(query_info.get("timezone"))
+    try:
+        prefetch = await prefetch_retrieval(
+            query=query_info.get("query", ""), org_id=org_id, user_id=user_id,
+            retrieval_service=retrieval_service, graph_provider=graph_provider, blob_store=blob_store,
+            filters=query_info.get("filters"), limit=query_info.get("limit"),
+            is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
+            logger=log, force=True,
+        )
+    finally:
+        reset_llm_time_zone(zone_token)
     ref_mapper = prefetch.citation_ref_mapper if prefetch else CitationRefMapper()
     context_text = prefetch.formatted_context if prefetch else ""
+    if prefetch and prefetch.filter_notice:
+        context_text = filter_notice_constraint(prefetch.filter_notice)
 
     messages = await _build_no_tools_messages(
         query=query_info.get("query", ""), system_prompts_config=system_prompts_config, context_text=context_text,
@@ -316,6 +371,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     model_key: str | None = None,
     is_multimodal_llm: bool = False,
     context_length: int = 128000,
+    configured_context_window: int | None = None,
     llm_provider: str = "",
     system_prompts_config: dict[str, Any] | None = None,
     supports_tool_calls: bool = True,
@@ -323,13 +379,19 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     client_name: str | None = None,
     cancellation_registry: "RunCancellationRegistry | None" = None,
     cancellation_owner: "RunOwner | None" = None,
+    entity_vector_store: Any = None,
 ) -> "AsyncGenerator[str, None]":
     """Entry point `chatbot.py::askAIStream()` calls for every `/chat/stream`
-    request, regardless of mode. See module docstring."""
-    from app.modules.agents.qna.chat_state import build_initial_state
-    from app.utils.execute_query import connector_instances_have_sql
-    from app.utils.fetch_slack_thread import connector_instances_have_slack
+    request, regardless of mode. See module docstring.
+
+    ``entity_vector_store`` (optional) backs the knowledge-graph
+    ``search_entities``/``find_records_by_entity`` tools; with ``None`` they
+    are not granted (see ``factory._initial_entity_tool_grant``).
+    """
+    from app.modules.agents.qna.chat_state import build_initial_state, remember_shown_results
     from app.modules.transformers.blob_storage import BlobStorage
+    from app.utils.execute_query import connector_instances_have_sql, sql_connector_instance_ids
+    from app.utils.fetch_slack_thread import connector_instances_have_slack
 
     policy = policy or resolve_chat_mode_policy(query_info.get("chatMode"))
     system_prompts_config = system_prompts_config or {}
@@ -373,7 +435,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         # of it sits before the first streamed byte -- run it as one wave. The
         # SQL and Slack checks used to issue the SAME `get_user_connector_
         # instances` query twice; they now share one result.
-        connector_instances, web_search_config, resolved_attachments, available_connectors = (
+        connector_instances, web_search_config, resolved_attachments, available_connectors, demo_excluded = (
             await asyncio.gather(
                 fetch_user_connector_instances(
                     graph_provider, user_info["userId"], user_info["orgId"], log,
@@ -382,6 +444,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 resolve_attachments(
                     query_info.get("attachments"), blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    user_id=user_info.get("userId") or "",
+                    graph_provider=graph_provider,
+                    is_service_account=bool(user_info.get("isServiceAccount")),
                 ),
                 # Pre-fetch user-visible connectors so the catalog
                 # (ConnectorCatalog.build) and capability_summary can use them
@@ -393,6 +458,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     org_id=user_info.get("orgId", ""),
                     log=log,
                 ) if policy.has_knowledge else _none(),
+                demo_exclusions_for_run(graph_provider, config_service, user_info, log),
             )
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
@@ -405,24 +471,31 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             existing_kb = list(filters.get("kb") or [])
             filters["kb"] = list({*existing_kb, *resolved_attachments.virtual_record_ids})
         query_info = {**query_info, "filters": filters, "chatMode": policy.loop_chat_mode}
+        query_info = exclude_from_query(query_info, demo_excluded)
 
         chat_state = build_initial_state(
             query_info, user_info, llm, log, retrieval_service, graph_provider,
             reranker_service, config_service, model_name or "", model_key or "", org_info,
             "react", has_sql_connector=has_sql_connector, is_multimodal_llm=is_multimodal_llm,
             has_slack_connector=has_slack_connector, client_name=client_name,
+            entity_vector_store=entity_vector_store,
         )
-        _apply_policy_to_chat_state(chat_state, policy, web_search_config)
-        chat_state["instructions"] = _with_mode_instructions(chat_state.get("instructions"), policy)
+        _apply_policy_to_chat_state(
+            chat_state, policy, web_search_config,
+            sql_connector_ids=sql_connector_instance_ids(connector_instances, user_info["orgId"]),
+        )
+        _apply_mode_instructions(chat_state, policy)
         chat_state["custom_instructions"] = _resolve_custom_instructions(system_prompts_config, policy)
         chat_state["citation_ref_mapper"] = ref_mapper
         # Read by `ConnectorCatalog.build`, which skips its own DB round-trip
         # when this key is present.
         if available_connectors is not None:
             chat_state["available_connectors"] = available_connectors
+        exclude_from_state(chat_state, demo_excluded)
+        await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
-        error_code, user_message = classify_error(str(exc))
+        error_code, user_message = classify_exception(exc)
         if cancellation_registry is not None:
             await cancellation_registry.unregister(run_id)
         yield _pre_stream_error_frame(protocol, user_message, error_code)
@@ -438,10 +511,15 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
     context = AgentContext.from_chat_state(
         chat_state, event_sink=event_sink, protocol=protocol,
         llm_provider=llm_provider, context_length=context_length,
+        configured_context_window=configured_context_window,
         run_id=run_id, cancellation_token=cancellation_token,
     )
 
     async def _produce() -> None:
+        # Record headers rendered by tools show dates in the user's zone,
+        # weekday included. Set inside this task so it reaches every tool
+        # call of the run and nothing outside it.
+        set_llm_time_zone(context.timezone)
         agent: Any = None
         try:
             factory = PipesHubAgentFactory()
@@ -464,6 +542,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         # `prefetch_retrieval`'s `ref_mapper` docstring.
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
+                        image_admission=admission_from_state(context.tool_state),
                     )
                 )
                 if policy.prefetch_retrieval else None
@@ -476,6 +555,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             )
 
             prefetch_result = await prefetch_task if prefetch_task is not None else None
+            if prefetch_result is not None and prefetch_result.filter_notice:
+                goal.constraints.append(filter_notice_constraint(prefetch_result.filter_notice))
             if prefetch_result is not None and not prefetch_result.is_empty:
                 context.tool_state["final_results"] = [
                     *context.tool_state.get("final_results", []), *prefetch_result.final_results,
@@ -487,6 +568,16 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 context.tool_state["tool_records"] = [
                     *context.tool_state.get("tool_records", []), *prefetch_result.tool_records,
                 ]
+                remember_shown_results(
+                    context.tool_state,
+                    prefetch_result.ranked_results,
+                    prefetch_result.virtual_record_id_to_result,
+                )
+                note_retrieved_by(context.tool_state, "prefetch", [
+                    (vrid, record.get("id"), record.get("record_name"))
+                    for vrid, record in prefetch_result.virtual_record_id_to_result.items()
+                    if isinstance(record, dict)
+                ])
                 # No `citation_ref_mapper` reassignment here: `prefetch_result.
                 # citation_ref_mapper` IS `ref_mapper` (passed in above), the
                 # same instance `context.tool_state["citation_ref_mapper"]`
@@ -547,9 +638,11 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
 
                 candidate_suffix = ""
                 coverage_note = ""
+                read_in_full = bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY))
                 if plan.has_candidates:
                     candidate_suffix = render_candidate_table(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                     # Leads the constraint: the table lands after the whole
                     # prefetched context, far enough down that the model may
@@ -557,6 +650,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                     # reads how little of each record it holds.
                     coverage_note = render_coverage_note(
                         plan, needs_whole_document=context.needs_whole_document,
+                        read_in_full=read_in_full,
                     )
                 log.info(
                     "prefetch: needs_whole_document=%s | candidates=%s",
@@ -574,6 +668,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ensure_fetch_full_record_available(
                     context, registry=_runtime.tool_registry,
                 )
+            # After the merge above, so the frame reports what actually
+            # reached the model. Emitted even when prefetch was skipped or
+            # found nothing, so a consumer can tell those apart.
+            await emit_prefetch_retrieval_context(
+                context, scheduled=prefetch_task is not None, result=prefetch_result,
+            )
             if resolved_attachments.context_text:
                 goal.constraints.append(resolved_attachments.context_text)
 
@@ -581,12 +681,15 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,
                 )
+                await emit_run_usage(context, agent, model=model_name or None)
             else:
                 collector = CitationCollector(context)
                 streamer = TerminalAnswerStreamer(context, collector, context.event_sink)
                 async for event in agent.stream(goal):
                     await streamer.on_event(event)
                 result = agent.last_stream_result
+
+                await emit_run_usage(context, agent, result, model=model_name or None)
 
                 finalizer = AnswerFinalizer(context, collector)
                 await finalizer.run(
@@ -603,7 +706,10 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 )
         except Exception as exc:
             log.error("run_chat_stream: run failed: %s", exc, exc_info=True)
-            error_code, user_message = classify_error(str(exc))
+            # What the turn spent before failing; nothing when the frame
+            # already went out on the success path.
+            await emit_run_usage(context, agent, model=model_name or None)
+            error_code, user_message = classify_exception(exc)
             for evt in context.formatter.error(context, message=user_message, code=error_code):
                 await context.event_sink.write(evt)
         finally:

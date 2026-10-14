@@ -24,6 +24,20 @@ from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
 
 logger = logging.getLogger(__name__)
 
+# In SnowflakeHierarchy.unreadable: the database listing itself failed.
+UNREADABLE_ALL = "*"
+
+
+def unreadable_key(kind: str, scope: str) -> str:
+    """An entry in SnowflakeHierarchy.unreadable: ``kind`` could not be read under ``scope``.
+
+    ``kind`` is "tables", "views" or "files" for a failed listing, or "columns"
+    or "last_altered" for a failed read that leaves the tables listed but that
+    detail of them empty. A "last_altered" scope is a schema, or a single table
+    that SHOW TABLES lists but INFORMATION_SCHEMA.TABLES leaves out.
+    """
+    return f"{kind}:{scope}"
+
 
 class SnowflakeFetchError(Exception):
     """A metadata query Snowflake refused, carrying what it refused with.
@@ -214,6 +228,10 @@ class SnowflakeHierarchy:
     files: Dict[str, List[SnowflakeFile]] = field(default_factory=dict)
     folders: Dict[str, List[SnowflakeFolder]] = field(default_factory=dict)
     foreign_keys: List[ForeignKey] = field(default_factory=list)
+    # unreadable_key() entries, or UNREADABLE_ALL. The fetches return empty
+    # lists on failure so a sync can go on, which must not be read as "these
+    # objects are gone".
+    unreadable: Set[str] = field(default_factory=set)
     
     def summary(self) -> Dict[str, int]:
         return {
@@ -310,10 +328,31 @@ class SnowflakeDataFetcher:
                         self.hierarchy.folders[stage_key] = folders
                 
                 if include_relationships and tables:
-                    all_columns = await self._fetch_all_columns_in_schema(db.name, schema.name)
+                    try:
+                        all_columns = await self._fetch_all_columns_in_schema(
+                            db.name, schema.name, strict=True
+                        )
+                    except SnowflakeFetchError:
+                        self.hierarchy.unreadable.add(unreadable_key("columns", schema_key))
+                        all_columns = {}
+                    try:
+                        last_altered = await self._fetch_last_altered_in_schema(db.name, schema.name)
+                    except SnowflakeFetchError:
+                        self.hierarchy.unreadable.add(unreadable_key("last_altered", schema_key))
+                        last_altered = {}
+                    else:
+                        # Snowflake documents that INFORMATION_SCHEMA can omit tables SHOW TABLES
+                        # lists, e.g. for a role with MANAGE GRANTS: their time is unknown, not None.
+                        if self.warehouse:
+                            self.hierarchy.unreadable.update(
+                                unreadable_key("last_altered", table.fqn)
+                                for table in tables
+                                if table.name not in last_altered
+                            )
                     for table in tables:
                         table.columns = all_columns.get(table.name, [])
-                    
+                        table.last_altered = last_altered.get(table.name)
+
                     fks = await self._fetch_foreign_keys_in_schema(db.name, schema.name)
                     self.hierarchy.foreign_keys.extend(fks)
                     
@@ -350,6 +389,7 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_databases()
         if not response.success:
             logger.error("Failed to fetch databases: %s", response.error)
+            self.hierarchy.unreadable.add(UNREADABLE_ALL)
             return []
         
         databases = []
@@ -369,6 +409,9 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_schemas(database=database)
         if not response.success:
             logger.error("Failed to fetch schemas: %s", response.error)
+            self.hierarchy.unreadable.update(
+                unreadable_key(kind, database) for kind in ("tables", "views", "files")
+            )
             return []
         
         schemas = []
@@ -388,6 +431,7 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_tables(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch tables: %s", response.error)
+            self.hierarchy.unreadable.add(unreadable_key("tables", f"{database}.{schema}"))
             return []
         
         tables = []
@@ -402,8 +446,6 @@ class SnowflakeDataFetcher:
                 comment=item.get("comment"),
                 table_type=item.get("kind") or item.get("table_type"),
                 created_at=item.get("created_on"),
-                # last_altered is typically available from INFORMATION_SCHEMA or SHOW TABLES
-                last_altered=item.get("last_altered") or item.get("changed_on"),
             ))
         return tables
     
@@ -411,6 +453,7 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_views(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch views: %s", response.error)
+            self.hierarchy.unreadable.add(unreadable_key("views", f"{database}.{schema}"))
             return []
         
         views = []
@@ -436,6 +479,8 @@ class SnowflakeDataFetcher:
         response = await self.data_source.list_stages(database=database, schema=schema)
         if not response.success:
             logger.error("Failed to fetch stages: %s", response.error)
+            # Without the stages, none of their files can be listed.
+            self.hierarchy.unreadable.add(unreadable_key("files", f"{database}.{schema}"))
             return []
         
         stages = []
@@ -459,6 +504,7 @@ class SnowflakeDataFetcher:
         stage_fqn = f"{database}.{schema}.{stage}"
         if not self.warehouse:
             logger.warning("Warehouse not set, skipping stage files for %s", stage_fqn)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
             return []
         
         logger.debug("Fetching files for stage: %s (warehouse: %s)", stage_fqn, self.warehouse)
@@ -470,10 +516,16 @@ class SnowflakeDataFetcher:
         )
         if not response.success:
             logger.error("Failed to fetch stage files for %s: %s", stage_fqn, response.error)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
             return []
         
+        data = await self._read_all_partitions(response.data)
+        if data is None:
+            logger.error("Could not read every result partition of stage files for %s", stage_fqn)
+            self.hierarchy.unreadable.add(unreadable_key("files", stage_fqn))
+            return []
+
         files = []
-        data = response.data.get("data", []) if isinstance(response.data, dict) else []
         logger.debug("Stage %s: received %d file entries from Snowflake", stage_fqn, len(data))
         for item in data:
             if isinstance(item, list) and len(item) >= 1:
@@ -489,6 +541,35 @@ class SnowflakeDataFetcher:
                 ))
         return files
     
+    async def _read_all_partitions(self, data: object) -> Optional[List[Any]]:
+        """Every row of a SQL API result, or None if any part of it could not be read.
+
+        The SQL API returns only partition 0 inline and lists the rest in
+        resultSetMetaData.partitionInfo; a statement still running (HTTP 202)
+        returns no rows at all. Either would pass for a complete, shorter list.
+        A later partition is the bare row array, with no metadata around it.
+        """
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            return None
+        rows = list(data["data"])
+        partitions = (data.get("resultSetMetaData") or {}).get("partitionInfo") or []
+        if len(partitions) <= 1:
+            return rows
+        handle = data.get("statementHandle")
+        if not handle:
+            return None
+        for partition in range(1, len(partitions)):
+            response = await self.data_source.get_statement_status(
+                statement_handle=handle, partition=partition
+            )
+            body = response.data
+            if isinstance(body, dict):
+                body = body.get("data")
+            if not response.success or not isinstance(body, list):
+                return None
+            rows.extend(body)
+        return rows
+
     def _deduce_folders(
         self,
         files: List[SnowflakeFile],
@@ -549,8 +630,16 @@ class SnowflakeDataFetcher:
                 )
             return {}
         
+        # Every partition: a column only in a later one must still move the table's signature.
+        all_rows = await self._read_all_partitions(response.data)
+        if all_rows is None:
+            context = f"Failed to fetch columns for {database}.{schema}: could not read every result partition"
+            logger.warning(context)
+            if strict:
+                raise SnowflakeFetchError(context)
+            return {}
         columns_by_table: Dict[str, List[Dict[str, Any]]] = {}
-        for row in self._parse_sql_result(response.data):
+        for row in self._parse_sql_result({**response.data, "data": all_rows}):
             table_name = row.get("TABLE_NAME", "")
             if table_name not in columns_by_table:
                 columns_by_table[table_name] = []
@@ -568,6 +657,42 @@ class SnowflakeDataFetcher:
         self._columns_cache[cache_key] = columns_by_table
         return columns_by_table
     
+    async def _fetch_last_altered_in_schema(self, database: str, schema: str) -> dict[str, str]:
+        """LAST_ALTERED of each table in the schema, by table name.
+
+        SHOW TABLES has no last-altered column, and an UPDATE that keeps the row
+        count and byte estimate moves only this. Raises SnowflakeFetchError when
+        any part of the result can't be read.
+        """
+        if not self.warehouse:
+            return {}
+
+        escaped_schema = schema.replace("'", "''")
+        sql = f"""
+        SELECT TABLE_NAME, LAST_ALTERED
+        FROM {database}.INFORMATION_SCHEMA.TABLES
+        WHERE TABLE_SCHEMA = '{escaped_schema}'
+        """
+        response = await self.data_source.execute_sql(
+            statement=sql,
+            database=database,
+            warehouse=self.warehouse,
+        )
+        context = f"Failed to fetch last-altered times for {database}.{schema}"
+        if not response.success:
+            logger.warning("%s: %s", context, response.error)
+            raise SnowflakeFetchError.from_response(response, context)
+
+        rows = await self._read_all_partitions(response.data)
+        if rows is None:
+            logger.warning("%s: could not read every result partition", context)
+            raise SnowflakeFetchError(context)
+        return {
+            row[0]: row[1]
+            for row in rows
+            if isinstance(row, list) and len(row) >= 2 and row[0] and row[1]
+        }
+
     async def get_table_ddl(
         self, database: str, schema: str, table: str, strict: bool = False
     ) -> Optional[str]:

@@ -325,8 +325,23 @@ class TestResolveSlackWorkspaceInfo:
         assert team_id is None
 
 
+_ACCESS: dict[str, Any] = {
+    "graph_provider": MagicMock(),
+    "org_id": "org1",
+    "user_id": "user1",
+}
+
+
 @pytest.mark.asyncio
 class TestFetchNearbyMessagesImpl:
+    @pytest.fixture(autouse=True)
+    def _allow_channel_access(self):
+        with patch.object(
+            fsn, "_user_can_read_channel", AsyncMock(return_value=True),
+        ) as mock_access:
+            self.mock_access = mock_access
+            yield
+
     async def test_missing_config_service(self):
         out = await fsn._fetch_nearby_messages_impl(
             "2023-11-14T22:13:20Z",
@@ -345,6 +360,7 @@ class TestFetchNearbyMessagesImpl:
             "C123",
             "",
             config_service=config,
+            **_ACCESS,
         )
         assert out.ok is False
         assert "connector_id" in out.error
@@ -379,6 +395,7 @@ class TestFetchNearbyMessagesImpl:
                     "C123",
                     "conn-1",
                     config_service=config,
+                    **_ACCESS,
                 )
 
         assert out.ok is True, getattr(out, "error", None)
@@ -400,6 +417,7 @@ class TestFetchNearbyMessagesImpl:
             "  ",
             "conn-1",
             config_service=config,
+            **_ACCESS,
         )
         assert out.ok is False
         assert "channel_id" in out.error
@@ -412,6 +430,7 @@ class TestFetchNearbyMessagesImpl:
             "C123",
             "conn-1",
             config_service=config,
+            **_ACCESS,
         )
         assert out.ok is False
         assert "Invalid timestamp" in out.error
@@ -428,6 +447,7 @@ class TestFetchNearbyMessagesImpl:
                 "C123",
                 "conn-1",
                 config_service=config,
+                **_ACCESS,
             )
         assert out.ok is False
         assert "Failed to connect to Slack" in out.error
@@ -448,9 +468,116 @@ class TestFetchNearbyMessagesImpl:
                     "C123",
                     "conn-1",
                     config_service=config,
+                    **_ACCESS,
                 )
         assert out.ok is False
         assert out.error == "rate_limited"
+
+    async def test_denied_channel_never_builds_slack_client(self):
+        self.mock_access.return_value = False
+        with patch.object(fsn, "SlackClient") as mock_client_cls:
+            mock_client_cls.build_from_services = AsyncMock()
+            out = await fsn._fetch_nearby_messages_impl(
+                "2023-11-14T22:13:20Z",
+                "before",
+                "C-private",
+                "someone-elses-connector",
+                config_service=MagicMock(),
+                **_ACCESS,
+            )
+        assert out.ok is False
+        assert "don't have access" in out.error
+        mock_client_cls.build_from_services.assert_not_awaited()
+        self.mock_access.assert_awaited_once_with(
+            _ACCESS["graph_provider"],
+            connector_id="someone-elses-connector",
+            channel_id="C-private",
+            user_id="user1",
+            org_id="org1",
+        )
+
+    async def test_missing_graph_provider(self):
+        out = await fsn._fetch_nearby_messages_impl(
+            "2023-11-14T22:13:20Z",
+            "before",
+            "C123",
+            "conn-1",
+            config_service=MagicMock(),
+            org_id="org1",
+            user_id="user1",
+        )
+        assert out.ok is False
+        assert "graph_provider" in out.error
+
+    async def test_missing_org_id(self):
+        out = await fsn._fetch_nearby_messages_impl(
+            "2023-11-14T22:13:20Z",
+            "before",
+            "C123",
+            "conn-1",
+            config_service=MagicMock(),
+            graph_provider=MagicMock(),
+            user_id="user1",
+        )
+        assert out.ok is False
+        assert "org_id" in out.error
+
+
+@pytest.mark.asyncio
+class TestUserCanReadChannel:
+    async def _call(self, graph, user_id="user1"):
+        return await fsn._user_can_read_channel(
+            graph,
+            connector_id="conn-1",
+            channel_id="C123",
+            user_id=user_id,
+            org_id="org1",
+        )
+
+    @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_checks_access_on_channel_record_group(self, mock_key, mock_access):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        graph = AsyncMock()
+        graph.get_record_group_by_external_id = AsyncMock(return_value={"_key": "rg-1"})
+        assert await self._call(graph) is True
+        graph.get_record_group_by_external_id.assert_awaited_once_with(
+            connector_id="conn-1", external_id="C123",
+        )
+        mock_access.assert_awaited_once_with(graph, "rg-1", "ukey", "org1")
+
+    @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_when_user_lacks_access(self, mock_key, mock_access):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = False
+        graph = AsyncMock()
+        graph.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rg-1"),
+        )
+        assert await self._call(graph) is False
+
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_when_channel_not_indexed(self, mock_key):
+        mock_key.return_value = "ukey"
+        graph = AsyncMock()
+        graph.get_record_group_by_external_id = AsyncMock(return_value=None)
+        assert await self._call(graph) is False
+
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_when_user_unknown(self, mock_key):
+        mock_key.return_value = None
+        graph = AsyncMock()
+        assert await self._call(graph, user_id=None) is False
+        graph.get_record_group_by_external_id.assert_not_awaited()
+
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_denied_when_lookup_raises(self, mock_key):
+        mock_key.return_value = "ukey"
+        graph = AsyncMock()
+        graph.get_record_group_by_external_id = AsyncMock(side_effect=RuntimeError("db"))
+        assert await self._call(graph) is False
 
 
 @pytest.mark.asyncio
@@ -646,6 +773,30 @@ class TestCreateFetchSlackNearbyMessagesTool:
             )
         assert result == expected
         mock_impl.assert_awaited_once()
+
+    async def test_factory_forwards_access_context(self):
+        graph = MagicMock()
+        tool_fn = fsn.create_fetch_slack_nearby_messages_tool(
+            config_service=MagicMock(),
+            graph_provider=graph,
+            org_id="org1",
+            user_id="user1",
+        )
+        with patch.object(
+            fsn, "_fetch_nearby_messages_impl", AsyncMock(),
+        ) as mock_impl:
+            await tool_fn.ainvoke(
+                {
+                    "timestamp": "2023-11-14T22:13:20Z",
+                    "direction": "before",
+                    "channel_id": "C123",
+                    "connector_id": "conn-1",
+                },
+            )
+        kwargs = mock_impl.await_args.kwargs
+        assert kwargs["graph_provider"] is graph
+        assert kwargs["org_id"] == "org1"
+        assert kwargs["user_id"] == "user1"
 
     async def test_tool_catches_unexpected_exception(self):
         config = MagicMock()

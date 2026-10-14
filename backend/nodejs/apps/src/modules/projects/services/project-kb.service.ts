@@ -45,7 +45,7 @@ export class ProjectKnowledgeBaseService {
   ): Promise<void> {
     if (userIds.length === 0) return;
     const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.POST,
       headers,
       { userIds, teamIds: [], role },
@@ -63,7 +63,7 @@ export class ProjectKnowledgeBaseService {
   ): Promise<void> {
     if (teamIds.length === 0) return;
     const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.POST,
       headers,
       // No `role` — the KB permission model has no concept of a team role
@@ -107,7 +107,7 @@ export class ProjectKnowledgeBaseService {
     const previousKbId = project.linkedKnowledgeBaseId ?? null;
     if (previousKbId) {
       const check = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${previousKbId}`,
+        `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(previousKbId)}`,
         HttpMethod.GET,
         headers,
       );
@@ -142,7 +142,7 @@ export class ProjectKnowledgeBaseService {
       // Lost the race — someone else linked a KB first. Delete the orphan
       // and defer to whatever the winner actually set.
       await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
+        `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}`,
         HttpMethod.DELETE,
         headers,
       ).catch(() => undefined);
@@ -219,7 +219,7 @@ export class ProjectKnowledgeBaseService {
         ? { userIds: [], teamIds: [principalId] }
         : { userIds: [principalId], teamIds: [] };
     const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.DELETE,
       headers,
       body,
@@ -238,7 +238,7 @@ export class ProjectKnowledgeBaseService {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
     const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${kbId}/permissions`,
+      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/permissions`,
       HttpMethod.DELETE,
       headers,
       { userIds: [], teamIds: [allOrgTeamId(project.orgId.toString())] },
@@ -257,7 +257,7 @@ export class ProjectKnowledgeBaseService {
     const kbId = project.linkedKnowledgeBaseId;
     if (!kbId) return;
     const response = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/kb/${kbId}`,
+      `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}`,
       HttpMethod.DELETE,
       headers,
     );

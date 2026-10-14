@@ -5,7 +5,7 @@ import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
 /**
  * Source types that determine which tabs are available
  */
-export type FilePreviewSource = 'collections' | 'all-records' | 'agents' | 'chat';
+export type FilePreviewSource = 'collections' | 'all-records' | 'agents' | 'chat' | 'artifacts';
 
 /**
  * Tab identifiers
@@ -166,6 +166,13 @@ export interface FilePreviewProps {
    * to keep behaviour stable for previews that don't expect it.
    */
   showDownload?: boolean;
+
+  /**
+   * When set, the Download button calls this instead of saving the loaded
+   * preview bytes under `file.name`. Needed when those bytes were converted
+   * for display (PPTX streamed as PDF) and the saved file must stay the original.
+   */
+  onDownload?: () => void;
 
   /**
    * Highest known version for `file` — enables the version-switcher header

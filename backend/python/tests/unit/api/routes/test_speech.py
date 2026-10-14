@@ -179,6 +179,43 @@ class TestTranscribeRoute:
         assert exc_info.value.status_code == 502
         assert "sk-proj-abc" not in str(exc_info.value.detail)
 
+    @pytest.mark.asyncio
+    async def test_runtime_error_is_not_echoed(
+        self, mock_config_service: MagicMock, mock_logger: MagicMock
+    ) -> None:
+        """A RuntimeError names host paths and binaries; the caller gets fixed text."""
+        from app.api.routes.speech import transcribe_audio
+        from app.utils.user_messages import action_failed
+
+        upload = MagicMock()
+        upload.read = AsyncMock(return_value=b"binary-audio")
+        upload.content_type = "audio/webm"
+        upload.filename = "speech.webm"
+
+        error = RuntimeError("SENTINEL ffmpeg exited 1: /opt/app/tmp/in.webm")
+        adapter = MagicMock()
+        adapter.transcribe = AsyncMock(side_effect=error)
+        adapter.model = "base"
+
+        with patch(
+            "app.api.routes.speech.get_stt_model_instance",
+            new=AsyncMock(return_value=(adapter, {"provider": "wispr"})),
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                await transcribe_audio(
+                    file=upload,
+                    language=None,
+                    config_service=mock_config_service,
+                    logger=mock_logger,
+                )
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == action_failed("transcribe this recording")
+        assert "SENTINEL" not in exc_info.value.detail
+        assert exc_info.value.__cause__ is error
+        log_call = mock_logger.error.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
 
 class TestSpeakRoute:
     @pytest.mark.asyncio

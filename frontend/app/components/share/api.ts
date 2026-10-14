@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { toLookupUserIds } from '@/lib/utils/user-ids';
 import { toShareUsers } from './utils';
 import type { ShareTeam, ShareUser } from './types';
 
@@ -36,7 +37,8 @@ export const ShareCommonApi = {
    * Look up multiple users by UUID (batch lookup).
    * Used by adapters whose sharedWith IDs are UUIDs.
    */
-  async getUsersByIds(userIds: string[]): Promise<ShareUser[]> {
+  async getUsersByIds(ids: ReadonlyArray<string | null | undefined>): Promise<ShareUser[]> {
+    const userIds = toLookupUserIds(ids);
     if (userIds.length === 0) return [];
     const { data } = await apiClient.post('/api/v1/users/by-ids', { userIds });
     const users = Array.isArray(data) ? data : data.users ?? [];

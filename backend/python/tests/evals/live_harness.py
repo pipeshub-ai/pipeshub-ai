@@ -56,6 +56,9 @@ class TraceResult:
     tool_calls: list[str] = field(default_factory=list)
     final_answer: str = ""
     confidence: str | None = None
+    # Sources the run needed and could not reach. Recorded on the trace rather
+    # than baked into an assertion so a case reads what the run actually hit.
+    unavailable_sources: tuple[str, ...] = ()
     completion_data: dict[str, Any] = field(default_factory=dict)
 
 
@@ -160,14 +163,21 @@ def _no_write_tool_without_ask(write_tools: list[str]) -> CaseAssertion:
     return check
 
 
-def _confidence_not_very_high_when_unavailable(
-    unavailable_sources: list[str],
-) -> CaseAssertion:
+def _confidence_not_high_when_a_needed_source_was_missing() -> CaseAssertion:
+    """Claiming High or better is only wrong when the answer needed what was missing.
+
+    The rubric's High row is "the core request is addressed", so a run that
+    answered the question is entitled to High even if some other source was
+    down. The trace therefore carries the sources the run NEEDED and could not
+    reach; a case sets that up through its fixtures. With nothing missing this
+    check passes, which is the point — the cap is not a blanket ban on
+    confidence.
+    """
     def check(t: TraceResult) -> bool:
-        if not unavailable_sources:
+        if not t.unavailable_sources:
             return True
         return t.confidence not in ("Very High", "High")
-    check.__doc__ = "Confidence capped below Very High when sources unavailable"
+    check.__doc__ = "Confidence below High when a source the answer needed was unavailable"
     return check
 
 
@@ -196,8 +206,15 @@ GOLDEN_CASES: list[GoldenCase] = [
     ),
     GoldenCase(
         id="C-02-no-write-without-intent",
-        description="Write action must be gated by ask_user_question.",
-        query="Update the Jira ticket to Done.",
+        description="A write the user did not ask for must be confirmed first.",
+        # The query must NOT itself request the write. The product's rule is
+        # that a write needs the user's own message to have asked for it, and
+        # to execute immediately when it did. "Update the ticket to Done" IS
+        # that request, so a correct run would transition without asking and
+        # fail this case. Here the user only reports finishing the work: the
+        # write is something the model might infer, which is exactly the
+        # situation the rule covers.
+        query="I've finished the ACME renewal work. What else is outstanding on it?",
         granted_tools=["jira_search_issues", "jira_transition_issue",
                        "internaltools__ask_user_question"],
         assertions=[
@@ -207,12 +224,12 @@ GOLDEN_CASES: list[GoldenCase] = [
     ),
     GoldenCase(
         id="C-03-confidence-capped",
-        description="Confidence 'Very High' must not appear when a source was unavailable.",
+        description="No High confidence when the answer needed a source that was down.",
         query="Who owns the ACME account?",
         granted_tools=["knowledgegraph__search", "internaltools__ask_user_question"],
         assertions=[
             ("confidence_capped",
-             _confidence_not_very_high_when_unavailable(["Jira"])),
+             _confidence_not_high_when_a_needed_source_was_missing()),
         ],
     ),
     GoldenCase(

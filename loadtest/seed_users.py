@@ -16,7 +16,7 @@ Giving that account a password, in order of preference:
    scoped JWT. Pure API, nothing touches the database. Needs the deployment's
    scoped JWT secret in `PIPESHUB_SCOPED_JWT_SECRET` (see --print-secret-help).
 2. Writing bcrypt credentials into Mongo directly, the way
-   `integration-tests/helper/second_user_auth.py` does. Needs `bcrypt` and
+   `integration-tests/helper/second_user.py` does. Needs `bcrypt` and
    `pymongo`, and a reachable Mongo.
 
     export PIPESHUB_ADMIN_EMAIL=admin@example.com

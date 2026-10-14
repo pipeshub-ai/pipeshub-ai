@@ -4,6 +4,12 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { HttpError } from '../../../libs/errors/http.errors';
+import {
+  keepDeliberateWording,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
@@ -42,8 +48,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Creating the organisation failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the organisation')),
       );
     }
   }
@@ -75,8 +83,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Creating the user failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the account')),
       );
     }
   }
@@ -114,8 +124,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Looking the user up by email failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('look up the account')),
       );
     }
   }
@@ -124,7 +136,7 @@ export class IamService {
     try {
       const config = {
         method: 'get',
-        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${userId}`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${encodeURIComponent(userId)}`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',
@@ -148,8 +160,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Looking the user up by id failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('look up the account')),
       );
     }
   }
@@ -158,7 +172,7 @@ export class IamService {
     try {
       const config = {
         method: 'put',
-        url: `${this.authConfig.iamBackend}/api/v1/users/${userId}`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/${encodeURIComponent(userId)}`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',
@@ -183,8 +197,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Updating the user failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('update the account')),
       );
     }
   }
@@ -194,7 +210,7 @@ export class IamService {
       const config = {
         method: 'get',
         // Internal S2S path: USER_LOOKUP scoped token (no user-session role claim).
-        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${userId}/adminCheck`,
+        url: `${this.authConfig.iamBackend}/api/v1/users/internal/${encodeURIComponent(userId)}/adminCheck`,
         headers: {
           Authorization: `Bearer ${authServiceToken}`,
           'Content-Type': 'application/json',
@@ -215,8 +231,10 @@ export class IamService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Checking whether the user is an admin failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('check the admin account')),
       );
     }
   }

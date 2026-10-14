@@ -15,6 +15,13 @@ The number matters less than the direction. `--check` compares against the
 recorded baseline and fails when a connector is registered without a test, so
 the gap can shrink over time but cannot silently widen. Update the baseline
 deliberately, in a commit, when you add or remove a connector.
+
+What this counts is whether a connector HAS tests, not whether they ran. A
+suite whose credentials are missing skips itself, and a skipped suite still
+counts as covered here. On the nightly a missing credential fails instead of
+skipping (PIPESHUB_REQUIRE_CONNECTOR_SECRETS, see
+integration-tests/helper/source_credentials.py), and the run summary names any
+suite that covered nothing.
 """
 
 from __future__ import annotations
@@ -204,6 +211,8 @@ def check(rep: dict) -> int:
         return 1
 
     print(f"OK: no new uncovered connectors ({rep['covered']}/{rep['total']} covered).")
+    print("Covered means the connector has tests. Whether they ran depends on")
+    print("credentials being present; the run summary names suites that skipped.")
     return 0
 
 

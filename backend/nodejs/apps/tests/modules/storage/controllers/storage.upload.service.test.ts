@@ -6,6 +6,7 @@ import { StorageVendor } from '../../../../src/modules/storage/types/storage.ser
 import { BadRequestError, InternalServerError } from '../../../../src/libs/errors/http.errors'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
+import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
 
 describe('UploadDocumentService', () => {
   let mockAdapter: any
@@ -16,6 +17,7 @@ describe('UploadDocumentService', () => {
     mockAdapter = {
       uploadDocumentToStorageService: sinon.stub(),
       generatePresignedUrlForDirectUpload: sinon.stub(),
+      objectExistsAtPath: sinon.stub().resolves(false),
     }
     mockKeyValueStoreService = {
       get: sinon.stub(),
@@ -613,6 +615,67 @@ describe('UploadDocumentService', () => {
       expect(placeholderDoc.documentPath).to.equal(
         '507f1f77bcf86cd799439011/PipesHub/Finance',
       )
+    })
+
+    const directUpload = (placeholderDoc: any) => {
+      sinon.stub(DocumentModel, 'create').resolves(placeholderDoc)
+      const service = new UploadDocumentService(
+        mockAdapter,
+        { buffer: Buffer.from('x'), originalname: 'big.pdf', size: LARGE_SIZE, mimetype: 'application/pdf' } as any,
+        StorageVendor.S3,
+        mockKeyValueStoreService,
+        mockDefaultConfig,
+      )
+      const req = {
+        user: { orgId: '507f1f77bcf86cd799439011', userId: '507f1f77bcf86cd799439012' },
+        body: { documentName: 'big', documentPath: 'Finance', extension: 'pdf', isVersionedFile: false },
+      } as any
+      const res = { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as any
+      return { service, req, res }
+    }
+
+    it('should remove the placeholder and answer plainly when storage gives no upload URL', async () => {
+      const placeholderDoc: any = {
+        _id: 'doc-7', documentName: 'big', documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+        isVersionedFile: false, save: sinon.stub().resolves(),
+      }
+      const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
+      mockAdapter.generatePresignedUrlForDirectUpload.rejects(new Error('AccessDenied: s3:PutObject'))
+      const { service, req, res } = directUpload(placeholderDoc)
+
+      const next = sinon.stub()
+      try {
+        await service.uploadDocument(req, res, next)
+        expect.fail('Should have thrown')
+      } catch (error: any) {
+        expect(error.statusCode).to.equal(503)
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+      }
+      expect(deleteOne.calledOnceWithExactly({ _id: 'doc-7', s3: { $exists: false } })).to.be.true
+      expect(placeholderDoc.save.called).to.be.false
+      expect(res.setHeader.called).to.be.false
+    })
+
+    it('should keep the placeholder once a direct upload has started', async () => {
+      const placeholderDoc: any = {
+        _id: 'doc-8', documentName: 'big', documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+        isVersionedFile: false, save: sinon.stub().resolves(),
+      }
+      const deleteOne = sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
+      mockAdapter.generatePresignedUrlForDirectUpload.resolves({
+        statusCode: 200, data: { url: 'https://bucket.s3.amazonaws.com/presigned?x=1' },
+      })
+      const { service, req, res } = directUpload(placeholderDoc)
+
+      const next = sinon.stub()
+      await service.uploadDocument(req, res, next)
+
+      expect(deleteOne.called).to.be.false
+      // Marks it as an upload that may not arrive, so only then can it be aborted.
+      expect(placeholderDoc.awaitingDirectUpload).to.equal(true)
+      expect(placeholderDoc.save.calledOnce).to.be.true
+      expect(res.status.calledWith(HTTP_STATUS.PERMANENT_REDIRECT)).to.be.true
+      expect(res.setHeader.calledWith('x-document-id', 'doc-8')).to.be.true
     })
 
     it('should include /current/ in direct-upload path for versioned files', async () => {

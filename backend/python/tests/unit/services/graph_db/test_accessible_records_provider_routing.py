@@ -121,8 +121,9 @@ class TestPermissionModelRouting:
         await provider.get_accessible_virtual_record_ids(USER, ORG)
 
         assert cache.routes == [("cusr", "conn-rec")]
+        # The loader is strict so that a failed read is never cached.
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-rec", None
+            USER, ORG, "conn-rec", None, raise_on_error=True
         )
         provider._get_all_virtual_ids_for_connector.assert_not_called()
 
@@ -171,10 +172,10 @@ class TestMetadataFilterBypass:
 
         assert cache.routes == []
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", {"departments": ["eng"]}, time_range=None
+            USER, ORG, "conn-app", {"departments": ["eng"]}, time_range=None, raise_on_error=False
         )
         provider._get_kb_virtual_ids.assert_awaited_once_with(
-            USER, ORG, None, {"departments": ["eng"]}, time_range=None
+            USER, ORG, None, {"departments": ["eng"]}, time_range=None, raise_on_error=False
         )
 
     async def test_time_range_takes_the_live_path(self) -> None:
@@ -188,10 +189,10 @@ class TestMetadataFilterBypass:
 
         assert cache.routes == []
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", {}, time_range=window
+            USER, ORG, "conn-app", {}, time_range=window, raise_on_error=False
         )
         provider._get_kb_virtual_ids.assert_awaited_once_with(
-            USER, ORG, None, {}, time_range=window
+            USER, ORG, None, {}, time_range=window, raise_on_error=False
         )
 
     async def test_time_range_bypasses_even_with_kb_and_apps_filters(self) -> None:
@@ -345,7 +346,9 @@ class TestKbAccessResolution:
         out = await provider.get_accessible_virtual_record_ids(USER, ORG)
 
         assert out == {"vr-1": "rec-1"}
-        provider._get_kb_virtual_ids.assert_awaited_once_with(USER, ORG, None, None)
+        provider._get_kb_virtual_ids.assert_awaited_once_with(
+            USER, ORG, None, None, raise_on_error=False
+        )
 
     async def test_per_kb_failure_falls_back_to_the_live_path(self) -> None:
         cache = RecordingCache()
@@ -374,7 +377,7 @@ class TestConnectorFallback:
 
         assert out == {"vr-1": "rec-1"}
         provider._get_virtual_ids_for_connector.assert_awaited_once_with(
-            USER, ORG, "conn-app", None
+            USER, ORG, "conn-app", None, raise_on_error=False
         )
 
 

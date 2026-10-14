@@ -33,3 +33,41 @@ export const PAT_APP_CLIENT_ID_PREFIX = 'pat-system:'
  * Developer Settings the same way as {@link PAT_APP_CLIENT_ID_PREFIX}.
  */
 export const FIRST_PARTY_DEVICE_CLIENT_ID = 'pipeshub-agent'
+
+/**
+ * Literal prefix on service tokens, the credential a service account
+ * authenticates with. Deliberately different from {@link PAT_TOKEN_PREFIX}:
+ * a leaked `phsvc_` token is a machine identity that may be read by a whole
+ * team's automation, while a leaked `phpat_` token belongs to one person.
+ * They warrant different responses, so a scanner and anyone reading a log
+ * should be able to tell them apart at a glance.
+ */
+export const SERVICE_TOKEN_PREFIX = 'phsvc_'
+
+/**
+ * clientId prefix on the per-org synthetic "Service Tokens" app that service
+ * tokens are minted against, mirroring {@link PAT_APP_CLIENT_ID_PREFIX}.
+ * Hidden from Developer Settings the same way.
+ */
+export const SERVICE_TOKEN_APP_CLIENT_ID_PREFIX = 'svc-system:'
+
+/**
+ * Every display-only prefix a credential may carry ahead of its JWT.
+ *
+ * These exist for humans and secret scanners, never for the cryptography, so
+ * they are stripped before a token is verified or hashed. Keeping the list
+ * and the stripping in one place is what stops a new prefix from being
+ * honoured by one verifier and rejected by another.
+ */
+export const TOKEN_DISPLAY_PREFIXES: readonly string[] = [
+  PAT_TOKEN_PREFIX,
+  SERVICE_TOKEN_PREFIX,
+]
+
+/** Returns the bare JWT, with any display prefix removed. */
+export function stripTokenDisplayPrefix(token: string): string {
+  const prefix = TOKEN_DISPLAY_PREFIXES.find((candidate) =>
+    token.startsWith(candidate),
+  )
+  return prefix === undefined ? token : token.slice(prefix.length)
+}

@@ -20,6 +20,8 @@ import {
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
+import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
@@ -62,7 +64,11 @@ import {
 } from './config';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
+import { MailConsumer } from './modules/mail/services/mail.consumer';
+import { MailSenderService } from './modules/mail/services/mail.sender.service';
+import { BrokerTopic } from './libs/types/messaging.types';
 import { createNotificationRouter } from './modules/notification/routes/notification.routes';
+import { createOpenAIModelsRouter } from './modules/configuration_manager/routes/openai_models.routes';
 import {
   loadAppConfig,
   AppConfig,
@@ -70,6 +76,8 @@ import {
 import { NotificationService } from './modules/notification/service/notification.service';
 import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/desktop-proxy.gateway';
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
+import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
+import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
 import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
@@ -82,6 +90,10 @@ import { createTeamsRouter } from './modules/user_management/routes/teams.routes
 import { OAuthProviderContainer } from './modules/oauth_provider/container/oauth.provider.container';
 import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth.provider.routes';
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
+import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
+import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
+import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
+import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
 import { createOIDCDiscoveryRouter } from './modules/oauth_provider/routes/oid.provider.routes';
 import {
@@ -95,8 +107,13 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import {
+  createMcpClientMetadataHandler,
+  MCP_CLIENT_METADATA_PATH,
+} from './modules/mcp_servers/routes/mcp_client_metadata';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
+import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
 import { createMCPRouter } from './modules/mcp/routes/mcp.routes';
 // Side-effect import: registers edition-specific Redis providers for this process.
 import './redisProviders';
@@ -107,6 +124,11 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+// Well under the stop grace period (30s in docker-compose.yml, 300s in Helm),
+// leaving time to close Mongo, Redis and the brokers after a drain that runs
+// the full time.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const loggerConfig = {
   service: 'Application',
@@ -126,6 +148,7 @@ export class Application {
   private mailServiceContainer!: Container;
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
+  private outboxDispatcher: OutboxDispatcher | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -232,7 +255,7 @@ export class Application {
           appConfig,
         );
       this.desktopProxyContainer =
-        await DesktopProxyContainer.initialize(appConfig, () => this.port);
+        await DesktopProxyContainer.initialize(appConfig);
 
       this.oauthProviderContainer = await OAuthProviderContainer.initialize(
         configurationManagerConfig,
@@ -284,14 +307,26 @@ export class Application {
       );
       startOrgMetricsRefresh(this.logger);
 
+      // Domain events are written to the outbox by whoever makes the change;
+      // this is what actually delivers them. Without it running, events queue
+      // durably and nothing reaches the permission graph, so it starts with
+      // the application rather than on first use.
+      this.outboxDispatcher = new OutboxDispatcher(
+        this.entityManagerContainer.get<IMessageProducer>('MessageProducer'),
+        this.logger,
+      );
+      this.outboxDispatcher.start();
+
       this.notificationContainer
         .get<NotificationService>(NotificationService)
         .initialize(this.server);
       this.desktopProxySocketGateway =
         this.desktopProxyContainer.get(DesktopProxySocketGateway);
+      registerDesktopPresence(this.desktopProxySocketGateway);
       this.desktopProxySocketGateway.initialize(this.server);
 
       this.bootstrapNotificationBrokerConsumer();
+      this.bootstrapMailBrokerConsumer();
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -378,6 +413,12 @@ export class Application {
   }
 
   private configureMiddleware(appConfig: AppConfig): void {
+    // Unset means trust no proxy: req.ip is the socket address.
+    if (appConfig.trustProxy.warning) {
+      this.logger.warn(appConfig.trustProxy.warning);
+    }
+    this.app.set('trust proxy', appConfig.trustProxy.value);
+
     const isStrictMode = process.env.STRICT_MODE === 'true';
     if (isStrictMode) {
       // Security middleware - configure helmet once with all options
@@ -475,7 +516,13 @@ export class Application {
     );
 
     // Global rate limiter - applies to all routes
-    this.app.use(createGlobalRateLimiter(this.logger, appConfig.maxRequestsPerMinute));
+    this.app.use(
+      createGlobalRateLimiter(
+        this.logger,
+        appConfig.maxRequestsPerMinute,
+        appConfig.scopedJwtSecret,
+      ),
+    );
     this.app.use(metricsMiddleware());
   }
 
@@ -540,6 +587,12 @@ export class Application {
       createStorageRouter(this.storageServiceContainer),
     );
 
+    // desktop relay routes (connector service -> user's desktop app)
+    this.app.use(
+      '/api/v1/desktop',
+      createDesktopProxyRouter(this.desktopProxyContainer),
+    );
+
     // enterprise search conversational routes
     this.app.use(
       '/api/v1/conversations',
@@ -588,6 +641,11 @@ export class Application {
     );
 
     this.app.use(
+      '/api/v1/artifacts',
+      createArtifactsRouter(this.knowledgeBaseContainer),
+    );
+
+    this.app.use(
       '/api/v1/notifications',
       createNotificationRouter(this.entityManagerContainer),
     );
@@ -596,6 +654,17 @@ export class Application {
     this.app.use(
       '/api/v1/configurationManager',
       createConfigurationManagerRouter(this.configurationManagerContainer),
+    );
+
+    // OpenAI-compatible catalog of configured models. Clients use either
+    // ``{origin}/v1`` or ``{origin}/api/v1`` as the base URL.
+    this.app.use(
+      '/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
+    );
+    this.app.use(
+      '/api/v1',
+      createOpenAIModelsRouter(this.configurationManagerContainer),
     );
 
     // toolsets routes
@@ -620,6 +689,14 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+    // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
+    // ahead of the static files and the SPA fallback, which answer a .json path with 404.
+    this.app.get(
+      MCP_CLIENT_METADATA_PATH,
+      createMcpClientMetadataHandler(
+        KeyValueStoreService.getInstance(loadConfigurationManagerConfig()),
+      ),
     );
 
     // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
@@ -649,6 +726,30 @@ export class Application {
     this.app.use(
       '/api/v1/oauth-clients',
       createOAuthClientsRouter(this.oauthProviderContainer),
+    );
+
+    // Service accounts own the identity; service tokens own the credential,
+    // and they live in different containers. Joined here, where both exist,
+    // so deleting an account revokes its tokens and restoring one under the
+    // same name does not bring old tokens back with it.
+    this.entityManagerContainer
+      .get<ServiceAccountsService>('ServiceAccountsService')
+      .setTokenRevoker(
+        this.oauthProviderContainer.get<ServiceTokenService>(
+          'ServiceTokenService',
+        ),
+      );
+
+    // Service accounts (machine identities, admin-managed)
+    this.app.use(
+      '/api/v1/service-accounts',
+      createServiceAccountsRouter(this.entityManagerContainer),
+    );
+
+    // Service tokens (the credential a service account authenticates with)
+    this.app.use(
+      '/api/v1/service-tokens',
+      createServiceTokenRouter(this.oauthProviderContainer),
     );
 
     this.app.use(
@@ -697,6 +798,27 @@ export class Application {
     })();
   }
 
+  private bootstrapMailBrokerConsumer(): void {
+    void (async () => {
+      try {
+        const consumer =
+          this.mailServiceContainer.get<MailConsumer>(MailConsumer);
+        await consumer.start();
+        // From the start: an invite can be queued before a brand-new group
+        // exists, and starting at the tail would skip it. An existing group
+        // resumes from its own offsets, so delivered mail is not replayed.
+        await consumer.subscribe([BrokerTopic.MAIL_EVENTS], true);
+        await consumer.consume(async () => {
+          /* delivery, retry and failure notification live in MailConsumer */
+        });
+      } catch (error) {
+        this.logger.error('Mail broker consumer failed to start', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }
+
   async start(): Promise<void> {
     try {
       await new Promise<void>((resolve) => {
@@ -717,9 +839,56 @@ export class Application {
     }
   }
 
+  /**
+   * Stops accepting connections and resolves once in-flight requests have
+   * finished, force-closing whatever is still open after the drain timeout.
+   */
+  private async closeHttpServer(): Promise<void> {
+    if (!this.server.listening) return;
+    const closed = new Promise<void>((resolve) => {
+      this.server.close(() => {
+        resolve();
+      });
+    });
+    // close() drops only the sockets idle at this moment. A keep-alive socket
+    // whose response finishes later stays open for keepAliveTimeout (65s) and
+    // would hold close() until the drain timeout, so keep sweeping.
+    const sweep = setInterval(() => {
+      this.server.closeIdleConnections();
+    }, SHUTDOWN_IDLE_SWEEP_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout');
+      }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        closed.then(() => 'drained' as const),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          'Requests still open after the shutdown drain timeout; closing them',
+          { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        );
+        this.server.closeAllConnections();
+        await closed;
+      }
+    } finally {
+      clearInterval(sweep);
+      clearTimeout(timer);
+    }
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      // Stop accepting first, and only dispose Mongo/Redis/brokers once the
+      // requests already in flight have finished — otherwise they fail
+      // mid-request on closed clients. Socket.IO connections are closed by
+      // the gateway shutdowns below, so they don't hold the drain open.
+      const drained = this.closeHttpServer();
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -732,8 +901,18 @@ export class Application {
         });
       }
       try {
+        const mailConsumer =
+          this.mailServiceContainer.get<MailConsumer>(MailConsumer);
+        await mailConsumer.stop();
+      } catch (err) {
+        this.logger.warn('MailConsumer not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
+        registerDesktopPresence(null);
         this.notificationContainer
           .get<NotificationService>(NotificationService)
           .shutdown();
@@ -741,6 +920,25 @@ export class Application {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
       }
+      await drained;
+      // After the drain: an in-flight /mail/emails/sendEmail request may still be
+      // queued on this pool, and close() fails queued messages.
+      try {
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
+      } catch (err) {
+        this.logger.warn('MailSenderService not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      // Stopped before the containers go, because it holds the message
+      // producer one of them owns.
+      // Awaited: a pass in flight is publishing through a producer the
+      // containers below are about to disconnect.
+      await this.outboxDispatcher?.stop();
+      this.outboxDispatcher = null;
+
       await NotificationContainer.dispose();
       await StorageContainer.dispose();
       await UserManagerContainer.dispose();

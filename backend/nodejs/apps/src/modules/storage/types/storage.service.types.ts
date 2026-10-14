@@ -78,6 +78,10 @@ export interface Document {
   uploadLeaseToken?: string;
   uploadLeaseExpiresAt?: number;
   /**
+   * A signed URL was issued for this new document's first file, which may not have arrived.
+   */
+  awaitingDirectUpload?: boolean;
+  /**
    * Access permissions for the document.
    */
   permissions?: DocumentPermission;

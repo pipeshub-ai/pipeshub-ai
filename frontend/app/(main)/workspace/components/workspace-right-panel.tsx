@@ -217,7 +217,8 @@ export function WorkspaceRightPanel({
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onOpenChange(false);
+      // A menu or dialog open on top handles its own Escape (Radix marks it handled).
+      if (e.key === 'Escape' && !e.defaultPrevented) onOpenChange(false);
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
@@ -305,7 +306,7 @@ export function WorkspaceRightPanel({
                 color="gray"
                 size="2"
                 onClick={onBack}
-                aria-label="Go back"
+                aria-label={t('common.back')}
                 style={{ cursor: 'pointer', flexShrink: 0 }}
               >
                 <MaterialIcon name="arrow_back" size={18} color="var(--slate-11)" />

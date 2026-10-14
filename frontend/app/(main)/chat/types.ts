@@ -13,9 +13,9 @@ export type ResponseTab = 'answer' | 'sources' | 'citation';
 
 /**
  * Platform-normalized reasoning effort levels. `null`/absent means "no
- * explicit user choice" — the backend applies `DEFAULT_REASONING_EFFORT`
- * ("high") for any reasoning-capable model rather than deferring to the
- * provider's own default.
+ * explicit user choice" — the backend applies the model's own default
+ * effort, else `DEFAULT_REASONING_EFFORT` ("high"), for any reasoning-capable
+ * model rather than deferring to the provider's own default.
  *
  * `'none'` is kept in the type for backward compatibility with
  * already-persisted conversations/agents, but is no longer offered as a
@@ -29,8 +29,8 @@ export type ReasoningEffort = 'none' | 'low' | 'medium' | 'high' | 'max';
 
 /**
  * Effective reasoning effort applied by the backend (`_reasoning_effort_kwargs`
- * in `backend/python/app/utils/aimodels.py`) when the user hasn't explicitly
- * picked one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
+ * in `backend/python/app/utils/aimodels.py`) when neither the user, the agent
+ * nor the model set one. Kept in sync with `DEFAULT_REASONING_EFFORT` there.
  */
 export const DEFAULT_REASONING_EFFORT: ReasoningEffort = 'high';
 
@@ -542,6 +542,8 @@ export interface PendingAskUserQuestion {
   assistantMessageId: string;
   payload: AskUserQuestionPayload;
   answers: Record<string, AskUserQuestionAnswer>;
+  /** Answers the model already received. A resume only carries what is not here or differs. */
+  sentAnswers?: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
 }
 
@@ -625,6 +627,8 @@ export interface CitationApiResponse {
       recordName: string;
       recordId: string;
       connector: string;
+      /** Connector instance the record came from; absent on older saved answers */
+      connectorId?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -715,8 +719,17 @@ export interface ReasoningTurn {
  * `resultPreview` is always a bounded preview (~500 chars), never the full
  * external tool result — the server never sends more than that.
  */
+/** On an `mcp_sign_in` part: an MCP server whose sign-in lacked permission this turn (Python `mcp_sign_in.py`). */
+export interface McpSignInServer {
+  instanceId: string;
+  serverName: string;
+  scopes: string[];
+  /** Set for a service-account agent's own sign-in, redone through the agent's route. */
+  agentKey?: string;
+}
+
 export interface MessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -724,10 +737,20 @@ export interface MessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
   resultSummary?: string;
+  /** A table or field list of the result, built server-side; unchecked here, see `toolResultView`. */
+  resultView?: unknown;
+  /** On an `awaiting_approval` call: what the approval card shows. */
+  approval?: ToolApprovalDetails;
+  /** The call a person approved, run when they answered. */
+  approved?: boolean;
+  /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
+  approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
+  servers?: McpSignInServer[];
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -897,6 +920,34 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /** The person's answer to a tool approval card; the call itself is saved server-side. */
+  toolApproval?: ToolApprovalAnswer;
+}
+
+export type ToolApprovalDecision = 'allow' | 'deny';
+
+export interface ToolApprovalAnswer {
+  approvalId: string;
+  decision: ToolApprovalDecision;
+  /** "Don't ask again for this tool": the answer becomes the person's own rule for it. */
+  remember?: boolean;
+}
+
+/** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
+export interface ToolApprovalDetails {
+  approvalId: string;
+  instanceId: string;
+  serverName: string;
+  toolName: string;
+  toolTitle?: string | null;
+  readOnly?: boolean;
+  /** What the tool does to data; a deleting tool is marked on the card. */
+  kind?: 'read' | 'write' | 'destructive' | null;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+  /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
+  arguments?: Record<string, unknown> | null;
+  argumentsPreview?: string;
 }
 
 /**
@@ -957,6 +1008,8 @@ export interface AvailableLlmModel {
   isReasoning: boolean;
   isDefault: boolean;
   modelFriendlyName: string;
+  /** The model's own effort, used when the request sets no reasoningEffort and the agent has no default. Absent when nothing valid is stored; a legacy `none` is shown as Low. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /**
@@ -1005,8 +1058,18 @@ export interface ChatSlot {
   isTemp: boolean;
   /** True once messages have been loaded (or immediately for new chats). */
   isInitialized: boolean;
+  /**
+   * Bumped by every `invalidateConversation`, including one that arrives while a history load is
+   * in flight; the loader discards and repeats a response fetched under an older value.
+   */
+  refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
+  /**
+   * The loaded conversation was still `Inprogress` on the server — a run that kept going after this
+   * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
+   */
+  remoteRunInProgress: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];
@@ -1047,6 +1110,8 @@ export interface ChatSlot {
    */
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
+  /** Assistant row this run is writing into. A resume can be an older card. */
+  streamingAssistantId: string | null;
   pendingCollections: ChatCollectionAttachment[];
 
   /** Artifacts produced during the current streaming response. */
@@ -1054,7 +1119,9 @@ export interface ChatSlot {
 
   /**
    * Pending interactive questionnaire from SSE `ask_user_question`.
-   * Cleared when the user submits answers or starts another stream that replaces messages.
+   * Stays on the same assistant row through submit (`status: 'submitted'`)
+   * so the follow-up answer streams in-place. Replaced by
+   * `persistedAskUserQuestion` after `onComplete` / reload.
    */
   pendingAskUserQuestion: PendingAskUserQuestion | null;
 
@@ -1088,6 +1155,13 @@ export interface ChatSlot {
     hasOlderMessages: boolean;
     isLoadingOlder: boolean;
   } | null;
+
+  /**
+   * The stored rows `messages` was built from. "Load older messages" joins an
+   * older page onto these and rebuilds, so a card that spans two pages comes
+   * out as one card. `null` when the thread was not built from stored rows.
+   */
+  rawMessages: ConversationMessage[] | null;
 
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
@@ -1126,6 +1200,8 @@ export interface SearchResultMetadata {
   recordVersion?: number;
   origin: string;
   connector: string;
+  /** Connector instance the record came from; marks demo records. */
+  connectorId?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

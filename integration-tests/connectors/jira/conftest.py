@@ -18,10 +18,11 @@ See ``README.md`` for the shared-site contract every test follows.
 import logging
 import os
 import uuid
-from typing import Any, AsyncGenerator, Callable, Optional
+from typing import Any, AsyncGenerator, Optional
 
-import pytest
 import pytest_asyncio
+
+from helper.source_credentials import source_unavailable
 
 from app.sources.client.jira.jira import (  # type: ignore[import-not-found]
     JiraApiKeyConfig,
@@ -63,9 +64,9 @@ async def jira_datasource() -> JiraDataSource:
     api_token = os.getenv("JIRA_TEST_API_TOKEN")
 
     if not base_url or not email or not api_token:
-        pytest.skip(
-            "Jira credentials not set "
-            "(JIRA_TEST_BASE_URL, JIRA_TEST_EMAIL, JIRA_TEST_API_TOKEN)."
+        source_unavailable(
+            "The Jira site this suite syncs from is not configured.",
+            secrets=["JIRA_TEST_BASE_URL", "JIRA_TEST_EMAIL", "JIRA_TEST_API_TOKEN"],
         )
 
     config = JiraApiKeyConfig(base_url=base_url, email=email, api_key=api_token)
@@ -130,9 +131,10 @@ async def jira_connector(
 
     project_keys = _parse_project_keys()
     if not project_keys:
-        pytest.skip(
-            "JIRA_TEST_PROJECT_KEYS not set. Provide comma-separated dedicated IT "
-            "project keys (primary first)."
+        source_unavailable(
+            "No Jira projects are named for this suite to sync, so it would test "
+            "nothing. Provide comma-separated project keys, primary first.",
+            secrets=["JIRA_TEST_PROJECT_KEYS"],
         )
     primary_key = project_keys[0]
 

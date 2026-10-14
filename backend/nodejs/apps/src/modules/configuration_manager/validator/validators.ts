@@ -1,5 +1,10 @@
 import { z } from 'zod';
-import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import {
+  AI_MODEL_TYPES,
+  googleWorkspaceTypes,
+  storageTypes,
+} from '../constants/constants';
+import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
 import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
@@ -467,18 +472,12 @@ export const metricsCollectionRemoteServerSchema = z.object({
 });
 
 
-// Enum definitions
-export const modelType = z.enum([
-  'llm',
-  'embedding',
-  'ocr',
-  'slm',
-  'reasoning',
-  'multiModal',
-  'imageGeneration',
-  'tts',
-  'stt',
-]);
+// Enum definitions. `AI_MODEL_TYPES` is the single list; Zod wants a mutable tuple.
+export const modelType = z.enum(
+  AI_MODEL_TYPES as unknown as [AIModelTypeName, ...AIModelTypeName[]],
+);
+
+type AIModelTypeName = (typeof AI_MODEL_TYPES)[number];
 
 // Provider validation is now dynamic — the Python backend registry is the
 // source of truth.  We only enforce that a non-empty string is provided.
@@ -510,7 +509,23 @@ export const configurationSchema = z.object({
   region: z.string().optional().describe("AWS region"),
   model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
-  cache_folder: z.string().optional().describe("Cache folder for models")
+  cache_folder: z.string().optional().describe("Cache folder for models"),
+  // Python's LLM factory treats a blank value as "no default", same as absent.
+  defaultReasoningEffort: z
+    .string()
+    .nullable()
+    .optional()
+    .refine(
+      (value) =>
+        value == null ||
+        value.trim() === '' ||
+        (REASONING_EFFORT_VALUES as readonly string[]).includes(value.trim()),
+      {
+        message:
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+      },
+    )
+    .describe('Reasoning effort used when a request does not choose one'),
 }).passthrough().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)
@@ -549,6 +564,71 @@ export const updateProviderRequestSchema = z.object({
     isReasoning: z.boolean().default(false).describe("Whether the model supports reasoning"),
     isDefault: z.boolean().default(false).describe("Whether this should be the default model"),
     contextLength: z.number().optional().nullable().describe("Context length for the model")
+  }),
+});
+
+export const discoverModelsRequestSchema = z.object({
+  body: z.object({
+    provider: providerType,
+    capability: z.string().optional(),
+    configuration: configurationSchema.default({}),
+    modelType: modelType.optional(),
+    modelKey: z.string().optional(),
+    query: z.string().optional(),
+  }),
+});
+
+const batchModelSchema = z.object({
+  model: z.string().min(1),
+  modelFriendlyName: z.string().optional(),
+  isMultimodal: z.boolean().default(false),
+  isReasoning: z.boolean().default(false),
+  contextLength: z.number().optional().nullable(),
+});
+
+/** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */
+const batchSharedConfigurationSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (!('modelFriendlyName' in value)) return value;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.modelFriendlyName;
+  return copy;
+}, configurationSchema);
+
+export const batchAddModelsRequestSchema = z.object({
+  body: z.object({
+    modelType: modelType,
+    provider: providerType,
+    configuration: batchSharedConfigurationSchema,
+    models: z.array(batchModelSchema).min(1).max(25),
+    defaultModel: z.string().optional(),
+    connectionId: z.string().uuid().optional(),
+  }).superRefine((body, ctx) => {
+    const seen = new Set<string>();
+    for (const model of body.models) {
+      if (seen.has(model.model)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate model id ${model.model}`,
+          path: ['models'],
+        });
+      }
+      seen.add(model.model);
+    }
+  }),
+});
+
+export const rotateConnectionCredentialsSchema = z.object({
+  body: z.object({
+    configuration: z.object({
+      apiKey: z.string().optional(),
+      awsAccessKeyId: z.string().optional(),
+      awsAccessSecretKey: z.string().optional(),
+      serviceAccountJson: z.string().optional(),
+    }).strict(),
+  }),
+  params: z.object({
+    connectionId: z.string().min(1),
   }),
 });
 
@@ -598,50 +678,20 @@ export const aiModelsConfigSchema = z.object({
 
 export const modelTypeSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
   }),
 });
 
 export const updateDefaultModelSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
 
 export const deleteProviderSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });

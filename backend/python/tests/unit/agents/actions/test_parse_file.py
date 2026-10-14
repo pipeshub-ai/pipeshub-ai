@@ -24,6 +24,7 @@ from app.agents.actions.util.parse_file import (
 )
 from app.models.blocks import Block, BlockType, BlocksContainer, ImageMetadata
 from app.models.entities import LlmTextContent
+from app.utils.llm import LLM_MISSING_FOR_FILE, LLMNotConfiguredError
 from app.agents.actions.util.parse_file import ParseErrorPayload
 
 
@@ -243,6 +244,18 @@ class TestCheckTokenLimit:
         assert result is True
 
     @pytest.mark.asyncio
+    async def test_no_llm_configured_raises_the_clear_error(self) -> None:
+        """Runs the real get_model_config against a config with no LLM bucket."""
+        parser = _make_parser()
+        cs = MagicMock()
+        cs.get_config = AsyncMock(return_value={"embedding": [{"provider": "openAI"}]})
+        data = [LlmTextContent(type="text", text="hello")]
+        with pytest.raises(LLMNotConfiguredError):
+            await parser.check_token_limit(
+                model_name=None, model_key=None, configuration_service=cs, data=data
+            )
+
+    @pytest.mark.asyncio
     async def test_within_limit(self):
         parser = _make_parser()
         with patch(
@@ -377,6 +390,30 @@ class TestParse:
         ok, msg = await parser.parse(rec, b"data", None, None, MagicMock())
         assert ok is False
         assert "Parse failed" in msg[0].error
+
+    @pytest.mark.asyncio
+    async def test_spreadsheet_without_a_model_says_what_to_do(self) -> None:
+        """XLSX parsing asks for the model; its message must not get a "Parse failed:" prefix."""
+        import io
+
+        import openpyxl
+
+        workbook = openpyxl.Workbook()
+        workbook.active.append(["name", "value"])
+        raw = io.BytesIO()
+        workbook.save(raw)
+
+        parser = _make_parser()
+        parser._config.get_config = AsyncMock(return_value={"embedding": [{"provider": "openAI"}]})
+        rec = _make_file_record(
+            extension="xlsx",
+            mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        ok, msg = await parser.parse(rec, raw.getvalue(), None, None, MagicMock())
+
+        assert ok is False
+        assert msg[0].error == LLM_MISSING_FOR_FILE
+        assert "Parse failed" not in msg[0].error
 
     @pytest.mark.asyncio
     async def test_to_llm_context_fails(self):
@@ -604,13 +641,12 @@ class TestHandleCsvTsv:
         assert result.blocks == []
 
     @pytest.mark.asyncio
-    async def test_undecodable_returns_empty(self):
+    async def test_windows_1252_csv_is_decoded(self) -> None:
         parser = _make_parser()
-        parser._csv_parser.read_raw_rows = MagicMock(
-            side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad")
-        )
-        result = await parser.handle_csv(b"\xff\xfe", "bad.csv")
-        assert isinstance(result, BlocksContainer)
+        parser._csv_parser.read_raw_rows = MagicMock(return_value=[])
+        await parser.handle_csv(b"item,price\nWidget,\x80 5 \x93each\x94\n", "prices.csv")
+        stream = parser._csv_parser.read_raw_rows.call_args[0][0]
+        assert stream.getvalue() == "item,price\nWidget,\u20ac 5 \u201ceach\u201d\n"
 
     @pytest.mark.asyncio
     async def test_csv_successful_parse(self):
@@ -661,26 +697,13 @@ class TestHandleMd:
         assert "Heading" in call_args[0]
 
     @pytest.mark.asyncio
-    async def test_latin1_fallback(self):
-        """Bytes undecodable as utf-8 fall back to latin-1 which always succeeds."""
+    async def test_windows_1252_fallback(self) -> None:
         parser = _make_parser()
         expected = BlocksContainer(blocks=[], block_groups=[])
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
-        # Non-utf-8 bytes; latin-1/iso-8859-1 accepts anything
-        result = await parser.handle_md(b"\xff\xfecaf\xe9", "a.md")
+        result = await parser.handle_md(b"\x93caf\xe9\x94 \x80", "a.md")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode Markdown"):
-            await parser.handle_md(raw, "a.md")
+        assert parser._markdown_string_to_blocks.call_args[0][0] == "\u201ccaf\u00e9\u201d \u20ac"
 
 
 class TestHandleTxt:
@@ -691,18 +714,6 @@ class TestHandleTxt:
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
         result = await parser.handle_txt(b"plain text", "notes.txt")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode text file"):
-            await parser.handle_txt(raw, "notes.txt")
 
 
 class TestHandleMdx:

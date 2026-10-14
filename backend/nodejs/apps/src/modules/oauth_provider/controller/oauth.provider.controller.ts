@@ -95,10 +95,11 @@ export class OAuthProviderController {
     try {
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(query.scope)
-      this.scopeValidatorService.validateScopesForApp(
-        requestedScopes,
-        app.allowedScopes,
-      )
+      const { granted, notGranted } =
+        this.scopeValidatorService.resolveGrantedScopes(
+          requestedScopes,
+          app.allowedScopes,
+        )
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
@@ -117,8 +118,12 @@ export class OAuthProviderController {
 
       // Build consent data
       const user = req.user!
-      const scopeDefinitions =
-        this.scopeValidatorService.getScopeDefinitions(requestedScopes)
+      const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
+        this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
+          name: s.name,
+          description: s.description,
+          category: s.category,
+        }))
 
       const consentData: ConsentData = {
         app: {
@@ -129,11 +134,8 @@ export class OAuthProviderController {
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
         },
-        scopes: scopeDefinitions.map((s) => ({
-          name: s.name,
-          description: s.description,
-          category: s.category,
-        })),
+        scopes: toScopeInfo(granted),
+        notGrantedScopes: toScopeInfo(notGranted),
         user: {
           email: user.email,
           name: user.fullName,
@@ -209,9 +211,23 @@ export class OAuthProviderController {
 
       const user = req.user!
 
+      // The GET step already rejects this, but the POST is what issues the
+      // code, so a caller that skips the GET must be stopped here too.
+      if (!app.isConfidential && !code_challenge) {
+        const redirectUrl = new URL(redirect_uri)
+        redirectUrl.searchParams.set('error', 'invalid_request')
+        redirectUrl.searchParams.set(
+          'error_description',
+          'PKCE code_challenge is required for public clients',
+        )
+        redirectUrl.searchParams.set('state', state)
+        res.json({ redirectUrl: redirectUrl.toString() })
+        return
+      }
+
       // Parse and validate scopes
       const requestedScopes = this.scopeValidatorService.parseScopes(scope)
-      this.scopeValidatorService.validateScopesForApp(
+      const { granted } = this.scopeValidatorService.resolveGrantedScopes(
         requestedScopes,
         app.allowedScopes,
       )
@@ -222,7 +238,7 @@ export class OAuthProviderController {
         user.userId,
         user.orgId,
         redirect_uri,
-        requestedScopes,
+        granted,
         code_challenge,
         code_challenge_method,
       )
@@ -235,7 +251,7 @@ export class OAuthProviderController {
       this.logger.info('Authorization code issued', {
         clientId: client_id,
         userId: user.userId,
-        scopes: requestedScopes,
+        scopes: granted,
       })
 
       res.json({ redirectUrl: redirectUrl.toString() })
@@ -558,6 +574,7 @@ export class OAuthProviderController {
       clientId,
       request.redirect_uri,
       request.code_verifier,
+      app.isConfidential,
     )
 
     // Look up user details to embed in token
@@ -588,15 +605,20 @@ export class OAuthProviderController {
       }
     }
 
-    // Generate tokens
+    // The code may predate an edit that removed scopes from the app; the
+    // revocation that edit triggers cannot reach a token minted after it.
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       codeResult.userId,
       codeResult.orgId,
-      codeResult.scopes,
+      this.scopeValidatorService.getGrantedScopes(
+        codeResult.scopes,
+        app.allowedScopes,
+      ),
       true,
       fullName,
       accountType,
+      { recheckAppScopes: true },
     )
 
     this.logger.info('Authorization code grant completed', {
@@ -651,18 +673,42 @@ export class OAuthProviderController {
     let fullName: string | undefined
     let accountType: string | undefined
 
-    if (app.createdBy) {
-      const user = await Users.findOne({
-        _id: app.createdBy,
+    // The identity these tokens will act as: the application's chosen service
+    // account where one is set, its creator otherwise. Checked here rather
+    // than only at mint time, because this grant hands out a bearer that
+    // authenticates as that identity for as long as it lives.
+    const identityId = app.tokenIdentityUserId ?? app.createdBy
+    if (identityId) {
+      const identity = await Users.findOne({
+        _id: identityId,
         orgId: app.orgId,
         isDeleted: false,
       })
-        .select('fullName')
+        .select('fullName isDisabled restoreOpId')
         .lean()
         .exec()
-      if (user) {
-        fullName = user.fullName
+
+      // Refused rather than issued against an identity that cannot be used.
+      // A client_credentials token is stored without a userId, so it is not
+      // reached by the revocation that runs when a service account is
+      // deleted, disabled or restored — which means one issued now would
+      // outlive those decisions instead of being cleaned up by them.
+      if (!identity) {
+        throw new BadRequestError(
+          'The identity this application acts as no longer exists',
+        )
       }
+      if (identity.isDisabled === true) {
+        throw new BadRequestError(
+          'The identity this application acts as is disabled',
+        )
+      }
+      if (identity.restoreOpId !== undefined && identity.restoreOpId !== null) {
+        throw new BadRequestError(
+          'The identity this application acts as is being restored. Try again once that has finished.',
+        )
+      }
+      fullName = identity.fullName
     }
 
     const org = await Org.findOne({

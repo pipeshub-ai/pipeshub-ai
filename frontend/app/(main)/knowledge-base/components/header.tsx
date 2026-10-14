@@ -26,12 +26,16 @@ interface KBHeaderProps {
   /** Shown when browsing inside a KB collection */
   showIndexingStatus?: boolean;
   onIndexingStatusClick?: () => void;
+  /** Opens the collection's Recently deleted page; only passed while the trash is on */
+  onRecentlyDeletedClick?: () => void;
 
   // Collections mode only actions (hidden in all-records mode)
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onShare?: () => void;
   createPermissionDenied?: boolean;
+  folderPermissionDenied?: boolean;
+  uploadPermissionDenied?: boolean;
   sharePermissionDenied?: boolean;
   sharedMembers?: SharedAvatarMember[];
   onRename?: (nodeId: string, nodeType: string, newName: string) => Promise<void>;
@@ -179,10 +183,13 @@ export function Header({
   onRefresh,
   showIndexingStatus,
   onIndexingStatusClick,
+  onRecentlyDeletedClick,
   onCreateFolder,
   onUpload,
   onShare,
   createPermissionDenied,
+  folderPermissionDenied,
+  uploadPermissionDenied,
   sharePermissionDenied,
   sharedMembers = [],
   onRename,
@@ -392,6 +399,31 @@ export function Header({
               </Button>
             )
           )}
+          {onRecentlyDeletedClick && (
+            isMobile ? (
+              <IconButton
+                variant="ghost"
+                size="2"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={{ cursor: 'pointer' }}
+                aria-label={t('collections.trash.menuLabel')}
+              >
+                <MaterialIcon name="delete_outline" size={18} color="var(--slate-11)" />
+              </IconButton>
+            ) : (
+              <Button
+                variant="ghost"
+                size="1"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={{ cursor: 'pointer', fontSize: '14px' }}
+              >
+                <MaterialIcon name="delete_outline" size={16} color="var(--slate-11)" />
+                {t('collections.trash.menuLabel')}
+              </Button>
+            )
+          )}
         </Flex>
 
         {/* Collections mode only actions */}
@@ -412,6 +444,7 @@ export function Header({
                       disabled={createPermissionDenied}
                     >
                       <MaterialIcon name="add" size={18} color="white" />
+                      {createPermissionDenied && <PermissionLockIcon />}
                     </IconButton>
                   ) : (
                     <Button
@@ -429,15 +462,33 @@ export function Header({
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
                   {onCreateFolder && (
-                    <DropdownMenu.Item onClick={() => onCreateFolder()}>
-                      <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
-                      {t('kb.newFolder')}
+                    <DropdownMenu.Item
+                      disabled={folderPermissionDenied}
+                      onClick={() => {
+                        if (folderPermissionDenied) return;
+                        onCreateFolder();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('kb.newFolder')}</Text>
+                        {folderPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                   {onUpload && (
-                    <DropdownMenu.Item onClick={() => onUpload()}>
-                      <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
-                      {t('dialog.uploadData')}
+                    <DropdownMenu.Item
+                      disabled={uploadPermissionDenied}
+                      onClick={() => {
+                        if (uploadPermissionDenied) return;
+                        onUpload();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('dialog.uploadData')}</Text>
+                        {uploadPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                 </DropdownMenu.Content>

@@ -83,6 +83,8 @@ export interface McpServerReference {
   name: string;
   displayName?: string;
   typeId?: string;
+  /** Every tool the server offers at chat time, including ones added later; `tools` is then just the snapshot shown. */
+  allTools?: boolean;
   tools?: McpToolRef[];
 }
 
@@ -108,6 +110,8 @@ export interface AgentFormPayload {
   webSearch?: AgentWebSearchAttachment | null;
   /** Fallback applied when a chat request against this agent omits its own reasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
+  /** When false, omit user name/email/org from this agent's system prompt. Defaults to true. */
+  sendUserContext?: boolean;
 }
 
 /** Agent shape used when rebuilding the graph (extends API detail with optional legacy fields). */

@@ -71,24 +71,44 @@ function limitTrigger(page: Page): Locator {
 export async function changeLimit(page: Page, limit: 10 | 25 | 50 | 100): Promise<void> {
   const trigger = limitTrigger(page);
   await expect(trigger, 'the page-size control should be shown').toBeVisible({ timeout: 10_000 });
-  await trigger.click();
-  await page.getByRole('menuitem', { name: `${limit} per page` }).click();
+
+  // Open and pick as one retried unit, rather than clicking a locator resolved
+  // once. A list still settling from an earlier change — these tests call this
+  // twice in a row — re-renders the menu out from under the click, and
+  // Playwright reports "element was detached from the DOM" until it times out.
+  // Retrying the open too gets a fresh menu each attempt.
+  await expect(async () => {
+    await trigger.click();
+    await page
+      .getByRole('menuitem', { name: `${limit} per page` })
+      .click({ timeout: 2_000 });
+  }, `the page-size menu should offer ${limit} per page`).toPass({ timeout: 20_000 });
 
   await expect(trigger, `the page-size control should show ${limit}`).toHaveText(
     // The number is followed directly by the icon's ligature text ("50expand_less").
     new RegExp(`^\\s*${limit}(?!\\d)`),
     { timeout: 10_000 },
   );
+  let shown = 0;
   await expect
     .poll(
       async () => {
         const { from, to, total } = await getShowingRange(page);
+        shown = to;
         return from === 1 && to === Math.min(limit, total) ? 'ok' : `Showing ${from}-${to} of ${total}`;
       },
       { timeout: 10_000, message: `the list should show the first ${limit} items` },
     )
     .toBe('ok');
-  expect(await page.locator('[role="row"]').count()).toBeLessThanOrEqual(limit);
+  // The "Showing" line updates before the next page's rows replace the old
+  // ones, so the rows are waited for separately. An exact count, because the
+  // old page already has at most `limit` rows when the limit grows.
+  await expect
+    .poll(() => page.locator('[role="row"]').count(), {
+      timeout: 10_000,
+      message: `the list should render the ${shown} rows its "Showing" line counts`,
+    })
+    .toBe(shown);
 }
 
 /** Assert the "Showing X-Y of Z" text matches expected range */

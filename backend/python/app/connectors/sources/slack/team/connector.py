@@ -37,6 +37,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from enum import IntEnum
+from functools import cached_property
 from typing import TYPE_CHECKING, Any, Optional
 from urllib.parse import urlparse
 
@@ -44,7 +45,12 @@ import httpx
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    PermissionModel,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
@@ -84,10 +90,15 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
     slack_stream_error,
+)
+from app.connectors.sources.slack.common.token_renewal import (
+    RenewingSlackDataSource,
+    SlackTokenRenewal,
 )
 from app.models.blocks import (
     Block,
@@ -208,6 +219,14 @@ class ProcessingContext:
     user_id_to_name:    dict[str, str]   # Slack user_id → name  (snapshot)
     channel_id_to_name: dict[str, str]   # Slack channel_id → name  (snapshot)
     rate_limiter:       "RateLimiter"
+    # Set when channel_groups_map is keyed on a thread instead of a channel.
+    root_rg_id:         Optional[str] = None
+    # True when root_rg_id was resolved explicitly, so None means "no root",
+    # not "not looked up". The reindex paths key channel_groups_map on the
+    # record's own group, which for a threaded record is the thread — falling
+    # back to it would store the thread as its own root, and _derive_group_root
+    # only fills a root in when one is absent, so nothing would repair it.
+    root_resolved:      bool = False
 
 
 @dataclass
@@ -343,10 +362,17 @@ class RateLimiter:
         .add_filter_field(FilterField(
             name="sync_window",
             display_name="Sync Messages From",
-            description="How far back to sync messages on initial sync",
+            description=(
+                "How far back to sync messages on the first sync. If this filter "
+                "is not set, only the last 30 days are synced; choose an earlier "
+                "date to include older history."
+            ),
             filter_type=FilterType.DATETIME,
             category=FilterCategory.SYNC,
-            default_operator=FilterOperator.LAST_30_DAYS))
+            default_operator=FilterOperator.LAST_30_DAYS,
+            # What _compute_sync_window_oldest uses when no filter is saved; the
+            # panel shows it while the filter is cleared.
+            fallback_operator=FilterOperator.LAST_30_DAYS))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         # Indexing filters
         .add_filter_field(FilterField(
@@ -478,6 +504,22 @@ class SlackConnector(BaseConnector):
         FilterOperator.LAST_365_DAYS: 365 * 86400,
     }
 
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync reads messages from the sync window on, and a thread only
+        when its first message is inside the window. So a message or thread
+        older than the window that it did not see was not read, not deleted.
+
+        Asked after the sync: the window start is computed now, a little later
+        than the one the sync used, so nothing the sync could have read is
+        counted as outside it.
+        """
+        oldest = self._compute_sync_window_oldest()
+        return FullSyncCoverage(
+            complete=not getattr(self, "_full_sync_read_failed", False),
+            window_start_ms=int(float(oldest) * 1000) if oldest else None,
+            windowed_group_types=frozenset({RecordGroupType.SLACK_THREAD.value}),
+        )
+
     def _compute_sync_window_oldest(self) -> Optional[str]:
         """
         Compute the Slack ``oldest`` ts from the sync_window DATETIME filter.
@@ -556,11 +598,19 @@ class SlackConnector(BaseConnector):
             self.logger.error(f"❌ Init failed: {exc}", exc_info=True)
             return False
 
-    async def _fresh_datasource(self) -> SlackDataSource:
-        """Return a SlackDataSource backed by the always-current OAuth token."""
+    @cached_property
+    def _token_renewal(self) -> SlackTokenRenewal:
+        return SlackTokenRenewal(
+            self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+        )
+
+    async def _fresh_datasource(self) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
         if not self.external_client:
             raise RuntimeError("Call init() first.")
+        return await self._token_renewal.datasource(self.external_client, self._current_token)
 
+    async def _current_token(self) -> tuple[dict[str, Any], str]:
         # Cache the connector config to avoid an etcd/Redis round-trip on every
         # Slack call. The config service invalidates the cache via its watch /
         # pubsub on key changes, so token rotation still propagates.
@@ -580,13 +630,7 @@ class SlackConnector(BaseConnector):
             token = auth.get("apiToken", "")
         if not token:
             raise RuntimeError("No access token in config.")
-
-        client = self.external_client.get_client()
-        if getattr(client, "get_token", lambda: None)() != token:
-            if hasattr(client, "set_token"):
-                client.set_token(token)
-
-        return SlackDataSource(self.external_client)
+        return cfg, token
 
     # =========================================================================
     # 1.  Main orchestration
@@ -607,6 +651,10 @@ class SlackConnector(BaseConnector):
 
             if not self.external_client:
                 raise RuntimeError("Call init() first.")
+
+            # Set when a read fails and the sync carries on without it; see
+            # full_sync_coverage.
+            self._full_sync_read_failed = False
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack_workspace", self.connector_id, self.logger
@@ -637,6 +685,7 @@ class SlackConnector(BaseConnector):
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
                     except Exception as exc:
+                        self._full_sync_read_failed = True
                         self.logger.error(
                             f"Channel message sync failed for "
                             f"{rg.external_group_id}: {exc}",
@@ -675,6 +724,9 @@ class SlackConnector(BaseConnector):
         self.user_id_to_internal_id_cache.clear()
         self.user_id_to_name_cache.clear()
         self._non_guest_app_users: list[AppUser] = []
+        # Set when a page fails: the caches above then miss users, and every
+        # permission list built from them would be short (see _sync_channels).
+        self._users_read_failed = False
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
@@ -685,6 +737,10 @@ class SlackConnector(BaseConnector):
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
             if not resp or not resp.success:
+                # The workspace_member role is written from these pages: with one
+                # missing it is left out or short, and must not be unlinked as unseen.
+                self._full_sync_read_failed = True
+                self._users_read_failed = True
                 self.logger.error(f"❌ users.list failed: {getattr(resp, 'error', 'no response')}")
                 break
 
@@ -813,6 +869,11 @@ class SlackConnector(BaseConnector):
         users (owners, admins, regular members).  This role is referenced in
         channel permissions so that public channels don't need per-user edges.
         """
+        if getattr(self, "_users_read_failed", False):
+            # Written from a short user list, the role would drop every member
+            # not yet read, and with it their access to every public channel.
+            self.logger.warning("ℹ️ User list was not read in full; workspace role left as it is")
+            return
         non_guests = getattr(self, "_non_guest_app_users", [])
         if not non_guests:
             self.logger.info("ℹ️ No non-guest users to sync workspace role for")
@@ -843,9 +904,14 @@ class SlackConnector(BaseConnector):
             resp = await ds.usergroups_list(include_users=True)
 
             if not resp or not resp.success:
+                error = getattr(resp, "error", "no response")
+                # A missing scope is how this workspace is set up, not a failed read:
+                # its groups can never be read, so they are not kept as if they
+                # might be. Any other error leaves them unread this time.
+                if error != "missing_scope":
+                    self._full_sync_read_failed = True
                 self.logger.warning(
-                    f"⚠️  Could not fetch usergroups (scope missing?): "
-                    f"{getattr(resp, 'error', 'no response')}"
+                    f"⚠️  Could not fetch usergroups (scope missing?): {error}"
                 )
                 return
 
@@ -996,6 +1062,7 @@ class SlackConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
+                self._full_sync_read_failed = True
                 self.logger.error(
                     f"❌ conversations.list failed: {getattr(resp, 'error', 'no response')}"
                 )
@@ -1020,14 +1087,30 @@ class SlackConnector(BaseConnector):
                     continue
                 if include_ids and cid not in include_ids:
                     continue
+                if (
+                    getattr(self, "_users_read_failed", False)
+                    and (cd.get("is_im") or cd.get("is_private") or cd.get("is_mpim"))
+                ):
+                    # Its permission list is built from the user caches, which
+                    # this sync could not fill: members would be dropped, a DM
+                    # left with nobody. Leave it as it is until a sync reads the
+                    # users in full; the sync is already marked incomplete.
+                    self.logger.warning(
+                        f"User list was not read in full; channel {cd.get('name') or cid} left as it is"
+                    )
+                    continue
                 try:
                     rg = self._to_channel_record_group(cd)
                     if not rg:
+                        # It logs and answers None when it cannot build the group:
+                        # the channel goes unwritten, so it must not be unlinked.
+                        self._full_sync_read_failed = True
                         continue
                     if rg.name:
                         self.channel_id_to_name_cache[cid] = rg.name
                     page_items.append((rg, cd))
                 except Exception as exc:
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Failed to build RecordGroup for {cd.get('name')}: {exc}"
                     )
@@ -1046,11 +1129,16 @@ class SlackConnector(BaseConnector):
             batch: list[tuple[RecordGroup, list[Permission]]] = []
             for (rg, cd), perms in zip(page_items, perms_results):
                 if isinstance(perms, Exception):
+                    # Written with no permissions, the channel would lose every
+                    # member: on_new_record_groups replaces an existing group's
+                    # grants. Leave it as it is until a sync can read its members,
+                    # and skip its messages this time; their checkpoint stays put.
+                    self._full_sync_read_failed = True
                     self.logger.error(
                         f"❌ Permission resolution failed for "
-                        f"{cd.get('name')}: {perms}"
+                        f"{cd.get('name')}: {perms}; channel left unchanged"
                     )
-                    perms = []
+                    continue
                 batch.append((rg, perms))
                 record_groups.append(rg)
                 total += 1
@@ -1123,6 +1211,12 @@ class SlackConnector(BaseConnector):
         """
         Return all member Slack user IDs for a channel via conversations.members
         with full cursor-based pagination.
+
+        An empty list when the first page answers channel_not_found,
+        not_in_channel or missing_scope: the members cannot be read with this
+        token, so nobody is granted the channel (fail closed) until they can be.
+        Those answers repeat on every sync, so they are not a failed read. Any
+        failure after the first page, or any other failure, raises.
         """
         members: list[str] = []
         cursor: Optional[str] = None
@@ -1140,26 +1234,38 @@ class SlackConnector(BaseConnector):
                 if not resp or not resp.success:
                     # Connector may lack membership scope — log and bail
                     error = getattr(resp, "error", "no response")
-                    if error in ("channel_not_found", "not_in_channel", "missing_scope"):
-                        self.logger.debug(
-                            f"Cannot fetch members for {channel_id}: {error}"
-                        )
-                    else:
+                    # On the first page these mean the members cannot be read at
+                    # all, and will not be next time either: fail closed, so a
+                    # member removed from the channel never keeps access unseen.
+                    # After it they cut the list short like any other error.
+                    if cursor is None and error in ("channel_not_found", "not_in_channel", "missing_scope"):
                         self.logger.warning(
-                            f"conversations.members({channel_id}) failed: {error}"
+                            f"Cannot read the members of {channel_id} ({error}); "
+                            f"nobody is given access to it until they can be read"
                         )
-                    break
+                        return []
+                    # Any other failure leaves the member list short. Returned,
+                    # it would replace the channel's grants and lock out every
+                    # member not yet read; raised, the channel is left as it is.
+                    self.logger.warning(
+                        f"conversations.members({channel_id}) failed: {error}"
+                    )
+                    raise RuntimeError(
+                        f"conversations.members({channel_id}) failed part-way: {error}"
+                    )
 
                 members.extend(resp.data.get("members", []))
                 cursor = resp.data.get("response_metadata", {}).get("next_cursor", "")
                 if not cursor:
                     break
 
+            except RuntimeError:
+                raise
             except Exception as exc:
                 self.logger.error(
                     f"_fetch_channel_members({channel_id}): {exc}", exc_info=True
                 )
-                break
+                raise RuntimeError(f"conversations.members({channel_id}) failed: {exc}") from exc
 
         return members
 
@@ -1208,6 +1314,9 @@ class SlackConnector(BaseConnector):
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.SLACK_CHANNEL,
+                # Slack has no per-message ACL, so channel membership is the
+                # whole permission story and search can trust the group.
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=web_url,
                 created_at=current_ts,
                 updated_at=current_ts,
@@ -1273,6 +1382,14 @@ class SlackConnector(BaseConnector):
         newest_ts:  Optional[str] = None   # newest across ALL pages (Slack newest-first)
         total_msgs = 0
         all_deferred_threads: list[DeferredThread] = []
+        # Set when a page fails for a reason that is not a permanent skip
+        # (rate limit, server error, no response). Older pages were never
+        # fetched, so the checkpoint must not move past them.
+        history_error: Optional[str] = None
+        # Threads whose replies were not all read (a failed replies page, or
+        # an exception while processing the thread). Their parents must stay
+        # inside the next sync's window, so the channel checkpoint waits too.
+        incomplete_threads = 0
         join_attempted = False
 
         while True:
@@ -1321,6 +1438,7 @@ class SlackConnector(BaseConnector):
                     self.logger.error(
                         f"❌ conversations.history({channel_id}) failed: {error}"
                     )
+                    history_error = error
                     break
 
             msgs: list[dict[str, Any]] = resp.data.get("messages", [])
@@ -1403,29 +1521,55 @@ class SlackConnector(BaseConnector):
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (full)"
                         )
-                        await self._process_thread(dt.msg, dt.ctx, dt.rg_id)
+                        replies_complete = await self._process_thread(
+                            dt.msg, dt.ctx, dt.rg_id
+                        )
                     else:
                         self.logger.info(
                             f"[DeferredThread] Processing thread parent ts={ts}, "
                             f"reply_count={dt.msg.get('reply_count')}, channel={dt.ctx.channel_id} (incremental)"
                         )
-                        await self._process_thread_incremental(
+                        replies_complete = await self._process_thread_incremental(
                             dt.msg, dt.ctx, existing_rg_id, last_reply_ts
                         )
+
+                    if not replies_complete:
+                        incomplete_threads += 1
+                        self.logger.warning(
+                            f"[DeferredThread] Thread checkpoint NOT updated for ts={ts}, "
+                            f"channel={dt.ctx.channel_id}: replies were only partly fetched"
+                        )
+                        continue
 
                     latest_reply = dt.msg.get("latest_reply") or ts
                     await self.audit_log_sync_point.update_sync_point(
                         thread_sp_key, {"last_reply_ts": latest_reply}
                     )
                 except Exception as exc:
+                    incomplete_threads += 1
                     self.logger.error(
                         f"[DeferredThread] Thread processing FAILED for ts={ts}, "
                         f"channel={dt.ctx.channel_id}: {exc}",
                         exc_info=True,
                     )
 
+        if history_error or incomplete_threads:
+            self._full_sync_read_failed = True
+
         # Persist checkpoint ONLY after all pages succeed
-        if newest_ts:
+        if history_error:
+            self.logger.warning(
+                f"⚠️ Checkpoint NOT updated for {channel_id}: conversations.history "
+                f"failed part-way ({history_error}) after {total_msgs} messages; "
+                f"the next sync starts again from the previous checkpoint"
+            )
+        elif incomplete_threads:
+            self.logger.warning(
+                f"⚠️ Checkpoint NOT updated for {channel_id}: replies of "
+                f"{incomplete_threads} thread(s) could not all be read; the next "
+                f"sync starts again from the previous checkpoint"
+            )
+        elif newest_ts:
             await self.messages_sync_point.update_sync_point(
                 sync_key, {"last_sync_time": newest_ts}
             )
@@ -1717,6 +1861,7 @@ class SlackConnector(BaseConnector):
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.SLACK_THREAD,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
                 web_url=url,
                 created_at=now,
                 updated_at=now,
@@ -1745,12 +1890,17 @@ class SlackConnector(BaseConnector):
         thread_ts: str,
         ctx: ProcessingContext,
         oldest: Optional[str] = None,
-    ) -> list[dict[str, Any]]:
+    ) -> tuple[list[dict[str, Any]], bool]:
         """Fetch raw thread replies (excluding the parent) via conversations.replies.
 
         Args:
             oldest: If set, only replies with ts > oldest are returned
                     (Slack ``oldest`` is exclusive lower bound).
+
+        Returns:
+            ``(replies, complete)``. ``complete`` is False when a page failed
+            before the cursor ran out; ``replies`` then holds only the pages
+            fetched so far, and the caller must not record the thread as synced.
         """
         replies: list[dict[str, Any]] = []
         cursor:  Optional[str] = None
@@ -1767,7 +1917,19 @@ class SlackConnector(BaseConnector):
                 kwargs["oldest"] = oldest
             resp = await ds.conversations_replies(**kwargs)
             if not resp or not resp.success:
-                break
+                error = getattr(resp, "error", "no response")
+                # The thread or channel is gone: nothing more can be read, so
+                # a retry would fail the same way. Treat it as finished.
+                if error in ("thread_not_found", "channel_not_found", "not_in_channel"):
+                    self.logger.warning(
+                        f"Skipping replies of thread ts={thread_ts} in {channel_id}: {error}"
+                    )
+                    return replies, True
+                self.logger.warning(
+                    f"conversations.replies({channel_id}, ts={thread_ts}) failed: "
+                    f"{error}; returning {len(replies)} replies fetched so far as incomplete"
+                )
+                return replies, False
 
             for md in resp.data.get("messages", []):
                 ts = md.get("ts")
@@ -1780,7 +1942,7 @@ class SlackConnector(BaseConnector):
             if not cursor:
                 break
 
-        return replies
+        return replies, True
 
     async def _build_thread_burst_record(
         self,
@@ -1844,6 +2006,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=burst_id,
                 external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
                 record_group_id=thread_rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
@@ -1878,9 +2041,12 @@ class SlackConnector(BaseConnector):
         parent_msg: dict[str, Any],
         ctx: ProcessingContext,
         rg_id: Optional[str],
-    ) -> None:
+    ) -> bool:
         """
         Full thread processing for a thread-parent message.
+
+        Returns False when the replies could only be partly fetched, so the
+        caller must not write the thread's sync point.
 
         Creates:
           1. SLACK_THREAD RecordGroup
@@ -1902,7 +2068,7 @@ class SlackConnector(BaseConnector):
                 f"[ThreadProcess] Could not build thread RecordGroup for ts={ts} "
                 f"in {ctx.channel_id} — skipping thread"
             )
-            return
+            return True
 
         try:
             await self.data_entities_processor.on_new_record_groups([(thread_rg, [])])
@@ -1921,7 +2087,9 @@ class SlackConnector(BaseConnector):
             f"group_type={thread_rg.group_type}"
         )
 
-        replies = await self._fetch_thread_replies_raw(ctx.channel_id, ts, ctx)
+        replies, replies_complete = await self._fetch_thread_replies_raw(
+            ctx.channel_id, ts, ctx
+        )
         all_msgs = [parent_msg] + replies
         self.logger.info(
             f"[ThreadProcess] Fetched {len(replies)} replies for thread ts={ts}"
@@ -1939,6 +2107,7 @@ class SlackConnector(BaseConnector):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
                     fr.record_group_id = thread_rg_id
+                    fr.root_record_group_id       = self._root_rg_id(ctx)
                     fr.external_record_group_id = thread_ext_group_id
                     fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
@@ -2025,6 +2194,7 @@ class SlackConnector(BaseConnector):
             f"channel={ctx.channel_id}: thread_rg_id={thread_rg_id}, "
             f"{len(burst_recs_batch)} burst/file records"
         )
+        return replies_complete
 
     async def _process_thread_incremental(
         self,
@@ -2032,19 +2202,20 @@ class SlackConnector(BaseConnector):
         ctx: ProcessingContext,
         thread_rg_id: str,
         last_reply_ts: str,
-    ) -> None:
+    ) -> bool:
         """
         Incremental thread processing: only fetch and process replies newer
         than ``last_reply_ts``.
 
         Creates thread-burst/single records for the new replies only.
+        Returns False when the new replies could only be partly fetched.
         """
         thread_ts = parent_msg.get("ts", "")
-        new_replies = await self._fetch_thread_replies_raw(
+        new_replies, replies_complete = await self._fetch_thread_replies_raw(
             ctx.channel_id, thread_ts, ctx, oldest=last_reply_ts,
         )
         if not new_replies:
-            return
+            return replies_complete
 
         self.logger.info(
             f"  Thread {thread_ts}: {len(new_replies)} new replies "
@@ -2063,6 +2234,7 @@ class SlackConnector(BaseConnector):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
                     fr.record_group_id = thread_rg_id
+                    fr.root_record_group_id       = self._root_rg_id(ctx)
                     fr.external_record_group_id = thread_ext_group_id
                     fr.record_group_type = RecordGroupType.SLACK_THREAD
                     file_recs_by_ts.setdefault(mts, []).append(fr)
@@ -2129,6 +2301,8 @@ class SlackConnector(BaseConnector):
 
             await self._enrich_link_records_linked_id(burst_recs_batch)
             await self.data_entities_processor.on_new_records(burst_recs_batch)
+
+        return replies_complete
 
     # =========================================================================
     # 5e.  Burst / single processing
@@ -2230,6 +2404,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=burst_id,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
@@ -2385,6 +2560,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
@@ -2521,12 +2697,17 @@ class SlackConnector(BaseConnector):
                 # files.slack.com downloads aren't covered by the Web API tiers;
                 # T3 keeps a sane upper bound on parallel binary transfers.
                 await ctx.rate_limiter.acquire(Tier.T3)
-                token = getattr(
-                    self.external_client.get_client(), "get_token", lambda: None
-                )()
+                token = (await self._fresh_datasource()).access_token
                 async with httpx.AsyncClient(timeout=30.0) as http:
                     headers = {"Authorization": f"Bearer {token}"} if token else {}
                     r = await http.get(url_dl, headers=headers)
+                    # Slack answers a token it no longer accepts with 200 and its sign-in
+                    # page. Right after a scheduled rotation the connector can still hold
+                    # the old token, so try once more with the stored one if it is newer.
+                    if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                        newer = await self._token_renewal.newer_stored_token(token)
+                        if newer:
+                            r = await http.get(url_dl, headers={"Authorization": f"Bearer {newer}"})
                     if r.status_code == 200:
                         file_hash = hashlib.sha256(r.content).hexdigest()
             except Exception as exc:
@@ -2545,6 +2726,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=fid,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
@@ -2608,6 +2790,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=hashlib.md5(url.encode()).hexdigest(),
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,
                 version=1,
@@ -2695,6 +2878,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=(
                     RecordType.MESSAGE if parent_external_record_id else None
@@ -2867,7 +3051,15 @@ class SlackConnector(BaseConnector):
                     oldest_ts = sync_window_ts
 
                 try:
-                    await self._scan_channel_thread_growth(cid, oldest_ts)
+                    scan_complete = await self._scan_channel_thread_growth(
+                        cid, oldest_ts
+                    )
+                    if not scan_complete:
+                        self.logger.warning(
+                            f"Thread-growth checkpoint NOT updated for {cid}: "
+                            f"channel history was only partly scanned"
+                        )
+                        continue
                     await self.audit_log_sync_point.update_sync_point(
                         chan_key, {"last_check_time": now_ms}
                     )
@@ -2884,10 +3076,14 @@ class SlackConnector(BaseConnector):
 
     async def _scan_channel_thread_growth(
         self, channel_id: str, oldest_ts: Optional[str]
-    ) -> None:
+    ) -> bool:
         """
         Paginate through channel history within [oldest_ts, now] and call
         ``_handle_new_thread()`` for every thread-root message (reply_count > 0).
+
+        Returns True when the whole range was scanned (or the channel is gone
+        for good), False when a page failed part-way or a thread's replies
+        could not all be read, so the caller must not advance its checkpoint.
         """
         bot_messages_enabled = self.indexing_filters.is_enabled(
             IndexingFilterKey.BOT_MESSAGES
@@ -2916,6 +3112,7 @@ class SlackConnector(BaseConnector):
         # Slack expects canonical "<sec>.<6-digit μs>"; `str(time.time())` can
         # emit 7 decimals, which the API silently rejects.
         now_ts = f"{time.time():.6f}"
+        threads_complete = True
 
         while True:
             await self.rate_limiter.acquire(Tier.T3)
@@ -2936,10 +3133,17 @@ class SlackConnector(BaseConnector):
                     f"conversations.history for thread-growth in {channel_id}: {exc}",
                     exc_info=True,
                 )
-                break
+                return False
 
             if not resp or not resp.success:
-                break
+                error = getattr(resp, "error", "no response")
+                if error in ("channel_not_found", "not_in_channel"):
+                    return True
+                self.logger.warning(
+                    f"conversations.history for thread-growth in {channel_id} "
+                    f"failed: {error}"
+                )
+                return False
 
             msgs: list[dict[str, Any]] = resp.data.get("messages", [])
             if not msgs:
@@ -2978,8 +3182,10 @@ class SlackConnector(BaseConnector):
                     if not bot_messages_enabled and self._is_bot_message(md):
                         continue
                     try:
-                        await self._handle_new_thread(md, channel_id, ts)
+                        if not await self._handle_new_thread(md, channel_id, ts):
+                            threads_complete = False
                     except Exception as exc:
+                        threads_complete = False
                         self.logger.error(
                             f"Thread-growth for ts={ts} in {channel_id}: {exc}",
                             exc_info=True,
@@ -2990,6 +3196,8 @@ class SlackConnector(BaseConnector):
             )
             if not cursor:
                 break
+
+        return threads_complete
 
     # =========================================================================
     # 7b. Phase 5 — Full change detection (bypassed for now)
@@ -3332,7 +3540,17 @@ class SlackConnector(BaseConnector):
                 return 0
 
             rg_id = getattr(existing_base, "record_group_id", None)
-            ctx   = self._make_ctx(channel_id, rg_id)
+            # Pass the root explicitly: for a threaded message rg_id is the
+            # *thread* group, and _root_rg_id's channel_groups_map fallback
+            # would then persist the thread as its own root. A stored wrong
+            # value is worse than none — _derive_group_root only fills a root
+            # in when one is absent, so the backfill could not repair it.
+            ctx   = self._make_ctx(
+                channel_id,
+                rg_id,
+                root_rg_id=await self._reindex_root_rg_id(existing_base, channel_id),
+                root_resolved=True,
+            )
             text  = self._replace_mentions_in_text(
                 md.get("text", ""), ctx.user_id_to_name, ctx.channel_id_to_name
             )
@@ -3355,6 +3573,7 @@ class SlackConnector(BaseConnector):
                 external_record_id=ts,
                 external_record_group_id=channel_id,
                 record_group_id=rg_id,
+                root_record_group_id=self._root_rg_id(ctx),
                 version=existing_base.version + 1,
                 external_revision_id=str(get_epoch_timestamp_in_ms()),
                 origin=OriginTypes.CONNECTOR,
@@ -3441,12 +3660,54 @@ class SlackConnector(BaseConnector):
         await self.data_entities_processor.on_record_content_update(burst_rec)
         return 1
 
+
+    def _root_rg_id(self, ctx: ProcessingContext) -> Optional[str]:
+        """Channel record group id: the root of a Slack record's group chain."""
+        if ctx.root_resolved:
+            return ctx.root_rg_id
+        return ctx.root_rg_id or ctx.channel_groups_map.get(ctx.channel_id)
+
+    @staticmethod
+    def _channel_ext_id(external_group_id: str) -> str:
+        """The Slack channel id behind a record's external group id.
+
+        Threaded records carry the thread group's id, ``thread_{channel}_{ts}``.
+        """
+        if external_group_id.startswith("thread_"):
+            parts = external_group_id.split("_", 2)  # ["thread", channel_id, thread_ts]
+            if len(parts) >= 2:
+                return parts[1]
+        return external_group_id
+
+    async def _reindex_root_rg_id(
+        self, rec: Record, external_group_id: str
+    ) -> Optional[str]:
+        """Root (channel) group for a record being reindexed.
+
+        A threaded record's ``record_group_id`` is its thread group, so the
+        ``channel_groups_map`` fallback in :meth:`_root_rg_id` would publish the
+        thread as its own root; container filtering drops a root-scoped
+        connector's descendants, so the record would then vanish from search.
+        Records written before ``rootRecordGroupId`` existed have none stored.
+        """
+        stored = getattr(rec, "root_record_group_id", None)
+        if stored:
+            return stored
+        cid = self._channel_ext_id(external_group_id)
+        return (await self._channel_group_map([cid])).get(cid)
+
     def _make_ctx(
-        self, channel_id: str, rg_id: Optional[str]
+        self,
+        channel_id: str,
+        rg_id: Optional[str],
+        root_rg_id: Optional[str] = None,
+        root_resolved: bool = False,
     ) -> ProcessingContext:
         return ProcessingContext(
             channel_id=channel_id,
             channel_groups_map={channel_id: rg_id} if rg_id else {},
+            root_rg_id=root_rg_id,
+            root_resolved=root_resolved,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
@@ -3455,9 +3716,12 @@ class SlackConnector(BaseConnector):
 
     async def _handle_new_thread(
         self, md: dict[str, Any], channel_id: str, ts: str
-    ) -> None:
+    ) -> bool:
         """
         Handle a thread root discovered during change detection.
+
+        Returns False when the thread's replies could not all be read, so
+        the thread-growth scan must not advance its checkpoint.
 
         Decision is gated on the per-thread sync_point, not on whether the
         thread RecordGroup node already exists. A full sync deletes sync_points
@@ -3513,23 +3777,36 @@ class SlackConnector(BaseConnector):
                 f"[ThreadGrowth] Fresh sync for thread ts={ts}, channel={channel_id}, "
                 f"reply_count={md.get('reply_count')}, channel_rg_id={rg_id}"
             )
-            await self._process_thread(md, ctx, rg_id)
+            replies_complete = await self._process_thread(md, ctx, rg_id)
+            if not replies_complete:
+                self.logger.warning(
+                    f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
+                    f"channel={channel_id}: replies were only partly fetched"
+                )
+                return False
 
             latest_reply = md.get("latest_reply") or ts
             await self.audit_log_sync_point.update_sync_point(
                 thread_sp_key, {"last_reply_ts": latest_reply}
             )
-            return
+            return True
 
         # ── Incremental ───────────────────────────────────────────────────
-        await self._process_thread_incremental(
+        replies_complete = await self._process_thread_incremental(
             md, ctx, thread_rg_id, last_reply_ts,
         )
+        if not replies_complete:
+            self.logger.warning(
+                f"[ThreadGrowth] Thread checkpoint NOT updated for ts={ts}, "
+                f"channel={channel_id}: replies were only partly fetched"
+            )
+            return False
 
         latest_reply = md.get("latest_reply") or last_reply_ts
         await self.audit_log_sync_point.update_sync_point(
             thread_sp_key, {"last_reply_ts": latest_reply}
         )
+        return True
 
     def _record_changed(
         self, md: dict[str, Any], existing: Any
@@ -3953,12 +4230,7 @@ class SlackConnector(BaseConnector):
         if not ext_id or not ch:
             raise HTTPException(400, f"Missing id/channel for record {record.id}")
 
-        # Thread records have external_record_group_id = "thread_{channel_id}_{ts}",
-        # extract the real Slack channel ID for API calls.
-        if ch.startswith("thread_"):
-            parts = ch.split("_", 2)  # ["thread", channel_id, thread_ts]
-            if len(parts) >= 2:
-                ch = parts[1]
+        ch = self._channel_ext_id(ch)
 
         rg_id = getattr(record, "record_group_id", None)
         ctx   = self._make_ctx(ch, rg_id)
@@ -4150,11 +4422,7 @@ class SlackConnector(BaseConnector):
                 connector=self.display_name,
             )
 
-        token = getattr(
-            self.external_client.get_client(), "get_token", lambda: None
-        )()
-        if not token:
-            self.logger.warning(f"No auth token available for file download {fid}, attempting without auth")
+        token = ds.access_token
         async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http:
             headers = {"Authorization": f"Bearer {token}"} if token else {}
             async with http.stream("GET", url, headers=headers) as r:
@@ -4276,6 +4544,8 @@ class SlackConnector(BaseConnector):
         ctx   = ProcessingContext(
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
+            root_rg_id=await self._reindex_root_rg_id(rec, ch),
+            root_resolved=True,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),
@@ -4331,6 +4601,8 @@ class SlackConnector(BaseConnector):
         ctx   = ProcessingContext(
             channel_id=ch,
             channel_groups_map={ch: rg_id} if rg_id else {},
+            root_rg_id=await self._reindex_root_rg_id(rec, ch),
+            root_resolved=True,
             user_id_to_email=dict(self.user_id_to_email_cache),
             user_id_to_name=dict(self.user_id_to_name_cache),
             channel_id_to_name=dict(self.channel_id_to_name_cache),

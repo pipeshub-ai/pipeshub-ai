@@ -22,22 +22,19 @@ NO-GO on `agent_loop_lib`'s blocking `HILStore.wait_for_response()` /
 answer — workable for a long-lived CLI/control-plane process, but a poor
 fit for one stateless request-per-turn web worker (`runtime.hil_store` is
 never set here; `PipesHubAgentFactory` doesn't register the library's
-`clarify` tool at all). PipesHub's actual mid-run mechanism —
-`ask_user_question` tagged `TAG_LIFECYCLE_TERMINAL` — deliberately ends
-the turn instead of blocking, and the user's answer arrives as an
-ordinary NEW turn; "resume" is therefore conversation-history
-continuity, not in-process suspension. Phase 2a (`tool_results` ->
-`previousConversations`, see `factory.py::_convert_conversation_turn`)
-is what actually closes that continuity gap, and already ships without
-this. Revisit only if PipesHub moves to a long-lived worker-per-run
-model; if the sibling `agent_loop_architecture_fixes` plan's ASK->HIL
-item lands a real persistent `HILStore` first, prefer reusing it over
-building a second one.
+`clarify` tool at all). PipesHub's mid-run mechanism — `ask_user_question` tagged
+`TAG_LIFECYCLE_TERMINAL` — ends THIS HTTP request (the pause) instead of
+blocking on `hil_store.wait_for_response()`. The next request is a
+resume: `factory.py` keeps the original Goal, injects the card answers
+as a `ToolMessage` on the parked tool call, and `stream_bridge` runs
+`agent.stream(..., _skip_start=True)` so the loop does not append a new
+`UserMessage`. That is conversation-history resume, not in-process
+suspension. A persistent `HILStore` would replace the second request
+with a true coroutine resume; prefer that if it lands.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -67,11 +64,16 @@ async def emit_pre_run_clarification(
     Returns the `completion_data` dict, matching `RespondPipeline.run()`'s
     return contract so `stream_bridge.py` can treat both paths uniformly.
     """
-    from app.agents.actions.internal_tools.intrim_tools import InternalTools
+    from app.agents.actions.internal_tools.intrim_tools import (
+        asked_questions,
+        question_payload,
+    )
 
-    tool_data = json.loads(await InternalTools().ask_user_question(user_intent=user_intent, questions=questions))
-
-    if context.has_ui_client:
+    questions = asked_questions(questions)
+    # With no question there is no card to show, and the event would make
+    # the client drop the clarifying text that follows.
+    if context.has_ui_client and questions:
+        tool_data = question_payload(user_intent, questions)
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 

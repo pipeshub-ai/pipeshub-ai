@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -53,7 +53,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -63,10 +63,20 @@ jobs:
           npm ci
           npx playwright install chromium --with-deps
 
+      # From GHCR so CI neither spends nor inflates Docker Hub pulls; the compose
+      # build reads the exported names. Docker Hub is the fallback per image.
       - name: Pull pre-built base images
         run: |
-          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
-          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
+              image="$hub"
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
 
       - name: Build stack images
         working-directory: deployment/docker-compose
@@ -105,32 +115,39 @@ jobs:
 
       - name: Create organization and admin user
         run: |
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
+          # jq reads the credentials from the environment, so quotes or backslashes
+          # in a secret stay valid JSON and never appear on a command line.
+          jq -n --arg name "Smoke Test" --arg short "SMOKE" '{
+              accountType: "business",
+              adminFullName: "\($name) Admin",
+              contactEmail: $ENV.PIPESHUB_TEST_USER_EMAIL,
+              password: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              confirmPassword: $ENV.PIPESHUB_TEST_USER_PASSWORD,
+              registeredName: "\($name) Org",
+              shortName: $short
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/org" \
             -H "Content-Type: application/json" \
-            -d '{
-              "accountType": "business",
-              "adminFullName": "Smoke Test Admin",
-              "contactEmail": "'"${PIPESHUB_TEST_USER_EMAIL}"'",
-              "password": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "confirmPassword": "'"${PIPESHUB_TEST_USER_PASSWORD}"'",
-              "registeredName": "Smoke Test Org",
-              "shortName": "SMOKE"
-            }' > /dev/null
+            --data-binary @- > /dev/null
 
       - name: Skip onboarding
         run: |
           HEADERS=$(mktemp)
-          curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
+          jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
+            | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/initAuth" \
             -H "Content-Type: application/json" \
-            -d "{\"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             -D "${HEADERS}" -o /dev/null
           SESSION_TOKEN=$(grep -i "x-session-token:" "${HEADERS}" | tr -d '\r' | awk '{print $2}')
           rm -f "${HEADERS}"
 
-          ACCESS_TOKEN=$(curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
+          ACCESS_TOKEN=$(jq -n '{
+              method: "password",
+              credentials: {password: $ENV.PIPESHUB_TEST_USER_PASSWORD},
+              email: $ENV.PIPESHUB_TEST_USER_EMAIL
+            }' | curl -sf "${PIPESHUB_BASE_URL}/api/v1/userAccount/authenticate" \
             -H "Content-Type: application/json" \
             -H "x-session-token: ${SESSION_TOKEN}" \
-            -d "{\"method\": \"password\", \"credentials\": {\"password\": \"${PIPESHUB_TEST_USER_PASSWORD}\"}, \"email\": \"${PIPESHUB_TEST_USER_EMAIL}\"}" \
+            --data-binary @- \
             | jq -r '.accessToken')
 
           curl -sf -X PUT "${PIPESHUB_BASE_URL}/api/v1/org/onboarding-status" \
@@ -147,6 +164,9 @@ jobs:
           NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
           TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
           TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+          # The stack's Mailpit catches invite emails; the invite test reads them back.
+          SMTP_HOST: mailpit
+          SMTP_PORT: '1025'
         run: npm run test:e2e:smoke 2>&1
 
       - name: Dump docker logs
@@ -156,7 +176,7 @@ jobs:
 
       - name: Upload smoke report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-smoke-report
           path: |

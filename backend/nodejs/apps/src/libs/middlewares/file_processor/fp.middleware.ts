@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
+import { createMulter } from '../../utils/multer.utils';
 import { BadRequestError } from '../../errors/http.errors';
 
 const defaultOptions: FileUploadOptions = {
@@ -47,7 +48,7 @@ export class FileUploadMiddleware {
       }
     };
 
-    this.multer = multer({
+    this.multer = createMulter({
       storage: storage,
       limits: {
         fileSize: this.options.maxFileSize,

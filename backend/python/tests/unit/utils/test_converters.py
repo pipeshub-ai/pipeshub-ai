@@ -22,14 +22,6 @@ from app.utils.converters.docling_doc_to_blocks import (
     DoclingDocToBlocksConverter,
 )
 import logging
-from app.models.blocks import (
-    BlockType,
-    GroupType,
-)
-from app.utils.converters.docling_doc_to_blocks import (
-    DOCLING_REF_NODE,
-    DoclingDocToBlocksConverter,
-)
 
 
 @pytest.fixture

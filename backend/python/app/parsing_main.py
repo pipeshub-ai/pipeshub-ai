@@ -37,6 +37,10 @@ from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
+from app.modules.parsers.parse_pool import (
+    set_resource_governor as set_parse_pool_governor,
+)
+from app.modules.parsers.parse_pool import shutdown_parse_pool
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
@@ -62,7 +66,9 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("parsing_main")
 
@@ -150,11 +156,10 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
-    # EPUB is converted to PDF via LibreOffice, then delegated to the same
-    # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
-    # OCR selection stays entirely inside SmartPDFParser).
-    registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
-    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
+    # EPUB chapters are XHTML, so each book goes through the HTML parser of
+    # the same provider.
+    registry.register("epub", ParserProvider.DOCLING, EPUBParser(docling_html_parser))
+    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(default_html_parser))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
@@ -226,6 +231,7 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    mark_process_non_dumpable()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 
@@ -257,6 +263,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    set_parse_pool_governor(governor)
 
     # Size the loop's default executor (used by every asyncio.to_thread
     # offload) to the combined heavy+light ceiling so CPU-bound parsers
@@ -298,6 +305,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
+    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:
@@ -337,7 +345,8 @@ async def health_check() -> JSONResponse:
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
-            content["resource_governor"] = {"error": str(stats_error)}
+            container.logger().warning("Resource governor stats failed: %s", stats_error)
+            content["resource_governor"] = {"error": "unavailable"}
     return JSONResponse(content=content)
 
 
@@ -372,6 +381,7 @@ def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = No
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

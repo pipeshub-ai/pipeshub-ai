@@ -3,6 +3,7 @@ from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
+    is_generated_file_name,
     is_ignored_path,
     should_index_code_file,
 )
@@ -17,6 +18,7 @@ __all__ = [
     "FileRole",
     "classify_file_role",
     "detect_language",
+    "is_generated_file_name",
     "is_ignored_path",
     "should_index_code_file",
 ]

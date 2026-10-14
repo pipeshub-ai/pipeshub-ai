@@ -1,6 +1,9 @@
 import json
 import logging
 import asyncio
+import re
+from datetime import date, datetime
+from http import HTTPStatus
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
@@ -12,6 +15,7 @@ from app.agents.actions.util.tool_summaries import (
     confirmation,
     entity_summary,
     list_summary,
+    parse_json_maybe,
 )
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
@@ -27,6 +31,10 @@ from app.connectors.core.registry.tool_builder import (
 from app.sources.client.microsoft.microsoft import MSGraphClient
 from app.sources.external.microsoft.teams.teams import TeamsDataSource
 
+from msgraph.generated.models.aad_user_conversation_member import AadUserConversationMember
+from msgraph.generated.models.channel import Channel
+from msgraph.generated.models.chat import Chat
+from msgraph.generated.models.chat_type import ChatType
 from msgraph.generated.models.patterned_recurrence import PatternedRecurrence
 from msgraph.generated.models.recurrence_pattern import RecurrencePattern
 from msgraph.generated.models.recurrence_pattern_type import RecurrencePatternType
@@ -46,6 +54,60 @@ def _teams_channel_label(channel: dict) -> str:
 
 def _teams_meeting_label(meeting: dict) -> str:
     return meeting.get("subject") or meeting.get("meeting_id") or "?"
+
+
+_GRAPH_STATUS_RE = re.compile(r"\(status (\d{3})\)\s*$")
+_RECONNECT_TEAMS = "Reconnect the Teams toolset in Settings > Toolsets and try again."
+_GRAPH_STATUS_HINTS = {
+    HTTPStatus.TOO_MANY_REQUESTS: "Microsoft Teams is limiting how fast requests can be made. Wait a minute and try again.",
+    HTTPStatus.UNAUTHORIZED: f"Microsoft did not accept the saved sign-in. {_RECONNECT_TEAMS}",
+    HTTPStatus.FORBIDDEN: (
+        "The signed-in account does not have permission to do this. If it should, reconnect the Teams "
+        "toolset in Settings > Toolsets and approve the requested permissions."
+    ),
+    HTTPStatus.NOT_FOUND: "Check the id, or look it up first with get_teams, get_channels or get_users_list.",
+}
+
+
+def _graph_error(error: str | None, fallback: str) -> str:
+    """Graph's own message plus what to do next, read from the "(status N)" the SDK error ends with."""
+    text = (error or "").strip() or fallback
+    match = _GRAPH_STATUS_RE.search(text)
+    if not match:
+        return text
+    status = int(match.group(1))
+    hint = _GRAPH_STATUS_HINTS.get(status)
+    if hint is None and status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        hint = "Microsoft Teams is having a temporary problem. Try again in a moment."
+    return f"{text}. {hint}" if hint else text
+
+
+def _coerce_str_list(value: object) -> Optional[list[str]]:
+    """Accept a real list, the JSON-array string the tool schema asks for, or a comma-separated string.
+
+    Returns None when the value cannot be read as a list, so a caller never iterates a string's characters.
+    """
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("["):
+            parsed = parse_json_maybe(text)
+            if not isinstance(parsed, list):
+                return None
+            items: list[Any] = parsed
+        else:
+            items = text.split(",")
+    elif isinstance(value, (list, tuple)):
+        items = list(value)
+    else:
+        return None
+    return [str(item).strip() for item in items if item is not None and str(item).strip()]
+
+
+def _coerce_dict(value: object) -> Optional[dict[str, Any]]:
+    if isinstance(value, dict):
+        return value
+    parsed = parse_json_maybe(value) if isinstance(value, str) else None
+    return parsed if isinstance(parsed, dict) else None
 
 
 # ---------------------------------------------------------------------------
@@ -467,12 +529,88 @@ class GetUsersListInput(BaseModel):
 
 
 class TeamsAmbiguousUserError(Exception):
-    """Raised when multiple Teams users match a provided identifier."""
+    """Raised when a Teams identifier does not pin down exactly one user.
 
-    def __init__(self, query: str, matches: List[Dict[str, Any]]) -> None:
+    exact_required: raised by an exact-only lookup whose only candidates contain the query.
+    """
+
+    def __init__(self, query: str, matches: List[Dict[str, Any]], *, exact_required: bool = False) -> None:
         self.query = query
         self.matches = matches
+        self.exact_required = exact_required
         super().__init__(f"Multiple users found matching '{query}'")
+
+
+class TeamsUserLookupError(Exception):
+    """The directory could not be read, so "no such user" cannot be concluded."""
+
+    def __init__(self, query: str, error: str | None) -> None:
+        self.query = query
+        self.error = error
+        super().__init__(error or "directory lookup failed")
+
+    def agent_message(self) -> str:
+        reason = _graph_error(self.error, "the directory lookup failed")
+        return f"Could not look up '{self.query}' in the directory: {reason}"
+
+
+_RECURRENCE_PATTERN_TYPES = (
+    "daily", "weekly", "absoluteMonthly", "relativeMonthly", "absoluteYearly", "relativeYearly",
+)
+_RECURRENCE_RANGE_TYPES = ("endDate", "noEnd", "numbered")
+
+
+def _validate_recurrence(pattern: dict[str, Any], range_obj: dict[str, Any]) -> None:
+    """Refuse an invalid recurrence, and rewrite pattern type and dates in place to the form Graph expects.
+
+    The datasource lowercases the pattern type without stripping it and maps anything it doesn't
+    know to daily, and parses dates with date.fromisoformat unstripped, so only canonical values
+    may leave this function.
+    """
+    pattern_type = pattern.get("type")
+    canonical_type = next(
+        (t for t in _RECURRENCE_PATTERN_TYPES
+         if isinstance(pattern_type, str) and pattern_type.strip().lower() == t.lower()),
+        None,
+    )
+    if canonical_type is None:
+        raise ValueError(
+            f"recurrence pattern type {pattern_type!r} is not supported. Use one of: daily, weekly, "
+            "absoluteMonthly (for example the 15th of every month), relativeMonthly (for example "
+            "the first Monday of every month), absoluteYearly, relativeYearly."
+        )
+    pattern["type"] = canonical_type
+    if range_obj.get("type") not in _RECURRENCE_RANGE_TYPES:
+        raise ValueError(
+            f"recurrence range type {range_obj.get('type')!r} is not supported. Use endDate "
+            "(with endDate), noEnd, or numbered (with numberOfOccurrences)."
+        )
+    if "startDate" not in range_obj:
+        raise ValueError("recurrence range is missing startDate.")
+    for key in ("startDate", "endDate"):
+        if key == "endDate" and key not in range_obj:
+            continue
+        parsed = _parse_recurrence_date(range_obj.get(key))
+        if parsed is None:
+            raise ValueError(
+                f"recurrence range {key} must be a date in YYYY-MM-DD form, for example 2026-03-02."
+            )
+        range_obj[key] = parsed.isoformat()
+
+
+def _parse_recurrence_date(value: object) -> Optional[date]:
+    # fromisoformat alone also takes 20260302 and week dates like 2026-W10-1.
+    # datetime is a subclass of date, so check it first: Graph wants a date without a time.
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value.strip(), re.ASCII):
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
 
 
 def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
@@ -530,6 +668,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
             else:
                 range_obj["type"] = "noEnd"
 
+        _validate_recurrence(pattern, range_obj)
         return {
             "pattern": pattern,
             "range": range_obj,
@@ -571,9 +710,9 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
 
     # If user passed one nested key, reuse it and fill the missing one from flat keys.
     if "pattern" in recurrence and isinstance(recurrence["pattern"], dict):
-        pattern = recurrence["pattern"]
+        pattern = dict(recurrence["pattern"])
     if "range" in recurrence and isinstance(recurrence["range"], dict):
-        range_obj = recurrence["range"]
+        range_obj = dict(recurrence["range"])
 
     if "type" in range_obj:
         normalized_type = _normalize_range_type(range_obj.get("type"))
@@ -601,8 +740,7 @@ def _build_recurrence_body(recurrence: Dict[str, Any]) -> Dict[str, Any]:
         raise ValueError(
             "recurrence is missing range data. Provide recurrence.range or flat keys like startDate/endDate/numberOfOccurrences."
         )
-    if "startDate" not in range_obj:
-        raise ValueError("recurrence range is missing startDate.")
+    _validate_recurrence(pattern, range_obj)
 
     return {
         "pattern": pattern,
@@ -767,9 +905,13 @@ class Teams:
                     )
                 })
 
+        # ValueErrors come from argument validation (e.g. recurrence); their text says what to fix.
+        if isinstance(error, ValueError):
+            logger.error(f"Invalid arguments for {operation}: {error}")
+            return False, json.dumps({"error": str(error)})
+
         if (
-            isinstance(error, ValueError)
-            or "not authenticated" in error_msg
+            "not authenticated" in error_msg
             or "oauth" in error_msg
             or "authentication" in error_msg
             or "unauthorized" in error_msg
@@ -914,8 +1056,14 @@ class Teams:
         self,
         user_identifier: str,
         allow_ambiguous: bool = False,
+        *,
+        exact_only: bool = False,
     ) -> Optional[str]:
-        """Resolve user identifier (ID, UPN/email, or display name) to user ID."""
+        """Resolve user identifier (ID, UPN/email, or display name) to user ID.
+
+        exact_only: return only an exact match; names that merely contain the query are raised as
+        TeamsAmbiguousUserError candidates, even when there is just one.
+        """
         try:
             if not user_identifier or not isinstance(user_identifier, str):
                 return None
@@ -937,16 +1085,20 @@ class Teams:
             partial_matches: List[Dict[str, Any]] = []
             next_link: Optional[str] = None
             seen_links = set()
+            read_to_end = False
 
             for _ in range(50):
                 users_response = await self.client.teams_list_users(cursor_url=next_link)
-                if not users_response.success or not users_response.data:
+                # An unread page may hold the real person or a namesake, so never pick from a partial read.
+                if not users_response.success:
+                    raise TeamsUserLookupError(user_identifier, users_response.error)
+                if not users_response.data:
+                    read_to_end = True
                     break
 
+                # An empty page can still carry a next link, so only a missing link ends the read.
                 users_payload = self._serialize_response(users_response.data)
                 users = self._extract_collection_items(users_payload)
-                if not users:
-                    break
 
                 for user in users:
                     if not isinstance(user, dict):
@@ -962,14 +1114,14 @@ class Teams:
                         "user_principal_name": user.get("userPrincipalName") or user.get("user_principal_name"),
                     }
 
-                    names_to_match = [
+                    names = [
                         user.get("displayName"),
                         user.get("display_name"),
                         user.get("mail"),
                         user.get("userPrincipalName"),
                         user.get("user_principal_name"),
-                        user_id,
                     ]
+                    names_to_match = [*names, user_id]
 
                     found_exact = False
                     for name in names_to_match:
@@ -985,22 +1137,29 @@ class Teams:
                     if found_exact:
                         continue
 
-                    for name in names_to_match:
+                    # Only a name that contains the query: never "Ann" for "Joanna", and never a
+                    # substring of a hex object id ("deb" appears in plenty of them).
+                    for name in names:
                         if not isinstance(name, str):
                             continue
                         name_normalized = name.casefold()
-                        if len(target_identifier) >= 3 and (
-                            target_identifier in name_normalized or name_normalized in target_identifier
-                        ):
+                        if len(target_identifier) >= 3 and target_identifier in name_normalized:
                             if not any(m.get("id") == user_id for m in partial_matches):
                                 partial_matches.append(user_info)
                             break
 
                 next_link_candidate = self._extract_next_link(users_payload)
-                if not next_link_candidate or next_link_candidate in seen_links:
+                if not next_link_candidate:
+                    read_to_end = True
+                    break
+                if next_link_candidate in seen_links:
                     break
                 seen_links.add(next_link_candidate)
                 next_link = next_link_candidate
+
+            # The page cap or a repeating next link left part of the directory unread: same as a failed page.
+            if not read_to_end:
+                raise TeamsUserLookupError(user_identifier, "the directory could not be read to the end")
 
             if exact_matches:
                 if len(exact_matches) > 1 and not allow_ambiguous:
@@ -1008,17 +1167,63 @@ class Teams:
                 return exact_matches[0]["id"]
 
             if partial_matches:
+                if exact_only:
+                    raise TeamsAmbiguousUserError(user_identifier, partial_matches, exact_required=True)
                 if len(partial_matches) > 1 and not allow_ambiguous:
                     raise TeamsAmbiguousUserError(user_identifier, partial_matches)
                 return partial_matches[0]["id"]
 
             logger.debug(f"Could not resolve Teams user identifier '{user_identifier}'")
             return None
-        except TeamsAmbiguousUserError:
+        except (TeamsAmbiguousUserError, TeamsUserLookupError):
             raise
         except Exception as e:
             logger.error(f"Error resolving Teams user identifier '{user_identifier}': {e}")
             return None
+
+    @staticmethod
+    def _ambiguous_user_message(error: TeamsAmbiguousUserError) -> str:
+        matches_list = []
+        for match in error.matches[:20]:
+            label = match.get("display_name") or match.get("user_principal_name") or "Unknown"
+            if match.get("mail"):
+                label += f" ({match.get('mail')})"
+            label += f" [ID: {match.get('id', 'Unknown')}]"
+            matches_list.append(f"  - {label}")
+        if error.exact_required:
+            return (
+                f"No Teams user is named exactly '{error.query}'. If you meant one of these people, "
+                f"call the tool again with their email address or user ID.\n\n"
+                f"Closest matches:\n" + "\n".join(matches_list)
+            )
+        return (
+            f"Multiple users found matching '{error.query}'. Please use email/UPN or user ID for disambiguation.\n\n"
+            f"Matching users:\n" + "\n".join(matches_list)
+        )
+
+    async def _resolve_single_user(self, user_identifier: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        """Return (user_id, None) for exactly one exact match, else (None, error message for the agent).
+
+        Exact only: these callers message someone or read their chat, so a near miss must be confirmed.
+        """
+        identifier = (user_identifier or "").strip() if isinstance(user_identifier, str) else ""
+        if not identifier:
+            return None, (
+                "user_identifier is required. Pass the person's email address, "
+                "user principal name, display name or user ID."
+            )
+        try:
+            user_id = await self._resolve_user_identifier(identifier, allow_ambiguous=False, exact_only=True)
+        except TeamsAmbiguousUserError as e:
+            return None, self._ambiguous_user_message(e)
+        except TeamsUserLookupError as e:
+            return None, e.agent_message()
+        if not user_id:
+            return None, (
+                f"No Teams user matches '{identifier}'. Check the spelling, or use "
+                "get_users_list to find the person's email address or user ID."
+            )
+        return user_id, None
 
     # ------------------------------------------------------------------
     # User tools
@@ -1039,19 +1244,9 @@ class Teams:
             try:
                 user_id = await self._resolve_user_identifier(user, allow_ambiguous=False)
             except TeamsAmbiguousUserError as e:
-                matches_list = []
-                for match in e.matches[:20]:
-                    label = match.get("display_name") or match.get("user_principal_name") or "Unknown"
-                    if match.get("mail"):
-                        label += f" ({match.get('mail')})"
-                    label += f" [ID: {match.get('id', 'Unknown')}]"
-                    matches_list.append(f"  - {label}")
-
-                error_msg = (
-                    f"Multiple users found matching '{user}'. Please use email/UPN or user ID for disambiguation.\n\n"
-                    f"Matching users:\n" + "\n".join(matches_list)
-                )
-                return False, json.dumps({"error": error_msg})
+                return False, json.dumps({"error": self._ambiguous_user_message(e)})
+            except TeamsUserLookupError as e:
+                return False, json.dumps({"error": e.agent_message()})
 
             if not user_id:
                 user_id = user
@@ -1085,7 +1280,7 @@ class Teams:
                             "results": [transformed],
                         },
                     })
-            return False, json.dumps({"error": response.error or "Failed to get user info"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get user info")})
         except TeamsAmbiguousUserError:
             raise
         except Exception as e:
@@ -1103,46 +1298,63 @@ class Teams:
     async def get_users_list(self, limit: Optional[int] = None) -> tuple[bool, str]:
         """Get users list with pagination support."""
         try:
-            # If limit is specified, single page is enough then slice.
-            if limit:
-                response = await self.client.teams_list_users()
-                if not response.success:
-                    return False, json.dumps({"error": response.error or "Failed to get users list"})
-                payload = self._serialize_response(response.data)
-                users = self._extract_collection_items(payload)
-                users = users[: max(limit, 0)]
-                return True, json.dumps({
-                    "members": users,
-                    "count": len(users),
-                    "data": {"results": users},
-                })
-
+            # Graph pages users 100 at a time, so a larger limit has to read on.
+            want = max(limit, 0) if limit is not None else None
             all_users: List[Any] = []
+            seen_ids: set[str] = set()
             next_link: Optional[str] = None
             seen_links = set()
+            complete = False
+            link_repeated = False
 
             for _ in range(50):
+                if want is not None and len(all_users) >= want:
+                    complete = True
+                    break
                 response = await self.client.teams_list_users(cursor_url=next_link)
-                if not response.success or not response.data:
+                if not response.success:
                     if not all_users:
-                        return False, json.dumps({"error": response.error or "Failed to get users list"})
+                        return False, json.dumps({"error": _graph_error(response.error, "Failed to get users list")})
+                    break
+                if not response.data:
+                    complete = True
                     break
 
                 payload = self._serialize_response(response.data)
-                users = self._extract_collection_items(payload)
-                all_users.extend(users)
+                for user in self._extract_collection_items(payload):
+                    user_id = user.get("id") if isinstance(user, dict) else None
+                    # A page Graph serves twice must not count its users twice toward the limit.
+                    if isinstance(user_id, str) and user_id:
+                        if user_id in seen_ids:
+                            continue
+                        seen_ids.add(user_id)
+                    all_users.append(user)
 
                 next_link_candidate = self._extract_next_link(payload)
-                if not next_link_candidate or next_link_candidate in seen_links:
+                if not next_link_candidate:
+                    complete = True
+                    break
+                if next_link_candidate in seen_links:
+                    link_repeated = True
                     break
                 seen_links.add(next_link_candidate)
                 next_link = next_link_candidate
 
-            return True, json.dumps({
+            if want is not None:
+                complete = (complete or len(all_users) >= want) and not link_repeated
+                all_users = all_users[:want]
+            reply: dict[str, Any] = {
                 "members": all_users,
                 "count": len(all_users),
+                "complete": complete,
                 "data": {"results": all_users},
-            })
+            }
+            if not complete:
+                reply["message"] = (
+                    "Microsoft Teams stopped answering part-way through, so this is only part of the "
+                    "directory. Try again in a moment to get the rest."
+                )
+            return True, json.dumps(reply)
         except Exception as e:
             return self._handle_error(e, "get users list")
 
@@ -1206,9 +1418,15 @@ class Teams:
         ) -> tuple[bool, str]:
 
         try:
+            # The datasource's own lookup takes the first substring match on the first directory
+            # page, so resolve exactly one user here and hand over the id.
+            user_id, resolve_error = await self._resolve_single_user(user_identifier)
+            if resolve_error:
+                return False, json.dumps({"error": resolve_error})
 
             response = await self.client.teams_get_conversation_with_user(
-                user_identifier=user_identifier,
+                user_identifier=user_id,
+                user_id=user_id,
                 minutes=minutes,
                 hours=hours,
                 days=days,
@@ -1238,7 +1456,7 @@ class Teams:
                 )
 
             return False, json.dumps(
-                {"error": response.error or "Failed to get conversation"}
+                {"error": _graph_error(response.error, "Failed to get conversation")}
             )
 
         except Exception as e:
@@ -1272,7 +1490,7 @@ class Teams:
                     "count": len(channels),
                     "team_id": team_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get user channels"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get user channels")})
         except Exception as e:
             return self._handle_error(e, "get user channels")
 
@@ -1351,7 +1569,7 @@ class Teams:
                     "is_cancelled": is_cancelled,
                     "meeting_type": meeting_type,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get meetings"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get meetings")})
         except Exception as e:
             return self._handle_error(e, "get meetings")
 
@@ -1513,13 +1731,11 @@ class Teams:
     ) -> tuple[bool, str]:
         """Search calendar events by partial subject match within a time range.
 
-        Uses Graph API $filter with:
-        - contains(subject, '{keyword}')        — partial name match
-        - start/dateTime ge '{start_datetime}'  — time range start
-        - end/dateTime   le '{end_datetime}'    — time range end
+        The datasource reads calendarView for the range and matches subjects in Python,
+        so the keyword is not part of an OData filter and must not be quote-escaped.
         """
         try:
-            keyword = keyword.strip().replace("'", "''")
+            keyword = (keyword or "").strip()
 
             if not keyword:
                 return False, json.dumps({"error": "keyword cannot be empty."})
@@ -1534,7 +1750,7 @@ class Teams:
             )
 
             if not resp.success:
-                return False, json.dumps({"error": resp.error or "Failed to search calendar events"})
+                return False, json.dumps({"error": _graph_error(resp.error, "Failed to search calendar events")})
             
             data = self._serialize_response(resp.data)
             
@@ -1554,7 +1770,6 @@ class Teams:
             })
 
         except Exception as e:
-            print(f"[search_calendar_events_in_range] exception: {e!r}")
             return self._handle_error(e, "search calendar events in range")
 
 
@@ -1609,7 +1824,7 @@ class Teams:
                 onlineMeeting_id=resolved_meeting_id,
             )
             if not list_resp.success:
-                return False, json.dumps({"error": list_resp.error or "Failed to list transcripts"})
+                return False, json.dumps({"error": _graph_error(list_resp.error, "Failed to list transcripts")})
             
             data = self._serialize_response(list_resp.data) if list_resp.data else {}
             transcript_items = (
@@ -1829,7 +2044,7 @@ class Teams:
                     "count": len(people),
                     "meeting_id": resolved_meeting_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get people attended"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get people attended")})
         except Exception as e:
             return self._handle_error(e, "get people attended")
 
@@ -1858,7 +2073,7 @@ class Teams:
                     "count": len(people),
                     "meeting_id": meeting_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get people invited"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get people invited")})
         except Exception as e:
             return self._handle_error(e, "get people invited")
 
@@ -1926,17 +2141,27 @@ class Teams:
                 event_body["location"] = {"displayName": location}
 
             if attendees:
+                attendee_addresses = _coerce_str_list(attendees)
+                if attendee_addresses is None:
+                    return False, json.dumps({
+                        "error": 'attendees must be a list of email addresses, for example ["ann@contoso.com"].'
+                    })
                 event_body["attendees"] = [
-                    {
-                        "emailAddress": {"address": addr.strip()},
-                        "type": "required",
-                    }
-                    for addr in attendees
-                    if addr.strip()
+                    {"emailAddress": {"address": addr}, "type": "required"}
+                    for addr in attendee_addresses
                 ]
 
             if recurrence:
-                event_body["recurrence"] = _build_recurrence_body(recurrence)
+                recurrence_dict = _coerce_dict(recurrence)
+                if recurrence_dict is None:
+                    return False, json.dumps({
+                        "error": (
+                            "recurrence must be an object with 'pattern' and 'range' keys, for example "
+                            '{"pattern": {"type": "daily", "interval": 1}, '
+                            '"range": {"type": "noEnd", "startDate": "2026-03-02"}}.'
+                        )
+                    })
+                event_body["recurrence"] = _build_recurrence_body(recurrence_dict)
             response = await self.client.me_calendar_create_events(request_body=event_body)
             if response.success:
                 serialized_result = self._serialize_response(response.data)
@@ -1949,7 +2174,7 @@ class Teams:
                     "subject": subject,
                     "result": serialized_result,
                 })
-            return False, json.dumps({"error": response.error or "Failed to create event"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to create event")})
         except Exception as e:
             return self._handle_error(e, "create event")
 
@@ -1989,7 +2214,7 @@ class Teams:
                 serialized_result = self._serialize_response(response.data)
                 event_id = None
                 if isinstance(serialized_result, dict):
-                    event_id = serialized_result.get("id")
+                    event_id = serialized_result.get("event_id") or serialized_result.get("id")
                 return True, json.dumps(
                     {
                         "message": "Channel meeting created successfully",
@@ -2001,7 +2226,7 @@ class Teams:
                     }
                 )
             return False, json.dumps(
-                {"error": response.error or response.message or "Failed to create channel meeting"}
+                {"error": _graph_error(response.error or response.message, "Failed to create channel meeting")}
             )
         except Exception as e:
             return self._handle_error(e, "create channel meeting")
@@ -2048,7 +2273,7 @@ class Teams:
                     "event_id": event_id,
                     "result": serialized_result,
                 })
-            return False, json.dumps({"error": response.error or "Failed to edit event"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to edit event")})
         except Exception as e:
             return self._handle_error(e, "edit event")
 
@@ -2083,7 +2308,7 @@ class Teams:
                         "results": teams,
                     },
                 })
-            return False, json.dumps({"error": response.error or "Failed to get teams"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get teams")})
         except Exception as e:
             return self._handle_error(e, "get teams")
 
@@ -2098,10 +2323,11 @@ class Teams:
     )
     async def get_team(self, team_id: str) -> tuple[bool, str]:
         try:
-            response = await self.client.me_get_joined_teams(team_id=team_id)
+            # me_get_joined_teams needs a joinedTeams item selector this SDK version does not have.
+            response = await self.client.teams_team_get_team(team_id=team_id)
             if response.success:
                 return True, json.dumps(self._serialize_response(response.data))
-            return False, json.dumps({"error": response.error or "Failed to get team"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get team")})
         except Exception as e:
             return self._handle_error(e, f"get team {team_id}")
 
@@ -2151,7 +2377,7 @@ class Teams:
                     "provisioning_status": "accepted",
                     "next_step": "Use get_teams shortly to fetch the new team_id once provisioning finishes.",
                 })
-            return False, json.dumps({"error": response.error or "Failed to create team"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to create team")})
         except Exception as e:
             return self._handle_error(e, "create team")
 
@@ -2182,7 +2408,7 @@ class Teams:
                 channels_response = await self.client.teams_get_channels(team_id=team_id)
                 if not channels_response.success:
                     return False, json.dumps({
-                        "error": channels_response.error or "Failed to fetch channels to resolve membership scope"
+                        "error": _graph_error(channels_response.error, "Failed to fetch channels to resolve membership scope")
                     })
 
                 serialized_channels = self._serialize_response(channels_response.data)
@@ -2237,7 +2463,7 @@ class Teams:
                     payload["membership_type"] = membership_type
                     payload["membership_scope"] = membership_scope
                 return True, json.dumps(payload)
-            return False, json.dumps({"error": response.error or "Failed to get members"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get members")})
         except Exception as e:
             return self._handle_error(e, f"get members for team {team_id}")
 
@@ -2284,13 +2510,13 @@ class Teams:
                         "team_id": team_id,
                         "user_id": user_id,
                     })
-                return False, json.dumps({"error": response.error or "Failed to add member to team"})
+                return False, json.dumps({"error": _graph_error(response.error, "Failed to add member to team")})
 
             # CASE 2 — Channel provided: determine membership type first
             channels_response = await self.client.teams_get_channels(team_id=team_id)
             if not channels_response.success:
                 return False, json.dumps({
-                    "error": channels_response.error or "Failed to fetch channels to resolve membership type"
+                    "error": _graph_error(channels_response.error, "Failed to fetch channels to resolve membership type")
                 })
 
             serialized_channels = self._serialize_response(channels_response.data)
@@ -2328,7 +2554,7 @@ class Teams:
                         "user_id": user_id,
                     })
                 return False, json.dumps({
-                    "error": response.error or "Failed to add user to team for standard channel"
+                    "error": _graph_error(response.error, "Failed to add user to team for standard channel")
                 })
 
             # Private channel
@@ -2346,7 +2572,7 @@ class Teams:
                         "user_id": user_id,
                     })
                 return False, json.dumps({
-                    "error": response.error or "Failed to add user to private channel"
+                    "error": _graph_error(response.error, "Failed to add user to private channel")
                 })
 
             return False, json.dumps({
@@ -2382,7 +2608,7 @@ class Teams:
                         "results": channels,
                     }
                 })
-            return False, json.dumps({"error": response.error or "Failed to get channels"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get channels")})
         except Exception as e:
             return self._handle_error(e, f"get channels for team {team_id}")
 
@@ -2433,7 +2659,7 @@ class Teams:
                     "display_name": display_name,
                     "channel": data,
                 })
-            return False, json.dumps({"error": response.error or "Failed to create channel"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to create channel")})
         except Exception as e:
             return self._handle_error(e, f"create channel in team {team_id}")
 
@@ -2499,14 +2725,15 @@ class Teams:
         description: Optional[str] = None,
     ) -> tuple[bool, str]:
         try:
-            patch_body: Dict[str, Any] = {}
-            if display_name is not None:
-                patch_body["displayName"] = display_name
-            if description is not None:
-                patch_body["description"] = description
-
-            if not patch_body:
+            if display_name is None and description is None:
                 return False, json.dumps({"error": "No fields provided to update"})
+
+            # The SDK serializes only model objects; a plain dict body fails before any request is sent.
+            patch_body = Channel()
+            if display_name is not None:
+                patch_body.display_name = display_name
+            if description is not None:
+                patch_body.description = description
 
             response = await self.client.teams_update_channels(
                 team_id=team_id,
@@ -2519,7 +2746,7 @@ class Teams:
                     "team_id": team_id,
                     "channel_id": channel_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to update channel"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to update channel")})
         except Exception as e:
             return self._handle_error(e, f"update channel {channel_id} in team {team_id}")
 
@@ -2555,7 +2782,7 @@ class Teams:
                     "channel_id": channel_id,
                     "result": serialized_result,
                 })
-            return False, json.dumps({"error": response.error or "Failed to send Teams message"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to send Teams message")})
         except Exception as e:
             return self._handle_error(e, "send Teams message")
 
@@ -2575,8 +2802,15 @@ class Teams:
         message: str,
     ) -> tuple[bool, str]:
         try:
+            # The datasource's own lookup takes the first substring match on the first directory
+            # page ("Sam" could reach "Samantha"), so resolve exactly one user here and hand over the id.
+            user_id, resolve_error = await self._resolve_single_user(user_identifier)
+            if resolve_error:
+                return False, json.dumps({"error": resolve_error})
+
             response = await self.client.teams_send_message_to_user(
-                user_identifier=user_identifier,
+                user_identifier=user_id,
+                user_id=user_id,
                 message=message,
             )
             if response.success:
@@ -2589,7 +2823,7 @@ class Teams:
                     }
                 )
             return False, json.dumps(
-                {"error": response.error or "Failed to send Teams direct message"}
+                {"error": _graph_error(response.error, "Failed to send Teams direct message")}
             )
         except Exception as e:
             return self._handle_error(e, "send Teams direct message")
@@ -2628,7 +2862,7 @@ class Teams:
                     "parent_message_id": parent_message_id,
                     "result": self._serialize_response(response.data),
                 })
-            return False, json.dumps({"error": response.error or "Failed to reply to message"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to reply to message")})
         except Exception as e:
             return self._handle_error(e, "reply to Teams message")
 
@@ -2650,16 +2884,24 @@ class Teams:
         message: str,
     ) -> tuple[bool, str]:
         try:
+            channel_list = _coerce_str_list(channel_ids)
+            if not channel_list:
+                return False, json.dumps({
+                    "error": (
+                        "channel_ids must list at least one channel ID, for example "
+                        '["19:abc@thread.tacv2"]. Use get_channels to look up the channel IDs of a team.'
+                    )
+                })
             response = await self.client.teams_send_message_to_multiple_channels(
                 team_id=team_id,
-                channel_ids=channel_ids,
+                channel_ids=channel_list,
                 message=message,
             )
             serialized = self._serialize_response(response.data)
             return response.success, json.dumps({
                 "message": "Message sent to multiple channels" if response.success else "One or more channel sends failed",
                 "result": serialized,
-                "error": response.error,
+                "error": _graph_error(response.error, "") or None,
             })
         except Exception as e:
             return self._handle_error(e, "send Teams message to multiple channels")
@@ -2693,17 +2935,24 @@ class Teams:
             if response.success:
                 serialized = self._serialize_response(response.data)
                 results = []
+                complete, message = True, None
                 if isinstance(serialized, dict):
                     raw_results = serialized.get("results")
                     if isinstance(raw_results, list):
                         results = raw_results
-                return True, json.dumps({
+                    complete = serialized.get("complete", True) is not False
+                    message = serialized.get("message")
+                reply: dict[str, Any] = {
                     "data": {"results": results},
                     "results": results,
                     "count": len(results),
                     "query": query,
-                })
-            return False, json.dumps({"error": response.error or "Failed to search messages"})
+                    "complete": complete,
+                }
+                if message:
+                    reply["message"] = message
+                return True, json.dumps(reply)
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to search messages")})
         except Exception as e:
             return self._handle_error(e, "search Teams messages")
 
@@ -2743,7 +2992,7 @@ class Teams:
                     "reaction_type": (reaction_type or "").strip().lower(),
                     "result": serialized_result,
                 })
-            return False, json.dumps({"error": response.error or "Failed to add reaction"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to add reaction")})
         except Exception as e:
             return self._handle_error(e, "add Teams reaction")
 
@@ -2780,7 +3029,7 @@ class Teams:
                     "channel_id": channel_id,
                     "message_id": message_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get reactions"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get reactions")})
         except Exception as e:
             return self._handle_error(e, "get Teams reactions")
 
@@ -2819,7 +3068,7 @@ class Teams:
                     "reaction_type": (reaction_type or "").strip().lower(),
                     "result": self._serialize_response(response.data),
                 })
-            return False, json.dumps({"error": response.error or "Failed to remove reaction"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to remove reaction")})
         except Exception as e:
             return self._handle_error(e, "remove Teams reaction")
 
@@ -2859,7 +3108,7 @@ class Teams:
                     "team_id": team_id,
                     "channel_id": channel_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get channel messages"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get channel messages")})
         except Exception as e:
             return self._handle_error(e, "get channel messages")
 
@@ -2901,7 +3150,7 @@ class Teams:
                     "channel_id": channel_id,
                     "message_id": message_id,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get thread replies"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get thread replies")})
         except Exception as e:
             return self._handle_error(e, "get Teams thread replies")
 
@@ -2952,7 +3201,7 @@ class Teams:
                     result_payload["team_id"] = team_id
                     result_payload["channel_id"] = channel_id
                 return True, json.dumps(result_payload)
-            return False, json.dumps({"error": response.error or "Failed to update message"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to update message")})
         except Exception as e:
             return self._handle_error(e, "update Teams message")
 
@@ -2984,7 +3233,7 @@ class Teams:
                     "permalink": permalink,
                     "result": data,
                 })
-            return False, json.dumps({"error": response.error or "Failed to get message permalink"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get message permalink")})
         except Exception as e:
             return self._handle_error(e, "get Teams message permalink")
 
@@ -3014,24 +3263,33 @@ class Teams:
             if normalized_type not in ("oneOnOne", "group"):
                 normalized_type = "oneOnOne"
 
-            members = [
-                {
-                    "@odata.type": "#microsoft.graph.aadUserConversationMember",
-                    "roles": ["owner"],
-                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{uid.strip()}')",
+            member_ids = _coerce_str_list(member_user_ids)
+            if not member_ids:
+                return False, json.dumps({
+                    "error": (
+                        "member_user_ids must list at least one user ID or email address. "
+                        "Use get_user_info or get_users_list to look up user IDs."
+                    )
+                })
+
+            members: list[AadUserConversationMember] = []
+            for uid in member_ids:
+                member = AadUserConversationMember()
+                member.roles = ["owner"]
+                safe_uid = uid.replace("'", "''")
+                member.additional_data = {
+                    "user@odata.bind": f"https://graph.microsoft.com/v1.0/users('{safe_uid}')",
                 }
-                for uid in member_user_ids
-                if uid.strip()
-            ]
+                members.append(member)
 
-            request_body: Dict[str, Any] = {
-                "chatType": normalized_type,
-                "members": members,
-            }
+            # The SDK serializes only model objects; a plain dict body fails before any request is sent.
+            chat = Chat()
+            chat.chat_type = ChatType.Group if normalized_type == "group" else ChatType.OneOnOne
+            chat.members = members
             if topic and normalized_type == "group":
-                request_body["topic"] = topic
+                chat.topic = topic
 
-            response = await self.client.me_create_chats(body=request_body)
+            response = await self.client.chats_chat_create_chat(body=chat)
             if response.success:
                 data = self._serialize_response(response.data)
                 chat_id = None
@@ -3043,7 +3301,7 @@ class Teams:
                     "chat_type": normalized_type,
                     "chat": data,
                 })
-            return False, json.dumps({"error": response.error or "Failed to create chat"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to create chat")})
         except Exception as e:
             return self._handle_error(e, "create chat")
 
@@ -3061,6 +3319,6 @@ class Teams:
             response = await self.client.me_get_chats(chat_id=chat_id)
             if response.success:
                 return True, json.dumps(self._serialize_response(response.data))
-            return False, json.dumps({"error": response.error or "Failed to get chat"})
+            return False, json.dumps({"error": _graph_error(response.error, "Failed to get chat")})
         except Exception as e:
             return self._handle_error(e, f"get chat {chat_id}")

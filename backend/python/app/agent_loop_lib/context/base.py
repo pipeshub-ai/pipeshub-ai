@@ -42,10 +42,12 @@ class ContextWindow(ABC):
 class ContextBudget(BaseModel):
     """Passed to every `pre_model` shaper hook alongside the message list.
 
-    `max_tokens` is what the shaper pipeline aims to fit under before the
-    call goes out — derived from the model's real context window (see
-    modules/providers/budget/pricing.py) minus headroom for the model's own output, not an
-    arbitrary flat number.
+    `max_tokens` is what the shaper pipeline aims to fit the conversation
+    messages under before the call goes out — derived from the model's real
+    context window (see modules/providers/budget/pricing.py) minus headroom for
+    the model's own output and minus `reserved_prompt_tokens`, the system
+    prompt and tool schemas sent beside the messages, not an arbitrary flat
+    number.
 
     `reserved_artifact_tokens` carves out a dedicated budget for artifact
     content that may be injected back into context on demand (via
@@ -58,11 +60,12 @@ class ContextBudget(BaseModel):
     model: str | None = None
     reserved_output_tokens: int = 8_000
     reserved_artifact_tokens: int = 0
+    reserved_prompt_tokens: int = 0
 
     @property
     def effective_max_tokens(self) -> int:
         """Budget available to the shaping pipeline after all reserves."""
-        return max(self.max_tokens - self.reserved_artifact_tokens, 1_000)
+        return max(self.max_tokens - self.reserved_artifact_tokens, min(1_000, self.max_tokens))
 
     @classmethod
     def for_model(
@@ -70,12 +73,24 @@ class ContextBudget(BaseModel):
         model: str | None,
         reserved_output_tokens: int = 8_000,
         reserved_artifact_tokens: int = 0,
+        *,
+        context_window: int | None = None,
+        reserved_prompt_tokens: int = 0,
     ) -> "ContextBudget":
-        window = get_context_window(model)
-        max_tokens = max(window - reserved_output_tokens, 1_000)
+        window = context_window if context_window and context_window > 0 else get_context_window(model)
+        prompt = max(reserved_prompt_tokens, 0)
+        left = window - prompt
+        # A small window cannot give 8k to the reply: at most a quarter of it,
+        # and at most half of what the system prompt and tool schemas leave, so
+        # prompt + messages + reply fit whenever the prompt itself does. A prompt
+        # over the window leaves 1 token; the provider rejects that request with
+        # its own context-length error, which callers already explain.
+        reserve = max(min(reserved_output_tokens, window // 4, left // 2), 0)
+        max_tokens = max(left - reserve, 1)
         return cls(
             max_tokens=max_tokens,
             model=model,
-            reserved_output_tokens=reserved_output_tokens,
+            reserved_output_tokens=reserve,
             reserved_artifact_tokens=reserved_artifact_tokens,
+            reserved_prompt_tokens=prompt,
         )

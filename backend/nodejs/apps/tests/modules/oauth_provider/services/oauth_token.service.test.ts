@@ -3,14 +3,35 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import jwt from 'jsonwebtoken'
 import { Types } from 'mongoose'
-import { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
+import { OAuthTokenService, isGrantCoveredBy } from '../../../../src/modules/oauth_provider/services/oauth_token.service'
 import { OAuthAccessToken } from '../../../../src/modules/oauth_provider/schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../../../../src/modules/oauth_provider/schema/oauth.refresh_token.schema'
+import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema'
 import {
   InvalidTokenError,
   ExpiredTokenError,
+  InvalidGrantError,
+  InvalidScopeError,
 } from '../../../../src/libs/errors/oauth.errors'
 import { createMockLogger } from '../../../helpers/mock-logger'
+
+// The re-read after a user grant stores its tokens.
+function stubCurrentApp(doc: { allowedScopes: string[] } | null) {
+  return sinon.stub(OAuthApp, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().returns({ exec: sinon.stub().resolves(doc) }),
+    }),
+  } as any)
+}
+
+describe('isGrantCoveredBy', () => {
+  it('is false for an empty grant, true for a subset, and false when a scope was removed', () => {
+    expect(isGrantCoveredBy([], ['org:read'])).to.equal(false)
+    expect(isGrantCoveredBy(['org:read'], ['org:read', 'kb:read'])).to.equal(true)
+    expect(isGrantCoveredBy(['org:read', 'kb:write'], ['org:read'])).to.equal(false)
+    expect(isGrantCoveredBy(['org:read'], undefined)).to.equal(false)
+  })
+})
 
 describe('OAuthTokenService', () => {
   let service: OAuthTokenService
@@ -93,6 +114,70 @@ describe('OAuthTokenService', () => {
       expect(result.refreshToken).to.be.a('string')
     })
 
+    describe('recheckAppScopes', () => {
+      const userId = new Types.ObjectId().toString()
+      const orgId = new Types.ObjectId().toString()
+      const mint = () =>
+        service.generateTokens(
+          mockApp, userId, orgId, ['org:read', 'offline_access'], true,
+          undefined, undefined, { recheckAppScopes: true },
+        )
+
+      beforeEach(() => {
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+      })
+
+      it('returns the tokens when the app still allows every scope', async () => {
+        stubCurrentApp({ allowedScopes: ['org:read', 'offline_access', 'kb:read'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+
+        const result = await mint()
+
+        expect(result.accessToken).to.be.a('string')
+        expect(accessRevoke.called).to.be.false
+      })
+
+      it('revokes the new tokens and fails when the app lost a scope while they were minted', async () => {
+        stubCurrentApp({ allowedScopes: ['offline_access'] })
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        const refreshRevoke = sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+
+        expect(accessRevoke.calledOnce).to.be.true
+        expect(accessRevoke.firstCall.args[1]).to.include({ isRevoked: true })
+        expect(refreshRevoke.calledOnce).to.be.true
+      })
+
+      it('revokes the new tokens when the app was deleted while they were minted', async () => {
+        stubCurrentApp(null)
+        const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
+        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
+
+        try {
+          await mint()
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(accessRevoke.calledOnce).to.be.true
+      })
+
+      it('does not read the app again without the option', async () => {
+        const findApp = stubCurrentApp(null)
+
+        await service.generateTokens(mockApp, userId, orgId, ['org:read'], false)
+
+        expect(findApp.called).to.be.false
+      })
+    })
+
     it('should not generate refresh token without offline_access scope', async () => {
       sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
 
@@ -121,6 +206,25 @@ describe('OAuthTokenService', () => {
 
       expect(result.refreshToken).to.be.undefined
     })
+
+    it('refuses to store a token when the grant has no scopes', async () => {
+      const create = sinon.stub(OAuthAccessToken, 'create')
+
+      try {
+        await service.generateTokens(
+          mockApp,
+          null,
+          new Types.ObjectId().toString(),
+          [],
+          false,
+        )
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(InvalidScopeError)
+      }
+
+      expect(create.called).to.be.false
+    })
   })
 
   describe('verifyAccessToken', () => {
@@ -141,6 +245,29 @@ describe('OAuthTokenService', () => {
       const result = await service.verifyAccessToken(token)
       expect(result.userId).to.equal('user-1')
       expect(result.client_id).to.equal('client-1')
+    })
+
+    it('rejects a signed token whose scope claim is empty or missing', async () => {
+      const base = {
+        userId: 'user-1',
+        orgId: 'org-1',
+        iss: testIssuer,
+        client_id: 'client-1',
+        tokenType: 'oauth',
+        jti: 'jti-1',
+      }
+      sinon.stub(OAuthAccessToken, 'findOne').resolves({ isRevoked: false } as any)
+
+      for (const claims of [{ ...base, scope: '' }, base]) {
+        const token = jwt.sign(claims, testSecret, { algorithm: 'HS256' })
+        try {
+          await service.verifyAccessToken(token)
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidTokenError)
+          expect((error as Error).message).to.equal('Token carries no scopes')
+        }
+      }
     })
 
     it('should verify a personal access token carrying the phpat_ prefix', async () => {
@@ -377,6 +504,24 @@ describe('OAuthTokenService', () => {
 
       const result = await service.introspectToken(token, 'different-client')
       expect(result.active).to.be.false
+    })
+
+    it('returns inactive when the token carries no scopes', async () => {
+      const token = jwt.sign(
+        {
+          userId: 'user-1',
+          orgId: 'org-1',
+          iss: testIssuer,
+          scope: '',
+          client_id: 'client-1',
+          tokenType: 'oauth',
+        },
+        testSecret,
+        { algorithm: 'HS256' },
+      )
+
+      const result = await service.introspectToken(token, 'client-1')
+      expect(result).to.deep.equal({ active: false })
     })
 
     it('should return inactive for revoked token', async () => {
@@ -929,7 +1074,10 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should throw InvalidTokenError when token is revoked (not found)', async () => {
-      const token = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
+      const token = jwt.sign(
+        { userId: 'u1', orgId: 'o1', scope: 'org:read' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
 
       sinon.stub(OAuthAccessToken, 'findOne').resolves(null)
 
@@ -966,7 +1114,10 @@ describe('OAuthTokenService - branch coverage', () => {
     })
 
     it('should return payload for valid non-revoked access token', async () => {
-      const token = jwt.sign({ userId: 'u1', orgId: 'o1' }, 'test-secret-key-for-signing-tokens-at-least-32-bytes')
+      const token = jwt.sign(
+        { userId: 'u1', orgId: 'o1', scope: 'org:read' },
+        'test-secret-key-for-signing-tokens-at-least-32-bytes',
+      )
 
       sinon.stub(OAuthAccessToken, 'findOne').resolves({ tokenHash: 'hash' } as any)
 
@@ -1093,6 +1244,188 @@ describe('OAuthTokenService - branch coverage', () => {
         expect(error).to.be.instanceOf(InvalidTokenError)
       }
     })
+
+    describe('client binding', () => {
+      const secret = 'test-secret-key-for-signing-tokens-at-least-32-bytes'
+      const userId = new Types.ObjectId()
+      const orgId = new Types.ObjectId()
+
+      function signRefreshToken(clientId: string): string {
+        return jwt.sign(
+          {
+            isRefreshToken: true,
+            userId: userId.toString(),
+            orgId: orgId.toString(),
+            client_id: clientId,
+            scope: 'user:read offline_access',
+          },
+          secret,
+        )
+      }
+
+      function storedRefreshToken(clientId: string) {
+        return {
+          clientId,
+          userId,
+          orgId,
+          scopes: ['user:read', 'offline_access'],
+          isRevoked: false,
+          revokedAt: undefined as Date | undefined,
+          rotationCount: 0,
+          save: sinon.stub().resolves(),
+        }
+      }
+
+      beforeEach(() => {
+        stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'] })
+      })
+
+      const app = (
+        clientId: string,
+        allowedScopes: string[] = ['user:read', 'offline_access'],
+      ) => ({
+        clientId,
+        allowedScopes,
+        accessTokenLifetime: 3600,
+        refreshTokenLifetime: 86400,
+        createdBy: new Types.ObjectId(),
+      }) as any
+
+      it('rotates and issues new tokens when the presenting client matches the issuing client', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+
+        expect(result.accessToken).to.be.a('string')
+        expect(result.refreshToken).to.be.a('string')
+        expect(stored.isRevoked).to.be.true
+        expect(stored.save.calledOnce).to.be.true
+        expect(accessCreate.calledOnce).to.be.true
+        expect(refreshCreate.calledOnce).to.be.true
+      })
+
+      it('drops scopes the app no longer allows from the refreshed tokens', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        const result = await service.refreshTokens(
+          app('client-a', ['offline_access']),
+          signRefreshToken('client-a'),
+        )
+
+        expect(result.scope).to.equal('offline_access')
+      })
+
+      it('does not rotate when the app no longer allows any granted scope', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create')
+
+        try {
+          await service.refreshTokens(
+            app('client-a', ['kb:read']),
+            signRefreshToken('client-a'),
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidScopeError)
+        }
+
+        expect(stored.save.called).to.be.false
+        expect(stored.isRevoked).to.be.false
+        expect(accessCreate.called).to.be.false
+      })
+
+      it('does not rotate when the requested scopes do not overlap the grant', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+
+        try {
+          await service.refreshTokens(
+            app('client-a'),
+            signRefreshToken('client-a'),
+            ['kb:write'],
+          )
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidScopeError)
+        }
+
+        expect(stored.save.called).to.be.false
+        expect(stored.isRevoked).to.be.false
+      })
+
+      it('rejects a refresh token issued to a different client with invalid_grant', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+      })
+
+      it('does not rotate or revoke the stored token when a different client is rejected', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-a'))
+        } catch {
+          // asserted in the previous case
+        }
+
+        expect(stored.isRevoked).to.be.false
+        expect(stored.revokedAt).to.be.undefined
+        expect(stored.save.called).to.be.false
+      })
+
+      it('binds to the stored clientId, not the client_id claim inside the JWT', async () => {
+        // A token whose JWT claim says client-b but whose stored record says
+        // client-a must still be rejected for client-b: the database row is
+        // the source of truth for who the grant was issued to.
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne')
+          .onFirstCall().resolves(stored as any)
+          .onSecondCall().resolves(stored as any)
+        sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        try {
+          await service.refreshTokens(app('client-b'), signRefreshToken('client-b'))
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(InvalidGrantError)
+        }
+        expect(stored.isRevoked).to.be.false
+      })
+    })
   })
 
   // =========================================================================
@@ -1101,7 +1434,7 @@ describe('OAuthTokenService - branch coverage', () => {
   describe('introspectToken', () => {
     it('should return inactive for token with different client_id', async () => {
       const token = jwt.sign(
-        { client_id: 'client-1', userId: 'u1', orgId: 'o1' },
+        { client_id: 'client-1', userId: 'u1', orgId: 'o1', scope: 'user:read' },
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 
@@ -1111,7 +1444,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
     it('should return inactive for revoked token', async () => {
       const token = jwt.sign(
-        { client_id: 'client-1', userId: 'u1', orgId: 'o1' },
+        { client_id: 'client-1', userId: 'u1', orgId: 'o1', scope: 'user:read' },
         'test-secret-key-for-signing-tokens-at-least-32-bytes',
       )
 

@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pydantic import ValidationError
 
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+
 # ---------------------------------------------------------------------------
 # ChatQuery model
 # ---------------------------------------------------------------------------
@@ -223,8 +225,38 @@ class TestGetModelConfig:
         from app.api.routes.chatbot import get_model_config
         cs = AsyncMock()
         cs.get_config = AsyncMock(return_value={"llm": []})
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_model_config(cs, model_key="missing")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("ai_models", [{}, None, {"embedding": [{"provider": "openAI"}]}])
+    async def test_no_llm_bucket_raises_the_clear_error(self, ai_models) -> None:
+        """An empty or embeddings-only config used to raise KeyError('llm') here."""
+        from app.api.routes.chatbot import get_model_config
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=ai_models)
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_model_config(cs)
+        assert str(exc.value) == LLM_MISSING_FOR_CHAT
+
+    @pytest.mark.asyncio
+    async def test_no_llm_bucket_after_refresh_raises_the_clear_error(self) -> None:
+        from app.api.routes.chatbot import get_model_config
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(side_effect=[{}, {}])
+        with pytest.raises(LLMNotConfiguredError):
+            await get_model_config(cs, model_key="missing")
+
+    @pytest.mark.asyncio
+    async def test_chat_llm_init_keeps_the_clear_message(self) -> None:
+        """Chat streams this message to the user, so it must not be wrapped as 'Failed to initialize LLM: ...'."""
+        from app.api.routes.chatbot import get_llm_for_chat
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={})
+        with pytest.raises(LLMNotConfiguredError) as exc:
+            await get_llm_for_chat(cs)
+        assert "Failed to initialize" not in str(exc.value)
+        assert "'llm'" not in str(exc.value)
 
     @pytest.mark.asyncio
     async def test_no_default_returns_list(self, llm_configs):
@@ -385,7 +417,7 @@ class TestGetLlmForChat:
     async def test_none_config_raises(self, mock_get_model_config):
         from app.api.routes.chatbot import get_llm_for_chat
         mock_get_model_config.return_value = (None, {})
-        with pytest.raises(ValueError, match="Failed to initialize LLM"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_llm_for_chat(AsyncMock())
 
     @pytest.mark.asyncio
@@ -585,7 +617,7 @@ class TestGetModelConfigAdditional:
         mock_cs = AsyncMock()
         mock_cs.get_config = AsyncMock(return_value={"llm": []})
 
-        with pytest.raises(ValueError, match="No LLM configurations found"):
+        with pytest.raises(LLMNotConfiguredError):
             await get_model_config(mock_cs, model_key=None, model_name=None)
 
     @pytest.mark.asyncio
@@ -679,3 +711,46 @@ class TestChatQueryAgentCapabilities:
 
 # ---------------------------------------------------------------------------
 # askAIStream endpoint (lines 496-702)
+
+
+class TestDeleteChatAttachmentAuthz:
+    """record_id is client-supplied: only the owner's own chat attachments may be deleted."""
+
+    def _setup(self, *, record, owner_edge):
+        request = MagicMock()
+        request.state.user = {"orgId": "o1", "userId": "u1"}
+        gp = AsyncMock()
+        gp.get_document = AsyncMock(return_value=record)
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "uk1"})
+        gp.get_edge = AsyncMock(return_value=owner_edge)
+        return request, gp
+
+    @pytest.mark.asyncio
+    async def test_non_attachment_record_is_not_deleted(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import delete_chat_attachment
+
+        request, gp = self._setup(
+            record={"orgId": "o1", "connectorName": "KB"}, owner_edge={"role": "OWNER"}
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_chat_attachment("rid", request, gp)
+        assert exc_info.value.status_code == 404
+        gp.delete_nodes_and_edges.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_other_users_attachment_is_not_deleted(self):
+        from fastapi import HTTPException
+
+        from app.api.routes.chatbot import delete_chat_attachment
+        from app.config.constants.arangodb import Connectors
+
+        request, gp = self._setup(
+            record={"orgId": "o1", "connectorName": Connectors.ATTACHMENTS.value},
+            owner_edge={"role": "READER"},
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await delete_chat_attachment("rid", request, gp)
+        assert exc_info.value.status_code == 404
+        gp.delete_nodes_and_edges.assert_not_called()

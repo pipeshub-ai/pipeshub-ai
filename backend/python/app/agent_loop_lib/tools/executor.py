@@ -28,7 +28,11 @@ from app.agent_loop_lib.hooks.middleware.context import (
     ToolCallContext,
     ToolResultContext,
 )
-from app.agent_loop_lib.hooks.middleware.decisions import PostDecision, PreDecision
+from app.agent_loop_lib.hooks.middleware.decisions import (
+    PendingApproval,
+    PostDecision,
+    PreDecision,
+)
 from app.agent_loop_lib.hooks.registry import HookRegistry
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agent_loop_lib.tools.errors import ToolNotFoundError, ToolValidationError
@@ -53,6 +57,7 @@ UNKNOWN_TOOL_ERROR_PREFIX = "Unknown tool:"
 # hasn't wired a HIL store — ASK then degrades to the same behavior as DENY,
 # since there is no one to ask.
 OnAsk = Callable[[ToolCall, str], Awaitable[bool]]
+OnPending = Callable[[ToolCall, PendingApproval], Awaitable[None]]
 
 _USAGE_HINT_DESCRIPTION_LIMIT = 100
 
@@ -141,6 +146,7 @@ class ToolExecutor:
         override_execute: OverrideExecute | None = None,
         on_denied: Callable[[str], Awaitable[None]] | None = None,
         on_ask: OnAsk | None = None,
+        on_pending: OnPending | None = None,
         scope: "ToolScope | None" = None,
     ) -> CoreToolResult:
         """Run one tool call through PreToolUse -> execute -> PostToolUse.
@@ -169,6 +175,11 @@ class ToolExecutor:
         the same outcome as DENY — this executor is caller-agnostic and holds
         no `HILStore`/checkpoint state of its own.
 
+        `on_pending`, when given, is awaited with `(call, pending)` if PRE_TOOL_USE left the
+        call for a person to approve later (`ToolCallContext.ask_later`). The call isn't
+        executed; the result carries the pending message. Without `on_pending` it is an
+        ordinary ASK.
+
         `scope`, when given (always set by the real turn loop; `None` in
         standalone/test calls), is attached to both decision contexts so
         middleware can reach `ctx.scope.turn.run` for ambient run state —
@@ -196,6 +207,11 @@ class ToolExecutor:
             scope=scope,
         )
         await self._kernel.on(HookEvent.PRE_TOOL_USE).dispatch(pre_ctx)
+
+        pending = pre_ctx.pending_approval if pre_ctx.decision == PreDecision.ASK else None
+        if pending is not None and on_pending is not None:
+            await on_pending(call, pending)
+            return CoreToolResult(tool_call_id=call.id, name=call.name, content=pending.message, is_error=True)
 
         approved = pre_ctx.decision == PreDecision.ALLOW
         if pre_ctx.decision == PreDecision.ASK:

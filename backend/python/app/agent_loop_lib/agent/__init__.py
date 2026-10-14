@@ -10,7 +10,7 @@ from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.agent import resume as agent_resume
 from app.agent_loop_lib.agent import streaming as agent_streaming
 from app.agent_loop_lib.agent.loops import StepOutcome
-from app.agent_loop_lib.agent.prompt import build_system_prompt
+from app.agent_loop_lib.agent.prompt import build_system_blocks, build_system_prompt
 from app.agent_loop_lib.agent.tool_loop import (
     ToolCallOutcome,
     compute_duplicate_flags,
@@ -20,6 +20,7 @@ from app.agent_loop_lib.agent.tool_loop import (
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
+from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ImagePart,
@@ -28,6 +29,7 @@ from app.agent_loop_lib.core.messages import (
     ThinkingPart,
     ToolMessage,
     UserMessage,
+    add_loop_note,
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
@@ -77,6 +79,13 @@ def _content_to_json(content: Any) -> str:
 
 
 _PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+_FINAL_ANSWER_NOTE = (
+    "[loop: You have reached the maximum number of steps for this request. "
+    "Do not call any more tools. Reply now with your final answer to the "
+    "user's question, using only the information you have already gathered. "
+    "If something could not be determined, say so briefly.]"
+)
 
 
 def _tool_result_content_to_message_content(content: Any) -> str | list[Part]:
@@ -399,9 +408,27 @@ class Agent:
         else:
             self._scope.extra_prompt_sections.pop(name, None)
 
+    def _cut_off_reply_parts(self) -> list[str]:
+        """Texts of the text-only replies cut off at the output-token limit
+        that end this run's turns so far, oldest first. The model was asked
+        to continue each one, so they and the next reply form one answer."""
+        turns = self._scope.turns if self._scope is not None else []
+        parts: list[str] = []
+        for turn in reversed(turns):
+            msg = turn.messages[-1] if turn.messages else None
+            if turn.tool_calls or not isinstance(msg, AssistantMessage) or not msg.truncated:
+                break
+            parts.append(msg.text)
+        parts.reverse()
+        return parts
+
     def last_assistant_text(self) -> str:
         """Text of the most recent assistant message across this run's
-        turns so far, or "" if none."""
+        turns so far, or "" if none. A reply cut off at the output-token
+        limit is returned whole, joined with its continuations."""
+        cut_off = "".join(self._cut_off_reply_parts())
+        if cut_off:
+            return cut_off
         turns = self._scope.turns if self._scope is not None else []
         for turn in reversed(turns):
             for msg in reversed(turn.messages):
@@ -542,7 +569,11 @@ class Agent:
         _resume_todos: list[Todo] | None = None,
         _resume_extensions: dict[str, Any] | None = None,
         _skip_start: bool = False,
+        _skip_user_message: bool = False,
     ) -> AgentResult:
+        """`_skip_user_message`: the goal's question is already in the history (a request that
+        continues a turn stopped on a tool call), so the run starts as usual but adds no new user
+        message for it. `_skip_start` also skips the start events and PRE_AGENT."""
         if self._model is None:
             self._resolve_model()
         if self._context is None:
@@ -592,7 +623,8 @@ class Agent:
                     await self._post_agent(result)
                     return result
 
-                await self._context.add(UserMessage(content=goal.description))
+                if not _skip_user_message:
+                    await self._context.add(UserMessage(content=goal.description))
 
             result = await self._spec.loop.run(self, goal)
             try:
@@ -608,7 +640,7 @@ class Agent:
 
     # ---- the step primitive ----
 
-    async def step(self, goal: Goal, turn_index: int) -> StepOutcome:
+    async def step(self, goal: Goal, turn_index: int, *, final_answer_only: bool = False) -> StepOutcome:
         """One turn: PRE_TURN guards -> context shaping -> guarded model
         call -> tool dispatch -> POST_TURN. The one fixed unit every
         `LoopStrategy` calls, any number of times, in any order. Hooks
@@ -616,6 +648,15 @@ class Agent:
         this is what keeps deterministic control (budget, cancellation,
         guardrails, truncation recovery) middleware-owned regardless of
         loop shape.
+
+        `final_answer_only=True` is the wrap-up turn after `max_turns` (see
+        `loops.py::_finish_after_max_turns`): only calls to tools that end
+        the run are executed (see `_drop_non_terminal_tool_calls`), so the
+        reply's text or a terminal call is the answer. The request for that
+        answer rides on the latest tool result's loop footer, this call's
+        copy only (see `add_loop_note`). A failed model call
+        or a reply with no answer returns `continue` instead of failing the
+        run, so the caller can fall back to what it already has.
         """
         spec, runtime, context = self._spec, self._runtime, self._context
 
@@ -624,6 +665,9 @@ class Agent:
         # makes, so middleware can reach `ctx.scope.turn.run...` uniformly
         # regardless of which event fired.
         turn_scope = TurnScope(run=self._scope, turn_index=turn_index)
+        # Created before anything is spawned this turn, so children inherit the same holder.
+        from app.agent_loop_lib.agent.tool_loop import PENDING_APPROVAL
+        approval_holder = self._scope.get(PENDING_APPROVAL)
 
         try:
             await hooks.dispatch_pre_turn(self._hooks, turn_index, scope=turn_scope)
@@ -644,30 +688,36 @@ class Agent:
 
         messages = await context.messages()
 
+        tool_schemas = tool_schemas_for_turn(self, spec, runtime)
+        # Stable and volatile blocks when the builder splits them, so the
+        # transport can end a cache breakpoint on the stable one; `system` is
+        # their join, for transports that take one string.
+        system_blocks = build_system_blocks(
+            spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections,
+        )
+        system_prompt = (
+            "\n\n".join(block for block in system_blocks if block) if system_blocks
+            else build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
+        )
+
         # --- Context shaping (pre_model hooks): the Phase-1 context-
         # engineering pipeline (budget reduction -> tool-result clearing ->
         # offload -> sliding window -> auto-compact) over what's about to be
         # sent, plus the deterministic deadline-warning guard. Stored
-        # history in `context` is untouched — shaping is per-call.
-        budget = ContextBudget.for_model(spec.model.model)
+        # history in `context` is untouched — shaping is per-call. The
+        # system prompt and tool schemas go on the same call, so the messages
+        # get only what they leave of the window; no shaper changes either.
+        budget = ContextBudget.for_model(
+            spec.model.model, context_window=spec.model.context_window,
+            reserved_prompt_tokens=count_text_tokens(system_prompt or "") + count_schema_tokens(tool_schemas),
+        )
         messages = await hooks.dispatch_pre_model(
             self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )
+        if final_answer_only:
+            add_loop_note(messages, _FINAL_ANSWER_NOTE)
 
-        tool_schemas = tool_schemas_for_turn(self, spec, runtime)
-        system_prompt = build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
-
-        # When the builder supports `build_blocks()` (i.e. `PipesHubPromptBuilder`),
-        # pass the stable and volatile blocks separately so the transport can place
-        # the Anthropic cache breakpoint on the stable block only.  Other transports
-        # receive a plain `system` string and join internally when needed.
-        system_blocks: list[str] | None = None
-        _builder = spec.system_prompt
-        if hasattr(_builder, "build_blocks"):
-            _stable, _volatile = _builder.build_blocks(
-                spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections
-            )
-            system_blocks = [_stable, _volatile]
+        cut_off_parts = self._cut_off_reply_parts()
 
         llm_kwargs: dict = {}
         if spec.model.thinking_budget is not None:
@@ -687,7 +737,12 @@ class Agent:
             # --- Streaming branch: consume the StreamEvent stream, firing
             # per-token AG-UI events for text deltas, terminating on exactly
             # one StreamCompleteEvent carrying the full ModelResponse.
-            await self.emit(EventType.TEXT_MESSAGE_START, {"turn_index": turn_index})
+            text_start: dict = {"turn_index": turn_index}
+            if cut_off_parts:
+                # Tentative: lets the live answer keep the cut-off text on
+                # screen, but this turn may still turn out to call a tool.
+                text_start["continues_truncated"] = True
+            await self.emit(EventType.TEXT_MESSAGE_START, text_start)
             final_response: "ModelResponse | None" = None
             # Reasoning brackets its own message, lazily opened on the
             # first `ThinkingDeltaEvent` (not every turn reasons) and
@@ -754,7 +809,15 @@ class Agent:
                     final_response = event.response
             if reasoning_open:
                 await self.emit(EventType.REASONING_MESSAGE_END, {"turn_index": turn_index})
-            await self.emit(EventType.TEXT_MESSAGE_END, {"turn_index": turn_index})
+            text_end: dict = {"turn_index": turn_index}
+            if (
+                cut_off_parts and final_response is not None
+                and not self._extract_tool_calls(final_response.message)
+            ):
+                # Confirmed: this turn's text continues the cut-off reply, so
+                # the saved transcript joins them into one part.
+                text_end["joins_truncated"] = True
+            await self.emit(EventType.TEXT_MESSAGE_END, text_end)
             if final_response is None:
                 raise AgentError("Model.stream() completed without a StreamCompleteEvent")
             return final_response
@@ -793,11 +856,19 @@ class Agent:
                 summary=f"Input guardrail blocked turn {turn_index}: {e}",
             ))
         except Exception as e:
+            if final_answer_only:
+                await obs.append_timeline(
+                    self, "final_answer_turn_failed", f"Final-answer LLM call failed: {e}",
+                    "calling_llm", {"turn_index": turn_index, "error": str(e)},
+                )
+                return StepOutcome("continue")
             return StepOutcome("stop", result=await self.fail(
                 goal, f"LLM call failed: {e}", event="llm_call_failed", summary=f"LLM call failed: {e}",
             ))
 
         response_msg = response.message
+        if final_answer_only:
+            response_msg = await self._drop_non_terminal_tool_calls(response_msg, turn_index)
         self._usage.add(response.usage)
         if runtime.budget is not None:
             await runtime.budget.record_turn(
@@ -864,7 +935,11 @@ class Agent:
                 await self.emit(EventType.TURN_COMPLETE, {"turn_index": turn_index})
                 return StepOutcome("continue", turn=turn)
 
-            output = self.extract_text(response_msg)
+            # Joined as-is: the model resumes exactly where it was cut off,
+            # often mid-word, so any separator would corrupt the text.
+            output = "".join(cut_off_parts) + self.extract_text(response_msg)
+            if final_answer_only and not output.strip():
+                return StepOutcome("continue")
             try:
                 await hooks.dispatch_guardrail_output(self._hooks, output or "", scope=turn_scope)
             except HookBlocked as e:
@@ -996,6 +1071,11 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+            # A sub-agent left a call waiting for a person: this run waits for the answer too.
+            pending = approval_holder.pending
+            if not task_done and pending is not None and pending.end_turn:
+                task_done = True
+                final_output = pending.message
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision
@@ -1059,6 +1139,30 @@ class Agent:
         if isinstance(msg, AssistantMessage) and msg.tool_calls:
             return list(msg.tool_calls)
         return []
+
+    async def _drop_non_terminal_tool_calls(self, msg: Message, turn_index: int) -> Message:
+        """The final-answer turn still sends the tool list (providers reject
+        tool history without tool definitions), so the model may call a
+        tool anyway. Only calls that end the run (`TAG_LIFECYCLE_TERMINAL`,
+        e.g. `final_answer`, `task_complete`) are kept. The rest are removed
+        before the reply is recorded: history never holds a call without a
+        result, and text streamed beside a removed call becomes the answer
+        rather than being replaced by older narration."""
+        registry = self._runtime.tool_registry
+        kept: list[ToolCall] = []
+        dropped: list[ToolCall] = []
+        for call in self._extract_tool_calls(msg):
+            terminal = registry is not None and TAG_LIFECYCLE_TERMINAL in registry.tags_for_name(call.name)
+            (kept if terminal else dropped).append(call)
+        if not dropped:
+            return msg
+        await obs.append_timeline(
+            self, "final_answer_turn_tool_calls_ignored",
+            f"Final-answer turn requested {len(dropped)} tool call(s); not executed",
+            "calling_llm",
+            {"turn_index": turn_index, "tools": [c.name for c in dropped]},
+        )
+        return msg.model_copy(update={"tool_calls": kept or None})
 
     def stream(self, goal: Goal, **run_kwargs):
         """Streaming turn loop: run this goal while yielding `AgentEvent`s

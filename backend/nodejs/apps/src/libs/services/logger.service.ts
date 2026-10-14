@@ -4,6 +4,18 @@ import { injectable } from 'inversify';
 import path from 'path';
 import { threadId } from 'worker_threads';
 import { currentDisplayId, getRequestContext } from '../context/request-context';
+import {
+  redactHeadersForLog,
+  redactLogMetadata,
+  redactQueryForLog,
+} from '../utils/log-redaction.utils';
+
+const redactMetadata = winston.format((info) => {
+  if (info.metadata !== undefined) {
+    info.metadata = redactLogMetadata(info.metadata);
+  }
+  return info;
+});
 
 export enum LogLevel {
   Debug = 'debug',
@@ -75,6 +87,8 @@ export class Logger {
 
   private initializeLogger(config?: LoggerConfig): winston.Logger {
     const logFormat = winston.format.combine(
+      // First, so the console line and the JSON file lines both get it.
+      redactMetadata(),
       winston.format.timestamp(),
       winston.format.errors({ stack: true }),
       winston.format.printf((info) => {
@@ -269,16 +283,9 @@ export class Logger {
     this.info(`${req.method} ${req.path}`, {
       ...meta,
       ...callerInfo,
-      query: req.query,
+      query: redactQueryForLog(req.query),
       params: req.params,
-      headers: this.sanitizeHeaders(req.headers),
+      headers: redactHeadersForLog(req.headers),
     });
-  }
-
-  private sanitizeHeaders(headers: any): any {
-    const sanitized = { ...headers };
-    delete sanitized.authorization;
-    delete sanitized.cookie;
-    return sanitized;
   }
 }

@@ -21,7 +21,7 @@ from app.agents.tools.factories.registry import ClientFactoryRegistry
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
 
-__all__ = ["ToolInstanceCreator"]
+__all__ = ["ToolInstanceCreator", "configured_name_matches"]
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +36,21 @@ _TRANSIENT_EXCEPTIONS: tuple[type[Exception], ...] = (
 )
 
 _MAX_CLIENT_CREATION_ATTEMPTS = 3
+
+
+def configured_name_matches(app_name: str, configured_name: str) -> bool:
+    """Whether a configured toolset name (already normalized) belongs to `app_name`.
+
+    Suffix matching bridges short registry names to the graph's longer ones
+    ("drive" -> "googledrive"), but a name that is itself a different
+    connector ("onedrive") must not be claimed by "drive", or one connector's
+    credentials end up building another connector's client."""
+    if configured_name == app_name:
+        return True
+    if not app_name or not configured_name.endswith(app_name):
+        return False
+    other = ClientFactoryRegistry.get_factory(configured_name)
+    return other is None or other is ClientFactoryRegistry.get_factory(app_name)
 
 
 class ToolInstanceCreator:
@@ -221,9 +236,14 @@ class ToolInstanceCreator:
         and the graph DB toolset names (e.g. ``"Google Drive"`` → ``"googledrive"``).
         """
         normalized = app_name.lower().replace(" ", "").replace("_", "")
-        for ts in self._agent_toolsets:
-            name = (ts.get("name") or "").lower().replace(" ", "").replace("_", "")
-            if name == normalized or name.endswith(normalized):
+        named = [
+            ((ts.get("name") or "").lower().replace(" ", "").replace("_", ""), ts)
+            for ts in self._agent_toolsets
+        ]
+        # An exact name beats a suffix match regardless of list order.
+        named.sort(key=lambda pair: pair[0] != normalized)
+        for name, ts in named:
+            if configured_name_matches(normalized, name):
                 instance_id = ts.get("instanceId")
                 if instance_id:
                     config = self._toolset_configs.get(instance_id)

@@ -93,6 +93,6 @@ class TestValidateResourceBudget:
         self, validator: SkillValidator
     ) -> None:
         chunk = "x" * (MAX_RESOURCE_FILE_BYTES // 2)
-        resources = {f"assets/chunk-{i}.bin": chunk for i in range(5)}
+        resources = {f"assets/chunk-{i}.bin": chunk for i in range(11)}
         with pytest.raises(SkillFormatError, match="per-skill limit"):
             validator.validate_resource_budget(resources)

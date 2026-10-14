@@ -339,6 +339,12 @@ class TestNeo4jAppChildrenCypher:
         cypher = neo4j_provider._get_app_children_cypher()
         assert "reason: record.reason" in cypher
 
+    def test_connector_groups_project_their_connector_id(self, neo4j_provider) -> None:
+        # The demo connector's channels and folders imitate other systems by
+        # name; the instance id is what marks them as demo data in the UI.
+        cypher = neo4j_provider._get_app_children_cypher()
+        assert "connectorId: rg.connectorId" in cypher
+
 
 class TestNeo4jRecordGroupChildrenCypher:
     """_get_record_group_children_cypher emits node.* projection with the KB

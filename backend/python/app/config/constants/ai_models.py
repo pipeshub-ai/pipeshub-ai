@@ -13,6 +13,12 @@ EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
 # timeout with nothing to distinguish it from a slow model.
 REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS = 60.0
 
+# Bound on one attempt to embed a search query with a hosted API. A query is one
+# short string that comes back in well under a second; the 60s above is sized for
+# indexing batches, and a search that waits it out on one stalled request answers
+# after its caller has given up, while a fresh attempt answers at once.
+QUERY_EMBEDDING_ATTEMPT_TIMEOUT_SECONDS = 15.0
+
 class OCRProvider(Enum):
     AZURE_DI = "azureDI"
     VLM_OCR = "vlmOCR"
@@ -55,10 +61,11 @@ REASONING_EFFORT_VALUES = frozenset(item.value for item in ReasoningEffort)
 
 # Applied by the LLM factory (`_reasoning_effort_kwargs`) whenever a
 # reasoning-capable model has no explicit effort — from the user's selection,
-# an agent's `defaultReasoningEffort`, or any other caller. Reasoning-capable
-# models should reason thoroughly by default rather than falling back to
-# whatever a given provider's own default happens to be (which varies and is
-# often a lower/cheaper tier than users expect).
+# an agent's `defaultReasoningEffort`, the model's own `defaultReasoningEffort`,
+# or any other caller. Reasoning-capable models should reason thoroughly by
+# default rather than falling back to whatever a given provider's own default
+# happens to be (which varies and is often a lower/cheaper tier than users
+# expect).
 DEFAULT_REASONING_EFFORT = ReasoningEffort.HIGH.value
 
 

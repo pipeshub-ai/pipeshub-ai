@@ -178,14 +178,16 @@ class TestGenerateJwt:
             await generate_jwt(mock_config, {"sub": "user1"})
 
     @pytest.mark.asyncio
-    async def test_calls_config_service_with_correct_key(self):
+    async def test_reads_the_secret_keys_through_the_config_cache(self):
         from app.config.constants.service import config_node_constants
 
         mock_config = AsyncMock()
         mock_config.get_config.return_value = {"scopedJwtSecret": "secret"}
 
         await generate_jwt(mock_config, {"sub": "user1"})
-        mock_config.get_config.assert_called_once_with(config_node_constants.SECRET_KEYS.value)
+        mock_config.get_config.assert_called_once_with(
+            config_node_constants.SECRET_KEYS.value, use_cache=True
+        )
 
     @pytest.mark.asyncio
     async def test_generated_token_is_decodable(self):

@@ -3,7 +3,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Handle, Position, useReactFlow, useStore, useNodeConnections } from '@xyflow/react';
-import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Dialog, Button, TextArea, Badge, Switch } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
@@ -86,6 +86,14 @@ function mcpConnectionChipLabel(n: FlowNodeData): string {
   const c = (n.config || {}) as Record<string, unknown>;
   const disp = String(c.displayName ?? '').trim();
   return normalizeDisplayName(disp || n.label);
+}
+
+/** `config.skillName` is the catalog identity; `label` is only its display form,
+ *  kept as the fallback for flows persisted before skillName was stored. */
+function skillConnectionChipLabel(n: FlowNodeData): string {
+  const c = (n.config || {}) as Record<string, unknown>;
+  const name = String(c.skillName ?? '').trim();
+  return normalizeDisplayName(name || n.label);
 }
 
 type CoreInboundHandle = 'input' | 'llms' | 'knowledge' | 'toolsets' | 'skills' | 'mcpServers';
@@ -300,6 +308,9 @@ export function AgentCoreNode({
   const [defaultReasoningEffort, setDefaultReasoningEffort] = useState<ReasoningEffort | null>(
     (data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null
   );
+  const [sendUserContext, setSendUserContext] = useState(
+    data.config?.sendUserContext !== false
+  );
 
   const connected = useMemo(() => {
     const incoming = storeEdges.filter((e) => e.target === data.id);
@@ -343,6 +354,7 @@ export function AgentCoreNode({
                   instructions,
                   startMessage,
                   defaultReasoningEffort,
+                  sendUserContext,
                 },
               },
             }
@@ -350,13 +362,14 @@ export function AgentCoreNode({
       )
     );
     setPromptOpen(false);
-  }, [data.id, defaultReasoningEffort, instructions, setNodes, startMessage, systemPrompt]);
+  }, [data.id, defaultReasoningEffort, instructions, sendUserContext, setNodes, startMessage, systemPrompt]);
 
   const openPrompts = () => {
     setSystemPrompt((data.config?.systemPrompt as string) || t('agentBuilder.defaultSystemPrompt'));
     setInstructions((data.config?.instructions as string) || '');
     setStartMessage((data.config?.startMessage as string) || t('agentBuilder.defaultStartMessage'));
     setDefaultReasoningEffort((data.config?.defaultReasoningEffort as ReasoningEffort | null) ?? null);
+    setSendUserContext(data.config?.sendUserContext !== false);
     setPromptOpen(true);
   };
 
@@ -559,6 +572,20 @@ export function AgentCoreNode({
             )}
           </Section>
 
+          <Section title={t('agentBuilder.skillsSection')} icon="psychology">
+            <CoreHandle type="target" position={Position.Left} id="skills" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+            {connected.skills.length ? (
+              <ConnectedChips
+                nodes={connected.skills}
+                max={MAX_VISIBLE.skills}
+                labelOf={skillConnectionChipLabel}
+              />
+            ) : (
+              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                {t('agentBuilder.optional')}
+              </Text>
+            )}
+          </Section>
 
           <Section title={t('agentBuilder.mcpServersSection')} icon="hub">
             <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
@@ -662,6 +689,22 @@ export function AgentCoreNode({
                 onSelect={setDefaultReasoningEffort}
               />
             ) : null}
+            <Flex align="start" justify="between" gap="3">
+              <Box style={{ minWidth: 0 }}>
+                <Text size="2" weight="bold">
+                  {t('agentBuilder.sendUserContextLabel')}
+                </Text>
+                <Text size="1" color="gray" as="p" mt="1">
+                  {t('agentBuilder.sendUserContextHint')}
+                </Text>
+              </Box>
+              <Switch
+                checked={sendUserContext}
+                onCheckedChange={setSendUserContext}
+                disabled={readOnly}
+                aria-label={t('agentBuilder.sendUserContextLabel')}
+              />
+            </Flex>
           </Box>
 
           {/* Fixed footer */}

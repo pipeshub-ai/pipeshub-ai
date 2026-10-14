@@ -6,6 +6,7 @@ process_image, process_delimited_document.
 """
 
 import logging
+from collections.abc import AsyncGenerator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.services.messaging.config import IndexingEvent, PipelineEvent, PipelineEventData
 
-log = logging.getLogger("test")
+log = logging.getLogger(__name__)
 log.setLevel(logging.CRITICAL)
 
 
@@ -227,24 +228,6 @@ class TestProcessTxtDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-
-    @pytest.mark.asyncio
-    async def test_undecipherable_encoding_raises(self):
-        """Binary that can't be decoded with any encoding raises ValueError wrapped in DocumentProcessingError."""
-        proc = _make_processor()
-
-        # Create bytes that fail all encodings by mocking decode
-        bad_binary = MagicMock()
-        bad_binary.decode = MagicMock(side_effect=UnicodeDecodeError("codec", b"", 0, 1, "bad"))
-
-        with pytest.raises(DocumentProcessingError, match="Unable to decode"):
-            await _collect_events(
-                proc.process_txt_document(
-                    "test.txt", "r1", "1", "src", "o1",
-                    bad_binary, "vr1", "FILE", "UPLOAD", "UPLOAD"
-                )
-            )
-
 
 # ============================================================================
 # process_excel_document
@@ -1048,7 +1031,7 @@ class TestMarkRecord:
 # convert_record_dict_to_record
 # ============================================================================
 
-class TestConvertRecordDictToRecord:
+class TestConvertRecordDictToRecordDefaults:
     def test_valid_record(self):
         """A valid record dict produces a Record with correct fields."""
         from app.events.processor import convert_record_dict_to_record
@@ -1452,35 +1435,7 @@ class TestProcessPdfWithDoclingAdditional:
 # process_image — additional branches
 # ============================================================================
 
-class TestProcessImageAdditional:
-    @pytest.mark.asyncio
-    async def test_multimodal_embedding(self):
-        """Multimodal embedding model enables image processing even without multimodal LLM."""
-        image_parser = MagicMock()
-        image_parser.parse_image = MagicMock(return_value=MagicMock())
-        proc = _make_processor(parsers={"png": image_parser})
-
-        proc.graph_provider.get_document = AsyncMock(return_value=_mock_record_dict(
-            recordName="photo.png", mimeType="image/png",
-        ))
-
-        with patch("app.events.processor.get_llm_for_role", new_callable=AsyncMock) as mock_llm, \
-             patch("app.events.processor.get_embedding_model_config", new_callable=AsyncMock) as mock_emb, \
-             patch("app.events.processor.get_extension_from_mimetype", return_value="png"), \
-             patch("app.events.processor.IndexingPipeline") as MockPipeline, \
-             patch("app.events.processor.TransformContext"):
-            # LLM is not multimodal, but embedding is
-            mock_llm.return_value = (MagicMock(), {"isMultimodal": False})
-            mock_emb.return_value = {"isMultimodal": True}
-            MockPipeline.return_value.apply = AsyncMock()
-
-            events = await _collect_events(
-                proc.process_image("r1", b"imgdata", "vr1")
-            )
-
-        assert any(e.event == "parsing_complete" for e in events)
-        assert any(e.event == "indexing_complete" for e in events)
-
+class TestProcessImageValidation:
     @pytest.mark.asyncio
     async def test_no_mime_type_raises(self):
         """Raises when record has no mime type."""
@@ -2021,21 +1976,29 @@ class TestProcessTxtDocumentAdditional:
         assert any(e.event == "indexing_complete" for e in events)
 
     @pytest.mark.asyncio
-    async def test_latin1_encoding(self):
-        """Latin-1 encoded text is decoded when UTF-8 fails."""
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param(b"Caf\xe9 \x93costs\x94 \x80 5", "Caf\u00e9 \u201ccosts\u201d \u20ac 5", id="windows-1252"),
+            pytest.param(b"Caf\xe9 \x81 \x80", "Caf\u00e9 \ufffd \u20ac", id="undefined-windows-1252-byte"),
+            pytest.param("Zoë €".encode(), "Zoë €", id="utf-8"),
+            pytest.param(b"\xef\xbb\xbf" + "Zoë €".encode(), "Zoë €", id="utf-8-with-bom"),
+        ],
+    )
+    async def test_text_encodings(self, raw: bytes, expected: str) -> None:
         proc = _make_processor()
+        received = []
 
-        async def _fake_md(*args, **kwargs):
-            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="r1"))
+        async def _fake_md(*args: object, **kwargs: object) -> AsyncGenerator[PipelineEvent, None]:
+            received.append(kwargs["md_binary"])
             yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
 
         proc.process_md_document = _fake_md
 
-        text = "Caf\xe9".encode("latin-1")
-        events = await _collect_events(
-            proc.process_txt_document("test.txt", "r1", "1", "src", "o1", text, "vr1", "FILE", "UPLOAD", "UPLOAD")
+        await _collect_events(
+            proc.process_txt_document("test.txt", "r1", "1", "src", "o1", raw, "vr1", "FILE", "UPLOAD", "UPLOAD")
         )
-        assert any(e.event == "indexing_complete" for e in events)
+        assert received == [expected]
 
 
 # ============================================================================

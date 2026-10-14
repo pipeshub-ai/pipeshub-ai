@@ -16,9 +16,12 @@ from typing import TYPE_CHECKING, Any
 import httpx
 
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
 
 if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+    from app.config.constants.service import TokenScopes
     from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
@@ -32,6 +35,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0           # seconds; doubled on each retry (exponential)
 TRANSIENT_STATUS_CODES = (set(range(500, 600)) - {501}) | {429}
 HTTP_TOO_MANY_REQUESTS = 429
+AUTH_REFUSED_STATUS_CODES = {401, 403}
 
 # Backpressure (429 + Retry-After) gets its own, longer attempt budget so a
 # saturated-but-healthy downstream service is waited out instead of being
@@ -92,6 +96,14 @@ class ServiceUnavailableError(ServiceCallError):
     """Raised when the remote service is unreachable or persistently 5xx."""
 
 
+class ServiceAuthRefusedError(ServiceCallError):
+    """Raised when the service answers 401/403 to this client's own call.
+
+    A deployment fault (secret mismatch, services upgraded out of order), never
+    a fault of the document being sent, so it must not fail the document for good.
+    """
+
+
 class ServiceBackpressureError(ServiceCallError):
     """Raised when a service signals sustained backpressure (429 + Retry-After).
 
@@ -130,9 +142,10 @@ def _extract_service_error_message(response: httpx.Response) -> str | None:
     if isinstance(error, str) and error.strip():
         return error.strip()
 
-    msg = body.get("message")
-    if isinstance(msg, str) and msg.strip():
-        return msg.strip()
+    for field in ("message", "detail"):
+        msg = body.get(field)
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
     return None
 
 
@@ -301,9 +314,13 @@ class BaseServiceClient:
         circuit_breaker_cooldown: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
         max_backpressure_attempts: int = DEFAULT_MAX_BACKPRESSURE_ATTEMPTS,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
+        config_service: "ConfigurationService | None" = None,
+        service_scope: "TokenScopes | None" = None,
     ) -> None:
         self.service_url = service_url.rstrip("/")
         self.service_name = service_name
+        self._config_service = config_service
+        self._service_scope = service_scope
         self._timeout = httpx.Timeout(
             connect=connect_timeout,
             read=read_timeout,
@@ -443,6 +460,18 @@ class BaseServiceClient:
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
                         self.circuit_breaker.record_success()
+                        if response.status_code in AUTH_REFUSED_STATUS_CODES:
+                            detail = _extract_service_error_message(response)
+                            message = (
+                                f"{self.service_name} {operation} was refused "
+                                f"with status {response.status_code}"
+                            )
+                            raise ServiceAuthRefusedError(
+                                f"{message}: {detail}" if detail else message,
+                                status_code=response.status_code,
+                                service_name=self.service_name,
+                                details={"error_message": detail} if detail else None,
+                            )
                         return response
 
                     retry_after = (
@@ -587,10 +616,35 @@ class BaseServiceClient:
     # Public helpers for sub-classes
     # ------------------------------------------------------------------
 
-    async def _post_json(self, path: str, payload: dict, operation: str = "POST") -> httpx.Response:
+    async def _auth_headers(self, org_id: str | None) -> dict[str, str]:
+        """Bearer header for a client that declares a service scope; empty otherwise."""
+        if self._service_scope is None:
+            return {}
+        if self._config_service is None:
+            raise ServiceCallError(
+                f"{self.service_name} requires a {self._service_scope.value} service token, "
+                "but this client has no config service to mint one",
+                service_name=self.service_name,
+            )
+        claims: dict[str, Any] = {"scopes": [self._service_scope.value]}
+        if org_id:
+            claims["orgId"] = org_id
+        token = await generate_jwt(self._config_service, claims)
+        return {"Authorization": f"Bearer {token}"}
+
+    async def _post_json(
+        self,
+        path: str,
+        payload: dict,
+        operation: str = "POST",
+        org_id: str | None = None,
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         body = json.dumps(payload).encode("utf-8")
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            **await self._auth_headers(org_id),
+        }
         # Starlette does not auto-decompress Content-Encoding: gzip request bodies,
         # so we never compress JSON request payloads here.
         return await self._request_with_retry(
@@ -604,16 +658,22 @@ class BaseServiceClient:
         data: dict,
         operation: str = "POST multipart",
         budget_seconds: float | None = None,
+        org_id: str | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
             "POST", url, files=files, data=data, operation=operation,
+            headers=await self._auth_headers(org_id),
             budget_seconds=budget_seconds,
         )
 
-    async def _get_json(self, path: str, operation: str = "GET") -> httpx.Response:
+    async def _get_json(
+        self, path: str, operation: str = "GET", org_id: str | None = None
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
-        return await self._request_with_retry("GET", url, operation=operation)
+        return await self._request_with_retry(
+            "GET", url, operation=operation, headers=await self._auth_headers(org_id)
+        )
 
     # ------------------------------------------------------------------
     # Health check

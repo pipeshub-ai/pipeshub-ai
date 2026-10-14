@@ -11,13 +11,19 @@ factories). Covered indirectly today via the chat-mode integration tests.
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from typing import TYPE_CHECKING
+from unittest.mock import MagicMock, patch
 
+import pytest
 from pydantic import BaseModel
 
+from app.agents.actions.coding_sandbox.coding_sandbox import CodingSandbox
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.tool_loader import _build_dynamic_tools
+from app.agents.agent_loop.tool_loader import PipesHubToolLoader, _build_dynamic_tools
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def _make_context() -> AgentContext:
@@ -69,3 +75,57 @@ class TestBuildDynamicToolsWebAdapterWiring:
         _build_dynamic_tools(context)
 
         assert context.tool_state["citation_ref_mapper"] is not None
+
+
+class TestSandboxToolsetGate:
+    """`coding_sandbox` is `.as_internal()`, so nothing else stops it from
+    loading into every chat. With no usable `SANDBOX_MODE` its tools would
+    only ever answer with "sandbox unavailable" (or, before the fix, run the
+    code in-process), so the loader drops the toolset with one warning."""
+
+    @pytest.fixture
+    def _only_coding_sandbox(self) -> Iterator[None]:
+        registry = MagicMock()
+        registry.get_all_toolsets.return_value = {
+            "codingsandbox": {"class": CodingSandbox, "isInternal": True, "description": "sandbox"},
+        }
+        with patch(
+            "app.agents.registry.toolset_registry.get_toolset_registry", return_value=registry,
+        ):
+            yield
+
+    @pytest.mark.usefixtures("_only_coding_sandbox")
+    async def test_unset_mode_skips_sandbox_toolset_with_warning(self, monkeypatch) -> None:
+        monkeypatch.delenv("SANDBOX_MODE", raising=False)
+        context = _make_context()
+
+        registry = await PipesHubToolLoader().load(context)
+
+        assert not any(name.startswith("coding_sandbox") for name in registry.names())
+        warning_calls = [
+            c for c in context.tool_state["logger"].warning.call_args_list
+            if "Skipping sandbox toolsets" in str(c.args[0])
+        ]
+        assert len(warning_calls) == 1
+
+    @pytest.mark.usefixtures("_only_coding_sandbox")
+    async def test_local_mode_without_dev_flag_skips_sandbox_toolset(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.delenv("SANDBOX_ALLOW_LOCAL", raising=False)
+        context = _make_context()
+
+        registry = await PipesHubToolLoader().load(context)
+
+        assert not any(name.startswith("coding_sandbox") for name in registry.names())
+        warnings = [str(c.args) for c in context.tool_state["logger"].warning.call_args_list]
+        assert any("SANDBOX_ALLOW_LOCAL" in w for w in warnings)
+
+    @pytest.mark.usefixtures("_only_coding_sandbox")
+    async def test_explicit_local_mode_loads_sandbox_toolset(self, monkeypatch) -> None:
+        monkeypatch.setenv("SANDBOX_MODE", "local")
+        monkeypatch.setenv("SANDBOX_ALLOW_LOCAL", "true")
+        context = _make_context()
+
+        registry = await PipesHubToolLoader().load(context)
+
+        assert any(name.startswith("coding_sandbox") for name in registry.names())

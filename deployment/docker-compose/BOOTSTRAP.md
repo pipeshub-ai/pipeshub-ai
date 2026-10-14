@@ -24,6 +24,8 @@ The script writes the token to `--token-file` (mode `0600`) and never prints it.
 | LLM | `POST` | `/api/v1/configurationManager/ai-models/providers` | Session JWT + admin. Provider-shaped `configuration`. |
 | PAT | `POST` | `/api/v1/personal-access-tokens` | Not `/api/v1/pat`. **Always send `scopes`.** Omitting them grants the full `mcpScopes` set. |
 | Wizard | `PUT` | `/api/v1/org/onboarding-status` | `{ "status": "configured" }` |
+| Demo data | `POST` | `/api/v1/connectors/` | Only with `PIPESHUB_DEMO_DATA=1`. Creates the bundled **Demo** connector (the Acme Corp sample company) as a team connector, then `PUT …/config` and `POST …/toggle` to start its sync. Nothing external is contacted; the records index over the next minute or two. |
+| Demo personas | `POST` | `/api/v1/users/` | Only with `PIPESHUB_DEMO_PERSONAS=1` (needs `PIPESHUB_DEMO_DATA=1`, a business account, and `PIPESHUB_DEMO_PASSWORD`). Creates Alice Chen and Bob Okafor as members with that starting password, before the connector sync so their group memberships attach. Sign in as each and ask the pricing question to see permission-aware answers. |
 
 PAT scopes the script mints (valid on the stock `MCP_SCOPES` list):
 

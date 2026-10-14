@@ -2,13 +2,15 @@ import base64
 import io
 import json
 import logging
-from typing import List, Literal, Optional
+from typing import Any, List, Optional
 
 from langchain_core.messages import HumanMessage
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
 from app.models.blocks import Block, SemanticMetadata
+from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
     prompt_for_document_extraction,
 )
@@ -21,7 +23,6 @@ from app.utils.streaming import invoke_with_structured_output_and_reflection
 DEFAULT_CONTEXT_LENGTH = 128000
 CONTENT_TOKEN_RATIO = 0.85
 MAX_IMAGE_DIMENSION = 2000
-SentimentType = Literal["Positive", "Neutral", "Negative"]
 
 SUPPORTED_LLM_IMAGE_PREFIXES = (
     "data:image/png",
@@ -40,6 +41,67 @@ _MIME_TO_PIL_FORMAT = {
 }
 
 logger = logging.getLogger(__name__)
+
+# The block types _prepare_content reads; it skips every other type.
+CLASSIFIED_BLOCK_TYPES = frozenset({"text", "image", "table_row", "code"})
+
+# The longest cl100k_base token is 128 bytes and a character is at least one
+# UTF-8 byte, so n characters are never fewer than ceil(n / 128) tokens. The
+# len // 4 fallback in _prepare_content never counts fewer either.
+_MAX_CHARS_PER_TOKEN = 128
+
+
+def _token_floor(block_type: str, data: Any) -> int:  # noqa: ANN401 - Block.data is free-form
+    """A lower bound on what _prepare_content counts for this block."""
+    if isinstance(data, dict):
+        if block_type == "table_row":
+            data = data.get("row_natural_language_text")
+        elif block_type == "code":
+            data = data.get("text")
+    if block_type == "image" or not isinstance(data, str):
+        return 0
+    return -(-len(data) // _MAX_CHARS_PER_TOKEN)
+
+
+def classify_request_blocks(
+    blocks: list[Block], context_length_ceiling: int | float | None
+) -> list[dict]:
+    """The blocks the classify endpoint will read, already JSON-ready.
+
+    _prepare_content reads only ``type``, ``format`` and ``data``, skips
+    other block types and empty blocks, and stops at the first text block
+    that would take it past ``int(context_length * CONTENT_TOKEN_RATIO)``
+    tokens. Serialising the rest of a large container was a measurable share
+    of the indexing loop's CPU.
+
+    With *context_length_ceiling* at or above the service's context length,
+    a block after the one where the token floor alone passes the budget can
+    never be reached, so it is left out; the service's own truncation still
+    decides where the content ends. ``None`` keeps every block.
+    """
+    budget = (
+        int(context_length_ceiling * CONTENT_TOKEN_RATIO)
+        if context_length_ceiling
+        else None
+    )
+    floor_total = 0
+    request_blocks: list[dict] = []
+    for block in blocks:
+        block_type = getattr(block.type, "value", block.type)
+        if block_type not in CLASSIFIED_BLOCK_TYPES or not block.data:
+            continue
+        data = block.data
+        request_blocks.append({
+            "type": block_type,
+            "format": getattr(block.format, "value", block.format),
+            "data": data if type(data) is str else to_jsonable_python(data),
+        })
+        # Only a text block can end the service's loop, so only one can end this one.
+        if budget is not None and block_type != "image":
+            floor_total += _token_floor(block_type, data)
+            if floor_total > budget:
+                break
+    return request_blocks
 
 
 def _downscale_base64_image(
@@ -107,16 +169,44 @@ class DocumentClassification(BaseModel):
         description="Nested subcategories for the document"
     )
     languages: List[str] = Field(
-        description="List of languages detected in the document"
-    )
-    sentiment: SentimentType = Field(description="Overall sentiment of the document")
-    confidence_score: float = Field(
-        description="Confidence score of the classification", ge=0, le=1
+        description="Natural languages the document is written in"
     )
     topics: List[str] = Field(
         description="List of key topics/themes extracted from the document"
     )
-    summary: str = Field(description="Summary of the document")
+    summary: str = Field(
+        description=(
+            "Retrieval-facing summary. Sentence 1 must state document type, "
+            "primary subject, principal parties or owning team, and time period "
+            "or effective date, in that order — a downstream tool shows only the "
+            "first ~600 characters, so front-loading is mandatory. Length is "
+            "tiered to document depth: 3-5 sentences for thin/sparse documents, "
+            "no more than 300 words typically, never exceeding 400 words. Prefer "
+            "concrete named entities, identifiers, dates, and figures over "
+            "connective prose. No opening filler, meta commentary, "
+            "recommendations, or unsupported claims."
+        )
+    )
+
+    @field_validator("languages", mode="after")
+    @classmethod
+    def _only_natural_languages(cls, values: list[str]) -> list[str]:
+        names = (canonical_language(v) for v in values if isinstance(v, str))
+        return list(dict.fromkeys(n for n in names if n))
+
+
+def semantic_metadata_from_classification(classification: DocumentClassification) -> SemanticMetadata:
+    return SemanticMetadata(
+        departments=classification.departments,
+        languages=classification.languages,
+        topics=classification.topics,
+        summary=classification.summary,
+        categories=[classification.category],
+        sub_category_level_1=classification.subcategories.level1,
+        sub_category_level_2=classification.subcategories.level2,
+        sub_category_level_3=classification.subcategories.level3,
+    )
+
 
 class DocumentExtraction(Transformer):
     def __init__(self, logger, graph_provider: IGraphDBProvider, config_service) -> None:
@@ -129,20 +219,16 @@ class DocumentExtraction(Transformer):
         record = ctx.record
         blocks = record.block_containers.blocks
 
-        document_classification = await self.process_document(blocks, record.org_id)
+        document_classification = await self.process_document(
+            blocks,
+            record.org_id,
+            record_name=record.record_name,
+            record_type=record.record_type.value,
+        )
         if document_classification is None:
             record.semantic_metadata = None
             return
-        record.semantic_metadata = SemanticMetadata(
-            departments=document_classification.departments,
-            languages=document_classification.languages,
-            topics=document_classification.topics,
-            summary=document_classification.summary,
-            categories=[document_classification.category],
-            sub_category_level_1=document_classification.subcategories.level1,
-            sub_category_level_2=document_classification.subcategories.level2,
-            sub_category_level_3=document_classification.subcategories.level3,
-        )
+        record.semantic_metadata = semantic_metadata_from_classification(document_classification)
         self.logger.debug("🎯 Document extraction completed successfully")
 
 
@@ -269,11 +355,27 @@ class DocumentExtraction(Transformer):
 
         return content
 
+    @staticmethod
+    def _fill_prompt(department_list: str, record_name: str, record_type: str) -> str:
+        """Substitute template placeholders via `.replace()`, not `.format()`.
+
+        A record name containing braces (e.g. "report_{final}.pdf") would raise
+        inside `.format()`, and record names come from connector data.
+        """
+        return (
+            prompt_for_document_extraction
+            .replace("{department_list}", department_list)
+            .replace("{record_name}", record_name or "(unknown)")
+            .replace("{record_type}", record_type or "(unknown)")
+        )
+
     async def classify(
         self,
         blocks: List[Block],
         org_id: str,
         departments: Optional[List[str]] = None,
+        record_name: str = "",
+        record_type: str = "",
     ) -> Optional[DocumentClassification]:
         """Extract metadata using pre-fetched *departments*.
 
@@ -291,12 +393,7 @@ class DocumentExtraction(Transformer):
         try:
             resolved_departments: List[str] = departments or [dept.value for dept in DepartmentNames]
             department_list = "\n".join(f'     - "{dept}"' for dept in resolved_departments)
-            sentiment_list = "\n".join(
-                f'     - "{sentiment}"' for sentiment in SentimentType.__args__
-            )
-            filled_prompt = prompt_for_document_extraction.replace(
-                "{department_list}", department_list
-            ).replace("{sentiment_list}", sentiment_list)
+            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
             if len(content) == 0:
                 self.logger.info("No content to process in document extraction")
@@ -322,7 +419,11 @@ class DocumentExtraction(Transformer):
             raise
 
     async def extract_metadata(
-        self, blocks: List[Block], org_id: str
+        self,
+        blocks: List[Block],
+        org_id: str,
+        record_name: str = "",
+        record_type: str = "",
     ) -> Optional[DocumentClassification]:
         """
         Extract metadata from document content.
@@ -341,15 +442,7 @@ class DocumentExtraction(Transformer):
                 departments = [dept.value for dept in DepartmentNames]
 
             department_list = "\n".join(f'     - "{dept}"' for dept in departments)
-
-            sentiment_list = "\n".join(
-                f'     - "{sentiment}"' for sentiment in SentimentType.__args__
-            )
-
-            filled_prompt = prompt_for_document_extraction.replace(
-                "{department_list}", department_list
-            ).replace("{sentiment_list}", sentiment_list)
-
+            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
 
             # Prepare multimodal content
             content = self._prepare_content(blocks, is_multimodal_llm, context_length)
@@ -435,8 +528,6 @@ class DocumentExtraction(Transformer):
                 category="",
                 subcategories=SubCategories(level1="", level2="", level3=""),
                 languages=[],
-                sentiment="Neutral",
-                confidence_score=0.0,
                 topics=[],
                 summary=summary_text,
             )
@@ -444,9 +535,15 @@ class DocumentExtraction(Transformer):
             self.logger.error(f"❌ Fallback summary call failed: {e}")
             return None
 
-    async def process_document(self, blocks: List[Block], org_id: str) -> DocumentClassification:
-            self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
-            return await self.extract_metadata(blocks, org_id)
+    async def process_document(
+        self,
+        blocks: List[Block],
+        org_id: str,
+        record_name: str = "",
+        record_type: str = "",
+    ) -> DocumentClassification:
+        self.logger.info("🖼️ Processing blocks for semantic metadata extraction")
+        return await self.extract_metadata(blocks, org_id, record_name=record_name, record_type=record_type)
 
 
 

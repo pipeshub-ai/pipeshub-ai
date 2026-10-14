@@ -73,6 +73,12 @@ export class BatchDispatcher {
     if (this.pending > 0) this.scheduleFlush();
   }
 
+  /** Drop the buffer without dispatching it — see EventCorrelator.discardPending. */
+  discard(): void {
+    if (this.flushTimer) { clearTimeout(this.flushTimer); this.flushTimer = null; }
+    this.buffer.length = 0;
+  }
+
   private scheduleFlush(): void {
     if (this.flushTimer) return;
     this.flushTimer = setTimeout(() => {

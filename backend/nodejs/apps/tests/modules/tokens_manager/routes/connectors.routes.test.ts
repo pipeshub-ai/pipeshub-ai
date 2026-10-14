@@ -52,10 +52,6 @@ describe('Connector Routes', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
-    container.bind<any>('RecordsEventProducer').toConstantValue({
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-    })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -368,34 +364,6 @@ describe('Connector Routes', () => {
           layer.route.methods.post,
       )
       expect(toggleRoute).to.not.be.undefined
-    })
-  })
-
-  describe('Local FS file-events routes', () => {
-    it('should register POST /:connectorId/file-events route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
-      const routes = (router as any).stack
-
-      const route = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/file-events' &&
-          layer.route.methods.post,
-      )
-      expect(route).to.not.be.undefined
-    })
-
-    it('should register POST /:connectorId/file-events/upload route', () => {
-      const router = createConnectorRouter(container, mockCrawlingContainer)
-      const routes = (router as any).stack
-
-      const route = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:connectorId/file-events/upload' &&
-          layer.route.methods.post,
-      )
-      expect(route).to.not.be.undefined
     })
   })
 
@@ -1094,10 +1062,6 @@ describe('Connector Routes - handler coverage', () => {
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
     container.bind<any>('AppConfig').toConstantValue(mockConfig)
     container.bind<any>('EntitiesEventProducer').toConstantValue(mockEventService)
-    container.bind<any>('RecordsEventProducer').toConstantValue({
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-    })
     container.bind<any>('SyncEventProducer').toConstantValue({
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),

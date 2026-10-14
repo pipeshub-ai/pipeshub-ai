@@ -16,7 +16,6 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { EntitiesEventProducer } from '../services/entity_event.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { IMessageProducer } from '../../../libs/types/messaging.types';
-import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import {
   resolveMessageBrokerConfig,
@@ -135,15 +134,6 @@ export class TokenManagerContainer {
         .bind<EntitiesEventProducer>('EntitiesEventProducer')
         .toConstantValue(entityEventsService);
 
-      const recordsEventProducer = new RecordsEventProducer(
-        messageProducer,
-        container.get('Logger'),
-      );
-      await recordsEventProducer.start();
-      container
-        .bind<RecordsEventProducer>('RecordsEventProducer')
-        .toConstantValue(recordsEventProducer);
-
       const syncEventProducer = new SyncEventProducer(
         messageProducer,
         container.get('Logger'),
@@ -202,19 +192,10 @@ export class TokenManagerContainer {
           ? this.instance.get<IMessageProducer>('MessageProducer')
           : null;
 
-        const recordsEventProducer = this.instance.isBound(
-          'RecordsEventProducer',
-        )
-          ? this.instance.get<RecordsEventProducer>('RecordsEventProducer')
-          : null;
-
         const syncEventProducer = this.instance.isBound('SyncEventProducer')
           ? this.instance.get<SyncEventProducer>('SyncEventProducer')
           : null;
 
-        if (recordsEventProducer) {
-          await recordsEventProducer.stop();
-        }
         if (syncEventProducer) {
           await syncEventProducer.stop();
         }

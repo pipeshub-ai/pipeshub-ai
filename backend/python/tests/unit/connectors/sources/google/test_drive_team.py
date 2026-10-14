@@ -277,8 +277,10 @@ class TestSyncUserGroups:
         })
 
         await connector._sync_user_groups()
-        # Group with no user members should not call on_new_user_groups
-        connector.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 # ---------------------------------------------------------------------------

@@ -74,11 +74,150 @@ const appliedFiltersSchema = z
   })
   .optional();
 
-/** `{ apps, kb }` filter object reused across search/message/regenerate flows. */
+// Built-in named-entity kinds; mirrors EntityKind in
+// backend/python/app/modules/named_entities/domain/kinds.py.
+export const NAMED_ENTITY_KINDS = [
+  'person',
+  'person_type',
+  'organization',
+  'event',
+  'product',
+  'skill',
+  'location',
+  'city',
+  'state',
+  'country_region',
+  'address',
+  'date',
+  'date_range',
+  'date_time',
+  'duration',
+  'currency',
+  'percentage',
+  'age',
+  'dimension',
+  'email',
+  'url',
+  'phone',
+  'ip',
+] as const;
+
+const finiteNumber = z.number().finite();
+
+const rangeChecked = <T extends z.ZodRawShape>(
+  shape: T,
+  low: string,
+  high: string,
+): z.ZodEffects<z.ZodObject<T, 'strict'>> =>
+  z
+    .object(shape)
+    .strict()
+    .superRefine((value: Record<string, unknown>, ctx) => {
+      const start = value[low];
+      const end = value[high];
+      if (typeof start === 'number' && typeof end === 'number' && start > end) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `${low} must be less than or equal to ${high}`,
+        });
+      }
+    });
+
+// Epoch milliseconds, or an ISO-8601 date / date-time (a date alone is UTC midnight).
+const instant = z.union([
+  z.number().int(),
+  z
+    .string()
+    .trim()
+    .min(1)
+    .transform((value, ctx) => {
+      const parsed = Date.parse(value);
+      if (Number.isNaN(parsed)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'must be epoch milliseconds or an ISO-8601 date',
+        });
+        return z.NEVER;
+      }
+      return parsed;
+    }),
+]);
+
+/**
+ * Experimental. Every constraint must hold for the same record: an amount and
+ * a date match a record that mentions both, not one entity that is both.
+ */
+const entityFiltersSchema = z
+  .object({
+    kinds: z
+      .array(z.string().trim().toLowerCase().pipe(z.enum(NAMED_ENTITY_KINDS)))
+      .min(1)
+      .max(NAMED_ENTITY_KINDS.length)
+      .optional(),
+    name: z
+      .string()
+      .trim()
+      .min(1, { message: 'name must not be blank' })
+      .max(256)
+      .optional(),
+    entityIds: z.array(z.string().uuid()).min(1).max(100).optional(),
+    mentionedDate: rangeChecked(
+      { from: instant.optional(), to: instant.optional() },
+      'from',
+      'to',
+    ).optional(),
+    amount: rangeChecked(
+      {
+        min: finiteNumber.optional(),
+        max: finiteNumber.optional(),
+        currency: z
+          .string()
+          .trim()
+          .toUpperCase()
+          .regex(/^[A-Z]{3}$/, {
+            message: 'currency must be a three-letter ISO 4217 code',
+          })
+          .optional(),
+      },
+      'min',
+      'max',
+    ).optional(),
+    quantity: rangeChecked(
+      {
+        min: finiteNumber.optional(),
+        max: finiteNumber.optional(),
+        dimension: z
+          .string()
+          .trim()
+          .toLowerCase()
+          .regex(/^[a-z_]{1,32}$/)
+          .optional(),
+      },
+      'min',
+      'max',
+    ).optional(),
+    // Fractions: 0.125 is 12.5%.
+    percent: rangeChecked(
+      { min: finiteNumber.optional(), max: finiteNumber.optional() },
+      'min',
+      'max',
+    ).optional(),
+  })
+  .strict();
+
+/** `{ apps, kb, entityFilters }` filter object reused across search/message/regenerate flows. */
 const filtersSchema = z
   .object({
     apps: z.array(appOrKbIdSchema).optional(),
     kb: z.array(appOrKbIdSchema).optional(),
+    entityFilters: entityFiltersSchema.optional(),
+    // Reserved for the typed filter tree that will replace entityFilters.
+    where: z
+      .unknown()
+      .refine((value) => value === undefined, {
+        message: 'filters.where is not supported yet',
+      })
+      .optional(),
   })
   .optional();
 
@@ -136,6 +275,27 @@ const contextFieldsSchema = {
   // {runId}` (see `cancelRunBodySchema`) can target it. Optional — a caller
   // that never sends one just can't be cooperatively cancelled.
   runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
+  // The person's answer to a tool approval card (Python `tool_approvals.py`). Same
+  // declare-or-be-stripped constraint as `protocol` above. The call it answers is
+  // the one saved server-side; only its id, the decision and "don't ask again" travel here.
+  toolApproval: z
+    .object({
+      approvalId: z.string().min(1).max(64),
+      decision: z.enum(['allow', 'deny']),
+      remember: z.boolean().optional(),
+    })
+    .optional(),
+};
+
+/**
+ * Opt-in: Python streams CUSTOM `retrieval_context` frames naming the records
+ * and blocks that reached the model, plus a `run_usage` frame — evaluation
+ * clients read both. Must be declared or Zod's unknown-key stripping removes
+ * it from req.body before the controller sees it. The two stream routes accept
+ * it; regenerating an answer is not a measured run.
+ */
+const retrievalContextFieldsSchema = {
+  includeRetrievalContext: z.boolean().optional(),
 };
 
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
@@ -201,13 +361,16 @@ const attachmentRefSchema = z.object({
   source: z.enum(['upload', 'paste-text']).optional(),
 });
 
+/** A chat message's text, the same limit on a new chat and on every follow-up. */
+const chatQuerySchema = z
+  .string({ required_error: 'Query is required' })
+  .min(1, { message: 'Query is required' })
+  .max(100000, {
+    message: 'Query exceeds maximum length of 100000 characters',
+  });
+
 const enterpriseSearchCreateBodySchema = z.object({
-    query: z
-      .string({ required_error: 'Query is required' })
-      .min(1, { message: 'Query is required' })
-      .max(100000, {
-        message: 'Query exceeds maximum length of 100000 characters',
-      }),
+    query: chatQuerySchema,
     recordIds: z.array(objectId('record ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
@@ -219,6 +382,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     projectVisibility: z.enum(['private', 'project']).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...retrievalContextFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -366,13 +530,14 @@ export const getAgentConversationByIdSchema = z.object({
 // ---------------------------------------------------------------------------
 
 const addMessageBodySchema = z.object({
-    query: z.string().min(1, { message: 'Query is required' }),
+    query: chatQuerySchema,
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
     attachments: z.array(attachmentRefSchema).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
+    ...retrievalContextFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
@@ -417,6 +582,27 @@ export const agentAddMessageParamsSchema = z.object({
     ...conversationIdParam,
   }),
   body: agentAddMessageBodySchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
+// ---------------------------------------------------------------------------
+
+export const agentCreateConversationSchema = z.object({
+  params: z.object(agentKeyParam),
+  body: agentStreamCreateBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
+});
+
+export const agentAddMessageSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+  }),
+  body: agentAddMessageBodySchema.extend({
+    chatMode: agentChatModeSchema.optional(),
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -491,7 +677,11 @@ const agentMcpServerSchema = z.object({
     .max(200),
   displayName: z.string().max(200).optional(),
   typeId: z.string().max(200).optional(),
-  tools: z.array(agentToolRefSchema).max(200).optional(),
+  /** Every tool the server offers at chat time, including ones it adds later. */
+  allTools: z.boolean().optional(),
+  // A loose bound on payload size only: Python allows 500 chosen tools and, with `allTools`,
+  // keeps the first 500 of however many the server lists.
+  tools: z.array(agentToolRefSchema).max(5000).optional(),
 });
 
 /**
@@ -624,6 +814,7 @@ const createAgentBodySchema = z
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const createAgentSchema = z.object({
@@ -660,6 +851,7 @@ const updateAgentBodySchema = z
     defaultReasoningEffort: z
       .union([z.null(), z.enum(REASONING_EFFORT_VALUES)])
       .optional(),
+    sendUserContext: z.boolean().optional(),
   });
 
 export const updateAgentSchema = z.object({
@@ -841,7 +1033,14 @@ export const enterpriseSearchQuerySchema = z.object({
 
 export const enterpriseSearchSearchSchema = z.object({
   body: z.object({
-    query: z.string().min(1, { message: 'Search query is required' }),
+    // Same ceiling as a chat question (chatQuerySchema). The XSS middleware
+    // also refuses a longer query before it gets here.
+    query: z
+      .string()
+      .min(1, { message: 'Search query is required' })
+      .max(100000, {
+        message: 'Search query exceeds maximum length of 100000 characters',
+      }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
   }),

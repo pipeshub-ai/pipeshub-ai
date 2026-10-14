@@ -129,7 +129,7 @@ class TestCleanup:
             await registry.aclose()
 
         client.aclose.assert_awaited_once()
-        assert registry._clients == {}
+        assert len(registry._clients) == 0
 
     @pytest.mark.asyncio
     async def test_one_failing_close_does_not_strand_the_others(self, logger) -> None:
@@ -139,12 +139,12 @@ class TestCleanup:
         bad = AsyncMock()
         bad.aclose = AsyncMock(side_effect=RuntimeError("loop is closed"))
         good = AsyncMock()
-        registry._clients = {1: (bad, None), 2: (good, None)}
+        registry._clients._clients = {1: (bad, None), 2: (good, None)}
 
         await registry.aclose()
 
         good.aclose.assert_awaited_once()
-        assert registry._clients == {}
+        assert len(registry._clients) == 0
 
     @pytest.mark.asyncio
     async def test_aclose_is_safe_with_no_clients(self, logger) -> None:

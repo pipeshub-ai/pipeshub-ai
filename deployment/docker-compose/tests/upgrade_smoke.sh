@@ -27,6 +27,7 @@
 #   PIPESHUB_BASE_VERSION    version to upgrade FROM (default: newest Hub tag)
 #   PIPESHUB_TARGET_VERSION  version to upgrade TO   (default: latest)
 #   PIPESHUB_DEPLOY_TYPE     slim (default) | full
+#   PIPESHUB_GRAPH_DB        neo4j | arango (default: the installer's choice)
 #   PIPESHUB_UPGRADE_PORT    host port (default 3996)
 #   HEALTH_WAIT_SECS         per-stage health deadline (default 600)
 #   PIPESHUB_UPGRADE_KEEP=1  leave the stack up for inspection
@@ -61,10 +62,16 @@ grep -q -- '--upgrade' "$INNER_INSTALLER" \
 
 DEPLOY_TYPE="${PIPESHUB_DEPLOY_TYPE:-slim}"
 case "$DEPLOY_TYPE" in slim) SUFFIX="-slim" ;; full) SUFFIX="" ;; *) die "PIPESHUB_DEPLOY_TYPE must be slim or full" ;; esac
+case "${PIPESHUB_GRAPH_DB:-}" in
+  "") EXPECTED_DATA_STORE="" ;;
+  neo4j) EXPECTED_DATA_STORE="neo4j" ;;
+  arango) EXPECTED_DATA_STORE="arangodb" ;;
+  *) die "PIPESHUB_GRAPH_DB must be neo4j or arango (got ${PIPESHUB_GRAPH_DB})" ;;
+esac
 
 TARGET_VERSION="${PIPESHUB_TARGET_VERSION:-latest}"
 PORT="${PIPESHUB_UPGRADE_PORT:-3996}"
-PROJECT="${PIPESHUB_PROJECT:-pipeshub-upgrade-${DEPLOY_TYPE}-${GITHUB_RUN_ID:-$$}}"
+PROJECT="${PIPESHUB_PROJECT:-pipeshub-upgrade-${DEPLOY_TYPE}${PIPESHUB_GRAPH_DB:+-${PIPESHUB_GRAPH_DB}}-${GITHUB_RUN_ID:-$$}}"
 export HEALTH_WAIT_SECS="${HEALTH_WAIT_SECS:-600}"
 DIAG_DIR="${PIPESHUB_UPGRADE_DIAG:-}"
 
@@ -135,7 +142,7 @@ cp "$COMPOSE_FILE_SRC" "$WORK/docker-compose.yml"
 cp "$INNER_INSTALLER"  "$WORK/install.sh"
 chmod +x "$WORK/install.sh"
 
-log "deploy=${DEPLOY_TYPE} project=${PROJECT} port=${PORT}"
+log "deploy=${DEPLOY_TYPE} graph=${PIPESHUB_GRAPH_DB:-default} project=${PROJECT} port=${PORT}"
 log "upgrade path: ${BASE_VERSION}${SUFFIX} -> ${TARGET_VERSION}"
 log "workdir=${WORK}"
 
@@ -196,6 +203,11 @@ _p="$(env_file_val APP_PORT || true)"; [[ -n "${_p:-}" ]] && { PORT="$_p"; BASE_
 _n="$(env_file_val COMPOSE_PROJECT_NAME || true)"; [[ -n "${_n:-}" ]] && PROJECT="$_n"
 
 wait_healthy "base install"
+DATA_STORE_BEFORE="$(env_file_val DATA_STORE || true)"
+if [[ -n "$EXPECTED_DATA_STORE" && "$DATA_STORE_BEFORE" != "$EXPECTED_DATA_STORE" ]]; then
+  die "asked for PIPESHUB_GRAPH_DB=${PIPESHUB_GRAPH_DB}, base install wrote DATA_STORE=${DATA_STORE_BEFORE:-unset}"
+fi
+log "graph database: ${DATA_STORE_BEFORE:-unset}"
 log "running image: $(running_image || echo unknown)"
 
 # Keep a copy of the .env the old version wrote. An upgrade that regenerates
@@ -254,6 +266,12 @@ for key in SECRET_KEY MONGO_PASSWORD REDIS_PASSWORD QDRANT_API_KEY; do
   fi
 done
 log "secrets preserved across upgrade"
+
+# The upgrade must keep the graph database the data lives in. Switching it would
+# start an empty graph beside the customer's real one.
+DATA_STORE_AFTER="$(env_file_val DATA_STORE || true)"
+[[ "$DATA_STORE_AFTER" == "$DATA_STORE_BEFORE" ]] \
+  || die "DATA_STORE changed during upgrade (${DATA_STORE_BEFORE:-unset} -> ${DATA_STORE_AFTER:-unset})"
 
 restarts="$(docker inspect "$(docker ps -aq \
   --filter "label=com.docker.compose.project=${PROJECT}" \

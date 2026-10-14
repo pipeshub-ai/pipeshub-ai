@@ -278,6 +278,36 @@ describe('ProjectService', () => {
       expect(filter).to.not.have.property('isArchived');
     });
 
+    it('filters to archived projects when isArchived is true', async () => {
+      const findStub = stubFindChain([]);
+      sinon.stub(Project, 'countDocuments').resolves(0);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: false,
+        isArchived: true,
+      });
+
+      expect(findStub.firstCall.args[0].isArchived).to.equal(true);
+    });
+
+    it('filters to active projects when isArchived is false', async () => {
+      const findStub = stubFindChain([]);
+      sinon.stub(Project, 'countDocuments').resolves(0);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'all',
+        includeArchived: true,
+        isArchived: false,
+      });
+
+      expect(findStub.firstCall.args[0].isArchived).to.equal(false);
+    });
+
     it('adds a fourth team-membership branch in scope "all" when callerTeamIds is non-empty', async () => {
       const findStub = stubFindChain([]);
       sinon.stub(Project, 'countDocuments').resolves(0);
@@ -332,6 +362,48 @@ describe('ProjectService', () => {
       expect(totalCount).to.equal(1);
       expect(projects[0]?.role).to.equal('owner');
       expect(projects[0]?.conversationCount).to.equal(3);
+    });
+
+    it('escapes regex metacharacters so a search term is matched literally', async () => {
+      const findStub = stubFindChain([]);
+      sinon.stub(Project, 'countDocuments').resolves(0);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+        search: 'Q3 (draft).*',
+      });
+
+      const pattern = findStub.firstCall.args[0].name.$regex;
+      expect(pattern).to.equal('Q3 \\(draft\\)\\.\\*');
+      expect(new RegExp(pattern, 'i').test('Q3 (draft).*')).to.equal(true);
+      expect(new RegExp(pattern, 'i').test('Q3 draft and anything after')).to.equal(false);
+    });
+
+    it('reports zero conversations for a project the aggregate returned no row for', async () => {
+      const busyId = new mongoose.Types.ObjectId();
+      const emptyId = new mongoose.Types.ObjectId();
+      const row = (id: mongoose.Types.ObjectId) => ({
+        _id: id,
+        orgId: new mongoose.Types.ObjectId(ORG_ID),
+        userId: new mongoose.Types.ObjectId(OWNER_ID),
+        members: [],
+        visibility: 'private',
+      });
+      stubFindChain([row(busyId), row(emptyId)]);
+      sinon.stub(Project, 'countDocuments').resolves(2);
+      sinon.stub(ChatSession, 'aggregate').resolves([{ _id: busyId, count: 5 }]);
+
+      const { projects } = await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+      });
+
+      expect(projects.map((p) => p.conversationCount)).to.deep.equal([5, 0]);
     });
 
     it('skips the aggregate entirely when there are no projects on the page', async () => {
@@ -400,6 +472,116 @@ describe('ProjectService', () => {
       });
       expect(updated.visibility).to.equal('org');
       expect(updated.chatSharing).to.equal('members');
+    });
+
+    it('applies every optional field present in the patch', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+      const patch = {
+        description: 'Planning for Q3',
+        icon: 'rocket',
+        color: '#ff8800',
+        instructions: 'Cite sources.',
+        knowledgeScope: { apps: ['app-1'], kb: ['kb-1'] },
+        appliedFilters: { departments: ['eng'] },
+        tools: ['web-search'],
+      };
+
+      const updated = await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), patch as any);
+
+      expect(updated).to.deep.include(patch);
+      expect(project.save.calledOnce).to.equal(true);
+    });
+
+    it('leaves fields absent from the patch untouched', async () => {
+      const project = makeProjectDoc({
+        description: 'Original description',
+        instructions: 'Original instructions',
+        tools: ['web-search'],
+        visibility: 'org',
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const updated = await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), {
+        icon: 'rocket',
+      });
+
+      expect(updated.name).to.equal('Test Project');
+      expect(updated.description).to.equal('Original description');
+      expect(updated.instructions).to.equal('Original instructions');
+      expect(updated.tools).to.deep.equal(['web-search']);
+      expect(updated.visibility).to.equal('org');
+    });
+
+    it('lets an explicit empty value clear a field, unlike an absent one', async () => {
+      const project = makeProjectDoc({ instructions: 'Original instructions', tools: ['web-search'] });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const updated = await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), {
+        instructions: '',
+        tools: [],
+      });
+
+      expect(updated.instructions).to.equal('');
+      expect(updated.tools).to.deep.equal([]);
+    });
+
+    it('throws ForbiddenError when a non-owner editor changes chatSharing alone, saving nothing', async () => {
+      const project = makeProjectDoc({
+        members: [
+          {
+            principalType: 'user',
+            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            role: 'editor',
+          },
+        ],
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.update(ORG_ID, MEMBER_ID, project._id.toString(), {
+          name: 'Sneaky rename',
+          chatSharing: 'members',
+        }),
+        ForbiddenError,
+        /Only the project owner can change sharing settings/,
+      );
+
+      expect(project.name).to.equal('Test Project');
+      expect(project.save.called).to.equal(false);
+    });
+
+    it('throws ForbiddenError for a viewer, saving nothing', async () => {
+      const project = makeProjectDoc({
+        members: [
+          {
+            principalType: 'user',
+            principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+            role: 'viewer',
+          },
+        ],
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.update(ORG_ID, MEMBER_ID, project._id.toString(), { name: 'Renamed' }),
+        ForbiddenError,
+        /needs the editor role/,
+      );
+
+      expect(project.save.called).to.equal(false);
+    });
+
+    it('throws NotFoundError for an outsider, hiding that the project exists', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.update(ORG_ID, OUTSIDER_ID, project._id.toString(), { name: 'Renamed' }),
+        NotFoundError,
+      );
+
+      expect(project.save.called).to.equal(false);
     });
   });
 
@@ -555,6 +737,76 @@ describe('ProjectService', () => {
         makeProjectDoc({ instructions: '   ' }),
       );
       expect(blank.instructions).to.equal(undefined);
+    });
+  });
+
+  describe('listMembers', () => {
+    const members = [
+      {
+        principalType: 'user',
+        principalId: new mongoose.Types.ObjectId(MEMBER_ID),
+        role: 'viewer',
+      },
+    ];
+
+    it('returns the member list to the owner', async () => {
+      const project = makeProjectDoc({ members });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      expect(await ProjectService.listMembers(ORG_ID, OWNER_ID, project._id.toString())).to.equal(
+        project.members,
+      );
+    });
+
+    it('returns the member list to a plain viewer', async () => {
+      const project = makeProjectDoc({ members });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const listed = await ProjectService.listMembers(ORG_ID, MEMBER_ID, project._id.toString());
+
+      expect(listed).to.have.length(1);
+    });
+
+    it('returns the member list to a caller whose only access is through a team', async () => {
+      const teamId = new mongoose.Types.ObjectId().toString();
+      const project = makeProjectDoc({
+        members: [
+          { principalType: 'team', principalId: new mongoose.Types.ObjectId(teamId), role: 'viewer' },
+        ],
+      });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      const listed = await ProjectService.listMembers(ORG_ID, OUTSIDER_ID, project._id.toString(), [teamId]);
+
+      expect(listed).to.have.length(1);
+    });
+
+    it('throws NotFoundError for an outsider, without leaking who the members are', async () => {
+      const project = makeProjectDoc({ members });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.listMembers(ORG_ID, OUTSIDER_ID, project._id.toString()),
+        NotFoundError,
+      );
+    });
+
+    it('throws NotFoundError for the owner\'s id presented under another org', async () => {
+      const project = makeProjectDoc({ members });
+      sinon.stub(Project, 'findOne').resolves(project);
+
+      await expectRejection(
+        ProjectService.listMembers(OTHER_ORG_ID, OWNER_ID, project._id.toString()),
+        NotFoundError,
+      );
+    });
+
+    it('throws BadRequestError for a malformed project id, without querying', async () => {
+      const findOneStub = sinon.stub(Project, 'findOne');
+
+      await expectRejection(ProjectService.listMembers(ORG_ID, OWNER_ID, 'not-an-id'), BadRequestError);
+
+      expect(findOneStub.called).to.equal(false);
     });
   });
 
@@ -765,6 +1017,11 @@ describe('ProjectService', () => {
 
     it('never throws when the update fails (best-effort)', async () => {
       sinon.stub(Project, 'updateOne').rejects(new Error('db down'));
+      await ProjectService.touchActivity(new mongoose.Types.ObjectId().toString());
+    });
+
+    it('never throws when the driver rejects with something other than an Error', async () => {
+      sinon.stub(Project, 'updateOne').callsFake((() => Promise.reject('db down')) as any);
       await ProjectService.touchActivity(new mongoose.Types.ObjectId().toString());
     });
 

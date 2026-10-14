@@ -38,6 +38,7 @@ import {
   recordClassifiedFailureOnSession,
   savePartialConversation,
 } from '../../../../src/modules/enterprise_search/utils/utils'
+import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { handleRegenerationError, markConversationFailed, replaceMessageWithError, markAgentConversationFailed, deleteAgentConversation, attachPopulatedCitations } from '../../../../src/modules/enterprise_search/utils/utils';
 import { InternalServerError, BadRequestError } from '../../../../src/libs/errors/http.errors'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
@@ -332,6 +333,16 @@ describe('Enterprise Search Utils', () => {
         data: { confidence: 0.5 },
       }
       expect(() => buildAIResponseMessage(aiResponse as any)).to.throw('AI response must include an answer')
+    })
+
+    it('should allow an empty answer when status is waiting_input', () => {
+      const result = buildAIResponseMessage({
+        statusCode: 200,
+        data: { answer: '', status: 'waiting_input' },
+      } as any)
+
+      expect(result.messageType).to.equal('bot_response')
+      expect(result.content).to.equal('')
     })
 
     it('should throw InternalServerError when data is null', () => {
@@ -1221,12 +1232,13 @@ describe('Enterprise Search Utils', () => {
       expect(writeArg).to.include('Something went wrong')
     })
 
-    it('should include details when provided', async () => {
+    it('never sends raw details to the client', async () => {
       const res = createMockResponse()
-      await sendSSEErrorEvent(res, 'Error occurred', 'detail info')
+      await sendSSEErrorEvent(res, 'Error occurred', 'read ECONNRESET')
 
       const writeArg = res.write.firstCall.args[0]
-      expect(writeArg).to.include('detail info')
+      expect(writeArg).to.include('Error occurred')
+      expect(writeArg).not.to.include('ECONNRESET')
     })
 
     it('should include conversation when provided', async () => {
@@ -1442,7 +1454,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         (data) => { capturedData = data },
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1465,7 +1476,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         (d) => { capturedData = d },
-        false,
       )
 
       expect(capturedData).to.not.be.null
@@ -1487,7 +1497,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       // Incomplete event should be kept in buffer
@@ -1508,7 +1517,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       // Should forward because parse failed
@@ -1529,7 +1537,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1562,7 +1569,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1581,7 +1587,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1602,7 +1607,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1624,7 +1628,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1657,7 +1660,6 @@ describe('Enterprise Search Utils', () => {
         'req-1',
         res,
         () => {},
-        false,
       )
 
       expect(res.write.calledOnce).to.be.true
@@ -1913,14 +1915,28 @@ describe('Enterprise Search Utils', () => {
       expect(result).to.be.null
     })
 
-    it('should return null on error', async () => {
-      sinon.stub(ChatSession, 'findOne').rejects(new Error('DB down'))
+    it('should return null when the id cannot be cast, since it can match nothing', async () => {
+      sinon.stub(ChatSession, 'findOne').rejects(new mongoose.Error.CastError('ObjectId', 'not-an-id', '_id'))
 
       const result = await validateAgentConversationAccess(
-        VALID_OID, 'agent-1', VALID_OID, VALID_OID2
+        'not-an-id', 'agent-1', VALID_OID, VALID_OID2
       )
 
       expect(result).to.be.null
+    })
+
+    it('should pass any other lookup failure on instead of treating it as not found', async () => {
+      const outage = new Error('DB down')
+      sinon.stub(ChatSession, 'findOne').rejects(outage)
+
+      let thrown: unknown
+      try {
+        await validateAgentConversationAccess(VALID_OID, 'agent-1', VALID_OID, VALID_OID2)
+      } catch (error) {
+        thrown = error
+      }
+
+      expect(thrown).to.equal(outage)
     })
 
     it('should scope the query to agent sessions only (defense-in-depth)', async () => {
@@ -1986,7 +2002,8 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.calledOnce).to.be.true
       const writeArg = res.write.firstCall.args[0]
       expect(writeArg).to.include('error')
-      expect(writeArg).to.include('Stream broke')
+      expect(writeArg).to.include(CHAT_ERROR_MESSAGES.failed)
+      expect(writeArg).not.to.include('Stream broke')
     })
 
     it('should send SSE error when there is no messageId', async () => {
@@ -2033,6 +2050,36 @@ describe('Enterprise Search Utils', () => {
       expect(res.write.calledOnce).to.be.true
       const writeArg = res.write.firstCall.args[0]
       expect(writeArg).to.include('Regeneration failed')
+    })
+
+    it('saves and sends the interrupted message, never the socket error, when regeneration drops', async () => {
+      const res = createMockResponse()
+      const error = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      const messageId = new mongoose.Types.ObjectId()
+      const sessionId = new mongoose.Types.ObjectId()
+
+      const mockConv: any = {
+        _id: sessionId,
+        conversationErrors: [],
+        save: sinon.stub().resolves(true),
+      }
+      const { findOneAndReplaceStub } = stubUpdateMessageById({ _id: messageId, sessionId, orgId: 'org-1', seq: 2 })
+      sinon.stub(ChatSession, 'findById').resolves({
+        _id: sessionId,
+        toObject: () => ({ _id: sessionId, title: 'Test' }),
+      })
+      stubGetMessagesChain([])
+
+      await handleRegenerationError(
+        res, error, mockConv, messageId, sessionId.toString(), null, 'req-1', 'stream_error'
+      )
+
+      const saved = JSON.stringify(findOneAndReplaceStub.firstCall.args)
+      expect(saved).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(saved).not.to.include('ECONNRESET')
+      const writeArg = res.write.firstCall.args[0]
+      expect(writeArg).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArg).not.to.include('ECONNRESET')
     })
   })
 })
@@ -2217,6 +2264,27 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(result.map((m: any) => m.role)).to.not.include('tool_call')
     })
 
+    it('should attach a regenerate ask_user_question tool_call that follows the bot', () => {
+      const payload = { name: 'ask_user_question', questions: [{ question: 'Which region?' }] }
+      const messages = [
+        { messageType: 'user_query', content: 'ask me question' },
+        { messageType: 'bot_response', content: '', parts: [] },
+        {
+          messageType: 'tool_call',
+          content: '',
+          tools: [{ toolName: 'ask_user_question', toolResult: payload }],
+        },
+      ]
+      const result = formatPreviousConversations(messages as any)
+      expect(result).to.have.lengthOf(2)
+      expect(result[1].tool_results).to.deep.include({
+        tool_id: 'ask_user_question',
+        tool_name: 'internaltools__ask_user_question',
+        result: JSON.stringify(payload),
+        status: 'success',
+      })
+    })
+
     it('should include referenceData when present', () => {
       const messages = [
         { messageType: 'bot_response', content: 'Answer', referenceData: [{ name: 'doc1' }] },
@@ -2231,6 +2299,17 @@ describe('Enterprise Search Utils - coverage', () => {
       ]
       const result = formatPreviousConversations(messages as any)
       expect(result[0]).to.not.have.property('referenceData')
+    })
+
+    it('replays a call that never ran as not run', () => {
+      const part = (status: string) => ({ type: 'tool_call', toolName: `t_${status}`, toolCallId: status, status })
+      const messages = [{
+        messageType: 'bot_response',
+        content: 'Waiting for your approval to run create_issue on Jira.',
+        parts: [part('completed'), part('failed'), part('blocked'), part('awaiting_approval')],
+      }]
+      const [turn] = formatPreviousConversations(messages as any) as any[]
+      expect(turn.tool_results.map((r: any) => r.status)).to.deep.equal(['success', 'error', 'error', 'error'])
     })
   })
 
@@ -3105,11 +3184,11 @@ describe('Enterprise Search Utils - coverage', () => {
       expect(written).to.include('Something failed')
     })
 
-    it('should include details when provided', async () => {
+    it('omits details from the payload even when provided', async () => {
       const res = createMockResponse()
       await sendSSEErrorEvent(res, 'Error', 'Detail info')
       const written = res.write.firstCall.args[0]
-      expect(written).to.include('Detail info')
+      expect(written).not.to.include('Detail info')
     })
 
     it('should include conversation when provided', async () => {
@@ -3642,7 +3721,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, false, AGUI_PROTOCOL,
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(result)
@@ -3656,7 +3735,7 @@ describe('AG-UI Protocol', () => {
       let capturedData: any = null
 
       handleRegenerationStreamData(
-        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, false, AGUI_PROTOCOL,
+        chunk, '', null, null, null, 'req-1', res, (d) => { capturedData = d }, AGUI_PROTOCOL,
       )
 
       expect(capturedData).to.deep.equal(payload)
@@ -3667,7 +3746,7 @@ describe('AG-UI Protocol', () => {
       const chunk = Buffer.from('event: RUN_FINISHED\ndata: {invalid json}\n\n')
       const onComplete = sinon.stub()
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       expect(onComplete.called).to.be.false
       expect(res.write.calledOnce).to.be.true
@@ -3686,17 +3765,18 @@ describe('AG-UI Protocol', () => {
         `event: RUN_ERROR\ndata: ${JSON.stringify({ type: 'RUN_ERROR', message: 'boom' })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, 'm2', null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(res.write.firstCall.args[0]).to.include('event: RUN_ERROR')
     })
 
-    it('should persist an ask_user_question tool_call from a CUSTOM event', async () => {
+    it('should report an ask_user_question from a CUSTOM event without saving a row', async () => {
       const res = createMockResponse()
       const mockConv: any = { _id: 'c1', orgId: 'org-1', agentKey: 'agent-1' }
       const { insertManyStub } = stubAppendMessages([{ _id: new mongoose.Types.ObjectId() }])
       const toolData = { question: 'Pick a channel', options: ['#general', '#random'] }
+      const onAskUserQuestion = sinon.stub()
       const chunk = Buffer.from(
         `event: CUSTOM\ndata: ${JSON.stringify({
           type: 'CUSTOM',
@@ -3705,15 +3785,16 @@ describe('AG-UI Protocol', () => {
         })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), true, AGUI_PROTOCOL)
+      handleRegenerationStreamData(
+        chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL,
+        undefined, undefined, onAskUserQuestion,
+      )
       await Promise.resolve()
       await Promise.resolve()
 
       expect(res.write.calledOnce).to.be.true
-      expect(insertManyStub.calledOnce).to.be.true
-      const inserted = insertManyStub.firstCall.args[0]
-      expect(inserted[0].tools[0].toolName).to.equal('ask_user_question')
-      expect(inserted[0].tools[0].toolResult).to.deep.equal(toolData)
+      expect(onAskUserQuestion.firstCall.args[0]).to.deep.equal(toolData)
+      expect(insertManyStub.called).to.be.false
     })
 
     it('should ignore CUSTOM events that are not ask_user_question', () => {
@@ -3724,7 +3805,7 @@ describe('AG-UI Protocol', () => {
         `event: CUSTOM\ndata: ${JSON.stringify({ type: 'CUSTOM', name: 'artifact', value: {} })}\n\n`,
       )
 
-      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), true, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', mockConv, null, null, 'req-1', res, sinon.stub(), AGUI_PROTOCOL)
 
       expect(res.write.calledOnce).to.be.true
       expect(findByIdAndUpdateStub.called).to.be.false
@@ -3735,7 +3816,7 @@ describe('AG-UI Protocol', () => {
       const onComplete = sinon.stub()
       const chunk = Buffer.from('event: complete\ndata: {"answer":"legacy"}\n\n')
 
-      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, false, AGUI_PROTOCOL)
+      handleRegenerationStreamData(chunk, '', null, null, null, 'req-1', res, onComplete, AGUI_PROTOCOL)
 
       // Under `agui`, the legacy `complete` name has no special handling and
       // is forwarded through unchanged rather than being parsed as a completion.

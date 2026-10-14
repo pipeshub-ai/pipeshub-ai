@@ -1,6 +1,13 @@
 import axios, { AxiosError } from 'axios';
 import { injectable } from 'inversify';
 import { InternalServerError } from '../../../libs/errors/http.errors';
+import { HttpError } from '../../../libs/errors/http.errors';
+import { Logger } from '../../../libs/services/logger.service';
+import {
+  keepDeliberateWording,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { generateFetchConfigAuthToken } from '../utils/generateAuthToken';
 
 interface ConfigManagerResponse {
@@ -18,6 +25,10 @@ export const OAUTH_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/oauth';
 export const SSO_AUTH_CONFIG_PATH =
   'api/v1/configurationManager/internal/authConfig/sso';
+
+const logger = Logger.getInstance({
+  service: 'Auth Config Service',
+});
 
 @injectable()
 export class ConfigurationManagerService {
@@ -51,8 +62,10 @@ export class ConfigurationManagerService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      logger.error('Reading the configuration failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('read that setting')),
       );
     }
   }

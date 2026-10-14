@@ -7,7 +7,12 @@ from app.modules.reconciliation.service import ReconciliationMetadata, Reconcili
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.modules.transformers.transformer import (
+    ENRICHMENT_FOLLOWS,
+    ReconciliationContext,
+    TransformContext,
+)
+from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
 
@@ -136,10 +141,22 @@ class IndexingPipeline:
                             f"🗑️ Deleted old embeddings for empty document update (1:1): "
                             f"{record.virtual_record_id}"
                         )
-                        # Save empty reconciliation metadata so future diffs start clean
+                        # Save empty reconciliation metadata so future diffs
+                        # start clean. document_path is derived from
+                        # content's actual current location (not guessed) so
+                        # metadata stays selectable by future move-tree
+                        # operations -- see blob_storage.py's apply()'s
+                        # actual_storage_path tracking and
+                        # get_actual_content_path().
                         empty_metadata = ReconciliationMetadata().to_dict()
+                        actual_content_path = await self.sink_orchestrator.blob_storage.get_actual_content_path(
+                            record.org_id, record.virtual_record_id
+                        )
                         await self.sink_orchestrator.blob_storage.save_reconciliation_metadata(
-                            record.org_id, record_id, record.virtual_record_id, empty_metadata
+                            record.org_id, record_id, record.virtual_record_id, empty_metadata,
+                            document_path=actual_content_path,
+                            connector_id=getattr(record, "connector_id", None),
+                            record_group_id=getattr(record, "record_group_id", None),
                         )
                     except Exception as e:
                         self.logger.warning(
@@ -165,12 +182,15 @@ class IndexingPipeline:
                 return
 
             if ctx.reconciliation_context is None:
-                ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-                    ctx, self.logger, self.sink_orchestrator
-                )
+                with stage("reconcile"):
+                    ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                        ctx, self.logger, self.sink_orchestrator
+                    )
 
             # Phase 1: Index (VectorStore + BlobStorage)
-            # Document becomes searchable after this call.
+            # Document becomes searchable after this call. Deferral is still a
+            # stub that enriches inline, so enrichment always follows here.
+            ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
             await self._index(ctx)
 
             # Phase 2: Enrich (DocumentExtraction + GraphDB)
@@ -190,12 +210,35 @@ class IndexingPipeline:
 
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
-        await self.document_extraction.apply(ctx)
+        import asyncio
+        import contextlib
+
+        ner_task = asyncio.create_task(self.sink_orchestrator.extract_named_entities(ctx))
+        try:
+            with stage("extract"):
+                await self.document_extraction.apply(ctx)
+            # Entity extraction runs alongside classification; only the wait
+            # left once classification is done counts here.
+            with stage("entities.extract"):
+                extraction = await ner_task
+        finally:
+            if not ner_task.done():
+                ner_task.cancel()
+                # Its own failure must not replace the one propagating here.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await ner_task
 
         record = ctx.record
         if record.semantic_metadata:
-            await self.sink_orchestrator.blob_storage.apply(ctx)
+            # Taxonomy names must be resolved before the blob, summary and
+            # graph writes below all consume them.
+            with stage("entities.resolve"):
+                await self.sink_orchestrator.resolve_entities(ctx)
+            self.sink_orchestrator.attach_named_entities(ctx, extraction)
+            with stage("blob.write"):
+                await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
+                # Not wrapped in a stage: it times its own steps.
                 await self.sink_orchestrator.vector_store.index_record_summary(
                     record.id,
                     record.virtual_record_id,
@@ -205,6 +248,14 @@ class IndexingPipeline:
                 )
 
         await self.sink_orchestrator.enrich(ctx)
+        with stage("entities.persist"):
+            await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+        from app.modules.named_entities.stage import extraction_blob_holder
+
+        with extraction_blob_holder(record, extraction) as held:
+            if held:
+                with stage("blob.write"):
+                    await self.sink_orchestrator.blob_storage.apply(ctx)
 
     async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
         """Stub: publish an event for deferred enrichment via Kafka.

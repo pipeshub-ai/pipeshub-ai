@@ -31,17 +31,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 import base64
 import uuid
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     FileRecord,
     MailRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
 
 

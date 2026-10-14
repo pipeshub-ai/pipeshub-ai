@@ -1,0 +1,284 @@
+[
+  {
+    "id": "leading-bold-and-symbols",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "**Q3** results — the e-mail from Zürich isn’t ready, but the team says “soon” & means it.",
+    "expected_highlight": "Q3 results — the e-mail from Zürich isn’t ready, but the team says “soon” & means it",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Q3%20results%20%E2%80%94%20the%20e%2Dmail,says%20%E2%80%9Csoon%E2%80%9D%20%26%20means%20it"
+  },
+  {
+    "id": "heading-hash-is-not-text",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "# Q3 2025 Results",
+    "expected_highlight": "Q3 2025 Results",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Q3%202025%20Results"
+  },
+  {
+    "id": "leading-link-and-hyphenated-long-paragraph",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "[Revenue](/revenue) grew 12% year-over-year, driven by enterprise renewals in EMEA and a stronger-than-expected pipeline in the second half of the quarter.",
+    "expected_highlight": "Revenue grew 12% year-over-year, driven by enterprise renewals in EMEA and a stronger-than-expected pipeline in the second half of the quarter",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Revenue%20grew%2012%25%20year%2Dover%2Dyear,half%20of%20the%20quarter"
+  },
+  {
+    "id": "currency-parentheses-and-dashes",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Costs: $1,200.50 (down 3%) - see Appendix A, section 2.1.",
+    "expected_highlight": "Costs: $1,200.50 (down 3%) - see Appendix A, section 2.1",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Costs%3A%20%241%2C200.50%20%28down%203,Appendix%20A%2C%20section%202.1"
+  },
+  {
+    "id": "inline-code",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Set `max_retries=3` in the config file before deploying.",
+    "expected_highlight": "Set max_retries=3 in the config file before deploying",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Set%20max_retries%3D3%20in%20the%20config%20file%20before%20deploying"
+  },
+  {
+    "id": "nbsp-and-zero-width",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Non\u00a0breaking\u200b spaces and zero\u200bwidth characters appear here.",
+    "expected_highlight": "Non breaking spaces and zerowidth characters appear here",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Non%20breaking%20spaces%20and%20zerowidth%20characters%20appear%20here"
+  },
+  {
+    "id": "trailing-punctuation",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Almost finished with the quarterly review!!!",
+    "expected_highlight": "Almost finished with the quarterly review",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Almost%20finished%20with%20the%20quarterly%20review"
+  },
+  {
+    "id": "phrase-duplicated-on-page",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Action items follow below.",
+    "expected_highlight": "Action items follow below",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Action%20items%20follow%20below"
+  },
+  {
+    "id": "very-long-single-paragraph",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "The board reviewed the plan on Monday morning and asked for a few changes before approval, mostly around hiring timelines, the regional budget split, and how the new pricing tiers would be communicated to existing customers over the following two quarters.",
+    "expected_highlight": "The board reviewed the plan on Monday morning and asked for a few changes before approval, mostly around hiring timelines, the regional budget split, and how the new pricing tiers would be communicated to existing customers over the following two quarters",
+    "expected_url": "https://pages.example.test/report.html#:~:text=The%20board%20reviewed%20the,the%20following%20two%20quarters"
+  },
+  {
+    "id": "one-word",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Summary",
+    "expected_highlight": "Summary",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Summary"
+  },
+  {
+    "id": "two-words",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Next steps",
+    "expected_highlight": "Next steps",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Next%20steps"
+  },
+  {
+    "id": "three-words",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "See also below",
+    "expected_highlight": "See also below",
+    "expected_url": "https://pages.example.test/report.html#:~:text=See%20also%20below"
+  },
+  {
+    "id": "too-short-to-quote",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Hi",
+    "expected_highlight": null,
+    "expected_url": "https://pages.example.test/report.html"
+  },
+  {
+    "id": "image-inside-paragraph",
+    "fixture": "report",
+    "format": "markdown",
+    "snippet": "Chart below ![Revenue chart](chart.png) shows the trend",
+    "expected_highlight": "Chart below shows the trend",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Chart%20below,shows%20the%20trend"
+  },
+  {
+    "id": "existing-anchor-is-kept",
+    "fixture": "report",
+    "format": "markdown",
+    "base_url": "https://pages.example.test/report.html#top",
+    "snippet": "Almost finished with the quarterly review!!!",
+    "expected_highlight": "Almost finished with the quarterly review",
+    "expected_url": "https://pages.example.test/report.html#top:~:text=Almost%20finished%20with%20the%20quarterly%20review"
+  },
+  {
+    "id": "existing-directive-is-left-alone",
+    "fixture": "report",
+    "format": "markdown",
+    "base_url": "https://pages.example.test/report.html#:~:text=Revenue",
+    "snippet": "Almost finished with the quarterly review!!!",
+    "expected_highlight": "Revenue",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Revenue"
+  },
+  {
+    "id": "plain-format-keeps-markdown-characters",
+    "fixture": "report",
+    "format": "plain",
+    "snippet": "Almost finished with the quarterly review!!!",
+    "expected_highlight": "Almost finished with the quarterly review",
+    "expected_url": "https://pages.example.test/report.html#:~:text=Almost%20finished%20with%20the%20quarterly%20review"
+  },
+  {
+    "id": "heading-then-paragraph-two-blocks",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "## Setup guide\nInstall the package first, then configure it.",
+    "expected_highlight": "Setup guide Install the package first, then configure it",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Setup%20guide,first%2C%20then%20configure%20it"
+  },
+  {
+    "id": "bullet-list-with-nesting",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "- Item one text\n- Item two text\n  - Nested item here\n- Item three text",
+    "expected_highlight": "Item one text Item two text Nested item here Item three text",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Item%20one%20text,Item%20three%20text"
+  },
+  {
+    "id": "bold-lead-list-item",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "- **Bold lead** item text continues here",
+    "expected_highlight": "Bold lead item text continues here",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Bold%20lead%20item%20text%20continues%20here"
+  },
+  {
+    "id": "link-lead-list-item",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "- [Link lead](/docs) item with the link first",
+    "expected_highlight": "Link lead item with the link first",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Link%20lead%20item%20with%20the%20link%20first"
+  },
+  {
+    "id": "numbered-list",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "1. First step in order\n2. Second step in order\n3. Third step in order",
+    "expected_highlight": "First step in order Second step in order Third step in order",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=First%20step%20in%20order,Third%20step%20in%20order"
+  },
+  {
+    "id": "table-cells-are-blocks",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "| Name | Role |\n| --- | --- |\n| Ada | Engineer |\n| Bob | Designer |",
+    "expected_highlight": "Name Role Ada Engineer Bob Designer",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Name,Designer"
+  },
+  {
+    "id": "code-block-is-plain",
+    "fixture": "structure",
+    "format": "plain",
+    "snippet": "x = compute_total(items)",
+    "expected_highlight": "x = compute_total(items",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=x%20%3D%20compute_total%28items"
+  },
+  {
+    "id": "br-splits-blocks",
+    "fixture": "structure",
+    "format": "html",
+    "snippet": "<p>Line one of the address<br>Line two of the address</p>",
+    "expected_highlight": "Line one of the address Line two of the address",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=Line%20one%20of%20the,two%20of%20the%20address"
+  },
+  {
+    "id": "blockquote",
+    "fixture": "structure",
+    "format": "markdown",
+    "snippet": "> A quoted sentence that sits inside a blockquote element.",
+    "expected_highlight": "A quoted sentence that sits inside a blockquote element",
+    "expected_url": "https://pages.example.test/structure.html#:~:text=A%20quoted%20sentence%20that,inside%20a%20blockquote%20element"
+  },
+  {
+    "id": "cyrillic",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "Квартальный отчёт показал рост выручки на двенадцать процентов",
+    "expected_highlight": "Квартальный отчёт показал рост выручки на двенадцать процентов",
+    "expected_url": "https://pages.example.test/international.html#:~:text=%D0%9A%D0%B2%D0%B0%D1%80%D1%82%D0%B0%D0%BB%D1%8C%D0%BD%D1%8B%D0%B9%20%D0%BE%D1%82%D1%87%D1%91%D1%82%20%D0%BF%D0%BE%D0%BA%D0%B0%D0%B7%D0%B0%D0%BB%20%D1%80%D0%BE%D1%81%D1%82%20%D0%B2%D1%8B%D1%80%D1%83%D1%87%D0%BA%D0%B8%20%D0%BD%D0%B0%20%D0%B4%D0%B2%D0%B5%D0%BD%D0%B0%D0%B4%D1%86%D0%B0%D1%82%D1%8C%20%D0%BF%D1%80%D0%BE%D1%86%D0%B5%D0%BD%D1%82%D0%BE%D0%B2"
+  },
+  {
+    "id": "arabic-rtl",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "تقرير الربع الثالث يظهر نموا قويا في الإيرادات",
+    "expected_highlight": "تقرير الربع الثالث يظهر نموا قويا في الإيرادات",
+    "expected_url": "https://pages.example.test/international.html#:~:text=%D8%AA%D9%82%D8%B1%D9%8A%D8%B1%20%D8%A7%D9%84%D8%B1%D8%A8%D8%B9%20%D8%A7%D9%84%D8%AB%D8%A7%D9%84%D8%AB%20%D9%8A%D8%B8%D9%87%D8%B1%20%D9%86%D9%85%D9%88%D8%A7%20%D9%82%D9%88%D9%8A%D8%A7%20%D9%81%D9%8A%20%D8%A7%D9%84%D8%A5%D9%8A%D8%B1%D8%A7%D8%AF%D8%A7%D8%AA"
+  },
+  {
+    "id": "accented-latin-decomposed",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "Cre\u0300me bru\u0302le\u0301e a\u0300 la fac\u0327on de Zu\u0308rich",
+    "expected_highlight": "Crème brûlée à la façon de Zürich",
+    "expected_url": "https://pages.example.test/international.html#:~:text=Cr%C3%A8me%20br%C3%BBl%C3%A9e%20%C3%A0%20la%20fa%C3%A7on%20de%20Z%C3%BCrich"
+  },
+  {
+    "id": "cjk-long-paragraph",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "第三季度报告显示收入增长，主要由企业续约推动。管理层预计下一季度将继续保持增长势头，并计划扩大欧洲市场的投放规模。",
+    "expected_highlight": "第三季度报告显示收入增长，主要由企业续约推动。管理层预计下一季度将继续保持增长势头，并计划扩大欧洲市场的投放规模",
+    "expected_url": "https://pages.example.test/international.html#:~:text=%E7%AC%AC%E4%B8%89%E5%AD%A3%E5%BA%A6%E6%8A%A5%E5%91%8A%E6%98%BE%E7%A4%BA%E6%94%B6%E5%85%A5%E5%A2%9E%E9%95%BF,%E5%B9%B6%E8%AE%A1%E5%88%92%E6%89%A9%E5%A4%A7%E6%AC%A7%E6%B4%B2%E5%B8%82%E5%9C%BA%E7%9A%84%E6%8A%95%E6%94%BE%E8%A7%84%E6%A8%A1"
+  },
+  {
+    "id": "emoji",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "Launch day 🎉 went great and everyone celebrated together",
+    "expected_highlight": "Launch day 🎉 went great and everyone celebrated together",
+    "expected_url": "https://pages.example.test/international.html#:~:text=Launch%20day%20%F0%9F%8E%89%20went%20great%20and%20everyone%20celebrated%20together"
+  },
+  {
+    "id": "smart-quotes-and-apostrophes",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "They said “it’s fine” and don’t worry about the rollout schedule today",
+    "expected_highlight": "They said “it’s fine” and don’t worry about the rollout schedule today",
+    "expected_url": "https://pages.example.test/international.html#:~:text=They%20said%20%E2%80%9Cit%E2%80%99s%20fine,the%20rollout%20schedule%20today"
+  },
+  {
+    "id": "hyphens-and-percent",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "State-of-the-art e-mail filtering reduces spam by 90% - according to the vendor",
+    "expected_highlight": "State-of-the-art e-mail filtering reduces spam by 90% - according to the vendor",
+    "expected_url": "https://pages.example.test/international.html#:~:text=State%2Dof%2Dthe%2Dart%20e%2Dmail%20filtering%20reduces,according%20to%20the%20vendor"
+  },
+  {
+    "id": "commas-and-ampersand",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "Terms & Conditions, Privacy Policy, and Cookie Settings apply here",
+    "expected_highlight": "Terms & Conditions, Privacy Policy, and Cookie Settings apply here",
+    "expected_url": "https://pages.example.test/international.html#:~:text=Terms%20%26%20Conditions%2C%20Privacy%20Policy,Cookie%20Settings%20apply%20here"
+  },
+  {
+    "id": "thai-unspaced-script",
+    "fixture": "international",
+    "format": "markdown",
+    "snippet": "ภาษาไทยไม\u0e48ม\u0e35ช\u0e48องว\u0e48างระหว\u0e48างคำ แต\u0e48ย\u0e31งคงต\u0e49องม\u0e35ขอบเขตของคำท\u0e35\u0e48ช\u0e31ดเจน",
+    "expected_highlight": "ภาษาไทยไม\u0e48ม\u0e35ช\u0e48องว\u0e48างระหว\u0e48างคำ แต\u0e48ย\u0e31งคงต\u0e49องม\u0e35ขอบเขตของคำท\u0e35\u0e48ช\u0e31ดเจน",
+    "expected_url": "https://pages.example.test/international.html#:~:text=%E0%B8%A0%E0%B8%B2%E0%B8%A9%E0%B8%B2%E0%B9%84%E0%B8%97%E0%B8%A2%E0%B9%84%E0%B8%A1%E0%B9%88%E0%B8%A1%E0%B8%B5%E0%B8%8A%E0%B9%88%E0%B8%AD%E0%B8%87%E0%B8%A7%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%A3%E0%B8%B0%E0%B8%AB%E0%B8%A7%E0%B9%88%E0%B8%B2%E0%B8%87%E0%B8%84%E0%B8%B3,%E0%B9%81%E0%B8%95%E0%B9%88%E0%B8%A2%E0%B8%B1%E0%B8%87%E0%B8%84%E0%B8%87%E0%B8%95%E0%B9%89%E0%B8%AD%E0%B8%87%E0%B8%A1%E0%B8%B5%E0%B8%82%E0%B8%AD%E0%B8%9A%E0%B9%80%E0%B8%82%E0%B8%95%E0%B8%82%E0%B8%AD%E0%B8%87%E0%B8%84%E0%B8%B3%E0%B8%97%E0%B8%B5%E0%B9%88%E0%B8%8A%E0%B8%B1%E0%B8%94%E0%B9%80%E0%B8%88%E0%B8%99"
+  }
+]

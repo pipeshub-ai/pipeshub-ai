@@ -6,6 +6,7 @@ from typing import Any, Dict, Union
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.http.http_client import HTTPClient
 from app.sources.client.iclient import IClient
+from app.sources.client.resilience import ResiliencePolicy
 
 
 class NextcloudRESTClientViaUsernamePassword(HTTPClient):
@@ -14,13 +15,20 @@ class NextcloudRESTClientViaUsernamePassword(HTTPClient):
         base_url: The URL of the Nextcloud instance
         username: The username
         password: The App Password (generated in Security settings)
+        resilience: The connector's rate limit and retry policy, if it declares one
     """
 
-    def __init__(self, base_url: str, username: str, password: str) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        username: str,
+        password: str,
+        resilience: ResiliencePolicy | None = None,
+    ) -> None:
         # HTTP Basic Auth requires "username:password" to be Base64 encoded
         auth_string = f"{username}:{password}"
         encoded_auth = base64.b64encode(auth_string.encode("utf-8")).decode("utf-8")
-        super().__init__(encoded_auth, token_type="Basic")
+        super().__init__(encoded_auth, token_type="Basic", resilience=resilience)
         self.base_url = base_url
 
     def get_base_url(self) -> str:

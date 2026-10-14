@@ -12,7 +12,19 @@ import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
 import { ArtifactsPanel } from './artifacts-panel';
-import { AskUserQuestionCard } from './ask-user-question-card';
+import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
+import { McpConnectRequiredCard } from './mcp-connect-required-card';
+import { McpSignInCard } from './mcp-sign-in-card';
+import { ToolApprovalCard, ToolApprovalReceipts } from './tool-approval-card';
+import {
+  answeredToolApproval,
+  findToolApproval,
+  hasApprovedCall,
+  settledToolApprovals,
+  withoutWaitingLine,
+} from '../../tool-approval';
+import { mcpSignInServers } from '../../mcp-sign-in';
+import { mcpConfigMissingDetails, type ChatStreamErrorInfo } from '../../stream-error';
 import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts, hasMultiStepActivity } from './agent-activity';
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
@@ -21,7 +33,7 @@ import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
+import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -30,6 +42,7 @@ import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-download-markers';
+import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { DownloadTasks } from './download-tasks';
 import {
   isPresentationFile,
@@ -94,6 +107,8 @@ interface ChatResponseProps {
   messageId?: string;
   /** Whether this is the last bot message in the conversation */
   isLastMessage?: boolean;
+  /** This reply's row in the thread (`messagePairs[].key`): an approval card's answer carries it on. */
+  rowId?: string;
   /** Streaming content — only passed for the currently-streaming message */
   streamingContent?: string;
   /** Current status message — only passed for the currently-streaming message */
@@ -119,10 +134,19 @@ interface ChatResponseProps {
   attachments?: AttachmentRef[];
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
+  persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
   /** Persisted feedback value from the backend — initialises the like/dislike button state */
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** Set when this response was cut short by a user-initiated Stop (see `IMessage.status`, Node). */
   status?: 'stopped';
+  /** The server's error code and details when this reply is a failed run. */
+  streamError?: ChatStreamErrorInfo;
+  /**
+   * No assistant row exists for this question (see `buildMessagePairs`). The
+   * question is drawn on its own: an answer area, tabs and message actions
+   * would all be empty controls over a reply that was never produced.
+   */
+  unanswered?: boolean;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -138,6 +162,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   attachments,
   messageId,
   isLastMessage = false,
+  rowId,
   streamingContent = '',
   currentStatusMessage: currentStatusMessageProp = null,
   streamingCitationMaps = null,
@@ -148,11 +173,15 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMessageRowKey,
   createdAt,
   persistedAskUserQuestion,
+  persistedAskUserQuestionAnswers,
   feedbackInfo,
   status,
+  streamError,
+  unanswered = false,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
+  const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
   const isMobile = useIsMobile();
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
@@ -172,7 +201,7 @@ export const ChatResponse = React.memo(function ChatResponse({
     question, answer, citationMaps, citationCallbacks, confidence,
     isStreaming, modelInfo, collections, appliedFilters, messageId,
     isLastMessage, streamingContent, currentStatusMessage: currentStatusMessageProp,
-    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion, status,
+    streamingCitationMaps, streamingParts, persistedParts, createdAt, persistedAskUserQuestion, persistedAskUserQuestionAnswers, status,
   };
   const crReasons: string[] = [];
   for (const [k, v] of Object.entries(currentCRVals)) {
@@ -365,12 +394,13 @@ export const ChatResponse = React.memo(function ChatResponse({
     s.activeSlotId ? s.slots[s.activeSlotId]?.pendingAskUserQuestion ?? null : null
   );
 
-  const askQuestionMatchesRow =
-    Boolean(
-      pendingAskUserQuestion &&
-      citationMessageRowKey &&
-      pendingAskUserQuestion.assistantMessageId === citationMessageRowKey
-    );
+  const askQuestionMatchesRow = askUserQuestionOwnsRow(
+    pendingAskUserQuestion,
+    citationMessageRowKey,
+    messageId,
+  );
+  const questionPending =
+    askQuestionMatchesRow && pendingAskUserQuestion?.status === 'pending';
 
   // If another message was expanded (or expansion was cleared), reset to 'answer'.
   // We only react when our localTab is non-answer — avoids unnecessary effects.
@@ -449,6 +479,18 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => parseDownloadMarkers(contentWithoutArtifacts),
     [contentWithoutArtifacts],
   );
+  const EMPTY_ANSWER_FALLBACK =
+    "I wasn't able to generate a response. Please try rephrasing.";
+  const hasAskToolPart = (isStreaming ? streamingParts : persistedParts)?.some(
+    (part) => part.type === 'tool_call' && isAskUserQuestionTool(part.toolName),
+  );
+  const hasQuestionCard = Boolean(
+    persistedAskUserQuestion || askQuestionMatchesRow || hasAskToolPart,
+  );
+  const visibleAnswer =
+    hasQuestionCard && displayContent.trim() === EMPTY_ANSWER_FALLBACK
+      ? ''
+      : displayContent;
   // During streaming, use live artifacts from SSE events (they arrive before
   // the final content exists). Once streaming ends, the markers in the saved
   // content become the source of truth — slot.artifacts gets wiped on
@@ -477,6 +519,30 @@ export const ChatResponse = React.memo(function ChatResponse({
   // block follows), it's settled into the timeline and cleared from the
   // answer buffer in the same update, so it never renders in both places.
   const multiStep = useMemo(() => hasMultiStepActivity(effectiveParts), [effectiveParts]);
+  // A turn that ended waiting for approval; shown once the reply is settled.
+  const toolApproval = useMemo(
+    () => (isStreaming ? null : findToolApproval(effectiveParts)),
+    [effectiveParts, isStreaming],
+  );
+  const approvalReceipts = useMemo(() => settledToolApprovals(effectiveParts), [effectiveParts]);
+  // "Waiting for your approval…" closes a reply that stopped on a card. The card says it while it
+  // waits; once answered, the reply carries on in this row, and until its new text streams in the
+  // row still holds those words. They are never the answer.
+  const hasApprovalCard = useMemo(
+    () => findToolApproval(effectiveParts) !== null || approvalReceipts.length > 0,
+    [effectiveParts, approvalReceipts],
+  );
+  const answerShown = hasApprovalCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
+  // Regenerating could run an approved call again, or answer a card twice: the server refuses both.
+  const ranApprovedCall = useMemo(
+    () => hasApprovedCall(effectiveParts) || answeredToolApproval(effectiveParts),
+    [effectiveParts],
+  );
+  // Servers that refused for missing permission: signed in to again from the latest, settled reply.
+  const signInServers = useMemo(
+    () => (isStreaming || !isLastMessage ? [] : mcpSignInServers(effectiveParts)),
+    [effectiveParts, isStreaming, isLastMessage],
+  );
   // Drives both the "Answer" separator and the collapsible-summary wrapper
   // around a completed activity timeline — computed with the exact same
   // filtering the timeline itself applies, so it never disagrees with what
@@ -540,8 +606,10 @@ export const ChatResponse = React.memo(function ChatResponse({
                 `isFinal` text part, which the timeline itself filters out.
                 `isStreaming && multiStep` is OR'd in so the timeline stays
                 reachable while a multi-step run is active but hasn't
-                produced a visible part yet. */}
-            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+                produced a visible part yet. Shown on ask_user_question
+                rows too — the card is the question UI, not a reason to
+                hide the tools that ran before it. */}
+            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && (
               canCollapseActivity ? (
                 <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
                   <AgentActivityTimeline
@@ -567,8 +635,9 @@ export const ChatResponse = React.memo(function ChatResponse({
             {/* Separator marking the handoff from "here's the work" to
                 "here's the answer" — only when there's activity actually
                 visible above (not just a lone isFinal part that the
-                timeline itself filtered out) and content to show below. */}
-            {hasVisibleActivity && displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+                timeline itself filtered out) and content to show below
+                (answer text or the ask_user_question card). */}
+            {hasVisibleActivity && (answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
               <Box
                 className="agent-activity-enter"
                 style={{
@@ -579,26 +648,103 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             )}
 
-            {/* Show content - either streaming or final. Suppressed only
-                when an ask_user_question card (streaming or persisted) owns
-                this row so partial/final answer chunks aren't shown above
-                the question card. The trailing text streams straight in
-                here even for multi-step responses — see the `multiStep`
-                comment above. */}
-            {displayContent && !askQuestionMatchesRow && !persistedAskUserQuestion && (
-              <AnswerContent
-                content={displayContent}
-                citationMaps={effectiveCitationMaps}
-                citationCallbacks={wrappedCallbacks}
-                isStreaming={isStreaming}
+            {/* Persisted ask_user_question from historical tool_call — read-only display */}
+            {persistedAskUserQuestion && !askQuestionMatchesRow ? (
+              <AskUserQuestionCard
+                payload={persistedAskUserQuestion}
+                initialAnswers={persistedAskUserQuestionAnswers ?? {}}
+                status="persisted"
               />
+            ) : null}
+
+            {/* Active (streaming/pending) ask_user_question card */}
+            {askQuestionMatchesRow && pendingAskUserQuestion ? (
+              <AskUserQuestionCard
+                payload={pendingAskUserQuestion.payload}
+                initialAnswers={pendingAskUserQuestion.answers}
+                status={pendingAskUserQuestion.status}
+                sentAnswers={pendingAskUserQuestion.sentAnswers}
+                onAnswersChange={(nextAnswers) => {
+                  const sid = useChatStore.getState().activeSlotId;
+                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
+                  if (!sid || !p) return;
+                  useChatStore.getState().updateSlot(sid, {
+                    pendingAskUserQuestion: { ...p, answers: nextAnswers },
+                  });
+                }}
+                onSubmit={(message, nextAnswers) => {
+                  const sid = useChatStore.getState().activeSlotId;
+                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
+                  if (!sid || !p) return;
+                  useChatStore.getState().updateSlot(sid, {
+                    pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
+                  });
+                  const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request) {
+                    void streamMessageForSlot(sid, message, request, {
+                      resumeAskUserQuestion: true,
+                    });
+                  }
+                }}
+              />
+            ) : null}
+
+            {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
+            {mcpConnectDetails && (
+              <McpConnectRequiredCard details={mcpConnectDetails} question={question} />
+            )}
+
+            {/* Continuation / final answer — below the question card so the
+                turn reads tools → question → answer. Hidden while the card
+                is still waiting for answers. */}
+            {approvalReceipts.length > 0 && (
+              <Box mb="3">
+                <ToolApprovalReceipts items={approvalReceipts} />
+              </Box>
+            )}
+
+            {answerShown && !questionPending && !mcpConnectDetails && (
+              <Box
+                style={{
+                  marginTop:
+                    persistedAskUserQuestion || askQuestionMatchesRow
+                      ? 'var(--space-4)'
+                      : undefined,
+                }}
+              >
+                <AnswerContent
+                  content={answerShown}
+                  citationMaps={effectiveCitationMaps}
+                  citationCallbacks={wrappedCallbacks}
+                  isStreaming={isStreaming}
+                />
+              </Box>
+            )}
+
+            {/* After an answered question the reply carries on in this row and can stop on an
+                approval: its card shows under the question. Only an unanswered question comes first. */}
+            {toolApproval && !questionPending && (
+              <Box mt="3">
+                <ToolApprovalCard
+                  key={toolApproval.approvalId}
+                  approval={toolApproval}
+                  isLatest={isLastMessage}
+                  rowId={rowId}
+                />
+              </Box>
+            )}
+
+            {signInServers.length > 0 && (
+              <Box mt="3">
+                <McpSignInCard servers={signInServers} />
+              </Box>
             )}
 
             {/* Subtle marker for a response cut short by Stop. Only shown once
                 settled (never while still streaming/regenerating) — regenerate
                 remains available via MessageActions below, same as any other
                 completed response. */}
-            {!isStreaming && status === 'stopped' && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {!isStreaming && status === 'stopped' && !questionPending && (
               <Flex
                 align="center"
                 gap="1"
@@ -622,12 +768,12 @@ export const ChatResponse = React.memo(function ChatResponse({
             )}
 
             {/* Legacy download buttons */}
-            {downloadTasks.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {downloadTasks.length > 0 && !questionPending && (
               <DownloadTasks tasks={downloadTasks} />
             )}
 
             {/* Artifacts generated by sandbox tools */}
-            {effectiveArtifacts.length > 0 && !askQuestionMatchesRow && !persistedAskUserQuestion && (
+            {effectiveArtifacts.length > 0 && !questionPending && (
               <ArtifactsPanel
                 artifacts={effectiveArtifacts}
                 latestArtifactVersions={latestArtifactVersions}
@@ -659,42 +805,6 @@ export const ChatResponse = React.memo(function ChatResponse({
                 }}
               />
             )}
-
-            {/* Persisted ask_user_question from historical tool_call — read-only display */}
-            {persistedAskUserQuestion && !askQuestionMatchesRow ? (
-              <AskUserQuestionCard
-                payload={persistedAskUserQuestion}
-                initialAnswers={{}}
-                status="persisted"
-              />
-            ) : null}
-
-            {/* Active (streaming/pending) ask_user_question card */}
-            {askQuestionMatchesRow && pendingAskUserQuestion ? (
-              <AskUserQuestionCard
-                payload={pendingAskUserQuestion.payload}
-                initialAnswers={pendingAskUserQuestion.answers}
-                status={pendingAskUserQuestion.status}
-                onAnswersChange={(nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
-                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
-                  if (!sid || !p) return;
-                  useChatStore.getState().updateSlot(sid, {
-                    pendingAskUserQuestion: { ...p, answers: nextAnswers },
-                  });
-                }}
-                onSubmit={(message, nextAnswers) => {
-                  const sid = useChatStore.getState().activeSlotId;
-                  const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
-                  if (!sid || !p) return;
-                  useChatStore.getState().updateSlot(sid, {
-                    pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
-                  });
-                  const request = buildStreamChatRequestForSlot(sid, message);
-                  if (request) void streamMessageForSlot(sid, message, request);
-                }}
-              />
-            ) : null}
           </Box>
         );
       case 'sources':
@@ -728,7 +838,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   // and its options instead of the hidden bot response.
   const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
-    : displayContent;
+    : visibleAnswer;
 
   const shell = (
     <Box style={{ width: '100%' }}>
@@ -856,18 +966,20 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      <ResponseTabs
-        activeTab={activeTab}
-        onTabChange={setActiveTab}
-        sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
-        citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
-      />
+      {!unanswered && (
+        <ResponseTabs
+          activeTab={activeTab}
+          onTabChange={setActiveTab}
+          sourcesCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : sourcesCount}
+          citationCount={(askQuestionMatchesRow || persistedAskUserQuestion) ? 0 : citationCount}
+        />
+      )}
 
       {/* Tab Content */}
-      {renderTabContent()}
+      {!unanswered && renderTabContent()}
 
       {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {activeTab === 'answer' && (
+      {!unanswered && activeTab === 'answer' && (
         <MessageActions
           content={speakContent}
           citationMaps={effectiveCitationMaps}
@@ -875,9 +987,10 @@ export const ChatResponse = React.memo(function ChatResponse({
           isStreaming={isStreaming}
           messageId={messageId}
           question={question}
-          isLastMessage={isLastMessage && !askQuestionMatchesRow}
+          isLastMessage={isLastMessage && !questionPending}
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
+          canRegenerate={!ranApprovedCall}
         />
       )}
 

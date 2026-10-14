@@ -258,6 +258,12 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Reference any related issues
    - Add screenshots if applicable
 
+Pull requests from forks run the integration tests without repository secrets:
+CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
+runs the full suite on a reviewed commit using *Run workflow* on
+`integration-tests.yml` with that commit's hash (see
+[integration-tests/README.md](integration-tests/README.md)).
+
 ## Code Style Guidelines
 
 - **Python**: Follow PEP 8 guidelines
@@ -338,6 +344,22 @@ pytest --cov=app --cov-report=term-missing
 # Run tests in parallel (requires pytest-xdist)
 pytest -n auto
 ```
+
+### Running Frontend Unit Tests
+
+Unit tests use **Vitest** and live in `__tests__` folders beside the code they test under `frontend/app/` and `frontend/lib/`, named `*.test.ts` or `*.test.tsx`.
+
+```bash
+cd frontend
+
+# Run all unit tests
+npm run test:unit
+
+# Run them with coverage, as CI does (reports land in coverage/unit)
+npm run test:unit:coverage
+```
+
+CI runs the coverage command and fails when coverage drops below the minimum set in `coverage.thresholds` in `frontend/vitest.config.ts`. If your change trips it, add tests rather than lowering the minimum.
 
 ### Running Frontend E2E Tests (Playwright)
 

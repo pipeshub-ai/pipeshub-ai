@@ -15,6 +15,7 @@ import type {
 import { KB_SECTION_HEADER_MARGIN_BOTTOM } from '@/app/components/sidebar/constants';
 import { SidebarListShimmerRows } from './sidebar-list-shimmer';
 import { SidebarLoadMoreButton } from './sidebar-load-more-button';
+import { useFittedTreeIndent } from './use-fitted-tree-indent';
 
 // ========================================
 // Types
@@ -125,6 +126,7 @@ function CollectionTreeSection({
   onRename,
   onDelete,
 }: CollectionTreeSectionProps) {
+  const { ref: treeRef, style: treeIndentStyle } = useFittedTreeIndent(nodes, expandedFolders);
 
   return (
     <Box style={{ marginBottom: `${SECTION_PADDING_BOTTOM}px` }}>
@@ -144,7 +146,7 @@ function CollectionTreeSection({
 
       {/* Tree items or empty state */}
       {nodes.length > 0 ? (
-        <Box className="no-scrollbar" style={{ overflow: 'hidden' }}>
+        <Box ref={treeRef} className="no-scrollbar" style={{ overflow: 'hidden', ...treeIndentStyle }}>
           <Flex direction="column" gap="0">
             {nodes.map((node) => (
               <FolderTreeItem

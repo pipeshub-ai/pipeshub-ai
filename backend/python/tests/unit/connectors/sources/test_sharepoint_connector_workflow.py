@@ -642,6 +642,7 @@ class TestDriveProcessing:
         existing.record_status = ProgressStatus.NOT_STARTED.value
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
         dep.get_record_by_external_id = AsyncMock(return_value=existing)
+        dep.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_mock_drive_item("item-3", "updated.docx", e_tag="new-etag")
 

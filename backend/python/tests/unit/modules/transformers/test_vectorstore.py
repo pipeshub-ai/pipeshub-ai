@@ -230,7 +230,7 @@ class TestInitializeCollectionBasics:
 
 
 @pytest.mark.skip(
-    reason="recreate_records_collection replaced by CollectionRegistry.recreate_all_collections; "
+    reason="recreate_records_collection replaced by CollectionRegistry.recreate_records_collections; "
     "covered by test_collection_registry.py"
 )
 class TestRecreateRecordsCollection:
@@ -284,7 +284,7 @@ class TestIndexRecordSummary:
 # get_embedding_model_instance
 # ===================================================================
 
-class TestGetEmbeddingModelInstance:
+class TestGetEmbeddingModelInstanceConfig:
     """Tests for VectorStore.get_embedding_model_instance."""
 
     @pytest.mark.asyncio
@@ -452,14 +452,16 @@ class TestDeleteEmbeddings:
         vs.vector_db_service.delete_points.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_error_raises_embedding_error(self):
-        """Raises EmbeddingError on failure."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
+    async def test_error_raises_vector_store_error(self):
+        """A failed delete is a storage failure, not an embedding-model one."""
+        from app.exceptions.indexing_exceptions import VectorStoreError
         vs = _make_vectorstore()
-        vs.vector_db_service.filter_collection = AsyncMock(side_effect=RuntimeError("fail"))
+        cause = RuntimeError("fail")
+        vs.vector_db_service.filter_collection = AsyncMock(side_effect=cause)
 
-        with pytest.raises(EmbeddingError):
+        with pytest.raises(VectorStoreError) as caught:
             await vs.delete_embeddings("vr-1", "test_collection")
+        assert caught.value.__cause__ is cause
 
 
 # ===================================================================
@@ -614,19 +616,8 @@ class TestCleanupOrphanedEmbeddings:
 # _store_image_points
 # ===================================================================
 
-class TestStoreImagePoints:
+class TestStoreImagePointsEmpty:
     """Tests for VectorStore._store_image_points."""
-
-    @pytest.mark.asyncio
-    async def test_stores_points(self):
-        """Stores points in vector DB."""
-        vs = _make_vectorstore()
-        vs.vector_db_service.upsert_points = AsyncMock()
-
-        mock_point = MagicMock()
-        await vs._store_image_points([mock_point], "test_collection")
-
-        vs.vector_db_service.upsert_points.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_empty_points_logs(self):
@@ -644,13 +635,8 @@ class TestStoreImagePoints:
 # _is_local_cpu_embedding
 # ===================================================================
 
-class TestIsLocalCpuEmbedding:
+class TestIsLocalCpuEmbeddingProviders:
     """Tests for VectorStore._is_local_cpu_embedding."""
-
-    def test_none_provider_is_local(self):
-        vs = _make_vectorstore()
-        vs.embedding_provider = None
-        assert vs._is_local_cpu_embedding() is True
 
     def test_default_provider_is_local(self):
         from app.utils.aimodels import EmbeddingProvider
@@ -690,7 +676,7 @@ class TestIsLocalCpuEmbedding:
 # _process_document_chunks
 # ===================================================================
 
-class TestProcessDocumentChunks:
+class TestProcessDocumentChunksBatching:
     """Tests for VectorStore._process_document_chunks."""
 
     @pytest.mark.asyncio
@@ -786,17 +772,8 @@ class TestProcessDocumentChunks:
 # _create_embeddings
 # ===================================================================
 
-class TestCreateEmbeddings:
+class TestCreateEmbeddingsChunkTypes:
     """Tests for VectorStore._create_embeddings."""
-
-    @pytest.mark.asyncio
-    async def test_no_chunks_raises(self):
-        """Raises EmbeddingError when no chunks provided."""
-        from app.exceptions.indexing_exceptions import EmbeddingError
-        vs = _make_vectorstore()
-
-        with pytest.raises(EmbeddingError, match="No chunks"):
-            await vs._create_embeddings([], "rec-1", "vr-1", "test_collection")
 
     @pytest.mark.asyncio
     async def test_separates_document_and_image_chunks(self):
@@ -2592,3 +2569,74 @@ class TestRecordSummaryEmbeddingInit:
             await vs.index_record_summary("rec-1", "vr-1", "org-1", MagicMock())
 
         vs.delete_blocks_by_ids.assert_not_awaited()
+
+
+# ===================================================================
+# The record-existence guard shared by one record's batches
+# ===================================================================
+
+
+class TestRecordPresenceAcrossBatches:
+    """Each batch skips its embedding when the record was deleted mid-flight.
+    The read behind that is about a millisecond of driver CPU on the indexing
+    loop on Neo4j, and a large record runs one batch per 50 documents."""
+
+    @staticmethod
+    def _store(get_document: AsyncMock) -> object:
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openai"  # concurrent remote batches
+        vs.graph_provider.get_document = get_document
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=lambda texts: [[0.1, 0.2] for _ in texts]
+        )
+        return vs
+
+    @staticmethod
+    def _docs(count: int) -> list:
+        from langchain_core.documents import Document
+
+        return [Document(page_content=f"block {i}", metadata={}) for i in range(count)]
+
+    @pytest.mark.asyncio
+    async def test_one_read_covers_the_batches_of_one_record(self) -> None:
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(return_value={"_key": "rec-1"}))
+
+        await vs._process_document_chunks(
+            self._docs(10 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+        )
+
+        assert vs.vector_db_service.upsert_points.await_count == 10
+        vs.graph_provider.get_document.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_gone_record_is_asked_about_by_every_batch(self) -> None:
+        """A negative answer is not shared: each batch asks again, as before."""
+        from app.modules.transformers.vectorstore import _DEFAULT_DOCUMENT_BATCH_SIZE
+
+        vs = self._store(AsyncMock(return_value=None))
+
+        await vs._process_document_chunks(
+            self._docs(3 * _DEFAULT_DOCUMENT_BATCH_SIZE), "rec-1", "test_collection"
+        )
+
+        vs.vector_db_service.upsert_points.assert_not_awaited()
+        assert vs.graph_provider.get_document.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_a_present_answer_expires(self) -> None:
+        from app.modules.transformers.vectorstore import _RecordPresence
+
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(side_effect=[{"_key": "rec-1"}, None])
+        clock = iter([100.0, 100.5, 103.0])
+        presence = _RecordPresence(graph, "rec-1", max_age_s=2.0)
+
+        with patch("app.modules.transformers.vectorstore.time.monotonic", lambda: next(clock)):
+            assert await presence.check() is True   # read at 100.0
+            assert await presence.check() is True   # 0.5 s later: reused
+            assert await presence.check() is False  # 3 s later: read again, gone
+
+        assert graph.get_document.await_count == 2

@@ -7,6 +7,7 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig, formatSyncLabel } from './utils';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -134,6 +135,7 @@ export function ReferenceCard({
             >
               {config.label}
             </Text>
+            <DemoSourceBadge connectorId={citation.connectorId} />
           </Flex>
 
           {/* Right: sync badge + action buttons (desktop).

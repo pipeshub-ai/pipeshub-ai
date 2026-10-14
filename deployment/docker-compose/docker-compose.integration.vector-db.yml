@@ -1,0 +1,66 @@
+# Vector stores for the vector DB integration tests.
+#
+#   docker compose -f deployment/docker-compose/docker-compose.integration.vector-db.yml up -d --wait
+#   cd backend/python && pytest tests/integration/vector_db tests/integration/test_multimodal_indexing.py -m integration --timeout=120
+#
+# Start only the backend you need by naming it (qdrant-vector-it,
+# opensearch-vector-it or redis-vector-it); the tests for the others skip.
+# Ports are deliberately non-standard so this can run beside a dev stack
+# without clashing with it. Images match the ones the product ships.
+services:
+  qdrant-vector-it:
+    image: qdrant/qdrant:v1.15
+    ports:
+      # The client talks gRPC (prefer_grpc defaults on) and reads its gRPC port
+      # as 6334, which is also the port the tests pass it.
+      - "6334:6334"
+      - "6343:6333"
+    healthcheck:
+      # The image ships no curl or wget.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/6333 && printf \"GET /readyz HTTP/1.0\\r\\n\\r\\n\" >&3 && grep -q \"200 OK\" <&3'"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  opensearch-vector-it:
+    image: opensearchproject/opensearch:3.6.0
+    ports:
+      - "9299:9200"
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      # No TLS and no auth, as in the product's local compose; the tests'
+      # admin/admin credentials are then ignored.
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+      - plugins.security.disabled=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' || exit 1"]
+      interval: 5s
+      timeout: 10s
+      retries: 40
+
+  redis-vector-it:
+    # The vector store needs 8.4+ for FT.HYBRID. When the command starts with
+    # redis-server, the image's entrypoint loads its bundled modules (search
+    # among them) itself; loading search again aborts the server.
+    image: redis:8
+    ports:
+      - "6399:6379"
+    command:
+      - redis-server
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20

@@ -58,6 +58,7 @@ class GmailUtils:
         thread_id: Optional[str] = None,
         message_id: Optional[str] = None,
         in_memory_attachments: Optional[Sequence[InMemoryAttachment]] = None,
+        references: str | None = None,
     ) -> dict:
         """Build the message body using MIME format.
 
@@ -69,7 +70,8 @@ class GmailUtils:
             mail_body: HTML body content.
             mail_attachments: Local file paths (legacy; agent code passes None).
             thread_id: Gmail thread ID for threading.
-            message_id: Gmail message ID for In-Reply-To / References headers.
+            message_id: The replied-to message's RFC 822 Message-ID, for In-Reply-To.
+            references: Its References chain plus that Message-ID; defaults to message_id alone.
             in_memory_attachments: Sequence of (filename, bytes, mime_type) tuples
                 resolved from PipesHub records. These are added after any file-path
                 attachments and never touch the filesystem.
@@ -147,7 +149,7 @@ class GmailUtils:
 
         if thread_id and message_id:
             message["In-Reply-To"] = message_id
-            message["References"] = message_id
+            message["References"] = references or message_id
 
         raw_message = base64.urlsafe_b64encode(message.as_bytes()).decode()
 

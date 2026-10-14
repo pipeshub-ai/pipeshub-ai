@@ -2,8 +2,11 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import mongoose from 'mongoose'
+import jwt from 'jsonwebtoken'
 import { EventEmitter } from 'events'
 import {
+  assignAgentCapabilitiesToPayload,
+  assignRetrievalContextToPayload,
   createConversation,
   getAllConversations,
   getConversationById,
@@ -62,10 +65,23 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { BadRequestError, ConflictError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
+import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
+
+/** A query stub that `await` resolves to `doc`, for `ChatSession.findOne` in the error-message tests. */
+const resolvingTo = (doc: unknown) =>
+  ({ then: (resolve: (value: unknown) => unknown) => resolve(doc) }) as unknown as ReturnType<
+    typeof ChatSession.findOne
+  >
+
+/** An AI-service response fixture with only the fields the controller reads. */
+const asAIResponse = (response: { statusCode: number; data: unknown; msg: string }) =>
+  response as unknown as Awaited<ReturnType<AIServiceCommand<unknown>['execute']>>
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -132,6 +148,50 @@ function stubUsersFindForSharedBy(users: any[] = []) {
   }
   sinon.stub(Users, 'find').returns(findChain as any)
   return findChain
+}
+
+interface CapturedAICall {
+  uri: string
+  method: string
+  body: string
+  headers: Record<string, string>
+  timeoutMs: number
+  maxAttempts: number
+}
+
+function capturePermissionSyncCalls(): CapturedAICall[] {
+  const calls: CapturedAICall[] = []
+  sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+    calls.push({
+      uri: this.uri,
+      method: this.method,
+      body: this.body,
+      headers: this.headers,
+      timeoutMs: this.timeoutMs,
+      maxAttempts: this.maxAttempts,
+    })
+    return Promise.resolve({ statusCode: 200, data: {} } as any)
+  })
+  return calls
+}
+
+/** `ChatSessionMessage.find(...).populate().lean()` used when collecting chat-attachment record ids. */
+function stubChatSessionMessageLeanFind(messages: any[]): sinon.SinonStub {
+  restoreIfStubbed(ChatSessionMessage, 'find')
+  const chain: any = {
+    populate() {
+      return chain
+    },
+    lean: () => Promise.resolve(messages),
+  }
+  return sinon.stub(ChatSessionMessage, 'find').returns(chain)
+}
+
+function serviceTokenClaims(call: CapturedAICall): Record<string, unknown> {
+  const token = call.headers.authorization.replace(/^Bearer /, '')
+  const claims = jwt.verify(token, createMockAppConfig().scopedJwtSecret) as Record<string, unknown>
+  expect(claims.scopes).to.deep.equal(['conversation:permissions'])
+  return claims
 }
 
 function createMockSession(): any {
@@ -325,6 +385,11 @@ describe('Enterprise Search Controller', () => {
     if (!(ChatSessionMessage.aggregate as any).restore) {
       sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
     }
+    // The run reservation writes the session itself; these tests don't care. The real
+    // reservation is covered in utils.persistence.test.ts and es_controller.streaming.test.ts.
+    if (!(searchUtils.reserveRun as any).restore) {
+      sinon.stub(searchUtils, 'reserveRun').resolves(null)
+    }
     // getConversationById / getAllConversations(source=shared) / getAllAgentConversations
     // call this on every request to extend the access filter with
     // project-shared conversations; default to "no accessible projects" so
@@ -332,6 +397,11 @@ describe('Enterprise Search Controller', () => {
     // Individual tests can `.resolves(...)` a different value after this.
     if (!(ProjectService.getAccessibleProjectIds as any).restore) {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    }
+    // Scoped-token hydration resolves the sole org before looking the user up,
+    // so every hydration path needs this or it buffers for 10s.
+    if (!(Org.find as any).restore) {
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
     }
   })
 
@@ -349,46 +419,43 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when user is missing and body has no query', async () => {
+    it('should pass BadRequestError to next when user is missing and body has no query', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ user: undefined })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ body: {} })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
-    it('should throw BadRequestError when query is empty string', async () => {
+    it('should pass BadRequestError to next when query is empty string', async () => {
       const handler = createConversation(createMockAppConfig())
       const req = createMockRequest({ body: { query: '' } })
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-        expect.fail('Expected an error to be thrown')
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should create conversation and return CREATED on happy path', async () => {
@@ -567,7 +634,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
     })
   })
 
@@ -702,6 +769,39 @@ describe('Enterprise Search Controller', () => {
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
+    })
+
+    it('saves and shows a plain message, not the socket error, when the stream drops', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const dropped = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' })
+      mockStream.emit('error', dropped)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const writeArgs = res.write.args.map((a: unknown[]) => String(a[0])).join('')
+      expect(writeArgs).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArgs).not.to.include('ECONNRESET')
+      const markStub = searchUtils.markConversationFailed as sinon.SinonStub
+      expect(markStub.calledOnce).to.be.true
+      expect(markStub.firstCall.args[1]).to.equal(CHAT_ERROR_MESSAGES.interrupted)
     })
 
     it('should not emit generic incomplete SSE error when AI already sent an error event', async () => {
@@ -859,7 +959,7 @@ describe('Enterprise Search Controller', () => {
       expect(next.calledOnce).to.be.true
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = addMessage(createMockAppConfig())
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -868,11 +968,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -1073,6 +1173,36 @@ describe('Enterprise Search Controller', () => {
       expect(res.end.called).to.be.true
     })
 
+    it('saves and shows a plain message, not the socket error, when a follow-up stream drops', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({ messages: [], modelInfo: {} })
+      mockDoc.messages = [...mockDoc.messages]
+      sinon.stub(ChatSession, 'findOne').returns(resolvingTo(mockDoc))
+      const markStub = sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { query: 'test' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const writeArgs = res.write.args.map((a: unknown[]) => String(a[0])).join('')
+      expect(writeArgs).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArgs).not.to.include('ECONNRESET')
+      expect(markStub.calledOnce).to.be.true
+      expect(markStub.firstCall.args[1]).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+    })
+
     it('should handle conversation not found', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
@@ -1207,7 +1337,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1223,7 +1353,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1255,7 +1385,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -1294,7 +1424,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
@@ -1320,11 +1450,302 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
       expect(err.message).to.include('not found')
+    })
+
+    it('should not sync artifact permissions when the viewer is the conversation owner', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: false,
+        sharedWith: [],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+
+      const aiExecuteStub = sinon
+        .stub(AIServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data: {} } as any)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(aiExecuteStub.called).to.be.false
+    })
+
+    it('should sync artifact permissions for the viewer when a shared (non-owner) user opens the conversation', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      // A non-owner viewer makes the handler resolve who shared the chat.
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('POST')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID2],
+      })
+      // The owner, not the viewer, is the grantor; the viewer's token is never forwarded.
+      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID3 })
+      expect(artifactCall!.timeoutMs).to.equal(3000)
+      expect(artifactCall!.maxAttempts).to.equal(1)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should sync attachment permissions for a shared viewer from message chips and ATTACHMENTS citations', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(2)
+      stubGetMessages(ChatSessionMessage, [
+        {
+          messageType: 'user_query',
+          content: 'see ss',
+          attachments: [{ recordId: 'att-chip' }],
+        },
+        {
+          messageType: 'bot_response',
+          content: 'here',
+          citations: [
+            {
+              citationId: {
+                _id: VALID_OID3,
+                metadata: { recordId: 'att-cite', connector: 'ATTACHMENTS' },
+              },
+            },
+            {
+              citationId: {
+                _id: VALID_OID,
+                metadata: { recordId: 'kb-doc', connector: 'KNOWLEDGE_BASE' },
+              },
+            },
+          ],
+        },
+      ])
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(attachmentCall!.method).to.equal('POST')
+      const body = JSON.parse(attachmentCall!.body)
+      expect(body.userIds).to.deep.equal([VALID_OID2])
+      expect(body.recordIds).to.have.members(['att-chip', 'att-cite'])
+      expect(body.recordIds).to.not.include('kb-doc')
+      expect(serviceTokenClaims(attachmentCall!)).to.include({
+        userId: VALID_OID,
+        orgId: VALID_OID3,
+      })
+      expect(attachmentCall!.timeoutMs).to.equal(3000)
+      expect(attachmentCall!.maxAttempts).to.equal(1)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should sync attachment permissions (but not artifacts) when a shared viewer loads an older page', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(40)
+      stubGetMessages(ChatSessionMessage, [
+        {
+          messageType: 'user_query',
+          content: 'old ss',
+          attachments: [{ recordId: 'att-old' }],
+        },
+      ])
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '2', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))).to.not.exist
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
+        userIds: [VALID_OID2],
+        recordIds: ['att-old'],
+      })
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should not sync artifact permissions when a shared viewer loads an older page', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      // A non-owner viewer makes the handler resolve who shared the chat.
+      stubUsersFindForSharedBy()
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '2', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(calls).to.be.empty
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('should still return the conversation when syncing artifact permissions fails', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        title: 'Test',
+        initiator: VALID_OID,
+        isShared: true,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+        status: 'complete',
+      }
+      const findOneChain: any = {
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves(mockConversation),
+      }
+      sinon.stub(ChatSession, 'findOne').returns(findOneChain as any)
+      restoreIfStubbed(ChatSessionMessage, 'countDocuments')
+      sinon.stub(ChatSessionMessage, 'countDocuments').resolves(0)
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find')
+      stubUsersFindForSharedBy()
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        query: { page: '1', limit: '20' },
+        user: { userId: VALID_OID2, orgId: VALID_OID3 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await getConversationById(createMockAppConfig())(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -1473,10 +1894,9 @@ describe('Enterprise Search Controller', () => {
       // shareConversationById does a bare `await ChatSessionMessage.find(...).lean()`
       // (no .exec()) — stubMongooseFind's `.lean()` returns the chain itself, not a
       // promise, so it would resolve to a non-array here; return a real promise.
-      restoreIfStubbed(ChatSessionMessage, 'find')
-      const attachmentLookup = sinon.stub(ChatSessionMessage, 'find').returns({
-        lean: () => Promise.resolve([{ attachments: [{ recordId: 'rec-1' }] }]),
-      } as any)
+      const attachmentLookup = stubChatSessionMessageLeanFind([
+        { attachments: [{ recordId: 'rec-1' }] },
+      ])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -1494,7 +1914,7 @@ describe('Enterprise Search Controller', () => {
       expect(update.firstCall.args[0]).to.deep.equal({ _id: VALID_OID, sessionType: 'chat' })
       // Attachment permission grant reads message attachments from the
       // separate chatSessionMessages collection, not conversation.messages.
-      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1 })).to.be.true
+      expect(attachmentLookup.calledWith({ sessionId: VALID_OID }, { attachments: 1, citations: 1 })).to.be.true
 
       if (!next.called) {
         const response = res.json.firstCall.args[0]
@@ -1522,6 +1942,162 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should grant artifact permissions (in addition to attachment permissions) after sharing', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(attachmentCall).to.exist
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('POST')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID2],
+      })
+      for (const call of [attachmentCall!, artifactCall!]) {
+        expect(serviceTokenClaims(call)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
+      }
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should still share the conversation when granting artifact permissions fails', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([])
+
+      // Every AIServiceCommand call (including the new artifact-permissions
+      // grant) fails; the share itself must still succeed.
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response.isShared).to.equal(true)
+    })
+
+    it('should grant attachment permissions for ATTACHMENTS citations even without message chips', async () => {
+      const handler = shareConversationById(createMockAppConfig())
+
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [],
+        isShared: false,
+      }
+      stubThenableFindOne(ChatSession, mockConversation)
+
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } })
+
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: true,
+        shareLink: undefined,
+        sharedWith: [{ userId: VALID_OID2, accessLevel: 'read' }],
+      } as any)
+
+      stubChatSessionMessageLeanFind([
+        {
+          attachments: [],
+          citations: [
+            {
+              citationId: {
+                metadata: { recordId: 'png-1', connector: 'ATTACHMENTS' },
+              },
+            },
+            {
+              citationId: {
+                metadata: { recordId: 'kb-doc', connector: 'KNOWLEDGE_BASE' },
+              },
+            },
+          ],
+        },
+      ])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID2], accessLevel: 'read' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) =>
+        c.uri.includes('/chat/attachments/permissions'),
+      )
+      expect(attachmentCall).to.exist
+      expect(JSON.parse(attachmentCall!.body)).to.deep.equal({
+        userIds: [VALID_OID2],
+        recordIds: ['png-1'],
+      })
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -1589,7 +2165,8 @@ describe('Enterprise Search Controller', () => {
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves({
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
         _id: VALID_OID,
         isShared: false,
         shareLink: undefined,
@@ -1629,6 +2206,86 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should revoke artifact permissions (in addition to attachment permissions) after unsharing', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
+      }
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: false,
+        shareLink: undefined,
+        sharedWith: [],
+      } as any)
+
+      stubChatSessionMessageLeanFind([{ attachments: [{ recordId: 'rec-1' }] }])
+
+      const calls = capturePermissionSyncCalls()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
+
+      const attachmentCall = calls.find((c) => c.uri.includes('/chat/attachments/permissions'))
+      const artifactCall = calls.find((c) => c.uri.includes('/chat/artifacts/permissions'))
+      expect(attachmentCall).to.exist
+      expect(artifactCall).to.exist
+      expect(artifactCall!.method).to.equal('DELETE')
+      expect(JSON.parse(artifactCall!.body)).to.deep.equal({
+        conversationId: VALID_OID,
+        userIds: [VALID_OID3],
+      })
+      expect(serviceTokenClaims(artifactCall!)).to.include({ userId: VALID_OID, orgId: VALID_OID2 })
+
+      if (!next.called) {
+        expect(res.status.calledWith(200)).to.be.true
+      }
+    })
+
+    it('should still unshare the conversation when revoking artifact permissions fails', async () => {
+      const mockConversation = {
+        _id: VALID_OID,
+        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
+      }
+      stubMongooseFind(ChatSession, 'findOne', mockConversation)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: false,
+        shareLink: undefined,
+        sharedWith: [],
+      } as any)
+
+      stubChatSessionMessageLeanFind([])
+
+      sinon.stub(AIServiceCommand.prototype, 'execute').rejects(new Error('permission service down'))
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      const handler = unshareConversationById(createMockAppConfig())
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.have.property('unsharedUsers')
     })
   })
 
@@ -2100,9 +2757,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -2117,12 +2773,81 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-        const response = res.json.firstCall.args[0]
-        expect(response).to.have.property('searchId')
-        expect(response).to.have.property('searchResponse')
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.have.property('searchId')
+      expect(response).to.have.property('searchResponse')
+    })
+
+    it('saves every hit as a citation in one ordered insert and keeps hit order', async () => {
+      const handler = search(createMockAppConfig())
+
+      const hitCount = 250
+      const hits = Array.from({ length: hitCount }, (_, i) => ({
+        content: `hit ${i}`,
+        // Every third hit arrives without a chunkIndex and must still save as 0.
+        ...(i % 3 === 0 ? {} : { chunkIndex: i }),
+        citationType: 'vectordb|document',
+        metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+      }))
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: hits, records: [] },
+      } as any)
+
+      const insertedIds = hits.map(() => new mongoose.Types.ObjectId())
+      const insertManyStub = sinon
+        .stub(Citation, 'insertMany')
+        .callsFake(async (docs: any) =>
+          (docs as any[]).map((d, i) => ({ ...d, _id: insertedIds[i] })) as any,
+        )
+      // Resolves like a real save, so on the old code the test fails on the
+      // per-hit saves themselves rather than on a missing return value.
+      const saveStub = sinon
+        .stub(Citation.prototype, 'save')
+        .callsFake(async function (this: any) {
+          return this
+        })
+
+      let savedSearch: any
+      sinon
+        .stub(EnterpriseSemanticSearch.prototype, 'save')
+        .callsFake(async function (this: any) {
+          savedSearch = this
+          return this
+        })
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+
+      expect(saveStub.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      const [docs, options] = insertManyStub.firstCall.args as any[]
+      expect(options).to.deep.include({ ordered: true })
+      expect(docs).to.have.length(hitCount)
+      docs.forEach((doc: any, i: number) => {
+        expect(doc).to.deep.equal({
+          content: `hit ${i}`,
+          chunkIndex: i % 3 === 0 ? 0 : i,
+          citationType: 'vectordb|document',
+          metadata: { recordId: `rec-${i}`, orgId: VALID_OID2 },
+        })
+      })
+
+      expect(savedSearch.citationIds.map(String)).to.deep.equal(
+        insertedIds.map(String),
+      )
     })
 
     it('should call next when AI service returns no data', async () => {
@@ -3043,7 +3768,7 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = createAgentConversation(createMockAppConfig())
       const req = createMockRequest({
         params: { agentKey: 'agent-1' },
@@ -3052,11 +3777,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should create agent conversation and return CREATED', async () => {
@@ -3535,6 +4260,7 @@ describe('Enterprise Search Controller', () => {
         deletedBy: null,
         lastActivityAt: null,
         save: sinon.stub().resolves(),
+        toJSON: () => ({ _id: VALID_OID, isDeleted: true }),
       }
       mockConv.save.resolves(mockConv)
       sinon.stub(ChatSession, 'findOne').resolves(mockConv as any)
@@ -3548,6 +4274,7 @@ describe('Enterprise Search Controller', () => {
 
       await deleteAgentConversationById(req, res, next)
 
+      expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
     })
   })
@@ -3591,7 +4318,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3618,7 +4345,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3654,7 +4381,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -3869,9 +4596,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
 
       const mockSearch = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
       mockSearch.save.resolves(mockSearch)
@@ -3886,9 +4612,9 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
     })
 
     it('should handle search with no search results in response', async () => {
@@ -4541,7 +5267,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
     })
 
     it('should handle backend error with response status 401 in search', async () => {
@@ -4780,6 +5506,64 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+
+    it('should refuse a Slack-minted token when the instance has more than one org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      // This edition's Slack config carries no orgId, so two orgs means there is
+      // no safe answer — it must refuse rather than pick one.
+      stubMongooseFind(Org, 'find', [
+        { _id: new mongoose.Types.ObjectId(VALID_OID2) },
+        { _id: new mongoose.Types.ObjectId(VALID_OID3) },
+      ])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      // Refused before any user lookup, so no tenant's data is touched.
+      expect(usersFindOne.called).to.be.false
+    })
+
+    it('should scope the user lookup to the sole org', async () => {
+      const handler = streamChatInternal(createMockAppConfig())
+
+      stubMongooseFind(Org, 'find', [{ _id: new mongoose.Types.ObjectId(VALID_OID2) }])
+      const usersFindOne = sinon.stub(Users, 'findOne').resolves(null)
+
+      const req: any = {
+        headers: { authorization: 'Bearer slack-token' },
+        body: { query: 'test' },
+        params: {},
+        query: {},
+        context: { requestId: 'req-123' },
+        on: sinon.stub(),
+        tokenPayload: { email: 'test@test.com', configId: 'cfg-1' },
+      }
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(usersFindOne.calledOnce).to.be.true
+      const lookupFilter = usersFindOne.firstCall.args[0] as { orgId?: unknown }
+      expect(String(lookupFilter.orgId)).to.equal(VALID_OID2)
     })
   })
 
@@ -5104,6 +5888,7 @@ describe('Enterprise Search Controller', () => {
 
       const writeArgs = res.write.args.map((a: any) => a[0]).join('')
       expect(writeArgs).to.include('error')
+      expect(writeArgs).not.to.include('Agent stream broke')
       expect(res.end.called).to.be.true
     })
 
@@ -5319,6 +6104,90 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   // regenerateAnswers deep paths
   // -----------------------------------------------------------------------
+  describe('stream drops never reach the user as raw socket errors', () => {
+    it('saves and shows a plain message when an agent follow-up stream drops', async () => {
+      const handler = addMessageStreamToAgentConversation(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({ agentKey: 'agent-1', messages: [], modelInfo: {} })
+      mockDoc.messages = [...mockDoc.messages]
+      sinon.stub(ChatSession, 'findOne').returns(resolvingTo(mockDoc))
+      const markStub = sinon.stub(searchUtils, 'markAgentConversationFailed').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'test' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const writeArgs = res.write.args.map((a: unknown[]) => String(a[0])).join('')
+      expect(writeArgs).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArgs).not.to.include('ECONNRESET')
+      expect(markStub.calledOnce).to.be.true
+      expect(markStub.firstCall.args[1]).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+    })
+
+    it('shows a plain message when a regeneration stream drops', async () => {
+      const handler = regenerateAnswers(createMockAppConfig())
+      const messageId = new mongoose.Types.ObjectId()
+      const userQueryId = new mongoose.Types.ObjectId()
+      const mockConversation = createMockConversationDoc({
+        messages: [
+          { _id: userQueryId, messageType: 'user_query', content: 'hello', createdAt: Date.now() },
+          { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
+        ],
+      })
+      sinon.stub(ChatSession, 'findOne').returns(resolvingTo(mockConversation))
+      stubGetMessages(ChatSessionMessage, [
+        { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
+        { _id: userQueryId, messageType: 'user_query', content: 'hello', createdAt: Date.now() },
+      ])
+      const regenStub = sinon.stub(searchUtils, 'handleRegenerationError').resolves()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: messageId.toString() },
+        body: {},
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      void handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      // handleRegenerationError picks and saves the message (covered in utils tests);
+      // here it fails, so the controller's own fallback must stay plain too.
+      expect(regenStub.calledOnce).to.be.true
+      regenStub.resetHistory()
+      regenStub.rejects(new Error('db down'))
+      const res2 = createMockResponse()
+      res2.flush = sinon.stub()
+      const mockStream2 = createMockStream()
+      ;(AIServiceCommand.prototype.executeStream as sinon.SinonStub).resolves(mockStream2)
+      void handler(req, res2)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream2.emit('error', Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }))
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const writeArgs = res2.write.args.map((a: unknown[]) => String(a[0])).join('')
+      expect(writeArgs).to.include(CHAT_ERROR_MESSAGES.interrupted)
+      expect(writeArgs).not.to.include('ECONNRESET')
+    })
+  })
+
   describe('regenerateAnswers (deep paths)', () => {
     it('should call next (via SSE error) when conversation not found', async () => {
       const handler = regenerateAnswers(createMockAppConfig())
@@ -5805,7 +6674,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
     })
 
-    it('should handle client disconnect by destroying stream', async () => {
+    it('should keep the upstream stream alive when the client disconnects', async () => {
       const handler = streamAgentConversation(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         agentKey: 'agent-1',
@@ -5835,7 +6704,7 @@ describe('Enterprise Search Controller', () => {
       const closeCallback = res.on.args.find((a: any) => a[0] === 'close')
       expect(closeCallback).to.exist
       closeCallback[1]()
-      expect(mockStream.destroy.called).to.be.true
+      expect(mockStream.destroy.called).to.be.false
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -6001,7 +6870,7 @@ describe('Enterprise Search Controller', () => {
       expect(handler).to.be.a('function')
     })
 
-    it('should throw BadRequestError when query is missing', async () => {
+    it('should pass BadRequestError to next when query is missing', async () => {
       const handler = addMessageToAgentConversation(createMockAppConfig())
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -6010,11 +6879,11 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      try {
-        await handler(req, res, next)
-      } catch (error: any) {
-        expect(error.message).to.equal('Query is required')
-      }
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Query is required')
     })
 
     it('should call next with NotFoundError when conversation not found', async () => {
@@ -6143,7 +7012,8 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
+      expect(err.metadata).to.be.undefined
     })
 
     it('should handle AI service returning non-200 status', async () => {
@@ -6187,14 +7057,14 @@ describe('Enterprise Search Controller', () => {
     it('should look up user from tokenPayload email when user property is absent', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([{
+      sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
         email: 'test@test.com',
         fullName: 'Test User',
         mobile: '1234567890',
         slug: 'test-user',
-      }] as any)
+      } as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -6242,7 +7112,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when user not found from tokenPayload email', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer old-token' },
@@ -6275,14 +7145,14 @@ describe('Enterprise Search Controller', () => {
     it('should look up user from tokenPayload email and add message', async () => {
       const handler = addMessage(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([{
+      sinon.stub(Users, 'findOne').resolves({
         _id: new mongoose.Types.ObjectId(VALID_OID),
         orgId: new mongoose.Types.ObjectId(VALID_OID2),
         email: 'test@test.com',
         fullName: 'Test User',
         mobile: '1234567890',
         slug: 'test-user',
-      }] as any)
+      } as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -6328,7 +7198,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next when user not found from tokenPayload in addMessage', async () => {
       const handler = addMessage(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer old-token' },
@@ -6408,7 +7278,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const calledErr = next.firstCall.args[0]
-      expect(calledErr.message).to.include('unavailable')
+      expect(calledErr.message).to.include('trouble reaching one of its services')
     })
   })
 
@@ -7041,16 +7911,17 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
-  // unshareConversationById - findByIdAndUpdate returns null
+  // unshareConversationById - findOneAndUpdate returns null
   // -----------------------------------------------------------------------
-  describe('unshareConversationById (findByIdAndUpdate null)', () => {
-    it('should call next when findByIdAndUpdate returns null', async () => {
+  describe('unshareConversationById (findOneAndUpdate null)', () => {
+    it('should call next when findOneAndUpdate returns null', async () => {
       const mockConversation = {
         _id: VALID_OID,
         sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
       }
       stubMongooseFind(ChatSession, 'findOne', mockConversation)
-      sinon.stub(ChatSession, 'findByIdAndUpdate').resolves(null)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      sinon.stub(ChatSession, 'findOneAndUpdate').resolves(null)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -7195,6 +8066,58 @@ describe('Enterprise Search Controller', () => {
       // Should either throw a validation error or proceed (depends on validateNoXSS implementation)
       // If validation passes, the AI command will run; if not, next will be called with an error
       expect(next.called || res.status.called).to.be.true
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // search - the query is free text, like a chat question
+  // -----------------------------------------------------------------------
+  describe('search (query in angle brackets)', () => {
+    it('passes a query containing <id> to the search service unchanged', async () => {
+      const handler = search(createMockAppConfig())
+      const query = 'cite [Summary of <id>]'
+
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { searchResults: [], records: [] },
+      } as any)
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
+        _id: new mongoose.Types.ObjectId(),
+      } as any)
+
+      const req = createMockRequest({
+        body: { query, limit: 5 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(executeStub.calledOnce).to.be.true
+      const sent = JSON.parse((executeStub.firstCall.thisValue as any).body)
+      expect(sent.query).to.equal(query)
+    })
+
+    it('still refuses format specifiers in the query', async () => {
+      const handler = search(createMockAppConfig())
+      const executeStub = sinon.stub(AIServiceCommand.prototype, 'execute')
+
+      const req = createMockRequest({
+        body: { query: 'show %n records' },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
     })
   })
 
@@ -7385,7 +8308,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getConversationById(req, res, next)
+      await getConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -7659,7 +8582,7 @@ describe('Enterprise Search Controller', () => {
       await handler(req, res, next)
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('fetch failed')
+      expect(err.message).to.equal(CHAT_ERROR_MESSAGES.unavailable)
     })
 
     it('should handle error response with data.reason fallback', async () => {
@@ -7703,7 +8626,7 @@ describe('Enterprise Search Controller', () => {
         slug: 'test-user',
       }
 
-      sinon.stub(Users, 'find').resolves([mockUser])
+      sinon.stub(Users, 'findOne').resolves(mockUser as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -7737,7 +8660,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next with NotFoundError when user not found via service request', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      sinon.stub(Users, 'find').resolves([])
+      sinon.stub(Users, 'findOne').resolves(null)
 
       const req: any = {
         headers: { authorization: 'Bearer scoped-token' },
@@ -7773,7 +8696,7 @@ describe('Enterprise Search Controller', () => {
         slug: 'test-user',
       }
 
-      sinon.stub(Users, 'find').resolves([mockUser])
+      sinon.stub(Users, 'findOne').resolves(mockUser as any)
 
       const mockDoc = createMockConversationDoc({
         messages: [
@@ -7838,15 +8761,99 @@ describe('Enterprise Search Controller', () => {
   })
 
   // -----------------------------------------------------------------------
+  // A run left running after a refresh must not be joined by a second one
+  // -----------------------------------------------------------------------
+  describe('a send while the thread already has a run in progress', () => {
+    const CONFLICT_MESSAGE = 'A response is still being generated for this conversation.'
+    const user = () => ({
+      userId: new mongoose.Types.ObjectId(VALID_OID),
+      orgId: new mongoose.Types.ObjectId(VALID_OID2),
+    })
+
+    const expectRefusedWithoutStartingARun = (res: any, executeStream: sinon.SinonStub) => {
+      const written = res.write.args.map((a: any) => a[0]).join('')
+      expect(written).to.include(CONFLICT_MESSAGE)
+      expect(written).to.include('RUN_ERROR')
+      expect(executeStream.called).to.be.false
+      expect(res.end.called).to.be.true
+    }
+
+    it('addMessageStream refuses the message and never starts a second run', async () => {
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      const markFailed = sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID },
+        body: { query: 'second message' },
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await addMessageStream(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
+      expect(markFailed.called).to.be.false
+      const filter = (searchUtils.reserveRun as sinon.SinonStub).firstCall.args[0]
+      expect(String(filter._id)).to.equal(VALID_OID)
+      expect(String(filter.orgId)).to.equal(VALID_OID2)
+      expect(String(filter.userId)).to.equal(VALID_OID)
+    })
+
+    it('addMessageStreamToAgentConversation refuses the message and never starts a second run', async () => {
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        body: { query: 'second message' },
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await addMessageStreamToAgentConversation(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
+      const filter = (searchUtils.reserveRun as sinon.SinonStub).firstCall.args[0]
+      expect(filter.agentKey).to.equal('agent-1')
+    })
+
+    it('regenerateAnswers refuses and never starts a second run', async () => {
+      ;(searchUtils.reserveRun as sinon.SinonStub).rejects(new ConflictError(CONFLICT_MESSAGE))
+      const executeStream = sinon.stub(AIServiceCommand.prototype, 'executeStream')
+      sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+      const req = createMockRequest({
+        params: { conversationId: VALID_OID, messageId: new mongoose.Types.ObjectId().toString() },
+        body: {},
+        user: user(),
+      })
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+
+      await regenerateAnswers(createMockAppConfig())(req, res)
+
+      expectRefusedWithoutStartingARun(res, executeStream)
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // streamChat - client disconnect
   // -----------------------------------------------------------------------
   describe('streamChat - client disconnect handling', () => {
-    it('should destroy stream when client disconnects', async () => {
+    it('keeps the run going after the client disconnects and saves the finished answer', async () => {
       const handler = streamChat(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
+        save: sinon.stub(),
       })
+      mockDoc.save.resolves(mockDoc)
       sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
 
       const mockStream = createMockStream()
       sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
@@ -7867,23 +8874,82 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 50))
 
-      // Simulate client disconnect (response never finished)
-      if (closeCallback) closeCallback()
+      // A refresh: the response closes without having finished.
+      closeCallback()
+      expect(mockStream.destroy.called).to.be.false
 
-      expect(mockStream.destroy.calledOnce).to.be.true
-
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"Hello world","citations":[],"followUpQuestions":[]}}\n\n',
+        ),
+      )
       mockStream.emit('end')
-      await new Promise((resolve) => setTimeout(resolve, 50))
-    })
-  })
+      await new Promise((resolve) => setTimeout(resolve, 100))
 
-  // -----------------------------------------------------------------------
-  // streamChat - disconnect races the AI backend request itself (not yet a
-  // stream) — regression coverage for the FAILED/STOPPED race described in
-  // the review comment on `startAIStream`'s disconnect handling.
-  // -----------------------------------------------------------------------
-  describe('streamChat - disconnect while AI stream is still opening', () => {
-    it('saves STOPPED, not FAILED, when the client disconnects before executeStream resolves', async () => {
+      expect(saveComplete.calledOnce).to.be.true
+      expect(saveComplete.firstCall.args[1]).to.include({ answer: 'Hello world' })
+      expect(savePartial.called).to.be.false
+    })
+
+    it('still persists the ask_user_question card and saves the waiting_input turn after the client left', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+      })
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
+      const insertMany = ChatSessionMessage.insertMany as sinon.SinonStub
+      insertMany.resetHistory()
+
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+      let closeCallback: any = null
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      res.on = sinon.stub().callsFake((event: string, cb: any) => {
+        if (event === 'close') closeCallback = cb
+      })
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      closeCallback()
+
+      const askPayload = JSON.stringify({
+        type: 'CUSTOM',
+        name: 'ask_user_question',
+        value: { toolData: { question: 'Pick one' } },
+      })
+      mockStream.emit('data', Buffer.from(`event: CUSTOM\ndata: ${askPayload}\n\n`))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"","status":"waiting_input","citations":[]}}\n\n',
+        ),
+      )
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      const persistedCard = insertMany.args.some((c: any) =>
+        c[0]?.some((m: any) => m.tools?.[0]?.toolName === 'ask_user_question'),
+      )
+      expect(persistedCard).to.be.true
+      expect(mockStream.destroy.called).to.be.false
+      expect(saveComplete.calledOnce).to.be.true
+      expect(saveComplete.firstCall.args[1]).to.include({ status: 'waiting_input' })
+      expect(savePartial.called).to.be.false
+    })
+
+    it('records a failure, not a stop, when the upstream errors after the client left', async () => {
       const handler = streamChat(createMockAppConfig())
       const mockDoc = createMockConversationDoc({
         messages: [{ messageType: 'user_query', content: 'hello' }],
@@ -7891,11 +8957,55 @@ describe('Enterprise Search Controller', () => {
       sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
       sinon.stub(searchUtils, 'markConversationFailed').resolves()
 
-      let rejectExecuteStream: (err: unknown) => void = () => {}
+      const mockStream = createMockStream()
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').resolves(mockStream)
+
+      const req = createMockRequest({
+        body: { query: 'hello' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+      let closeCallback: any = null
+      const res = createMockResponse()
+      res.flush = sinon.stub()
+      res.on = sinon.stub().callsFake((event: string, cb: any) => {
+        if (event === 'close') closeCallback = cb
+      })
+
+      const promise = handler(req, res)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      closeCallback()
+      mockStream.emit('error', new Error('upstream exploded'))
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      expect((searchUtils.markConversationFailed as sinon.SinonStub).calledOnce).to.be.true
+      expect(mockDoc.status).to.not.equal('Stopped')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // streamChat - the client leaves while the AI backend request is still
+  // opening: the run is not stopped, the stream opens and finishes normally.
+  // -----------------------------------------------------------------------
+  describe('streamChat - disconnect while AI stream is still opening', () => {
+    it('does not stop the run when the client disconnects before executeStream resolves', async () => {
+      const handler = streamChat(createMockAppConfig())
+      const mockDoc = createMockConversationDoc({
+        messages: [{ messageType: 'user_query', content: 'hello' }],
+        save: sinon.stub(),
+      })
+      mockDoc.save.resolves(mockDoc)
+      sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+      const saveComplete = sinon.stub(searchUtils, 'saveCompleteConversation').resolves({})
+      const savePartial = sinon.stub(searchUtils, 'savePartialConversation').resolves()
+
+      const mockStream = createMockStream()
+      let resolveExecuteStream: (stream: unknown) => void = () => {}
       sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(
         () =>
-          new Promise((_resolve, reject) => {
-            rejectExecuteStream = reject
+          new Promise((resolve) => {
+            resolveExecuteStream = resolve
           }),
       )
 
@@ -7915,20 +9025,23 @@ describe('Enterprise Search Controller', () => {
       const promise = handler(req, res)
       await new Promise((resolve) => setTimeout(resolve, 20))
 
-      // Client disconnects while `executeStream` is still pending — mirrors
-      // `attachUpstreamAbort`'s `controller.abort()` propagating into a
-      // rejected upstream fetch before the `Readable` ever exists.
       closeCallback()
-      const abortError: any = new Error('The operation was aborted')
-      abortError.name = 'AbortError'
-      rejectExecuteStream(abortError)
-
+      resolveExecuteStream(mockStream)
       await promise
       await new Promise((resolve) => setTimeout(resolve, 20))
 
-      expect((searchUtils.markConversationFailed as sinon.SinonStub).called).to.be
-        .false
-      expect(mockDoc.status).to.equal('Stopped')
+      mockStream.emit(
+        'data',
+        Buffer.from(
+          'event: RUN_FINISHED\ndata: {"type":"RUN_FINISHED","result":{"answer":"Hello world","citations":[],"followUpQuestions":[]}}\n\n',
+        ),
+      )
+      mockStream.emit('end')
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      expect(mockStream.destroy.called).to.be.false
+      expect(saveComplete.calledOnce).to.be.true
+      expect(savePartial.called).to.be.false
     })
   })
 
@@ -8912,9 +10025,8 @@ describe('Enterprise Search Controller', () => {
         },
       } as any)
 
-      const mockCitation = { _id: new mongoose.Types.ObjectId(), save: sinon.stub() }
-      mockCitation.save.resolves(mockCitation)
-      sinon.stub(Citation.prototype, 'save').resolves(mockCitation as any)
+      const mockCitation = { _id: new mongoose.Types.ObjectId() }
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([mockCitation] as any)
       sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves({
         _id: new mongoose.Types.ObjectId(),
       } as any)
@@ -8928,9 +10040,10 @@ describe('Enterprise Search Controller', () => {
 
       await handler(req, res, next)
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true
-      }
+      expect(next.called).to.be.false
+      expect(insertManyStub.calledOnce).to.be.true
+      expect((insertManyStub.firstCall.args[0] as any[])[0].chunkIndex).to.equal(0)
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 
@@ -9274,7 +10387,7 @@ describe('Enterprise Search Controller', () => {
   // addMessageStream: client disconnect handler
   // -----------------------------------------------------------------------
   describe('addMessageStream - client disconnect handling', () => {
-    it('should destroy stream when client disconnects', async () => {
+    it('should keep the upstream stream alive when client disconnects', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
       const mockDoc = createMockConversationDoc({
@@ -9310,7 +10423,7 @@ describe('Enterprise Search Controller', () => {
       await new Promise((resolve) => setTimeout(resolve, 50))
 
       if (closeCallback) closeCallback()
-      expect(mockStream.destroy.calledOnce).to.be.true
+      expect(mockStream.destroy.called).to.be.false
 
       mockStream.emit('end')
       await new Promise((resolve) => setTimeout(resolve, 50))
@@ -9540,7 +10653,8 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
+      expect(err.metadata).to.be.undefined
     })
   })
 
@@ -9617,7 +10731,7 @@ describe('Enterprise Search Controller', () => {
 
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
-      expect(err.message).to.include('unavailable')
+      expect(err.message).to.include('trouble reaching one of its services')
     })
   })
 
@@ -10091,6 +11205,73 @@ describe('Enterprise Search Controller', () => {
   // -----------------------------------------------------------------------
   // AI response non-200 for createAgentConversation
   // -----------------------------------------------------------------------
+  describe('create paths save a plain reason for a non-200 AI response', () => {
+    const cases = [
+      {
+        name: 'a 400 with a classified body message keeps that message',
+        response: { statusCode: 400, data: { detail: 'This conversation is too long for the selected model.' }, msg: 'Bad Request' },
+        expected: 'This conversation is too long for the selected model.',
+      },
+      {
+        name: 'a 400 with no body message gets the plain fallback, not the status text',
+        response: { statusCode: 400, data: null, msg: 'Bad Request' },
+        expected: CHAT_ERROR_MESSAGES.failed,
+      },
+      {
+        name: 'a 503 never shows the upstream text',
+        response: { statusCode: 503, data: { detail: 'upstream connect error' }, msg: 'Service Unavailable' },
+        expected: CHAT_ERROR_MESSAGES.unavailable,
+      },
+    ]
+
+    for (const c of cases) {
+      it(`createConversation: ${c.name}`, async () => {
+        const handler = createConversation(createMockAppConfig())
+        const mockDoc = createMockConversationDoc({ messages: [{ messageType: 'user_query', content: 'hello' }] })
+        sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves(asAIResponse(c.response))
+        const markStub = sinon.stub(searchUtils, 'markConversationFailed').resolves()
+
+        const req = createMockRequest({
+          body: { query: 'hello' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const next = createMockNext()
+        await handler(req, createMockResponse(), next)
+
+        expect(markStub.calledOnce).to.be.true
+        const saved = markStub.firstCall.args[1] as string
+        expect(saved).to.equal(c.expected)
+        expect(saved).not.to.match(/AI service error|Status:|Bad Request/)
+        expect(next.firstCall.args[0].message).to.equal(c.expected)
+      })
+
+      it(`createAgentConversation: ${c.name}`, async () => {
+        const handler = createAgentConversation(createMockAppConfig())
+        const mockDoc = createMockConversationDoc({
+          agentKey: 'agent-1',
+          messages: [{ messageType: 'user_query', content: 'hello' }],
+        })
+        sinon.stub(ChatSession.prototype, 'save').resolves(mockDoc)
+        sinon.stub(AIServiceCommand.prototype, 'execute').resolves(asAIResponse(c.response))
+        const markStub = sinon.stub(searchUtils, 'markAgentConversationFailed').resolves()
+
+        const req = createMockRequest({
+          params: { agentKey: 'agent-1' },
+          body: { query: 'hello' },
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const next = createMockNext()
+        await handler(req, createMockResponse(), next)
+
+        expect(markStub.calledOnce).to.be.true
+        const saved = markStub.firstCall.args[1] as string
+        expect(saved).to.equal(c.expected)
+        expect(saved).not.to.match(/AI service error|Status:|Bad Request/)
+      })
+    }
+  })
+
   describe('createAgentConversation - AI response non-200 with msg', () => {
     it('should handle AI response with non-200 status and msg field', async () => {
       const handler = createAgentConversation(createMockAppConfig())
@@ -10762,15 +11943,7 @@ describe('Enterprise Search Controller', () => {
     it('should call next with error when email lookup finds no user', async () => {
       const handler = createConversation(createMockAppConfig())
 
-      const findChain: any = {
-        sort: sinon.stub().returnsThis(),
-        skip: sinon.stub().returnsThis(),
-        limit: sinon.stub().returnsThis(),
-        select: sinon.stub().returnsThis(),
-        lean: sinon.stub().returnsThis(),
-        exec: sinon.stub().resolves([]),
-      }
-      sinon.stub(Users, 'find').returns(findChain as any)
+      sinon.stub(Users, 'findOne').resolves(null)
 
       // Service request without user but with tokenPayload
       const req: any = {
@@ -12686,8 +13859,7 @@ describe('Enterprise Search Controller', () => {
       } as any)
       // unshareConversationById revokes attachment permissions via a bare
       // `.find(...).lean()` (no .exec()); give it a real resolving promise.
-      restoreIfStubbed(ChatSessionMessage, 'find')
-      sinon.stub(ChatSessionMessage, 'find').returns({ lean: () => Promise.resolve([]) } as any)
+      stubChatSessionMessageLeanFind([])
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -13066,4 +14238,35 @@ describe('Enterprise Search Controller', () => {
     })
   })
 
+})
+
+describe('assignRetrievalContextToPayload', () => {
+  it('forwards the flag when true', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: true })
+    expect(payload.includeRetrievalContext).to.equal(true)
+  })
+
+  it('omits the key entirely when absent or false', () => {
+    for (const body of [{}, { includeRetrievalContext: false }]) {
+      const payload: Record<string, unknown> = {}
+      assignRetrievalContextToPayload(payload, body)
+      expect(payload).to.not.have.property('includeRetrievalContext')
+    }
+  })
+
+  it('ignores non-boolean truthy values', () => {
+    const payload: Record<string, unknown> = {}
+    assignRetrievalContextToPayload(payload, { includeRetrievalContext: 'yes' })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
+
+  it('is independent of agentCapabilities forwarding', () => {
+    // Regression: this used to live inside assignAgentCapabilitiesToPayload,
+    // which streamChat only calls in agent mode — so `internal_search`, the
+    // mode evaluations measure, silently never received the flag.
+    const payload: Record<string, unknown> = {}
+    assignAgentCapabilitiesToPayload(payload, { includeRetrievalContext: true })
+    expect(payload).to.not.have.property('includeRetrievalContext')
+  })
 })

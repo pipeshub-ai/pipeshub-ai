@@ -36,6 +36,7 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    Status,
     TicketRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
@@ -480,6 +481,28 @@ class TestBuildIssueRecords:
         assert rec.version == 0
         assert rec.record_name == "[PROJ-1] Issue PROJ-1"
         assert "company.atlassian.net/browse/PROJ-1" in rec.weburl
+
+    @pytest.mark.asyncio
+    async def test_backlog_issue_keeps_jira_own_status(self) -> None:
+        """Jira's "Backlog" is stored as NEW; the record keeps "Backlog" too,
+        and the model is shown both."""
+        connector = _make_connector()
+        connector.site_url = "https://company.atlassian.net"
+        connector.indexing_filters = None
+
+        issue = _issue_dict()
+        issue["fields"]["status"] = {"name": "Backlog"}
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector._handle_attachment_deletions_from_changelog = AsyncMock(return_value=[])
+        connector._fetch_issue_attachments = AsyncMock(return_value=[])
+
+        records, _ = await connector._build_issue_records([issue], "p-1", [_app_user()])
+
+        rec = records[0][0]
+        assert rec.status == Status.NEW
+        assert rec.source_status == "Backlog"
+        assert rec.to_arango_record()["sourceStatus"] == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in rec.to_llm_context()
 
     @pytest.mark.asyncio
     async def test_existing_unchanged_issue_skipped(self):
@@ -1763,9 +1786,9 @@ class TestPermissionSchemeIdGuard:
 class TestBuildProjectRecordGroupDegradation:
 
     @pytest.mark.asyncio
-    async def test_scheme_unavailable_syncs_project_with_empty_permissions(self):
-        # A transient scheme failure must not drop the project — sync it with an empty ACL
-        # so its issues keep flowing; the next successful fetch refreshes permissions.
+    async def test_scheme_unavailable_keeps_project_with_permissions_none(self):
+        # A transient scheme failure must not drop the project (its issues keep flowing), and
+        # must not become an empty ACL, which would replace the stored one.
         connector = _make_connector()
         connector._fetch_project_permission_scheme = AsyncMock(return_value=None)
 
@@ -1776,7 +1799,7 @@ class TestBuildProjectRecordGroupDegradation:
         assert result is not None
         record_group, permissions = result
         assert record_group.short_name == "PROJ"
-        assert permissions == []
+        assert permissions is None
 
     @pytest.mark.asyncio
     async def test_returns_none_when_record_group_build_fails(self):
@@ -2199,7 +2222,7 @@ class TestProcessGroupEdges:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_membership_failure_syncs_group_with_no_members(self):
+    async def test_membership_failure_returns_members_none(self):
         connector = _make_connector()
         connector._fetch_group_members = AsyncMock(return_value=([], False))
 
@@ -2207,7 +2230,7 @@ class TestProcessGroupEdges:
 
         assert result is not None
         _gid, _name, _group, members = result
-        assert members == []
+        assert members is None
 
 
 class TestPaginationBounds:

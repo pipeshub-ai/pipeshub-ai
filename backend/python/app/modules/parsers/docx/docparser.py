@@ -5,7 +5,10 @@ from io import BytesIO
 
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.libreoffice_convert import convert_with_libreoffice
+from app.utils.libreoffice_convert import (
+    convert_with_libreoffice,
+    unreadable_file_as_parse_error,
+)
 
 
 class DocParser:
@@ -30,7 +33,8 @@ class DocParser:
         ``asyncio.create_subprocess_exec`` instead of blocking a thread for the
         whole conversion.
         """
-        docx_bytes = await convert_with_libreoffice(binary, "doc", "docx")
+        with unreadable_file_as_parse_error("doc"):
+            docx_bytes = await convert_with_libreoffice(binary, "doc", "docx")
         return BytesIO(docx_bytes)
 
     def convert_doc_to_docx(self, binary: bytes) -> BytesIO:

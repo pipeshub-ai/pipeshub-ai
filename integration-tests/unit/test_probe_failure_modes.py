@@ -111,6 +111,40 @@ async def test_a_collection_that_vanished_mid_scan_is_skipped() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_connector_count_can_be_held_to_one_collection() -> None:
+    """Entity points carry connectorIds too; a records-only count leaves them out."""
+    from types import SimpleNamespace
+
+    probe = VectorStoreProbe(host="localhost")
+    client = MagicMock()
+    client.count = AsyncMock(
+        side_effect=lambda collection_name, **_: SimpleNamespace(count={"records": 5, "entities": 3}[collection_name])
+    )
+    probe._conn = AsyncMock(return_value=client)
+    probe.collections = AsyncMock(return_value=["entities", "records"])
+
+    assert await probe.count_for_connector("c1") == 8
+    assert await probe.count_for_connector("c1", collection="records") == 5
+
+
+@pytest.mark.asyncio
+async def test_an_org_count_can_be_held_to_one_collection() -> None:
+    """The Labs cleanup drops the records collection; the org's entity points stay."""
+    from types import SimpleNamespace
+
+    probe = VectorStoreProbe(host="localhost")
+    client = MagicMock()
+    client.count = AsyncMock(
+        side_effect=lambda collection_name, **_: SimpleNamespace(count={"records": 0, "entities": 4}[collection_name])
+    )
+    probe._conn = AsyncMock(return_value=client)
+    probe.collections = AsyncMock(return_value=["entities", "records"])
+
+    assert await probe.count_for_org("org-1") == 4
+    assert await probe.count_for_org("org-1", collection="records") == 0
+
+
+@pytest.mark.asyncio
 async def test_a_transport_failure_raises_rather_than_counting_zero() -> None:
     """Zero from a failed count is read as "the store is clean"."""
     probe = VectorStoreProbe(host="localhost")
@@ -121,6 +155,23 @@ async def test_a_transport_failure_raises_rather_than_counting_zero() -> None:
 
     with pytest.raises(VectorProbeUnavailable, match="Could not count points"):
         await probe.count_for_virtual_record("v1")
+
+
+@pytest.mark.asyncio
+async def test_counting_reconnects_after_the_vector_database_restarts() -> None:
+    """The session-wide probe's pooled connection dies with a Qdrant restart."""
+    collections = MagicMock(collections=[MagicMock()])
+    collections.collections[0].name = "records"
+    dead = MagicMock(close=AsyncMock())
+    dead.get_collections = AsyncMock(side_effect=Exception("Server disconnected"))
+    fresh = MagicMock(close=AsyncMock())
+    fresh.get_collections = AsyncMock(return_value=collections)
+    fresh.count = AsyncMock(return_value=MagicMock(count=7))
+
+    with patch("helper.vector_store.AsyncQdrantClient", side_effect=[dead, fresh]):
+        probe = VectorStoreProbe(host="localhost")
+        assert await probe.count_for_virtual_record("v1") == 7
+    dead.close.assert_awaited_once()
 
 
 # --------------------------------------------------------------------- #

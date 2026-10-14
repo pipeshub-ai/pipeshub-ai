@@ -83,7 +83,7 @@ function isRedisXReadGroupResult(
  * means lag dashboards and consumer subscriptions see every lane from
  * startup instead of only after the first message happens to land on it.
  *
- * With laning off (the default) this returns the input unchanged.
+ * With laning off (`FAIR_SCHEDULING_LANE_COUNT=1`) this returns the input unchanged.
  */
 function expandLaneStreams(topics: TopicDefinition[]): TopicDefinition[] {
   const lanes = laneCount();
@@ -339,7 +339,7 @@ export abstract class BaseRedisStreamsConsumerConnection
       config.groupId ?? `${config.clientId ?? 'redis-consumer'}-group`;
     this.consumerId = config.clientId ?? 'consumer-' + crypto.randomUUID();
     this.blockMs = REDIS_STREAMS_DEFAULTS.blockMs;
-    this.count = REDIS_STREAMS_DEFAULTS.count;
+    this.count = config.readCount ?? REDIS_STREAMS_DEFAULTS.count;
     this.redis = createStreamsClient(config);
     this.ackRedis = createStreamsClient(config);
     this.planner = new StreamReadPlanner(streamsProvider(config));
@@ -466,17 +466,23 @@ export abstract class BaseRedisStreamsConsumerConnection
             topic,
             this.groupId,
             this.consumerId,
-            30000, // min-idle-time: claim all pending
+            this.config.claimMinIdleMs ?? 30000,
             startId,
             'COUNT',
-            '10',
+            String(this.count),
           );
 
           // ioredis returns [nextStartId, [[id, fields], ...], deletedIds]
           const nextId = result[0] as string;
           const claimed = result[1] as RedisStreamEntry[];
 
-          if (!claimed || claimed.length === 0) break;
+          // XAUTOCLAIM scans at most COUNT*10 pending entries per call, so an
+          // empty page with a live cursor can still have stale entries past it.
+          if (!claimed || claimed.length === 0) {
+            if (nextId === '0-0') break;
+            startId = nextId;
+            continue;
+          }
 
           for (const entry of claimed) {
             const entryId = entry[0];

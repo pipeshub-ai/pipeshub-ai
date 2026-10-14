@@ -23,12 +23,16 @@ from fastapi.responses import StreamingResponse
 # Base connector and service imports
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -165,6 +169,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Dropbox Personal",
@@ -290,12 +295,15 @@ class DropboxIndividualConnector(BaseConnector):
         access_token = credentials_config.get("access_token")
         refresh_token = credentials_config.get("refresh_token")
 
-        auth_config = config.get("auth")
+        auth_config = config.get("auth") or {}
         oauth_config_id = auth_config.get("oauthConfigId")
 
         if not oauth_config_id:
-            self.logger.error("Dropbox Individual oauthConfigId not found in auth configuration.")
-            return False
+            self.logger.error(
+                "Dropbox Individual has no oauthConfigId in its auth config; it reads its "
+                "client ID and secret only from a linked OAuth app."
+            )
+            raise oauth_app_not_linked_error()
 
         oauth_config = await self._fetch_oauth_config_by_id(
             oauth_config_id=oauth_config_id,

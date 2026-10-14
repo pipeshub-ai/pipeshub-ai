@@ -22,6 +22,13 @@ logger = create_logger("etcd")
 # Constants
 ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
 
+UNENCRYPTED_KEYS = (
+    config_node_constants.ENDPOINTS.value,
+    config_node_constants.STORAGE.value,
+    config_node_constants.MIGRATIONS.value,
+    config_node_constants.DEPLOYMENT.value,
+)
+
 T = TypeVar("T")
 
 class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
@@ -67,7 +74,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     def _create_store(self) -> Etcd3DistributedKeyValueStore:
         self.logger.debug("🔧 Creating ETCD store configuration...")
         self.logger.debug("ETCD URL: %s", os.getenv("ETCD_URL"))
-        self.logger.debug("ETCD Timeout: %s", os.getenv("ETCD_TIMEOUT", "5.0"))
+        self.logger.debug("ETCD Timeout (ms): %s", os.getenv("ETCD_TIMEOUT", "5000"))
         self.logger.debug("ETCD Username: %s", os.getenv("ETCD_USERNAME", "None"))
         etcd_url = os.getenv("ETCD_URL")
         if not etcd_url:
@@ -80,12 +87,13 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         # Split host and port
         parts = etcd_url.split(":")
         etcd_host = parts[0]
-        etcd_port = parts[1]
+        etcd_port = parts[1] if len(parts) > 1 else "2379"
 
         config = StoreConfig(
             host=etcd_host,
             port=int(etcd_port),
-            timeout=float(os.getenv("ETCD_TIMEOUT", "5.0")),
+            # ETCD_TIMEOUT is in milliseconds (consistent with Node.js), convert to seconds
+            timeout=float(os.getenv("ETCD_TIMEOUT", "5000")) / 1000,
             username=os.getenv("ETCD_USERNAME", None),
             password=os.getenv("ETCD_PASSWORD", None),
         )
@@ -147,13 +155,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             # Convert value to JSON string
             value_json = json.dumps(value)
 
-            EXCLUDED_KEYS = [
-                config_node_constants.ENDPOINTS.value,
-                config_node_constants.STORAGE.value,
-                config_node_constants.MIGRATIONS.value,
-                config_node_constants.DEPLOYMENT.value,
-            ]
-            encrypt_value = key not in EXCLUDED_KEYS
+            encrypt_value = key not in UNENCRYPTED_KEYS
 
             if encrypt_value:
                 # Encrypt the value
@@ -200,53 +202,26 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def update_value(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:
-            encrypted_value = await self.store.get_key(key)
+            # Forwarded, or the backend's own swallow of an unreadable value
+            # answers None here and reads as a missing key.
+            if raise_on_error:
+                encrypted_value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                encrypted_value = await self.store.get_key(key)
 
             if encrypted_value is not None:
                 try:
-                    # Determine if value needs decryption
-                    UNENCRYPTED_KEYS = [
-                        config_node_constants.ENDPOINTS.value,
-                        config_node_constants.STORAGE.value,
-                        config_node_constants.MIGRATIONS.value,
-                        config_node_constants.DEPLOYMENT.value,
-                    ]
-                    needs_decryption = key not in UNENCRYPTED_KEYS
-
-                    # Get decrypted or raw value
-                    value = (
-                        self.encryption_service.decrypt(encrypted_value)
-                        if needs_decryption
-                        else encrypted_value
-                    )
-
-                    # Parse value — already-deserialized types pass through
-                    if isinstance(value, (dict, list, int, float)):
-                        result = value
-                    elif not needs_decryption:
-                        try:
-                            result = json.loads(value)
-                        except (json.JSONDecodeError, TypeError):
-                            try:
-                                # Legacy fallback: unencrypted values may have been
-                                # stored via Python's str() (single quotes,
-                                # True/False/None) instead of json.dumps().
-                                # Read-only: the next create_key() call will
-                                # overwrite with proper JSON, upgrading in place.
-                                result = ast.literal_eval(value)
-                            except (ValueError, SyntaxError):
-                                result = value
-                    else:
-                        result = json.loads(value)
-
-                    return result
-
+                    return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
                         f"❌ Failed to process value for key {key}: {str(e)}"
                     )
+                    # A value came back and could not be read: not the same as
+                    # no value, so a caller that asked must not see None.
+                    if raise_on_error:
+                        raise
                     return None
             else:
                 self.logger.debug(f"⚠️ No value found in ETCD for key: {key}")
@@ -255,7 +230,37 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             self.logger.error("❌ Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
             return None
+
+    def _decode_value(self, key: str, stored: object) -> T | None:
+        """Turn what the inner store returned for ``key`` into the caller's value."""
+        needs_decryption = key not in UNENCRYPTED_KEYS
+
+        value = (
+            self.encryption_service.decrypt(stored)
+            if needs_decryption
+            else stored
+        )
+
+        # Parse value — already-deserialized types pass through
+        if isinstance(value, (dict, list, int, float)):
+            return value
+        if needs_decryption:
+            return json.loads(value)
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                # Legacy fallback: unencrypted values may have been
+                # stored via Python's str() (single quotes,
+                # True/False/None) instead of json.dumps().
+                # Read-only: the next create_key() call will
+                # overwrite with proper JSON, upgrading in place.
+                return ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return value
 
     async def delete_key(self, key: str) -> bool:
         return await self.store.delete_key(key)
@@ -269,7 +274,12 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
     ) -> None:
-        return await self.store.watch_key(key, callback, error_callback)
+        def on_change(stored: object) -> None:
+            # A decryption failure raised here reaches error_callback through
+            # the inner store, rather than handing the watcher ciphertext.
+            callback(None if stored is None else self._decode_value(key, stored))
+
+        return await self.store.watch_key(key, on_change, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
         """
@@ -289,21 +299,14 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             if not encrypted_keys:
                 return []
 
-            # Normalize directory prefix for matching
-            directory_prefix = directory.rstrip("/") if directory and directory != "/" else ""
-
-            UNENCRYPTED_PREFIXES = [
-                config_node_constants.ENDPOINTS.value,
-                config_node_constants.STORAGE.value,
-                config_node_constants.MIGRATIONS.value,
-                config_node_constants.DEPLOYMENT.value,
-            ]
+            # Kept as given: stripping the trailing slash let "/a/b/" also match "/a/b" and "/a/b-2/...".
+            directory_prefix = directory if directory != "/" else ""
 
             decrypted_keys = []
             for encrypted_key in encrypted_keys:
                 try:
                     # Check if key is unencrypted (excluded from encryption)
-                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_PREFIXES)
+                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_KEYS)
 
                     if is_unencrypted:
                         decrypted_key = encrypted_key
@@ -341,4 +344,15 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
     async def close(self) -> None:
         """Clean up resources and close connection."""
-        self.store.close()
+        await self.store.close()
+
+    # Without these the base-class no-ops answer, and a ConfigurationService on
+    # this store never hears that another process changed a key it has cached.
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> object | None:
+        return await self.store.subscribe_changes(callback)
+
+    async def publish_change(self, key: str) -> None:
+        await self.store.publish_change(key)
+
+    async def unsubscribe_changes(self, handle: object) -> None:
+        await self.store.unsubscribe_changes(handle)

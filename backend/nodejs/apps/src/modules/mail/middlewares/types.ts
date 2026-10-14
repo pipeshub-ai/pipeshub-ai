@@ -23,6 +23,7 @@ export enum EmailTemplateType {
   LoginWithOtp = 'loginWithOTP',
   ResetPassword = 'resetPassword',
   ResetEmail = 'resetEmail',
+  EmailChangeNotice = 'emailChangeNotice',
   AccountCreation = 'accountCreation',
   OrgEmailVerification = 'orgEmailVerification',
   AppuserInvite = 'appuserInvite',

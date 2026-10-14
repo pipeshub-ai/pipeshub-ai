@@ -219,6 +219,10 @@ describe('user-admin.service', () => {
         orgId,
         role: 'admin',
         isDeleted: { $ne: true },
+        // Service accounts are excluded so they cannot be counted as one of
+        // an organisation's administrators: were one counted, the last person
+        // who can actually sign in could be demoted.
+        kind: { $ne: 'service' },
       });
     });
 

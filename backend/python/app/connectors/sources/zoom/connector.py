@@ -75,6 +75,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.zoom.zoom import ZoomClient
 from app.sources.external.zoom.zoom import ZoomDataSource
+from app.utils.text_fragments import SourceFormat, build_text_fragment_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
 
 # ---------------------------------------------------------------------------
@@ -85,6 +86,7 @@ ZOOM_PAGE_SIZE = 300
 ZOOM_REPORT_SYNC_KEY_PREFIX = "zoom_report_last_sync"
 ZOOM_REPORT_MAX_RANGE_DAYS = 30
 ZOOM_REPORT_MAX_HISTORY_DAYS = 180
+ZOOM_TRANSCRIPT_LISTING_URL = "https://zoom.us/recording/meeting/transcript"
 
 _ZOOM_CODE_NO_AI_TRANSCRIPT = 3322
 _ZOOM_CODES_MEETING_NOT_FOUND = {3001, 3301}
@@ -919,9 +921,8 @@ class ZoomConnector(BaseConnector):
 
         # Transcript listing page with #:~:text= fragment so the browser scrolls to and
         # highlights the specific meeting row when the user clicks through from search results.
-        weburl = (
-            "https://zoom.us/recording/meeting/transcript"
-            + "#:~:text=" + urllib.parse.quote(topic)
+        weburl = build_text_fragment_url(
+            ZOOM_TRANSCRIPT_LISTING_URL, topic, SourceFormat.PLAIN
         )
 
         now_ms = get_epoch_timestamp_in_ms()

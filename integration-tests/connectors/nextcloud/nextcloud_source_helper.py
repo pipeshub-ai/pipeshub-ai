@@ -105,6 +105,12 @@ class NextcloudSourceHelper:
         if response.status_code != 404:
             response.raise_for_status()
 
+    def move(self, path: str, new_path: str) -> None:
+        """Rename or move ``path``; Nextcloud keeps its file id, so it stays the same record."""
+        self._dav(
+            "MOVE", path, headers={"Destination": self._url(new_path), "Overwrite": "F"}
+        ).raise_for_status()
+
     def list(self, path: str = "") -> list[str]:
         """Paths under ``path``, relative to the user's root, folders ending in "/"."""
         response = self._dav("PROPFIND", path, headers={"Depth": "infinity"})

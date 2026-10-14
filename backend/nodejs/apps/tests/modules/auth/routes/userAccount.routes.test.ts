@@ -6,6 +6,7 @@ import { createUserAccountRouter } from '../../../../src/modules/auth/routes/use
 import { UserAccountController } from '../../../../src/modules/auth/controller/userAccount.controller';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
+import { Logger } from '../../../../src/libs/services/logger.service';
 
 describe('createUserAccountRouter', () => {
   let container: Container;
@@ -49,6 +50,22 @@ describe('createUserAccountRouter', () => {
     container
       .bind<AppConfig>('AppConfig')
       .toConstantValue(mockConfig as any);
+    container
+      .bind<Logger>('Logger')
+      .toConstantValue(sinon.createStubInstance(Logger) as unknown as Logger);
+  });
+
+  it('should mount one shared auth rate limiter first on credential, OTP and password routes', () => {
+    const router = createUserAccountRouter(container);
+    const firstHandler = (path: string) =>
+      (router.stack as any[]).find((layer) => layer.route?.path === path).route.stack[0].handle;
+
+    const limited = ['/initAuth', '/authenticate', '/login/otp/generate', '/password/reset', '/password/forgot'];
+    const limiter = firstHandler(limited[0]);
+    for (const path of limited) {
+      expect(firstHandler(path), path).to.equal(limiter);
+    }
+    expect(firstHandler('/refresh/token')).to.not.equal(limiter);
   });
 
   afterEach(() => {

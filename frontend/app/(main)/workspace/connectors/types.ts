@@ -58,6 +58,15 @@ export interface Connector {
    * Prefer comparing to `CONNECTOR_INSTANCE_STATUS` from `./constants`; other strings may appear before the UI is updated.
    */
   status?: string | null;
+  /**
+   * Local FS only, and only while sync is enabled. Live: the owner device
+   * (`ownerDeviceId`) is connected, stamped by Node at response time.
+   * Absent when unknown, unclaimed, or when the connector is disabled.
+   */
+  desktopOnline?: boolean;
+  /** Local FS only. The desktop device that claimed this connector on first enable. */
+  ownerDeviceId?: string;
+  ownerDeviceName?: string;
 }
 
 /** API list response shape. */
@@ -213,6 +222,11 @@ export interface FilterSchemaField {
   defaultOperator?: string;
   /** When true, empty operator row stays empty (no fallback to operators[0]). */
   noImplicitOperatorDefault?: boolean;
+  /**
+   * The window the connector applies when this filter is not set at all (e.g. a
+   * sync filter that falls back to the last 30 days). Shown while the filter is cleared.
+   */
+  fallbackOperator?: string;
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];
@@ -329,10 +343,18 @@ export interface ConnectorSchemaResponse {
     hideConnector: boolean;
     isAdminAccessRequired?: boolean;
     personalConnectorType?: string | null;
+    /** The credentials can be tried with `testConnection` before they are saved. */
+    supportsConnectionCheck?: boolean;
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;
   };
+}
+
+/** Body of `POST /registry/:connectorType/test-connection`; a failed check is `success: false`. */
+export interface ConnectionCheckResponse {
+  success: boolean;
+  message: string;
 }
 
 // ========================================
@@ -403,6 +425,14 @@ export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
 
+/** Connection check run by the Authenticate tab's Next button. */
+export interface ConnectionCheckState {
+  status: 'idle' | 'checking' | 'failed';
+  message: string | null;
+  /** Set while checking; a reset (panel opened or closed, auth type changed) drops it, voiding the result. */
+  id?: number;
+}
+
 // ========================================
 // Instance page types
 // ========================================
@@ -452,6 +482,8 @@ export interface ConnectorInstance extends Connector {
 export interface LocalSyncStatus {
   connectorId: string;
   watcherState: 'starting' | 'watching' | 'stopped';
+  /** Strategy the mounted watcher is running under — falls back to journal meta when stopped. */
+  syncStrategy: 'MANUAL' | 'SCHEDULED';
   rootPath: string | null;
   lastError: string | null;
   pendingCount: number;

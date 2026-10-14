@@ -3,7 +3,9 @@
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
-import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -44,19 +46,18 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useUserStore } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
-import {
-  SIDEBAR_CONVERSATIONS_PAGE_SIZE,
-  chatContentColumnStyle,
-} from './constants';
+import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -68,6 +69,7 @@ const footerLinkStyle: React.CSSProperties = {
 };
 
 function ChatFooterLinks() {
+  const { t } = useTranslation();
   const stars = useGitHubStars();
 
   return (
@@ -129,7 +131,7 @@ function ChatFooterLinks() {
           style={{ flexShrink: 0 }}
         />
         <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
-          Docs
+          {t('common.docs')}
         </span>
       </a>
     </Flex>
@@ -178,12 +180,6 @@ function ChatContent() {
   // prevents this component from re-rendering on background slot updates.
   const previewFile = useChatStore((s) => s.previewFile);
   const previewMode = useChatStore((s) => s.previewMode);
-  const setConversations = useChatStore((s) => s.setConversations);
-  const setSharedConversations = useChatStore((s) => s.setSharedConversations);
-  const setIsConversationsLoading = useChatStore((s) => s.setIsConversationsLoading);
-  const setConversationsError = useChatStore((s) => s.setConversationsError);
-  const setPagination = useChatStore((s) => s.setPagination);
-  const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
 
@@ -210,6 +206,9 @@ function ChatContent() {
   );
   const activeSlotConvId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
+  );
+  const activeSlotRemoteRunInProgress = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.remoteRunInProgress ?? false : false
   );
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
@@ -328,43 +327,6 @@ function ChatContent() {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [router]);
-
-  // Fetch conversations from API
-  const loadConversations = useCallback(async () => {
-    setIsConversationsLoading(true);
-    setConversationsError(null);
-
-    try {
-      const [owned, shared] = await Promise.all([
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'owned' }),
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'shared' }),
-      ]);
-      setConversations(owned.conversations);
-      setSharedConversations(shared.conversations);
-      setPagination(owned.pagination);
-      setSharedPagination(shared.pagination);
-    } catch (error) {
-      if (useServicesHealthStore.getState().apiServerReachable) {
-        console.error('Failed to fetch conversations:', error);
-        setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
-      }
-    } finally {
-      setIsConversationsLoading(false);
-    }
-  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination, setSharedPagination]);
-
-  // Fetch conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  // Re-fetch conversations when a mutation bumps the version counter
-  const conversationsVersion = useChatStore((s) => s.conversationsVersion);
-  useEffect(() => {
-    if (conversationsVersion > 0) {
-      loadConversations();
-    }
-  }, [conversationsVersion, loadConversations]);
 
   // Populate agent side-effects (tools, display name) and kick off the model
   // fetch for the current context. The shared `fetchModelsForContext` handles
@@ -709,13 +671,32 @@ function ChatContent() {
     if (!convId) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const generationOf = () => useChatStore.getState().slots[activeSlotId]?.refreshGeneration ?? 0;
+    // A notification can invalidate the conversation while this request is in flight; a response
+    // fetched before that is stale. Refetch at once a few times; past that, back off and start over,
+    // so a stale response (or error) never marks the slot initialized.
+    const MAX_REFETCHES = 3;
+    const RETRY_DELAY_MS = 500;
 
-    const loadHistory = async () => {
+    const retryStale = (attempt: number): Promise<void> | undefined => {
+      if (attempt < MAX_REFETCHES) return loadHistory(attempt + 1);
+      retryTimer = setTimeout(() => {
+        if (!cancelled) void loadHistory(0);
+      }, RETRY_DELAY_MS);
+      return undefined;
+    };
+
+    const loadHistory = async (attempt = 0): Promise<void> => {
+      const generation = generationOf();
       try {
         const detail = historyAndShareAgentId
           ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
           : await ChatApi.fetchConversation(convId);
         if (cancelled) return;
+        if (generationOf() !== generation) {
+          return retryStale(attempt);
+        }
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
@@ -774,8 +755,10 @@ function ChatContent() {
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
+          rawMessages: messages,
           isInitialized: true,
           hasLoaded: true,
+          remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           messagePagination: {
             currentPage: apiPagination.page,
@@ -783,11 +766,12 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
-          ...(unansweredAskUserQuestion
-            ? { pendingAskUserQuestion: unansweredAskUserQuestion }
-            : {}),
+          pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
+        if (!cancelled && generationOf() !== generation) {
+          return retryStale(attempt);
+        }
         console.error('Failed to load conversation history:', error);
         if (!cancelled) {
           // Mark as initialized to avoid infinite retries, but leave isOwner
@@ -796,6 +780,10 @@ function ChatContent() {
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
           });
+          // The API client already explains HTTP failures in its own toast.
+          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+            toast.error(t('chat.toasts.loadConversationFailed'));
+          }
         }
       }
     };
@@ -804,8 +792,17 @@ function ChatContent() {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+
+  // A run that outlived a refresh finishes on the server; reload once it has.
+  useRemoteRunPoll(
+    activeSlotId,
+    activeSlotConvId,
+    historyAndShareAgentId,
+    activeSlotRemoteRunInProgress && activeSlotIsInitialized && !activeSlotIsStreaming,
+  );
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -1017,6 +1014,10 @@ function ChatContent() {
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const demoDataActive = useDemoDataActive();
+  // Unknown reads as shown, as before the switch existed.
+  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1030,13 +1031,6 @@ function ChatContent() {
     }
     return '';
   }, [profile]);
-
-  const defaultSuggestionsMap = t('chat.defaultSuggestions', { returnObjects: true }) as Record<string, { text: string; icons: ChatSuggestion['icons'] }>;
-  const defaultSuggestions: ChatSuggestion[] = Object.entries(defaultSuggestionsMap).map(([id, item]) => ({
-    id,
-    text: item.text,
-    icons: item.icons,
-  }));
 
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
@@ -1378,11 +1372,6 @@ function ChatContent() {
                       </Text>
                       <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
                     </Flex>
-                    <Box style={{ textAlign: 'center', marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)', fontFamily: 'Manrope, sans-serif' }}>
-                      <Text size="3" style={{ color: 'var(--slate-10)' }}>
-                        {t('chat.projects.newChatInProject')}
-                      </Text>
-                    </Box>
                   </>
                 ) : (
                   <>
@@ -1417,6 +1406,15 @@ function ChatContent() {
                   <Box style={{ width: '100%' }}>
                     <ChatInputWrapper />
                   </Box>
+                )}
+                {showChatInput && (
+                  // Shows itself only when it applies, including for a disabled demo
+                  // whose records are still searchable. Not tied to this admin's own
+                  // switch: others may still show it, and its sample accounts can sign in.
+                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
+                )}
+                {demoDataActive && showChatInput && !demoHidden && (
+                  <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
                 )}
               </Flex>
             </Box>
@@ -1493,7 +1491,7 @@ function ChatContent() {
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize chat and preview panels"
+              aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
                 width: '8px',

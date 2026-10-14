@@ -17,6 +17,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     AppGroups,
     Connectors,
     ExtensionTypes,
@@ -24,6 +25,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
 )
 from app.connectors.core.constants import IconPaths
+from app.connectors.sources.web.address_guard import create_guarded_session
 from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     fetch_url_with_fallback,
@@ -74,12 +76,7 @@ class RSSApp(App):
     .with_description("Subscribe to and sync content from RSS and Atom feeds")
     .with_categories(["Web", "Content"])
     .with_scopes([ConnectorScope.PERSONAL.value, ConnectorScope.TEAM.value])
-    # RECORD_LEVEL (the default) rather than APP_LEVEL: reviewers disagreed on
-    # whether a non-creator can hold a USER_APP_RELATION to a personal instance,
-    # and APP_LEVEL answers with one connector-wide scan that never checks the
-    # per-user ACL. The only cost of being wrong the safe way is losing the cache
-    # shortcut for this connector; the cost of being wrong the other way is one
-    # user reading another's records.
+    .with_permission_model(PermissionModel.APP_LEVEL)
     .configure(
         lambda builder: builder.with_icon(IconPaths.connector_icon(Connectors.RSS.value))
         .with_realtime_support(False)
@@ -213,7 +210,7 @@ class RSSConnector(BaseConnector):
 
             # Initialize aiohttp session with realistic browser headers
             timeout = aiohttp.ClientTimeout(total=30)
-            self.session = aiohttp.ClientSession(
+            self.session = create_guarded_session(
                 timeout=timeout,
                 headers={
                     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
@@ -453,6 +450,7 @@ class RSSConnector(BaseConnector):
 
         # Process entries in batches
         records_batch: List[Tuple[FileRecord, List[Permission]]] = []
+        retitled: list[FileRecord] = []
         processed_count = 0
 
         for entry in feed.entries[: self.max_articles_per_feed]:
@@ -461,6 +459,8 @@ class RSSConnector(BaseConnector):
                 if result:
                     records_batch.append(result)
                     processed_count += 1
+                    if await self._only_metadata_changed(result[0]):
+                        retitled.append(result[0])
 
                     # Flush batch when it reaches batch_size
                     if len(records_batch) >= self.batch_size:
@@ -484,8 +484,32 @@ class RSSConnector(BaseConnector):
                 f"  📦 Flushed final batch of {len(records_batch)} records"
             )
 
+        # on_new_records rewrites an existing record only when its revision (the
+        # text's hash) changes, so a new title or link on unchanged text is saved here.
+        for record in retitled:
+            try:
+                await self.data_entities_processor.on_record_metadata_update(record)
+            except Exception as e:
+                self.logger.error(
+                    f"❌ Error updating the title of '{record.record_name}': {e}", exc_info=True
+                )
+
         self.logger.info(f"✅ Processed {processed_count} articles from '{feed_title}'")
         return processed_count
+
+    async def _only_metadata_changed(self, record: FileRecord) -> bool:
+        """True when the entry is already synced with the same text but a new title or link."""
+        try:
+            existing = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, record.external_record_id
+            )
+        except Exception as e:
+            # The entry still goes to on_new_records; only its rename waits for the next sync.
+            self.logger.warning(f"⚠️ Could not read the stored record for '{record.record_name}': {e}")
+            return False
+        if existing is None or existing.external_revision_id != record.external_revision_id:
+            return False
+        return existing.record_name != record.record_name or existing.weburl != record.weburl
 
     def _source_fetch_error(self, result: Optional[FetchResponse]) -> HTTPException:
         """Map a failed `fetch_url_with_fallback` result onto our HTTP status."""
@@ -515,7 +539,8 @@ class RSSConnector(BaseConnector):
                     raise self._source_fetch_error(result)
                 return None
 
-            feed = feedparser.parse(result.content_bytes)
+            # Given bytes, feedparser first tries them as a file name on this host.
+            feed = feedparser.parse(BytesIO(result.content_bytes))
 
             if feed.bozo and not feed.entries:
                 self.logger.warning(

@@ -1,0 +1,714 @@
+"""Per-tool approvals for MCP tool calls: which calls run, which wait for a person, which never run.
+
+Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Block ("Deny"). The
+rule is the person's own, set for their MCP servers, and it applies in every chat they have,
+agent chats included. Without one, a tool starts from what it does to data (`mcp/tool_kind.py`):
+a read-only tool at Allow, one that changes data at Ask, one that deletes data at Block.
+
+- **Block**: the call doesn't run, and the model is told why.
+- **Ask**: the call is saved and the turn stops on it, with an approval card on the tool's row.
+  The person's answer comes back as a request that resumes that same call (`Tool approval: …`
+  with `toolApproval`, like the ask-user card's `User selections:`): the saved call runs, on the
+  server, with the arguments it was asked with, and its result becomes the result of the call the
+  model made. The model carries on from there in the same reply; it never re-creates the call.
+  "Don't ask again" also saves the answer as the person's rule for the tool.
+- Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
+  service account): there, Ask is Block. Only a tool the person pre-approved runs there.
+
+Enforced at the tool executor's one checkpoint (PreToolUse), so other kinds of tools can join later.
+`MCP_TOOL_APPROVALS=false` turns it off. Approvals are bound to the signed-in user and the
+conversation they were asked in, and are answered only from a run someone is watching. Whether a
+run is watched rests on the `client-name` header, which Node sets to `api` for OAuth and personal
+access tokens, so only a web sign-in can claim the web app's name.
+"""
+from __future__ import annotations
+
+import json
+import logging
+import time
+import uuid
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Literal, Optional
+
+from pydantic import Field, ValidationError
+
+from app.agent_loop_lib.core.messages import AssistantMessage, ToolMessage, UserMessage
+from app.agent_loop_lib.core.types import ToolCall
+from app.agent_loop_lib.events.base import AgentEvent, EventType, ToolCallStatus
+from app.agent_loop_lib.hooks.middleware.decisions import PendingApproval
+from app.agent_loop_lib.tools.executor import ToolExecutor
+from app.agents.agent_loop import parked_turn
+from app.agents.constants.mcp_server_constants import (
+    get_mcp_tool_approval_claim_path,
+    get_mcp_tool_approval_path,
+    get_mcp_user_tool_rules_path,
+)
+from app.agents.mcp.models import MCPCamelModel
+from app.utils.env_utils import env_bool
+
+if TYPE_CHECKING:
+    from app.agent_loop_lib.agent import Agent
+    from app.agent_loop_lib.context.manager import ContextManager
+    from app.agent_loop_lib.core.scope import RunScope
+    from app.agent_loop_lib.hooks.middleware.context import (
+        AgentLifecycleContext,
+        ToolCallContext,
+    )
+    from app.agents.agent_loop.context import AgentContext
+    from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
+    from app.agents.mcp.tool_kind import ToolKind
+    from app.config.configuration_service import ConfigurationService
+
+logger = logging.getLogger(__name__)
+
+ENABLED_ENV = "MCP_TOOL_APPROVALS"
+APPROVAL_TTL_SECONDS = 900
+# A saved call and its claim are kept longer than they can be answered, so a late or repeated
+# answer still finds the call it was about and is told what happened to it.
+_RECORD_TTL_SECONDS = 86400
+# The web app's `client-name`: the one client that can show an approval card.
+WEB_CLIENT_NAME = "pipeshub-ai"
+# How the app's answer to a card starts; the rest of the text is only for reading.
+TOOL_APPROVAL_RESUME_PREFIX = "Tool approval:"
+# How much of an approved call's result the model is given.
+_MAX_RESULT_CHARS = 20_000
+# How much of it the call's row keeps.
+_MAX_PREVIEW_CHARS = 2_000
+# Arguments larger than this are shown on the card as a preview only.
+_MAX_CARD_ARGUMENT_CHARS = 8_000
+# The stopped turn is kept (`parked_turn`) until the card can no longer be answered.
+TURN_TTL_SECONDS = APPROVAL_TTL_SECONDS + 600
+# How the result of a call that stopped on a card starts (its row, and its result in the history).
+WAITING_PREFIX = "Waiting for your approval to run"
+
+Rule = Literal["allow", "ask", "block"]
+Decision = Literal["allow", "deny"]
+
+# `context.tool_state` keys.
+TOOLS_BY_PATH = "_mcp_tools_by_path"
+_RULES_CACHE = "_tool_approval_rules"
+_PENDING_IN_RUN = "_tool_approval_pending_id"
+_STOPPED_CALL = "_tool_approval_stopped_call"
+# The answer of a turn that ended waiting for approval (read by `AnswerFinalizer`).
+PENDING_MESSAGE = "_tool_approval_pending_message"
+_APPROVED_CALL = "_tool_approval_running"
+# This request answers a card and continues the turn it stopped (read by the stream bridge).
+RESUMING = "_tool_approval_resuming"
+_RESUME_HISTORY = "_tool_approval_resume_history"
+
+
+class ToolRules(MCPCamelModel):
+    tools: dict[str, Rule] = Field(default_factory=dict)
+
+
+class PendingCall(MCPCamelModel):
+    approval_id: str
+    org_id: str
+    user_id: str
+    conversation_id: str
+    instance_id: str
+    server_name: str
+    tool_name: str
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    # The model's id for the call: the answer becomes that call's result, on that call's row.
+    tool_call_id: str = ""
+    created_at: float
+    expires_at: float
+
+
+class ToolApprovalAnswer(MCPCamelModel):
+    """What the app sends when a person answers an approval card."""
+
+    approval_id: str = Field(min_length=1, max_length=64)
+    decision: Decision
+    # "Don't ask again for this tool": the answer becomes the person's rule for it.
+    remember: bool = False
+
+
+class Outcome(MCPCamelModel):
+    """What came of an answered card: the call's row, and the result the model is given. Kept with
+    the claim, so answering the same card again shows the same thing and runs nothing."""
+
+    answer: Literal["allowed", "declined", "expired"]
+    status: Literal["completed", "failed", "blocked"]
+    result: str
+    preview: str = ""
+    summary: Optional[str] = None
+    ran: bool = False
+
+
+def enabled() -> bool:
+    return env_bool(ENABLED_ENV, True)
+
+
+@dataclass(frozen=True)
+class Verdict:
+    rule: Rule
+    # Why, for a Block: what the model (and so the person) is told.
+    reason: str = ""
+
+
+_STARTING_RULES: dict[str, Rule] = {"read": "allow", "write": "ask", "destructive": "block"}
+
+
+def starting_rule(*, kind: ToolKind) -> Rule:
+    """A tool's rule where nobody set one."""
+    return _STARTING_RULES[kind]
+
+
+def decide(*, own: Optional[Rule], kind: ToolKind, watched: bool, approved_call: bool = False) -> Verdict:
+    """The rule for one call. `approved_call`: this is the call a person just approved (it runs
+    unless something now blocks it)."""
+    effective = own or starting_rule(kind=kind)
+    if effective == "block":
+        return Verdict("block", "own" if own else "default")
+    if effective == "allow" or approved_call:
+        return Verdict("allow")
+    if not watched:
+        return Verdict("block", "unattended")
+    return Verdict("ask")
+
+
+def watched(context: "AgentContext") -> bool:
+    """Whether someone can answer an approval card in this run."""
+    return bool(
+        context.client_name == WEB_CLIENT_NAME and context.chat_streaming
+        and context.conversation_id and not context.is_service_account
+    )
+
+
+# ---------------------------------------------------------------------------
+# Stores
+# ---------------------------------------------------------------------------
+
+async def _read(config_service: "ConfigurationService", key: str) -> Any:  # noqa: ANN401
+    # A store that can't be read must not look like "no rules": that would drop every Block.
+    return await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True, keep_in_cache=False)
+
+
+async def _write(config_service: "ConfigurationService", key: str, value: dict[str, Any], *, ttl_seconds: Optional[int] = None) -> bool:
+    return bool(await config_service.set_config(key, value, ttl_seconds=ttl_seconds, keep_in_cache=False))
+
+
+def _model(model: type, raw: Any) -> Any:  # noqa: ANN401
+    try:
+        return model.model_validate(raw) if isinstance(raw, dict) else model()
+    except ValidationError:
+        logger.warning(f"Ignoring a malformed {model.__name__} record")
+        return model()
+
+
+async def load_own_rules(config_service: "ConfigurationService", *, user_id: str, instance_id: str) -> ToolRules:
+    return _model(ToolRules, await _read(config_service, get_mcp_user_tool_rules_path(user_id, instance_id)))
+
+
+async def save_own_rules(config_service: "ConfigurationService", rules: ToolRules, *, user_id: str, instance_id: str) -> bool:
+    return await _write(config_service, get_mcp_user_tool_rules_path(user_id, instance_id), rules.model_dump(by_alias=True))
+
+
+@dataclass
+class Claim:
+    """`claimed`: this answer is the one that settles the call. `used`: an earlier answer did
+    (`outcome` is what came of it, once it is known). `expired`: too late to run it. `unknown`:
+    no such call for this person in this conversation."""
+
+    status: Literal["claimed", "used", "expired", "unknown"]
+    pending: Optional[PendingCall] = None
+    outcome: Optional[Outcome] = None
+
+
+async def claim_pending(
+    config_service: "ConfigurationService", approval_id: str, *, org_id: str, user_id: str, conversation_id: Optional[str],
+) -> Claim:
+    """Claims the saved call for this answer. Claiming makes it used: two answers to the same card
+    settle it once. A store failure raises, and nothing is claimed."""
+    raw = await _read(config_service, get_mcp_tool_approval_path(approval_id))
+    try:
+        pending = PendingCall.model_validate(raw) if isinstance(raw, dict) else None
+    except ValidationError:
+        pending = None
+    if pending is None:
+        return Claim("unknown")
+    if (pending.org_id, pending.user_id, pending.conversation_id) != (org_id, user_id, conversation_id or ""):
+        logger.warning(f"Tool approval {approval_id} was answered by another user or from another conversation; ignored")
+        return Claim("unknown")
+    claim_path = get_mcp_tool_approval_claim_path(approval_id)
+    earlier = await _read(config_service, claim_path)
+    if isinstance(earlier, dict):
+        return Claim("used", pending, _outcome_of(earlier))
+    if pending.expires_at <= time.time():
+        return Claim("expired", pending)
+    if not await config_service.create_config_if_absent(claim_path, {"claimedAt": time.time()}, ttl_seconds=_RECORD_TTL_SECONDS):
+        return Claim("used", pending, _outcome_of(await _read(config_service, claim_path)))
+    return Claim("claimed", pending)
+
+
+def _outcome_of(raw: Any) -> Optional[Outcome]:  # noqa: ANN401
+    try:
+        return Outcome.model_validate(raw["outcome"]) if isinstance(raw, dict) and isinstance(raw.get("outcome"), dict) else None
+    except ValidationError:
+        return None
+
+
+async def _keep_outcome(config_service: "ConfigurationService", approval_id: str, outcome: Outcome) -> None:
+    try:
+        await _write(
+            config_service, get_mcp_tool_approval_claim_path(approval_id),
+            {"claimedAt": time.time(), "outcome": outcome.model_dump(by_alias=True)}, ttl_seconds=_RECORD_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Couldn't keep the outcome of tool approval {approval_id}: {e}")
+
+
+# ---------------------------------------------------------------------------
+# The gate (PreToolUse)
+# ---------------------------------------------------------------------------
+
+def mcp_tool_identity(path: str) -> Optional[tuple[str, str]]:
+    """(instance id, the server's own tool name) of an MCP tool path `/mcp/{instance}/{tool}`.
+    The tool name may itself contain `/`; the instance id never does."""
+    prefix = "/mcp/"
+    if not path.startswith(prefix):
+        return None
+    instance_id, _, tool_name = path[len(prefix):].partition("/")
+    return (instance_id, tool_name) if instance_id and tool_name else None
+
+
+@dataclass
+class _InstanceRules:
+    own: ToolRules
+    # The rules couldn't be read: every tool of the instance is refused, and nothing is saved.
+    unavailable: bool = False
+
+
+async def _rules_for(context: "AgentContext", instance_id: str) -> _InstanceRules:
+    """Read once per request and instance; an answer to a card updates it in place."""
+    cache: dict[str, _InstanceRules] = context.tool_state.setdefault(_RULES_CACHE, {})
+    if instance_id not in cache:
+        try:
+            own = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
+        except Exception as e:
+            logger.warning(f"Couldn't read the tool rules of MCP instance {instance_id}: {e}")
+            cache[instance_id] = _InstanceRules(ToolRules(), unavailable=True)
+        else:
+            cache[instance_id] = _InstanceRules(own)
+    return cache[instance_id]
+
+
+def _blocked_message(reason: str, tool: str, server: str) -> str:
+    if reason == "unattended":
+        return (
+            f"{tool} on {server} needs someone to approve it in the PipesHub app, so it wasn't run here. "
+            "Tell the user what you wanted to do."
+        )
+    if reason == "default":
+        return (
+            f"{tool} on {server} can delete data, so it's denied unless the user's tool approval rules allow it. "
+            "It wasn't run. Tell the user they can change its rule to run it."
+        )
+    return f"{tool} on {server} is blocked in the user's tool approval rules, so it wasn't run."
+
+
+def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
+    text = json.dumps(arguments, default=str, ensure_ascii=False)
+    if len(text) <= _MAX_CARD_ARGUMENT_CHARS:
+        return {"arguments": arguments}
+    return {"arguments": None, "argumentsPreview": text[:_MAX_CARD_ARGUMENT_CHARS] + "…"}
+
+
+def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
+    """PreToolUse middleware; registered last, so nothing after it can still deny a call it
+    leaves pending."""
+
+    async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
+        identity = mcp_tool_identity(ctx.tool_path)
+        adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(ctx.tool_path)
+        if not enabled() or identity is None or adapter is None:
+            await next_fn()
+            return
+        instance_id, tool_name = identity
+        rules = await _rules_for(context, instance_id)
+        if rules.unavailable:
+            ctx.deny(
+                f"The approval rules for {tool_name} on {adapter.server.display_name} couldn't be checked, "
+                "so it wasn't run. Tell the user to try again in a moment."
+            )
+            await next_fn()
+            return
+        verdict = decide(
+            own=rules.own.tools.get(tool_name),
+            kind=adapter.kind,
+            watched=watched(context),
+            approved_call=context.tool_state.get(_APPROVED_CALL) == identity,
+        )
+        server = adapter.server.display_name
+        if verdict.rule == "block":
+            ctx.deny(_blocked_message(verdict.reason, tool_name, server))
+        elif verdict.rule == "ask":
+            await _ask(context, ctx, adapter, instance_id, tool_name)
+        await next_fn()
+
+    return _gate
+
+
+async def _ask(context: "AgentContext", ctx: "ToolCallContext", adapter: "MCPToolAdapter", instance_id: str, tool_name: str) -> None:
+    server = adapter.server.display_name
+    if context.tool_state.get(_PENDING_IN_RUN):
+        # The model reads this when the answer to the other card resumes the turn: it must ask again
+        # then, or the action is silently dropped.
+        ctx.deny(
+            "Not run yet: only one action can wait for the user's approval at a time, and another one is waiting. "
+            f"After the user answers it, call {tool_name} again with the same arguments to ask for this one."
+        )
+        return
+    now = time.time()
+    call = getattr(ctx.scope, "call", None)
+    pending = PendingCall(
+        approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
+        conversation_id=context.conversation_id or "", instance_id=instance_id, server_name=server,
+        tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
+        created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
+    )
+    # Taken before the write is awaited: calls in one wave run concurrently.
+    context.tool_state[_PENDING_IN_RUN] = pending.approval_id
+    context.tool_state[_STOPPED_CALL] = pending.tool_call_id
+    try:
+        saved = await _write(
+            context.config_service, get_mcp_tool_approval_path(pending.approval_id),
+            pending.model_dump(by_alias=True), ttl_seconds=_RECORD_TTL_SECONDS,
+        )
+    except Exception as e:
+        logger.warning(f"Couldn't save a tool approval for {tool_name}: {e}")
+        saved = False
+    if not saved:
+        context.tool_state.pop(_PENDING_IN_RUN, None)
+        ctx.deny(f"{tool_name} on {server} needs approval, and the approval couldn't be saved, so it wasn't run.")
+        return
+    message = f"{WAITING_PREFIX} {tool_name} on {server}."
+    context.tool_state[PENDING_MESSAGE] = message
+    title = (adapter.tool_info.annotations or {}).get("title")
+    ctx.ask_later(PendingApproval(
+        message=message,
+        details={
+            "approvalId": pending.approval_id, "instanceId": instance_id, "serverName": server,
+            "toolName": tool_name, "toolTitle": title if isinstance(title, str) else None,
+            "readOnly": adapter.kind == "read", "kind": adapter.kind,
+            "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
+        },
+    ))
+
+
+# ---------------------------------------------------------------------------
+# The answer: the stopped turn carries on from the call
+# ---------------------------------------------------------------------------
+
+def is_resume_query(text: Optional[str]) -> bool:
+    return isinstance(text, str) and text.lstrip().startswith(TOOL_APPROVAL_RESUME_PREFIX)
+
+
+def begin_resume(context: "AgentContext", query: Optional[str]) -> bool:
+    """Whether this request answers an approval card, and so continues the turn that stopped on
+    it rather than starting a new one: the app's answer text, the answer itself, and someone
+    watching. Anything else is an ordinary message."""
+    if context.tool_approval is None or not is_resume_query(query) or not watched(context):
+        return False
+    context.tool_state[RESUMING] = True
+    return True
+
+
+def hold_history(context: "AgentContext", agent: "Agent") -> None:
+    """The conversation the answer is bound into, once the factory has loaded it."""
+    if context.tool_state.get(RESUMING):
+        context.tool_state[_RESUME_HISTORY] = agent.context
+
+
+def resume_parked_call(context: "AgentContext") -> Any:  # noqa: ANN401
+    """PRE_AGENT middleware of a request that answers an approval card: settles the stopped call
+    (runs it when the person allowed it) and makes what happened that call's result, on the call's
+    own row. PRE_AGENT, not the first turn: a loop may add its own message (a plan request) before
+    that turn, and the result must follow the call, not that message."""
+
+    async def _middleware(ctx: "AgentLifecycleContext", next_fn: Any) -> None:  # noqa: ANN401
+        if ctx.scope is None or ctx.scope.identity.parent_run_id:
+            await next_fn()
+            return
+        history: Optional[ContextManager] = context.tool_state.pop(_RESUME_HISTORY, None)
+        answer, context.tool_approval = context.tool_approval, None
+        if history is None or answer is None:
+            await next_fn()
+            return
+        settled = await _settle(context, ctx.scope, answer)
+        names = await parked_turn.restore(context, history, call_id=settled.call_id)
+        if names:
+            _show_tools(ctx.scope, names)
+        await _bind(history, settled, ctx.scope.goal)
+        await next_fn()
+
+    return _middleware
+
+
+async def keep_stopped_turn(context: "AgentContext", agent: "Agent") -> None:
+    """After a run that stopped on a card: the turn as the model had it, for the answer (`parked_turn`)."""
+    call_id = context.tool_state.get(_STOPPED_CALL)
+    if context.tool_state.get(_PENDING_IN_RUN) and call_id:
+        await parked_turn.keep(context, agent, call_id=call_id, ttl_seconds=TURN_TTL_SECONDS)
+
+
+def _show_tools(run: "RunScope", names: list[str]) -> None:
+    """Makes the tools the stopped turn could see visible again."""
+    registry = run.runtime.tool_registry
+    visible = set(names) & set(registry.names()) if registry is not None else set()
+    if visible:
+        from app.agent_loop_lib.agent.tool_loop import initial_visible_tools
+
+        run.visible_tools = (run.visible_tools or initial_visible_tools(run.spec, run.runtime)) | visible
+
+
+@dataclass
+class _Settled:
+    # The stopped call's id ("" when it isn't known); its tool and arguments, for a history without it.
+    call_id: str
+    tool: str
+    arguments: dict[str, Any]
+    result: str
+    is_error: bool
+
+
+async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApprovalAnswer) -> _Settled:
+    try:
+        claim = await claim_pending(
+            context.config_service, answer.approval_id,
+            org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id,
+        )
+    except Exception as e:
+        logger.warning(f"Couldn't claim tool approval {answer.approval_id}: {e}")
+        # Nothing was claimed, so the card can be answered again.
+        return _Settled("", "", {}, "The user's answer to the approval request couldn't be applied, so nothing ran. "
+                        "Tell them to answer the card again.", True)
+    pending = claim.pending
+    if pending is None:
+        return _Settled("", "", {}, "The approval request the user answered wasn't found, so nothing ran.", True)
+    adapter = _adapter_for(context, pending.instance_id, pending.tool_name)
+    call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
+    tool_name = adapter.name if adapter is not None else pending.tool_name
+    if claim.status == "used":
+        outcome = claim.outcome
+        if outcome is None:
+            # The first answer is still being applied; its own request finishes the row.
+            return _Settled(call_id, tool_name, pending.arguments, (
+                f"The user already answered the approval for {pending.tool_name} on {pending.server_name}; "
+                "it may still be running. Don't run it again."
+            ), True)
+        await _show(run, call_id, tool_name, pending, adapter, outcome)
+        return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+    tool, server = pending.tool_name, pending.server_name
+    outcome: Optional[Outcome] = None
+    try:
+        if claim.status == "expired":
+            outcome = Outcome(
+                answer="expired", status="blocked", preview="The approval request expired.",
+                result=f"The approval request for {tool} on {server} expired before the user answered, so it didn't run. "
+                "If it's still needed, call the tool again to ask again.",
+            )
+        elif answer.decision == "deny":
+            outcome = Outcome(
+                answer="declined", status="blocked", preview="Declined by the user.",
+                # Said plainly: models otherwise report it as "declined by the system".
+                result=f"The user declined: they chose Deny on the approval card for {tool} on {server}, so it didn't run. "
+                # "That call", not the tool: another call of it may still be waiting to be asked for.
+                "Tell them you didn't do it because they declined, and don't make that call again unless they ask for it.",
+            )
+            if answer.remember:
+                await _remember(context, pending, "block")
+        elif adapter is None:
+            outcome = Outcome(
+                answer="allowed", status="blocked", preview="This tool is no longer available.",
+                result=f"{tool} on {server} is no longer available here, so the approved action didn't run.",
+            )
+        else:
+            outcome = await _run(context, run, adapter, pending, call_id)
+            if answer.remember and outcome.status != "blocked":
+                await _remember(context, pending, "allow")
+    finally:
+        if claim.status == "claimed":
+            # Kept even when the run is stopped mid-call, so a later answer says what may have happened.
+            await _keep_outcome(context.config_service, pending.approval_id, outcome or Outcome(
+                answer="allowed", status="failed", ran=True, preview="Stopped before its result came back.",
+                result=f"The user approved running {tool} on {server}, but the request was stopped while it ran, so it "
+                "may or may not have run. Don't run it again; tell the user to check its effect.",
+            ))
+    if outcome.answer != "allowed" or adapter is None:
+        await _show(run, call_id, tool_name, pending, adapter, outcome)
+    return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
+
+
+async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
+    """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
+    since the card was shown stands over an Allow."""
+    rules = await _rules_for(context, pending.instance_id)
+    if rules.unavailable or (rule == "allow" and rules.own.tools.get(pending.tool_name) == "block"):
+        return
+    rules.own.tools[pending.tool_name] = rule
+    try:
+        await save_own_rules(context.config_service, rules.own, user_id=context.user_id, instance_id=pending.instance_id)
+    except Exception as e:
+        logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
+
+
+def _adapter_for(context: "AgentContext", instance_id: str, tool_name: str) -> Optional["MCPToolAdapter"]:
+    for adapter in context.tool_state.get(TOOLS_BY_PATH, {}).values():
+        if adapter.instance_id == instance_id and adapter.raw_name == tool_name:
+            return adapter
+    return None
+
+
+def _start_payload(call_id: str, tool_name: str, pending: PendingCall, adapter: Optional["MCPToolAdapter"], outcome_answer: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "tool": tool_name, "args": pending.arguments, "tool_call_id": call_id, "approval_answer": outcome_answer,
+    }
+    if adapter is not None:
+        payload["display_name"] = adapter.display_name
+        args_summary = _quietly(adapter.summarize_args, pending.arguments)
+        if isinstance(args_summary, str):
+            payload["args_summary"] = args_summary
+    return payload
+
+
+async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, adapter: Optional["MCPToolAdapter"], outcome: Outcome) -> None:  # noqa: ANN401
+    """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
+    start = _start_payload(call_id, tool_name, pending, adapter, outcome.answer)
+    if outcome.ran:
+        # Kept on the reply's part: regenerating that reply could run the action again.
+        start["approved"] = True
+    await _emit(run, EventType.TOOL_CALL_START, start)
+    await _emit(run, EventType.TOOL_CALL_END, {
+        "tool": tool_name, "tool_call_id": call_id, "is_error": outcome.status == "failed",
+        "content": outcome.preview, "result_summary": outcome.summary, **_end_status(outcome),
+    })
+
+
+def _end_status(outcome: Outcome) -> dict[str, Any]:
+    if outcome.status == "blocked":
+        return {"status": ToolCallStatus.BLOCKED, "reason": outcome.preview}
+    return {"status": ToolCallStatus.ERROR if outcome.status == "failed" else ToolCallStatus.SUCCESS}
+
+
+async def _run(context: "AgentContext", run: Any, adapter: "MCPToolAdapter", pending: PendingCall, call_id: str) -> Outcome:  # noqa: ANN401
+    """The saved call, through the executor (so every PreToolUse check runs again: a Block set
+    since the card was shown still stops it), on the stopped call's row."""
+    tool, server = pending.tool_name, pending.server_name
+    denied: list[str] = []
+
+    async def _on_denied(reason: str) -> None:
+        denied.append(reason)
+
+    call = ToolCall(id=call_id, name=adapter.name, arguments=pending.arguments)
+    await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, adapter.name, pending, adapter, "allowed"), "approved": True})
+    context.tool_state[_APPROVED_CALL] = (pending.instance_id, pending.tool_name)
+    try:
+        result = await ToolExecutor(run.runtime.tool_registry, run.runtime.hooks).call_tool(
+            call, session_id=run.session_id, on_denied=_on_denied,
+        )
+    except Exception as e:
+        logger.warning(f"Running the approved call {tool} failed: {e}", exc_info=True)
+        outcome = Outcome(
+            answer="allowed", status="failed", ran=True, preview="Something went wrong while it ran.",
+            result=f"The user approved running {tool} on {server}, but something went wrong while it ran, so it may "
+            "or may not have run. Don't run it again; tell the user to check its effect.",
+        )
+        await _emit(run, EventType.TOOL_CALL_END, {
+            "tool": adapter.name, "tool_call_id": call_id, "is_error": True, "content": outcome.preview,
+            "result_summary": None, "status": ToolCallStatus.ERROR,
+        })
+        return outcome
+    finally:
+        context.tool_state.pop(_APPROVED_CALL, None)
+    end: dict[str, Any] = {"tool": adapter.name, "tool_call_id": call_id, "is_error": result.is_error, "result_summary": None}
+    text = _text(result.content)
+    if denied:
+        outcome = Outcome(
+            answer="allowed", status="blocked", preview=denied[0],
+            result=f"The user approved running {tool} on {server}, but it wasn't run: {denied[0]}",
+        )
+        end.update(content=denied[0], status=ToolCallStatus.BLOCKED, reason=denied[0])
+    elif result.is_error:
+        outcome = Outcome(
+            answer="allowed", status="failed", ran=True, preview=text[:_MAX_PREVIEW_CHARS],
+            result=f"The user approved running {tool} on {server}, but it failed: {text}",
+        )
+        end.update(content=outcome.preview, status=ToolCallStatus.ERROR)
+    else:
+        summary = _quietly(adapter.summarize_result, pending.arguments, result)
+        outcome = Outcome(
+            answer="allowed", status="completed", ran=True, preview=text[:_MAX_PREVIEW_CHARS],
+            summary=summary if isinstance(summary, str) else None, result=text,
+        )
+        end.update(content=outcome.preview, result_summary=outcome.summary, status=ToolCallStatus.SUCCESS)
+        view = _quietly(adapter.result_view, pending.arguments, result)
+        if isinstance(view, dict):
+            end["result_view"] = view
+    await _emit(run, EventType.TOOL_CALL_END, end)
+    return outcome
+
+
+def _quietly(fn: Any, *args: Any) -> Any:  # noqa: ANN401
+    try:
+        return fn(*args)
+    except Exception:
+        return None
+
+
+async def _bind(history: "ContextManager", settled: _Settled, goal: Any) -> None:  # noqa: ANN401
+    """Makes the outcome the stopped call's result in the conversation the model reads. The turn's
+    closing words ("Waiting for your approval…") go: the result follows the call. A call the history
+    doesn't have (a sub-agent's, whose row is nested) is added after it, with its result. Call ids
+    are unique in the history, so the call is looked for in all of it: adding one that is already
+    there would repeat its id, which providers refuse."""
+    messages = list(await history.messages())
+    while messages and isinstance(messages[-1], AssistantMessage) and not messages[-1].tool_calls:
+        messages.pop()
+    if settled.call_id:
+        candidates = range(len(messages) - 1, -1, -1)
+    else:
+        turn_start = max((i for i, m in enumerate(messages) if isinstance(m, UserMessage)), default=0)
+        candidates = range(turn_start, len(messages))
+    index = next((
+        i for i in candidates
+        if isinstance(messages[i], ToolMessage) and _is_stopped_call(messages[i], settled.call_id)
+    ), None)
+    if index is not None:
+        messages[index] = ToolMessage(
+            content=settled.result, tool_call_id=messages[index].tool_call_id, is_error=settled.is_error,
+        )
+    elif settled.call_id:
+        messages.append(AssistantMessage(
+            content=[], tool_calls=[ToolCall(id=settled.call_id, name=settled.tool, arguments=settled.arguments)],
+        ))
+        messages.append(ToolMessage(content=settled.result, tool_call_id=settled.call_id, is_error=settled.is_error))
+    else:
+        goal.constraints.append(settled.result)
+    await history.clear()
+    for message in messages:
+        await history.add(message)
+
+
+def _is_stopped_call(message: ToolMessage, call_id: str) -> bool:
+    if call_id:
+        return message.tool_call_id == call_id
+    return isinstance(message.content, str) and message.content.startswith(WAITING_PREFIX)
+
+
+async def _emit(run: Any, event_type: EventType, payload: dict[str, Any]) -> None:  # noqa: ANN401
+    emitter = run.runtime.event_emitter
+    if emitter is not None:
+        await emitter.emit(AgentEvent(event_type=event_type, run_context=run.identity, payload=payload))
+
+
+def _text(content: Any) -> str:  # noqa: ANN401
+    if isinstance(content, str):
+        text = content
+    elif isinstance(content, list):
+        text = "\n".join(str(getattr(part, "text", "")) for part in content if getattr(part, "text", None))
+    else:
+        text = json.dumps(content, default=str, ensure_ascii=False)
+    return text if len(text) <= _MAX_RESULT_CHARS else text[:_MAX_RESULT_CHARS] + "\n[result cut]"

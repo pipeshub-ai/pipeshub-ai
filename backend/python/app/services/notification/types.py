@@ -41,3 +41,11 @@ class NotificationRecipientRole(str, Enum):
     ADMIN = "admin"
     STANDARD = "standard"
     EVERYONE = "everyone"
+
+class NotificationOutcome(str, Enum):
+    """What ``BaseConnector.notify_and_wait`` did with a notification."""
+
+    SENT = "sent"
+    SUPPRESSED = "suppressed"
+    SKIPPED = "skipped"
+    FAILED = "failed"

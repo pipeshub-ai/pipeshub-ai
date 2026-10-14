@@ -45,6 +45,11 @@ from app.agent_loop_lib.core.streaming import (
     ToolCallDeltaEvent,
 )
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    GEMINI_FILTER_FINISH_REASONS,
+    content_filter_error,
+    gemini_prompt_block_reason,
+)
 from app.agent_loop_lib.transport.openai_responses import normalise_tool_call
 
 if TYPE_CHECKING:
@@ -471,14 +476,22 @@ class GeminiTransport(LLMTransport):
             cache_write_tokens=0,
         )
 
-    def _stop_reason(self, chunk: Any, has_tool_calls: bool) -> StopReason:
+    def _stop_reason(self, chunk: Any, has_tool_calls: bool, context: str) -> StopReason:
         candidates = getattr(chunk, "candidates", None) or []
+        if not candidates:
+            # A blocked prompt comes back with no candidates at all, which would
+            # otherwise read as an ordinary empty answer.
+            block_reason = gemini_prompt_block_reason(getattr(chunk, "prompt_feedback", None))
+            if block_reason is not None:
+                raise content_filter_error(context, f"prompt_feedback.block_reason={block_reason}")
         raw = getattr(candidates[0], "finish_reason", None) if candidates else None
         name = getattr(raw, "name", None) or (str(raw) if raw else None)
         # Truncation first, then tool calls, matching the OpenAI paths: a reply
         # cut off mid-call must not be reported as a usable TOOL_USE.
         if name == "MAX_TOKENS":
             return StopReason.MAX_TOKENS
+        if name in GEMINI_FILTER_FINISH_REASONS:
+            raise content_filter_error(context, f"finish_reason={name}")
         if name in _ABNORMAL_FINISH_REASONS:
             # Surfaced rather than silently ended: the caller sees a failed turn
             # instead of an empty answer it cannot explain.
@@ -553,7 +566,7 @@ class GeminiTransport(LLMTransport):
         message = AssistantMessage(
             content="".join(text_parts) or None, tool_calls=tool_calls or None,
         )
-        stop_reason = self._stop_reason(response, bool(tool_calls))
+        stop_reason = self._stop_reason(response, bool(tool_calls), "complete")
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
         return ModelResponse(
@@ -658,7 +671,7 @@ class GeminiTransport(LLMTransport):
         message = AssistantMessage(
             content="".join(text_parts) or None, tool_calls=tool_calls or None,
         )
-        stop_reason = self._stop_reason(last_chunk, bool(tool_calls))
+        stop_reason = self._stop_reason(last_chunk, bool(tool_calls), "stream")
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
         usage = (

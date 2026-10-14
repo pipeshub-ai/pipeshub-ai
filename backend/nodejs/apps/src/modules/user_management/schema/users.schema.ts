@@ -4,9 +4,26 @@ import { jurisdictions } from '../../../libs/utils/juridiction.utils';
 
 import { Address } from '../../../libs/utils/address.utils';
 import { generateUniqueSlug } from '../../../libs/utils/counter';
+import {
+  assertReservedEmailDomainBelongsToServiceAccount,
+  assertServiceAccountRole,
+  isServiceAccountEmail,
+  reservedEmailDomainPattern,
+  SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE,
+  SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE,
+} from '../constants/service-account.constants';
 
 export const userRoles = ['admin', 'member'] as const;
 export type UserRole = (typeof userRoles)[number];
+
+/**
+ * What sort of principal this record represents. `human` is someone who signs
+ * in; `service` is a machine identity that automation authenticates as and
+ * that can never sign in interactively. Everything that already existed is a
+ * human, which is why that is the default and why no migration is needed.
+ */
+export const userKinds = ['human', 'service'] as const;
+export type UserKind = (typeof userKinds)[number];
 
 export interface User extends Document, Address {
   slug?: string;
@@ -19,6 +36,23 @@ export interface User extends Document, Address {
   mobile?: string;
   hasLoggedIn?: boolean;
   designation?: string;
+  kind?: UserKind;
+  /** Free text explaining what a service account is for. Unused for humans. */
+  description?: string;
+  /**
+   * Suspends the account without deleting it: tokens stop working and no
+   * session can be issued, but the record, its group memberships and its
+   * permission-graph node all survive so it can be switched back on.
+   */
+  isDisabled?: boolean;
+  /**
+   * Set while a deleted service account is being brought back, and cleared
+   * when that finishes either way. It exists so the step that undoes a failed
+   * restore can tell its own attempt from a later one: without it, a restore
+   * that failed slowly could mark an account deleted that somebody had since
+   * deleted, recreated and restored again.
+   */
+  restoreOpId?: string;
   /** Org privilege: admin | member (replaces membership in type=admin UserGroup) */
   role?: UserRole;
   address?: Address;
@@ -43,6 +77,15 @@ const userSchema = new Schema<User>(
     mobile: { type: String },
     hasLoggedIn: { type: Boolean, default: false },
     designation: { type: String, trim: true },
+    kind: {
+      type: String,
+      enum: userKinds,
+      default: 'human',
+      index: true,
+    },
+    description: { type: String, trim: true },
+    isDisabled: { type: Boolean, default: false },
+    restoreOpId: { type: String },
     role: {
       type: String,
       enum: userRoles,
@@ -68,11 +111,140 @@ userSchema.pre<User>('save', async function (next) {
     if (!this.slug) {
       this.slug = await generateUniqueSlug('User');
     }
+    assertServiceAccountRole(this.kind, this.role);
+    // Only when this save is what puts the address there. Judging the
+    // document's current state instead would refuse every later write to a
+    // person who already holds a reserved address — and one can, because
+    // nothing stopped it before this rule existed. `deleteUser` pulls group
+    // memberships, revokes OAuth apps and knowledge-base permissions, removes
+    // project access and unsets the password before it saves `isDeleted`, so a
+    // throw at that save would leave the account stripped of everything and
+    // still active, with no way back: changing an address is owner-only, and
+    // deleting is the documented repair for a bad invite.
+    if (this.isNew || this.isModified('email') || this.isModified('kind')) {
+      assertReservedEmailDomainBelongsToServiceAccount(this.kind, this.email);
+    }
     next();
   } catch (error) {
     next(error as Error);
   }
 });
+
+/**
+ * The same rule for updates that do not load the document first.
+ *
+ * `findOneAndUpdate`, `updateOne` and `updateMany` bypass the save hook, and
+ * the role-update endpoint and invite processor both reach users that way.
+ * When the update does not itself set `kind`, the stored record has to be
+ * consulted: promoting an existing service account is precisely the case
+ * worth catching.
+ */
+async function refuseAdminRoleOnServiceAccount(
+  this: mongoose.Query<unknown, User>,
+): Promise<void> {
+  const update = this.getUpdate() as Record<string, unknown> | null;
+  if (update === null) return;
+
+  // Both shapes have to be read, not one or the other. `timestamps: true`
+  // means Mongoose adds its own `$set` for `updatedAt`, so an update written
+  // as `{ role: 'admin' }` arrives here as
+  // `{ role: 'admin', $set: { updatedAt } }` — the field is at the top level
+  // while `$set` exists but holds something else entirely.
+  const set = (update.$set ?? {}) as Record<string, unknown>;
+  const role = set.role ?? update.role;
+  if (role !== 'admin') return;
+
+  const kind = set.kind ?? update.kind;
+  if (kind === 'service') {
+    throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+  }
+  if (kind !== undefined) return;
+
+  // Ask whether the update reaches *any* service account, rather than
+  // sampling one document and reading its kind. `updateMany` is the reason:
+  // the invite processor promotes a batch with
+  // `updateMany({ _id: { $in: ids } }, { role: 'admin' })`, and a sample that
+  // happened to return a person would have let every service account in that
+  // batch through. Narrowing the query instead means one match is enough to
+  // refuse, whichever documents the update covers.
+  const offending = await this.model
+    .findOne({ ...this.getQuery(), kind: 'service' })
+    .select('_id')
+    .lean()
+    .exec();
+  if (offending) {
+    throw new Error(SERVICE_ACCOUNT_ADMIN_ROLE_MESSAGE);
+  }
+}
+
+/**
+ * Keeps the reserved domain reserved across updates as well as creates.
+ *
+ * Two ways an update can break the rule, and both are checked: it can move a
+ * record that is not a service account onto an address in the domain, or it
+ * can take `kind` away from a record that already holds one. Either leaves a
+ * human on addresses the rest of the product reads as machine identities.
+ *
+ * The stored record is consulted only when the update alone cannot settle it,
+ * so an ordinary update that touches neither field costs nothing.
+ */
+async function refuseReservedEmailDomainOnPeople(
+  this: mongoose.Query<unknown, User>,
+): Promise<void> {
+  const update = this.getUpdate() as Record<string, unknown> | null;
+  if (update === null) return;
+
+  // Read both shapes, for the same reason the role guard does: `timestamps`
+  // adds its own `$set`, so a field written at the top level stays there.
+  const set = (update.$set ?? {}) as Record<string, unknown>;
+  const email = set.email ?? update.email;
+  const kind = set.kind ?? update.kind;
+
+  if (typeof email === 'string' && isServiceAccountEmail(email)) {
+    if (kind === 'service') return;
+    if (kind !== undefined) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+    // Refuse if the update reaches anything that is not a service account.
+    // Asked as "is there an offender" rather than by sampling, because
+    // `updateMany` can cover a mix.
+    const offender = await this.model
+      .findOne({ ...this.getQuery(), kind: { $ne: 'service' } })
+      .select('_id')
+      .lean()
+      .exec();
+    if (offender) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+    return;
+  }
+
+  // Downgrading `kind` on a record that already holds a reserved address.
+  //
+  // Unless the same update also replaces the address with one outside the
+  // domain, which leaves a record that breaks no rule — and is exactly how
+  // someone would repair a row that should never have held one, so refusing it
+  // would close the only door out.
+  const replacesWithOrdinaryAddress =
+    typeof email === 'string' && !isServiceAccountEmail(email);
+  if (kind !== undefined && kind !== 'service' && !replacesWithOrdinaryAddress) {
+    const offender = await this.model
+      .findOne({ ...this.getQuery(), email: reservedEmailDomainPattern() })
+      .select('_id')
+      .lean()
+      .exec();
+    if (offender) {
+      throw new Error(SERVICE_ACCOUNT_RESERVED_DOMAIN_MESSAGE);
+    }
+  }
+}
+
+userSchema.pre('findOneAndUpdate', refuseAdminRoleOnServiceAccount);
+userSchema.pre('updateOne', refuseAdminRoleOnServiceAccount);
+userSchema.pre('updateMany', refuseAdminRoleOnServiceAccount);
+userSchema.pre('findOneAndUpdate', refuseReservedEmailDomainOnPeople);
+userSchema.pre('updateOne', refuseReservedEmailDomainOnPeople);
+userSchema.pre('updateMany', refuseReservedEmailDomainOnPeople);
 
 export const Users: Model<User> =
   (mongoose.models['users'] as Model<User>) ||

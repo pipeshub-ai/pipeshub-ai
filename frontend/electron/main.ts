@@ -15,11 +15,26 @@ import {
 } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
-import { LocalSyncManager, type ConnectorStatus } from './local-sync';
+import { pathToFileURL } from 'url';
+import {
+  ContentStreamer,
+  DesktopCredentialsStore,
+  DesktopSocketClient,
+  LocalSyncManager,
+  resolveDeviceIdentity,
+  type ConnectorStatus,
+} from './local-sync';
 import {
   openLocalFsRecordSource,
   type OpenLocalFsRecordSourcePayload,
 } from './local-sync/open-record-source';
+import {
+  DEEP_LINK_SCHEME,
+  findDeepLinkInArgv,
+  parseOAuthDeepLink,
+  type OAuthDeepLink,
+} from './deep-link';
+import { isAppUrl, isExternalWebUrl } from './navigation';
 
 // Directory where `next build` (static export) output lands after electron:copy
 // Static export lives at electron/out/ (see electron-prepare); main runs from electron/compile/
@@ -32,18 +47,77 @@ const SCHEME = 'app';
 
 let mainWindow: BrowserWindow | null = null;
 let localSyncManager: LocalSyncManager | null = null;
+let desktopCredentials: DesktopCredentialsStore | null = null;
+let desktopSocket: DesktopSocketClient | null = null;
+let deviceIdentityReady: Promise<void> = Promise.resolve();
+let deviceIdentityError: string | null = null;
 let isQuitting = false;
+/** Last OAuth deep link, held until a renderer subscriber takes it (see handleDeepLinkUrl). */
+let pendingDeepLink: (OAuthDeepLink & { receivedAt: number }) | null = null;
+
+// Sign-in runs in the user's default browser because no provider accepts an
+// app:// redirect URI. Registering this scheme is how the result gets back.
+if (process.defaultApp && process.argv.length >= 2) {
+  // Running from source: argv[0] is electron itself, so the entry path has to be
+  // registered with it or the OS launches a bare Electron shell instead of us.
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME, process.execPath, [
+    path.resolve(process.argv[1]),
+  ]);
+} else {
+  app.setAsDefaultProtocolClient(DEEP_LINK_SCHEME);
+}
+
+/** A link older than this is stale; a sign-in attempt has long since timed out. */
+const DEEP_LINK_TTL_MS = 5 * 60 * 1000;
+
+/** Upper bound on a token-exchange request, whatever deadline the renderer asks for. */
+const TOKEN_EXCHANGE_MAX_TIMEOUT_MS = 30 * 1000;
+
+function focusMainWindow(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.focus();
+}
+
+function deliverDeepLink(link: OAuthDeepLink & { receivedAt: number }): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  mainWindow.webContents.send('oauth/callback', link);
+}
+
+/**
+ * Buffer as well as send: on a cold start the window exists well before React
+ * mounts a subscriber, and a send with no listener is simply dropped. The
+ * renderer drains the buffer when it subscribes, and consumes single-use, so
+ * receiving the same link both ways is harmless.
+ *
+ * Never log rawUrl — it carries the id_token or auth code.
+ */
+function handleDeepLinkUrl(rawUrl: string | null | undefined): void {
+  if (!rawUrl) return;
+  const parsed = parseOAuthDeepLink(rawUrl);
+  if (!parsed) return;
+
+  pendingDeepLink = { ...parsed, receivedAt: Date.now() };
+  focusMainWindow();
+  deliverDeepLink(pendingDeepLink);
+}
+
+// macOS delivers deep links as an event, and can do so before the app is ready,
+// so this has to be registered at module scope rather than inside whenReady().
+app.on('open-url', (event, url) => {
+  event.preventDefault();
+  handleDeepLinkUrl(url);
+});
 
 // Single-instance lock so only one app instance runs watchers / dispatch.
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (mainWindow) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.focus();
-    }
+  app.on('second-instance', (_event, argv) => {
+    focusMainWindow();
+    // Windows and Linux hand the link to the second instance as an argument.
+    handleDeepLinkUrl(findDeepLinkInArgv(argv));
   });
 }
 
@@ -116,6 +190,18 @@ function createWindow(): void {
     return { action: 'deny' };
   });
 
+  // See electron/navigation.ts for why the window must never leave app://.
+  const keepInApp = (event: { preventDefault(): void }, url: string): void => {
+    if (isAppUrl(url, SCHEME)) return;
+    event.preventDefault();
+    if (isExternalWebUrl(url)) void shell.openExternal(url);
+  };
+  mainWindow.webContents.on('will-navigate', keepInApp);
+  mainWindow.webContents.on('will-redirect', keepInApp);
+  mainWindow.webContents.on('did-navigate', (_event, url) => {
+    if (!isAppUrl(url, SCHEME)) void mainWindow?.loadURL(`${SCHEME}://./login/`);
+  });
+
   mainWindow.loadURL(`${SCHEME}://./chat/`);
 
   mainWindow.on('closed', () => {
@@ -133,6 +219,28 @@ interface StreamStartPayload {
 
 interface ConnectorIdPayload {
   connectorId?: string;
+}
+
+interface AccessTokenPayload {
+  accessToken?: string;
+  apiBaseUrl?: string;
+}
+
+/**
+ * Handlers that talk to the server wait for identity resolution instead of
+ * reading a null socket, since the renderer can invoke them before it lands.
+ */
+async function requireDesktopSocket(): Promise<{
+  credentials: DesktopCredentialsStore;
+  socket: DesktopSocketClient;
+}> {
+  await deviceIdentityReady;
+  if (!desktopCredentials || !desktopSocket) {
+    throw new Error(
+      `DEVICE_IDENTITY_UNAVAILABLE: ${deviceIdentityError ?? 'device identity has not been resolved'}`,
+    );
+  }
+  return { credentials: desktopCredentials, socket: desktopSocket };
 }
 
 app.whenReady().then(() => {
@@ -171,6 +279,39 @@ app.whenReady().then(() => {
     },
   });
 
+  const contentStreamer = new ContentStreamer({
+    getRootPath: (connectorId: string) => localSyncManager?.getRootPath(connectorId) ?? null,
+  });
+  // Without a machine id the server cannot tell this desktop from another, so
+  // the socket is never built; the window still opens so the error can surface.
+  deviceIdentityReady = resolveDeviceIdentity().then(
+    (identity) => {
+      desktopCredentials = new DesktopCredentialsStore(identity);
+      desktopSocket = new DesktopSocketClient({
+        credentials: desktopCredentials,
+        servePull: (request) =>
+          localSyncManager
+            ? localSyncManager.servePull(request)
+            : Promise.resolve({
+                ok: false as const,
+                runId: request.runId,
+                batchIndex: request.batchIndex,
+                error: {
+                  code: 'INTERNAL' as const,
+                  message: 'Local sync is not initialized',
+                  retryable: true,
+                },
+              }),
+        serveContent: (request, emitChunk, abort) =>
+          contentStreamer.serve(request, emitChunk, abort),
+      });
+    },
+    (error: unknown) => {
+      deviceIdentityError = error instanceof Error ? error.message : String(error);
+      console.error('[local-sync] device identity unavailable; local sync is disabled:', error);
+    },
+  );
+
   // Handle the custom app:// protocol — map requests to static export files
   protocol.handle(SCHEME, (request) => {
     const url = new URL(request.url);
@@ -179,21 +320,20 @@ app.whenReady().then(() => {
     // Resolve to a file inside the static export directory
     let filePath = path.join(STATIC_DIR, pathname);
 
-    // If the path is a directory, serve index.html (Next.js trailingSlash output)
-    if (filePath.endsWith('/') || filePath.endsWith(path.sep)) {
-      filePath = path.join(filePath, 'index.html');
-    }
-
-    // If file doesn't exist and has no extension, try appending /index.html
-    // (handles routes like /login -> /login/index.html)
-    if (!path.extname(filePath) && !fs.existsSync(filePath)) {
+    // An extensionless route resolves to the directory the export wrote it as
+    // (/login -> out/login), whether or not it carries a trailing slash.
+    // Fetching the directory itself fails with ERR_UNEXPECTED, so prefer the
+    // index.html inside it -- this is what a full navigation to a route hits.
+    if (!path.extname(filePath)) {
       const withIndex = path.join(filePath, 'index.html');
       if (fs.existsSync(withIndex)) {
         filePath = withIndex;
       }
     }
 
-    return net.fetch('file://' + filePath);
+    // pathToFileURL, not string concatenation: the install path can contain
+    // spaces and a bare drive letter is not a valid file:// host.
+    return net.fetch(pathToFileURL(filePath).toString());
   });
 
   // Set the dock icon on macOS
@@ -213,9 +353,33 @@ app.whenReady().then(() => {
     return result.filePaths[0];
   });
 
+  ipcMain.handle('local-sync/device-info', async () => {
+    await deviceIdentityReady;
+    if (!desktopCredentials) {
+      return { ok: false, error: deviceIdentityError ?? 'device identity has not been resolved' };
+    }
+    return {
+      ok: true,
+      deviceId: desktopCredentials.deviceId,
+      deviceName: desktopCredentials.deviceName,
+    };
+  });
+
   ipcMain.handle('local-sync/start', async (_event: IpcMainInvokeEvent, payload: Parameters<LocalSyncManager['start']>[0]) => {
     if (!localSyncManager) return null;
-    return localSyncManager.start(payload || ({} as Parameters<LocalSyncManager['start']>[0]));
+    const { socket } = await requireDesktopSocket();
+    const status = await localSyncManager.start(payload || ({} as Parameters<LocalSyncManager['start']>[0]));
+    // Await the registration: toggle-on publishes an immediate pull as soon as
+    // this IPC returns, and a fire-and-forget register loses that race.
+    await socket.register();
+    return status;
+  });
+
+  ipcMain.handle('local-sync/check-root-path', async (_event: IpcMainInvokeEvent, payload: { connectorId: string; rootPath: string }) => {
+    if (!localSyncManager || !payload?.connectorId || !payload?.rootPath) {
+      return { available: true };
+    }
+    return localSyncManager.checkRootPathConflict(payload.connectorId, payload.rootPath);
   });
 
   ipcMain.handle('local-sync/stop', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
@@ -223,23 +387,58 @@ app.whenReady().then(() => {
     return localSyncManager.stop(payload.connectorId);
   });
 
+  ipcMain.handle('local-sync/remove', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
+    if (!localSyncManager || !payload?.connectorId) return { ok: false };
+    await localSyncManager.remove(payload.connectorId);
+    return { ok: true };
+  });
+
+  ipcMain.handle('local-sync/reap', async (_event: IpcMainInvokeEvent, payload?: { connectorIds?: string[] }) => {
+    if (!localSyncManager || !Array.isArray(payload?.connectorIds)) return { removed: [] };
+    const removed = await localSyncManager.reap(payload.connectorIds);
+    return { removed };
+  });
+
   ipcMain.handle('local-sync/status', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
     if (!localSyncManager) return null;
     return localSyncManager.getStatus(payload?.connectorId);
   });
 
-  ipcMain.handle('local-sync/full-resync', async (_event: IpcMainInvokeEvent, payload: ConnectorIdPayload) => {
-    if (!localSyncManager || !payload || !payload.connectorId) return null;
-    try {
-      const result = await localSyncManager.fullResync(payload.connectorId);
-      return { ok: true, ...result, status: localSyncManager.getStatus(payload.connectorId) };
-    } catch (error) {
-      return {
-        ok: false,
-        error: error instanceof Error ? error.message : String(error),
-        status: localSyncManager.getStatus(payload.connectorId),
-      };
+  ipcMain.handle('local-sync/bootstrap', async () => {
+    if (!localSyncManager) return [];
+    const { socket } = await requireDesktopSocket();
+    const results = await localSyncManager.bootstrapFromJournal();
+    await socket.register();
+    return results;
+  });
+
+  // The renderer pushes its access token at login and on every refresh; main
+  // never mints one, so sync runs as long as this process holds a live token.
+  ipcMain.handle('local-sync/access-token', async (_event: IpcMainInvokeEvent, payload: AccessTokenPayload) => {
+    if (!payload?.accessToken || !payload?.apiBaseUrl) {
+      return { ok: false, error: 'accessToken and apiBaseUrl are required' };
     }
+    try {
+      const { credentials, socket } = await requireDesktopSocket();
+      const { deviceId, changed } = credentials.setAccessToken({
+        accessToken: payload.accessToken,
+        apiBaseUrl: payload.apiBaseUrl,
+      });
+      // A re-push of the token already in hand must not tear down a healthy
+      // socket; the renderer pushes on every store change, not only on refresh.
+      if (changed || !socket.connected) {
+        await socket.reconnectWithNewCredential();
+      }
+      return { ok: true, deviceId };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
+  ipcMain.handle('local-sync/clear-credentials', async () => {
+    desktopCredentials?.clear();
+    desktopSocket?.disconnect();
+    return { ok: true };
   });
 
   ipcMain.handle('local-fs/open-record-source', async (_event: IpcMainInvokeEvent, payload: OpenLocalFsRecordSourcePayload) => {
@@ -322,28 +521,122 @@ app.whenReady().then(() => {
     }
   });
 
+  // The renderer cannot open a browser window itself — setWindowOpenHandler
+  // denies every popup. Web URLs only, so that a renderer-side injection cannot
+  // turn this into "launch any URL, in any scheme, as a trusted local app".
+  // http is allowed because SAML starts at the PipesHub server itself, which
+  // self-hosted installs often serve without TLS.
+  ipcMain.handle('oauth/open-external', async (_event: IpcMainInvokeEvent, payload: { url?: string }) => {
+    const url = payload?.url;
+    if (!url) return { ok: false, error: 'No URL supplied.' };
+    if (!isExternalWebUrl(url)) {
+      return { ok: false, error: 'Only http and https URLs can be opened externally.' };
+    }
+    await shell.openExternal(url);
+    return { ok: true };
+  });
+
+  /**
+   * Redeem an OAuth authorization code from the main process.
+   *
+   * Microsoft redeems a single-page-application code only cross-origin
+   * (AADSTS9002327), so the request has to carry the Origin that app
+   * registration lists. The renderer cannot supply it — its origin is app://
+   * and fetch refuses to let a caller override Origin — and net.fetch strips it
+   * as a forbidden header, so this goes over net.request where it is ours to set.
+   */
+  ipcMain.handle('oauth/token-exchange', async (
+    _event: IpcMainInvokeEvent,
+    payload: { url?: string; body?: string; origin?: string; timeoutMs?: number },
+  ) => {
+    const { url, body, origin, timeoutMs } = payload || {};
+    if (!url || !body) return { ok: false, error: 'url and body are required.' };
+    try {
+      if (new URL(url).protocol !== 'https:') {
+        return { ok: false, error: 'Only https token endpoints can be used.' };
+      }
+      if (origin) {
+        const originProtocol = new URL(origin).protocol;
+        if (originProtocol !== 'https:' && originProtocol !== 'http:') {
+          return { ok: false, error: 'Origin must be an http or https URL.' };
+        }
+      }
+    } catch {
+      return { ok: false, error: 'Malformed URL.' };
+    }
+
+    const deadlineMs = typeof timeoutMs === 'number' && Number.isFinite(timeoutMs) && timeoutMs > 0
+      ? Math.min(timeoutMs, TOKEN_EXCHANGE_MAX_TIMEOUT_MS)
+      : TOKEN_EXCHANGE_MAX_TIMEOUT_MS;
+
+    return new Promise((resolve) => {
+      let settled = false;
+      const finish = (result: { ok: boolean; status?: number; body?: string; error?: string }): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      const request = net.request({ method: 'POST', url });
+      request.setHeader('Content-Type', 'application/x-www-form-urlencoded');
+      if (origin) request.setHeader('Origin', origin);
+
+      const timer = setTimeout(() => {
+        finish({ ok: false, error: 'Token exchange timed out.' });
+        request.abort();
+      }, deadlineMs);
+
+      request.on('response', (response) => {
+        const chunks: Buffer[] = [];
+        response.on('data', (chunk: Buffer) => chunks.push(Buffer.from(chunk)));
+        response.on('end', () => {
+          finish({
+            ok: true,
+            status: response.statusCode,
+            body: Buffer.concat(chunks).toString('utf8'),
+          });
+        });
+        response.on('aborted', () => finish({ ok: false, error: 'Token exchange was interrupted.' }));
+      });
+      // Never include the body in an error: it carries the code and the tokens.
+      request.on('error', (error: Error) => finish({ ok: false, error: error.message }));
+      request.write(body);
+      request.end();
+    });
+  });
+
+  ipcMain.handle('oauth/pending', () => {
+    const link = pendingDeepLink;
+    pendingDeepLink = null;
+    if (!link) return null;
+    return Date.now() - link.receivedAt > DEEP_LINK_TTL_MS ? null : link;
+  });
+
   ipcMain.on('stream/abort', (_event: IpcMainEvent, payload: { streamId?: string }) => {
     const controller = payload?.streamId ? activeStreams.get(payload.streamId) : undefined;
     if (controller) controller.abort();
   });
 
-  ipcMain.handle('local-sync/replay', async (_event: IpcMainInvokeEvent, payload?: ConnectorIdPayload) => {
-    if (!localSyncManager) return null;
-    if (payload?.connectorId) {
-      return localSyncManager.replay(payload.connectorId);
-    }
-    const connectorIds = localSyncManager.journal.listConnectorIds();
-    const results = [];
-    for (const connectorId of connectorIds) {
-      results.push(await localSyncManager.replay(connectorId));
-    }
-    return results;
-  });
-
   createWindow();
-  localSyncManager.init().catch((error: unknown) => {
-    console.warn('[local-sync] initialization failed:', error);
+  // Cold start from a deep link: it arrives in argv, not through an event.
+  handleDeepLinkUrl(findDeepLinkInArgv(process.argv));
+  // A reload drops any listener the renderer had registered; re-send so a link
+  // that landed during startup is not lost.
+  mainWindow?.webContents.on('did-finish-load', () => {
+    if (pendingDeepLink) deliverDeepLink(pendingDeepLink);
   });
+  // Mount watchers up front so the journal is warm by the time the renderer
+  // pushes a token; connect() no-ops until then.
+  deviceIdentityReady
+    .then(async () => {
+      if (!localSyncManager || !desktopSocket) return;
+      await localSyncManager.bootstrapFromJournal();
+      await desktopSocket.connect();
+    })
+    .catch((error: unknown) => {
+      console.warn('[local-sync] initialization failed:', error);
+    });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
@@ -360,6 +653,7 @@ app.on('before-quit', async (event) => {
   event.preventDefault();
   isQuitting = true;
   try {
+    desktopSocket?.disconnect();
     await localSyncManager.shutdown();
   } catch (error) {
     console.warn('[local-sync] shutdown error:', error);

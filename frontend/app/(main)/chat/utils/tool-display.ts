@@ -3,6 +3,8 @@
  * and the agent activity timeline.
  */
 
+import type { MessagePart } from '../types';
+
 /**
  * The five `load_skill`/`skill_search`/... tools (see
  * `backend/python/app/agent_loop_lib/tools/builtin/data/skills.py`) go over
@@ -30,6 +32,11 @@ export function isSkillTool(toolName: string | undefined): boolean {
   return !!toolName && Object.prototype.hasOwnProperty.call(SKILL_TOOL_LABELS, toolName);
 }
 
+/** MCP tools are named `mcp_{server}_{tool}`; toolset tools carry an `{app}__` prefix instead. */
+export function isMcpTool(toolName: string | undefined): boolean {
+  return !!toolName && toolName.startsWith('mcp_') && !toolName.includes('__');
+}
+
 /** Drops any `{app}__` namespace prefix, splits on separators, title-cases. */
 export function humanizeToolName(name: string): string {
   const segment = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
@@ -38,9 +45,54 @@ export function humanizeToolName(name: string): string {
   return words.map((word) => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
 }
 
-/** Extracts the toolset/connector prefix display name. */
+/** True for the UI questionnaire tool, whose result is rendered as the card
+ *  rather than as prose — callers use this to keep the empty-answer fallback
+ *  out of a turn that is only a question. */
+export function isAskUserQuestionTool(toolName: string | undefined): boolean {
+  return typeof toolName === 'string' && toolName.includes('ask_user_question');
+}
+
+/**
+ * A resumed reply's parts, added to the row it carries on.
+ * - A call the row already has (the call an approval card stopped on, now settled) replaces it
+ *   where it is, inside a sub-agent too, and keeps the card's details.
+ * - Resume can re-emit the same ask_user_question call — the first one is kept.
+ */
+export function appendResumeParts(existing: MessagePart[], incoming: MessagePart[]): MessagePart[] {
+  const hasAsk = existing.some((p) => p.type === 'tool_call' && isAskUserQuestionTool(p.toolName));
+  let merged = existing;
+  const extra: MessagePart[] = [];
+  for (const part of incoming) {
+    if (hasAsk && part.type === 'tool_call' && isAskUserQuestionTool(part.toolName)) continue;
+    const replaced = part.type === 'tool_call' && part.toolCallId ? replaceToolCall(merged, part) : null;
+    if (replaced) merged = replaced;
+    else extra.push(part);
+  }
+  return extra.length ? [...merged, ...extra] : merged;
+}
+
+function replaceToolCall(parts: MessagePart[], next: MessagePart): MessagePart[] | null {
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    if (part.type === 'tool_call' && part.toolCallId === next.toolCallId) {
+      const settled = part.approval && !next.approval ? { ...next, approval: part.approval } : next;
+      return parts.map((p, j) => (j === i ? settled : p));
+    }
+    if (part.type === 'sub_agent' && part.parts?.length) {
+      const inner = replaceToolCall(part.parts, next);
+      if (inner) return parts.map((p, j) => (j === i ? { ...part, parts: inner } : p));
+    }
+  }
+  return null;
+}
+
+/** Extracts the toolset/connector prefix display name. MCP tools are named
+ * `mcp_{server}_{tool}` with single underscores, so the server part can't be
+ * split out reliably; they get a generic "MCP" chip and the server name comes
+ * from the backend's `displayName`. */
 export function extractToolsetLabel(toolName: string | undefined): string | undefined {
-  if (!toolName || !toolName.includes('__')) return undefined;
+  if (!toolName) return undefined;
+  if (!toolName.includes('__')) return isMcpTool(toolName) ? 'MCP' : undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;
   const words = prefix.split(/[_\-\s]+/).filter(Boolean);

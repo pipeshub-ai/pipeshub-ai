@@ -65,6 +65,8 @@ interface MessageActionsProps {
   appliedFilters?: AppliedFilters;
   /** Persisted feedback value — initialises the like/dislike button state on load */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /** False for a reply that ran an action a person approved: regenerating could run it again. */
+  canRegenerate?: boolean;
 }
 
 /**
@@ -117,6 +119,7 @@ export function MessageActions({
   isLastMessage = false,
   appliedFilters,
   feedbackInfo,
+  canRegenerate = true,
 }: MessageActionsProps) {
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
@@ -694,13 +697,14 @@ export function MessageActions({
         </Tooltip>
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId &&(
+        {isLastMessage && messageId && canRegenerate && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               disabled={!messageId}
+              aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
                 margin: 0,
@@ -863,11 +867,18 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
   const [hovered, setHovered] = useState(false);
 
   return (
+    // A real button, not a styled div: these are the only way to send feedback,
+    // and as a div they could not be tabbed to, activated with the keyboard, or
+    // announced by a screen reader as something to press.
     <Box
-      onClick={onClick}
+      asChild
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
-      style={{
+    >
+      <button
+        type="button"
+        onClick={onClick}
+        style={{
         display: 'inline-flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -882,19 +893,21 @@ function FeedbackChip({ label, selected, onClick }: FeedbackChipProps) {
         cursor: 'pointer',
         transition: 'all 0.12s ease',
         userSelect: 'none',
-      }}
-    >
-      <Text
-        size="2"
-        weight="medium"
-        style={{
-          color: selected ? 'var(--accent-11)' : 'var(--slate-12)',
-          whiteSpace: 'nowrap',
-          fontSize: '13px',
+        font: 'inherit',
         }}
       >
-        {label}
-      </Text>
+        <Text
+          size="2"
+          weight="medium"
+          style={{
+            color: selected ? 'var(--accent-11)' : 'var(--slate-12)',
+            whiteSpace: 'nowrap',
+            fontSize: '13px',
+          }}
+        >
+          {label}
+        </Text>
+      </button>
     </Box>
   );
 }

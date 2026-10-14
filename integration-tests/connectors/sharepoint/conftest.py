@@ -22,11 +22,17 @@ import pytest
 import pytest_asyncio
 from connector_lifecycle import destructor
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 from helper.graph_provider_utils import wait_until_graph_condition
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 
-# The secrets are named ...FILE_CONTENT, but the workflow exports them as
-# ...FILE. These are the environment variable names, not the secret names.
+# Each name here is also the name of the secret that supplies it. The two file
+# variables hold the contents of the certificate and the private key, not paths
+# to them.
+# The registry key is the connector's @ConnectorBuilder name, matched exactly,
+# spaces included -- every other suite here passes it the same way.
+CONNECTOR_TYPE = "SharePoint Online"
+
 REQUIRED_ENV = (
     "SHAREPOINT_TEST_CLIENT_ID",
     "SHAREPOINT_TEST_TENANT_ID",
@@ -46,7 +52,10 @@ def expected_site_names() -> list[str]:
 def sharepoint_credentials() -> dict[str, str]:
     missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
     if missing:
-        pytest.skip(f"SharePoint credentials not set: {', '.join(missing)}")
+        source_unavailable(
+            "The SharePoint tenant this suite syncs from is not configured.",
+            secrets=missing,
+        )
     return {name: os.environ[name] for name in REQUIRED_ENV}
 
 
@@ -75,7 +84,7 @@ async def sharepoint_connector(
 
     connector_name = f"sharepoint-lifecycle-test-{uuid.uuid4().hex[:8]}"
     instance = pipeshub_client.create_connector(
-        connector_type="SharePointOnline",
+        connector_type=CONNECTOR_TYPE,
         instance_name=connector_name,
         scope="team",
         config=config,
@@ -122,7 +131,7 @@ async def sharepoint_connector(
             pipeshub_client,
             graph_provider,
             state,
-            connector_type="SharePointOnline",
+            connector_type=CONNECTOR_TYPE,
         )
         raise
 
@@ -133,7 +142,7 @@ async def sharepoint_connector(
         pipeshub_client,
         graph_provider,
         state,
-        connector_type="SharePointOnline",
+        connector_type=CONNECTOR_TYPE,
     )
 
 

@@ -17,27 +17,23 @@ from app.connectors.sources.azure_files.connector import (
 from app.models.entities import FileRecord, RecordType
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import urlparse
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
     MultiselectOperator,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
+from app.models.entities import User
 from app.models.permission import EntityType, Permission, PermissionType
 import base64
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from datetime import timedelta
+from unittest.mock import PropertyMock
+from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOperator,
     IndexingFilterKey,
-    MultiselectOperator,
-    SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import RecordGroupType
 
 
 # ---------------------------------------------------------------------------
@@ -46,66 +42,6 @@ from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 @pytest.fixture()
 def mock_logger():
     return logging.getLogger("test.azure_files")
-
-
-@pytest.fixture()
-def mock_data_entities_processor():
-    from app.models.entities import AppMetadata
-    
-    proc = MagicMock(spec=AzureFilesDataSourceEntitiesProcessor)
-    proc.org_id = "org-azf-1"
-    proc.on_new_app_users = AsyncMock()
-    proc.on_new_record_groups = AsyncMock()
-    proc.on_new_records = AsyncMock()
-    proc.get_all_active_users = AsyncMock(return_value=[])
-    proc.account_name = "teststorage"
-    proc.get_record_by_external_id = AsyncMock(return_value=None)
-    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    proc.delete_parent_child_edge_to_record = AsyncMock()
-    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
-        connector_id="az-files-1",
-        name="Azure Files",
-        type="azure_files",
-        app_group="STORAGE",
-        scope="PERSONAL",
-        created_by="user-1",
-        created_at_timestamp=1234567890,
-        updated_at_timestamp=1234567890,
-    ))
-    proc.get_user_by_user_id = AsyncMock(
-        return_value=User(
-            email="user@test.com",
-            source_user_id="src-1",
-            org_id="org-azf-1",
-            full_name="Test User",
-            title="Title",
-        )
-    )
-    return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    provider.transaction.return_value = mock_tx
-    return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
-        },
-        "scope": "TEAM",
-    })
-    return svc
 
 
 @pytest.fixture()
@@ -1099,8 +1035,42 @@ class TestProcessorPlaceholderParent:
             assert isinstance(result, FileRecord)
             assert result.is_internal is True
             assert result.hide_weburl is True
-            assert "myacc.file.core.windows.net" in result.weburl
+            parsed = urlparse(result.weburl)
+            assert parsed.scheme == "https"
+            assert parsed.hostname == "myacc.file.core.windows.net"
             assert result.path == "folder"
+
+    def test_forwards_record_group_kwargs_to_base(self, logger, provider, cfg):
+        proc = AzureFilesDataSourceEntitiesProcessor(
+            logger=logger, data_store_provider=provider,
+            config_service=cfg, account_name="myacc",
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = Connectors.AZURE_FILES
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+        child.external_record_group_id = "share1"
+        child.record_group_type = RecordGroupType.FILE_SHARE.value
+
+        result = proc._create_placeholder_parent_record(
+            "share1/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.FILE_SHARE.value,
+            external_record_group_id="share1",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.FILE_SHARE.value
+        assert result.external_record_group_id == "share1"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "myacc.file.core.windows.net"
+        assert result.path == "folder"
 
 
 # ===========================================================================

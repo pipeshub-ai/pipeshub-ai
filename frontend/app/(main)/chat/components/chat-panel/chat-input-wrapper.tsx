@@ -6,6 +6,7 @@ import { ChatInput } from '../chat-input';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { ChatApi } from '@/chat/api';
 import {
   buildAssistantApiFilters,
@@ -130,7 +131,7 @@ export function ChatInputWrapper() {
         signal,
       });
       const ref = refs[0];
-      if (!ref) throw new Error('Upload returned no attachment ref');
+      if (!ref) throw new Error("The upload didn't finish. Please attach the file again.");
       return ref;
     },
     [effectiveAgentId],
@@ -164,6 +165,10 @@ export function ChatInputWrapper() {
     // the old run's grace timer fires.
     const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (active?.isStreaming && !active.stopping) {
+      return;
+    }
+    if (active?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
       return;
     }
 

@@ -95,6 +95,43 @@ class BookStackSourceHelper:
     def update_page(self, page_id: int, markdown: str) -> None:
         self._api("PUT", f"pages/{page_id}", markdown=markdown)
 
+    def rename_page(self, page_id: int, name: str) -> None:
+        self._api("PUT", f"pages/{page_id}", name=name)
+
+    def delete_page(self, page_id: int) -> None:
+        self._api("DELETE", f"pages/{page_id}")
+
+    # -- people and access ---------------------------------------------------
+
+    def create_role(self, name: str) -> int:
+        """A role with no system permissions: its members see only what is shared with the role."""
+        return self._api("POST", "roles", display_name=name, permissions=[])["id"]
+
+    def delete_role(self, role_id: int) -> None:
+        self._api("DELETE", f"roles/{role_id}")
+
+    def create_user(self, name: str, email: str, role_id: int, password: str) -> int:
+        """A BookStack account for ``email`` in ``role_id`` only, so the connector maps it to that PipesHub user."""
+        for user in self._api("GET", "users?count=500").get("data", []):
+            if user.get("email") == email:
+                self._api("DELETE", f"users/{user['id']}")
+        return self._api(
+            "POST", "users", name=name, email=email, roles=[role_id],
+            password=password, send_invite=False,
+        )["id"]
+
+    def delete_user(self, user_id: int) -> None:
+        self._api("DELETE", f"users/{user_id}")
+
+    def set_page_role_view(self, page_id: int, role_id: int, *, view: bool) -> None:
+        """Give ``role_id`` view access to one page, or take every page-level role grant away."""
+        grants = (
+            [{"role_id": role_id, "view": True, "create": False, "update": False, "delete": False}]
+            if view
+            else []
+        )
+        self._api("PUT", f"content-permissions/page/{page_id}", role_permissions=grants)
+
     def delete_books_named(self, prefix: str) -> None:
         """Delete every book whose name starts with ``prefix``, from this run or an earlier one."""
         for book in self._api("GET", "books?count=500").get("data", []):

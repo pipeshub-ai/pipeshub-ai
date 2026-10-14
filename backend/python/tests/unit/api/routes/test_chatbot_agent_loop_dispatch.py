@@ -212,6 +212,70 @@ class TestGenerateChatStreamViaAgentLoop:
         assert "supports_tool_calls" not in mock_run_chat_stream.call_args.kwargs
         assert mock_run_chat_stream.call_args.args[3] is WEB_SEARCH_POLICY
 
+    async def test_labs_user_context_flag_off_forces_send_user_info_false(self):
+        from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
+
+        request = self._mock_request({})
+        query_info = ChatQuery(query="hello")
+
+        async def _fake_run_chat_stream(*args, **kwargs):
+            yield "event: complete\ndata: {}\n\n"
+
+        with (
+            patch(
+                "app.api.routes.chatbot.get_llm_for_chat",
+                new=AsyncMock(return_value=(MagicMock(), {"provider": "openai", "isMultimodal": False}, {})),
+            ),
+            patch(
+                "app.api.routes.chatbot.is_user_context_enabled",
+                new=AsyncMock(return_value=False),
+            ),
+            patch(
+                "app.api.routes.chatbot.run_chat_stream", side_effect=_fake_run_chat_stream,
+            ) as mock_run_chat_stream,
+        ):
+            [
+                chunk
+                async for chunk in _generate_chat_stream_via_agent_loop(
+                    request, query_info, AsyncMock(), MagicMock(), AsyncMock(),
+                )
+            ]
+
+        user_info = mock_run_chat_stream.call_args.args[1]
+        assert user_info["sendUserInfo"] is False
+
+    async def test_labs_user_context_flag_on_keeps_send_user_info(self):
+        from app.api.routes.chatbot import ChatQuery, _generate_chat_stream_via_agent_loop
+
+        request = self._mock_request({})
+        query_info = ChatQuery(query="hello")
+
+        async def _fake_run_chat_stream(*args, **kwargs):
+            yield "event: complete\ndata: {}\n\n"
+
+        with (
+            patch(
+                "app.api.routes.chatbot.get_llm_for_chat",
+                new=AsyncMock(return_value=(MagicMock(), {"provider": "openai", "isMultimodal": False}, {})),
+            ),
+            patch(
+                "app.api.routes.chatbot.is_user_context_enabled",
+                new=AsyncMock(return_value=True),
+            ),
+            patch(
+                "app.api.routes.chatbot.run_chat_stream", side_effect=_fake_run_chat_stream,
+            ) as mock_run_chat_stream,
+        ):
+            [
+                chunk
+                async for chunk in _generate_chat_stream_via_agent_loop(
+                    request, query_info, AsyncMock(), MagicMock(), AsyncMock(),
+                )
+            ]
+
+        user_info = mock_run_chat_stream.call_args.args[1]
+        assert user_info["sendUserInfo"] is True
+
 
 class TestAskAIStreamDefaultDispatch:
     """Every `chatMode` routes through the agent loop."""

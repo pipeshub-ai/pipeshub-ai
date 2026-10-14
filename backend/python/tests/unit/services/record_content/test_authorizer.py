@@ -15,8 +15,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.config.constants.arangodb import Connectors, OriginTypes
+from app.models.entities import Record, RecordType
 from app.services.record_content.authorizer import TieredRecordAuthorizer
-from app.services.record_content.models import RecordAccessDeniedError
+from app.services.record_content.models import (
+    RecordAccessDeniedError,
+    RecordNotFoundError,
+)
 
 
 def _make_actor(org_id="org1", user_id="user1"):
@@ -148,3 +153,57 @@ async def test_service_account_denied_by_tier3(graph):
     ):
         with pytest.raises(RecordAccessDeniedError):
             await authorizer.authorize(actor, record)
+
+
+# ---------------------------------------------------------------------------
+# Tier 0: a record in the trash
+# ---------------------------------------------------------------------------
+
+
+def _stored_record(*, is_deleted: bool) -> Record:
+    return Record(
+        id="rec1",
+        org_id="org1",
+        record_name="report.pdf",
+        record_type=RecordType.FILE,
+        external_record_id="ext-1",
+        version=1,
+        origin=OriginTypes.UPLOAD,
+        connector_name=Connectors.KNOWLEDGE_BASE,
+        connector_id="kb1",
+        is_deleted=is_deleted,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "record",
+    [
+        pytest.param(_stored_record(is_deleted=True), id="record-model"),
+        pytest.param({"_key": "rec1", "orgId": "org1", "isDeleted": True}, id="stored-document"),
+    ],
+)
+async def test_a_trashed_record_is_not_found_even_with_a_direct_edge(graph, record) -> None:
+    """Trashed records keep their permission edges for restore; tier 2 alone would grant."""
+    graph.get_edge.return_value = {"_id": "edges/e1"}
+    authorizer = TieredRecordAuthorizer(graph)
+
+    with pytest.raises(RecordNotFoundError, match="rec1 was deleted"):
+        await authorizer.authorize(_make_actor(), record)
+
+    graph.get_edge.assert_not_called()
+    graph.check_record_access_with_details.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_live_record_still_goes_through_the_tiers(graph) -> None:
+    graph.get_edge.return_value = {"_id": "edges/e1"}
+    authorizer = TieredRecordAuthorizer(graph)
+
+    with patch(
+        "app.services.artifact_registry.access.AccessPolicy.resolve_user_key",
+        new=AsyncMock(return_value="user/user1"),
+    ):
+        await authorizer.authorize(_make_actor(), _stored_record(is_deleted=False))
+
+    graph.get_edge.assert_awaited_once()

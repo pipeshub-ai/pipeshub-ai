@@ -381,7 +381,10 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_lookup_in_synced_users(self, connector):
@@ -416,7 +419,10 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 class TestFetchGroupMembers:

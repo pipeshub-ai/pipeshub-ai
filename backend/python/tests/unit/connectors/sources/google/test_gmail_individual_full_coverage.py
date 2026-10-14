@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
+
+from app.connectors.sources.google.common.connector_google_exceptions import GoogleAuthError
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 
@@ -27,6 +29,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 def _make_logger():
@@ -214,13 +217,15 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_no_oauth_config_id(self, connector):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, connector, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {},
+            "auth": auth,
             "credentials": {},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector):
@@ -637,7 +642,7 @@ class TestStreamFromDrive:
                 )
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_client_failure_with_service_account(self, connector):
+    async def test_stream_from_drive_client_failure_is_reported_not_retried_as_service_account(self, connector):
         connector.config = {"credentials": {"auth": {"type": "service_account"}}}
         record = MagicMock()
         record.id = "rec-1"
@@ -645,21 +650,17 @@ class TestStreamFromDrive:
         with patch(
             "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
             new_callable=AsyncMock,
-            side_effect=Exception("auth fail"),
+            side_effect=GoogleAuthError("auth fail"),
         ), patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.build",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
-        ) as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await connector._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-            mock_stream.assert_called_once()
+        ) as from_info:
+            with pytest.raises(HTTPException) as exc:
+                await connector._stream_from_drive(
+                    "drive-id", record, "file.txt", "text/plain"
+                )
+        assert exc.value.status_code == 409
+        assert "Reconnect the Gmail connector" in exc.value.detail
+        from_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_no_service_account_creds(self, connector):

@@ -26,11 +26,11 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Union
 
 __all__ = [
     "PackageSpec",
     "UrlSpec",
+    "CatalogSpec",
     "ParseResult",
     "NpmCommandParseError",
     "parse_npm_command",
@@ -65,6 +65,29 @@ _URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 # Known flags that carry a value and should be extracted, not rejected.
 _SKILL_FLAG_RE = re.compile(r"--skill\s+(\S+)")
 
+# Standalone flags (no value) that are noise in pasted commands
+_NOISE_STANDALONE = frozenset((
+    "--yes", "-y", "--global", "-g", "--list", "-l", "--all",
+    "--copy", "--dry-run", "--no-install", "--no-telemetry",
+))
+
+# Flags that consume the next token as their value
+_NOISE_VALUE_FLAGS = frozenset(("--agent", "-a", "--package", "-p"))
+
+# Subcommands that skill CLIs use after a URL-based runner
+_CLI_SUBCOMMANDS = frozenset(("add", "install"))
+
+# GitHub shorthand: owner/repo, optional /skill or @skill, optional #ref.
+# `npx skills add anthropics/skills/pptx` and `owner/repo@skill` are the
+# shapes the skills CLI documents; `#ref` is npm's github: shorthand.
+_GITHUB_SHORTHAND_RE = re.compile(
+    r"^(?P<owner>[a-z0-9][a-z0-9._-]*)/(?P<repo>[a-z0-9][a-z0-9._-]*)"
+    r"(?:/(?P<slash_skill>[a-z0-9][a-z0-9._-]*))?"
+    r"(?:@(?P<at_skill>[a-z0-9][a-z0-9._-]*))?"
+    r"(?:#(?P<ref>[a-z0-9._/-]+))?$",
+    re.IGNORECASE,
+)
+
 
 class NpmCommandParseError(ValueError):
     """The input isn't reducible to a single registry package spec or URL."""
@@ -88,7 +111,15 @@ class UrlSpec:
     skill_filter: str | None = None
 
 
-ParseResult = Union[PackageSpec, UrlSpec]
+@dataclass(frozen=True)
+class CatalogSpec:
+    """A skill-registry slug (e.g. OpenAgentSkill `zarazhangrui-frontend-slides`),
+    not an npm package and not a GitHub owner/repo path."""
+    slug: str
+    skill_filter: str | None = None
+
+
+ParseResult = PackageSpec | UrlSpec | CatalogSpec
 
 
 def _strip_runner_prefix(command: str) -> str:
@@ -100,17 +131,49 @@ def _strip_runner_prefix(command: str) -> str:
 
 
 def _extract_known_flags(text: str) -> tuple[str, str | None]:
-    """Strip ``--skill <name>`` from *text*, returning (remainder, skill_name).
+    """Strip every ``--skill <name>`` from *text*, returning (remainder, first_skill).
 
-    Other flags (``--registry``, ``--save-dev``, …) are left in place so the
-    later validation still rejects them with a clear message.
+    Multiple ``--skill`` flags are common in the ``skills`` CLI; we keep the
+    first value for ``skill_filter`` and strip the rest so they don't pollute
+    later checks.
     """
-    skill_match = _SKILL_FLAG_RE.search(text)
     skill_filter: str | None = None
-    if skill_match:
-        skill_filter = skill_match.group(1)
-        text = (text[: skill_match.start()] + text[skill_match.end() :]).strip()
+    while True:
+        m = _SKILL_FLAG_RE.search(text)
+        if not m:
+            break
+        if skill_filter is None:
+            skill_filter = m.group(1)
+        text = (text[: m.start()] + text[m.end() :]).strip()
     return text, skill_filter
+
+
+def _strip_noise(text: str) -> str:
+    """Remove flag-like tokens that are noise in pasted install commands.
+
+    Standalone flags (``--list``, ``-g``, …) are dropped.  Known value-bearing
+    flags (``--agent X``, ``-a X``) drop the flag and its value.  Unknown flags
+    (``--save-dev``) drop just the token.  Positional tokens are preserved.
+    """
+    tokens = text.split()
+    result: list[str] = []
+    i = 0
+    while i < len(tokens):
+        t = tokens[i]
+        if t in _NOISE_STANDALONE:
+            i += 1
+            continue
+        if t in _NOISE_VALUE_FLAGS:
+            if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                raise NpmCommandParseError(f"Flag {t!r} requires a value.")
+            i += 2
+            continue
+        if t.startswith("-") and "=" in t:
+            i += 1
+            continue
+        result.append(t)
+        i += 1
+    return " ".join(result)
 
 
 def parse_npm_command(raw: str) -> ParseResult:
@@ -140,15 +203,33 @@ def parse_npm_command(raw: str) -> ParseResult:
 
     remainder = _strip_runner_prefix(text)
     prefix_was_stripped = remainder is not text
+    if remainder.lower().startswith("github:"):
+        remainder = remainder[len("github:"):]
+        prefix_was_stripped = True
     remainder, skill_filter = _extract_known_flags(remainder)
+    remainder = _strip_noise(remainder)
+    catalog_slug_allowed = False
 
     if _URL_RE.match(remainder):
-        return UrlSpec(url=remainder, skill_filter=skill_filter)
+        url, _, after = remainder.partition(" ")
+        after = after.strip()
+        if not after:
+            return UrlSpec(url=url, skill_filter=skill_filter)
+        # URL is a runner CLI (e.g. `npx --yes <cli.tgz> add <pkg>`)
+        after_tokens = after.split()
+        if after_tokens and after_tokens[0].lower() in _CLI_SUBCOMMANDS:
+            after_tokens = after_tokens[1:]
+        if len(after_tokens) == 1 and not after_tokens[0].startswith("-"):
+            remainder = after_tokens[0]
+            catalog_slug_allowed = True
+        else:
+            return UrlSpec(url=url, skill_filter=skill_filter)
 
     if not prefix_was_stripped and " " in text:
         first, _, rest = text.partition(" ")
         rest = rest.strip()
         rest, skill_filter_fallback = _extract_known_flags(rest)
+        rest = _strip_noise(rest)
         skill_filter = skill_filter or skill_filter_fallback
         if _URL_RE.match(rest):
             return UrlSpec(url=rest, skill_filter=skill_filter)
@@ -173,7 +254,21 @@ def parse_npm_command(raw: str) -> ParseResult:
     if remainder.startswith("-"):
         raise NpmCommandParseError(f"Unsupported flag {remainder!r} — paste just the package name.")
 
-    match = _PACKAGE_SPEC_RE.match(remainder.lower())
+    gh = _GITHUB_SHORTHAND_RE.match(remainder)
+    if gh:
+        owner, repo = gh.group("owner"), gh.group("repo")
+        extra = gh.group("slash_skill") or gh.group("at_skill")
+        ref = gh.group("ref")
+        url = f"https://github.com/{owner}/{repo}"
+        if ref:
+            url += f"#{ref}"
+        return UrlSpec(url=url, skill_filter=skill_filter or extra)
+
+    lower = remainder.lower()
+    if catalog_slug_allowed and not remainder.startswith("@"):
+        return CatalogSpec(slug=lower, skill_filter=skill_filter)
+
+    match = _PACKAGE_SPEC_RE.match(lower)
     if not match:
         raise NpmCommandParseError(
             f"{remainder!r} doesn't look like a valid npm package spec "

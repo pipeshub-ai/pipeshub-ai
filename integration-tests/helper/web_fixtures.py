@@ -12,6 +12,7 @@ the published port. Both default to the integration compose files' values.
 from __future__ import annotations
 
 import os
+from typing import Any
 
 import requests
 
@@ -58,7 +59,55 @@ class WebFixtures:
         ).raise_for_status()
 
     def reset(self) -> None:
+        """Serve the seed files again and drop every fault."""
         requests.post(f"{self.test_url}{CONTROL}/reset", timeout=self.timeout).raise_for_status()
+
+    def add_fault(
+        self,
+        path: str,
+        *,
+        status: int | None = None,
+        retry_after: int | None = None,
+        delay: float = 0.0,
+        truncate: bool = False,
+        partial: bool = False,
+        times: int | None = None,
+    ) -> None:
+        """Make ``path`` misbehave for its next ``times`` requests (None: until removed).
+
+        ``status`` answers with that HTTP error (and ``Retry-After`` when given),
+        ``delay`` holds every answer back that many seconds, ``truncate`` drops the
+        connection halfway through the page, and ``partial`` serves half the page
+        as if it were whole. Setting a fault on a path replaces the one there.
+        """
+        spec: dict[str, Any] = {"delay": delay, "truncate": truncate, "partial": partial, "times": times}
+        if status is not None:
+            spec["status"] = status
+        if retry_after is not None:
+            spec["retry_after"] = retry_after
+        response = requests.put(
+            f"{self.test_url}{CONTROL}/faults/{path.lstrip('/')}", json=spec, timeout=self.timeout
+        )
+        if response.status_code == 400:
+            raise ValueError(f"web-fixtures rejected the fault for {path}: {response.text}")
+        response.raise_for_status()
+
+    def remove_fault(self, path: str) -> None:
+        response = requests.delete(f"{self.test_url}{CONTROL}/faults/{path.lstrip('/')}", timeout=self.timeout)
+        if response.status_code != 404:
+            response.raise_for_status()
+
+    def fault_hits(self, path: str) -> int:
+        """How many requests the fault on ``path`` has answered; 0 when there is none.
+
+        A test asserts on this so it cannot pass because the connector never
+        asked for the page, rather than because it got past the fault.
+        """
+        response = requests.get(f"{self.test_url}{CONTROL}/faults/{path.lstrip('/')}", timeout=self.timeout)
+        if response.status_code == 404:
+            return 0
+        response.raise_for_status()
+        return int(response.json()["served"])
 
     def clear_objects(self, resource_name: str) -> None:
         """What ``connector_lifecycle.destructor`` calls to clean up a source: serve the seed again."""

@@ -50,6 +50,21 @@ class TestCreateClient:
         kwargs = mock_redis_cls.call_args.kwargs
         assert "connection_pool" in kwargs
 
+    @pytest.mark.parametrize("attempts", [0, 1, 3])
+    def test_the_requested_retry_attempts_reach_the_client(self, mock_redis_cls, attempts) -> None:
+        """A caller that falls back on failure (the lane map) asks for fewer
+        retries than the default three; nothing else changes."""
+        provider = StandaloneRedisProvider(_config())
+        provider.create_client(ClientOptions(retry_attempts=attempts))
+
+        assert mock_redis_cls.call_args.kwargs["retry"]._retries == attempts
+
+    def test_three_retries_unless_asked_otherwise(self, mock_redis_cls) -> None:
+        provider = StandaloneRedisProvider(_config())
+        provider.create_client()
+
+        assert mock_redis_cls.call_args.kwargs["retry"]._retries == 3
+
     def test_tls_sets_ssl_kwargs(self, mock_redis_cls):
         provider = StandaloneRedisProvider(
             _config(tls=True, tls_reject_unauthorized=False, tls_ca_path="/ca.pem")

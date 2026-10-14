@@ -3,6 +3,13 @@ import { injectable, inject } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { MailProducer } from '../../mail/services/mail.producer';
+import {
+  MailEventType,
+  PasswordResetLinkTarget,
+} from '../../mail/types/mail-event.types';
+import { MailBody } from '../../mail/middlewares/types';
+import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
 interface SendMailParams {
   emailTemplateType: string;
   initiator: { orgId?: string; jwtAuthToken: string };
@@ -12,7 +19,12 @@ interface SendMailParams {
   fromEmailDomain?: string;
   attachedDocuments?: any[];
   ccEmails?: string[];
+  deliverAsync?: boolean;
+  /** Fills `templateData.link` with a set-password link, minted at send time. */
+  passwordResetLinkFor?: PasswordResetLinkTarget;
 }
+
+const SEND_MAIL_TIMEOUT_MS = 30_000;
 
 interface SendMailResponse {
   statusCode: number;
@@ -24,6 +36,7 @@ export class MailService {
   constructor(
     @inject('AppConfig') private userConfig: AppConfig,
     @inject('Logger') private logger: Logger,
+    @inject(MailProducer) private readonly mailProducer: MailProducer,
   ) {}
 
   async sendMail({
@@ -35,6 +48,8 @@ export class MailService {
     fromEmailDomain,
     attachedDocuments,
     ccEmails,
+    deliverAsync,
+    passwordResetLinkFor,
   }: SendMailParams): Promise<SendMailResponse> {
     try {
       this.logger.debug('sending mail ...');
@@ -44,7 +59,7 @@ export class MailService {
       if (!emailTemplateType)
         throw new BadRequestError('emailTemplateType is empty');
 
-      const data: Record<string, any> = {
+      const data: MailBody = {
         productName: 'PIP',
         emailTemplateType,
         isAutoEmail: false,
@@ -65,6 +80,33 @@ export class MailService {
         data.orgId = initiator.orgId;
       }
 
+      if (deliverAsync) {
+        // 200 here means "accepted for delivery", not "sent" — MailConsumer
+        // notifies admins if delivery ultimately fails.
+        await this.mailProducer.publishEvent({
+          eventType: MailEventType.SendMailEvent,
+          timestamp: Date.now(),
+          payload: { mail: data, orgId: initiator.orgId, passwordResetLinkFor },
+        });
+        return {
+          statusCode: 200,
+          data: { message: 'Email queued for delivery', queued: true },
+        };
+      }
+
+      if (passwordResetLinkFor) {
+        data.templateData = {
+          ...data.templateData,
+          link: newAccountPasswordLink(
+            this.userConfig.frontendUrl,
+            passwordResetLinkFor.email,
+            passwordResetLinkFor.userId,
+            passwordResetLinkFor.orgId,
+            this.userConfig.scopedJwtSecret,
+          ),
+        };
+      }
+
       const config = {
         method: 'post' as const,
         url: `${this.userConfig.communicationBackend}/api/v1/mail/emails/sendEmail`,
@@ -73,17 +115,19 @@ export class MailService {
           'Content-Type': 'application/json',
         },
         data,
+        timeout: SEND_MAIL_TIMEOUT_MS,
       };
-      const response = await axios(config);
+      const response = await axios.request(config);
       return { statusCode: 200, data: response.data };
     } catch (error: any) {
-      this.logger.error('Error sending mail', { error: error?.response?.data });
+      this.logger.error('Error sending mail', {
+        error: error?.response?.data ?? error?.message,
+      });
       return {
         statusCode: error?.response?.status || 500,
         data:
           error?.response?.data?.error?.message ||
           error?.response?.data?.message ||
-          (typeof error?.response?.data === 'string' ? error.response.data : null) ||
           error?.message ||
           'Error sending mail.',
       };

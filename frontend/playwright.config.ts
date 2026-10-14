@@ -5,6 +5,9 @@ dotenv.config({ path: '.env.test' });
 
 const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 
+// Tests that need a real AI model; they run in the `ai` project below.
+const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /agents\/.*\.spec\.ts/];
+
 const defaultReporter: any[] = [['html', { open: 'never' }]];
 const ciReporter: any[] = process.env.CI
   ? [['junit', { outputFile: 'test-results/playwright-junit.xml' }]]
@@ -72,8 +75,30 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, ...AI_SPECS],
       dependencies: ['setup'],
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/user.json',
+      },
+    },
+
+    // Adds the AI models the answering tests need once, and removes them once
+    // after all of them finish, so no test deletes a model another is using.
+    {
+      name: 'ai-models',
+      testMatch: /setup\/ai-models\.provision\.ts/,
+      dependencies: ['setup'],
+      teardown: 'ai-models-cleanup',
+    },
+    {
+      name: 'ai-models-cleanup',
+      testMatch: /setup\/ai-models\.cleanup\.ts/,
+    },
+    {
+      name: 'ai',
+      testMatch: AI_SPECS,
+      dependencies: ['setup', 'ai-models'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',

@@ -1,69 +1,54 @@
 import { expect } from 'chai';
+import { readFileSync } from 'fs';
+import { resolve } from 'path';
 
-import { laneStreamFor, stableLane } from '../../../src/libs/utils/lane.utils';
+import {
+  DEFAULT_FAIR_SCHEDULING_LANE_COUNT,
+  laneCount,
+} from '../../../src/libs/utils/lane.utils';
 
 describe('lane.utils', () => {
-  const originalBroker = process.env.MESSAGE_BROKER;
   const originalLanes = process.env.FAIR_SCHEDULING_LANE_COUNT;
 
   afterEach(() => {
-    process.env.MESSAGE_BROKER = originalBroker;
     process.env.FAIR_SCHEDULING_LANE_COUNT = originalLanes;
-    if (originalBroker === undefined) delete process.env.MESSAGE_BROKER;
     if (originalLanes === undefined) delete process.env.FAIR_SCHEDULING_LANE_COUNT;
   });
 
-  describe('stableLane', () => {
-    // Pinned vectors shared with the Python side. Python publishes most
-    // record events and this service publishes some, so a disagreement would
-    // put one connector on two different lanes depending on which service
-    // produced the event, and the consumer's per-lane view would stop meaning
-    // anything. The same pairs are asserted in
-    // backend/python/tests/unit/services/messaging/test_lane_router.py.
-    it('agrees with the Python lane hash', () => {
-      expect(stableLane('conn-1', 8)).to.equal(5);
-      expect(stableLane('connector-42', 8)).to.equal(4);
-      expect(stableLane('org-1', 8)).to.equal(4);
+  describe('laneCount', () => {
+    it('defaults to eight lanes, as the Python services do', () => {
+      delete process.env.FAIR_SCHEDULING_LANE_COUNT;
+      expect(laneCount()).to.equal(8);
     });
 
-    it('is stable across calls', () => {
-      const first = Array.from({ length: 20 }, (_u, i) => stableLane(`c${i}`, 16));
-      const second = Array.from({ length: 20 }, (_u, i) => stableLane(`c${i}`, 16));
-      expect(first).to.deep.equal(second);
-    });
-
-    it('stays within range and uses the whole space', () => {
-      const lanes = new Set(
-        Array.from({ length: 200 }, (_u, i) => stableLane(`connector-${i}`, 16)),
+    it('agrees with the Python default', () => {
+      // This service pre-creates the lane streams the Python services publish
+      // to and read. With different defaults, a default install pre-created
+      // one set of streams and used another.
+      const pythonConfig = readFileSync(
+        resolve(__dirname, '../../../../../python/app/services/messaging/config.py'),
+        'utf8',
       );
-      expect(lanes.size).to.equal(16);
-      expect([...lanes].every((l) => l >= 0 && l < 16)).to.be.true;
-    });
-
-    it('collapses to lane 0 when laning is off', () => {
-      expect(stableLane('anything', 1)).to.equal(0);
-    });
-  });
-
-  describe('laneStreamFor', () => {
-    it('routes to a lane stream on Redis', () => {
-      process.env.MESSAGE_BROKER = 'redis';
-      process.env.FAIR_SCHEDULING_LANE_COUNT = '8';
-      expect(laneStreamFor('record-events', 'conn-1')).to.equal(
-        'record-events.5',
+      const match = pythonConfig.match(
+        /_env_int\("FAIR_SCHEDULING_LANE_COUNT",\s*(\d+)\)/,
       );
+      expect(match, 'Python lane-count default not found').to.not.equal(null);
+      expect(Number(match?.[1])).to.equal(DEFAULT_FAIR_SCHEDULING_LANE_COUNT);
     });
 
-    it('leaves the topic alone on Kafka, where the key selects the partition', () => {
-      process.env.MESSAGE_BROKER = 'kafka';
-      process.env.FAIR_SCHEDULING_LANE_COUNT = '8';
-      expect(laneStreamFor('record-events', 'conn-1')).to.equal('record-events');
+    it('follows FAIR_SCHEDULING_LANE_COUNT', () => {
+      process.env.FAIR_SCHEDULING_LANE_COUNT = '4';
+      expect(laneCount()).to.equal(4);
     });
 
-    it('leaves the topic alone when laning is off', () => {
-      process.env.MESSAGE_BROKER = 'redis';
+    it('keeps the default for a value that is not a positive number', () => {
+      process.env.FAIR_SCHEDULING_LANE_COUNT = 'lots';
+      expect(laneCount()).to.equal(8);
+    });
+
+    it('one lane means laning is off', () => {
       process.env.FAIR_SCHEDULING_LANE_COUNT = '1';
-      expect(laneStreamFor('record-events', 'conn-1')).to.equal('record-events');
+      expect(laneCount()).to.equal(1);
     });
   });
 });

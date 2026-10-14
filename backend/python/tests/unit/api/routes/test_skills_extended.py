@@ -1,5 +1,6 @@
 """Extended tests for app.api.routes.skills — covers lines 207-641."""
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -1097,6 +1098,64 @@ class TestImportRoutes:
             assert exc.value.status_code == 400
 
     @pytest.mark.asyncio
+    async def test_preview_npm_url_spec_forwards_skill_filter(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "pptx"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "url"
+
+        from app.services.skills.npm_command_parser import UrlSpec
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
+             patch(f"{MODULE}.parse_npm_command", return_value=UrlSpec(
+                 url="https://github.com/anthropics/skills", skill_filter="pptx",
+             )), \
+             patch(f"{MODULE}.SkillPackageImporter") as MockImporter:
+            MockImporter.return_value.preview_url = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx skills add anthropics/skills --skill pptx")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        MockImporter.return_value.preview_url.assert_awaited_once_with(
+            "https://github.com/anthropics/skills", skill_filter="pptx",
+        )
+
+    @pytest.mark.asyncio
+    async def test_preview_npm_catalog_spec_uses_catalog_importer(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "frontend-slides"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "catalog"
+
+        from app.services.skills.npm_command_parser import CatalogSpec
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)), \
+             patch(f"{MODULE}.parse_npm_command", return_value=CatalogSpec(
+                 slug="zarazhangrui-frontend-slides",
+             )), \
+             patch(f"{MODULE}.SkillPackageImporter") as MockImporter:
+            MockImporter.return_value.preview_catalog_slug = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx --yes https://example.com/cli.tgz add zarazhangrui-frontend-slides")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        MockImporter.return_value.preview_catalog_slug.assert_awaited_once_with(
+            "zarazhangrui-frontend-slides", skill_filter=None,
+        )
+
+    @pytest.mark.asyncio
     async def test_preview_url_success(self):
         req = _mock_request()
         manager, ctx = _mock_manager_and_ctx()
@@ -1265,6 +1324,77 @@ class TestFinalizeImport:
             with pytest.raises(HTTPException) as exc:
                 await finalize_import(req, payload)
             assert exc.value.status_code == 409
+
+    @pytest.mark.asyncio
+    async def test_name_override_rewrites_frontmatter_past_reserved_original(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        manager.create = AsyncMock(return_value=_mock_metadata())
+        manager.write_resource = AsyncMock(return_value=True)
+        payload = FinalizeImportRequest(
+            content="---\nname: pdf\n---\nbody",
+            name="pdf-anthropic",
+        )
+        seeder = MagicMock(pack_versions={"pdf": "1.0.0"})
+
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            from app.api.routes.skills import finalize_import
+            resp = await finalize_import(req, payload)
+        assert resp.status_code == 201
+        called_name, called_content = manager.create.await_args.args[:2]
+        assert called_name == "pdf-anthropic"
+        assert "name: pdf-anthropic" in called_content
+
+    @pytest.mark.asyncio
+    async def test_invalid_name_override_raises_400(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        payload = FinalizeImportRequest(
+            content="---\nname: pdf\n---\nbody",
+            name="Not A Valid Name",
+        )
+
+        with patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)):
+            from app.api.routes.skills import finalize_import
+            with pytest.raises(HTTPException) as exc:
+                await finalize_import(req, payload)
+            assert exc.value.status_code == 400
+            manager.create.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_preview_warns_when_name_is_reserved(self):
+        req = _mock_request()
+        manager, ctx = _mock_manager_and_ctx()
+        mock_preview = MagicMock()
+        mock_preview.name = "pptx"
+        mock_preview.description = "d"
+        mock_preview.version = "1.0.0"
+        mock_preview.content = "c"
+        mock_preview.resources = {}
+        mock_preview.warnings = []
+        mock_preview.skipped_binary_resources = []
+        mock_preview.source_label = "url"
+        seeder = MagicMock(pack_versions={"pptx": "1.0.0"})
+
+        from app.services.skills.npm_command_parser import UrlSpec
+        with (
+            patch(f"{MODULE}._build_manager", new_callable=AsyncMock, return_value=(manager, ctx)),
+            patch(f"{MODULE}.parse_npm_command", return_value=UrlSpec(
+                url="https://github.com/anthropics/skills", skill_filter="pptx",
+            )),
+            patch(f"{MODULE}.SkillPackageImporter") as MockImporter,
+            patch(f"{MODULE}.get_builtin_seeder", return_value=seeder),
+        ):
+            MockImporter.return_value.preview_url = AsyncMock(return_value=mock_preview)
+            payload = NpmImportRequest(command_or_name="npx skills add anthropics/skills --skill pptx")
+            from app.api.routes.skills import preview_npm_import
+            resp = await preview_npm_import(req, payload)
+        assert resp.status_code == 200
+        warnings = json.loads(resp.body)["warnings"]
+        assert any("built-in skill name" in w for w in warnings)
 
     @pytest.mark.asyncio
     async def test_format_error_on_create(self):

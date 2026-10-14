@@ -261,7 +261,10 @@ class TestSyncUserGroupsExtended:
             "members": [{"type": "USER", "id": "u1", "email": ""}],
         })
         await connector._sync_user_groups()
-        connector.data_entities_processor.on_new_user_groups.assert_not_called()
+        # The group is stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     async def test_group_name_fallback_to_email(self, connector):
         """Group without name uses email as fallback."""

@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 from app.services.featureflag.platform_settings import (
     is_actions_enabled,
     is_skills_enabled,
+    is_user_context_enabled,
 )
 
 
@@ -76,3 +77,23 @@ class TestSharedPlatformFlagHelperAlsoServesActions:
         svc = _config_service({"featureFlags": {"ENABLE_ACTIONS": False, "ENABLE_SKILLS": True}})
         assert await is_actions_enabled(svc) is False
         assert await is_skills_enabled(svc) is True
+
+
+class TestIsUserContextEnabled:
+    async def test_defaults_to_true_when_settings_are_empty(self) -> None:
+        assert await is_user_context_enabled(_config_service({})) is True
+
+    async def test_stored_false_wins_over_the_default(self) -> None:
+        svc = _config_service({"featureFlags": {"ENABLE_USER_CONTEXT": False}})
+        assert await is_user_context_enabled(svc) is False
+
+    async def test_stored_true_is_respected(self) -> None:
+        svc = _config_service({"featureFlags": {"ENABLE_USER_CONTEXT": True}})
+        assert await is_user_context_enabled(svc) is True
+
+    async def test_independent_of_skills_flag(self) -> None:
+        svc = _config_service({
+            "featureFlags": {"ENABLE_SKILLS": False, "ENABLE_USER_CONTEXT": True},
+        })
+        assert await is_skills_enabled(svc) is False
+        assert await is_user_context_enabled(svc) is True

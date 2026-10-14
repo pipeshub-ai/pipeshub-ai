@@ -42,6 +42,18 @@ class EmbeddingError(IndexingError):
     pass
 
 
+class EmbeddingModelUnavailableError(IndexingError):
+    """The embedding model could not be built or did not answer a probe."""
+
+    pass
+
+
+class EmbeddingNotConfiguredError(EmbeddingModelUnavailableError):
+    """No embedding model is configured and the local fallback is unavailable."""
+
+    pass
+
+
 class VectorStoreError(IndexingError):
     """Raised when there's an error interacting with the vector store"""
 

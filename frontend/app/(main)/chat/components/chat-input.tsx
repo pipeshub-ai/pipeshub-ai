@@ -17,7 +17,7 @@ import { UniversalAgentResourcesPanel } from '@/chat/components/chat-panel/expan
 import { MessageActionIndicator } from '@/chat/components/chat-panel/expansion-panels/message-actions';
 import {
   ModelSelectorPanel,
-  getReasoningEffortLabel,
+  getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
 import { SelectedCollections } from '@/chat/components/selected-collections';
 import { resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
@@ -31,10 +31,17 @@ import {
 } from '@/chat/components/chat-panel';
 import { MobileQueryOptionsSheet } from '@/chat/components/chat-panel/expansion-panels/mobile-query-options-sheet';
 import { getQueryModeConfig } from '@/chat/constants';
-import { useChatStore, ctxKeyFromAgent, isModelReasoningCapable } from '@/chat/store';
+import {
+  useChatStore,
+  ctxKeyFromAgent,
+  isModelReasoningCapable,
+  getModelDefaultReasoningEffort,
+} from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
+import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
@@ -54,7 +61,7 @@ import type {
   AppliedFilters,
   AttachmentRef,
 } from '@/chat/types';
-import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, DEFAULT_REASONING_EFFORT } from '@/chat/types';
+import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES } from '@/chat/types';
 import {
   SUPPORTED_FILE_TYPES,
   ACCEPTED_MIME_TYPES,
@@ -96,6 +103,13 @@ interface ChatInputProps {
   isAgentChat?: boolean;
   /** Agent ID for filtering models to only those configured for the agent */
   agentId?: string | null;
+  /**
+   * Seeds the composer's text once per unique `key` (e.g. a quick-start
+   * suggestion chip rendered outside this component). Bump `key` to re-seed
+   * with the same `text` twice in a row; typing in the composer afterwards
+   * is never overwritten since the effect only fires on `key` changes.
+   */
+  prefill?: { text: string; key: number } | null;
 }
 
 function formatFileSize(bytes: number): string {
@@ -165,6 +179,7 @@ export function ChatInput({
   expandable = false,
   isAgentChat = false,
   agentId,
+  prefill,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -200,6 +215,17 @@ export function ChatInput({
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const chipsScrollRef = useRef<HTMLDivElement>(null);
+
+  // `prefill` seeds the composer from an external suggestion chip. Keyed by
+  // `prefill.key` (not `prefill.text`) so clicking the same suggestion twice
+  // re-seeds even if the user hadn't changed the text.
+  const lastPrefillKeyRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!prefill || prefill.key === lastPrefillKeyRef.current) return;
+    lastPrefillKeyRef.current = prefill.key;
+    setMessage(prefill.text);
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  }, [prefill]);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
   /**
@@ -365,7 +391,11 @@ export function ChatInput({
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
   const reasoningEffortLabel = activeModelSupportsReasoning
-    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? agentDefault ?? DEFAULT_REASONING_EFFORT)
+    ? getAppliedReasoningEffortLabel(t, {
+        picked: reasoningEffortOverride,
+        agentDefault,
+        modelDefault: getModelDefaultReasoningEffort(modelCtxKey, displayModel),
+      })
     : null;
 
   // Expansion panel view mode (inline vs overlay) from store
@@ -699,6 +729,10 @@ export function ChatInput({
     const sid = useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
     if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
+    if (liveSlot?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
+      return;
+    }
     // Block submit while any chip is still uploading — every chip must be
     // either `uploaded` (forwarded as a ref) or removed by the user before
     // we hand off to the runtime.
@@ -818,12 +852,10 @@ export function ChatInput({
     }
 
     // ── Normal send flow ──────────────────────────────────────
-    // Only forward chips whose upload completed successfully. Errored
-    // chips are dropped silently here — `canSubmit` lets them through
-    // (otherwise the send button would be stuck), but the user has
-    // already seen a toast per failed upload and the chip exposes a
-    // retry icon if they want to recover.
-    if ((message.trim() || uploadedFiles.length > 0) && onSend) {
+    // Only forward chips whose upload completed. A failed chip stays, with
+    // its retry, and does not by itself enable send.
+    const hasUploaded = uploadedFiles.some((f) => f.status === 'uploaded');
+    if ((message.trim() || hasUploaded) && onSend) {
       const refs = uploadedFiles
         .filter((f) => f.status === 'uploaded' && f.ref)
         .map((f) => f.ref!);
@@ -881,19 +913,13 @@ export function ChatInput({
       })
       .catch((err: unknown) => {
         if (controller.signal.aborted) return;
-        const errorMessage =
-          (err as { message?: string })?.message ??
-          t('chat.attachments.uploadFailed', { defaultValue: 'Upload failed' });
+        const errorMessage = attachmentErrorMessage(file.name, err, t);
         setUploadedFiles((prev) =>
           prev.map((f) =>
             f.id === file.id ? { ...f, status: 'error', errorMessage, ref: undefined } : f,
           ),
         );
-        toast.error(
-          t('chat.attachments.uploadFailedNamed', {
-            defaultValue: `Failed to upload ${file.name}: ${errorMessage}`,
-          }),
-        );
+        toast.error(errorMessage);
       })
       .finally(() => {
         if (uploadControllersRef.current.get(file.id) === controller) {
@@ -925,7 +951,8 @@ export function ChatInput({
     if (typeRejected.length > 0) {
       toast.error(
         t('chat.attachments.unsupportedType', {
-          defaultValue: `Unsupported file type: ${typeRejected.map((f) => f.name).join(', ')}. Supported types: ${SUPPORTED_FILE_TYPES.join(', ')}.`,
+          names: typeRejected.map((f) => f.name).join(', '),
+          types: SUPPORTED_FILE_TYPES.join(', '),
         })
       );
     }
@@ -942,7 +969,8 @@ export function ChatInput({
     if (sizeRejected.length > 0) {
       toast.error(
         t('chat.attachments.fileTooLarge', {
-          defaultValue: `File too large: ${sizeRejected.map((f) => f.name).join(', ')}. Maximum size is ${Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024))} MB per file.`,
+          names: sizeRejected.map((f) => f.name).join(', '),
+          maxMb: Math.round(CHAT_ATTACHMENT_MAX_BYTES / (1024 * 1024)),
         })
       );
     }
@@ -961,7 +989,7 @@ export function ChatInput({
     if (toAdd.length < sizeValid.length) {
       toast.error(
         t('chat.attachments.tooManyFiles', {
-          defaultValue: `Maximum ${CHAT_ATTACHMENT_MAX_FILES} attachments per message.`,
+          max: CHAT_ATTACHMENT_MAX_FILES,
         })
       );
     }
@@ -1250,7 +1278,8 @@ export function ChatInput({
     setShowUploadArea(next);
   };
 
-  const hasContent = message.trim() || uploadedFiles.length > 0 || isListening;
+  const hasSendableAttachment = uploadedFiles.some((f) => f.status === 'uploaded');
+  const hasContent = Boolean(message.trim()) || hasSendableAttachment || isListening;
   const hasUploadingAttachments = uploadedFiles.some((f) => f.status === 'uploading');
   const canSubmit =
     (hasContent || activeMessageAction !== null) &&
@@ -1294,6 +1323,9 @@ export function ChatInput({
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
     function handleClickOutside(e: MouseEvent) {
       if (expansionViewMode === 'overlay') return;
+      // A dialog opened from a panel (an MCP server's key) is portaled outside the input; closing
+      // the panel on a click inside it would unmount the dialog under the person typing.
+      if ((e.target as Element | null)?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
 
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         dismissExpansionPanelsRef.current();
@@ -1411,6 +1443,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',
@@ -1535,7 +1568,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments left"
+              aria-label={t('chat.scrollAttachmentsLeft')}
             >
               <MaterialIcon name="chevron_left" size={16} color="var(--slate-11)" />
             </Box>
@@ -1728,7 +1761,7 @@ export function ChatInput({
                 backgroundColor: 'var(--slate-4)',
                 cursor: 'pointer',
               }}
-              aria-label="Scroll attachments right"
+              aria-label={t('chat.scrollAttachmentsRight')}
             >
               <MaterialIcon name="chevron_right" size={16} color="var(--slate-11)" />
             </Box>
@@ -2062,7 +2095,7 @@ export function ChatInput({
                   color="gray"
                   size="2"
                   style={{ margin: 0, cursor: 'pointer' }}
-                  aria-label="More options"
+                  aria-label={t('common.moreOptions')}
                 >
                   <MaterialIcon name="tune" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
                 </IconButton>
@@ -2144,6 +2177,7 @@ export function ChatInput({
                   <Flex
                     align="center"
                     gap="2"
+                    data-testid="chat-model-selector"
                     onClick={() => {
                       setIsCompactMenuOpen(false);
                       const next = !isModelPanelOpen;
@@ -2329,6 +2363,7 @@ export function ChatInput({
                   <Flex
                     align="center"
                     gap="2"
+                    data-testid="chat-model-selector"
                     onClick={() => {
                       const next = !isModelPanelOpen;
                       dismissExpansionPanels();
@@ -2429,6 +2464,7 @@ export function ChatInput({
               size="2"
               onClick={handleSubmit}
               disabled={!canSubmit}
+              aria-label={t('chat.sendMessage')}
               style={{
                 margin: 0,
                 backgroundColor: canSubmit ? activeToggleColor : 'var(--slate-a3)',

@@ -38,6 +38,8 @@ interface ConnectorCatalogLayoutProps {
   trailingAction?: React.ReactNode;
   /** Optional admin actions rendered beside the search field in the header. */
   headerActions?: React.ReactNode;
+  /** Optional notice shown between the header and the tabs. */
+  banner?: React.ReactNode;
   /** Registry connectors to display as cards. */
   registryConnectors: Connector[];
   /** Active connectors to display as cards. */
@@ -73,6 +75,7 @@ export function ConnectorCatalogLayout({
   onTabChange,
   trailingAction,
   headerActions,
+  banner,
   registryConnectors,
   activeConnectors,
   onSetup,
@@ -222,6 +225,8 @@ export function ConnectorCatalogLayout({
           </TextField.Slot>
         </TextField.Root>
       </Flex>
+
+      {banner}
 
       {/* ── Tabs + trailing action ── */}
       <Flex align="center" justify="between" style={{ width: '100%' }}>

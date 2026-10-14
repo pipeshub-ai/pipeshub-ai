@@ -13,6 +13,7 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import multer from 'multer';
+import { createMulter } from '../../../libs/utils/multer.utils';
 
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
@@ -48,6 +49,7 @@ import {
   finalizeSkillImport,
   exportSkill,
 } from '../controller/skills.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 // A skill import archive is markdown + small scripts, never model weights —
 // mirrors the npm-tarball/URL-archive ceiling enforced server-side in
@@ -56,13 +58,14 @@ const SKILL_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
 
 export function createSkillsRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'name', 'version', 'candidateId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
   const logger = (container.get('Logger') as Logger | undefined)
     ?? Logger.getInstance({ service: 'SkillsRoutes' });
   const importLimiter = createSkillsImportRateLimiter(logger);
 
-  const skillUpload = multer({
+  const skillUpload = createMulter({
     storage: multer.memoryStorage(),
     limits: { fileSize: SKILL_UPLOAD_MAX_BYTES, files: 1 },
   });

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Dialog, Flex, Text, VisuallyHidden } from '@radix-ui/themes';
+import { Dialog, Flex, IconButton, Text, Tooltip, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
@@ -30,6 +30,8 @@ interface FilesCardProps {
   canEdit: boolean;
   /** Called once the first upload lazily creates the project's hidden KB, so the parent's `project` state stays in sync. */
   onKbCreated: (kbId: string) => void;
+  /** Reports the current file count + total size so the parent's "Project setup" row can show them without a second fetch. */
+  onSummaryChange?: (summary: { count: number; totalBytes: number }) => void;
 }
 
 /**
@@ -38,7 +40,13 @@ interface FilesCardProps {
  * backed by the project's lazily-created hidden Collection
  * (`linkedKnowledgeBaseId`, see `ProjectKnowledgeBaseService.ensureLinkedKb`).
  */
-export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreated }: FilesCardProps) {
+export function FilesCard({
+  projectId,
+  linkedKnowledgeBaseId,
+  canEdit,
+  onKbCreated,
+  onSummaryChange,
+}: FilesCardProps) {
   const { t } = useTranslation();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [items, setItems] = useState<KnowledgeHubNode[]>([]);
@@ -70,6 +78,14 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
       setItems([]);
     }
   }, [linkedKnowledgeBaseId, load]);
+
+  // Reports the loaded count + size to the parent (e.g. `setFileSummary`) —
+  // this effect only fires when `items` actually changes, not on every
+  // parent render, as long as the caller passes a stable state setter.
+  useEffect(() => {
+    const totalBytes = items.reduce((sum, item) => sum + (item.sizeInBytes ?? 0), 0);
+    onSummaryChange?.({ count: items.length, totalBytes });
+  }, [items, onSummaryChange]);
 
   const getKbId = useCallback(async (): Promise<string> => {
     if (linkedKnowledgeBaseId) return linkedKnowledgeBaseId;
@@ -133,9 +149,17 @@ export function FilesCard({ projectId, linkedKnowledgeBaseId, canEdit, onKbCreat
                 e.target.value = '';
               }}
             />
-            <LoadingButton size="1" variant="ghost" color="gray" onClick={() => fileInputRef.current?.click()}>
-              {t('chat.projects.workspace.uploadFiles')}
-            </LoadingButton>
+            <Tooltip content={t('chat.projects.workspace.uploadFiles')}>
+              <IconButton
+                size="1"
+                variant="soft"
+                radius="large"
+                aria-label={t('chat.projects.workspace.uploadFiles')}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <MaterialIcon name="upload_file" size={14} color="var(--accent-11)" />
+              </IconButton>
+            </Tooltip>
           </>
         )}
       </Flex>

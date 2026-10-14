@@ -21,12 +21,19 @@ from app.services.vector_db.strategy import (
 )
 
 
-def _make_config_service():
+def _make_config_service(*, down: bool = False):
     """In-memory fake ConfigurationService: enough of get_config/set_config
-    for the manifest persistence CollectionRegistry relies on."""
+    for the manifest persistence CollectionRegistry relies on.
+
+    ``down=True`` is an unreadable KV store, answered the way the real
+    get_config answers it: ``default``, unless asked to raise."""
     store: dict = {}
 
-    async def get_config(key, default=None):
+    async def get_config(key, default=None, raise_on_error=False):
+        if down:
+            if raise_on_error:
+                raise RuntimeError("KV store unreachable")
+            return default
         return store.get(key, default)
 
     async def set_config(key, value):
@@ -73,7 +80,7 @@ def _make_registry(
     return CollectionRegistry(
         vector_db_service=vector_db_service or _make_vdb(),
         strategy=strategy or SingleCollectionStrategy(),
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(
@@ -414,11 +421,11 @@ class TestDeleteCollection:
 
 
 # ---------------------------------------------------------------------------
-# recreate_all_collections
+# recreate_records_collections
 # ---------------------------------------------------------------------------
 
 
-class TestRecreateAllCollections:
+class TestRecreateRecordsCollections:
     @pytest.mark.asyncio
     async def test_drops_and_recreates_every_managed_collection(self):
         vdb = AsyncMock()
@@ -429,7 +436,7 @@ class TestRecreateAllCollections:
         await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=768)
         vdb.create_collection.reset_mock()
 
-        recreated = await registry.recreate_all_collections(records_dimension=1024)
+        recreated = await registry.recreate_records_collections(records_dimension=1024)
 
         assert recreated == ["records"]
         vdb.delete_collection.assert_awaited_once_with("records")
@@ -438,7 +445,7 @@ class TestRecreateAllCollections:
     @pytest.mark.asyncio
     async def test_noop_when_nothing_managed_and_nothing_live(self):
         registry = _make_registry(vector_db_service=_make_vdb(exists=False))
-        recreated = await registry.recreate_all_collections(records_dimension=1024)
+        recreated = await registry.recreate_records_collections(records_dimension=1024)
         assert recreated == []
 
     @pytest.mark.asyncio
@@ -455,11 +462,102 @@ class TestRecreateAllCollections:
         registry = _make_registry(vector_db_service=vdb)
         assert await registry.list_managed_collections() != []
 
-        recreated = await registry.recreate_all_collections(records_dimension=1024)
+        recreated = await registry.recreate_records_collections(records_dimension=1024)
 
         assert recreated == ["records"]
         vdb.delete_collection.assert_awaited_once_with("records")
         vdb.create_collection.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_entity_index_is_left_alone_when_the_manifest_lists_it(self) -> None:
+        """An earlier release adopted the entity index into the manifest on
+        some deployments. Rebuilt here it stayed empty: the loop that fills it
+        had every pass recorded as done."""
+        vdb = _make_vdb()
+        registry = _make_registry(vector_db_service=vdb)
+        entities = ManagedCollection(
+            name="entities",
+            collection_type="entities",
+            embedding_dimension=768,
+            strategy_name="single",
+        )
+        await registry.ensure_collection(RecordContext(org_id="org-1"), embedding_size=768)
+        await registry.manifest_store.record(entities)
+        vdb.create_collection.reset_mock()
+
+        recreated = await registry.recreate_records_collections(records_dimension=1024)
+
+        assert recreated == ["records"]
+        vdb.delete_collection.assert_awaited_once_with("records")
+        assert [
+            call.kwargs["collection_name"] for call in vdb.create_collection.await_args_list
+        ] == ["records"]
+        managed = {e.name: e for e in await registry.list_managed_collections(fresh=True)}
+        assert managed["entities"] == entities
+        assert managed["records"].embedding_dimension == 1024
+
+    @pytest.mark.asyncio
+    async def test_a_manifest_listing_only_the_entity_index_rebuilds_nothing(self) -> None:
+        vdb = _make_vdb()
+        registry = _make_registry(vector_db_service=vdb)
+        await registry.manifest_store.record(
+            ManagedCollection(
+                name="entities",
+                collection_type="entities",
+                embedding_dimension=768,
+                strategy_name="single",
+            )
+        )
+
+        assert await registry.recreate_records_collections(records_dimension=1024) == []
+
+        vdb.delete_collection.assert_not_awaited()
+        vdb.create_collection.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_manifest_fails_the_rebuild(self) -> None:
+        """The KV store answers a failed read as "empty". Taken as that, the
+        rebuild recreated nothing and reported success, after the cleanup had
+        reset every record to be indexed again."""
+        vdb = _make_vdb(exists=True, dimension=768)
+        registry = _make_registry(
+            vector_db_service=vdb, config_service=_make_config_service(down=True)
+        )
+
+        with pytest.raises(RuntimeError, match="KV store unreachable"):
+            await registry.recreate_records_collections(records_dimension=1024)
+
+        vdb.delete_collection.assert_not_awaited()
+        vdb.create_collection.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_adoption_probe_fails_the_rebuild(self) -> None:
+        """An empty manifest and a vector DB that cannot be asked what it holds
+        is not "nothing to rebuild" either."""
+        vdb = _make_vdb()
+        vdb.get_collection_info = AsyncMock(side_effect=Exception("connection refused"))
+        registry = _make_registry(vector_db_service=vdb)
+
+        with pytest.raises(Exception, match="connection refused"):
+            await registry.recreate_records_collections(records_dimension=1024)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_manifest_raises_when_strict(self):
+        """The manifest lives in the KV store, and a failed read there answers
+        "empty" -- so without strict reaching it, a delete path asking for
+        every collection gets [] from an unreadable store and drops mappings
+        whose points it never deleted. strict used to cover only the adoption
+        probe, which runs after that read and does not see the failure."""
+        registry = _make_registry(config_service=_make_config_service(down=True))
+
+        with pytest.raises(RuntimeError):
+            await registry.list_managed_collections(fresh=True, strict=True)
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_manifest_still_reads_as_empty_without_strict(self):
+        registry = _make_registry(config_service=_make_config_service(down=True))
+
+        assert await registry.list_managed_collections(fresh=True) == []
 
     @pytest.mark.asyncio
     async def test_adoption_survives_an_unreachable_vector_db(self):
@@ -468,6 +566,52 @@ class TestRecreateAllCollections:
         registry = _make_registry(vector_db_service=vdb)
 
         assert await registry.list_managed_collections() == []
+
+
+class TestAdoptionLeavesTheEntityIndexOut:
+    """Adoption runs when the manifest is found empty and used to take every
+    collection that existed at that instant, so whether the entity index
+    became "managed" (and was dropped by each records rebuild) depended on
+    start-up timing."""
+
+    @staticmethod
+    def _vdb(*existing: str) -> AsyncMock:
+        vdb = AsyncMock()
+
+        async def get_collection_info(collection_name: str) -> VectorCollectionInfo:
+            present = collection_name in existing
+            return VectorCollectionInfo(
+                name=collection_name,
+                exists=present,
+                dense_dimension=768 if present else None,
+            )
+
+        vdb.get_collection_info = AsyncMock(side_effect=get_collection_info)
+        return vdb
+
+    @pytest.mark.asyncio
+    async def test_only_the_records_collection_is_adopted(self) -> None:
+        registry = _make_registry(vector_db_service=self._vdb("records", "entities"))
+
+        managed = await registry.list_managed_collections(fresh=True)
+
+        assert [(e.name, e.collection_type) for e in managed] == [("records", "records")]
+
+    @pytest.mark.asyncio
+    async def test_an_entity_index_on_its_own_is_not_adopted(self) -> None:
+        registry = _make_registry(vector_db_service=self._vdb("entities"))
+
+        assert await registry.list_managed_collections(fresh=True) == []
+
+    @pytest.mark.asyncio
+    async def test_a_rebuild_after_adoption_leaves_the_entity_index(self) -> None:
+        vdb = self._vdb("records", "entities")
+        registry = _make_registry(vector_db_service=vdb)
+
+        recreated = await registry.recreate_records_collections(records_dimension=1024)
+
+        assert recreated == ["records"]
+        vdb.delete_collection.assert_awaited_once_with("records")
 
 
 # ---------------------------------------------------------------------------
@@ -494,7 +638,7 @@ class TestAdvisoryCeiling:
             CollectionRegistry(
                 vector_db_service=vdb,
                 strategy=PerConnectorTypeStrategy(),
-                collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+                collection_config_factory=lambda size: CollectionConfig(
                     embedding_size=size
                 ),
                 manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),
@@ -556,3 +700,57 @@ class TestAdvisoryCeiling:
         assert not any(
             "recommends" in str(c) for c in logger.warning.call_args_list
         )
+
+
+class TestARejectedManifestWriteIsRetried:
+    """record() raises when the store rejects the manifest write. The retry only
+    records if ensure_collection runs record() again -- but it marked the
+    existence cache *before* record(), so a retry inside the cache TTL hit
+    matches_dimension and returned without recording. The retried message then
+    stored points in a collection the manifest does not list, and a collection
+    that received nothing after the TTL was never recorded at all.
+    """
+
+    @staticmethod
+    def _registry(vdb):
+        from app.services.vector_db.collection_manifest import MANIFEST_CONFIG_KEY
+
+        stored: dict = {}
+        state = {"reject_next_write": True}
+
+        async def get_config(key, default=None, raise_on_error=False):
+            return stored.get(key, default)
+
+        async def set_config(key, value):
+            if state["reject_next_write"]:
+                state["reject_next_write"] = False
+                return False  # what set_config answers on a store failure
+            stored[key] = value
+            return True
+
+        svc = MagicMock()
+        svc.get_config = AsyncMock(side_effect=get_config)
+        svc.set_config = AsyncMock(side_effect=set_config)
+        return _make_registry(vector_db_service=vdb, config_service=svc), stored, MANIFEST_CONFIG_KEY
+
+    @pytest.mark.asyncio
+    async def test_retry_records_an_existing_collection_after_a_rejected_write(self):
+        registry, stored, key = self._registry(_make_vdb(exists=True, dimension=1024))
+        ctx = RecordContext(org_id="org-1")
+
+        with pytest.raises(RuntimeError, match="Could not save the collection manifest"):
+            await registry.ensure_collection(ctx, embedding_size=1024)
+        await registry.ensure_collection(ctx, embedding_size=1024)  # the retry, inside the TTL
+
+        assert "records" in (stored.get(key) or {}), "the retry did not record the collection"
+
+    @pytest.mark.asyncio
+    async def test_retry_records_a_new_collection_after_a_rejected_write(self):
+        registry, stored, key = self._registry(_make_vdb(exists=False))
+        ctx = RecordContext(org_id="org-1")
+
+        with pytest.raises(RuntimeError, match="Could not save the collection manifest"):
+            await registry.ensure_collection(ctx, embedding_size=1024)
+        await registry.ensure_collection(ctx, embedding_size=1024)
+
+        assert "records" in (stored.get(key) or {}), "the retry did not record the collection"

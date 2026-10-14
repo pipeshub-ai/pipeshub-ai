@@ -4,6 +4,7 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import urlparse
 
 import pytest
 from fastapi import HTTPException
@@ -24,13 +25,13 @@ from app.connectors.sources.google_cloud_storage.connector import (
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
 from contextlib import asynccontextmanager
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
+from app.models.entities import FileRecord, RecordGroupType, User
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +51,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -513,6 +516,8 @@ def mock_data_entities_processor_fullcov():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
@@ -640,6 +645,39 @@ class TestGCSDataSourceEntitiesProcessor95:
             assert result.is_internal is True
             assert result.hide_weburl is True
             assert "mybucket" in (result.weburl or "")
+
+    def test_forwards_record_group_kwargs_to_base(
+        self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov
+    ):
+        proc = GCSDataSourceEntitiesProcessor(
+            logger=mock_logger_fullcov,
+            data_store_provider=mock_data_store_provider_fullcov,
+            config_service=mock_config_service_fullcov,
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = "GCS"
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+
+        result = proc._create_placeholder_parent_record(
+            "mybucket/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.BUCKET.value,
+            external_record_group_id="mybucket",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.BUCKET.value
+        assert result.external_record_group_id == "mybucket"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "console.cloud.google.com"
+        assert result.path == "folder/"
 
     def test_create_placeholder_non_file_type(self, mock_logger_fullcov, mock_data_store_provider_fullcov, mock_config_service_fullcov):
         proc = GCSDataSourceEntitiesProcessor(
@@ -973,6 +1011,7 @@ class TestSyncBucket95:
         )
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.record_sync_point.update_sync_point = AsyncMock()
         await connector._sync_bucket("bucket")
 
     @pytest.mark.asyncio
@@ -1003,6 +1042,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1101,6 +1141,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1227,11 +1268,14 @@ class TestProcessGcsObject95:
         existing = MagicMock()
         existing.id = "moved-id"
         existing.external_record_id = "bucket/old/file.txt"
+        existing.external_record_group_id = "bucket"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data={"Contents": []})))
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {

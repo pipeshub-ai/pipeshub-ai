@@ -1,4 +1,4 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import {
@@ -27,6 +27,7 @@ import {
   deleteGoogleWorkspaceCredentials,
   getGoogleWorkspaceBusinessCredentials,
   getFrontendUrl,
+  getDesktopFrontendUrl,
   setFrontendUrl,
   getConnectorPublicUrl,
   setConnectorPublicUrl,
@@ -54,6 +55,7 @@ import {
   setPlatformSettings,
   getAvailablePlatformFeatureFlags,
   getEffectivePlatformFeatureFlags,
+  getSecretRevealStatus,
   getCustomSystemPrompt,
   setCustomSystemPrompt,
   getWebSearchProviders,
@@ -63,6 +65,7 @@ import {
   deleteWebSearchProvider,
   updateDefaultWebSearchProvider,
   getSlackBotConfigs,
+  getInternalSlackBotConfigs,
   createSlackBotConfig,
   updateSlackBotConfig,
   deleteSlackBotConfig,
@@ -72,6 +75,11 @@ import {
   getModelRoles,
   updateModelRoles,
 } from '../controller/cm_controller';
+import {
+  batchAddAIModels,
+  discoverAIModels,
+  rotateConnectionCredentials,
+} from '../controller/ai_models_batch.controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -92,6 +100,9 @@ import {
   updateDefaultModelSchema,
   deleteProviderSchema,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
+  discoverModelsRequestSchema,
+  rotateConnectionCredentialsSchema,
   updateProviderRequestSchema,
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
@@ -124,9 +135,17 @@ import {
   SyncEventProducer,
 } from '../services/kafka_events.service';
 import { SamlController } from '../../auth/controller/saml.controller';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 export function createConfigurationManagerRouter(container: Container): Router {
   const router = Router();
+  // Settings answers depend on who is asking and can carry secrets, so no
+  // browser or proxy cache may keep a copy to hand to the next user.
+  router.use((_req: Request, res: Response, next: NextFunction) => {
+    res.setHeader('Cache-Control', 'no-store');
+    next();
+  });
+  guardPathParams(router, 'providerId');
   const keyValueStoreService = container.get<KeyValueStoreService>(
     'KeyValueStoreService',
   );
@@ -355,7 +374,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/smtpConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSmtpConfig(keyValueStoreService),
+    getSmtpConfig(keyValueStoreService, false),
   );
 
   /**
@@ -383,7 +402,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/azureAd',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAzureAdAuthConfig(keyValueStoreService),
+    getAzureAdAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -405,7 +424,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/microsoft',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getMicrosoftAuthConfig(keyValueStoreService),
+    getMicrosoftAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -428,7 +447,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/google',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getGoogleAuthConfig(keyValueStoreService),
+    getGoogleAuthConfig(keyValueStoreService, false),
   );
   router.post(
     '/authConfig/google',
@@ -472,7 +491,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/oauth',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getOAuthConfig(keyValueStoreService),
+    getOAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -518,6 +537,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getEffectivePlatformFeatureFlags(keyValueStoreService),
   );
 
+  router.get(
+    '/secretReveal',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    getSecretRevealStatus,
+  );
+
   // Slack Bot configuration
   router.get(
     '/slack-bot',
@@ -527,8 +554,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   );
   router.get(
     '/internal/slack-bot',
-    authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSlackBotConfigs(keyValueStoreService),
+    authMiddleware.scopedTokenValidator(TokenScopes.SLACK_BOT_VERIFY),
+    getInternalSlackBotConfigs(keyValueStoreService),
   );
 
   router.post(
@@ -873,6 +900,35 @@ export function createConfigurationManagerRouter(container: Container): Router {
     streamEmbeddingDownloadProgress(),
   );
 
+  // Literal paths before /ai-models/:modelType. Express matches the param
+  // route first otherwise, and the enum validator rejects the literal segment.
+  router.post(
+    '/ai-models/discover',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(discoverModelsRequestSchema),
+    discoverAIModels(keyValueStoreService, appConfig),
+  );
+
+  router.post(
+    '/ai-models/providers/batch',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(batchAddModelsRequestSchema),
+    batchAddAIModels(keyValueStoreService, aiConfigEventService, appConfig),
+  );
+
+  router.put(
+    '/ai-models/connections/:connectionId/credentials',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(rotateConnectionCredentialsSchema),
+    rotateConnectionCredentials(keyValueStoreService, appConfig),
+  );
+
   /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType
    * @desc Get all AI models of a specific type
@@ -903,11 +959,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getAvailableModelsByType(keyValueStoreService),
   );
 
-  /**
-   * @route POST /api/v1/configurationManager/ai-models/providers
-   * @desc Add a new AI model provider
-   * @access Private (admin)
-   */
   router.post(
     '/ai-models/providers',
     authMiddleware.authenticate,
@@ -1066,6 +1117,14 @@ export function createConfigurationManagerRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONFIG_READ),
     getFrontendUrl(keyValueStoreService),
+  );
+
+  // The only unauthenticated route in this router: the desktop app calls it
+  // from the sign-in screen before any session exists. Do not put router-wide
+  // auth in front of it.
+  router.get(
+    '/public/desktopFrontendUrl',
+    getDesktopFrontendUrl(keyValueStoreService),
   );
 
   router.post(
