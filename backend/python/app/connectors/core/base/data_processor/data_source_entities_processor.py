@@ -597,6 +597,8 @@ class DataSourceEntitiesProcessor:
             "source_created_at": 0,  # Will be updated when real parent is synced
             "source_updated_at": 0,  # Will be updated when real parent is synced
             "is_placeholder": True,  # Reconciled to False when the real record syncs
+            # No indexing event is ever published for a stub; the model default QUEUED would sit forever.
+            "indexing_status": ProgressStatus.AUTO_INDEX_OFF.value,
             # Nobody has read this record's permissions yet, so nothing inherits
             # through it until the real record (or a source backfill) says how
             # it is shared.

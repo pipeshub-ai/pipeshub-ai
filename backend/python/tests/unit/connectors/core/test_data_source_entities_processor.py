@@ -175,6 +175,13 @@ class TestPlaceholdersAreRestricted:
         stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.FILE, _make_record())
         assert stub.is_placeholder and stub.access_rule == AccessRule.RESTRICTED
 
+    def test_a_placeholder_is_never_shown_as_queued(self) -> None:
+        # No indexing event is published for a stub, so QUEUED would never move.
+        from app.config.constants.arangodb import ProgressStatus
+
+        stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.TICKET, _make_record())
+        assert stub.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
     @pytest.mark.asyncio
     async def test_withdraw_app_user_access_deletes_each_user_app_relation(self) -> None:
         from app.config.constants.arangodb import CollectionNames, Connectors

@@ -18,8 +18,11 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import (
+    BooleanOperator,
+    Filter,
     FilterCollection,
     FilterOperator,
+    FilterType,
     IndexingFilterKey,
     SyncFilterKey,
 )
@@ -197,6 +200,14 @@ class TestTransformToFolderFileRecord:
         assert rec is not None
         assert rec.parent_external_record_id == "parent-page1"
         assert rec.parent_record_type == RecordType.CONFLUENCE_PAGE
+
+    def test_folder_is_not_queued_with_manual_indexing_on(self) -> None:
+        c = _make_connector()
+        assert c._transform_to_folder_file_record(_folder_data()).indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+        c.indexing_filters = FilterCollection(filters=[Filter(
+            key="enable_manual_sync", value=True, type=FilterType.BOOLEAN, operator=BooleanOperator.IS,
+        )])
+        assert c._transform_to_folder_file_record(_folder_data()).indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
 
     def test_transform_folder_missing_type_fallback(self):
         c = _make_connector()

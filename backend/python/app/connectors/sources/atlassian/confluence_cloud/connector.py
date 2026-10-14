@@ -3716,7 +3716,7 @@ class ConfluenceConnector(BaseConnector):
                 else:
                     record_version = existing_record.version
 
-            return FileRecord(
+            folder_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=folder_title,
@@ -3740,6 +3740,10 @@ class ConfluenceConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
+            # Manual indexing turns every key off; a folder has no key of its own.
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FOLDERS):
+                folder_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            return folder_record
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform folder: {e}")
