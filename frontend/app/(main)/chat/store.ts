@@ -274,6 +274,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     isInitialized: isNew,      // new chats have nothing to load
     refreshGeneration: 0,
     hasLoaded: false,
+    remoteRunInProgress: false,
     messages: [],
     isStreaming: false,
     streamingContent: '',

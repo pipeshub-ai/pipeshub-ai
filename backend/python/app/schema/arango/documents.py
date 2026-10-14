@@ -563,6 +563,7 @@ ticket_record_schema = {
         "properties": {
             "orgId": {"type": "string"},
             "status": {"type": ["string", "null"]},
+            "sourceStatus": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
             "type": {"type": ["string", "null"]},
             "deliveryStatus": {"type": ["string", "null"]},

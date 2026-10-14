@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from bisect import bisect_left, insort
+from typing import NamedTuple
 
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import Mention, NamedEntity
-from app.modules.named_entities.domain.values import ContactValue
+from app.modules.named_entities.domain.values import ContactValue, TypedValue
 from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.normalizers.dates import NormalizationContext
@@ -49,26 +50,43 @@ def _overlaps(left: tuple[int, int], right: tuple[int, int]) -> bool:
 MAX_SURFACE_CHARS = 2048
 
 
+class EntityIdentity(NamedTuple):
+    display: str
+    norm_key: str
+    value: TypedValue | None
+
+
+def entity_identity(kind: EntityKind, surface: str, ctx: NormalizationContext) -> EntityIdentity | None:
+    """The display name and node key indexing gives ``surface`` as ``kind``, or
+    None when it stores no entity for it. A name looked up at query time must go
+    through this, or it misses the node indexing wrote."""
+    if len(surface) > MAX_SURFACE_CHARS or is_suppressed_secret(surface):
+        return None
+    spec = spec_for(kind)
+    if spec is None:
+        return None
+    value = normalize_value(kind, surface, ctx)
+    if value is None and (spec.source is EntitySource.VALUE or kind is EntityKind.URL):
+        # A date or amount whose text states none is not stored under a name key,
+        # and a link that cannot be made canonical is never stored as its raw text.
+        return None
+    display = canonical_name(surface, organization=kind is EntityKind.ORGANIZATION)
+    if kind is EntityKind.URL and isinstance(value, ContactValue):
+        # The graph shows the canonical link, never the credentials a raw one can carry.
+        display = value.canonical
+    return EntityIdentity(display, norm_key_for(kind, display, value), value)
+
+
 def mentions_to_entities(
     mentions: list[RawMention], ctx: NormalizationContext
 ) -> list[NamedEntity]:
     grouped: dict[tuple[EntityKind, str], NamedEntity] = {}
     for raw in resolve_overlaps(mentions):
-        if len(raw.surface) > MAX_SURFACE_CHARS or is_suppressed_secret(raw.surface):
+        identity = entity_identity(raw.kind, raw.surface, ctx)
+        if identity is None:
             continue
         spec = spec_for(raw.kind)
-        if spec is None:
-            continue
-        value = normalize_value(raw.kind, raw.surface, ctx)
-        if value is None and (spec.source is EntitySource.VALUE or raw.kind is EntityKind.URL):
-            # A date or amount whose text states none is not stored under a name key,
-            # and a link that cannot be made canonical is never stored as its raw text.
-            continue
-        display = canonical_name(raw.surface, organization=raw.kind is EntityKind.ORGANIZATION)
-        if raw.kind is EntityKind.URL and isinstance(value, ContactValue):
-            # The graph shows the canonical link, never the credentials a raw one can carry.
-            display = value.canonical
-        key = norm_key_for(raw.kind, display, value)
+        display, key, value = identity
         entity = grouped.get((raw.kind, key))
         mention = Mention(
             block_index=raw.block_index,

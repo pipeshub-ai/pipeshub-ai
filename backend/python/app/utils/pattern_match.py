@@ -7,11 +7,12 @@ import os
 import re
 import shlex
 import time
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from cachetools import TTLCache
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from pydantic import BaseModel, Field, field_validator
 
 from app.agents.actions.storage_search.storage_search import (
@@ -407,17 +408,36 @@ def validate_pattern_match_command(cmd: str) -> tuple[bool, str]:
     return True, ""
 
 
+def _report_llm_usage(
+    response: Any,  # noqa: ANN401 - the include_raw structured-output dict
+    on_llm_usage: Callable[[BaseMessage], None] | None,
+    logger_instance: logging.Logger,
+) -> None:
+    raw = response.get("raw") if isinstance(response, dict) else None
+    if on_llm_usage is None or not isinstance(raw, BaseMessage):
+        return
+    try:
+        on_llm_usage(raw)
+    except Exception:
+        # Usage accounting must not cost the grep commands it accounts for.
+        logger_instance.warning("generate_grep_command_via_llm: usage callback failed", exc_info=True)
+
+
 async def generate_grep_command_via_llm(
     query: str,
     llm: BaseChatModel,
     logger_instance: logging.Logger,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[str] | None:
     """Generate targeted grep commands via LLM structured output.
 
     Returns a list of 1-3 commands that passed ``validate_pattern_match_command``,
     or None on timeout, LLM failure, or when every command is rejected. A failed
     attempt is retried once while ``_LLM_GREP_TIMEOUT`` leaves room for it.
+
+    ``on_llm_usage`` receives the raw model message of every attempt that
+    returned, for its token usage; an attempt cut off by the timeout has none.
 
     Uses LangChain's ``ainvoke`` with Opik callbacks so the call appears
     in the Opik trace alongside the rest of the agent loop.
@@ -459,6 +479,7 @@ async def generate_grep_command_via_llm(
                 "generate_grep_command_via_llm: attempt %d, LLM call failed: %s", attempt, exc,
             )
             continue
+        _report_llm_usage(response, on_llm_usage, logger_instance)
         commands = _parse_grep_response(response, logger_instance)
         valid_commands = _valid_llm_grep_commands(commands or [], logger_instance)
         if valid_commands:
@@ -983,6 +1004,7 @@ async def run_pattern_match_with_llm_grep(
     logger_instance: logging.Logger,
     llm: Any | None = None,
     user_query: str | None = None,
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate grep commands via LLM, run pipelines in parallel, dedup.
 
@@ -1005,7 +1027,7 @@ async def run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
-                found=found,
+                found=found, on_llm_usage=on_llm_usage,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1029,6 +1051,7 @@ async def _run_pattern_match_with_llm_grep(
     llm: Any | None,
     user_query: str | None,
     found: dict[str, dict[str, Any]],
+    on_llm_usage: Callable[[BaseMessage], None] | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
     so the caller still has them if the total budget cancels this."""
@@ -1042,6 +1065,7 @@ async def _run_pattern_match_with_llm_grep(
             llm_grep_cmds = await generate_grep_command_via_llm(
                 query=query, llm=await _grep_generation_llm(config_service, org_id, llm),
                 logger_instance=logger_instance, user_query=user_query,
+                on_llm_usage=on_llm_usage,
             )
             if llm_grep_cmds:
                 _grep_commands_cache[cache_key] = llm_grep_cmds
@@ -1560,17 +1584,9 @@ async def merge_pattern_match_results(
     if scope is None and filters and filters.get(STRICT_SCOPE_FILTER_KEY):
         return []
 
-    seen: set[str] = set()
-    unique: list[dict] = []
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if vrid and vrid not in seen:
-            seen.add(vrid)
-            unique.append(r)
-
     # Rank across connectors before the cap; each connector's list is already
     # ranked, but concatenation order would otherwise decide who is dropped.
-    unique.sort(key=keyword_match_rank, reverse=True)
+    unique = _best_hit_per_record(raw_records)
     new_records = [
         r
         for r in unique
@@ -1666,18 +1682,7 @@ async def merge_pattern_match_results(
         if not accessible_records:
             return []
 
-    rank_by_vrid: dict[str, tuple[int, int]] = {}
-    snippet_by_vrid: dict[str, str] = {}
-    for r in raw_records:
-        vrid = r.get("virtual_record_id")
-        if not vrid:
-            continue
-        rank = _record_rank(r)
-        if vrid not in rank_by_vrid or rank > rank_by_vrid[vrid]:
-            rank_by_vrid[vrid] = rank
-            if r.get("match_preview"):
-                snippet_by_vrid[vrid] = r["match_preview"]
-    match_count_by_vrid = {vrid: rank[1] for vrid, rank in rank_by_vrid.items()}
+    matches = _best_match_by_vrid(raw_records)
 
     results: list[dict] = []
     for rec in accessible_records:
@@ -1686,11 +1691,11 @@ async def merge_pattern_match_results(
         if not graph_rec:
             continue
         graph_rec = {**graph_rec}
-        mc = match_count_by_vrid.get(vrid, 0)
+        mc, snippet = matches.get(vrid, (0, None))
         if mc > 0:
             graph_rec["_match_count"] = mc
-        if vrid in snippet_by_vrid:
-            graph_rec["_match_snippet"] = snippet_by_vrid[vrid]
+        if snippet:
+            graph_rec["_match_snippet"] = snippet
         virtual_record_id_to_result[vrid] = graph_rec
         results.append({
             "virtual_record_id": vrid,
@@ -1707,6 +1712,98 @@ async def merge_pattern_match_results(
 
     logger_instance.info("Pattern match: %d record metadata results", len(results))
     return results
+
+
+def _best_hit_per_record(raw_records: list[dict]) -> list[dict]:
+    """Each record's best-ranked grep hit, best first; ties keep the order
+    the hits arrived in."""
+    best: dict[str, dict] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if vrid and (vrid not in best or keyword_match_rank(raw) > keyword_match_rank(best[vrid])):
+            best[vrid] = raw
+    return sorted(best.values(), key=keyword_match_rank, reverse=True)
+
+
+def _best_match_by_vrid(raw_records: list[dict]) -> dict[str, tuple[int, str | None]]:
+    """Per record: the match count of its best-ranked hit, and the preview of
+    its best-ranked hit that has one.
+
+    Taken apart because the best hit need not carry a preview; tying the two
+    lost a preview another hit had, depending on the order hits arrived in.
+    """
+    best_rank: dict[str, tuple[int, int]] = {}
+    preview_rank: dict[str, tuple[int, int]] = {}
+    previews: dict[str, str] = {}
+    for raw in raw_records:
+        vrid = raw.get("virtual_record_id")
+        if not vrid:
+            continue
+        rank = _record_rank(raw)
+        if vrid not in best_rank or rank > best_rank[vrid]:
+            best_rank[vrid] = rank
+        preview = raw.get("match_preview")
+        if preview and (vrid not in preview_rank or rank > preview_rank[vrid]):
+            preview_rank[vrid] = rank
+            previews[vrid] = preview
+    return {vrid: (rank[1], previews.get(vrid)) for vrid, rank in best_rank.items()}
+
+
+def grep_hits_on_loaded_records(
+    raw_records: list[dict],
+    virtual_record_id_to_result: Mapping[str, Any],
+) -> list[dict]:
+    """Hint entries for grep hits on records semantic search already loaded,
+    best first.
+
+    ``merge_pattern_match_results`` skips these records because their blocks
+    are about to be shown. When the search result then leaves one out to fit
+    its size, these entries name it in the keyword hint instead, so its match
+    can still be fetched. Only records already in the map qualify, and those
+    passed the semantic search's own permission check.
+    """
+    matches = _best_match_by_vrid(raw_records)
+    entries: list[dict] = []
+    for raw in _best_hit_per_record(raw_records):
+        vrid = raw["virtual_record_id"]
+        if not isinstance(virtual_record_id_to_result.get(vrid), dict):
+            continue
+        entry: dict[str, Any] = {"virtual_record_id": vrid, "score": 0.0, "source": "pattern_match"}
+        match_count, snippet = matches[vrid]
+        if match_count > 0:
+            entry["_match_count"] = match_count
+        if snippet:
+            entry["_match_snippet"] = snippet
+        entries.append(entry)
+    return entries
+
+
+def grep_hits_within(
+    entries: list[dict], virtual_record_id_to_result: Mapping[str, Any], max_chars: int,
+) -> list[dict]:
+    """The leading ``entries`` whose hint sections fit in ``max_chars``.
+
+    Bounds what naming records adds to a result, so leaving more records out
+    can never grow the hint past the room it frees.
+    """
+    kept: list[dict] = []
+    used = 0
+    for entry in entries:
+        section = _hint_section(entry, virtual_record_id_to_result)
+        if section is None:
+            continue
+        used += len(section) + 1
+        if used > max_chars:
+            break
+        kept.append(entry)
+    return kept
+
+
+def _render_loaded_record_metadata(record: dict[str, Any]) -> str:
+    """The metadata a semantic search result shows for ``record``."""
+    return record.get("context_metadata") or (
+        f"Record ID: {record.get('id') or 'N/A'}\nName: {record.get('record_name') or 'N/A'}"
+    )
 
 
 def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
@@ -1753,6 +1850,25 @@ def _render_graph_record_metadata(graph_rec: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _hint_section(entry: dict, virtual_record_id_to_result: Mapping[str, Any]) -> str | None:
+    """One record's ``<record>`` block in the keyword hint, or None when the
+    record is not in the map."""
+    graph_rec = virtual_record_id_to_result.get(entry.get("virtual_record_id", ""))
+    if not graph_rec:
+        return None
+    # A record semantic search loaded holds its blocks; a grep-only one holds
+    # the graph document.
+    if "block_containers" in graph_rec:
+        metadata_block = _render_loaded_record_metadata(graph_rec)
+    else:
+        metadata_block = _render_graph_record_metadata(graph_rec)
+    mc = graph_rec.get("_match_count") or entry.get("_match_count") or 0
+    mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
+    snippet = graph_rec.get("_match_snippet") or entry.get("_match_snippet")
+    snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
+    return f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>"
+
+
 def render_pattern_match_hint(
     pm_records: list[dict],
     virtual_record_id_to_result: dict[str, dict],
@@ -1780,18 +1896,10 @@ def render_pattern_match_hint(
 
     capped = pm_records[:max_records]
 
-    sections: list[str] = []
-    for entry in capped:
-        vrid = entry.get("virtual_record_id", "")
-        graph_rec = virtual_record_id_to_result.get(vrid)
-        if not graph_rec:
-            continue
-        metadata_block = _render_graph_record_metadata(graph_rec)
-        mc = graph_rec.get("_match_count", 0)
-        mc_line = f"\nKeyword Matches: {mc}" if mc > 1 else ""
-        snippet = graph_rec.get("_match_snippet")
-        snippet_line = f"\nMatched Text: {snippet}" if snippet else ""
-        sections.append(f"<record>\n{metadata_block}{mc_line}{snippet_line}\n</record>")
+    sections = [
+        section for entry in capped
+        if (section := _hint_section(entry, virtual_record_id_to_result)) is not None
+    ]
 
     if not sections:
         return ""

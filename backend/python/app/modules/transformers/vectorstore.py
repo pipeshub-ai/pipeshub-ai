@@ -72,6 +72,7 @@ from app.utils.embedding_retry import (
     signal_backpressure_if_rate_limited,
 )
 from app.utils.image_utils import normalize_image_to_base64
+from app.utils.indexing_timing import stage
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -816,19 +817,21 @@ class VectorStore(Transformer):
         # self.dense_embeddings is still None and the first use surfaces as an
         # AttributeError far from its cause, after the delete below has already
         # dropped the old summary block.
-        if self.dense_embeddings is None:
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to get embedding model instance",
-                    details={"error": str(e)},
-                ) from e
+        with stage("embed.setup"):
+            if self.dense_embeddings is None:
+                try:
+                    await self.get_embedding_model_instance()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to get embedding model instance",
+                        details={"error": str(e)},
+                    ) from e
 
-        collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
         tokens = await self._bind_membership(virtual_record_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)
@@ -1466,7 +1469,10 @@ class VectorStore(Transformer):
         """
         if presence is None:
             presence = _RecordPresence(self.graph_provider, record_id, max_age_s=0.0)
-        if not await presence.check():
+        # Record-existence guard before upsert
+        with stage("graph.read"):
+            present = await presence.check()
+        if not present:
             self.logger.warning(
                 f"Record {record_id} not found before upsert — skipping batch"
             )
@@ -1474,10 +1480,15 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
-        dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
+        with stage(
+            "embed.dense",
+            detail=f"batch of {len(texts)} texts / {sum(len(t) for t in texts)} chars",
+        ):
+            dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
         # Sparse embeddings (provider-dependent)
-        sparse_embeddings = await self._compute_sparse_embeddings(texts)
+        with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
+            sparse_embeddings = await self._compute_sparse_embeddings(texts)
 
         points: List[VectorPoint] = [
             VectorPoint(
@@ -1488,9 +1499,10 @@ class VectorStore(Transformer):
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
-        await self.vector_db_service.upsert_points(
-            collection_name=collection_name, points=points
-        )
+        with stage("vector.upsert", detail=f"{len(points)} points"):
+            await self.vector_db_service.upsert_points(
+                collection_name=collection_name, points=points
+            )
 
     async def _process_document_chunks(
         self,
@@ -1576,7 +1588,8 @@ class VectorStore(Transformer):
                 image_chunks.append(chunk)
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_embeddings(virtual_record_id, collection_name)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -1584,8 +1597,10 @@ class VectorStore(Transformer):
 
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
-            points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
-            await self._store_image_points(points, collection_name)
+            with stage("embed.image", detail=f"{len(image_chunks)} images"):
+                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+            with stage("vector.upsert", detail=f"{len(points)} image points"):
+                await self._store_image_points(points, collection_name)
 
         if langchain_docs:
             try:
@@ -1613,8 +1628,9 @@ class VectorStore(Transformer):
         record: Optional["Record"] = None,
     ) -> bool | None:
         try:
-            is_multimodal_embedding = await self.get_embedding_model_instance()
-            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            with stage("embed.setup"):
+                is_multimodal_embedding = await self.get_embedding_model_instance()
+                collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
                 "Failed to get embedding model instance",
@@ -1712,12 +1728,13 @@ class VectorStore(Transformer):
             # ── Text blocks ──
             if text_blocks:
                 try:
-                    text_documents = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            _process_text_blocks, text_blocks, virtual_record_id, org_id
-                        ),
-                        timeout=_TEXT_PROCESSING_TIMEOUT_S,
-                    )
+                    with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
+                        text_documents = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                            ),
+                            timeout=_TEXT_PROCESSING_TIMEOUT_S,
+                        )
                     documents_to_embed.extend(text_documents)
                     self.logger.debug("✅ Added text documents for embedding")
                 except asyncio.TimeoutError:
@@ -1981,17 +1998,19 @@ class VectorStore(Transformer):
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
-                await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                with stage("vector.delete"):
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 
-            await self._cleanup_orphaned_embeddings_if_needed(
-                record_id, virtual_record_id, org_id, record
-            )
-            await self._resync_membership_after_write(virtual_record_id, record_id)
+            with stage("vector.cleanup"):
+                await self._cleanup_orphaned_embeddings_if_needed(
+                    record_id, virtual_record_id, org_id, record
+                )
+                await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
         except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):

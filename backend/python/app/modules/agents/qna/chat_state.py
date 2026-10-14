@@ -180,6 +180,8 @@ class ChatState(TypedDict):
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
+    retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
+    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -189,6 +191,9 @@ class ChatState(TypedDict):
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in, disabled by default.
     enable_record_id_shortening: bool | None
+    # Opt-in measurement surface: when True the stream carries CUSTOM
+    # `retrieval_context` and `run_usage` frames. Never on by default.
+    include_retrieval_context: bool | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -683,6 +688,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "enable_record_id_shortening": bool(
             chat_query.get("enable_record_id_shortening")
             or chat_query.get("enableRecordIdShortening")
+        ),
+        "include_retrieval_context": bool(
+            chat_query.get("include_retrieval_context")
+            or chat_query.get("includeRetrievalContext")
         ),
 
         # Attachments (uploaded images/PDFs from client)

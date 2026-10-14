@@ -2012,12 +2012,11 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
         assert await neo4j_provider.get_user_by_source_id("src-missing", "conn-1") is None
+        assert await neo4j_provider.get_user_by_source_id("src-missing", "conn-1", raise_on_error=True) is None
 
-    @pytest.mark.asyncio
-    async def test_get_user_by_source_id_failure_raises_only_when_asked(self, neo4j_provider: Neo4jProvider) -> None:
-        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("down"))
+        neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("source id fail"))
         assert await neo4j_provider.get_user_by_source_id("src-1", "conn-1") is None
-        with pytest.raises(RuntimeError, match="down"):
+        with pytest.raises(RuntimeError):
             await neo4j_provider.get_user_by_source_id("src-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
@@ -2070,6 +2069,8 @@ class TestUserAndOrganizationLookups:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("app users fail"))
         assert await neo4j_provider.get_app_users("org-1", "conn-1") == []
+        with pytest.raises(RuntimeError):
+            await neo4j_provider.get_app_users("org-1", "conn-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_get_user_group_by_external_id_success_and_none(self, neo4j_provider: Neo4jProvider):

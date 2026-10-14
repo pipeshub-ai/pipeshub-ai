@@ -452,6 +452,7 @@ def make_lazy_tools_decider(
     apply: bool,
     essential_names: frozenset[str] = frozenset(),
     context: "AgentContext | None" = None,
+    uncounted_names: frozenset[str] = frozenset(),
 ) -> "Callable[[ToolRegistry, list[str]], tuple[list[str], str]]":
     """Builds the `(tool_names, tool_disclosure)` decision function used at
     BOTH the top-level `AgentSpec` construction site (`factory.py`, called
@@ -466,7 +467,9 @@ def make_lazy_tools_decider(
     "essential" set, e.g. `factory.py`'s `essential_toolset_names`
     (retrieval/knowledgehub/artifacts when attached, plus `"skills"`).
     `context` is threaded into `PipesHubGlobalCatalogFallback` for
-    auth-aware `search_tools` reasons.
+    auth-aware `search_tools` reasons. `uncounted_names` are left out of the
+    threshold count (still granted): a tool a deployment switch adds must not
+    by itself move a request from eager to lazy disclosure.
 
     `apply=False` (this scope wasn't selected, or the env flag is off)
     always returns `(tool_names, "eager")` unchanged — zero behavior
@@ -474,7 +477,8 @@ def make_lazy_tools_decider(
     """
 
     def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
-        if not apply or not should_apply_lazy_tools(len(tool_names)):
+        counted = sum(1 for name in tool_names if name not in uncounted_names)
+        if not apply or not should_apply_lazy_tools(counted):
             return tool_names, "eager"
         if not group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
             return tool_names, "eager"

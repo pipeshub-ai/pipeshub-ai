@@ -335,6 +335,29 @@ class TestMakeLazyToolsDecider:
         assert set(META_TOOL_NAMES) <= set(names)
         assert {g.name for g in registry.children_of("connectors")} == {"jira", "slack"}
 
+    def test_uncounted_names_do_not_push_a_grant_over_the_threshold(self, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "2")
+        grant = ["jira_create_issue", "jira_search_issues", "slack_send_message"]
+
+        counted = make_lazy_tools_decider(apply=True)
+        uncounted = make_lazy_tools_decider(apply=True, uncounted_names=frozenset({"slack_send_message"}))
+
+        assert counted(_registry_with_connectors(), grant)[1] == "lazy"
+        names, disclosure = uncounted(_registry_with_connectors(), grant)
+        assert (names, disclosure) == (grant, "eager"), "still granted, just not counted"
+
+    def test_uncounted_names_change_nothing_once_the_rest_is_over(self, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "1")
+        decide = make_lazy_tools_decider(apply=True, uncounted_names=frozenset({"slack_send_message"}))
+
+        names, disclosure = decide(
+            _registry_with_connectors(), ["jira_create_issue", "jira_search_issues", "slack_send_message"],
+        )
+
+        assert disclosure == "lazy" and "slack_send_message" in names
+
     def test_essential_names_are_excluded_from_grouping(self, monkeypatch) -> None:
         monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
         monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "1")

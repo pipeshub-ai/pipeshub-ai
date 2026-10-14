@@ -273,6 +273,7 @@ export interface IChatSession {
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
   lastActivityAt?: Number;
+  activeRunId?: string;
   tags?: Types.ObjectId[];
   createdAt?: Date;
   updatedAt?: Date;

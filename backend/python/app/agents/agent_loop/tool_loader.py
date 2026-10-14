@@ -332,6 +332,10 @@ class PipesHubToolLoader:
                 )
 
                 tools = toolset.tools
+                if callable(getattr(ts_class, "tools_for_request", None)):
+                    # A toolset may narrow or specialize its tools for this
+                    # request (KnowledgeGraph: tools a deployment switch adds).
+                    tools = instance.tools_for_request(tools)
                 if not context.has_ui_client:
                     # With no UI to render the question, the model's filler
                     # text becomes the final answer and the run just ends.

@@ -415,6 +415,20 @@ Both keys carry the `{record-events}` hash tag, so on Redis Cluster one script c
 
 **Node.** The Node service publishes no record events. It uses `FAIR_SCHEDULING_LANE_COUNT` (default 8, like Python) only to pre-create the lane streams.
 
+### 4.10 Where a record's time goes
+
+Every record that was admitted to an index slot logs one INFO line when its delivery ends (`app/utils/indexing_timing.py`):
+
+```
+⏱ Indexing timings for record <id> (reindexRecord, light, ok): total=412.3s wait_slot=0.0s held=412.3s pre_parse=1.2s parse_wait=0.0s parse=0.4s post_parse=410.7s | embed.dense=1630.2s/180(max 28.1s) graph.read=310.4s/181(max 9.8s) vector.upsert=40.2s/180(max 1.1s) extract=31.0s ...
+```
+
+The label ends with how the delivery finished: `ok`, `failed`, `stopped` (the consumer shut down), `contended` (a duplicate delivery owns the record) or `requeued` (it waited too long for a parse slot and went back on the queue without using an attempt). The first group is wall time on the record's own path, from the consumer wrapper: waiting for the index slot, holding it (up to the moment its leases and permits are handed back), and within the hold the time before parsing (record reads, download, dedup), waiting for a parse slot, parsing, and everything after parsing (embedding, storage, enrichment). The second group is busy time per step, largest first, as `total/count(max)`. Steps run concurrently (a record's embedding batches run five at a time), so a step's total can exceed the record's wall time; the count and the maximum say whether it was many ordinary calls or a few slow ones. Steps: `download`, `reconcile`, `chunk`, `embed.setup`, `embed.dense`, `embed.sparse`, `embed.image`, `graph.read`, `graph.status`, `graph.enrich`, `vector.delete`, `vector.upsert`, `vector.cleanup`, `blob.write`, `blob.metadata`, `images.describe`, `extract` (department lookup and classification), `entities.extract` (the wait for named-entity extraction left after classification, which runs alongside it), `entities.persist`, `entities.resolve`, `entities.identity`, `entities.upsert`, `lease.index`, `lease.record`. The record summary's embedding is not a step of its own: its time lands in `embed.*`, `vector.*` and `graph.read`, so no second counts the same work twice.
+
+A single step slower than `INDEXING_SLOW_STEP_SECONDS` (30) also logs a WARNING as it ends (`⏱ Slow indexing step embed.dense took 41.0s ... for record <id>: batch of 50 texts / 9120 chars`), at most three per step per record; the summary counts all of them.
+
+**Slow I/O or a blocked loop?** Every in-flight record shares the worker event loop, so one step that holds the loop makes every other record's graph, vector and embedding calls look slow. The worker loop therefore runs a lag monitor (`app/utils/loop_lag_monitor.py`): a task that wakes every 0.5s and measures how late it woke. Lateness over `INDEXING_LOOP_LAG_WARN_SECONDS` (1.0) logs `⏱ Event loop indexing-worker lagged ...` at most every 10s, and `GET /health` reports it under `worker_loop_lag`. If the loop has not run for `INDEXING_LOOP_STALL_STACK_SECONDS` (5), a watchdog thread logs the loop thread's current stack once per stall, which names the code holding it. Slow steps with no lag warnings are slow downstream calls; slow steps together with lag warnings are the loop.
+
 ---
 
 ## 5. Root cause: throughput collapses to a few records after the first few hundred
@@ -586,3 +600,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | `INDEXING_CONNECTOR_STATE_REFRESH_SECONDS` | 15 | how long a connector is trusted to be on before its state is read again, for settling turned-off and removed connectors' events as they are read; off and removed are always read afresh; `0` turns read-time settling off (section 4.1) |
 | `STRANDED_RECORD_REPUBLISH_AFTER_SECONDS` | 3600 | youngest a waiting record can be before the stranded sweep looks at it; `0` disables the sweep. Not a backlog-sized threshold (section 4.6) |
 | `INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS` | 86400 | longest a record may wait in total on its source's rate limit before it is FAILED; `0` turns waiting off (section 4.6) |
+| `INDEXING_TIMING_LOGS` | true | per-record timing summary and slow-step warnings (section 4.10); `false` turns both off |
+| `INDEXING_SLOW_STEP_SECONDS` | 30 | a single step at least this long logs a WARNING (section 4.10) |
+| `INDEXING_LOOP_LAG_WARN_SECONDS` | 1.0 | worker-loop lateness that logs a warning; `0` turns the lag monitor off (section 4.10) |
+| `INDEXING_LOOP_STALL_STACK_SECONDS` | 5 | how long the worker loop may not run before its stack is logged; `0` turns the watchdog off (section 4.10) |

@@ -37,6 +37,10 @@ Two properties the callers depend on:
   while the cap counted it once. The transport guard then had to cut the
   overflow, evicting pictures the model had not seen to keep repeats of one
   it had (`agents/agent_loop/image_guard.py`).
+
+Retrieval also gets only part of the per-request cap
+(`ImagePolicy.max_retrieved_images`): search hits arrive first, and would
+otherwise leave nothing for a record the model fetches for its figures.
 """
 
 from __future__ import annotations
@@ -113,6 +117,11 @@ class ImageOrigin(IntEnum):
     FETCHED_RECORD = 1   # the model explicitly fetched the record it lives in
     SEARCH_HIT = 2       # retrieval surfaced it
     HISTORY = 3          # replayed from an earlier turn
+
+    @property
+    def is_retrieved(self) -> bool:
+        """Arrived without the user or the model asking for this record."""
+        return self in (ImageOrigin.SEARCH_HIT, ImageOrigin.HISTORY)
 
 
 class DegradeReason(str, Enum):
@@ -240,6 +249,9 @@ class ImageAdmission:
         # Hashes already sent this request. Gives idempotent re-renders and a
         # stable image set across turns (see the module docstring).
         self._admitted_hashes: set[str] = set()
+        # How many of `_admitted_hashes` came from search hits or history,
+        # which may use only `policy.max_retrieved_images` of the cap.
+        self._retrieved_slots_used = 0
         # Original hash -> the bytes actually admitted for it, whenever
         # `_normalize` had to rewrite them. Kept because the renderers hold a
         # decision, not a candidate, and re-read the source block's own URI:
@@ -250,6 +262,23 @@ class ImageAdmission:
         # Hashes whose normalization has been decided, including the ones that
         # needed no rewrite. Without it a no-op re-decodes on every render.
         self._normalization_checked: set[str] = set()
+
+    def trial(self) -> "ImageAdmission":
+        """An arbiter that decides exactly as this one would from here on,
+        without spending this one's slots.
+
+        For sizing a render before committing to it. The downscale caches are
+        shared, not copied: they depend only on the bytes and the policy, so
+        work a trial does is not repeated by the real render.
+        """
+        budget = ImageBudget(self.budget.max_images)
+        budget.used = self.budget.used
+        clone = ImageAdmission(self.policy, budget=budget)
+        clone._admitted_hashes = set(self._admitted_hashes)
+        clone._retrieved_slots_used = self._retrieved_slots_used
+        clone._normalized_by_hash = self._normalized_by_hash
+        clone._normalization_checked = self._normalization_checked
+        return clone
 
     @property
     def allows_images(self) -> bool:
@@ -262,6 +291,14 @@ class ImageAdmission:
             return 0
         per_request = self.policy.max_images_per_request - len(self._admitted_hashes)
         return max(0, min(per_request, self.budget.remaining))
+
+    def _remaining_for(self, candidates: list[ImageCandidate]) -> int:
+        """Slots left for `candidates`: the retrieval share bounds a batch
+        made only of retrieved images."""
+        if candidates and all(c.origin.is_retrieved for c in candidates):
+            share = self.policy.max_retrieved_images - self._retrieved_slots_used
+            return max(0, min(self.remaining, share))
+        return self.remaining
 
     def already_admitted(self, candidate: ImageCandidate) -> bool:
         return candidate.hash in self._admitted_hashes
@@ -307,7 +344,8 @@ class ImageAdmission:
         # picture at all.
         # With no slots left at all there is nothing to choose between, and a
         # capacity reason tells the reader more than "too small" would.
-        if self.remaining > 0 and len(fresh) > self.remaining:
+        room = self._remaining_for(fresh)
+        if room > 0 and len(fresh) > room:
             eligible: list[ImageCandidate] = []
             for candidate in fresh:
                 reason = _prefilter_reason(candidate)
@@ -319,13 +357,18 @@ class ImageAdmission:
             eligible = fresh
 
         for candidate in sorted(eligible, key=_rank_key):
-            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0:
+            retrieved = candidate.origin.is_retrieved
+            if self.policy.max_images_per_request - len(self._admitted_hashes) <= 0 or (
+                retrieved and self._retrieved_slots_used >= self.policy.max_retrieved_images
+            ):
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_REQUEST_CAP))
                 continue
             if not self.budget.can_add():
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
                 continue
             _ = self.budget.try_consume(1)
+            if retrieved:
+                self._retrieved_slots_used += 1
             self._admitted_hashes.add(candidate.hash)
             admitted.append(self._normalize(candidate))
 

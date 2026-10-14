@@ -19,6 +19,7 @@ from atlassian_behaviour_fakes import (
     FakeCheckpointStore,
     FakeConfigService,
     json_response,
+    run_full_sync,
 )
 from atlassian_cloud_fakes import (
     CLOUD_ID,
@@ -35,6 +36,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors
 from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.sources.atlassian.core.read_outcome import StoredAccessReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.models.entities import FileRecord, RecordGroup, RecordGroupType, TicketRecord
 from app.sources.client.jira.jira import JiraRESTClientViaToken
@@ -874,3 +876,457 @@ class TestDeletedIssuesFoundByComparingIds:
         assert set(tickets(keyed_db)) == {"1", "3"}
         assert checkpoints.values_for("issues_audit_deletions"), "the next sync's audit window starts here"
         assert listing.id_bodies == []
+
+
+def person(account_id: str, email: Optional[str]) -> dict[str, Any]:
+    row: dict[str, Any] = {"accountId": account_id, "accountType": "atlassian", "active": True, "displayName": account_id}
+    if email:
+        row["emailAddress"] = email
+    return row
+
+
+
+def fail_checkpoint_reads(store: FakeCheckpointStore, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make reading the issues checkpoint fail, as a database error would."""
+    real = store.get_sync_point
+
+    async def get_sync_point(key: str, raise_on_error: bool = False) -> Any:  # noqa: ANN401
+        if key.endswith("issues_global"):
+            raise RuntimeError("database unavailable")
+        return await real(key, raise_on_error)
+
+    monkeypatch.setattr(store, "get_sync_point", get_sync_point)
+
+
+class TestUnfinishedUserRead:
+    """A user list that stops part-way must not shrink who can see what.
+
+    Bo is on the second page of ``/users/search``. He is in the devs group, in the
+    Developers role by name, he leads ENG and the ENG scheme names him directly.
+    """
+
+    FIRST_PAGE = [person("acc-ana", "ana@acme.com")] + [person(f"acc-{i}", f"u{i}@elsewhere.example") for i in range(49)]
+
+    @staticmethod
+    def _stub_bo_everywhere(api: AtlassianApiStub) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/group/member", {"values": [{"accountId": "acc-ana"}, {"accountId": "acc-bo"}], "isLast": True})
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"accountId": "acc-bo", "displayName": "Bo"}},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "acc-bo"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        api.on("GET", f"{JIRA}/project/ENG/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-user-role-actor", "actorUser": {"accountId": "acc-bo"}},
+        ]})
+        api.on("GET", f"{JIRA}/user/search", json_response([]))
+
+    def _second_page(self, api: AtlassianApiStub, answer: Callable[[], httpx.Response]) -> None:
+        def users(request: httpx.Request) -> httpx.Response:
+            start = AtlassianApiStub.query(request).get("startAt")
+            if start == "0":
+                return json_response(self.FIRST_PAGE)
+            if start == "50":
+                return answer()
+            return json_response([])
+
+        api.on("GET", f"{JIRA}/users/search", users)
+
+    @staticmethod
+    def _access(db: SiteDb) -> dict[str, Any]:
+        return {
+            "devs": saved_members(db, "grp-dev"),
+            "developers": sorted(m.email for m in db.app_roles["ENG_10002"]),
+            "lead": [m.email for m in db.app_roles["ENG_projectLead"]],
+            "project": acl(db),
+        }
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
+            pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
+            pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+        ],
+    )
+    async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
+        self, api, site_db, checkpoints, search, answer
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+        assert before["devs"] == ["ana@acme.com", "bo@acme.com"]
+        assert before["developers"] == ["bo@acme.com"]
+        assert before["lead"] == ["bo@acme.com"]
+        assert ("EntityType.USER", "bo@acme.com") in before["project"]
+
+        self._second_page(api, answer)
+        groups_saved = len(site_db.user_groups)
+        await connector.run_sync()
+
+        assert self._access(site_db) == before
+        assert len(site_db.user_groups) == groups_saved, "no group is saved again"
+        assert "1" in tickets(site_db), "issues are still synced"
+
+    @pytest.mark.parametrize("status", [503, 408])
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, api, site_db, checkpoints, search, status) -> None:
+        self._stub_bo_everywhere(api)
+        site_db.active_users.append(type("U", (), {"email": "bo@acme.com"})())
+        # Bo's email is hidden, so only the lookup by his PipesHub email finds him.
+        self._second_page(api, lambda: json_response([person("acc-bo", None)]))
+        api.on("GET", f"{JIRA}/user/search", lambda r: json_response(
+            [person("acc-bo", None)] if AtlassianApiStub.query(r).get("query") == "bo@acme.com" else []
+        ))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        site_db.app_users.clear()  # nothing cached from the last sync, so the lookup is needed again
+        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=status))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+    async def test_a_complete_read_that_drops_a_user_removes_them(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "bo@acme.com" in self._access(site_db)["devs"]
+
+        # Bo leaves Jira: the user list no longer has him, though older answers still name him.
+        self._second_page(api, lambda: json_response([]))
+        await connector.run_sync()
+
+        after = self._access(site_db)
+        assert after["devs"] == ["ana@acme.com"]
+        assert after["developers"] == []
+        assert after["lead"] == []
+        assert ("EntityType.USER", "bo@acme.com") not in after["project"]
+
+    async def test_a_user_list_refused_from_the_first_page_fails_closed(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        # The account cannot list users at all, so no one is kept on stale access.
+        api.on("GET", f"{JIRA}/users/search", json_response({"errorMessages": ["denied"]}, status=403))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == []
+
+    async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding back would leave everyone without access.
+        access = self._access(site_db)
+        assert access["devs"] == ["ana@acme.com"]
+        assert access["developers"] == []
+        assert access["lead"] == []
+        assert ("EntityType.GROUP", "grp-dev") in access["project"], "the grants that were read are saved"
+
+    async def test_a_full_sync_with_a_short_user_read_saves_what_was_read(self, api, site_db, checkpoints, search) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert "bo@acme.com" in self._access(site_db)["devs"]
+
+        # A full sync's prep deletes the sync points and every stored grant before the connector runs.
+        checkpoints.sync_points.clear()
+        site_db.user_groups.clear()
+        site_db.app_roles.clear()
+        site_db.record_group_permissions.clear()
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        access = self._access(site_db)
+        assert access["devs"] == ["ana@acme.com"]
+        assert ("EntityType.GROUP", "grp-dev") in access["project"]
+
+    async def test_a_failed_lookup_after_the_user_list_is_refused_outright_still_fails_closed(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert saved_members(site_db, "grp-dev") == ["ana@acme.com", "bo@acme.com"]
+
+        api.on("GET", f"{JIRA}/users/search", json_response({"errorMessages": ["denied"]}, status=403))
+        api.on("GET", f"{JIRA}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert saved_members(site_db, "grp-dev") == [], "a refused user list is not kept open by a lookup that failed"
+
+    async def test_a_checkpoint_that_cannot_be_read_keeps_the_stored_access(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = self._access(site_db)
+
+        fail_checkpoint_reads(checkpoints, monkeypatch)
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(site_db) == before, "an unreadable checkpoint is not 'nothing stored'"
+
+    def test_the_connector_class_keeps_its_registration(self) -> None:
+        # The helpers live in the same module; the builder decorator must still land on the connector.
+        assert "_connector_metadata" in JiraConnector.__dict__
+
+    async def test_full_sync_coverage_is_incomplete_only_when_stored_access_was_held(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_bo_everywhere(api)
+        self._second_page(api, lambda: json_response([person("acc-bo", "bo@acme.com")]))
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+        self._second_page(api, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is False, "stored access was held, and not noted as seen"
+
+        # A full sync's prep deletes the sync points, so this run holds nothing back and the unlink may run.
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+        assert connector.full_sync_coverage().complete is True
+
+
+class TestUnreadApplicationRoles:
+    """ENG's scheme also grants the jira-software application role, which Jira maps to grp-sw."""
+
+    @staticmethod
+    def _stub_application_role(api: AtlassianApiStub) -> None:
+        stub_site(api)
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [{"groupId": "grp-sw", "name": "jira-software-users"}]}]))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(json_response({"errorMessages": ["busy"]}, status=503), id="5xx"),
+            pytest.param(json_response({"errorMessages": ["timeout"]}, status=408), id="408"),
+            pytest.param(httpx.ConnectError("reset"), id="network"),
+            pytest.param(httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(json_response({"roles": []}), id="wrong-shape"),
+            pytest.param(json_response(["jira-software"]), id="malformed-entry"),
+            pytest.param(json_response([{"groupDetails": [{"groupId": "grp-sw"}]}]), id="role-without-key"),
+        ],
+    )
+    async def test_an_unread_application_role_list_keeps_the_project_access(self, api, site_db, checkpoints, search, answer) -> None:
+        self._stub_application_role(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert ("EntityType.GROUP", "grp-sw") in before
+
+        def roles(request: httpx.Request) -> httpx.Response:
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        api.on("GET", f"{JIRA}/applicationrole", roles)
+        await connector.run_sync()
+
+        assert acl(site_db) == before
+        assert "1" in tickets(site_db), "the project's issues are still synced"
+
+    async def test_an_unread_application_role_list_still_updates_projects_that_do_not_use_one(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        stub_site(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        api.on("GET", f"{JIRA}/permissionscheme/1/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "qa", "value": "grp-qa"}},
+        ]})
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-qa")]
+
+    async def test_a_first_sync_with_unread_application_roles_saves_the_grants_that_were_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding the project back would leave it with no access.
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev")]
+
+    async def test_a_first_sync_cut_short_after_saving_the_project_keeps_its_access(
+        self, api, site_db, checkpoints, search, monkeypatch
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+
+        async def stopped(*_: object) -> None:
+            raise RuntimeError("sync stopped")
+
+        monkeypatch.setattr(connector, "_update_issues_sync_checkpoint", stopped)
+        with pytest.raises(RuntimeError, match="sync stopped"):
+            await connector.run_sync()
+        before = acl(site_db)
+        assert checkpoints.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+        monkeypatch.undo()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl(site_db) == before
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_with_what_was_read(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        api.on("GET", f"{JIRA}/project/search", {"values": [
+            {"id": "10000", "key": "ENG", "name": "Engineering"},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ], "isLast": True})
+        api.on("GET", f"{JIRA}/project/OPS/role", {})
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        eng_before = acl(site_db)
+        assert "20000" not in site_db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        api.on("GET", f"{JIRA}/project/OPS/permissionscheme", {"id": 2})
+        api.on("GET", f"{JIRA}/permissionscheme/2/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs", "value": "grp-dev"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "applicationRole", "parameter": "jira-software"}},
+        ]})
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl(site_db) == eng_before, "ENG's saved access is kept"
+        ops = sorted((str(p.entity_type), p.external_id or p.email) for p in site_db.record_group_permissions["20000"])
+        assert ops == [("EntityType.GROUP", "grp-dev")], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_the_roles_groups(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert acl(site_db) == before, "the role's group stays"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_the_project_is_saved(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        site_db.fail_stored_permission_reads = True
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert acl(site_db) == before, "a failed read is not taken for 'nothing stored'"
+
+    async def test_a_full_sync_with_unread_roles_keeps_the_project_access_after_the_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)  # ENG has no issues, so nothing but the held project marks it seen
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+        assert ("EntityType.GROUP", "grp-sw") in before
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["busy"]}, status=503))
+        await run_full_sync(connector, site_db)
+
+        assert acl(site_db) == before, "the role's group stays"
+        assert connector.full_sync_coverage().complete is True, "the unlink still runs for what is really gone"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, api, site_db, checkpoints, search) -> None:
+        self._stub_application_role(api)
+        search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000")]})
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, site_db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+        before = acl(site_db)
+
+        checkpoints.sync_points.clear()
+        api.on("GET", f"{JIRA}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, site_db)
+
+        assert acl(site_db) == before, "the stored grants survive the unlink"
+
+    async def test_a_complete_application_role_list_rewrites_the_project_access(self, api, site_db, checkpoints, search) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response([{"key": "jira-software", "groupDetails": [{"groupId": "grp-new", "name": "new-licensees"}]}]))
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.GROUP", "grp-new")]
+
+    async def test_a_forbidden_application_role_list_still_falls_back_to_the_jira_account(
+        self, api, site_db, checkpoints, search
+    ) -> None:
+        self._stub_application_role(api)
+        connector, _ = await ready_connector(site_db, checkpoints)
+        await connector.run_sync()
+
+        api.on("GET", f"{JIRA}/applicationrole", json_response({"errorMessages": ["no"]}, status=403))
+        await connector.run_sync()
+
+        assert acl(site_db) == [("EntityType.GROUP", "grp-dev"), ("EntityType.USER", "sync@acme.com")]
+
+    def test_the_connector_class_keeps_its_registration(self) -> None:
+        # The helper exception lives in the same module; the builder decorator must still land on the connector.
+        assert "_connector_metadata" in JiraConnector.__dict__

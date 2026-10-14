@@ -35,6 +35,7 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     list_accessible_entity_records,
 )
+from app.modules.retrieval.provenance import graph_record_refs, note_retrieved_by
 from app.utils.chat_helpers import (
     get_record_id_shortener_if_enabled,
     resolve_frontend_url,
@@ -133,6 +134,7 @@ async def execute_find_records_by_entity(
     remember_record_ids(
         state, record_ids, names={r["_key"]: r.get("recordName") or "" for r in page.records if r.get("_key")},
     )
+    note_retrieved_by(state, "entity", graph_record_refs(page.records))
     name = indexed.get("name") if indexed.get("type") == resolved_type else None
     return True, _render_page(
         page.records,

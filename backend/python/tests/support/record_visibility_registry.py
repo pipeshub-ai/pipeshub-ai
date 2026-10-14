@@ -125,6 +125,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         "repair restores a trashed record's labels too, so a restore shows its own",
     ),
     "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_named_entity_mentions_in_records": (
+        Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),

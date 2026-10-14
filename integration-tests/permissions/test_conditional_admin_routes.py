@@ -106,7 +106,7 @@ def _ask(world: World, route: ConditionalRoute, case: Case) -> tuple[Reply, dict
         return used[key]
 
     # First, so that what the reply is searched for exists before the request is made.
-    for text in (case.words, *case.absent):
+    for text in (case.words, *case.also, *case.absent):
         fill(text, lookup)
     params = fill(route.params if case.params is None else case.params, lookup)
     body = fill(route.body if case.body is None else case.body, lookup)
@@ -139,8 +139,11 @@ def test_the_route_enforces_its_rule(
     problems = []
     if reply.status != case.status:
         problems.append(f"HTTP {reply.status}, not {case.status}")
-    if case.words and value_of(case.words) not in reply.text:
-        problems.append(f"the reply does not say {case.words!r}")
+    problems.extend(
+        f"the reply does not say {text!r}"
+        for text in (case.words, *case.also)
+        if text and value_of(text) not in reply.text
+    )
     problems.extend(
         f"the reply contains {text!r}" for text in case.absent if value_of(text) in reply.text
     )

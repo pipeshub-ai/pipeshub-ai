@@ -1016,6 +1016,11 @@ export interface ChatSlot {
   refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
+  /**
+   * The loaded conversation was still `Inprogress` on the server — a run that kept going after this
+   * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
+   */
+  remoteRunInProgress: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];

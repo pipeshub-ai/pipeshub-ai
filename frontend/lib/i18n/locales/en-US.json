@@ -2653,6 +2653,7 @@
         "add": "Add filter",
         "incomplete": "Finish operator and value for each filter below to see a summary here.",
         "empty": "No filters yet. Use \"Add filter\" to choose one of the supported filters.",
+        "unsetFallback": "{{field}}: {{value}} (default)",
         "operator": "Operator",
         "chooseOperator": "Choose operator…",
         "value": "Value",

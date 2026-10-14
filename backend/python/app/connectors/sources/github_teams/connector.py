@@ -62,6 +62,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
+from app.connectors.sources.github_teams.common.utils import updated_since_filter_field
 from app.models.entities import Record
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
@@ -155,6 +156,7 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(updated_since_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
             display_name="Index Issues",

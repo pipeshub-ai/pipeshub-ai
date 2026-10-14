@@ -646,7 +646,7 @@ class TestRenderNavigationViewContextBlock:
             context_block="Record ID: rec1\nName: PA-1787",
         )
         text = render_navigation_view(view, page=1)
-        assert "Indexed: IN_PROGRESS" in text
+        assert "exists, but its content is not indexed yet (status: IN_PROGRESS)" in text
 
     def test_context_block_completed_indexing_not_shown(self) -> None:
         view = NavigationView(
@@ -657,6 +657,7 @@ class TestRenderNavigationViewContextBlock:
         )
         text = render_navigation_view(view, page=1)
         assert "Indexed:" not in text
+        assert "not indexed" not in text
 
 
 class TestPaginationHints:
@@ -761,7 +762,7 @@ class TestRenderMatchDirect:
             web_url=None, indexing_status="IN_PROGRESS", identifier_used="Doc",
         )
         lines = _render_match(m)
-        assert any("Indexed: IN_PROGRESS" in l for l in lines)
+        assert any("not indexed yet (status: IN_PROGRESS)" in line for line in lines)
 
     def test_indexing_status_completed_not_shown(self) -> None:
         m = LookupMatch(
@@ -770,6 +771,7 @@ class TestRenderMatchDirect:
         )
         lines = _render_match(m)
         assert not any("Indexed:" in l for l in lines)
+        assert not any("not indexed" in line for line in lines)
 
     def test_no_record_type_uses_question_mark(self) -> None:
         m = LookupMatch(
