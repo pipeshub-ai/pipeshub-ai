@@ -15,12 +15,19 @@ from collections.abc import Iterable
 # shape the request used.
 # - "please use /v1/responses instead": Chat Completions rejected the
 #   combination.
+# - "to use function tools, use /v1/responses": the same refusal as Azure
+#   OpenAI words it for gpt-6 models ("Function tools with reasoning_effort
+#   are not supported for this model in /v1/chat/completions. To use function
+#   tools, use /v1/responses or set reasoning_effort to 'none'."). It comes
+#   back even when the request carried no reasoning setting, because those
+#   models reason by default.
 # - "please use /v1/chat/completions instead": the inverse -- a Responses-API
 #   attempt landed on a backend that only supports this on Chat Completions.
 # - "tool_choice.function": Chat-Completions-shaped tool_choice sent to a
 #   Responses-only model/deployment.
 API_SHAPE_CONFLICT_MARKERS = (
     "please use /v1/responses instead",
+    "to use function tools, use /v1/responses",
     "please use /v1/chat/completions instead",
     "tool_choice.function",
 )
@@ -64,7 +71,14 @@ def wants_responses_api(exc: Exception) -> bool:
     transport can pick a shape from the error rather than blindly toggling.
     """
     message = str(exc).lower()
-    return "please use /v1/responses instead" in message or "tool_choice.function" in message
+    return any(
+        marker in message
+        for marker in (
+            "please use /v1/responses instead",
+            "to use function tools, use /v1/responses",
+            "tool_choice.function",
+        )
+    )
 
 
 def is_prompt_cache_param_conflict(exc: Exception, sent: Iterable[str]) -> bool:

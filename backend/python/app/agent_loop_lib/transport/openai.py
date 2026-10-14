@@ -978,13 +978,13 @@ class OpenAITransport(LLMTransport):
                 d.reasoning = None
                 d.reasoning_effort = None
                 return LLMApiMode.NO_REASONING_WITH_TOOLS.value
-            # Reasoning combined with bound tools on Chat Completions: this
-            # deployment wants the Responses API for that combination.
+            # Tools refused on Chat Completions: this deployment wants the
+            # Responses API for them. Usually reasoning was set; a model that
+            # reasons by default (Azure's gpt-6) is refused without it, and
+            # then keeps its own default effort there, as on the LangChain arm.
             effort = d.reasoning_effort or (d.reasoning or {}).get("effort")
-            if not effort:
-                return None
             d.use_responses_api = True
-            d.reasoning = {"effort": effort}
+            d.reasoning = {"effort": effort} if effort else None
             d.reasoning_effort = None
             return LLMApiMode.RESPONSES.value
         if is_reasoning_mandatory_conflict(exc):

@@ -1396,6 +1396,13 @@ def _reasoning_effort_kwargs(
       hands a model an unfloored ``"none"``.
     """
     if not config.get("isReasoning"):
+        # Reasoning is unticked, but this model was seen to refuse tools on
+        # Chat Completions and accept them on the Responses API (Azure's
+        # gpt-6 models do this: they reason by default). Keep using the
+        # Responses API, with no reasoning setting so the model keeps its own
+        # default, exactly as the retry that succeeded was sent.
+        if api_mode == LLMApiMode.RESPONSES.value and provider in _OPENAI_FAMILY:
+            return {"use_responses_api": True}
         return {}
 
     if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:

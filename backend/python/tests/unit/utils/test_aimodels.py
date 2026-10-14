@@ -313,6 +313,31 @@ class TestReasoningEffortKwargs:
         )
         assert result == {"reasoning": {"effort": "high"}, "use_responses_api": True}
 
+    def test_learned_responses_mode_applies_with_reasoning_unticked(self) -> None:
+        """A model that refused tools on Chat Completions and worked on the
+        Responses API keeps using it, even with Reasoning unticked. No
+        reasoning setting is added: the model uses its own default."""
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="azureOpenAI",
+            model_name="gpt-6.1-sol", api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {"use_responses_api": True}
+
+    def test_unticked_model_without_learned_mode_gets_nothing(self) -> None:
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="azureOpenAI", model_name="gpt-6.1-sol",
+        )
+        assert result == {}
+
+    def test_learned_responses_mode_ignored_for_non_openai_provider(self) -> None:
+        """The learned fact is keyed by model, not provider: a non-OpenAI
+        client has no Responses API switch to set."""
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="anthropic",
+            model_name="gpt-6.1-sol", api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {}
+
     def test_base_url_host_match_is_case_insensitive(self):
         config = {"isReasoning": True}
         result = _reasoning_effort_kwargs(
@@ -1880,6 +1905,34 @@ class TestGetGeneratorModelApiModeWiring:
         call_kwargs = mock_cls.call_args.kwargs
         assert call_kwargs["reasoning"] == {"effort": "high"}
         assert call_kwargs["use_responses_api"] is True
+
+
+    @patch("app.utils.aimodels.get_llm_api_mode_store")
+    def test_azure_unticked_model_with_learned_responses_mode_request_body(self, mock_get_store) -> None:
+        """Once a gpt-6 model has been seen to need the Responses API for
+        tools, later requests go there from the start, with Reasoning
+        unticked and no reasoning setting in the body."""
+        from langchain_core.messages import HumanMessage
+
+        mock_store = MagicMock()
+        mock_store.get.return_value = LLMApiMode.RESPONSES.value
+        mock_get_store.return_value = mock_store
+        config = {
+            "configuration": {
+                "model": "gpt-6.1-sol", "apiKey": "test-key", "deploymentName": "gpt-6.1-sol",
+                "endpoint": "https://example.openai.azure.com",
+            },
+            "isDefault": True,
+            "isReasoning": False,
+            "modelKey": "abc-123",
+        }
+
+        llm = get_generator_model(LLMProvider.AZURE_OPENAI.value, config)
+        payload = llm._get_request_payload([HumanMessage(content="hi")])
+
+        assert "input" in payload  # Responses API
+        assert "reasoning" not in payload
+        assert payload["temperature"] == 1
 
 
 class TestModelDefaultReasoningEffort:
