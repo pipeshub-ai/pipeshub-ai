@@ -169,16 +169,33 @@ class TestWrites:
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
 
-    async def test_a_point_from_before_the_model_was_recorded_does_not_hide_the_others(self) -> None:
+    async def test_points_from_before_the_model_was_recorded_do_not_hide_the_others(self, monkeypatch) -> None:
+        """Older points scroll first on OpenSearch and Redis; the probe pages past them."""
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 10)
         db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
-        await _store(db, config).upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
-        first = next(iter(db.points.values()))
-        del first.payload["metadata"][EMBEDDING_MODEL_FIELD]
+        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(40)], merge_membership=False)
+        for point in list(db.points.values())[:39]:
+            del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
 
         await switch_embedding_model(config, SMALL_CONFIG)
         with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-ada-002"):
             await _store(db, config, owner=False).embedding_fingerprint()
         assert db.deletions == 0
+
+    async def test_the_probe_stops_at_its_cap(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        monkeypatch.setattr(module, "_MODEL_PROBE_MAX_POINTS", 4)
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(6)], merge_membership=False)
+        for point in list(db.points.values())[:5]:
+            del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
+        scroll = AsyncMock(wraps=db.scroll)
+        monkeypatch.setattr(db, "scroll", scroll)
+
+        with caplog.at_level(logging.WARNING, logger="entity-model-test"):
+            assert await _store(db, config, owner=False)._model_of_a_stored_point() is None
+        assert scroll.await_count == 2
+        assert any("record no embedding model" in r.getMessage() for r in caplog.records)
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""

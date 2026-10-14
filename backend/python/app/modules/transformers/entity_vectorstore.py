@@ -92,7 +92,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.models.entities import EntityRecord
     from app.services.vector_db.interface.vector_db import IVectorDBService
-    from app.services.vector_db.models import VectorCollectionInfo
+    from app.services.vector_db.models import ScrollResult, VectorCollectionInfo
 
 # (entity refs) -> {(type, id): {"connectorIds": [...], "recordGroupIds": [...]}},
 # from the graph; see IGraphDBProvider.get_taxonomy_entity_membership.
@@ -187,8 +187,11 @@ _STAMP_FIELD = "indexStamp"
 # stale read would otherwise drop a collection another had just recreated and
 # written to. Long enough for one drop and create; a holder that dies frees it.
 _RECREATE_LOCK_SECONDS = 120
-# Entity points read to find the model a collection was written with.
-_MODEL_PROBE_POINTS = 32
+# Finding the model a collection was written with pages past points that
+# predate the field, which scroll first on OpenSearch and Redis. Capped below
+# Redis's 10,000-result window, past which its scroll raises.
+_MODEL_PROBE_PAGE = 500
+_MODEL_PROBE_MAX_POINTS = 9_000
 
 
 def _recreate_lock_key(collection: str) -> str:
@@ -841,31 +844,45 @@ class EntityVectorStore:
         whenever the model changes, and writes embedded with a model the
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
-        model's points. A page of them is read, not one, so a few points
-        that predate the field do not hide the model the rest record."""
-        for point in await self._entity_points(collection or self.collection_name, _MODEL_PROBE_POINTS):
-            stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
-            if stored:
-                return stored
+        model's points. Points that predate the field are paged past, up to
+        ``_MODEL_PROBE_MAX_POINTS``."""
+        collection = collection or self.collection_name
+        offset: str | None = None
+        seen = 0
+        while seen < _MODEL_PROBE_MAX_POINTS:
+            page = await self._entity_page(collection, _MODEL_PROBE_PAGE, offset)
+            for point in page.points:
+                stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
+                if stored:
+                    return stored
+            seen += len(page.points)
+            offset = page.next_offset
+            if not page.points or not offset:
+                return None
+        self.logger.warning(
+            "The first %d entity points of '%s' record no embedding model; "
+            "treating the collection as written by the current one",
+            seen, collection,
+        )
         return None
 
     async def _holds_entities(self, collection: str) -> bool:
         """Whether the collection holds an entity point (the stamp point is
         not one). Raises when the read fails."""
-        return bool(await self._entity_points(collection, 1))
+        return bool((await self._entity_page(collection, 1)).points)
 
-    async def _entity_points(self, collection: str, limit: int) -> list[VectorPoint]:
+    async def _entity_page(self, collection: str, limit: int, offset: str | None = None) -> ScrollResult:
         from app.models.entities import EntityType
 
-        page = await self.vector_db_service.scroll(
+        return await self.vector_db_service.scroll(
             collection_name=collection,
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.entityType": [t.value for t in EntityType]},
             ),
             limit=limit,
+            offset=offset,
             with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
         )
-        return page.points
 
     async def embedding_config_version(self) -> str | None:
         """``embedding_config_hash`` of the configured models, None when the
