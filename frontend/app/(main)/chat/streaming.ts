@@ -1883,9 +1883,6 @@ export function cancelStreamForSlot(slotId: string): void {
     // stream started on this slot in the meantime) — nothing to do.
     if (!cur || !cur.isStreaming || cur.runId !== runId) return;
 
-
-    cur.abortController?.abort();
-
     // The open connection is the only way a brand-new chat learns its
     // conversation id, so without one it stays open until the cancel is done.
     const knownConvId = convId ?? pendingStopConvIds.get(runId) ?? null;
