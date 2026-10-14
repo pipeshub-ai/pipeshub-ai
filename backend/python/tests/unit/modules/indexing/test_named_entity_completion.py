@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -315,7 +316,10 @@ async def _run_replicas(
         logger=lambda: LOG,
         event_processor=lambda: SimpleNamespace(sink_orchestrator=MagicMock()),
     )
-    with patch("app.services.redis.connection_provider_factory.get_redis_provider", return_value=provider), \
+    # The loop reads its interval from the environment; ticks are counted at that one.
+    interval = {"NAMED_ENTITY_COMPLETION_INTERVAL_SECONDS": str(completion.DEFAULT_INTERVAL_SECONDS)}
+    with patch.dict(os.environ, interval), \
+            patch("app.services.redis.connection_provider_factory.get_redis_provider", return_value=provider), \
             patch.object(completion.MessagingUtils, "_get_redis_config", AsyncMock(return_value=MagicMock())), \
             patch.object(completion, "complete_named_entities", queue.drain), \
             patch.object(completion.asyncio, "sleep", sleep):
