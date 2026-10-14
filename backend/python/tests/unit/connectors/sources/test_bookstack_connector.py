@@ -2380,7 +2380,7 @@ class TestHandleRoleCreateEvent:
         mock_data_entities_processor_fullcov.on_new_app_roles.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_detail_fetch_failure_keeps_stored_role(self, connector, mock_data_entities_processor_fullcov):
+    async def test_user_detail_fetch_failure_keeps_stored_role(self, connector, mock_data_entities_processor_fullcov) -> None:
         connector.data_source = AsyncMock()
         connector.data_source.get_role = AsyncMock(
             return_value=_make_response(data={

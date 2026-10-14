@@ -2955,7 +2955,7 @@ class TestDeleteEdgesBetweenCollections:
         assert result == 0
 
     @pytest.mark.asyncio
-    async def test_exception_raises(self, connected_provider):
+    async def test_exception_raises(self, connected_provider) -> None:
         """A failed delete raises, as on Neo4j, rather than answering 0 as if nothing was there."""
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         with pytest.raises(Exception, match="fail"):

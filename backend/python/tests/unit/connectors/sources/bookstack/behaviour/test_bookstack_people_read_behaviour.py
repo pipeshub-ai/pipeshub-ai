@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
 
 import pytest
+
 from app.connectors.sources.bookstack.connector import BookStackConnector
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.external.bookstack.bookstack import BookStackDataSource
