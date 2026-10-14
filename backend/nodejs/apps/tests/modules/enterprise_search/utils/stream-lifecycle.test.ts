@@ -4,7 +4,7 @@ import { EventEmitter } from 'events'
 import { Readable } from 'stream'
 import {
   attachUpstreamAbort,
-  isUpstreamAbortError,
+  runGuarded,
   StreamedContentAccumulator,
 } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 
@@ -44,68 +44,89 @@ describe('stream-lifecycle', () => {
   // attachUpstreamAbort
   // -----------------------------------------------------------------------
   describe('attachUpstreamAbort', () => {
-    it('aborts the signal and reports disconnected once the response emits close', () => {
+    const CAP_MS = 1000
+
+    it('reports the client gone on close but leaves the run alone', () => {
       const res = createMockRes()
-      const handle = attachUpstreamAbort(res, 'req-1')
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-1', onAbandon, CAP_MS)
+      const stream = new Readable({ read() {} })
+      const destroySpy = sinon.spy(stream, 'destroy')
+      handle.bindStream(stream)
 
       expect(handle.isClientDisconnected()).to.be.false
+
+      res.emit('close')
+
+      expect(handle.isClientDisconnected()).to.be.true
+      expect(handle.isAborted()).to.be.false
       expect(handle.signal.aborted).to.be.false
-
-      res.emit('close')
-
-      expect(handle.isClientDisconnected()).to.be.true
-      expect(handle.signal.aborted).to.be.true
-    })
-
-    it('invokes onDisconnect exactly once even if close fires more than once', () => {
-      const res = createMockRes()
-      const onDisconnect = sinon.stub()
-      attachUpstreamAbort(res, 'req-2', onDisconnect)
-
-      res.emit('close')
-      res.emit('close')
-
-      expect(onDisconnect.calledOnce).to.be.true
-    })
-
-    it('destroys a bound stream when close fires after bindStream', () => {
-      const res = createMockRes()
-      const handle = attachUpstreamAbort(res, 'req-3')
-      const stream = new Readable({ read() {} })
-      const destroySpy = sinon.spy(stream, 'destroy')
-
-      handle.bindStream(stream)
-      res.emit('close')
-
-      expect(destroySpy.calledOnce).to.be.true
-    })
-
-    it('destroys a stream bound AFTER the client already disconnected (race with a slow executeStream)', () => {
-      const res = createMockRes()
-      const handle = attachUpstreamAbort(res, 'req-4')
-
-      // Client disconnects before the upstream Readable exists.
-      res.emit('close')
-      expect(handle.isClientDisconnected()).to.be.true
-
-      const stream = new Readable({ read() {} })
-      const destroySpy = sinon.spy(stream, 'destroy')
-      handle.bindStream(stream)
-
-      expect(destroySpy.calledOnce).to.be.true
-    })
-
-    it('does not re-destroy an already-destroyed stream when binding late', () => {
-      const res = createMockRes()
-      const handle = attachUpstreamAbort(res, 'req-5')
-      res.emit('close')
-
-      const stream = new Readable({ read() {} })
-      stream.destroy()
-      const destroySpy = sinon.spy(stream, 'destroy')
-
-      expect(() => handle.bindStream(stream)).to.not.throw()
       expect(destroySpy.called).to.be.false
+      expect(onAbandon.called).to.be.false
+    })
+
+    it('abandons a still-open stream once the detached-run cap passes', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-2', onAbandon, CAP_MS)
+      const stream = new Readable({ read() {} })
+      const destroySpy = sinon.spy(stream, 'destroy')
+      handle.bindStream(stream)
+
+      res.emit('close')
+      clock.tick(CAP_MS - 1)
+      expect(onAbandon.called).to.be.false
+
+      clock.tick(1)
+
+      expect(handle.isAborted()).to.be.true
+      expect(handle.signal.aborted).to.be.true
+      expect(destroySpy.calledOnce).to.be.true
+      expect(onAbandon.calledOnce).to.be.true
+    })
+
+    it('does not abandon a run whose stream already ended', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-3', onAbandon, CAP_MS)
+      const stream = new Readable({ read() {} })
+      handle.bindStream(stream)
+
+      res.emit('close')
+      stream.destroy()
+      clock.tick(CAP_MS * 2)
+
+      expect(handle.isAborted()).to.be.false
+      expect(onAbandon.called).to.be.false
+    })
+
+    it('finalizes as abandoned at the cap even when no stream is bound yet, so the run is not recorded as failed', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-4', onAbandon, CAP_MS)
+
+      res.emit('close')
+      clock.tick(CAP_MS * 2)
+
+      expect(handle.isAborted()).to.be.true
+      expect(onAbandon.calledOnce).to.be.true
+    })
+
+    it('arms the cap only once even if close fires more than once', () => {
+      const clock = sinon.useFakeTimers()
+      const res = createMockRes()
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-5', onAbandon, CAP_MS)
+      handle.bindStream(new Readable({ read() {} }))
+
+      res.emit('close')
+      res.emit('close')
+      clock.tick(CAP_MS * 2)
+
+      expect(onAbandon.calledOnce).to.be.true
     })
 
     // Regression coverage: `IncomingMessage` ('req') fires 'close' as soon
@@ -114,68 +135,30 @@ describe('stream-lifecycle', () => {
     // fires on normal completion too, so `writableEnded`/`writableFinished`
     // must gate it or every successful stream would look like a disconnect.
     it('does NOT report disconnected when close fires after the response finished normally', () => {
+      const clock = sinon.useFakeTimers()
       const res = createMockRes()
-      const onDisconnect = sinon.stub()
-      const handle = attachUpstreamAbort(res, 'req-6', onDisconnect)
+      const onAbandon = sinon.stub()
+      const handle = attachUpstreamAbort(res, 'req-6', onAbandon, CAP_MS)
+      handle.bindStream(new Readable({ read() {} }))
 
       res.finish() // mirrors res.end() having already run
       res.emit('close')
+      clock.tick(CAP_MS * 2)
 
       expect(handle.isClientDisconnected()).to.be.false
-      expect(handle.signal.aborted).to.be.false
-      expect(onDisconnect.called).to.be.false
-    })
-
-    it('does NOT destroy a bound stream when close fires after normal completion', () => {
-      const res = createMockRes()
-      const handle = attachUpstreamAbort(res, 'req-7')
-      const stream = new Readable({ read() {} })
-      const destroySpy = sinon.spy(stream, 'destroy')
-      handle.bindStream(stream)
-
-      res.finish()
-      res.emit('close')
-
-      expect(destroySpy.called).to.be.false
+      expect(handle.isAborted()).to.be.false
+      expect(onAbandon.called).to.be.false
     })
 
     it('treats close as normal completion when only writableFinished is true (checks either flag, not just writableEnded)', () => {
       const res = createMockRes()
       res.writableEnded = false
       res.writableFinished = true
-      const handle = attachUpstreamAbort(res, 'req-8')
+      const handle = attachUpstreamAbort(res, 'req-7', undefined, CAP_MS)
 
       res.emit('close')
 
       expect(handle.isClientDisconnected()).to.be.false
-    })
-  })
-
-  // -----------------------------------------------------------------------
-  // isUpstreamAbortError
-  // -----------------------------------------------------------------------
-  describe('isUpstreamAbortError', () => {
-    it('returns true for an error named AbortError', () => {
-      const err = new Error('aborted')
-      err.name = 'AbortError'
-      expect(isUpstreamAbortError(err)).to.be.true
-    })
-
-    it('returns true for an error with code ABORT_ERR', () => {
-      const err: any = new Error('aborted')
-      err.code = 'ABORT_ERR'
-      expect(isUpstreamAbortError(err)).to.be.true
-    })
-
-    it('returns false for a genuine upstream failure', () => {
-      const err = new Error('upstream 500')
-      expect(isUpstreamAbortError(err)).to.be.false
-    })
-
-    it('returns false for non-object / nullish inputs', () => {
-      expect(isUpstreamAbortError(null)).to.be.false
-      expect(isUpstreamAbortError(undefined)).to.be.false
-      expect(isUpstreamAbortError('AbortError')).to.be.false
     })
   })
 
@@ -231,5 +214,29 @@ describe('stream-lifecycle', () => {
       acc.setAccumulatedText('full running text so far and more')
       expect(acc.getText()).to.equal('full running text so far and more')
     })
+  })
+})
+
+describe('runGuarded', () => {
+  it('runs the task', async () => {
+    const task = sinon.stub().resolves()
+
+    runGuarded(task)
+    await new Promise((resolve) => setImmediate(resolve))
+
+    expect(task.calledOnce).to.be.true
+  })
+
+  it('swallows a failing task instead of leaving an unhandled rejection', async () => {
+    const unhandled = sinon.stub()
+    process.once('unhandledRejection', unhandled)
+    try {
+      runGuarded(() => Promise.reject(new Error('disk full')), { requestId: 'req-1' })
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    } finally {
+      process.removeListener('unhandledRejection', unhandled)
+    }
+
+    expect(unhandled.called).to.be.false
   })
 })

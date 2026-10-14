@@ -754,10 +754,10 @@ class TestUserDirectoryFallbacks:
             ({"values": [{"key": "a"}], "nextPage": f"{BASE}{API}/user/list?cursor=c2"}, ["a"], "c2"),
             ({"values": [], "nextPage": "c3"}, [], "c3"),
             ({"values": [{"key": "a"}], "nextCursor": "c4", "isLast": True}, ["a"], None),
-            ("not json", [], None),
         ],
     )
     def test_user_list_page_shapes(self, payload, expected_keys, expected_cursor) -> None:
+        assert _parse_jira_dc_user_list_page(payload) is not None
         users, cursor = _parse_jira_dc_user_list_page(payload)
         assert [u["key"] for u in users] == expected_keys
         assert cursor == expected_cursor
@@ -1253,6 +1253,512 @@ class TestReindexEdgeCases:
         assert db.record_batches == []
         assert {r.id for r in db.reindexed} == {"f-attachment_200", "f-200", "f-attachment_7", "f-attachment_8"}
 
+
+
+class TestUnfinishedUserRead:
+    """A user list that stops part-way must not shrink who can see what.
+
+    Carol is on the second page of ``/user/list``. She is in the devs group, in the
+    Developers role by name, she leads ENG and the ENG scheme names her directly.
+    """
+
+    FIRST_PAGE = {
+        "values": [user("alice-key", "alice", "alice@example.com"), user("bob-key", "bob", "bob@example.com")],
+        "nextPage": f"{BASE}{API}/user/list?cursor=abc&maxResults=100",
+        "isLast": False,
+    }
+
+    @staticmethod
+    def _stub_carol_everywhere(jira) -> None:
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+        ]))
+        browse = "BROWSE_PROJECTS"
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": browse, "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": browse, "holder": {"type": "user", "parameter": "carol-key"}},
+            {"permission": browse, "holder": {"type": "projectLead"}},
+        ]})
+
+    def _second_page(self, jira, answer) -> None:
+        def user_list(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("cursor") == "abc":
+                return answer()
+            return json_response(self.FIRST_PAGE)
+
+        jira.on("GET", f"{API}/user/list", user_list)
+
+    @staticmethod
+    def _access(db: JiraRecordsDb) -> dict[str, Any]:
+        return {
+            "devs": sorted(m.email for m in db.groups_saved["devs"]),
+            "developers": sorted(m.email for m in db.app_roles["ENG_10002"]),
+            "lead": [m.email for m in db.app_roles["ENG_projectLead"]],
+            "project": acl_summary(db.record_group_permissions["10000"]),
+        }
+
+    @pytest.mark.parametrize(
+        "answer",
+        [
+            pytest.param(lambda: json_response({"errorMessages": ["expired"]}, status=401), id="401"),
+            pytest.param(lambda: json_response({"errorMessages": ["denied"]}, status=403), id="403"),
+            pytest.param(lambda: httpx.Response(200, content=b"<html>proxy error</html>"), id="unparseable"),
+            pytest.param(lambda: json_response({"unexpected": True}), id="not-a-page"),
+        ],
+    )
+    async def test_a_user_page_failing_part_way_leaves_groups_roles_and_grants_unchanged(
+        self, jira, db, store, search, answer
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        search.add("ENG", 0, [issue("1001", "ENG-1")])
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+        assert "carol@example.com" in before["devs"]
+        assert "carol@example.com" in before["developers"]
+        assert before["lead"] == ["carol@example.com"]
+        assert any(email == "carol@example.com" for *_, email in before["project"])
+
+        self._second_page(jira, answer)
+        logs = record_logs(connector)
+        await connector.run_sync()
+
+        assert self._access(db) == before
+        assert any("could not be read in full" in m for m in logged(logs, "warning"))
+        assert "1001" in db.records, "issues are still synced"
+
+    @pytest.mark.parametrize("status", [503, 408])
+    async def test_a_failed_reverse_lookup_leaves_the_group_unchanged(self, jira, db, store, search, status) -> None:
+        stub_site(jira, search)
+
+        def members(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request)["groupname"] == "jira-software-users":
+                return json_response({"values": [{"key": "bob-key"}], "isLast": True})
+            return json_response({"values": [{"key": "alice-key"}, {"key": "dave-key"}], "isLast": True})
+
+        jira.on("GET", f"{API}/group/member", members)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "dave@example.com"], (
+            "dave's email is hidden, so only the lookup by his PipesHub email finds him"
+        )
+
+        def lookups(request: httpx.Request) -> httpx.Response:
+            if AtlassianApiStub.query(request).get("username") == "dave@example.com":
+                return json_response({"errorMessages": ["busy"]}, status=status)
+            return json_response([])
+
+        jira.on("GET", f"{API}/user/search", lookups)
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "dave@example.com"]
+
+    async def test_a_complete_read_that_drops_a_user_removes_them(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+
+        # Carol leaves Jira: the user list no longer has her, though older answers still name her.
+        self._second_page(jira, lambda: json_response({"values": [user("dave-key", "dave", None)], "isLast": True}))
+        await connector.run_sync()
+
+        after = self._access(db)
+        assert after["devs"] == ["alice@example.com"]
+        assert after["developers"] == ["alice@example.com"]
+        assert after["lead"] == []
+        assert not any(email == "carol@example.com" for *_, email in after["project"])
+
+    async def test_a_user_list_refused_from_the_first_page_fails_closed(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+
+        # The account cannot list users at all, so no one is kept on stale access.
+        jira.on("GET", f"{API}/user/list", json_response({"errorMessages": ["denied"]}, status=403))
+        await connector.run_sync()
+
+        assert db.groups_saved["devs"] == []
+
+    @pytest.mark.parametrize(
+        ("failing_start", "unfinished"),
+        [pytest.param("50", True, id="a later page"), pytest.param("0", False, id="the first page")],
+    )
+    async def test_older_jira_user_search_refused_part_way_is_unfinished_but_refused_outright_is_not(
+        self, jira, db, store, search, failing_start, unfinished
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+        page1 = [user(f"u{i}-key", f"u{i}", f"u{i}@corp.example") for i in range(50)]
+
+        def directory(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("username") != ".":
+                return json_response([])
+            if q.get("startAt") == failing_start:
+                return json_response({"errorMessages": ["denied"]}, status=401)
+            return json_response(page1)
+
+        jira.on("GET", f"{API}/user/search", directory)
+        connector, _ = await make_connector(db, store)
+
+        await connector._fetch_users()
+
+        assert connector._user_read_unfinished is unfinished
+
+    async def test_a_first_sync_with_a_short_user_read_saves_what_was_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        connector, _ = await make_connector(db, store)
+
+        await connector.run_sync()
+
+        # Nothing was stored before, so holding back would leave everyone without access.
+        access = self._access(db)
+        assert access["devs"] == ["alice@example.com"]
+        assert access["developers"] == ["alice@example.com"]
+        assert access["lead"] == []
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in access["project"], (
+            "the grants that were read are saved"
+        )
+
+    async def test_a_full_sync_whose_prep_deleted_the_grants_saves_what_was_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+
+        # On main, a full sync's prep deletes the sync points and every stored grant before the connector runs.
+        store.sync_points.clear()
+        db.groups_saved.clear()
+        db.user_groups.clear()
+        db.app_roles.clear()
+        db.record_group_permissions.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        access = self._access(db)
+        assert access["devs"] == ["alice@example.com"]
+        assert access["developers"] == ["alice@example.com"]
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in access["project"]
+
+    async def test_a_failed_lookup_after_the_user_list_is_refused_outright_still_fails_closed(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+
+        jira.on("GET", f"{API}/user/list", json_response({"errorMessages": ["denied"]}, status=403))
+        jira.on("GET", f"{API}/user/search", json_response({"errorMessages": ["busy"]}, status=503))
+        await connector.run_sync()
+
+        assert db.groups_saved["devs"] == [], "a refused user list is not kept open by a lookup that failed"
+
+    async def test_a_first_sync_cut_short_after_saving_groups_keeps_them_on_a_later_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/project", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        with pytest.raises(Exception, match="Failed to fetch projects"):
+            await connector.run_sync()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"]
+        assert store.values_for("issues_global") is None, "the sync stopped before its checkpoint"
+
+        self._stub_carol_everywhere(jira)
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com", "carol@example.com"], (
+            "groups the first sync saved are kept, though it never wrote a checkpoint"
+        )
+        assert ("EntityType.GROUP", "PermissionType.READ", "devs", None) in acl_summary(
+            db.record_group_permissions["10000"]
+        ), "a project it never saved is saved with the grants that were read"
+
+    @pytest.mark.parametrize("payload", ["not json", 5, {"other": 1}, {"values": "x"}, {"users": None}])
+    def test_a_user_list_answer_that_is_not_a_page_is_not_read_as_the_last_page(self, payload) -> None:
+        assert _parse_jira_dc_user_list_page(payload) is None
+
+    async def test_a_group_list_that_fails_on_the_first_sync_is_saved_from_a_later_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/groups/picker", json_response({"errorMessages": ["boom"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert db.groups_saved == {}, "the group list could not be read, so no group is saved"
+
+        jira.on("GET", f"{API}/groups/picker", {"groups": [{"name": "devs"}, {"name": "jira-software-users"}], "total": 2})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert sorted(m.email for m in db.groups_saved["devs"]) == ["alice@example.com"], (
+            "nothing was stored, so the group is saved from the users that were read"
+        )
+
+    async def test_a_project_whose_access_was_never_saved_is_saved_from_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "ENG", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+            {"id": "20000", "key": "OPS", "name": "Operations"},
+        ]))
+        jira.on("GET", f"{API}/project/OPS/role", {})
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        eng_before = acl_summary(db.record_group_permissions["10000"])
+        assert "20000" not in db.record_group_permissions, "OPS's scheme could not be read, so nothing is saved"
+
+        jira.on("GET", f"{API}/project/OPS/permissionscheme", {"id": 8})
+        jira.on("GET", f"{API}/permissionscheme/8/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "user", "parameter": "carol-key"}},
+        ]})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == eng_before, "ENG's saved access is kept"
+        assert acl_summary(db.record_group_permissions["20000"]) == [
+            ("EntityType.GROUP", "PermissionType.READ", "devs", None),
+        ], "OPS had nothing stored, so the grants that were read are saved"
+
+    async def test_an_older_jira_user_search_answer_that_is_not_a_page_is_unfinished(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/user/list", json_response({}, status=404))
+        page1 = [user(f"u{i}-key", f"u{i}", f"u{i}@corp.example") for i in range(50)]
+
+        def directory(request: httpx.Request) -> httpx.Response:
+            q = AtlassianApiStub.query(request)
+            if q.get("username") != ".":
+                return json_response([])
+            return json_response(page1 if q.get("startAt") == "0" else {"other": 1})
+
+        jira.on("GET", f"{API}/user/search", directory)
+        connector, _ = await make_connector(db, store)
+
+        await connector._fetch_users()
+
+        assert connector._user_read_unfinished is True
+
+    async def test_a_renamed_project_keeps_its_saved_access_on_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert ("EntityType.USER", "PermissionType.READ", None, "carol@example.com") in before
+
+        # The same project (id 10000) now has the key NEW.
+        jira.on("GET", f"{API}/project", json_response([{"id": "10000", "key": "NEW", "name": "Engineering"}]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, (
+            "the project is known by its id, so its saved access is kept"
+        )
+
+    @pytest.mark.parametrize(
+        ("holder", "grant"),
+        [
+            pytest.param({"type": "projectRole", "parameter": "10002"}, "ENG_10002", id="role"),
+            pytest.param({"type": "projectLead"}, "ENG_projectLead", id="lead"),
+        ],
+    )
+    async def test_a_renamed_project_granted_through_a_role_or_its_lead_keeps_its_access_on_a_short_read(
+        self, jira, db, store, search, holder, grant
+    ) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": holder},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == [grant]
+
+        # The same project (id 10000) now has the key NEW; its roles under NEW are not synced on a short read.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == [grant], (
+            "the access list saved under the old key, whose roles have members, is kept"
+        )
+
+    async def test_a_renamed_project_is_saved_under_its_new_key_on_a_complete_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        jira.on("GET", f"{API}/project", json_response([{"id": "10000", "key": "NEW", "name": "Engineering"}]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {"Developers": f"{BASE}{API}/project/NEW/role/10002"})
+        jira.on("GET", f"{API}/project/NEW/role/10002", {"name": "Developers", "actors": [
+            {"type": "atlassian-group-role-actor", "name": "devs"},
+        ]})
+        await connector.run_sync()
+
+        assert [p.external_id for p in db.record_group_permissions["10000"]] == ["NEW_10002"]
+
+    async def test_a_renamed_project_granted_through_groups_a_role_and_its_lead_keeps_its_access_on_a_short_read(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "devs"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+        assert sorted(p[2] for p in before) == ["ENG_10002", "ENG_projectLead", "devs"]
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == ["carol@example.com"]
+
+        # The same project (id 10000) now has the key NEW; Carol, its lead, is on the page that fails.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "carol-key", "displayName": "Carol"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {"Developers": f"{BASE}{API}/project/NEW/role/10002"})
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, (
+            "the Developers and project-lead grants under the old key stay"
+        )
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == ["carol@example.com"]
+        assert "NEW_projectLead" not in db.app_roles, "no empty lead is saved for a project whose access is stored"
+
+    async def test_a_full_sync_after_its_prep_kept_the_grants_keeps_them_on_a_short_read(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+
+        # A full sync's prep deletes the sync points but leaves the stored grants in place (#4119).
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await connector.run_sync()
+
+        assert self._access(db) == before, "stored members, roles, lead and project access are kept"
+
+    async def test_a_stored_access_read_that_fails_stops_the_sync_before_replacing_anything(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)
+        self._stub_carol_everywhere(jira)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = self._access(db)
+
+        db.fail_stored_permission_reads = True
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        with pytest.raises(StoredAccessReadError):
+            await connector.run_sync()
+
+        assert self._access(db) == before, "a failed read is not taken for 'nothing stored'"
+
+    async def test_a_full_sync_with_a_short_read_keeps_what_it_held_after_the_unlink(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        assert "carol@example.com" in self._access(db)["devs"]
+        assert "ENG_10002" in [p[2] for p in self._access(db)["project"]]
+
+        # A full sync (#4119): sync points go, stored edges stay, and after the sync returns
+        # whatever it did not write is unlinked, unless it reports an incomplete read.
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, db)
+
+        after = self._access(db)
+        assert "carol@example.com" in after["devs"], "the held group keeps its stored members"
+        assert "carol@example.com" in after["developers"]
+        assert "ENG_10002" in [p[2] for p in after["project"]], "the held project keeps its grants"
+
+    async def test_a_complete_full_sync_still_unlinks_what_it_did_not_see(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        graph = await run_full_sync(connector, db)
+
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+        assert connector.full_sync_coverage().complete is True
+
+    async def test_a_full_sync_with_an_unreadable_scheme_keeps_the_project_access_after_the_unlink(
+        self, jira, db, store, search
+    ) -> None:
+        stub_site(jira, search)  # ENG has no issues, so nothing but the kept project marks it seen
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        before = acl_summary(db.record_group_permissions["10000"])
+
+        store.sync_points.clear()
+        jira.on("GET", f"{API}/project/ENG/permissionscheme", json_response({"errorMessages": ["oops"]}, status=500))
+        await run_full_sync(connector, db)
+
+        assert acl_summary(db.record_group_permissions["10000"]) == before, "the stored grants survive the unlink"
+
+    async def test_a_full_sync_with_a_short_read_still_unlinks_what_is_gone(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        graph = await run_full_sync(connector, db)
+
+        # What this sync held is noted as seen, so the unlink still runs for what Jira no longer has.
+        assert connector.full_sync_coverage().complete is True
+        graph.unlink_nodes_missed_by_full_sync.assert_awaited_once()
+
+    async def test_a_renamed_project_keeps_its_old_key_roles_through_a_full_sync_unlink(self, jira, db, store, search) -> None:
+        stub_site(jira, search)
+        jira.on("GET", f"{API}/permissionscheme/7/permission", {"permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectRole", "parameter": "10002"}},
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "projectLead"}},
+        ]})
+        connector, _ = await make_connector(db, store)
+        await connector.run_sync()
+        developers = sorted(m.email for m in db.app_roles["ENG_10002"])
+        lead = [m.email for m in db.app_roles["ENG_projectLead"]]
+        assert developers and lead
+
+        # The same project (id 10000) now has the key NEW; a full sync (#4119) with a short read.
+        jira.on("GET", f"{API}/project", json_response([
+            {"id": "10000", "key": "NEW", "name": "Engineering", "lead": {"key": "alice-key", "displayName": "Alice"}},
+        ]))
+        jira.on("GET", f"{API}/project/NEW/permissionscheme", {"id": 7})
+        jira.on("GET", f"{API}/project/NEW/role", {})
+        store.sync_points.clear()
+        self._second_page(jira, lambda: json_response({"errorMessages": ["expired"]}, status=401))
+        await run_full_sync(connector, db)
+
+        assert sorted(p.external_id for p in db.record_group_permissions["10000"]) == ["ENG_10002", "ENG_projectLead"]
+        assert sorted(m.email for m in db.app_roles["ENG_10002"]) == developers, "the old-key role keeps its members"
+        assert [m.email for m in db.app_roles["ENG_projectLead"]] == lead
 
 
 class TestUnreadApplicationRoles:

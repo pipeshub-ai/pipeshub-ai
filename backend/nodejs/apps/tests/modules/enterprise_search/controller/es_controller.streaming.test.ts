@@ -7,7 +7,8 @@ import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/u
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
-import { Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, startStream } from './streaming-flows'
+import { Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
+import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
 
 describe('es_controller streaming answers', () => {
   afterEach(() => {
@@ -62,7 +63,32 @@ describe('es_controller streaming answers', () => {
         expect(run.answer()?.content).to.equal(reason)
       })
 
-      it('keeps what the user already saw when they close the tab mid-answer, and stops the AI service', async () => {
+      it('keeps the answer going when they close the tab mid-answer, and saves it when the AI service finishes', async () => {
+        const run = await startStream(flow)
+
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('The roadmap '))
+        await settle()
+        const bytesBeforeDisconnect = run.res.body.length
+        run.res.disconnect()
+        await settle(10)
+
+        expect(run.conversation().status, 'closing the tab is not a stop').to.equal('Inprogress')
+
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('has three themes'))
+        run.ai.send('RUN_FINISHED', finalAnswer('The roadmap has three themes'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.conversation().status).to.equal('Complete')
+        expect(run.answer()?.content).to.equal('The roadmap has three themes')
+        expect(run.answer()?.status).to.not.equal('stopped')
+        expect(run.res.body.length, 'nothing is written to a closed connection').to.equal(bytesBeforeDisconnect)
+        expect(run.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+      })
+
+      it('abandons a run nobody came back to after the detached-run cap, keeping what the user already saw', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
         const run = await startStream(flow)
 
         run.ai.send('TEXT_MESSAGE_CONTENT', delta('The roadmap '))
@@ -72,12 +98,83 @@ describe('es_controller streaming answers', () => {
         const bytesBeforeDisconnect = run.res.body.length
         run.res.disconnect()
         await settle(10)
+        expect(run.conversation().status).to.equal('Inprogress')
+
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await settle(20)
 
         expect(run.conversation().status).to.equal('Stopped')
         const saved = run.answer()
         expect(saved?.content, 'partial answer, without sub-agent text').to.equal('The roadmap has three themes')
         expect(saved?.status).to.equal('stopped')
         expect(run.res.body.length, 'nothing is written to a closed connection').to.equal(bytesBeforeDisconnect)
+        expect(run.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+      })
+
+      it('records a failure, not a stop, when the AI service errors after the user has left', async () => {
+        const run = await startStream(flow)
+        const reason = 'This conversation is too long for the selected model. Start a new chat to continue.'
+
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Partial'))
+        await settle()
+        const bytesBeforeDisconnect = run.res.body.length
+        run.res.disconnect()
+        run.ai.send('RUN_ERROR', { runId: RUN, message: reason, code: 'context_length_exceeded' })
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.conversation().status).to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(reason)
+        expect(run.res.body.length).to.equal(bytesBeforeDisconnect)
+      })
+
+      it('saves the finished answer when the AI service sent it but never closed the stream before the cap', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const run = await startStream(flow)
+
+        run.ai.send('RUN_FINISHED', finalAnswer('All done.'))
+        await settle()
+        run.res.disconnect()
+        await settle(10)
+        expect(run.conversation().status).to.equal('Inprogress')
+
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await settle(20)
+
+        expect(run.conversation().status, 'a finished answer is completed, not left running or stopped').to.equal('Complete')
+        expect(run.answer()?.content).to.equal('All done.')
+      })
+
+      it('keeps the failure the AI service reported when it never closed the stream before the cap', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const run = await startStream(flow)
+        const reason = 'This conversation is too long for the selected model. Start a new chat to continue.'
+
+        run.ai.send('RUN_ERROR', { runId: RUN, message: reason, code: 'context_length_exceeded' })
+        await settle()
+        run.res.disconnect()
+        await settle(10)
+
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await settle(20)
+
+        expect(run.conversation().status, 'the saved failure is not overwritten by a stop').to.equal('Failed')
+        expect(run.conversation().failReason).to.equal(reason)
+      })
+
+      it('abandons a run still waiting for the AI service to respond when the cap expires, as stopped and without retrying', async () => {
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        const run = await startStream(flow, controllerModule, (ai) => ai.stallOpen(), { wait: false })
+        await settle(10)
+
+        run.res.disconnect()
+        clock.tick(DETACHED_RUN_MAX_MS + 1)
+        await run.done
+        await settle(10)
+
+        expect(run.ai.streamCalls, 'an aborted request is not retried').to.have.length(1)
+        expect(run.conversation().status).to.equal('Stopped')
         expect(run.res.eventsOf('RUN_ERROR')).to.deep.equal([])
       })
 
@@ -124,6 +221,18 @@ describe('es_controller streaming answers', () => {
         expect(run.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([CHAT_ERROR_MESSAGES.interrupted])
         expect(run.conversation().status).to.equal('Failed')
         expect(run.conversation().failReason).to.equal(CHAT_ERROR_MESSAGES.interrupted)
+      })
+
+      it('marks the thread in progress while the answer is being written and not afterwards', async () => {
+        const run = await startStream(flow)
+        expect(run.conversation().status).to.equal('Inprogress')
+
+        run.ai.send('RUN_FINISHED', finalAnswer('All done.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.conversation().status).to.equal('Complete')
       })
 
       if (!flow.regenerate) {
@@ -228,6 +337,86 @@ describe('es_controller streaming answers', () => {
     })
   }
 
+  for (const flow of flows.filter((f) => !['streamChat', 'streamAgentConversation'].includes(f.name))) {
+    describe(`${flow.name}: a message sent while the conversation's previous run is still going`, () => {
+      const fakeClock = (): sinon.SinonFakeTimers =>
+        sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'], now: Date.now() })
+
+      it('is refused without starting a second run, and the first run still finishes cleanly', async () => {
+        const clock = fakeClock()
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Working'))
+        await settle()
+        run.res.disconnect() // the refresh
+
+        const second = sendAgain(flow, run)
+        await clock.tickAsync(16_000)
+        await second.done
+
+        expect(second.res.eventsOf('RUN_ERROR').map((e) => e.data.message)).to.deep.equal([
+          'A response is still being generated for this conversation. Wait for it to finish, or stop it, then send your message again.',
+        ])
+        expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+        expect(run.conversation().status, 'the live run keeps the thread').to.equal('Inprogress')
+
+        run.ai.send('RUN_FINISHED', finalAnswer('Done.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+
+        expect(run.conversation().status).to.equal('Complete')
+        expect(run.answer()?.content).to.equal('Done.')
+        expect(run.messages().filter((m) => m.messageType === 'bot_response' || m.messageType === 'error')).to.have.length(
+          flow.regenerate ? 1 : 2,
+        )
+      })
+
+      it('does not hand a long answer to a second request just because it has been running a while', async () => {
+        const clock = sinon.useFakeTimers({
+          toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+          now: Date.now(),
+        })
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Still working'))
+        await settle()
+
+        await clock.tickAsync(40 * 60 * 1000) // browser still connected the whole time
+        const second = sendAgain(flow, run)
+        await clock.tickAsync(16_000)
+        await second.done
+
+        expect(second.res.eventsOf('RUN_ERROR')).to.have.length(1)
+        expect(run.ai.streamCalls, 'no second run was started').to.have.length(1)
+
+        run.ai.send('RUN_FINISHED', finalAnswer('Done.'))
+        run.ai.finish()
+        await run.res.ended
+        await settle()
+        expect(run.conversation().status).to.equal('Complete')
+      })
+
+      it('goes ahead once the previous run has finished saving, so a quick Stop-then-send is not refused', async () => {
+        const clock = fakeClock()
+        const run = await startStream(flow)
+        run.ai.send('TEXT_MESSAGE_CONTENT', delta('Working'))
+        await settle()
+
+        const second = sendAgain(flow, run)
+        await clock.tickAsync(1000)
+        expect(run.ai.streamCalls, 'still waiting for the first run').to.have.length(1)
+
+        run.ai.send('RUN_FINISHED', finalAnswer('Stopped early.'))
+        run.ai.finish()
+        await run.res.ended
+        await clock.tickAsync(1000)
+        await settle()
+
+        expect(second.res.eventsOf('RUN_ERROR')).to.deep.equal([])
+        expect(run.ai.streamCalls, 'the second run started').to.have.length(2)
+      })
+    })
+  }
+
   it('streamChat: a request without a question is refused before anything is saved', async () => {
     const store = new InMemoryChatStore()
     store.install()
@@ -295,5 +484,6 @@ describe('es_controller streaming answers', () => {
     expect(res.eventsOf('RUN_ERROR')[0]?.data.message).to.equal('Can only regenerate the last message in the conversation')
     expect(ai.streamCalls).to.deep.equal([])
     expect(store.messagesOf(session._id).map((m) => m.content)).to.deep.equal(['What changed in the release?', 'An older answer.'])
+    expect(session.status, 'a refused regenerate does not leave the thread in progress').to.equal('Complete')
   })
 })

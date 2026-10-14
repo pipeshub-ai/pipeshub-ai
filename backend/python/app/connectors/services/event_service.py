@@ -30,7 +30,11 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
-from app.connectors.core.sync.sync_runner import drain_queued_syncs, run_sync_task
+from app.connectors.core.sync.sync_runner import (
+    drain_queued_syncs,
+    resumes_interrupted_full_sync,
+    run_sync_task,
+)
 from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.connectors.core.base.data_processor.storage_cleanup import (
     StorageCleanupHelper,
@@ -490,6 +494,24 @@ class EventService:
             )
             return False
 
+        # A MANUAL connector's boot resume (bootResume) is owed only while the
+        # interrupted full sync still is. Checked before admission: a stop that
+        # landed while this event waited for the consumers cleared
+        # pendingResync, and queueing it at capacity (_mark_queued) or recording
+        # it behind a running sync (_persist_pending_resync) would write the
+        # flag straight back and undo the stop. A failed read redelivers.
+        boot_resume = bool(payload.get("bootResume"))
+        if boot_resume:
+            owed = await self._boot_resume_still_owed(connector_id)
+            if owed is None:
+                return False
+            if not owed:
+                self.logger.info(
+                    f"Not resuming {connector_id}: its interrupted full sync is no "
+                    "longer owed (stopped, disabled or already run since boot)"
+                )
+                return True
+
         # R6: keep one org's syncs together where a build can. Checked before
         # the connector claim so a handed-back event costs nothing but a
         # republish.
@@ -523,8 +545,9 @@ class EventService:
         # event as a transient failure and redeliver it, stalling the partition
         # behind a connector that is working fine.
         if admission is Admission.AT_CAPACITY:
-            await self._mark_queued(connector_id, full_sync=bool(full_sync))
-            return True
+            return await self._mark_queued(
+                connector_id, full_sync=bool(full_sync), boot_resume=boot_resume
+            )
 
         if admission is Admission.HELD_ELSEWHERE:
             # A request made before the running sync was admitted is served by
@@ -687,6 +710,30 @@ class EventService:
             # stale QUEUED would overwrite with IDLE.
             await self._drop_queued_intent(connector_id)
             return True, False
+
+        if payload.get("bootResume"):
+            # Checked again before admission too, but _ensure_connector above
+            # does OAuth and HTTP and can take seconds. A /sync/stop in that
+            # window finds no running task to stop and only clears
+            # pendingResync, and the prep below would delete the sync points of
+            # a sync the person stopped. Events nobody marked (the Sync button,
+            # the drain, schedules) never get here.
+            owed = await self._boot_resume_still_owed(connector_id)
+            if owed is None:
+                return False, False
+            if not owed:
+                self.logger.info(
+                    f"Not resuming {connector_id}: its interrupted full sync is no "
+                    "longer owed (stopped, disabled or already run since boot)"
+                )
+                return True, False
+            # Owed means this fresh read found pendingFullSync. The event itself
+            # carries fullSync false, and connector_doc above was read without
+            # raise_on_error, so a failed read there left both of these false:
+            # the resume would run incrementally first, and a full one would
+            # leave the flag set for the next sync to redo the prep.
+            pending_full_sync = True
+            effective_full_sync = True
 
         if effective_full_sync:
             # No "is one already running" check here: begin() above already
@@ -874,24 +921,59 @@ class EventService:
         )
         return False
 
+    async def _boot_resume_still_owed(self, connector_id: str) -> bool | None:
+        """Whether a bootResume event is still owed, read fresh.
+
+        None when the read failed. That is neither answer: dropping the event
+        would lose a resume that is owed (nothing publishes it again until the
+        next boot), and running it could start a sync someone stopped. Callers
+        return False for it, which redelivers the event. raise_on_error: by
+        default a failed read answers None, which would read as "no such
+        connector" and drop the resume.
+        """
+        try:
+            doc = await self.graph_provider.get_document(
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.warning(
+                f"Could not re-read {connector_id} before resuming it; "
+                f"redelivering the event: {e}"
+            )
+            return None
+        return resumes_interrupted_full_sync(doc if isinstance(doc, dict) else None)
+
     async def _mark_queued(
-        self, connector_id: str, *, full_sync: bool = False
-    ) -> None:
+        self, connector_id: str, *, full_sync: bool = False, boot_resume: bool = False
+    ) -> bool:
         """Accepted but not started: at the concurrency limit.
 
         Status is what the UI reads, and pendingResync is what actually gets the
         sync run later — the drain in the finalizer re-issues it when a slot
         frees. Without the status the connector would sit showing IDLE with a
         sync pending, which reads as the request having been dropped.
+
+        Returns whether to ack the event. False only for a ``boot_resume`` whose
+        doc could not be read: queueing it blind could restore the pendingResync
+        a stop just cleared, so it is redelivered instead.
         """
         # A disabled, signed-out or deleting connector must not be parked: no
         # start would ever run it, and every drain would publish it again.
+        # raise_on_error so a failed read is told apart from a missing doc: a
+        # boot resume is redelivered on the first and dropped on the second.
+        # Other requests treat both as before (queued on a doc of None).
         try:
             doc = await self.graph_provider.get_document(
-                document_key=connector_id, collection=CollectionNames.APPS.value
+                document_key=connector_id,
+                collection=CollectionNames.APPS.value,
+                raise_on_error=True,
             )
         except Exception as e:
             self.logger.warning(f"Could not read {connector_id} before queueing it: {e}")
+            if boot_resume:
+                return False
             doc = None
         if isinstance(doc, dict) and (
             doc.get(ConnectorStateKeys.IS_ACTIVE) is False
@@ -900,7 +982,18 @@ class EventService:
         ):
             self.logger.info(f"Not queueing {connector_id}: it is disabled, deleting or signed out")
             await self._drop_queued_intent(connector_id, doc)
-            return
+            return True
+        # Checked before admission as well; this read is the one right before
+        # the write, so a stop landing in between still holds. Once queued, the
+        # drain needs no marker: /sync/stop repairs a QUEUED connector to IDLE
+        # with pendingResync cleared, and the drain only re-issues QUEUED rows.
+        if boot_resume and not resumes_interrupted_full_sync(
+            doc if isinstance(doc, dict) else None
+        ):
+            self.logger.info(
+                f"Not queueing {connector_id}: its interrupted full sync is no longer owed"
+            )
+            return True
 
         updates: dict[str, Any] = {
             ConnectorStateKeys.PENDING_RESYNC: True,
@@ -929,6 +1022,7 @@ class EventService:
             )
         except Exception as e:
             self.logger.error(f"Failed to mark {connector_id} queued: {e}")
+        return True
 
     async def _drop_queued_intent(
         self, connector_id: str, doc: dict[str, Any] | None = None

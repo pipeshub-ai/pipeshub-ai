@@ -244,7 +244,8 @@ class TestWindow:
         for endpoint in ("get_pull", "get_pull_commits", "get_pull_reviews",
                          "get_pull_review_comments", "get_pull_file_changes"):
             assert calls[endpoint] == prs, endpoint
-        assert calls["get_file_contents"] == 5 * prs
+        # A PR is indexed from its diffs; no file is downloaded in full.
+        assert calls["get_file_contents"] == 0
         assert calls["get_issue"] == issues
         assert calls["list_issue_comments"] == prs + issues
 
@@ -348,11 +349,12 @@ class TestSavings:
         # Listing: /issues pages over issues and PRs (2,190 -> 361 items), and
         # /pulls stops on the page that crosses the window (11 pages -> 2).
         assert (listing_before, listing_after) == (22 + 11, 4 + 2)
-        # Indexing: a PR costs 11 requests (with 5 changed files) and an issue
+        # Indexing: a PR costs 6 requests (its diffs come with the file list, so
+        # none of its 5 changed files is downloaded in full) and an issue
         # 2; the repository lookup is made once. 1,095 of each before; 180 PRs
         # and 181 issues after.
-        assert total_before == 33 + 1_095 * 11 + 1_095 * 2 + 1 == 14_269
-        assert total_after == 6 + 180 * 11 + 181 * 2 + 1 == 2_349
+        assert total_before == 33 + 1_095 * 6 + 1_095 * 2 + 1 == 8_794
+        assert total_after == 6 + 180 * 6 + 181 * 2 + 1 == 1_449
 
 
 class TestFilterField:

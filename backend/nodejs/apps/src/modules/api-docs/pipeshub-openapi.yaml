@@ -35585,7 +35585,8 @@ paths:
                   pattern: '^[A-Za-z0-9_-]{1,64}$'
                   description: |
                     Instance being edited; its saved auth values fill in fields left out.
-                    A value that is sent, even a masked one, replaces the saved one.
+                    A secret sent as `••••••••` (the mask the config routes return) keeps the
+                    stored value; any other value that is sent replaces the saved one.
       responses:
         '200':
           description: Check ran; see <code>success</code>
