@@ -167,6 +167,22 @@ class TestComplete:
         assert model.bind_tools_called_with is not None
         assert len(model.bind_tools_called_with) == 1
 
+    async def test_openai_family_tools_are_not_strict(self) -> None:
+        # Named like LangChain's class: the transport recognises the family by class name.
+        class AzureChatOpenAI(_FakeModel):
+            pass
+
+        model = AzureChatOpenAI()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert model.bind_tools_called_with[0]["function"]["strict"] is False
+
+    async def test_other_providers_tools_carry_no_strict_key(self) -> None:
+        model = _FakeModel()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert "strict" not in model.bind_tools_called_with[0]["function"]
+
     async def test_no_tools_does_not_bind(self) -> None:
         model = _FakeModel()
         transport = LangChainTransport(model)

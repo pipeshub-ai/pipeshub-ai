@@ -218,6 +218,10 @@ _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
 
 
+def _is_openai_family(chat_model: "BaseChatModel") -> bool:
+    return bool({cls.__name__ for cls in type(chat_model).__mro__} & _OPENAI_CLASS_NAMES)
+
+
 def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     """Whether this LangChain chat model's underlying provider accepts
     image content inside a tool-result message.
@@ -372,6 +376,11 @@ class LangChainTransport(LLMTransport):
                 return cached
 
         lc_tools = self._cache.tools(convert_tool_schemas_to_langchain(tools))
+        if _is_openai_family(llm):
+            # Without `strict`, the Responses API holds a tool to strict mode: every property
+            # becomes required, and the model fills the optional ones with "" or 0, which a server
+            # refuses (Linear's `customView` must be non-empty). See `openai_responses.py`.
+            lc_tools = [{**tool, "function": {**tool["function"], "strict": False}} for tool in lc_tools]
         try:
             bound = llm.bind_tools(lc_tools)
         except Exception as exc:
