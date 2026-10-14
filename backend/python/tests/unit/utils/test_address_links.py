@@ -164,3 +164,15 @@ class TestEnrichmentIsDecidedAfresh:
         hits["vrid-pr"]["address_links"] = {"mentioned_in": [{"record_id": "stale"}]}
         await enrich_records_with_address_links(hits, failing, "org-1", user_id="bob")
         assert "address_links" not in hits["vrid-pr"]
+
+
+class TestAFailedReadAddsNothing:
+    @pytest.mark.asyncio
+    async def test_the_turn_goes_on_without_links(self) -> None:
+        hits = _hits()
+        graph = _graph({}, set(), DOCS)
+        graph.get_address_links_batch = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        await enrich_records_with_address_links(hits, graph, "org-1", user_id="user-1")
+
+        assert "address_links" not in hits["vrid-pr"]

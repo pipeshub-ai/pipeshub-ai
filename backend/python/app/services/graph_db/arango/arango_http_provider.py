@@ -5453,7 +5453,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error("❌ get_address_links_batch failed: %s", str(e))
-            return {}
+            raise
 
     async def get_issue_sites(
         self,

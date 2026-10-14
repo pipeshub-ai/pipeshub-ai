@@ -2157,8 +2157,11 @@ class IGraphDBProvider(ABC):
         Returns:
             ``{record_id: {"mentioned_in": [...], "links_to": [...]}}`` for
             every record asked about: ``mentioned_in`` holds the records that
-            name it, ``links_to`` the records it names. ``{}`` on a query
-            failure, which is logged.
+            name it, ``links_to`` the records it names.
+
+        Raises:
+            Exception: on a query failure, like the other reads behind these
+                joins; the chat enrichment catches it and adds nothing.
         """
         pass
 

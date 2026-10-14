@@ -30,6 +30,7 @@ READS = [
     ("get_records_by_weburls", (["https://github.com/a/b/pull/1"], "org-1")),
     ("get_records_linking_to_weburls", (["https://github.com/a/b/pull/1"], "org-1", ["SLACK WORKSPACE"])),
     ("get_issue_sites", ("org-1", ["JIRA"])),
+    ("get_address_links_batch", (["pr-1"], "org-1")),
 ]
 
 

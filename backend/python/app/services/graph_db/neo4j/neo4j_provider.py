@@ -16803,7 +16803,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
         except Exception as e:
             self.logger.error(f"❌ get_address_links_batch failed: {str(e)}")
-            return {}
+            raise
 
     async def get_issue_sites(
         self,
