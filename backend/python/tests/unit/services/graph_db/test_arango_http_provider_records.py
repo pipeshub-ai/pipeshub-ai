@@ -3723,44 +3723,6 @@ class TestExecuteLocalFsRecordDeletion:
 # _delete_local_fs_edges  (lines 8771-8807)
 # ===================================================================
 
-class TestDeleteLocalFsEdges:
-    async def test_success_deletes_its_collections_and_the_enrichment_edges(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1")
-        swept = [c.args[1]["@edge_collection"] for c in connected_provider.http_client.execute_aql.await_args_list]
-        assert sorted(swept) == sorted([
-            "isOfType", "permission", "belongsTo",
-            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic", "mentionsEntity",
-        ])
-
-    async def test_exception_propagates(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            side_effect=Exception("fail")
-        )
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider._delete_local_fs_edges("r1")
-
-    async def test_with_transaction(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1", transaction="txn1")
-        for call in connected_provider.http_client.execute_aql.call_args_list:
-            assert call.kwargs.get("txn_id") == "txn1"
-
-    async def test_correct_bind_vars(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1")
-        calls = connected_provider.http_client.execute_aql.call_args_list
-        all_bind_vars = [c[0][1] for c in calls]
-        collections_used = {bv["@edge_collection"] for bv in all_bind_vars}
-        assert "isOfType" in collections_used
-        assert "permission" in collections_used
-        assert "belongsTo" in collections_used
-
-
-# ===================================================================
-# delete_connector_instance  (lines 8194-8478)
-# ===================================================================
-
 class TestDeleteConnectorInstance:
     async def test_connector_not_found(self, connected_provider):
         connected_provider.get_document = AsyncMock(return_value=None)
