@@ -43,6 +43,7 @@ from openapi_schema_validator import (  # noqa: E402
 )
 
 _CREATE = "createConnectorInstance"
+_LIST_ALL_OAUTH_CONFIGS = "listOAuthConfigs"
 _LIST_OAUTH_CONFIGS = "listOAuthConfigsByType"
 _GET_OAUTH_CONFIG = "getOAuthConfig"
 _AUTHORIZE = "getOAuthAuthorizationUrl"
@@ -186,7 +187,7 @@ class TestSavedOAuthApps:
             resp = oauth_configs_api.list_all_configs(page=page, limit=100)
             assert resp.status_code == 200, resp.text
             body = resp.json()
-            assert_response_strictly_matches_openapi_operation(body, "listOAuthConfigs")
+            assert_response_strictly_matches_openapi_operation(body, _LIST_ALL_OAUTH_CONFIGS)
             listed |= {c.get("_id") for c in body["oauthConfigs"]}
             if jira_oauth_connector.oauth_config_id in listed or not body["pagination"]["hasNext"]:
                 break
@@ -207,7 +208,9 @@ class TestSavedOAuthApps:
         assert resp.status_code == 404, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _GET_OAUTH_CONFIG, 404)
 
-    @pytest.mark.parametrize("operation_id", [_LIST_OAUTH_CONFIGS, _GET_OAUTH_CONFIG])
+    @pytest.mark.parametrize(
+        "operation_id", [_LIST_ALL_OAUTH_CONFIGS, _LIST_OAUTH_CONFIGS, _GET_OAUTH_CONFIG]
+    )
     def test_oauth_config_reads_document_their_scope(
         self,
         oauth_configs_api: ConnectorOAuthConfigsClient,
@@ -217,7 +220,9 @@ class TestSavedOAuthApps:
     ) -> None:
         """A token without ``connector:read`` is refused, so the spec must say it is needed."""
         headers = {"Authorization": f"Bearer {scoped_token(['kb:read'])}"}
-        if operation_id == _LIST_OAUTH_CONFIGS:
+        if operation_id == _LIST_ALL_OAUTH_CONFIGS:
+            resp = oauth_configs_api.list_all_configs(auth=False, headers=headers)
+        elif operation_id == _LIST_OAUTH_CONFIGS:
             resp = oauth_configs_api.list_configs("Jira", auth=False, headers=headers)
         else:
             resp = oauth_configs_api.get_config(

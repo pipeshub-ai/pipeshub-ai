@@ -17,6 +17,7 @@ be fully described by pipeshub-openapi.yaml.
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -46,6 +47,8 @@ _UPDATE_FILTERS_SYNC = "updateConnectorFiltersSyncConfig"
 _FILTER_OPTIONS = "getFilterFieldOptions"
 _TOGGLE = "toggleConnector"
 
+SYNC_LOCK_TIMEOUT_SEC = 90
+
 
 def _is_active(connectors: ConnectorsClient, connector_id: str) -> bool:
     resp = connectors.get_instance(connector_id)
@@ -54,9 +57,16 @@ def _is_active(connectors: ConnectorsClient, connector_id: str) -> bool:
 
 
 def _ensure_sync_off(connectors: ConnectorsClient, connector_id: str) -> None:
-    if _is_active(connectors, connector_id):
+    if not _is_active(connectors, connector_id):
+        return
+    # A running full sync locks the connector (409) until it finishes.
+    deadline = time.monotonic() + SYNC_LOCK_TIMEOUT_SEC
+    while True:
         resp = connectors.toggle(connector_id)
-        assert resp.status_code == 200, f"could not turn sync back off: {resp.text}"
+        if resp.status_code != 409 or time.monotonic() > deadline:
+            break
+        time.sleep(2)
+    assert resp.status_code == 200, f"could not turn sync back off: {resp.text}"
 
 
 @pytest.mark.integration

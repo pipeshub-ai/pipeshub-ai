@@ -171,6 +171,7 @@ def _scope_cases() -> list[tuple[str, Callable[..., requests.Response]]]:
                 **h,
             ),
         ),
+        ("listOAuthConfigs", lambda c, o, f, h: o.list_all_configs(**h)),
         ("listOAuthConfigsByType", lambda c, o, f, h: o.list_configs("Jira", **h)),
         (
             "getOAuthConfig",

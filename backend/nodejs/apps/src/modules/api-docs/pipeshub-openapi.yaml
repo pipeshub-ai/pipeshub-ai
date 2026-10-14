@@ -41933,15 +41933,15 @@ paths:
         - OAuth Configuration
       summary: List OAuth configurations
       description: |
-        List all OAuth configurations for the organization.<br><br>
-        <b>Security:</b><br>
-        <ul>
-        <li>Admins see full configuration including credentials</li>
-        <li>Non-admins see only essential fields (client ID, not secret)</li>
-        </ul>
+        List the saved OAuth apps of every connector type in the organization.<br><br>
+        Every caller, admin or not, gets the same essential fields (ID, name, connector type, app
+        metadata, timestamps). Credentials are never included; an admin reads them per app with
+        <code>GET /oauth/{connectorType}/{configId}</code>.
       operationId: listOAuthConfigs
       security:
         - bearerAuth: []
+        - oauth2:
+            - connector:read
       parameters:
         - name: page
           in: query
@@ -41980,8 +41980,24 @@ paths:
                   - success
                   - oauthConfigs
                   - pagination
+        '400':
+          description: 'Invalid request: a parameter or the body failed validation'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Unauthorized
+          description: Missing or invalid credentials
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The token lacks a required scope, or the caller may not use this connector
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
 
   /oauth/{connectorType}:
     get:
