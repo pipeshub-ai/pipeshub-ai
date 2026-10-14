@@ -2433,6 +2433,7 @@ class TestDeleteRecordsAndRelations:
     async def test_success(self, connected_provider):
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations("r1")
         assert result is True
@@ -2440,6 +2441,7 @@ class TestDeleteRecordsAndRelations:
     async def test_hard_delete(self, connected_provider):
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
@@ -2457,6 +2459,30 @@ class TestDeleteRecordsAndRelations:
             await connected_provider.delete_records_and_relations(
                 "r1", transaction="txn1"
             )
+
+    async def test_every_graph_edge_of_the_record_is_removed(self, connected_provider) -> None:
+        """Jira Data Center and Linear hard-delete here; a fixed list left inheritPermissions behind."""
+        connected_provider.http_client.get_document.return_value = _arango_record(key="r1")
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["inheritPermissions", "entityRelations"])
+        connected_provider.http_client.execute_aql.return_value = []
+
+        assert await connected_provider.delete_records_and_relations("r1", hard_delete=True) is True
+
+        swept = [
+            c.args[1]["@edge_collection"]
+            for c in connected_provider.http_client.execute_aql.await_args_list
+            if "@edge_collection" in c.args[1]
+        ]
+        assert swept == ["inheritPermissions", "inheritPermissions", "entityRelations", "entityRelations"]
+
+    async def test_a_failed_edge_delete_fails_the_delete(self, connected_provider) -> None:
+        """It used to be logged and skipped, so the record went and its edges stayed."""
+        connected_provider.http_client.get_document.return_value = _arango_record(key="r1")
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
+        connected_provider.http_client.execute_aql.side_effect = Exception("write failed")
+
+        assert await connected_provider.delete_records_and_relations("r1") is False
+        assert connected_provider.http_client.execute_aql.await_count == 1
 
 
 # ===================================================================

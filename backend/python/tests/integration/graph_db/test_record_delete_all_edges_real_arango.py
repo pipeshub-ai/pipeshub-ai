@@ -1,9 +1,11 @@
-"""A single Drive, Gmail, Outlook or local-FS record delete on ArangoDB leaves no edge behind.
+"""A single connector record delete on ArangoDB leaves no edge behind.
 
-Each of those deletes walks its own fixed list of edge collections. A record in a
-record group also inherits that group's access over an inheritPermissions edge,
-and a ticket-like record links people over entityRelations; neither was on the
-lists, so both edges outlived the record and pointed at a missing node.
+The Drive, Gmail/Outlook and local-FS deletes, and the hard delete Jira Data
+Center and Linear use, each walked its own fixed list of edge collections. A
+record in a record group also inherits that group's access over an
+inheritPermissions edge, and a ticket-like record links people over
+entityRelations; neither was on the lists, so both edges outlived the record
+and pointed at a missing node.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait arango-graph-it
@@ -123,6 +125,11 @@ async def _edges_touching(provider, ids: list[str]) -> dict[str, int]:
             Connectors.LOCAL_FS.value, FILES,
             lambda p, rec, record: p._execute_local_fs_record_deletion(rec, record), id="local-fs",
         ),
+        pytest.param(
+            Connectors.JIRA.value, FILES,
+            lambda p, rec, record: p.delete_records_and_relations(rec, hard_delete=True),
+            id="jira-dc-linear-hard-delete",
+        ),
     ],
 )
 async def test_a_connector_record_delete_leaves_no_edge_behind(arango, connector, type_collection, delete) -> None:
@@ -133,7 +140,7 @@ async def test_a_connector_record_delete_leaves_no_edge_behind(arango, connector
 
     result = await delete(provider, rec, record)
 
-    assert result["success"], result
+    assert result is True or result["success"], result
     assert await _edges_touching(provider, ids) == {}
     assert await provider.http_client.get_document(collection=RECORDS, key=rec) is None
     assert await provider.http_client.get_document(collection=type_collection, key=rec) is None

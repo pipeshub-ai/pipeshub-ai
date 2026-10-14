@@ -5430,6 +5430,7 @@ class TestDeleteRecordsAndRelationsWithTransaction:
     @pytest.mark.asyncio
     async def test_hard_delete_success(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = [
             {"record_removed": True, "file_removed": True, "mail_removed": False}
         ]
@@ -11562,6 +11563,7 @@ class TestDeleteRecordsAndRelationsSoftDelete:
     @pytest.mark.asyncio
     async def test_soft_delete(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = [
             {"record_removed": True, "file_removed": True, "mail_removed": False}
         ]
@@ -15534,9 +15536,10 @@ class TestDeleteEveryEdgeOfRecord:
 
         calls = connected_provider.http_client.execute_aql.await_args_list
         record_calls = [c for c in calls if "record" in c.args[1]]
-        assert [c.args[1]["@edge_collection"] for c in record_calls] == GRAPH_EDGES
+        assert [c.args[1]["@edge_collection"] for c in record_calls] == [e for e in GRAPH_EDGES for _ in range(2)]
         for c in record_calls:
-            assert "edge._from == @record OR edge._to == @record" in c.args[0]
+            assert " OR " not in c.args[0], "an OR over _from and _to cannot use the edge index"
+            assert ("edge._from == @record" in c.args[0]) != ("edge._to == @record" in c.args[0])
             assert c.args[1]["record"] == "records/r1"
         assert all(c.kwargs["txn_id"] == "txn1" for c in calls)
 
@@ -15565,11 +15568,11 @@ class TestDeleteEveryEdgeOfRecord:
     @pytest.mark.asyncio
     async def test_a_failed_collection_stops_the_delete(self, connected_provider) -> None:
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=GRAPH_EDGES)
-        connected_provider.http_client.execute_aql = AsyncMock(side_effect=[[], Exception("write failed")])
+        connected_provider.http_client.execute_aql = AsyncMock(side_effect=[[], [], Exception("write failed")])
 
         with pytest.raises(Exception, match="write failed"):
             await connected_provider._delete_outlook_edges("r1")
-        assert connected_provider.http_client.execute_aql.await_count == 2
+        assert connected_provider.http_client.execute_aql.await_count == 3
 
 
 # ---------------------------------------------------------------------------

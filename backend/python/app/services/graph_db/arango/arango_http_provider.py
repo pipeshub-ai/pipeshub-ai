@@ -9170,34 +9170,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 return False
 
-            EDGE_COLLECTIONS = [
-                CollectionNames.RECORD_RELATIONS.value,
-                CollectionNames.BELONGS_TO.value,
-                *RECORD_ENRICHMENT_EDGE_COLLECTIONS,
-                CollectionNames.IS_OF_TYPE.value,
-            ]
-
-            # Step 1: Remove edges from all edge collections
-            for edge_collection in EDGE_COLLECTIONS:
-                try:
-                    edge_removal_query = """
-                    LET record_id_full = CONCAT('records/', @node_key)
-                    FOR edge IN @@edge_collection
-                        FILTER edge._from == record_id_full OR edge._to == record_id_full
-                        REMOVE edge IN @@edge_collection
-                    """
-                    bind_vars = {
-                        "node_key": node_key,
-                        "@edge_collection": edge_collection,
-                    }
-                    await self.http_client.execute_aql(edge_removal_query, bind_vars, txn_id=transaction)
-                    self.logger.debug(
-                        f"✅ Edges from {edge_collection} deleted for node {node_key}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
-                    )
+            # Step 1: Remove every edge of the record
+            await self._delete_every_edge_of_record(node_key, transaction)
 
             # Step 2: Delete node from `records`, `files`, and `mails` collections
             delete_query = f"""
@@ -16394,26 +16368,25 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         A fixed list of collections misses the ones it never named: inheritPermissions
         (a record inheriting its group's access) and entityRelations outlived the record.
         """
-        query = """
-        FOR edge IN @@edge_collection
-            FILTER edge._from == @record OR edge._to == @record
-            REMOVE edge IN @@edge_collection
-            RETURN 1
-        """
-        total_deleted = 0
+        # One statement per end: an OR over _from and _to cannot use the edge index.
+        queries = [
+            f"""
+            FOR edge IN @@edge_collection
+                FILTER edge.{end} == @record
+                REMOVE edge IN @@edge_collection
+            """
+            for end in ("_from", "_to")
+        ]
+        record = f"{CollectionNames.RECORDS.value}/{record_id}"
         for collection in await self._edge_collections_of_graph(GraphNames.KNOWLEDGE_GRAPH.value):
-            try:
-                result = await self.http_client.execute_aql(
-                    query,
-                    {"@edge_collection": collection, "record": f"{CollectionNames.RECORDS.value}/{record_id}"},
-                    txn_id=transaction,
-                )
-            except Exception as e:
-                self.logger.error(f"Failed to delete edges of record {record_id} from {collection}: {e}")
-                raise
-            total_deleted += len(result) if result else 0
-
-        self.logger.debug(f"Total edges deleted for record {record_id}: {total_deleted}")
+            for query in queries:
+                try:
+                    await self.http_client.execute_aql(
+                        query, {"@edge_collection": collection, "record": record}, txn_id=transaction,
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to delete edges of record {record_id} from {collection}: {e}")
+                    raise
 
     async def _delete_file_record(
         self,
