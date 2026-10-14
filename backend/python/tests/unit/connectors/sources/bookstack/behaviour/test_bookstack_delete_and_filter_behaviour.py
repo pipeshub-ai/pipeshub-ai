@@ -164,8 +164,10 @@ class FakeSyncPoint:
         return dict(self.points.get(key, {}))
 
     async def update_sync_point(self, key: str, data: dict[str, str]) -> None:
-        assert all(isinstance(v, str) for v in data.values())
-        self.points[key] = dict(data)
+        # Timestamps are strings; the role sync point also carries the rebuildOwed flag.
+        assert all(isinstance(v, (str, bool)) for v in data.values())
+        # Both graph stores merge an update into the stored sync point.
+        self.points.setdefault(key, {}).update(data)
 
 
 @contextmanager
@@ -550,6 +552,13 @@ class FakeRoleStore:
         for role, members in roles:
             self.roles[role.source_role_id] = [m.email for m in members]
 
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+        *, raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """The stored roles, as a complete role read lists them to remove the ones BookStack lost."""
+        return [{"externalRoleId": role_id} for role_id in self.roles]
+
     async def on_app_role_deleted(self, external_role_id: str, connector_id: str) -> bool:
         # Like the real processor: a delete that fails raises; False when the role isn't stored.
         if self.fail_role_delete:
@@ -578,10 +587,10 @@ async def test_a_role_deletion_the_store_refuses_is_read_again_on_the_next_sync(
             await connector._sync_user_roles()
 
         assert "8" in store.roles, "the deleted role still gives its members access"
-        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-01T00:00:00Z"}
+        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-01T00:00:00Z", "rebuildOwed": False}
 
         store.fail_role_delete = False
         await connector._sync_user_roles()
 
         assert store.roles == {"7": ["ana@acme.com"]}
-        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-03T00:00:00Z"}
+        assert connector.app_role_sync_point.points[ROLE_CHECKPOINT] == {"timestamp": "2026-01-03T00:00:00Z", "rebuildOwed": False}

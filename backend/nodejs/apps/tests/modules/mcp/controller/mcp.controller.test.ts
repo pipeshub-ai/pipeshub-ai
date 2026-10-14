@@ -603,24 +603,26 @@ describe('MCP Controller — handleMCPRequest', () => {
   describe('request-ID logging', () => {
     let infoStub: sinon.SinonStub
     let errorStub: sinon.SinonStub
+    let handle: typeof handleMCPRequest
 
+    // The controller takes its logger once, at load, and under mocha's parallel
+    // workers another file may have loaded it with a logger that stubs on
+    // Logger.prototype never reach: load a private copy that logs to a recorder.
     beforeEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
-      }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
-      }
-      infoStub = sinon.stub(Logger.prototype, 'info')
-      errorStub = sinon.stub(Logger.prototype, 'error')
-    })
-
-    afterEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
-      }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      infoStub = sinon.stub()
+      errorStub = sinon.stub()
+      const recorder = { info: infoStub, error: errorStub, warn: sinon.stub(), debug: sinon.stub() } as unknown as Logger
+      const modulePath = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
+      const original = require.cache[modulePath]
+      delete require.cache[modulePath]
+      const getInstance = sinon.stub(Logger, 'getInstance').returns(recorder)
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        handle = (require(modulePath) as { handleMCPRequest: typeof handleMCPRequest }).handleMCPRequest
+      } finally {
+        getInstance.restore()
+        if (original) require.cache[modulePath] = original
+        else delete require.cache[modulePath]
       }
     })
 
@@ -637,7 +639,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handle(appConfig)(req, res as any, next)
 
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
@@ -666,7 +668,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const next = createMockNext()
 
       requestContextMiddleware(req, res as any, () => {})
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handle(appConfig)(req, res as any, next)
 
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
@@ -688,7 +690,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handle(appConfig)(req, res as any, next)
 
       expect(infoStub.calledOnce).to.be.true
       expect(infoStub.firstCall.args[0]).to.equal('MCP request completed')
@@ -721,7 +723,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handle(appConfig)(req, res as any, next)
 
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')
@@ -747,7 +749,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await handleMCPRequest(appConfig)(req, res as any, next)
+      await handle(appConfig)(req, res as any, next)
 
       expect(errorStub.calledOnce).to.be.true
       expect(errorStub.firstCall.args[0]).to.equal('MCP request failed')

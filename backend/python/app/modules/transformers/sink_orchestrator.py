@@ -508,8 +508,8 @@ class SinkOrchestrator(Transformer):
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )
         # The record is only searchable now, so the accessible-record map that
-        # gates search is stale. KB-only: a connector sync flips thousands of
-        # records here in a burst and invalidates once, at sync completion.
+        # gates search is stale. Connector records arrive in bursts, so their
+        # deletes are coalesced (see `on_record_indexed`).
         await notify_record_indexed(
             connector_name=record.connector_name,
             connector_id=record.connector_id,

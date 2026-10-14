@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -753,6 +754,50 @@ class TestMergePatternMatchResults:
         assert (metadata["recordName"], metadata["mimeType"]) == ("msa.pdf", "application/pdf")
         assert (metadata["recordId"], metadata["virtualRecordId"], metadata["orgId"]) == ("rec-1", "vr-1", "org-1")
         assert "record_name" not in vr_map["vr-1"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("raw", "graph_extra", "block_type"), [
+        ({"match_preview": "…annual fee of $1,250,000…"}, {}, "matched_text"),
+        ({"match_preview": "…annual fee…"}, {"summary": "A master services agreement."}, "record_summary"),
+        ({}, {}, "record_name"),
+        ({"match_preview": "…annual fee…"}, {"summary": "   "}, "record_name"),
+    ], ids=["matched-text", "summary", "name-only", "blank-summary"])
+    async def test_a_record_page_citation_says_which_text_it_shows(
+        self, raw: dict, graph_extra: dict, block_type: str,
+    ) -> None:
+        """Only matched text is the record's own words. A caller checking an
+        answer against its citations must be able to tell it from a summary
+        written at indexing time, or from a bare record name."""
+        from app.utils.citations import normalize_citations_and_chunks
+
+        graph_rec = {
+            "_key": "rec-1", "id": "rec-1", "orgId": "org-1", "virtualRecordId": "vr-1",
+            "indexingStatus": "COMPLETED", "recordName": "msa.pdf", "recordType": "FILE",
+            "mimeType": "application/pdf", "connectorId": "kb-1", **graph_extra,
+        }
+        graph_provider = AsyncMock()
+        graph_provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-1": "rec-1"})
+        graph_provider.get_records_by_record_ids = AsyncMock(return_value=[graph_rec])
+        vr_map: dict[str, dict] = {}
+        await merge_pattern_match_results(
+            raw_records=[{"virtual_record_id": "vr-1", **raw}],
+            virtual_record_id_to_result=vr_map,
+            user_id="user-1",
+            org_id="org-1",
+            blob_store=AsyncMock(),
+            graph_provider=graph_provider,
+            is_multimodal_llm=False,
+            logger_instance=MagicMock(),
+        )
+
+        _answer, citations = normalize_citations_and_chunks(
+            "The fee is set [1](http://localhost:3000/record/rec-1).", [], [],
+            virtual_record_id_to_result=vr_map,
+        )
+
+        assert len(citations) == 1
+        assert citations[0]["metadata"]["blockType"] == block_type
+        assert citations[0]["metadata"]["webUrl"] == "http://localhost:3000/record/rec-1"
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("best_first", [True, False])
@@ -3376,6 +3421,176 @@ class TestRunPatternMatchWithLlmGrep:
 
         assert result == [{"virtual_record_id": "vr-fast"}]
         assert slow_cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_short_wait_keeps_what_finished_commands_found(self) -> None:
+        """A caller that asked for a short keyword search stops waiting once
+        its wait runs out, keeps the finished commands' matches, and cancels
+        the rest, instead of holding the answer for the whole 35 s budget."""
+        slow_cancelled = asyncio.Event()
+
+        async def _pipeline(**kwargs: object) -> list[dict[str, str]]:
+            if "fast" in kwargs["grep_command"]:
+                return [{"virtual_record_id": "vr-fast"}]
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                slow_cancelled.set()
+                raise
+
+        found: dict[str, dict] = {}
+        kwargs = {**self._base_kwargs(), "query": "short wait keeps finished commands"}
+        with patch("app.utils.pattern_match.generate_grep_command_via_llm", new_callable=AsyncMock,
+                   return_value=['grep -rci "fast" .', 'grep -rci "slow" .']), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=_pipeline):
+            task = asyncio.create_task(
+                run_pattern_match_with_llm_grep(**kwargs, llm=MagicMock(), found=found),
+            )
+            started = time.perf_counter()
+            result = await asyncio.wait_for(
+                await_pattern_match(task, MagicMock(), wait_budget=0.2, found_so_far=found),
+                timeout=5,
+            )
+            waited = time.perf_counter() - started
+
+        assert result == [{"virtual_record_id": "vr-fast"}]
+        assert waited < 2
+        assert task.cancelled() and slow_cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_without_a_wait_budget_every_command_is_waited_for(self) -> None:
+        """The in-app default is unchanged: no budget, so a slower command's
+        matches still arrive."""
+        async def _pipeline(**kwargs: object) -> list[dict[str, str]]:
+            if "slow" in kwargs["grep_command"]:
+                await asyncio.sleep(0.3)
+                return [{"virtual_record_id": "vr-slow"}]
+            return [{"virtual_record_id": "vr-fast"}]
+
+        found: dict[str, dict] = {}
+        kwargs = {**self._base_kwargs(), "query": "no wait budget waits for all"}
+        with patch("app.utils.pattern_match.generate_grep_command_via_llm", new_callable=AsyncMock,
+                   return_value=['grep -rci "fast" .', 'grep -rci "slow" .']), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=_pipeline):
+            task = asyncio.create_task(
+                run_pattern_match_with_llm_grep(**kwargs, llm=MagicMock(), found=found),
+            )
+            result = await asyncio.wait_for(
+                await_pattern_match(task, MagicMock(), found_so_far=found), timeout=5,
+            )
+
+        assert sorted(r["virtual_record_id"] for r in result) == ["vr-fast", "vr-slow"]
+
+    @pytest.mark.asyncio
+    async def test_a_task_that_finishes_inside_the_wait_returns_its_result(self) -> None:
+        async def _done() -> list[dict[str, str]]:
+            return [{"virtual_record_id": "vr-1"}]
+
+        task = asyncio.create_task(_done())
+        result = await await_pattern_match(task, MagicMock(), wait_budget=5.0, found_so_far={})
+        assert result == [{"virtual_record_id": "vr-1"}]
+
+    @pytest.mark.asyncio
+    async def test_cancel_task_if_running_passes_on_the_callers_cancellation(self) -> None:
+        """Cancelling the task's errors away must not also swallow a stop
+        aimed at the caller while it waits for the teardown."""
+        teardown_started = asyncio.Event()
+
+        async def _slow_teardown() -> None:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                teardown_started.set()
+                await asyncio.sleep(0.3)
+                raise
+
+        task = asyncio.create_task(_slow_teardown())
+        await asyncio.sleep(0)
+        caller = asyncio.create_task(cancel_task_if_running(task))
+        await asyncio.wait_for(teardown_started.wait(), timeout=5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+    @pytest.mark.asyncio
+    async def test_a_slow_grep_cleanup_does_not_stretch_the_short_wait(self) -> None:
+        """The budget plus a bounded grace is all the caller waits; the rest of
+        a slow teardown carries on in the background."""
+        cleanup_done = asyncio.Event()
+
+        async def _very_slow_cleanup() -> list[dict]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                await asyncio.sleep(2.5)
+                cleanup_done.set()
+                raise
+            return []
+
+        task = asyncio.create_task(_very_slow_cleanup())
+        started = asyncio.get_running_loop().time()
+        with patch("app.utils.pattern_match.KEYWORD_SEARCH_CLEANUP_GRACE_SECS", 0.2, create=True):
+            result = await await_pattern_match(
+                task, MagicMock(), wait_budget=0.05,
+                found_so_far={"vr-1": {"virtual_record_id": "vr-1"}},
+            )
+        elapsed = asyncio.get_running_loop().time() - started
+        assert result == [{"virtual_record_id": "vr-1"}]
+        assert elapsed < 1.0
+        assert not cleanup_done.is_set()
+        await asyncio.wait_for(cleanup_done.wait(), timeout=5)
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_caller_during_grep_cleanup_is_not_swallowed(self) -> None:
+        """Once the budget fires, the wait sits in the grep task's cleanup. A
+        cancellation of the caller there must still reach the caller."""
+        cleanup_started = asyncio.Event()
+
+        async def _slow_cleanup() -> list[dict]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                cleanup_started.set()
+                await asyncio.sleep(0.3)
+                raise
+            return []
+
+        task = asyncio.create_task(_slow_cleanup())
+        caller = asyncio.create_task(
+            await_pattern_match(
+                task, MagicMock(), wait_budget=0.05,
+                found_so_far={"vr-1": {"virtual_record_id": "vr-1"}},
+            ),
+        )
+        await asyncio.wait_for(cleanup_started.wait(), timeout=5)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+
+    @pytest.mark.asyncio
+    async def test_cancelling_the_caller_cancels_the_grep_task(self) -> None:
+        """Awaiting the task directly passed a caller's cancellation on to it;
+        the budgeted wait must too, or the grep keeps running for nobody."""
+        grep_cancelled = asyncio.Event()
+
+        async def _hang() -> list[dict]:
+            try:
+                await asyncio.sleep(3600)
+            except asyncio.CancelledError:
+                grep_cancelled.set()
+                raise
+            return []
+
+        task = asyncio.create_task(_hang())
+        caller = asyncio.create_task(
+            await_pattern_match(task, MagicMock(), wait_budget=60.0, found_so_far={}),
+        )
+        await asyncio.sleep(0.05)
+        caller.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await caller
+        await asyncio.sleep(0)
+        assert grep_cancelled.is_set()
 
     @pytest.mark.asyncio
     async def test_keyword_fallback_runs_inside_the_same_budget(self):

@@ -64,6 +64,10 @@ from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_processor.record_links import (
+    canonical_address,
+    related_for_urls,
+)
 from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     not_downloadable,
@@ -133,7 +137,6 @@ from app.models.entities import (
     Record,
     RecordGroup,
     RecordGroupType,
-    RecordRelations,
     RecordType,
     RelatedExternalRecord,
 )
@@ -2084,6 +2087,7 @@ class SlackIndividualConnector(BaseConnector):
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=burst_authors,
+                related_external_records=self._related_for_messages(burst.messages),
             )
         except Exception as exc:
             self.logger.error(f"_build_thread_burst_record({burst_id}): {exc}")
@@ -2452,6 +2456,7 @@ class SlackIndividualConnector(BaseConnector):
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=burst_authors,
+                related_external_records=self._related_for_messages(burst.messages),
             )
         except Exception as exc:
             self.logger.error(f"_process_burst create burst_rec ({burst_id}): {exc}")
@@ -2585,6 +2590,7 @@ class SlackIndividualConnector(BaseConnector):
                 preview_renderable=False,
                 block_containers=bc,
                 involved_user_source_ids=[msg.get("user", "")] if msg.get("user") else [],
+                related_external_records=self._related_for_messages([msg]),
             )
         except Exception as exc:
             self.logger.error(f"_process_single({ts}): {exc}")
@@ -2773,17 +2779,8 @@ class SlackIndividualConnector(BaseConnector):
         msg: dict[str, Any],
     ) -> Optional[LinkRecord]:
         try:
-            itype, imeta = self._classify_url(url)
             unfurl       = self._unfurl_data(url, msg)
             rg_id        = ctx.channel_groups_map.get(ctx.channel_id)
-
-            related: list[RelatedExternalRecord] = []
-            if itype == "jira" and imeta.get("ticket_key"):
-                related.append(RelatedExternalRecord(
-                    external_record_id=imeta["ticket_key"],
-                    record_type=RecordType.TICKET,
-                    relation_type=RecordRelations.LINKED_TO,
-                ))
 
             return LinkRecord(
                 org_id=self.data_entities_processor.org_id,
@@ -2800,7 +2797,9 @@ class SlackIndividualConnector(BaseConnector):
                 connector_name=Connectors.SLACK,
                 connector_id=self.connector_id,
                 mime_type=MimeTypes.MARKDOWN.value,
-                weburl=url,
+                # The canonical address, which a record indexed later looks for
+                # (record_links.addresses_linking_to); the paste stays on url.
+                weburl=canonical_address(url),
                 url=url,
                 title=unfurl.get("title"),
                 is_public=LinkPublicStatus.UNKNOWN,
@@ -2808,7 +2807,6 @@ class SlackIndividualConnector(BaseConnector):
                 is_dependent_node=True,
                 parent_node_id=parent.id,
                 inherit_permissions=True,
-                related_external_records=related,
             )
         except Exception as exc:
             self.logger.error(f"_process_link({url[:60]}): {exc}")
@@ -2904,6 +2902,9 @@ class SlackIndividualConnector(BaseConnector):
                 mentioned_group_ids=self._extract_channel_mentions(text),  # Keep original IDs for edges
                 is_edited=is_edited,
                 involved_user_source_ids=[user_id] if user_id else [],
+                # Rebuilt for a reindex, which leaves the link records alone: None keeps
+                # the message's link edges as they are, in step with those records.
+                related_external_records=None,
                 # Hierarchy
                 inherit_permissions=True,
                 preview_renderable=False,
@@ -3535,6 +3536,7 @@ class SlackIndividualConnector(BaseConnector):
                 mentioned_user_ids=self._extract_user_mentions(md.get("text", "")),
                 mentioned_group_ids=self._extract_channel_mentions(md.get("text", "")),
                 involved_user_source_ids=[md.get("user", "")] if md.get("user") else [],
+                related_external_records=self._related_for_messages([md]),
             )
             await self.data_entities_processor.on_record_content_update(updated_rec)
             return 1
@@ -3595,6 +3597,8 @@ class SlackIndividualConnector(BaseConnector):
         )
         burst_rec.content       = new_content
         burst_rec.block_containers = bc
+        # Rebuilt from every message, as the links are: saving drops the ones left out.
+        burst_rec.related_external_records = self._related_for_messages(burst_msgs)
         burst_rec.version      += 1
         # Synthetic revision forces _handle_updated_record to DB-upsert
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
@@ -3965,6 +3969,18 @@ class SlackIndividualConnector(BaseConnector):
             for m in re.findall(r"<(https?://[^>|]+)(?:\|[^>]+)?>|(https?://\S+)", text)
             if m[0] or m[1]
         ]
+
+    def _related_for_messages(self, msgs: list[dict[str, Any]]) -> list[RelatedExternalRecord]:
+        """The records these messages link to, named by address.
+
+        Saved on the message record, so the message is joined to the pull request,
+        ticket or page it pastes, in whichever connector holds it (see
+        ``record_links``). Built from every message the record holds: saving the
+        record drops the links left out.
+        """
+        return related_for_urls([
+            url for msg in msgs for url in self._extract_urls(msg.get("text", ""))
+        ])
 
     # =========================================================================
     # 10.  Link classification

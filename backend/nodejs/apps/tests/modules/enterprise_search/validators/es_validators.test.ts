@@ -212,6 +212,40 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+  describe('keywordSearchBudget', () => {
+    // Undeclared, Zod strips it and the short wait an MCP caller asked for
+    // never reaches Python. All four stream routes an MCP chat uses take it.
+    const valid = '507f1f77bcf86cd799439011'
+    const routes = [
+      ['new conversation', () => enterpriseSearchStreamCreateSchema, { chatMode: 'agent' }, {}],
+      ['follow-up', () => addMessageStreamParamsSchema, { chatMode: 'agent' }, { conversationId: valid }],
+      ['new agent conversation', () => agentStreamCreateSchema, { chatMode: 'quick' }, { agentKey: 'a1' }],
+      ['agent follow-up', () => agentAddMessageParamsSchema, { chatMode: 'quick' }, { agentKey: 'a1', conversationId: valid }],
+    ] as const
+
+    for (const [name, schema, body, params] of routes) {
+      it(`survives parsing on the ${name} route`, () => {
+        const result = (schema() as z.ZodTypeAny).safeParse({
+          params,
+          body: { query: 'hello', ...body, keywordSearchBudget: 'short' },
+        })
+        expect(result.success, JSON.stringify(result.error?.issues)).to.be.true
+        expect(result.data.body.keywordSearchBudget).to.equal('short')
+      })
+    }
+
+    it('is optional, and rejects anything but short or full', () => {
+      const parse = (extra: object) => enterpriseSearchStreamCreateSchema.safeParse({
+        body: { query: 'hello', chatMode: 'agent', ...extra },
+      })
+      const absent = parse({})
+      expect(absent.success).to.be.true
+      if (absent.success) expect(absent.data.body.keywordSearchBudget).to.equal(undefined)
+      expect(parse({ keywordSearchBudget: 'full' }).success).to.be.true
+      expect(parse({ keywordSearchBudget: 'off' }).success).to.be.false
+    })
+  })
+
   describe('enterpriseSearchStreamCreateSchema — chatMode', () => {
     for (const chatMode of UNIVERSAL_STREAM_CHAT_MODES) {
       it(`should accept required universal stream chatMode ${chatMode}`, () => {
@@ -550,6 +584,33 @@ describe('enterprise_search/validators/es_validators', () => {
       const data = { body: { query: 'a'.repeat(100000) } }
       const result = enterpriseSearchSearchSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+
+    it('keeps optional created and updated date bounds', () => {
+      const data = {
+        body: {
+          query: 'q',
+          createdAfter: '2026-01-01',
+          createdBefore: '2026-03-31T23:59:59Z',
+          modifiedAfter: ' 2026-09-01 ',
+          modifiedBefore: '2026-09-30T12:00:00+05:30',
+        },
+      }
+      const result = enterpriseSearchSearchSchema.safeParse(data)
+      expect(result.success).to.be.true
+      expect(result.data!.body).to.include({
+        createdAfter: '2026-01-01',
+        createdBefore: '2026-03-31T23:59:59Z',
+        modifiedAfter: '2026-09-01',
+        modifiedBefore: '2026-09-30T12:00:00+05:30',
+      })
+    })
+
+    it('rejects an empty or overlong date bound', () => {
+      for (const modifiedAfter of ['', '   ', '2'.repeat(65)]) {
+        const result = enterpriseSearchSearchSchema.safeParse({ body: { query: 'q', modifiedAfter } })
+        expect(result.success, JSON.stringify(modifiedAfter)).to.be.false
+      }
     })
 
     it('should strip model fields from body (semantic search schema is query-centric)', () => {

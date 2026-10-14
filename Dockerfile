@@ -459,6 +459,16 @@ RUN chmod +x /app/process_monitor.sh && \
 # releases; it drops to uid 1000 with no capabilities before any service starts.
 COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
+# Which build this image is; each service returns it from /health. Declared
+# last so a new commit rebuilds only these layers. With no build args the
+# variables are empty and the services report null.
+ARG APP_VERSION=""
+ARG GIT_COMMIT=""
+ENV APP_VERSION=${APP_VERSION} \
+    GIT_COMMIT=${GIT_COMMIT}
+LABEL org.opencontainers.image.version=${APP_VERSION} \
+      org.opencontainers.image.revision=${GIT_COMMIT}
+
 EXPOSE 3000 8002 8092 8093
 
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]

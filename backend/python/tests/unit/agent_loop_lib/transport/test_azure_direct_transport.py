@@ -245,6 +245,39 @@ class TestRequestShapeFallbacks:
         assert t._defaults.use_responses_api is True, "the working shape is pinned"
 
     @pytest.mark.asyncio
+    async def test_azure_tools_refusal_without_reasoning_switches_endpoint(self) -> None:
+        """A gpt-6 model with Reasoning unticked sends no effort, but Azure
+        still refuses its tools on Chat Completions, in its own wording. The
+        retry goes to the Responses API without a reasoning setting."""
+        t = _transport()
+        t._defaults = RequestDefaults(temperature=1, model="gpt-6.1-sol")
+        chat_calls: list = []
+        resp_calls: list = []
+
+        async def _chat(**kwargs: object) -> None:
+            chat_calls.append(kwargs)
+            raise RuntimeError(
+                "Function tools with reasoning_effort are not supported for this model in "
+                "/v1/chat/completions. To use function tools, use /v1/responses or set "
+                "reasoning_effort to 'none'."
+            )
+
+        def _resp(**kwargs: object) -> _FakeStreamingResponse:
+            resp_calls.append(kwargs)
+            return _FakeStreamingResponse([_DONE])
+
+        t._client = MagicMock()
+        t._client.chat.completions.create = AsyncMock(side_effect=_chat)
+        t._client.responses.with_streaming_response.create = MagicMock(side_effect=_resp)
+
+        [e async for e in t.stream(messages=[UserMessage(content="hi")])]
+
+        assert len(chat_calls) == 1
+        assert len(resp_calls) == 1, "retry must go to the Responses API"
+        assert "reasoning" not in resp_calls[0]
+        assert t._defaults.use_responses_api is True
+
+    @pytest.mark.asyncio
     async def test_reasoning_mandatory_conflict_bumps_off_a_disabled_value(self) -> None:
         t = _transport()
         t._defaults = RequestDefaults(reasoning_effort="none", model="gpt-4o")

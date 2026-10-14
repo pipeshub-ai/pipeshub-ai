@@ -298,6 +298,17 @@ const retrievalContextFieldsSchema = {
   includeRetrievalContext: z.boolean().optional(),
 };
 
+/**
+ * How long each search waits for the keyword (grep) pattern match after its
+ * semantic results: `short` caps the wait (Python `pattern_match_wait_budget`)
+ * for callers that would rather answer sooner, such as agents calling chat
+ * over MCP; `full`, or leaving it out, waits for all of it. Declared on every
+ * chat body that runs a search, or Zod strips it.
+ */
+const keywordSearchFieldsSchema = {
+  keywordSearchBudget: z.enum(['short', 'full']).optional(),
+};
+
 /** Body of `POST .../cancel` — one schema for both the assistant and agent
  * cancel routes, matching Python's `CancelRunRequest`. */
 export const cancelRunBodySchema = z.object({
@@ -383,6 +394,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
+  ...keywordSearchFieldsSchema,
 });
 
 export const enterpriseSearchCreateSchema = z.object({
@@ -538,6 +550,7 @@ const addMessageBodySchema = z.object({
     ...modelFieldsSchema,
     ...contextFieldsSchema,
     ...retrievalContextFieldsSchema,
+  ...keywordSearchFieldsSchema,
 });
 
 export const addMessageParamsSchema = z.object({
@@ -1031,6 +1044,14 @@ export const enterpriseSearchQuerySchema = z.object({
   }),
 });
 
+/** "YYYY-MM-DD" or an ISO 8601 datetime with an offset; checked in full by the AI service. */
+const searchDateSchema = z
+  .string()
+  .trim()
+  .min(1, { message: 'A date filter cannot be empty' })
+  .max(64, { message: 'A date filter must be at most 64 characters' })
+  .optional();
+
 export const enterpriseSearchSearchSchema = z.object({
   body: z.object({
     // Same ceiling as a chat question (chatQuerySchema). The XSS middleware
@@ -1043,6 +1064,13 @@ export const enterpriseSearchSearchSchema = z.object({
       }),
     filters: filtersSchema,
     limit: limitSchema.optional(),
+    // Optional bounds on the source's own created / last-updated date. The AI
+    // service parses them (the assistant's search tool uses the same parser)
+    // and answers 400 with the reason when one is not a date it accepts.
+    createdAfter: searchDateSchema,
+    createdBefore: searchDateSchema,
+    modifiedAfter: searchDateSchema,
+    modifiedBefore: searchDateSchema,
   }),
 });
 

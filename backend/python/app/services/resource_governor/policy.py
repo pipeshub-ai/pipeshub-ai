@@ -11,6 +11,7 @@ growth ramps slowly (plan section 4).
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -731,20 +732,74 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
     return False
 
 
+def _all_slow(holds: tuple[float, ...], threshold: float) -> bool:
+    return bool(holds) and all(hold > threshold for hold in holds)
+
+
 def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
-    """Fold this sample's mean permit hold time into the pool's EWMA and
+    """Fold this sample's typical permit hold time into the pool's EWMA and
     low-water baseline. The baseline drifts toward the EWMA by a small
     fraction of the gap each sample, so a workload that is simply slower
     than the one before it becomes the new normal within a few minutes
-    instead of pinning growth for the life of the process."""
+    instead of pinning growth for the life of the process.
+
+    When holders report how long each permit was held
+    (``PoolDemand.hold_seconds_by_sample``), each sample's new holds are
+    judged against the baseline. A hold over ``DOWNSTREAM_LATENCY_HOLD_FACTOR``
+    times the baseline is slow.
+
+    - Any of the sample's holds is fast: the median of the fast ones feeds
+      the EWMA. The few slow ones are large records, not a slow pool: pull
+      requests holding a permit for ten minutes beside chat messages that
+      take fifteen seconds. Read by the mean, ``permit_seconds /
+      completions``, they look exactly like a slowdown and stop the pool
+      growing for as long as they run.
+    - Every hold is slow, in this sample and in the previous one: every
+      record is slowing down. The EWMA goes straight to the median of the
+      slow holds, so the hold engages on that sample, before slow start has
+      doubled the pool, however few permits each sample releases.
+    - Every hold is slow but some of the previous sample's were not:
+      possibly a batch of large records finishing together. Nothing changes until the next
+      sample says which it is.
+
+    The mean is still used when no hold times were reported at all."""
     if demand.completions <= 0:
         return state
-    mean_hold = demand.permit_seconds / demand.completions
-    ewma = (
-        mean_hold
-        if state.hold_ewma is None
-        else HOLD_EWMA_ALPHA * mean_hold + (1.0 - HOLD_EWMA_ALPHA) * state.hold_ewma
+    samples = demand.hold_seconds_by_sample
+    if not any(samples):
+        mean_hold = demand.permit_seconds / demand.completions
+        return _fold_hold(state, mean_hold)
+    current = samples[-1]
+    if not current:
+        return state
+    if not state.hold_baseline:
+        return _fold_hold(state, statistics.median(current))
+
+    threshold = DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
+    if not _all_slow(current, threshold):
+        return _fold_hold(
+            state, statistics.median([hold for hold in current if hold <= threshold])
+        )
+    previous = next((sample for sample in reversed(samples[:-1]) if sample), ())
+    if not previous or not _all_slow(previous, threshold):
+        return state
+    slow_median = statistics.median(current)
+    return _fold_hold(
+        state, slow_median, ewma=max(slow_median, state.hold_ewma or 0.0)
     )
+
+
+def _fold_hold(
+    state: PoolState, hold: float, *, ewma: float | None = None
+) -> PoolState:
+    """Move the EWMA toward *hold* (or set it to *ewma*), then let the
+    baseline drift toward it."""
+    if ewma is None:
+        ewma = (
+            hold
+            if state.hold_ewma is None
+            else HOLD_EWMA_ALPHA * hold + (1.0 - HOLD_EWMA_ALPHA) * state.hold_ewma
+        )
     if state.hold_baseline is None:
         baseline = ewma
     else:

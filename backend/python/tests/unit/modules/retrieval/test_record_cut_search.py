@@ -238,7 +238,9 @@ class TestTheSwitch:
         ]
 
     @pytest.mark.parametrize(("enabled", "asked", "shown"), [
-        ("false", 5, ["long#0", "long#1", "long#2", "long#3", "long#4"]),
+        # Off, the fused cut is not applied, but the search API still keeps at
+        # most `passages_per_record(5)` = 4 passages of any one record.
+        ("false", 5, ["long#0", "long#1", "long#2", "long#3"]),
         ("true", 15, ["long#0", "long#1", "long#2", "r0#0", "r1#0"]),
     ])
     async def test_the_search_api_path_is_cut_the_same_way(

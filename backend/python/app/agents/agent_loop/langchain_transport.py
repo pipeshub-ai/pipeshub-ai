@@ -254,6 +254,23 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     return True
 
 
+def responses_api_copy(llm: "BaseChatModel") -> "BaseChatModel":
+    """A copy of an OpenAI-family LangChain model that sends its requests to
+    the Responses API, moving any `reasoning_effort` into the `reasoning` dict
+    that API expects (`_default_params` drops `None` values, so clearing the
+    other kwarg outright is required). With no effort set, the copy sends no
+    reasoning setting and the model keeps its own default.
+
+    Shared with the model setup check (`app/api/routes/health.py`), which
+    tries tools the same way an agent turn retries them."""
+    effort = getattr(llm, "reasoning_effort", None)
+    return llm.model_copy(update={
+        "use_responses_api": True,
+        "reasoning": {"effort": effort} if effort else None,
+        "reasoning_effort": None,
+    })
+
+
 def _system_prompt(system: str | None, system_blocks: list[str] | None) -> tuple[str, str]:
     """`(stable, volatile)`: the agent's blocks when given (the first is the
     stable one), else the whole `system` as one stable block."""
@@ -561,12 +578,7 @@ class LangChainTransport(LLMTransport):
             return llm.model_copy(update={
                 "use_responses_api": None, "reasoning": None, "reasoning_effort": None,
             }), LLMApiMode.NO_REASONING_WITH_TOOLS.value
-        effort = getattr(llm, "reasoning_effort", None)
-        return llm.model_copy(update={
-            "use_responses_api": True,
-            "reasoning": {"effort": effort} if effort else None,
-            "reasoning_effort": None,
-        }), LLMApiMode.RESPONSES.value
+        return responses_api_copy(llm), LLMApiMode.RESPONSES.value
 
     def _reasoning_mandatory_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
         """Builds a copy of `self._llm` with reasoning bumped off an

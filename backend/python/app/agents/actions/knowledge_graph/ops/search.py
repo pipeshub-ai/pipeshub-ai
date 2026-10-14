@@ -65,6 +65,7 @@ from app.utils.pattern_match import (
     grep_hits_on_loaded_records,
     grep_hits_within,
     merge_pattern_match_results,
+    pattern_match_wait_budget,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
 )
@@ -654,6 +655,9 @@ async def _execute_search(
             entity_filter_groups or record_scoped_entities or request_entity_filters
             or scope_virtual_record_ids is not None
         )
+        # Filled by each grep command as it finishes, so a search that stops
+        # waiting early (`keywordSearchBudget: "short"`) keeps those matches.
+        grep_found: dict[str, dict[str, Any]] = {}
         if config_service is not None and not entity_scoped:
             pattern_match_task = asyncio.create_task(
                 run_pattern_match_with_llm_grep(
@@ -667,6 +671,7 @@ async def _execute_search(
                     llm=state.get("llm"),
                     user_query=state.get("query"),
                     on_llm_usage=grep_generation_usage_reporter(state),
+                    found=grep_found,
                 )
             )
 
@@ -816,6 +821,8 @@ async def _execute_search(
         if pattern_match_task is not None:
             raw_pattern_records = await await_pattern_match(
                 pattern_match_task, logger_instance, run_timer=state.get("_run_timer"),
+                wait_budget=pattern_match_wait_budget(state.get("keyword_search_budget")),
+                found_so_far=grep_found,
             )
             if raw_pattern_records:
                 logger_instance.info(

@@ -11,7 +11,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from logging import Logger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -184,6 +184,12 @@ class ChatQuery(BaseModel):
     # `retrieval_context` frames naming the records and blocks that reached
     # the model, plus a `run_usage` frame. No effect on the answer.
     includeRetrievalContext: bool = False
+    # "short": a search waits at most `KEYWORD_SEARCH_SHORT_WAIT_SECS` for the
+    # keyword (grep) pattern match once its semantic results are in, and keeps
+    # what it found by then. For callers that would rather answer sooner, such
+    # as agents calling chat over MCP. Ignored under HIGH_ACCURACY_MODE.
+    # Absent or "full": waits for all of it, as before.
+    keywordSearchBudget: Literal["short", "full"] | None = None
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` (`chatbot.py` — one endpoint for
     # both assistant and agent runs) can target it.
@@ -4286,6 +4292,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "attachments": chat_query.attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "includeRetrievalContext": chat_query.includeRetrievalContext,
+                    "keywordSearchBudget": chat_query.keywordSearchBudget,
                     "runId": chat_query.runId,
                     # Per-tool approvals (`tool_approvals`) and agent sign-ins: the agent, and whether
                     # a card can be answered in this request.

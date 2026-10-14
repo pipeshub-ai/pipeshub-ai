@@ -13,6 +13,10 @@ A high-accuracy feature: ``FUSION_RECORD_CUT`` decides when set, otherwise
 ``HIGH_ACCURACY_MODE`` does. Off, a search is asked for ``limit`` and cut by
 point as before. The tuning knobs are read once at import, like the other
 search knobs; the switch is read per search.
+
+The search API also bounds each record after it expands matches into whole
+sections (``cap_passages_per_record``), at the same per-record count. That
+bound is always on.
 """
 
 from __future__ import annotations
@@ -174,6 +178,48 @@ def active_record_cut() -> RecordCut | None:
             _SETTINGS if enabled else "hits cut by point",
         )
     return _SETTINGS if enabled else None
+
+
+def passages_per_record(limit: int) -> int:
+    """Passages one record may keep in a knowledge-search response for ``limit``.
+
+    The same per-record count the record cut gives one record in the head of
+    its cut, from the same knobs, so one setting bounds a record in both.
+    """
+    return _SETTINGS.per_record(limit)
+
+
+def cap_passages_per_record(
+    results: Sequence[Any],
+    per_record: int,
+    *,
+    record_of: Callable[[Any], Hashable | None],
+    priority: Callable[[Any], Any],
+) -> tuple[list, dict[Hashable, int]]:
+    """Keep at most ``per_record`` of ``results`` from any one record.
+
+    Within a record the passages with the lowest ``priority`` are kept, ties
+    broken by position. The kept passages stay in their original order. A
+    passage whose record is unknown is always kept.
+
+    Returns the kept passages and, for each record that lost any, how many.
+    """
+    per_record = max(per_record, 1)
+    by_record: dict[Hashable, list[int]] = {}
+    for index, result in enumerate(results):
+        key = record_of(result)
+        if key is not None:
+            by_record.setdefault(key, []).append(index)
+    dropped: set[int] = set()
+    omitted: dict[Hashable, int] = {}
+    for key, indices in by_record.items():
+        if len(indices) <= per_record:
+            continue
+        ranked = sorted(indices, key=lambda i: (priority(results[i]), i))
+        dropped.update(ranked[per_record:])
+        omitted[key] = len(indices) - per_record
+    kept = [result for index, result in enumerate(results) if index not in dropped]
+    return kept, omitted
 
 
 def point_record_id(point: object) -> str | None:

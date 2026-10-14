@@ -486,6 +486,9 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_by_org": "test_failed_records",
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
+    "get_records_by_weburls": "test_weburl_lookup",
+    "get_records_linking_to_weburls": "test_records_linking_to_an_address",
+    "get_issue_sites": "test_issue_sites",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
@@ -612,6 +615,55 @@ async def test_weburl_lookup(world: _World) -> None:
     g = world.graph
     assert (await g.get_record_by_weburl(world.url("live"), world.org_id)).id == world.ids["live"]
     assert await g.get_record_by_weburl(world.url("trashed"), world.org_id) is None
+    rows = await g.get_records_by_weburls([world.url("live"), world.url("trashed")], world.org_id)
+    assert {row["id"] for row in rows} == {world.ids["live"]}
+
+
+async def test_records_linking_to_an_address(world: _World) -> None:
+    """A link record under a live record finds it; a trashed holder or a trashed
+    link record does not."""
+    g = world.graph
+    address = world.url("linked")
+    links = {}
+    for holder, link_trashed in (("live", False), ("trashed", False), ("live_failed", True)):
+        link_id = f"link-{holder}-{uuid.uuid4().hex[:8]}"
+        world.ids[f"link_{holder}"] = link_id
+        node = _file(world, "live", trashed=False).to_arango_base_record()
+        node.update(
+            id=link_id, _key=link_id, recordType=RecordType.LINK.value, webUrl=address,
+            externalRecordId=f"ext-{link_id}", isDeleted=link_trashed,
+        )
+        links[holder] = link_id
+        await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
+    await g.batch_upsert_record_relations([
+        {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[holder]}",
+         "_to": f"{CollectionNames.RECORDS.value}/{link_id}",
+         "relationshipType": "PARENT_CHILD", "constraintName": ""}
+        for holder, link_id in links.items()
+    ])
+
+    holders = await g.get_records_linking_to_weburls(
+        [address], world.org_id, [Connectors.GOOGLE_DRIVE.value]
+    )
+
+    assert holders == [world.ids["live"]]
+
+
+async def test_issue_sites(world: _World) -> None:
+    """A live ticket's site is read; a trashed ticket's is not."""
+    g = world.graph
+    for name, trashed, site in (("live", False, "https://live.example"), ("trashed", True, "https://gone.example")):
+        ticket_id = f"ticket-{name}-{uuid.uuid4().hex[:8]}"
+        world.ids[f"ticket_{name}"] = ticket_id
+        node = _file(world, "live", trashed=False).to_arango_base_record()
+        node.update(
+            id=ticket_id, _key=ticket_id, recordType=RecordType.TICKET.value,
+            connectorName=Connectors.JIRA.value, webUrl=f"{site}/browse/PA-1",
+            externalRecordId=f"ext-{ticket_id}", isDeleted=trashed,
+        )
+        await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
+
+    assert await g.get_issue_sites(world.org_id, [Connectors.JIRA.value]) == ["https://live.example"]
 
 
 async def test_entity_candidate_records(world: _World) -> None:

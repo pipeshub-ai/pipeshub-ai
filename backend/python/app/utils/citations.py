@@ -490,6 +490,35 @@ def _find_record_by_id(
     return None
 
 
+# `blockType` of a record-page citation, which cites no block: its text is the
+# record's summary (`BlockType.RECORD_SUMMARY`), the text the keyword (grep)
+# search matched in the record, or only the record's name. Only matched text
+# is quoted from the record itself.
+RECORD_PAGE_MATCHED_TEXT = "matched_text"
+RECORD_PAGE_NAME_ONLY = "record_name"
+
+
+def _record_page_text(record: dict[str, Any]) -> tuple[str, str]:
+    """The text a record-page citation shows, and the ``blockType`` naming it."""
+    name = record.get("record_name") or "Record"
+    # A grep hit has no summary until its blob is read; the text it matched
+    # says more than its name, which the citation already shows as its title.
+    summary = (record.get("semantic_metadata") or {}).get("summary")
+    matched = record.get("_match_snippet")
+    if summary:
+        snippet, kind = summary, BlockType.RECORD_SUMMARY.value
+    elif matched:
+        snippet, kind = matched, RECORD_PAGE_MATCHED_TEXT
+    else:
+        snippet, kind = name, RECORD_PAGE_NAME_ONLY
+    if not isinstance(snippet, str):
+        snippet = _safe_stringify_content(value=snippet)
+    snippet = snippet.strip()
+    if not snippet:
+        return name, RECORD_PAGE_NAME_ONLY
+    return snippet, kind
+
+
 def _append_record_page_citation(
     record: dict[str, Any],
     url: str,
@@ -499,23 +528,15 @@ def _append_record_page_citation(
 ) -> int:
     """Build citation metadata for /record/{id} (header / landing page), not a specific block."""
     record = as_blob_record(record)
-    # A grep hit has no summary until its blob is read; the text it matched
-    # says more than its name, which the citation already shows as its title.
-    snippet = (
-        (record.get("semantic_metadata") or {}).get("summary")
-        or record.get("_match_snippet")
-        or record.get("record_name")
-        or "Record"
-    )
-    if not isinstance(snippet, str):
-        snippet = _safe_stringify_content(value=snippet)
-    snippet = snippet.strip() or (record.get("record_name") or "Record")
-    display_content = snippet
+    display_content, text_kind = _record_page_text(record)
     meta = get_enhanced_metadata(
         record,
         None,
         {"webUrl": url, "blockText": display_content, },
     )
+    # Set after the metadata is built, so the citation's link is made exactly
+    # as before: a caller can tell the record's own words from a summary.
+    meta["blockType"] = text_kind
     new_citations.append({
         "content": display_content,
         "chunkIndex": citation_num,

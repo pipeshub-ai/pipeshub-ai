@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "node dist/index.js",
-    "build": "tsc",
+    "build": "tsc && node dist/scripts/write-build-info.js",
     "dev": "nodemon src/index.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",

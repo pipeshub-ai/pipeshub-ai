@@ -1146,9 +1146,9 @@
     "configuredModels": "कॉन्फ़िगर किए गए मॉडल",
     "reasoningEffort": {
       "label": "रीज़निंग प्रयास",
-      "overrideHint": "डिफ़ॉल्ट उपयोग करने के लिए फिर से क्लिक करें।",
-      "defaultHintWithLevel": "सेट न होने पर डिफ़ॉल्ट {{level}} रहता है।",
-      "modelDefaultHint": "सेट न होने पर इस मॉडल का अपना डिफ़ॉल्ट, {{level}}, रहता है।",
+      "modelDefaultOption": "मॉडल डिफ़ॉल्ट",
+      "modelDefaultOptionWithLevel": "मॉडल डिफ़ॉल्ट ({{level}})",
+      "agentDefaultOption": "एजेंट डिफ़ॉल्ट ({{level}})",
       "modelDefaultLabel": "डिफ़ॉल्ट ({{level}})",
       "low": "कम",
       "medium": "मध्यम",

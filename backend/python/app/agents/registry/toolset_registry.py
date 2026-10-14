@@ -15,6 +15,64 @@ AGENT_LOOP_TOOL_META_ATTR = "_agent_tool_meta"
 
 logger = logging.getLogger(__name__)
 
+# Every module here must import and define a toolset: discover_toolsets only
+# logs a failure, so a broken module would drop its toolset silently.
+STANDARD_TOOLSET_MODULES = (
+    # Internal toolsets (always available, no auth)
+    'app.agents.actions.retrieval.retrieval',
+    'app.agents.actions.calculator.calculator',
+    'app.agents.actions.calculator.date_calculator',
+    'app.agents.actions.knowledge_hub.knowledge_hub',
+    'app.agents.actions.knowledge_graph.knowledge_graph',
+    'app.agents.actions.coding_sandbox.coding_sandbox',
+    'app.agents.actions.database_sandbox.database_sandbox',
+    'app.agents.actions.image_generator.image_generator',
+    'app.agents.actions.artifacts.artifacts',
+    # Google toolsets
+    'app.agents.actions.google.drive.drive',
+    'app.agents.actions.google.calendar.calendar',
+    'app.agents.actions.google.gmail.gmail',
+    'app.agents.actions.internal_tools.intrim_tools',
+    # Off, and these do not import: they predate the async @tool and ToolsetCategory.
+    # 'app.agents.actions.google.meet.meet',
+    # 'app.agents.actions.google.slides.slides',
+    # 'app.agents.actions.google.forms.forms',
+    # 'app.agents.actions.google.docs.docs',
+    # 'app.agents.actions.google.sheets.sheets',
+    # Other toolsets
+    'app.agents.actions.slack.slack',
+    'app.agents.actions.jira.jira',
+    'app.agents.actions.jira_data_center.jira_data_center',
+    'app.agents.actions.confluence.confluence',
+    'app.agents.actions.confluence_data_center.confluence_data_center',
+    'app.agents.actions.clickup.clickup',
+    'app.agents.actions.github.github',
+    'app.agents.actions.mariadb.mariadb',
+    'app.agents.actions.lumos.lumos',
+    'app.agents.actions.redshift.redshift',
+    # 'app.agents.actions.gitlab.gitlab',
+    # 'app.agents.actions.linear.linear',
+    # 'app.agents.actions.notion.notion',
+    'app.agents.actions.microsoft.one_drive.one_drive',
+    'app.agents.actions.microsoft.sharepoint.sharepoint',
+    'app.agents.actions.microsoft.teams.teams',
+    'app.agents.actions.microsoft.outlook.outlook',
+    # 'app.agents.actions.airtable.airtable',
+    # 'app.agents.actions.dropbox.dropbox',
+    # 'app.agents.actions.box.box',
+    # 'app.agents.actions.linkedin.linkedin',
+    # 'app.agents.actions.posthog.posthog',
+    # 'app.agents.actions.zendesk.zendesk',
+    # 'app.agents.actions.discord.discord',
+    # 'app.agents.actions.s3.s3',
+    # 'app.agents.actions.azure.azure_blob',
+    # 'app.agents.actions.evernote.evernote',
+    # 'app.agents.actions.freshdesk.freshdesk',
+    # 'app.agents.actions.bookstack.bookstack',
+    'app.agents.actions.zoom.zoom',
+    'app.agents.actions.salesforce.salesforce',
+)
+
 
 def Toolset(
     name: str,
@@ -358,62 +416,7 @@ class ToolsetRegistry:
 
     def auto_discover_toolsets(self) -> None:
         """Auto-discover toolsets from action files"""
-        standard_paths = [
-            # Internal toolsets (always available, no auth)
-            'app.agents.actions.retrieval.retrieval',
-            'app.agents.actions.calculator.calculator',
-            'app.agents.actions.calculator.date_calculator',
-            'app.agents.actions.knowledge_hub.knowledge_hub',
-            'app.agents.actions.knowledge_graph.knowledge_graph',
-            'app.agents.actions.coding_sandbox.coding_sandbox',
-            'app.agents.actions.database_sandbox.database_sandbox',
-            'app.agents.actions.image_generator.image_generator',
-            'app.agents.actions.artifacts.artifacts',
-            # Google toolsets
-            'app.agents.actions.google.drive.drive',
-            'app.agents.actions.google.calendar.calendar',
-            'app.agents.actions.google.gmail.gmail',
-            'app.agents.actions.internal_tools.intrim_tools',
-
-            # 'app.agents.actions.google.meet.meet',
-            # 'app.agents.actions.google.slides.slides',
-            # 'app.agents.actions.google.forms.forms',
-            # 'app.agents.actions.google.docs.docs',
-            # 'app.agents.actions.google.sheets.sheets',
-            # Other toolsets
-            'app.agents.actions.slack.slack',
-            'app.agents.actions.jira.jira',
-            'app.agents.actions.jira_data_center.jira_data_center',
-            'app.agents.actions.confluence.confluence',
-            'app.agents.actions.confluence_data_center.confluence_data_center',
-            'app.agents.actions.clickup.clickup',
-            'app.agents.actions.github.github',
-            'app.agents.actions.mariadb.mariadb',
-            'app.agents.actions.lumos.lumos',
-            'app.agents.actions.redshift.redshift',
-            # 'app.agents.actions.gitlab.gitlab',
-            # 'app.agents.actions.linear.linear',
-            # 'app.agents.actions.notion.notion',
-            'app.agents.actions.microsoft.one_drive.one_drive',
-            'app.agents.actions.microsoft.sharepoint.sharepoint',
-            'app.agents.actions.microsoft.teams.teams',
-            'app.agents.actions.microsoft.outlook.outlook',
-            # 'app.agents.actions.airtable.airtable',
-            # 'app.agents.actions.dropbox.dropbox',
-            # 'app.agents.actions.box.box',
-            # 'app.agents.actions.linkedin.linkedin',
-            # 'app.agents.actions.posthog.posthog',
-            # 'app.agents.actions.zendesk.zendesk',
-            # 'app.agents.actions.discord.discord',
-            # 'app.agents.actions.s3.s3',
-            # 'app.agents.actions.azure.azure_blob',
-            # 'app.agents.actions.evernote.evernote',
-            # 'app.agents.actions.freshdesk.freshdesk',
-            # 'app.agents.actions.bookstack.bookstack',
-            'app.agents.actions.zoom.zoom',
-            'app.agents.actions.salesforce.salesforce',
-        ]
-        self.discover_toolsets(standard_paths)
+        self.discover_toolsets(list(STANDARD_TOOLSET_MODULES))
         logger.info(f"Auto-discovered {len(self._toolsets)} toolsets with in-memory registry")
 
     def get_toolset_metadata(self, toolset_name: str, serialize: bool = True) -> dict[str, Any] | None:

@@ -502,6 +502,33 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        """Every app of the org, active or not; see IGraphDBProvider.get_org_apps."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        """Records of the org stored under any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        """The Jira sites the org syncs; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: Optional[str] = None,
+    ) -> list[str]:
+        """Records holding a link to any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         pass
 

@@ -1146,9 +1146,9 @@
     "configuredModels": "Configured Models",
     "reasoningEffort": {
       "label": "Reasoning Effort",
-      "overrideHint": "Click again to use the default.",
-      "defaultHintWithLevel": "Defaults to {{level}} when not set.",
-      "modelDefaultHint": "Defaults to {{level}}, this model's own default, when not set.",
+      "modelDefaultOption": "Model default",
+      "modelDefaultOptionWithLevel": "Model default ({{level}})",
+      "agentDefaultOption": "Agent default ({{level}})",
       "modelDefaultLabel": "Default ({{level}})",
       "low": "Low",
       "medium": "Medium",

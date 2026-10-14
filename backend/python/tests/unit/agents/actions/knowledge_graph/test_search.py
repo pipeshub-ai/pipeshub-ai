@@ -1085,6 +1085,39 @@ class TestGrepQuery:
         assert grep.await_args.kwargs["user_query"] == "Which safeguard was added?"
 
 
+class TestKeywordSearchBudget:
+    """`keywordSearchBudget: "short"` on the chat request caps how long a
+    search waits for grep after its semantic results; nothing else does."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("requested", "high_accuracy", "expected"), [
+        ("short", None, 5.0),
+        (None, None, None),
+        ("full", None, None),
+        ("short", "true", None),
+    ], ids=["short", "absent-waits-as-before", "full", "high-accuracy-mode-keeps-full"])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_the_request_sets_the_wait(
+        self, mock_parse, monkeypatch, requested, high_accuracy, expected,
+    ) -> None:
+        if high_accuracy is None:
+            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("HIGH_ACCURACY_MODE", high_accuracy)
+        state = _entity_search_state(_empty_retrieval(), keyword_search_budget=requested)
+        grep = AsyncMock(return_value=[])
+        waited = AsyncMock(return_value=[])
+
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep), \
+                patch(f"{search_mod}.await_pattern_match", waited):
+            await execute_search(state, "roadmap")
+
+        assert waited.await_args.kwargs["wait_budget"] == expected
+        # What grep finds lands in the dict the wait keeps on a cut-off.
+        assert waited.await_args.kwargs["found_so_far"] is grep.call_args.kwargs["found"]
+
+
 class TestUnknownEntityIds:
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))

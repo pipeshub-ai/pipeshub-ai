@@ -15,6 +15,7 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.chatbot import warm_up_entity_vector_store
+from app.api.routes.records import router as records_router
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -503,6 +504,7 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")

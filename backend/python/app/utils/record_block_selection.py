@@ -25,6 +25,7 @@ hiccup must not turn into a failed fetch.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -328,7 +329,53 @@ def _grow_selection(
     return spent
 
 
-def describe_gaps(selected: set[int], available: list[int]) -> dict[int, str]:
+@dataclass(frozen=True)
+class ReadHints:
+    """How the hints a render leaves behind tell its reader to fetch more.
+
+    The assistant reads with `knowledgegraph__fetch_record`, which takes a list
+    of records; a caller of the record-content API passes `startBlock` back
+    to the same endpoint and has no such tool. A hint naming a call the reader
+    cannot make is no hint at all, so the phrasing goes with the reader.
+
+    `again` continues the record being read (`{start}`); `named` names it too
+    (`{label}`), for results that may carry several records.
+    """
+
+    again: str
+    named: str
+    # Appended to the in-order continuation hint.
+    continuing: str = ""
+    in_order: str = "start_block=0"
+
+    def again_from(self, start: int) -> str:
+        return self.again.format(start=start)
+
+    def named_from(self, label: str, start: int) -> str:
+        return self.named.format(label=label, start=start)
+
+
+# The assistant's own fetch tool. The default everywhere, so its hints read
+# exactly as they always have.
+FETCH_RECORD_HINTS = ReadHints(
+    again="call knowledgegraph__fetch_record again with start_block={start}",
+    named='call knowledgegraph__fetch_record with record_ids=["{label}"] and start_block={start}',
+    continuing=" — one record at a time when continuing",
+)
+
+# The record-content API. Kept shorter than the fetch tool's phrasing, so a
+# room reserved for those hints (`GAP_MARKER_CHARS`, `record_trailer_reserve`)
+# always holds these.
+API_READ_HINTS = ReadHints(
+    again="request this record again with startBlock={start}",
+    named="request record {label} again with startBlock={start}",
+    in_order="startBlock=0",
+)
+
+
+def describe_gaps(
+    selected: set[int], available: list[int], hints: ReadHints = FETCH_RECORD_HINTS,
+) -> dict[int, str]:
     """Marker text keyed by the selected block index it precedes.
 
     The model has to know the document it is reading is not contiguous —
@@ -341,15 +388,15 @@ def describe_gaps(selected: set[int], available: list[int]) -> dict[int, str]:
         if index not in selected:
             continue
         if previous is not None and index > previous + 1:
-            markers[index] = _gap_text(previous + 1, index - 1)
+            markers[index] = _gap_text(previous + 1, index - 1, hints)
         previous = index
     first = next((i for i in available if i in selected), None)
     if first is not None and first > available[0]:
-        markers[first] = _gap_text(available[0], first - 1)
+        markers[first] = _gap_text(available[0], first - 1, hints)
     return markers
 
 
-def _gap_text(start: int, end: int) -> str:
+def _gap_text(start: int, end: int, hints: ReadHints = FETCH_RECORD_HINTS) -> str:
     """What a skipped range says for itself.
 
     Names the range so the model can ask for it: a gap it cannot address is
@@ -358,27 +405,32 @@ def _gap_text(start: int, end: int) -> str:
     missing = end - start + 1
     return (
         f"\n[… {missing} block{'s' if missing != 1 else ''} ({start}–{end}) not shown — "
-        f"this record is too large to return in one read. To read this part, call "
-        f"knowledgegraph__fetch_record again with start_block={start} …]\n\n"
+        f"this record is too large to return in one read. To read this part, "
+        f"{hints.again_from(start)} …]\n\n"
     )
 
 
 RECORD_CLOSE = "\n</record>\n"
 
 
-def continuation_hint(label: str, start: int, end: int, total: int, next_start: int) -> str:
+def continuation_hint(
+    label: str, start: int, end: int, total: int, next_start: int,
+    hints: ReadHints = FETCH_RECORD_HINTS,
+) -> str:
     """Where a record read in order stopped, and the offset that continues it.
     It names its record: a result carrying several records cannot be continued
     from an anonymous "start_block=138"."""
     return (
         f"\n[Record {label}: showing blocks {start}–{end} of "
-        f"approximately {total} renderable blocks. To read on, call "
-        f"knowledgegraph__fetch_record with record_ids=[\"{label}\"] and "
-        f"start_block={next_start} — one record at a time when continuing.]\n"
+        f"approximately {total} renderable blocks. To read on, "
+        f"{hints.named_from(label, next_start)}{hints.continuing}.]\n"
     )
 
 
-def selection_hint(label: str, shown: int, total: int, resume: int | None = None) -> str:
+def selection_hint(
+    label: str, shown: int, total: int, resume: int | None = None,
+    hints: ReadHints = FETCH_RECORD_HINTS,
+) -> str:
     """A selection is not a window: the blocks shown are not contiguous, so a
     "next slice" offset would be the wrong instruction. `resume` is where a
     selection that ran out of room stopped, which reads on in order."""
@@ -386,28 +438,28 @@ def selection_hint(label: str, shown: int, total: int, resume: int | None = None
         return (
             f"\n[Record {label}: showed the {shown} block(s) most relevant "
             f"to the question, of {total}; the rest of the selection did not fit. "
-            f"To read on from block {resume}, call knowledgegraph__fetch_record with "
-            f"record_ids=[\"{label}\"] and start_block={resume}; to read it in order "
-            f"instead, use start_block=0.]\n"
+            f"To read on from block {resume}, {hints.named_from(label, resume)}; "
+            f"to read it in order instead, use {hints.in_order}.]\n"
         )
     return (
         f"\n[Record {label}: showed the {shown} block(s) most relevant "
         f"to the question, of {total}. To read it in order "
-        f"instead, call knowledgegraph__fetch_record with "
-        f"record_ids=[\"{label}\"] and start_block=0.]\n"
+        f"instead, {hints.named_from(label, 0)}.]\n"
     )
 
 
-def no_fit_hint(label: str, next_start: int) -> str:
+def no_fit_hint(label: str, next_start: int, hints: ReadHints = FETCH_RECORD_HINTS) -> str:
     """A record that got no room in a multi-record result, and how to read it."""
+    call = hints.named_from(label, next_start)
     return (
-        f"\n[Record {label}: no blocks fit in this result. Call "
-        f"knowledgegraph__fetch_record with record_ids=[\"{label}\"] "
-        f"and start_block={next_start} to read it on its own.]\n"
+        f"\n[Record {label}: no blocks fit in this result. "
+        f"{call[:1].upper()}{call[1:]} to read it on its own.]\n"
     )
 
 
-def record_trailer_reserve(record: dict[str, Any], *, selection: bool = False) -> int:
+def record_trailer_reserve(
+    record: dict[str, Any], *, selection: bool = False, hints: ReadHints = FETCH_RECORD_HINTS,
+) -> int:
     """The longest hint and closing tag a record's render can end with, so the
     render can hold room for them before it walks the blocks. Only a selection
     can end with the (longer) selection hint."""
@@ -415,9 +467,9 @@ def record_trailer_reserve(record: dict[str, Any], *, selection: bool = False) -
     indices = _block_indices(record)
     widest = int("9" * len(str(len(indices) + max(indices, default=0) + 1)))
     longest = max(
-        len(continuation_hint(label, widest, widest, widest, widest)),
-        len(selection_hint(label, widest, widest, widest)) if selection else 0,
-        len(no_fit_hint(label, widest)),
+        len(continuation_hint(label, widest, widest, widest, widest, hints)),
+        len(selection_hint(label, widest, widest, widest, hints)) if selection else 0,
+        len(no_fit_hint(label, widest, hints)),
     )
     return longest + len(RECORD_CLOSE)
 
@@ -428,13 +480,16 @@ GAP_MARKER_CHARS = len(_gap_text(10_000, 10_999))
 
 
 __all__ = [
+    "API_READ_HINTS",
     "BLOCK_RENDER_OVERHEAD",
     "DEFAULT_HIT_LIMIT",
+    "FETCH_RECORD_HINTS",
     "GAP_MARKER_CHARS",
     "NEIGHBOUR_SPAN",
     "OPENING_MAX_CHARS",
     "OPENING_SHARE",
     "RECORD_CLOSE",
+    "ReadHints",
     "build_selection_query",
     "continuation_hint",
     "describe_gaps",

@@ -1230,9 +1230,9 @@
     "configuredModels": "已設定的模型",
     "reasoningEffort": {
       "label": "推理強度",
-      "overrideHint": "再次點選即可使用預設值。",
-      "defaultHintWithLevel": "未設定時預設為{{level}}。",
-      "modelDefaultHint": "未設定時使用此模型本身的預設值：{{level}}。",
+      "modelDefaultOption": "模型預設",
+      "modelDefaultOptionWithLevel": "模型預設（{{level}}）",
+      "agentDefaultOption": "代理預設（{{level}}）",
       "modelDefaultLabel": "預設（{{level}}）",
       "low": "低",
       "medium": "中",

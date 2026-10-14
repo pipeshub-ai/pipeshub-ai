@@ -1230,9 +1230,9 @@
     "configuredModels": "已配置的模型",
     "reasoningEffort": {
       "label": "推理强度",
-      "overrideHint": "再次点击可使用默认值。",
-      "defaultHintWithLevel": "未设置时默认为{{level}}。",
-      "modelDefaultHint": "未设置时使用此模型自身的默认值：{{level}}。",
+      "modelDefaultOption": "模型默认",
+      "modelDefaultOptionWithLevel": "模型默认（{{level}}）",
+      "agentDefaultOption": "智能体默认（{{level}}）",
       "modelDefaultLabel": "默认（{{level}}）",
       "low": "低",
       "medium": "中",

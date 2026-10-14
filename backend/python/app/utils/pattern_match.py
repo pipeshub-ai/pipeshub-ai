@@ -32,7 +32,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     IGraphDBProvider,
     requested_scope_ids,
 )
-from app.utils.env_utils import accuracy_feature_enabled
+from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
 from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
@@ -58,6 +58,21 @@ _GREP_LLM_TTL_SECS = 300.0
 _GREP_LLM_LOOKUP_TIMEOUT = 3.0
 # Whole pattern match per search call: LLM grep generation plus every grep round.
 _PATTERN_MATCH_TOTAL_BUDGET = 35.0
+# How long a search that asked for the short keyword-search budget waits for
+# the pattern match once its semantic results are in, before it goes on with
+# the matches found so far. Measured on agent chats over MCP: semantic results
+# came in a median 0.7 s after the search started, and the pattern match then
+# took a median 4.4 s more (90th percentile 9.2 s, worst 12.6 s). Its command
+# generation alone finishes a median 2.4 s after the start, so a wait under
+# about 3 s keeps almost nothing. 5 s keeps 67% of the matched records and 32
+# of 43 searches still get some, while ending the wait 7.6 s sooner at worst.
+KEYWORD_SEARCH_SHORT_WAIT_SECS = 5.0
+# How long the short wait gives a cut-off grep task to clean up before
+# returning without it.
+KEYWORD_SEARCH_CLEANUP_GRACE_SECS = 1.0
+# Values of the chat request's `keywordSearchBudget`. "full" (and leaving it
+# out) keeps the whole `_PATTERN_MATCH_TOTAL_BUDGET`.
+KEYWORD_SEARCH_BUDGETS = ("short", "full")
 # Reciprocal rank fusion constant (Cormack et al. 2009): damps the gap
 # between first and second place so one command cannot decide the order.
 _RRF_K = 60
@@ -1005,6 +1020,7 @@ async def run_pattern_match_with_llm_grep(
     llm: Any | None = None,
     user_query: str | None = None,
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
+    found: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate grep commands via LLM, run pipelines in parallel, dedup.
 
@@ -1019,8 +1035,13 @@ async def run_pattern_match_with_llm_grep(
     after semantic search, so without one bound the LLM call, its pipelines
     and the keyword fallback would each add their own timeout to the answer.
     When the budget runs out, what the finished LLM commands found is kept.
+
+    *found*, when given, is filled with the best hit per record as each LLM
+    command finishes, so a caller that stops waiting early can keep them
+    (``await_pattern_match`` with ``wait_budget``).
     """
-    found: dict[str, dict[str, Any]] = {}
+    if found is None:
+        found = {}
     try:
         return await asyncio.wait_for(
             _run_pattern_match_with_llm_grep(
@@ -1432,9 +1453,25 @@ async def run_pattern_match(
     return all_records
 
 
+def pattern_match_wait_budget(requested: str | None) -> float | None:
+    """Seconds a search waits for its pattern match after semantic results,
+    or None to wait for all of it (up to ``_PATTERN_MATCH_TOTAL_BUDGET``).
+
+    Only a request that asked for the short budget gets one, and never under
+    ``HIGH_ACCURACY_MODE``, where the deployment has chosen better answers
+    over faster ones. A request that says nothing waits as it always has.
+    """
+    if requested != "short" or high_accuracy_mode():
+        return None
+    return KEYWORD_SEARCH_SHORT_WAIT_SECS
+
+
 async def await_pattern_match(
     task: asyncio.Task, logger_instance: logging.Logger,
     run_timer: "RunTimer | None" = None,
+    *,
+    wait_budget: float | None = None,
+    found_so_far: Mapping[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Result of a pattern-match task started beside semantic search; any
     failure is ``[]`` so semantic results are always returned.
@@ -1443,12 +1480,44 @@ async def await_pattern_match(
     (``except Exception`` misses it); only cancellation of the caller itself
     is re-raised.
 
+    With ``wait_budget``, waits at most that many seconds. If the task has
+    not finished by then it is cancelled, and the matches its finished
+    commands already put in ``found_so_far`` (the ``found`` dict passed to
+    ``run_pattern_match_with_llm_grep``) are returned.
+
     When ``run_timer`` is given, the time spent waiting here (semantic
     results already in hand) is recorded as ``pattern_match_wait``.
     """
     wait_started = time.perf_counter()
     try:
-        return await task or []
+        if wait_budget is None:
+            return await task or []
+        try:
+            done, _ = await asyncio.wait({task}, timeout=max(0.0, wait_budget))
+        except asyncio.CancelledError:
+            # `asyncio.wait` does not pass the caller's cancellation on to the
+            # task the way awaiting it directly does.
+            task.cancel()
+            raise
+        if task in done:
+            return task.result() or []
+        # Give the grep task a short, bounded time to clean up (kill its
+        # subprocesses, remove its access view); a slow teardown finishes in
+        # the background instead of stretching this short wait. A caller
+        # cancelled meanwhile gets CancelledError from `asyncio.wait`, which
+        # the handler below passes on.
+        task.cancel()
+        done, _ = await asyncio.wait({task}, timeout=KEYWORD_SEARCH_CLEANUP_GRACE_SECS)
+        if task in done:
+            _consume_outcome(task)
+        else:
+            task.add_done_callback(_consume_outcome)
+        kept = list((found_so_far or {}).values())
+        logger_instance.info(
+            "pattern_match: stopped waiting %.1fs after semantic results, keeping %d match(es) found so far",
+            wait_budget, len(kept),
+        )
+        return kept
     except asyncio.CancelledError:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
@@ -1464,14 +1533,24 @@ async def await_pattern_match(
     return []
 
 
+def _consume_outcome(task: asyncio.Task) -> None:
+    """Read a finished task's outcome so a late error is not reported as
+    "exception was never retrieved"."""
+    if not task.cancelled():
+        task.exception()
+
+
 async def cancel_task_if_running(task: asyncio.Task | None) -> None:
-    """Cancel an asyncio task if it hasn't finished yet and suppress errors."""
+    """Cancel an asyncio task if it hasn't finished yet and suppress its
+    errors. A cancellation of the caller while it waits is passed on."""
     if task is not None and not task.done():
         task.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):
-            pass
+            current = asyncio.current_task()
+            if current is not None and current.cancelling():
+                raise
 
 
 def _int_field(record: dict[str, Any] | None, key: str) -> int:

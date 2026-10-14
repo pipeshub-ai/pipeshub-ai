@@ -395,6 +395,8 @@ tags:
       - `monthly`: Run on specified day of the month
       - `custom`: Use cron expression for complex schedules
       - `once`: Run once at a specific future time
+  - name: Health
+    description: Health of the deployment, and the build that it runs
 components:
   parameters:
     RevealStoredSecrets:
@@ -572,6 +574,23 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    BuildInfo:
+      type: object
+      description: The build that the deployment runs. A value that is not known is null.
+      required:
+        - version
+        - commitId
+      properties:
+        version:
+          type: string
+          nullable: true
+          description: Release version the build was made from, without the leading `v`.
+          example: 0.9.1
+        commitId:
+          type: string
+          nullable: true
+          description: Full SHA of the git commit the build was made from.
+          example: 84614464bb120e9f8e8c85420001260e709d99bb
     OpenAIModel:
       type: object
       required: [id, object, created, owned_by, task, root, parent]
@@ -5487,7 +5506,138 @@ components:
           description: >-
             The record's full parsed content as a single plain-text string;
             for a record whose content is not indexed yet, a description of
-            the record and its indexing status instead (see above).
+            the record and its indexing status instead (see above). In a
+            budgeted read, the part of the record (or thread) that fit.
+        mode:
+          type: string
+          enum: [record, thread]
+          description: Budgeted reads only. Which kind of read this was.
+        recordId:
+          type: string
+          description: Budgeted record reads only. The record read.
+        order:
+          type: string
+          enum: [in_order, relevance]
+          description: >-
+            Budgeted record reads only. `relevance` when `query` chose which
+            blocks to show; the blocks are then not contiguous.
+        startBlock:
+          type: integer
+          description: >-
+            Budgeted reads only. Where this read started (in a thread read,
+            within the record at `startRecord`).
+        totalBlocks:
+          type: integer
+          description: Budgeted record reads only. Blocks in the record.
+        shownBlocks:
+          type: array
+          description: >-
+            Budgeted record reads only. The block ranges shown, as
+            `[first, last]` pairs.
+          items:
+            type: array
+            items:
+              type: integer
+        complete:
+          type: boolean
+          description: >-
+            Budgeted reads only. True when nothing of the record (or thread)
+            is left to read after this one. A block larger than the largest
+            `maxChars` (140000) is returned cut and given up; when nothing
+            follows it, `complete` is true and `truncatedBy` is `clipped`.
+        truncatedBy:
+          type: string
+          nullable: true
+          description: >-
+            Budgeted reads. Why the read stopped short: `chars`, `selection`,
+            or `clipped` (a block larger than `maxChars` was cut; it takes
+            precedence over the others). Null when the read lost nothing.
+            `clipped` can come with `complete: true`: a block given up at the
+            largest `maxChars` with nothing after it.
+        givenUpBlock:
+          type: integer
+          nullable: true
+          description: >-
+            Budgeted record reads only. A block larger than the largest
+            `maxChars` (140000) that this read cut and gave up: no read can
+            return the rest of it. Set in the read that gave it up, even when
+            more of the record follows.
+        givenUpBlocks:
+          type: array
+          description: >-
+            Thread reads only. Every block this read gave up at the largest
+            `maxChars`, by record.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              block:
+                type: integer
+        nextStartBlock:
+          type: integer
+          nullable: true
+          description: >-
+            Pass as `startBlock` to read on; null when nothing is left. In a
+            thread read it is the block of the record at `nextStartRecord`
+            (0 unless that record was cut short). A block larger than
+            `maxChars` holds it on that block: send it again with a larger
+            `maxChars` (up to 140000) to read the block whole.
+        threadRecordCount:
+          type: integer
+          description: Thread reads only. Records in the thread the caller may see.
+        startRecord:
+          type: integer
+          description: Thread reads only. Where this read started.
+        nextStartRecord:
+          type: integer
+          nullable: true
+          description: >-
+            Thread reads only. Pass as `startRecord`, with `nextStartBlock` as
+            `startBlock`, to read on. It stays on a record that was cut short
+            until that record has been read to its end. A block larger than
+            `maxChars` holds the cursor on that block; send the same cursor
+            with a larger `maxChars` to read it. Null when nothing is left to
+            read, and `complete` is then true. A block given up at the
+            largest `maxChars` is named in the text, and its record's entry
+            in `records` has `truncatedBy: clipped`.
+        records:
+          type: array
+          description: Thread reads only. The records shown, oldest first.
+          items:
+            type: object
+            properties:
+              recordId:
+                type: string
+              recordName:
+                type: string
+                nullable: true
+              startBlock:
+                type: integer
+              complete:
+                type: boolean
+              truncatedBy:
+                type: string
+                nullable: true
+              givenUpBlock:
+                type: integer
+                nullable: true
+              nextStartBlock:
+                type: integer
+                nullable: true
+        unreadableRecordIds:
+          type: array
+          description: >-
+            Thread reads only. Records of the thread the caller may see whose
+            content could not be loaded.
+          items:
+            type: string
+        chars:
+          type: integer
+          description: Budgeted reads only. Characters in `content`.
+        maxChars:
+          type: integer
+          description: Budgeted reads only. The budget this read used.
 
     KnowledgeGraphNodeRefSchema:
       type: object
@@ -7558,6 +7708,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -7775,6 +7935,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -8019,6 +8189,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -8201,6 +8381,16 @@ components:
             reached the model, and one CUSTOM `run_usage` event carrying the
             run's token totals and loop outcome. Identifiers only, never block
             text. Does not change the answer.
+        keywordSearchBudget:
+          type: string
+          enum: [short, full]
+          description: >-
+            How long each search waits for the keyword (grep) match after its
+            semantic results are in. `short` waits at most 5 seconds and keeps
+            the keyword matches found by then, for callers that would rather
+            answer sooner, such as agents calling chat over MCP. `full`, or
+            leaving it out, waits for all of it. Deployments running
+            `HIGH_ACCURACY_MODE` always wait in full.
         toolApproval:
           $ref: '#/components/schemas/ToolApprovalAnswer'
         runId:
@@ -9563,6 +9753,36 @@ components:
           maximum: 100
           default: 10
           description: Maximum number of results to return
+        createdAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or after this date. `YYYY-MM-DD` (the whole
+            day, UTC) or an ISO 8601 datetime with a timezone offset. A date that is not
+            one of these, or in the future, is a `400` that says why.
+          example: "2026-01-01"
+        createdBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records the source created on or before this date. A `YYYY-MM-DD` value
+            includes that whole day.
+          example: "2026-03-31"
+        modifiedAfter:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or after this date. Same format as
+            `createdAfter`.
+          example: "2026-09-01"
+        modifiedBefore:
+          type: string
+          maxLength: 64
+          description: |
+            Only records last changed in the source on or before this date. Same format as
+            `createdBefore`. Records with no source date are left out whenever a bound on
+            that date is set.
+          example: "2026-09-30T23:59:59Z"
 
     SemanticSearchBoundingBox:
       type: object
@@ -9797,6 +10017,14 @@ components:
         block_index:
           type: integer
           nullable: true
+        distanceFromMatch:
+          type: integer
+          minimum: 0
+          description: |
+            Set on a passage returned because a match inside its section (a thread, a list,
+            a table) brought the whole section back: how many blocks it sits from the passage
+            the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
+            directly or the section matched as a whole.
 
     SemanticSearchGraphRecord:
       type: object
@@ -10007,6 +10235,16 @@ components:
           type: string
         appliedFilters:
           $ref: '#/components/schemas/SemanticSearchAppliedFilters'
+        omittedPassages:
+          type: object
+          description: |
+            Present only when some records lost passages to the per-record cap: maps a
+            `recordId` to how many of its passages were left out. Each record keeps at most
+            `max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages
+            (4 at the default limit): the passages that matched first, then those nearest a match.
+          additionalProperties:
+            type: integer
+            minimum: 1
         virtual_to_record_map:
           type: object
           description: Maps virtual record id (object property name) to the accessible graph record document for that id.
@@ -16734,6 +16972,67 @@ security:
   - oauth2: []
 
 paths:
+  # ==================== HEALTH ====================
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health of the Node.js API and its data stores
+      description: |
+        Returns the status of each data store this deployment uses, and the build
+        that it runs. Every service comes from the same image, so one build
+        describes the whole deployment. Always answers `200`; read `status` for the result.
+        No authentication required.
+      operationId: getHealth
+      security: []
+      responses:
+        '200':
+          description: Health report
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                  - timestamp
+                  - services
+                  - serviceNames
+                  - deployment
+                  - build
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - healthy
+                      - unhealthy
+                  timestamp:
+                    type: string
+                    format: date-time
+                  services:
+                    type: object
+                    description: Status of each data store, for example `healthy`, `unhealthy` or `pending`.
+                    additionalProperties:
+                      type: string
+                  serviceNames:
+                    type: object
+                    description: Display name of each data store.
+                    additionalProperties:
+                      type: string
+                  deployment:
+                    type: object
+                    properties:
+                      kvStoreType:
+                        type: string
+                      messageBrokerType:
+                        type: string
+                      graphDbType:
+                        type: string
+                      vectorDbType:
+                        type: string
+                      redisMode:
+                        type: string
+                  build:
+                    $ref: '#/components/schemas/BuildInfo'
   /models:
     get:
       tags:
@@ -36525,6 +36824,19 @@ paths:
         full content when the search snippet or citation excerpt isn't
         enough to answer the question.
 
+        **Reading part of a long record, or a whole Slack thread:**
+
+        With no query parameters the whole record is returned, which for a
+        pull request with its diffs or a long document can run to hundreds of
+        thousands of characters. Pass any of `maxChars`, `startBlock`, `query`
+        or `mode` for a budgeted read instead: the response stays within
+        `maxChars` and says how to continue (`nextStartBlock`, or
+        `nextStartRecord` for a thread). `query` makes a record too large for
+        the budget show its most relevant blocks first, with the skipped
+        ranges marked. `mode=thread` returns every message of the Slack
+        thread the record belongs to, oldest first, as far as the caller may
+        see them.
+
         **Permission scoping:**
 
         The requesting user/token must have access to the record; access is
@@ -36545,6 +36857,58 @@ paths:
             (`hits[*].recordId`) or a chat citation (`citations[*].recordId`).
           schema:
             type: string
+        - name: maxChars
+          in: query
+          required: false
+          description: >-
+            Most characters of `content` to return. Asks for a budgeted read;
+            40000 when another budgeted-read parameter is given without it.
+          schema:
+            type: integer
+            minimum: 2000
+            maximum: 140000
+        - name: startBlock
+          in: query
+          required: false
+          description: >-
+            Read in order from this block: the `nextStartBlock` of a previous
+            read, or 0 for the top. Takes precedence over `query`. In thread
+            mode it applies to the record at `startRecord`; later records are
+            read from their start.
+          schema:
+            type: integer
+            minimum: 0
+        - name: query
+          in: query
+          required: false
+          description: >-
+            What you are looking for in the record. When the record does not
+            fit in `maxChars`, the blocks most relevant to it are shown first
+            and the skipped ranges are marked.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 2000
+        - name: mode
+          in: query
+          required: false
+          description: >-
+            `record` (default) reads this record. `thread` reads every record
+            of the Slack thread this message belongs to, oldest first; a
+            record outside any thread answers `422`.
+          schema:
+            type: string
+            enum: [record, thread]
+        - name: startRecord
+          in: query
+          required: false
+          description: >-
+            Thread mode: start at this record of the thread, the
+            `nextStartRecord` of a previous read. Pass the read's
+            `nextStartBlock` with it.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: |
@@ -36569,6 +36933,14 @@ paths:
           description: |
             OAuth token is missing the `connector:read` scope, or the
             authenticated user does not have access to this record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            `mode=thread` was asked of a record that is not part of a Slack
+            thread.
           content:
             application/json:
               schema:

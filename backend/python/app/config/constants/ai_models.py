@@ -6,6 +6,11 @@ EMBEDDING_SERVER_PORT = 8002
 DEFAULT_EMBEDDING_SERVER_URL = f"http://localhost:{EMBEDDING_SERVER_PORT}"
 EMBEDDING_SERVER_MAX_RETRIES = 5
 EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS = 600.0
+# Request header that marks an embedding request to the bundled server as a
+# search query. The server encodes queries ahead of bulk indexing batches
+# (embedding_main.EncodeGate); any other value, or none, is bulk.
+EMBEDDING_PRIORITY_HEADER = "X-Embedding-Priority"
+EMBEDDING_PRIORITY_QUERY = "query"
 
 # Bound on one HTTP attempt to a hosted embedding API. The provider SDKs
 # default to 600s and retry twice on top, so without this a single stalled

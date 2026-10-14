@@ -36,7 +36,9 @@ from app.modules.retrieval.entity_filters import (
 from app.modules.retrieval.record_cut import (
     RecordCut,
     active_record_cut,
+    cap_passages_per_record,
     hit_record_id,
+    passages_per_record,
     point_record_id,
 )
 from app.modules.retrieval.result_merging import (
@@ -768,10 +770,13 @@ class RetrievalService:
                         if knowledge_search:
                             meta = result.get("metadata")
                             is_block_group = meta.get("isBlockGroup")
-                            if is_block_group is not None and virtual_id not in virtual_record_id_to_record:
-                                await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
-                                record = virtual_record_id_to_record[virtual_id]
-                                if record is None:
+                            if is_block_group is not None:
+                                # Fetch the record once, but flatten every hit on it:
+                                # a later hit left raw was neither expanded nor known
+                                # as a match, and could repeat a passage already shown.
+                                if virtual_id not in virtual_record_id_to_record:
+                                    await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
+                                if virtual_record_id_to_record[virtual_id] is None:
                                     continue
                                 new_type_results.append(result)
                                 continue
@@ -944,6 +949,8 @@ class RetrievalService:
                 if record_id in record_id_to_record_map
             ]
 
+            # The score of the hit on each matched passage of an expanded section.
+            match_scores: dict[int, float] = {}
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
                 flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
@@ -953,7 +960,21 @@ class RetrievalService:
                     if (
                         block_type == GroupType.TABLE.value or block_type in valid_group_labels
                     ) and child_results is not None:
+                        matched = {
+                            i: score
+                            for i, score in (result.get("hit_block_scores") or {}).items()
+                            if isinstance(i, int)
+                        }
                         for child in child_results:
+                            child_index = child.get("block_index")
+                            if matched and isinstance(child_index, int):
+                                # 0 is a passage the search matched; the per-record
+                                # cap below keeps those first, then their neighbours.
+                                child["distanceFromMatch"] = min(abs(child_index - i) for i in matched)
+                                if child_index in matched:
+                                    # Every child carries the section's best score; a
+                                    # matched one is ranked by its own hit's score.
+                                    match_scores[id(child)] = matched[child_index]
                             final_search_results.append(child)
                     else:
                         final_search_results.append(result)
@@ -978,6 +999,30 @@ class RetrievalService:
                     self.logger.warning(f"Filtering out result with incomplete metadata. Virtual ID: {metadata.get('virtualRecordId')}, Missing fields: {[f for f in required_fields if f not in metadata]}")
 
             search_results = complete_results
+            omitted_passages: dict[str, int] = {}
+            if knowledge_search:
+                # A match inside a thread, a pull request or a table brings back
+                # every passage of that section; one long record could fill the
+                # response with thousands of them. Each record keeps the passages
+                # the search matched first, best score first, then the passages
+                # nearest them. A hit that was not expanded is a match itself.
+                search_results, omitted_passages = cap_passages_per_record(
+                    search_results,
+                    passages_per_record(limit),
+                    record_of=lambda r: (r.get("metadata") or {}).get("recordId"),
+                    priority=lambda r: (
+                        (r.get("distanceFromMatch") or 0) > 0,
+                        -match_scores.get(id(r), r.get("score") or 0.0),
+                        r.get("distanceFromMatch") or 0,
+                    ),
+                )
+                if omitted_passages:
+                    self.logger.debug(
+                        "search passages capped at %d per record: %d records lost %d passages",
+                        passages_per_record(limit),
+                        len(omitted_passages),
+                        sum(omitted_passages.values()),
+                    )
             if search_results or records:
                 response_data = {
                     "searchResults": search_results,
@@ -987,6 +1032,10 @@ class RetrievalService:
                     "message": "Query processed successfully. Relevant records retrieved.",
                     "virtual_to_record_map": virtual_to_record_map,
                 }
+                if omitted_passages:
+                    # recordId -> passages left out, so a caller can say how many
+                    # each record matched in all.
+                    response_data["omittedPassages"] = omitted_passages
 
                 # Add KB filtering info to response if KB filtering was applied
                 if kb_ids:

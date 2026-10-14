@@ -1715,6 +1715,33 @@ export const getConnectorStats =
     }
   };
 
+/**
+ * The query service parameters for a budgeted read, or null when the caller
+ * asked for none and gets the whole record from the connector service.
+ */
+export const budgetedReadParams = (
+  query: Record<string, unknown> | undefined,
+): URLSearchParams | null => {
+  const names: Array<[string, string]> = [
+    ['mode', 'mode'],
+    ['query', 'query'],
+    ['startBlock', 'start_block'],
+    ['startRecord', 'start_record'],
+    ['maxChars', 'max_chars'],
+  ];
+  const params = new URLSearchParams();
+  for (const [from, to] of names) {
+    const value = query?.[from];
+    if (
+      (typeof value === 'string' && value !== '') ||
+      typeof value === 'number'
+    ) {
+      params.append(to, String(value));
+    }
+  }
+  return params.toString() !== '' ? params : null;
+};
+
 export const getRecordContent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1729,9 +1756,18 @@ export const getRecordContent =
         );
       }
 
+      // Part of a record, or a Slack thread, is read by the query service:
+      // ranking a record's blocks against a question needs the search index,
+      // which lives there. With no such parameter the whole record comes from
+      // the connector service, exactly as before.
+      const budgeted = budgetedReadParams(req.query as Record<string, unknown>);
+      const uri = budgeted
+        ? `${appConfig.aiBackend}/api/v1/records/${encodeURIComponent(recordId)}/read?${budgeted.toString()}`
+        : `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`;
+
       // Forward only the proxy allowlist (Authorization + tracing). Never raw req.headers.
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
+        uri,
         HttpMethod.GET,
         buildProxyHeaders(req),
       );

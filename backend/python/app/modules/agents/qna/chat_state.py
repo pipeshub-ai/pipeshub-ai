@@ -194,6 +194,10 @@ class ChatState(TypedDict):
     # Opt-in measurement surface: when True the stream carries CUSTOM
     # `retrieval_context` and `run_usage` frames. Never on by default.
     include_retrieval_context: bool | None
+    # `ChatQuery.keywordSearchBudget`: "short" caps how long a search waits for
+    # the keyword (grep) pattern match after its semantic results; None or
+    # "full" waits for all of it. See `pattern_match_wait_budget`.
+    keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -698,6 +702,10 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "include_retrieval_context": bool(
             chat_query.get("include_retrieval_context")
             or chat_query.get("includeRetrievalContext")
+        ),
+        "keyword_search_budget": (
+            chat_query.get("keyword_search_budget")
+            or chat_query.get("keywordSearchBudget")
         ),
 
         # Attachments (uploaded images/PDFs from client)

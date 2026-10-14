@@ -1854,6 +1854,45 @@ async def test_check_and_fetch_updated_issue_returns_when_timestamp_changes():
 
 
 @pytest.mark.asyncio
+async def test_changed_issue_keeps_its_links_and_mentions() -> None:
+    """The processor rewrites every link edge from related_external_records, so a
+    reindexed issue must carry its outward links and what its description names."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    conn.indexing_filters = MagicMock()
+    rec = _ticket_record()
+    rec.external_record_id = "42"
+    rec.source_updated_at = 100
+    rec.version = 1
+    fresh = MagicMock()
+    fresh.status = HttpStatusCode.OK.value
+    fresh.json = MagicMock(return_value={
+        "id": "42", "key": "K-1",
+        "fields": {
+            "summary": "S", "description": "Blocked by OPS-12",
+            "updated": "2025-01-01T00:00:00.000+0000", "created": "2025-01-01T00:00:00.000+0000",
+            "issuetype": {"name": "Task"},
+            "creator": {"accountId": "c1", "emailAddress": "c@e", "displayName": "C"},
+            "issuelinks": [{"type": {"outward": "blocks", "name": "Blocks"}, "outwardIssue": {"id": "200", "key": "B-1"}}],
+        },
+    })
+    mapper = MagicMock()
+    mapper.map_type.return_value = "Task"
+    mapper.map_status.return_value = "Open"
+    mapper.map_priority.return_value = "Low"
+    conn.value_mapper = mapper
+    ds = MagicMock()
+    ds.get_issue_v2 = AsyncMock(return_value=fresh)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        with patch.object(conn, "_parse_jira_timestamp", return_value=200):
+            row = await conn._check_and_fetch_updated_issue(rec)
+
+    related = row[0].related_external_records
+    assert [r.external_record_id for r in related if not r.issue_key and not r.weburl] == ["200"]
+    assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
+
+@pytest.mark.asyncio
 async def test_check_and_fetch_updated_issue_null_assignee_does_not_crash():
     """Jira DC sends ``assignee: null`` for unassigned issues — must not raise."""
     conn = _make_connector()

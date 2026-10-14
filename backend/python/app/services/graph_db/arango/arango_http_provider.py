@@ -461,73 +461,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._edge_collections_by_graph: dict[str, list[str]] = {}
 
 
-        # Connector-specific delete permissions
+        # Roles that may delete a record, per connector. Every delete removes all of
+        # the record's edges (_delete_every_edge_of_record), whatever the connector.
         self.connector_delete_permissions = {
-            Connectors.GOOGLE_DRIVE.value: {
-                "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
-                "edge_collections": [
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.PERMISSION.value,
-                    CollectionNames.USER_DRIVE_RELATION.value,
-                    CollectionNames.BELONGS_TO.value,
-                    CollectionNames.ANYONE.value
-                ],
-                "document_collections": [
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.FILES.value,
-                ]
-            },
-            Connectors.GOOGLE_MAIL.value: {
-                "allowed_roles": ["OWNER", "WRITER"],
-                "edge_collections": [
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.PERMISSION.value,
-                    CollectionNames.BELONGS_TO.value,
-                ],
-                "document_collections": [
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.MAILS.value,
-                    CollectionNames.FILES.value,  # For attachments
-                ]
-            },
-            Connectors.OUTLOOK.value: {
-                "allowed_roles": ["OWNER", "WRITER"],
-                "edge_collections": [
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.PERMISSION.value,
-                    CollectionNames.BELONGS_TO.value,
-                ],
-                "document_collections": [
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.MAILS.value,
-                    CollectionNames.FILES.value,
-                ]
-            },
-            Connectors.KNOWLEDGE_BASE.value: {
-                "allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"],
-                "edge_collections": [
-                    CollectionNames.IS_OF_TYPE.value,
-                    CollectionNames.RECORD_RELATIONS.value,
-                    CollectionNames.BELONGS_TO.value,
-                    CollectionNames.PERMISSION.value,
-                ],
-                "document_collections": [
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.FILES.value,
-                ]
-            }
+            Connectors.GOOGLE_DRIVE.value: {"allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"]},
+            Connectors.GOOGLE_MAIL.value: {"allowed_roles": ["OWNER", "WRITER"]},
+            Connectors.OUTLOOK.value: {"allowed_roles": ["OWNER", "WRITER"]},
+            Connectors.KNOWLEDGE_BASE.value: {"allowed_roles": ["OWNER", "WRITER", "FILEORGANIZER"]},
         }
-
-        # The per-connector lists predate enrichment edges; a delete through one of
-        # them left the record's taxonomy edges behind.
-        for spec in self.connector_delete_permissions.values():
-            edges = spec["edge_collections"]
-            for enrichment_edge in RECORD_ENRICHMENT_EDGE_COLLECTIONS:
-                if enrichment_edge not in edges:
-                    edges.append(enrichment_edge)
 
     # ==================== Translation Layer ====================
     # Methods to translate between generic format and ArangoDB-specific format
@@ -5421,6 +5362,129 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error("❌ Failed to retrieve record by weburl %s: %s", weburl, str(e))
             return None
 
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        per_address: int = 2,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not weburls or not org_id:
+            return []
+        # One indexed (webUrl, orgId) lookup per address, each with its own limit,
+        # so the records at one address never crowd out another address.
+        query = f"""
+        FOR url IN @weburls
+            LET rows = (
+                FOR record IN {CollectionNames.RECORDS.value}
+                    FILTER record.webUrl == url
+                        AND record.orgId == @org_id
+                        AND record.recordType != "LINK"
+                        AND record.isPlaceholder != true
+                        AND {aql_live_record("record")}
+                    SORT record.isDependentNode == true, record._key
+                    LIMIT @per_address
+                    RETURN {{
+                        id: record._key,
+                        recordType: record.recordType,
+                        connectorName: record.connectorName,
+                        webUrl: record.webUrl,
+                        isDependentNode: record.isDependentNode == true
+                    }}
+            )
+            FOR row IN rows
+                RETURN row
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {"weburls": list(dict.fromkeys(weburls)), "org_id": org_id, "per_address": per_address},
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
+            raise
+
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not org_id or not connector_names:
+            return []
+        # The (orgId, recordType) index narrows this to the org's tickets.
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.orgId == @org_id
+                AND record.recordType == "TICKET"
+                AND record.connectorName IN @connector_names
+                AND IS_STRING(record.webUrl)
+                AND {aql_live_record("record")}
+            LET at = FIND_LAST(record.webUrl, "/browse/")
+            FILTER at > 0
+            COLLECT site = SUBSTRING(record.webUrl, 0, at)
+            SORT site
+            {"LIMIT @limit" if limit is not None else ""}
+            RETURN site
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {"org_id": org_id, "connector_names": list(connector_names)}
+                | ({"limit": limit} if limit is not None else {}),
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_issue_sites failed: %s", str(e))
+            raise
+
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: str | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not weburls or not org_id or not connector_names:
+            return []
+        query = f"""
+        FOR link IN {CollectionNames.RECORDS.value}
+            FILTER link.webUrl IN @weburls
+                AND link.orgId == @org_id
+                AND link.recordType == "LINK"
+                AND link.connectorName IN @connector_names
+                AND {aql_live_record("link")}
+            FOR holder, edge IN 1..1 INBOUND link {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge.relationshipType == "PARENT_CHILD"
+                    AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", holder)
+                    AND holder.orgId == @org_id
+                    AND {aql_live_record("holder")}
+                FILTER @after == null OR holder._key > @after
+                COLLECT id = holder._key
+                SORT id
+                LIMIT @limit
+                RETURN id
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {
+                    "weburls": list(weburls),
+                    "org_id": org_id,
+                    "connector_names": list(connector_names),
+                    "limit": limit,
+                    "after": after,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_records_linking_to_weburls failed: %s", str(e))
+            raise
+
     async def get_records_by_parent(
         self,
         connector_id: str,
@@ -9229,34 +9293,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 return False
 
-            EDGE_COLLECTIONS = [
-                CollectionNames.RECORD_RELATIONS.value,
-                CollectionNames.BELONGS_TO.value,
-                *RECORD_ENRICHMENT_EDGE_COLLECTIONS,
-                CollectionNames.IS_OF_TYPE.value,
-            ]
-
-            # Step 1: Remove edges from all edge collections
-            for edge_collection in EDGE_COLLECTIONS:
-                try:
-                    edge_removal_query = """
-                    LET record_id_full = CONCAT('records/', @node_key)
-                    FOR edge IN @@edge_collection
-                        FILTER edge._from == record_id_full OR edge._to == record_id_full
-                        REMOVE edge IN @@edge_collection
-                    """
-                    bind_vars = {
-                        "node_key": node_key,
-                        "@edge_collection": edge_collection,
-                    }
-                    await self.http_client.execute_aql(edge_removal_query, bind_vars, txn_id=transaction)
-                    self.logger.debug(
-                        f"✅ Edges from {edge_collection} deleted for node {node_key}"
-                    )
-                except Exception as e:
-                    self.logger.warning(
-                        f"⚠️ Could not delete edges from {edge_collection} for node {node_key}: {str(e)}"
-                    )
+            # Step 1: Remove every edge of the record
+            await self._delete_every_edge_of_record(node_key, transaction)
 
             # Step 2: Delete node from `records`, `files`, and `mails` collections
             delete_query = f"""
@@ -10856,39 +10894,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete edges attached to a Local FS record."""
-        edge_strategies = {
-            CollectionNames.IS_OF_TYPE.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            },
-            CollectionNames.PERMISSION.value: {
-                "filter": "edge._to == @record_to",
-                "bind_vars": {"record_to": f"records/{record_id}"},
-            },
-            CollectionNames.BELONGS_TO.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            },
-        }
-        edge_strategies.update(self._enrichment_edge_strategies(record_id))
-
-        query_template = """
-        FOR edge IN @@edge_collection
-            FILTER {filter}
-            REMOVE edge IN @@edge_collection
-            RETURN OLD
-        """
-
-        for collection, strategy in edge_strategies.items():
-            try:
-                query = query_template.format(filter=strategy["filter"])
-                bind_vars = {"@edge_collection": collection}
-                bind_vars.update(strategy["bind_vars"])
-                await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-            except Exception as e:
-                self.logger.error(f"Failed to delete Local FS edges from {collection}: {e}")
-                raise
+        """Delete every edge attached to a Local FS record."""
+        await self._delete_every_edge_of_record(record_id, transaction)
 
     async def get_key_by_external_file_id(
         self,
@@ -11986,10 +11993,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return count
 
         except Exception as e:
+            # Raise, as the Neo4j provider does: a caller that took 0 for "deleted"
+            # would move on as if the edges were gone.
             self.logger.error(
                 f"❌ Failed to delete edges from {from_key} to {to_collection} in {edge_collection}: {str(e)}"
             )
-            return 0
+            raise
 
     async def _stop_inheriting_from_record_groups(
         self, record_id: str, transaction: str | None
@@ -16470,56 +16479,39 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete Outlook specific edges."""
-        edge_strategies = {
-            CollectionNames.IS_OF_TYPE.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            },
-            CollectionNames.RECORD_RELATIONS.value: {
-                "filter": "(edge._from == @record_from OR edge._to == @record_to)",
-                "bind_vars": {
-                    "record_from": f"records/{record_id}",
-                    "record_to": f"records/{record_id}",
-                },
-            },
-            CollectionNames.PERMISSION.value: {
-                "filter": "edge._to == @record_to",
-                "bind_vars": {"record_to": f"records/{record_id}"},
-            },
-            CollectionNames.BELONGS_TO.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-            },
-        }
-        edge_strategies.update(self._enrichment_edge_strategies(record_id))
+        """Delete every edge of a Gmail or Outlook mail or attachment."""
+        await self._delete_every_edge_of_record(record_id, transaction)
 
-        query_template = """
-        FOR edge IN @@edge_collection
-            FILTER {filter}
-            REMOVE edge IN @@edge_collection
-            RETURN OLD
+    async def _delete_every_edge_of_record(
+        self,
+        record_id: str,
+        transaction: str | None = None
+    ) -> None:
+        """Delete every edge touching the record, in every edge collection of the
+        knowledge graph, as Neo4j's DETACH DELETE does.
+
+        A fixed list of collections misses the ones it never named: inheritPermissions
+        (a record inheriting its group's access) and entityRelations outlived the record.
         """
-
-        total_deleted = 0
-        for collection, strategy in edge_strategies.items():
-            try:
-                query = query_template.format(filter=strategy["filter"])
-                bind_vars = {"@edge_collection": collection}
-                bind_vars.update(strategy["bind_vars"])
-
-                result = await self.http_client.execute_aql(query, bind_vars, txn_id=transaction)
-                deleted_count = len(result) if result else 0
-                total_deleted += deleted_count
-
-                if deleted_count > 0:
-                    self.logger.debug(f"Deleted {deleted_count} edges from {collection}")
-
-            except Exception as e:
-                self.logger.error(f"Failed to delete edges from {collection}: {e}")
-                raise
-
-        self.logger.debug(f"Total edges deleted for record {record_id}: {total_deleted}")
+        # One statement per end: an OR over _from and _to cannot use the edge index.
+        queries = [
+            f"""
+            FOR edge IN @@edge_collection
+                FILTER edge.{end} == @record
+                REMOVE edge IN @@edge_collection
+            """
+            for end in ("_from", "_to")
+        ]
+        record = f"{CollectionNames.RECORDS.value}/{record_id}"
+        for collection in await self._edge_collections_of_graph(GraphNames.KNOWLEDGE_GRAPH.value):
+            for query in queries:
+                try:
+                    await self.http_client.execute_aql(
+                        query, {"@edge_collection": collection, "record": record}, txn_id=transaction,
+                    )
+                except Exception as e:
+                    self.logger.error(f"Failed to delete edges of record {record_id} from {collection}: {e}")
+                    raise
 
     async def _delete_file_record(
         self,
@@ -16581,101 +16573,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction
         )
 
-    @staticmethod
-    def _enrichment_edge_strategies(record_id: str) -> dict[str, dict[str, Any]]:
-        """Enrichment edges only leave a record, so ``_from`` alone finds them."""
-        return {
-            edge_collection: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": f"{edge_collection} edges",
-            }
-            for edge_collection in RECORD_ENRICHMENT_EDGE_COLLECTIONS
-        }
-
     async def _delete_drive_specific_edges(
         self,
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete Google Drive specific edges with optimized queries."""
-        drive_edge_collections = self.connector_delete_permissions[Connectors.GOOGLE_DRIVE.value]["edge_collections"]
-
-        # Define edge deletion strategies - maps collection to query config
-        edge_deletion_strategies = {
-            CollectionNames.USER_DRIVE_RELATION.value: {
-                "filter": "edge._to == CONCAT('drives/', @record_id)",
-                "bind_vars": {"record_id": record_id},
-                "description": "Drive user relations"
-            },
-            CollectionNames.IS_OF_TYPE.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "IS_OF_TYPE edges"
-            },
-            CollectionNames.PERMISSION.value: {
-                "filter": "edge._to == @record_to",
-                "bind_vars": {"record_to": f"records/{record_id}"},
-                "description": "Permission edges"
-            },
-            CollectionNames.BELONGS_TO.value: {
-                "filter": "edge._from == @record_from",
-                "bind_vars": {"record_from": f"records/{record_id}"},
-                "description": "Belongs to edges"
-            },
-            **self._enrichment_edge_strategies(record_id),
-            # Default strategy for bidirectional edges
-            "default": {
-                "filter": "edge._from == @record_from OR edge._to == @record_to",
-                "bind_vars": {
-                    "record_from": f"records/{record_id}",
-                    "record_to": f"records/{record_id}"
-                },
-                "description": "Bidirectional edges"
-            }
-        }
-
-        # Single query template for all edge collections
-        deletion_query_template = """
-        FOR edge IN @@edge_collection
-            FILTER {filter}
-            REMOVE edge IN @@edge_collection
-            RETURN OLD
-        """
-
-        total_deleted = 0
-
-        for edge_collection in drive_edge_collections:
-            try:
-                # Get strategy for this collection or use default
-                strategy = edge_deletion_strategies.get(edge_collection, edge_deletion_strategies["default"])
-
-                # Build query with specific filter
-                deletion_query = deletion_query_template.format(filter=strategy["filter"])
-
-                # Prepare bind variables
-                bind_vars = {
-                    "@edge_collection": edge_collection,
-                    **strategy["bind_vars"]
-                }
-
-                self.logger.debug(f"🔍 Deleting {strategy['description']} from {edge_collection}")
-
-                # Execute deletion
-                result = await self.http_client.execute_aql(deletion_query, bind_vars, txn_id=transaction)
-                deleted_count = len(result) if result else 0
-                total_deleted += deleted_count
-
-                if deleted_count > 0:
-                    self.logger.debug(f"🗑️ Deleted {deleted_count} {strategy['description']} from {edge_collection}")
-                else:
-                    self.logger.debug(f"📝 No {strategy['description']} found in {edge_collection}")
-
-            except Exception as e:
-                self.logger.error(f"❌ Failed to delete edges from {edge_collection}: {str(e)}")
-                raise
-
-        self.logger.debug(f"Total Drive edges deleted for record {record_id}: {total_deleted}")
+        """Delete every edge of a Drive record, and the user relations of a drive keyed like it."""
+        await self._delete_every_edge_of_record(record_id, transaction)
+        await self.http_client.execute_aql(
+            """
+            FOR edge IN @@edge_collection
+                FILTER edge._to == CONCAT('drives/', @record_id)
+                REMOVE edge IN @@edge_collection
+            """,
+            {"@edge_collection": CollectionNames.USER_DRIVE_RELATION.value, "record_id": record_id},
+            txn_id=transaction,
+        )
 
     async def _delete_drive_anyone_permissions(
         self,
@@ -16704,44 +16617,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_id: str,
         transaction: str | None = None
     ) -> None:
-        """Delete every edge touching a KB record, as the folder delete and Neo4j's DETACH DELETE do.
-
-        Enrichment links a record to taxonomy nodes (belongsToCategory, belongsToTopic, ...)
-        that the fixed KB list never named; left in place they point at a record that is gone.
-        """
-        kb_edge_collections = list(dict.fromkeys([
-            *self.connector_delete_permissions[Connectors.KNOWLEDGE_BASE.value]["edge_collections"],
-            *await self._get_all_edge_collections(),
-        ]))
-
-        edge_deletion_query = """
-        FOR edge IN @@edge_collection
-            FILTER edge._from == @record_from OR edge._to == @record_to
-            REMOVE edge IN @@edge_collection
-            RETURN OLD
-        """
-
-        total_deleted = 0
-        for edge_collection in kb_edge_collections:
-            try:
-                bind_vars = {
-                    "@edge_collection": edge_collection,
-                    "record_from": f"records/{record_id}",
-                    "record_to": f"records/{record_id}"
-                }
-
-                result = await self.http_client.execute_aql(edge_deletion_query, bind_vars, txn_id=transaction)
-                deleted_count = len(result) if result else 0
-                total_deleted += deleted_count
-
-                if deleted_count > 0:
-                    self.logger.debug(f"Deleted {deleted_count} edges from {edge_collection}")
-
-            except Exception as e:
-                self.logger.error(f"Failed to delete KB edges from {edge_collection}: {e}")
-                raise
-
-        self.logger.debug(f"Total KB edges deleted for record {record_id}: {total_deleted}")
+        """Delete every edge touching a KB record, as the folder delete does."""
+        await self._delete_every_edge_of_record(record_id, transaction)
 
     async def _execute_gmail_record_deletion(
         self,

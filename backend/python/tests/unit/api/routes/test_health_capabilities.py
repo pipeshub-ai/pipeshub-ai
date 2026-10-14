@@ -144,6 +144,75 @@ class TestToolCallingProbe:
         assert '"tool_calling":true' in resp.body.decode().replace(" ", "")
 
 
+_AZURE_TOOLS_REFUSAL = (
+    "Function tools with reasoning_effort are not supported for this model in "
+    "/v1/chat/completions. To use function tools, use /v1/responses or set "
+    "reasoning_effort to 'none'."
+)
+
+
+class _ApiShapeModel:
+    """An OpenAI-family model that refuses tools on Chat Completions the way
+    Azure does for gpt-6 models, and accepts them on the Responses API unless
+    `refuse_responses` is set."""
+
+    def __init__(self, use_responses_api=None, reasoning=None, reasoning_effort=None,
+                 refuse_responses: bool = False) -> None:
+        self.use_responses_api = use_responses_api
+        self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
+        self.refuse_responses = refuse_responses
+        self.copies: list[_ApiShapeModel] = []
+
+    def bind_tools(self, tools: list) -> _ApiShapeModel:
+        return self
+
+    async def ainvoke(self, messages: list, config: object = None) -> str:
+        if not self.use_responses_api or self.refuse_responses:
+            raise _error(_AZURE_TOOLS_REFUSAL, 400)
+        return "ok"
+
+    def model_copy(self, update: dict) -> _ApiShapeModel:
+        copy = _ApiShapeModel(
+            use_responses_api=update.get("use_responses_api", self.use_responses_api),
+            reasoning=update.get("reasoning", self.reasoning),
+            reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+            refuse_responses=self.refuse_responses,
+        )
+        self.copies.append(copy)
+        return copy
+
+
+class TestToolCallingProbeTriesResponsesApi:
+    """Azure refuses tools for gpt-6 models on Chat Completions, even with no
+    reasoning setting, and accepts them on the Responses API. The agent loop
+    switches on that refusal, so the setup check must not report "cannot be
+    used for agents" for a model the agent loop can use."""
+
+    async def test_refused_on_chat_completions_accepted_on_responses(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel()
+
+        assert await _check_tool_calling(model, MagicMock()) is True
+        assert len(model.copies) == 1
+        assert model.copies[0].use_responses_api is True
+        assert model.copies[0].reasoning is None
+
+    async def test_refused_on_both_is_reported(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+
+    async def test_a_model_already_on_responses_is_not_retried(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(use_responses_api=True, reasoning={"effort": "high"},
+                               refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+        assert model.copies == []
+
+
 class TestVisionVerdict:
     """"This model has no vision" is a verdict that tells an admin to disable a
     feature, so it may only be reached from an error that actually says so."""

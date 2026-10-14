@@ -2100,6 +2100,103 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        per_address: int = 2,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The live records of the org stored under any of ``weburls`` (exact
+        match), in any connector. Link records and placeholders are left out:
+        they hold an address, they do not live at it.
+
+        Used to join a record to the records whose addresses it pastes.
+
+        Args:
+            weburls: Exact ``webUrl`` values. Empty returns ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            per_address: Most rows per address, records that are not dependent
+                nodes first; each address is looked up on its own.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Rows ``{"id", "recordType", "connectorName", "webUrl",
+            "isDependentNode"}``, records that are not dependent nodes first at each address, so
+            a ticket is never dropped for its attachments, and one address
+            never crowds out another.
+
+        Raises:
+            Exception: on a query failure. Callers must not read a failure as
+            "nothing lives at this address".
+        """
+        pass
+
+    @abstractmethod
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """The Jira sites the org syncs, read from its live tickets' addresses.
+
+        A ticket stored at ``https://acme.atlassian.net/browse/PA-1`` gives
+        ``https://acme.atlassian.net``: what comes before ``/browse/``. Used to
+        turn an issue key found in text into the addresses the issue may be
+        stored under.
+
+        Args:
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only tickets of these connectors are read.
+            limit: Most sites returned; None returns every one.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct site prefixes, sorted.
+
+        Raises:
+            Exception: on a query failure, so it is never cached as "no site".
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: str | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Ids of the live records that hold a link to any of ``weburls``.
+
+        A connector that keeps each pasted address as a ``LINK`` record under
+        the record that pasted it (a Slack message) is read here: the link
+        record is matched by its ``webUrl`` (exact), then its parent through
+        the ``PARENT_CHILD`` relation is returned.
+
+        Args:
+            weburls: Exact ``webUrl`` values of the link records. Empty returns
+                ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only link records of these connectors are read.
+            limit: Most ids returned: one page.
+            after: Return only ids after this one; pass the last id of a page
+                to read the next.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct record ids in ascending order.
+
+        Raises:
+            Exception: on a query failure.
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_parent(
         self,
         connector_id: str,

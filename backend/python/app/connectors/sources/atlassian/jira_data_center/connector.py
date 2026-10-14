@@ -33,6 +33,7 @@ from app.connectors.core.base.connector.connector_service import BaseConnector, 
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -521,6 +522,7 @@ class JiraDataCenterConnector(BaseConnector):
             elif entity == "project_roles":
                 if external_id in project_ids:
                     await self._has_stored_access("record_group", project_ids[external_id])
+                    await self._keep_scheme_roles(projects, {external_id})
             elif entity == "project_issues":
                 if external_id in project_ids:
                     await self._keep_stored_records(project_ids[external_id])
@@ -535,8 +537,26 @@ class JiraDataCenterConnector(BaseConnector):
                 })
             elif entity == "project_role_ids":
                 await self._keep_stored_project_roles(list(project_ids))
+                await self._keep_scheme_roles(projects, set(project_ids))
             else:
                 await self._has_stored_access(entity, external_id)
+
+    async def _keep_scheme_roles(
+        self, projects: list[tuple[RecordGroup, Optional[list[Permission]]]], project_keys: set[str]
+    ) -> None:
+        """Note the stored roles these projects' schemes grant on this sync as seen.
+
+        Roles are not saved when their list was refused or the group list was, but the
+        scheme is still saved, and it may grant a stored role its stored grants did not name.
+        Unnoted, that role would lose its members and the new grant to the unlink. A scheme
+        that could not be read, or the configuring-user grant after a refused one, names none.
+        """
+        for group, permissions in projects:
+            if group.short_name not in project_keys:
+                continue
+            for permission in permissions or []:
+                if permission.entity_type == EntityType.ROLE and permission.external_id:
+                    await self._has_stored_access("role", str(permission.external_id))
 
     async def _keep_stored_project_roles(self, project_keys: list[str]) -> None:
         """Note each project's stored roles as seen by a full sync in progress, without saving them.
@@ -1216,7 +1236,8 @@ class JiraDataCenterConnector(BaseConnector):
     async def _detect_and_handle_deletions(self, last_sync_time: int) -> Optional[int]:
         """Fetch deleted issue keys from the audit log and delete each one flat.
 
-        Returns None when the audit log could not be read, so the caller keeps its checkpoint.
+        Returns None when the audit log could not be read, or an issue could not be
+        deleted, so the caller keeps its checkpoint.
         """
         self.logger.info("🔍 Checking for deleted issues via Jira DC audit log...")
 
@@ -1228,13 +1249,23 @@ class JiraDataCenterConnector(BaseConnector):
             return 0
 
         deleted_count = 0
+        failed_keys: list[str] = []
         for issue_key in deleted_issue_keys:
             try:
                 await self._handle_deleted_issue(issue_key)
                 deleted_count += 1
             except Exception as e:
+                failed_keys.append(issue_key)
                 self.logger.error("❌ Error handling deleted issue %s: %s", issue_key, e)
 
+        if failed_keys:
+            # Kept checkpoint: the next sync retries them, and a delete that already
+            # committed is a no-op then (the issue is no longer found).
+            self.logger.warning(
+                "Could not delete %d issue(s) the audit log reports deleted (%s)",
+                len(failed_keys), ", ".join(failed_keys),
+            )
+            return None
         return deleted_count
 
     async def _fetch_deleted_issues_from_audit(self, last_sync_time: int) -> Optional[list[str]]:
@@ -1414,39 +1445,36 @@ class JiraDataCenterConnector(BaseConnector):
             self.logger.error(
                 "❌ Error handling deleted issue %s: %s", issue_key, e, exc_info=True,
             )
+            raise
 
     async def _delete_direct_attachment_records(
         self,
         parent_issue_id: str,
         tx_store,
     ) -> int:
-        """Delete direct FILE children (attachments) of ``parent_issue_id``."""
-        try:
-            deleted_count = 0
-            child_records = await tx_store.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=parent_issue_id,
-                record_type=RecordType.FILE.value,
+        """Delete direct FILE children (attachments) of ``parent_issue_id``.
+
+        A failure is raised, so the caller's transaction rolls back rather than
+        deleting the issue and committing a half-deleted attachment.
+        """
+        deleted_count = 0
+        child_records = await tx_store.get_records_by_parent(
+            connector_id=self.connector_id,
+            parent_external_record_id=parent_issue_id,
+            record_type=RecordType.FILE.value,
+        )
+
+        for record in child_records:
+            await tx_store.delete_records_and_relations(
+                record_key=record.id,
+                hard_delete=True,
+            )
+            deleted_count += 1
+            self.logger.debug(
+                "  Deleted attachment %s", record.external_record_id,
             )
 
-            for record in child_records:
-                await tx_store.delete_records_and_relations(
-                    record_key=record.id,
-                    hard_delete=True,
-                )
-                deleted_count += 1
-                self.logger.debug(
-                    "  Deleted attachment %s", record.external_record_id,
-                )
-
-            return deleted_count
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error deleting attachments for issue %s: %s",
-                parent_issue_id, e,
-            )
-            return 0
+        return deleted_count
 
     # ============================================================================
     # User & Group Management
@@ -2688,6 +2716,12 @@ class JiraDataCenterConnector(BaseConnector):
                     continue
 
                 roles_dict = response.json()
+                if not isinstance(roles_dict, dict):
+                    # Not "no roles": the stored ones would look gone to a full sync's unlink.
+                    self.logger.warning(f"⚠️ The role list of project {project_key} is not a mapping")
+                    self._note_unread(None)
+                    failed_project_keys.append(project_key)
+                    continue
 
                 if not roles_dict:
                     self.logger.debug(f"No roles found for project {project_key}")
@@ -3463,6 +3497,12 @@ class JiraDataCenterConnector(BaseConnector):
     # ============================================================================
     # Issue Processing
     # ============================================================================
+
+    def _related_records(self, issue: dict[str, Any]) -> list[RelatedExternalRecord]:
+        """Issue links, then the addresses and issue keys in the summary and
+        description, which join the issue to those records in any connector."""
+        fields = (issue or {}).get("fields") or {}
+        return self._parse_issue_links(issue) + mentions_in(fields.get("summary"), fields.get("description"))
 
     def _parse_issue_links(self, issue: dict[str, Any]) -> list[RelatedExternalRecord]:
         """
@@ -4343,7 +4383,7 @@ class JiraDataCenterConnector(BaseConnector):
                     issue_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
                 # Parse issue links and set related_external_records for creating LINKED_TO edges
-                related_external_records = self._parse_issue_links(issue)
+                related_external_records = self._related_records(issue)
                 if related_external_records:
                     issue_record.related_external_records = related_external_records
                     self.logger.debug(f"🔗 Issue {issue_key} has {len(related_external_records)} linked issues")
@@ -5835,6 +5875,10 @@ class JiraDataCenterConnector(BaseConnector):
                 is_dependent_node=False,  # Tickets are not dependent
                 parent_node_id=None,  # Tickets have no parent node
             )
+
+            # _process_record deletes and rewrites every link edge from this list,
+            # so a reindexed issue without it would lose its links and mentions.
+            issue_record.related_external_records = self._related_records(issue)
 
             # Permissions: empty list - records inherit project-level permissions via inherit_permissions=True
             permissions = []

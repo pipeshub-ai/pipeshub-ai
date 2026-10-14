@@ -209,10 +209,11 @@ async def _consume(
     # lane keeps; handlers start concurrently, so their own order jitters.
     start_processing = consumer._start_processing_task
 
-    async def record_order(stream_name, message_id, fields, parsed_message=None):  # noqa: ANN202
+    async def record_order(stream_name, message_id, fields, parsed_message=None, **kwargs):  # noqa: ANN202
         if parsed_message is not None and parsed_message.payload.get("connectorId") == gitlab:
             outcome.gitlab_order.append(int(parsed_message.payload["index"]))
-        return await start_processing(stream_name, message_id, fields, parsed_message)
+        # Pass through whatever else the dispatcher hands over (slot_key, ...).
+        return await start_processing(stream_name, message_id, fields, parsed_message, **kwargs)
 
     consumer._start_processing_task = record_order  # type: ignore[method-assign]
     await consumer.start(handle)

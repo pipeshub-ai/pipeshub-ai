@@ -268,10 +268,10 @@ class TestDeleteEdgesBetweenCollections:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        count = await connected_provider.delete_edges_between_collections("id1", "users", "edge_col", "groups")
-        assert count == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_edges_between_collections("id1", "users", "edge_col", "groups")
 
 
 # ===========================================================================
