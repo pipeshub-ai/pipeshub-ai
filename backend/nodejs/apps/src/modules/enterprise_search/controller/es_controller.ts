@@ -4612,6 +4612,14 @@ export const searchArchivedConversations =
   }
   };
 
+/** Optional date bounds on `POST /search`, checked and applied by the AI service. */
+const SEARCH_DATE_BOUNDS = [
+  'createdAfter',
+  'createdBefore',
+  'updatedAfter',
+  'updatedBefore',
+] as const;
+
 export const search =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -4622,11 +4630,12 @@ export const search =
     try {
       const { query, limit, filters } = req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
-      const dateBounds = Object.fromEntries(
-        (['createdAfter', 'createdBefore', 'updatedAfter', 'updatedBefore'] as const)
-          .filter((key) => typeof req.body[key] === 'string')
-          .map((key) => [key, req.body[key]]),
-      );
+      const body = req.body as Record<string, unknown>;
+      const dateBounds: Record<string, string> = {};
+      for (const key of SEARCH_DATE_BOUNDS) {
+        const value = body[key];
+        if (typeof value === 'string') dateBounds[key] = value;
+      }
 
       // The query is free text, like a chat question, so text in angle
       // brackets such as "<id>" is allowed here as it is in chat. It is not

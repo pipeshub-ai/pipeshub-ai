@@ -547,7 +547,7 @@ class TestSearchEndpoint:
         return mock_retrieval
 
     @pytest.mark.asyncio
-    async def test_date_bounds_reach_the_retrieval_service(self):
+    async def test_date_bounds_reach_the_retrieval_service(self) -> None:
         """The retrieval service already filters by date; the route used to drop it."""
         body = SearchQuery(
             query="q", updatedAfter="2026-09-01", updatedBefore="2026-09-30T12:00:00Z",
@@ -563,7 +563,7 @@ class TestSearchEndpoint:
         }
 
     @pytest.mark.asyncio
-    async def test_a_date_only_upper_bound_takes_in_the_whole_day(self):
+    async def test_a_date_only_upper_bound_takes_in_the_whole_day(self) -> None:
         retrieval = await self._search_with(SearchQuery(query="q", createdBefore="2026-03-31"))
 
         assert retrieval.search_with_filters.call_args.kwargs["time_range"] == {
@@ -576,7 +576,9 @@ class TestSearchEndpoint:
         ("createdBefore", "2026-01-15T08:00:00", "createdBefore: '2026-01-15T08:00:00' has no timezone"),
         ("updatedAfter", "2999-01-01", "updatedAfter cannot be in the future"),
     ])
-    async def test_a_bad_date_is_a_400_that_names_the_field(self, field, value, said):
+    async def test_a_bad_date_is_a_400_that_names_the_field(
+        self, field: str, value: str, said: str
+    ) -> None:
         retrieval = MagicMock()
         retrieval.search_with_filters = AsyncMock()
 
@@ -593,7 +595,7 @@ class TestSearchEndpoint:
         retrieval.search_with_filters.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_an_inverted_range_is_a_400(self):
+    async def test_an_inverted_range_is_a_400(self) -> None:
         with pytest.raises(HTTPException) as caught:
             await self._search_with(
                 SearchQuery(query="q", updatedAfter="2026-09-30", updatedBefore="2026-09-01")
