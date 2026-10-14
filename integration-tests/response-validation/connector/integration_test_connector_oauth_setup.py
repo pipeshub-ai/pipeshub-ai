@@ -39,6 +39,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_request_body_strictly_matches_openapi_operation,
     assert_response_strictly_matches_openapi_operation,
     operation_oauth2_scopes,
+    operation_request_examples,
 )
 
 _CREATE = "createConnectorInstance"
@@ -122,6 +123,42 @@ class TestCreateOAuthConnector:
 
         with pytest.raises(AssertionError, match="oauthConfigId"):
             assert_request_body_strictly_matches_openapi_operation(body, _CREATE)
+
+
+    @pytest.mark.parametrize("example", sorted(operation_request_examples(_CREATE)))
+    def test_documented_create_example_is_accepted(
+        self,
+        connectors_api: ConnectorsClient,
+        oauth_configs_api: ConnectorOAuthConfigsClient,
+        jira_oauth_connector: Any,
+        linked_oauth_config_id: Callable[[str], str | None],
+        example: str,
+    ) -> None:
+        """Each example in the spec is a request the server accepts as it stands."""
+        body = operation_request_examples(_CREATE)[example]
+        body["instanceName"] = f"connector-spec-it-example-{uuid4().hex[:8]}"
+        auth = (body.get("config") or {}).get("auth") or {}
+        if "oauthConfigId" in auth:
+            auth["oauthConfigId"] = jira_oauth_connector.oauth_config_id
+        if "oauthInstanceName" in auth:
+            auth["oauthInstanceName"] = f"connector-spec-it-example-app-{uuid4().hex[:8]}"
+
+        resp = connectors_api.create_instance(body)
+        assert resp.status_code < 300, f"example {example!r}: {resp.status_code} {resp.text}"
+        connector_id = resp.json()["connector"]["connectorId"]
+        new_app = None
+        try:
+            linked = linked_oauth_config_id(connector_id)
+            if "clientSecret" in auth:
+                new_app = linked
+                assert new_app, "the inline OAuth app was not saved and linked"
+            elif "oauthConfigId" in auth:
+                assert linked == jira_oauth_connector.oauth_config_id
+            assert_request_body_strictly_matches_openapi_operation(body, _CREATE)
+        finally:
+            connectors_api.delete_instance(connector_id)
+            if new_app:
+                oauth_configs_api.delete_config(body["connectorType"], new_app)
 
 
 @pytest.mark.integration

@@ -35,6 +35,7 @@ from openapi_schema_validator import (  # noqa: E402
     assert_query_params_documented,
     assert_request_body_strictly_matches_openapi_operation,
     assert_response_strictly_matches_openapi_operation,
+    request_body_violations,
 )
 
 _CREATE = "createConnectorInstance"
@@ -225,6 +226,25 @@ class TestDynamicFilterOptions:
         assert resp.json().get("options"), f"MinIO listed no buckets: {resp.text}"
 
         assert_response_strictly_matches_openapi_operation(resp.json(), _FILTER_OPTIONS)
+
+
+    def test_update_filters_sync_with_a_filter_value_matches_spec(
+        self, connectors_api: ConnectorsClient, minio_connector: Any
+    ) -> None:
+        """A saved filter carries `type`: sync skips any entry without it."""
+        value = {"operator": "in", "value": ["pipeshub-connector-test"], "type": "list"}
+        body = {"filters": {"sync": {"values": {"buckets": value}}}}
+        resp = connectors_api.update_filters_sync_config(minio_connector.connector_id, body)
+        assert resp.status_code == 200, resp.text
+        assert_request_body_strictly_matches_openapi_operation(body, _UPDATE_FILTERS_SYNC)
+
+        saved = connectors_api.get_config(minio_connector.connector_id).json()
+        assert saved["config"]["config"]["filters"]["sync"]["values"]["buckets"] == value
+
+        untyped = {"filters": {"sync": {"values": {"buckets": {"operator": "in", "value": []}}}}}
+        assert request_body_violations(untyped, _UPDATE_FILTERS_SYNC), (
+            "the spec accepts a filter without `type`, which sync would skip"
+        )
 
 
 @pytest.mark.integration

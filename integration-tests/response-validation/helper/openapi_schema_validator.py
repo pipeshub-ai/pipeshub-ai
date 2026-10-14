@@ -566,3 +566,11 @@ def operation_parameter_accepts(operation_id: str, name: str, value: object) -> 
 def request_body_violations(data: object, operation_id: str) -> str | None:
     """Why ``data`` is not a valid documented request body (None when it is)."""
     return _strict_report(data, operation_request_body_json_pointer(operation_id))
+
+
+def operation_request_examples(operation_id: str) -> dict[str, Any]:
+    """The documented ``application/json`` request examples of an operation, by name."""
+    op, _ = _find_operation(operation_id)
+    content = ((op.get("requestBody") or {}).get("content") or {}).get("application/json") or {}
+    examples = content.get("examples") or {}
+    return {name: copy.deepcopy(ex.get("value")) for name, ex in examples.items()}
