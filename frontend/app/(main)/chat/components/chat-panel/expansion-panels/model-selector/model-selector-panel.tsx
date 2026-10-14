@@ -381,6 +381,7 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
               }}
               style={{
                 padding: '4px var(--space-3)',
+                minHeight: 44,
                 borderRadius: 'var(--radius-6)',
                 border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--slate-7)',
                 backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',

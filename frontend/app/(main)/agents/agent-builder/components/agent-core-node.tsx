@@ -912,6 +912,7 @@ function DefaultReasoningEffortSelector({
               }}
               style={{
                 padding: '4px 12px',
+                minHeight: 44,
                 borderRadius: 'var(--radius-6)',
                 border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--gray-6)',
                 backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
