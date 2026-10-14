@@ -6694,6 +6694,31 @@ class TestGetFlattenedResultsNewBranches:
         assert children[0]["content"] == "id=1, name=Alice"
 
     @pytest.mark.asyncio
+    async def test_an_out_of_blob_sql_row_keeps_its_strongest_point(self) -> None:
+        """A SQL row past the rows the blob stores, hit by two points: the row
+        takes the stronger point's score and text."""
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": {"table_summary": "sql table", "ddl": "CREATE TABLE t(id INT)"},
+            "children": [],
+            "table_metadata": {},
+            "citation_metadata": None,
+        }]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 99, "isBlockGroup": False}}
+            for text, score in (("id=1, part one", 0.3), ("id=1, part two", 0.95))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        (row,) = table_unit["content"][1]
+        assert (row["score"], row["content"]) == (0.95, "id=1, part two")
+
+    @pytest.mark.asyncio
     async def test_block_index_out_of_bounds_non_sql(self):
         record = _make_record_blob(record_type="FILE")
         record["block_containers"]["blocks"] = []

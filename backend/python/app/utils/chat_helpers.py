@@ -2398,6 +2398,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     # its best hit's score: a block over 100 words is several points with one
     # blockIndex, and the search API runs several queries.
     on_repeat_hit: dict[str, Callable[[float], None]] = {}
+    # SQL rows past the stored blob, queued with the point's own text.
+    pending_sql_rows: set[str] = set()
 
     def _raise_pending_row(pending_key: str, score: float) -> None:
         rows_key, position = pending_split_rows[pending_key]
@@ -2591,6 +2593,13 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             repeat_score = float(result.get("score", 0.0))
             if chunk_id in emitted_table_rows:
                 _note_matched_block(emitted_table_rows[chunk_id], index, repeat_score)
+            elif chunk_id in pending_sql_rows:
+                # A SQL row past the rows the blob stores has only the point's own
+                # text: a stronger point brings its score and its text.
+                rows_key, position = pending_split_rows[chunk_id]
+                row_index, row_score, content = rows_to_be_included[rows_key][position]
+                if repeat_score > row_score and result.get("content"):
+                    rows_to_be_included[rows_key][position] = (row_index, repeat_score, result["content"])
             elif chunk_id in on_repeat_hit:
                 on_repeat_hit[chunk_id](repeat_score)
             continue
@@ -2616,7 +2625,10 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 qdrant_content = result.get("content", "")
                 bg_index = 0
                 if record.get("record_type") == RecordType.SQL_TABLE.value and qdrant_content:
-                    rows_to_be_included[f"{virtual_record_id}_{bg_index}"].append(
+                    rows_key = f"{virtual_record_id}_{bg_index}"
+                    pending_split_rows[chunk_id] = (rows_key, len(rows_to_be_included[rows_key]))
+                    pending_sql_rows.add(chunk_id)
+                    rows_to_be_included[rows_key].append(
                         (index, float(result.get("score", 0.0)), qdrant_content)
                     )
                     logger.debug(f"Index Out of Bounds: Added row to rows_to_be_included for {qdrant_content}")
