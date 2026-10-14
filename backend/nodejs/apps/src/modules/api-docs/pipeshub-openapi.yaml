@@ -5536,7 +5536,9 @@ components:
           description: >-
             Pass as `startBlock` to read on; null when nothing is left. In a
             thread read it is the block of the record at `nextStartRecord`
-            (0 unless that record was cut short).
+            (0 unless that record was cut short). A block larger than
+            `maxChars` holds it on that block: send it again with a larger
+            `maxChars` (up to 140000) to read the block whole.
         threadRecordCount:
           type: integer
           description: Thread reads only. Records in the thread the caller may see.
