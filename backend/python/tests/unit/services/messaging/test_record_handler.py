@@ -5785,3 +5785,69 @@ class TestRecoveryExhausted:
 
         graph.update_node.assert_not_awaited()
         trigger.assert_not_awaited()
+
+
+def _refused(too_large: bool) -> Exception:
+    from app.exceptions.storage_exceptions import StorageRequestRejectedError
+
+    refusal = StorageRequestRejectedError(
+        "Failed to upload record: the storage service refused it (HTTP 400): "
+        "This file is larger than the 30 MB limit", 400, too_large=too_large,
+    )
+    try:
+        raise IndexingError("Failed to save record to storage") from refusal
+    except IndexingError as wrapped:
+        return wrapped
+
+
+class TestRejectedTooLargeCounter:
+    """pipeshub_record_storage_rejected_too_large_total counts records, not attempts or look-alikes."""
+
+    async def _fail(self, error: Exception, *, final: bool) -> tuple[MagicMock, dict | None]:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {"_key": "r1", "virtualRecordId": "vr1",
+                  "indexingStatus": ProgressStatus.NOT_STARTED.value, "mimeType": "application/pdf"}
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_node = AsyncMock(return_value=True)
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        pipeline = handler.event_processor.processor.indexing_pipeline
+        pipeline.bulk_delete_embeddings = AsyncMock()
+        pipeline.delete_points_for_virtual_record = AsyncMock()
+        handler.event_processor.on_event = lambda _event: _failing_async_gen(error)
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+                   "mimeType": "application/pdf", "extension": "pdf", "is_final_failure": final}
+        kind = MessageErrorType.TERMINAL if final else MessageErrorType.TRANSIENT
+        with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"), \
+             patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF"}), \
+             patch.object(record_module.MessageErrorClassifier, "classify_by_exception", return_value=kind), \
+             patch.object(record_module, "record_rejected_too_large") as counter:
+            handler.config_service.get_config = AsyncMock(
+                return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+            )
+            with pytest.raises(Exception):  # noqa: B017 - unknown errors are re-raised wrapped
+                await _collect_events(handler, EventTypes.REINDEX_RECORD.value, payload)
+        updates = gp.update_node.call_args.args[2] if gp.update_node.await_count else None
+        return counter, updates
+
+    @pytest.mark.asyncio
+    async def test_final_failure_refused_as_too_large_counts_once(self) -> None:
+        counter, updates = await self._fail(_refused(too_large=True), final=True)
+        counter.assert_called_once_with(400)
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+    @pytest.mark.asyncio
+    async def test_attempt_that_will_be_retried_is_not_counted(self) -> None:
+        counter, _ = await self._fail(_refused(too_large=True), final=False)
+        counter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_refusal_for_another_reason_is_not_counted(self) -> None:
+        counter, _ = await self._fail(_refused(too_large=False), final=True)
+        counter.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_out_of_memory_reads_too_large_but_is_not_counted(self) -> None:
+        counter, updates = await self._fail(MemoryError(), final=True)
+        counter.assert_not_called()
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE

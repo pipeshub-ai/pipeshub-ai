@@ -88,6 +88,7 @@ from app.services.vector_db.rebuild_state import (
 )
 from app.services.vector_db.strategy import DeleteContext, RecordContext
 from app.services.vector_db.strategy_resolver import reset_strategy_cache
+from app.telemetry.modules.record_storage_metrics import record_rejected_too_large
 from app.utils.api_call import make_api_call
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.indexing_timing import stage
@@ -108,6 +109,7 @@ from app.utils.user_errors import (
     rate_limited_gave_up,
     rate_limited_will_retry,
     to_user_reason,
+    too_large_refusal,
     unsupported_file_type,
 )
 
@@ -2139,6 +2141,8 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception)
+                    if (refusal := too_large_refusal(last_exception)) is not None:
+                        record_rejected_too_large(refusal.status)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,
