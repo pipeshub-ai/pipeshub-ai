@@ -282,6 +282,7 @@ class ImageAdmission:
         clone._retrieved_slots_used = self._retrieved_slots_used
         clone._normalized_by_hash = self._normalized_by_hash
         clone._normalization_checked = self._normalization_checked
+        clone._unsendable_hashes = self._unsendable_hashes
         return clone
 
     @property
@@ -386,6 +387,19 @@ class ImageAdmission:
         # what the model reads still matches the record it came from.
         #
         admitted.sort(key=lambda c: (c.turn_index, c.block_index))
+        # A copy is only "shown above" if the first one actually went out;
+        # otherwise it shares the first copy's reason.
+        first_reason = {
+            d.candidate.hash: d.reason for d in degraded if d.reason is not DegradeReason.DUPLICATE
+        }
+        degraded = [
+            DegradedImage(d.candidate, first_reason[d.candidate.hash])
+            if d.reason is DegradeReason.DUPLICATE
+            and d.candidate.hash not in self._admitted_hashes
+            and d.candidate.hash in first_reason
+            else d
+            for d in degraded
+        ]
         return AdmissionResult(admitted=admitted, degraded=degraded)
 
     def _normalize(self, candidate: ImageCandidate) -> ImageCandidate:

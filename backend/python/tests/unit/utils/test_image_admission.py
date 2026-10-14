@@ -401,6 +401,35 @@ class TestNormalization:
         assert [d.reason for d in result.degraded] == [DegradeReason.UNSUPPORTED_FORMAT]
         assert [c.ref for c in result.admitted] == ["ref1"]
 
+    def test_a_trial_that_finds_an_svg_unsendable_binds_the_real_admission(self) -> None:
+        """Renderers size with a trial first; it shares the normalization
+        cache, so it must share the verdict too or the real render sends the
+        raw SVG."""
+        admission = _admission(max_images=2)
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64",
+            side_effect=RuntimeError("cairo missing"),
+        ):
+            trial = admission.trial().admit([_candidate(0, data_uri=self._SVG)])
+            real = admission.admit([_candidate(0, data_uri=self._SVG)])
+
+        assert [d.reason for d in trial.degraded] == [DegradeReason.UNSUPPORTED_FORMAT]
+        assert [d.reason for d in real.degraded] == [DegradeReason.UNSUPPORTED_FORMAT]
+        assert not real.admitted
+
+    def test_a_copy_of_an_unsendable_svg_is_not_called_shown_above(self) -> None:
+        admission = _admission(max_images=2)
+        with patch(
+            "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64",
+            side_effect=RuntimeError("cairo missing"),
+        ):
+            result = admission.admit([
+                _candidate(0, data_uri=self._SVG),
+                _candidate(1, data_uri=self._SVG),
+            ])
+
+        assert [d.reason for d in result.degraded] == [DegradeReason.UNSUPPORTED_FORMAT] * 2
+
 
 class TestAdmissionFromState:
     def test_returns_the_seeded_arbiter(self) -> None:

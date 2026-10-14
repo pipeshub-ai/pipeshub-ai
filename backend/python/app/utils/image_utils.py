@@ -274,7 +274,7 @@ def to_llm_image_format(image_uri: str, *, max_long_edge_px: int) -> str | None:
         return image_uri
     # Wrapped base64 (RFC 2045 line breaks) would fail the fixed-width header
     # decode below and slip through unconverted.
-    if any(c.isspace() for c in payload):
+    if re.search(r"\s", payload):
         payload = "".join(payload.split())
         image_uri = f"{header},{payload}"
     try:
@@ -287,6 +287,11 @@ def to_llm_image_format(image_uri: str, *, max_long_edge_px: int) -> str | None:
             return image_uri
         return f"data:{media_type};base64,{payload}"
     if media_type is None and not is_svg:
+        declared = header[len("data:"):].split(";", 1)[0].lower()
+        # Declared as a format providers reject but unrecognizable (svgz, a
+        # long prolog): sending it would still 400 the request.
+        if declared.startswith("image/") and declared not in LLM_IMAGE_MEDIA_TYPES:
+            return None
         return image_uri
 
     b64 = normalize_image_to_base64(image_uri)
@@ -302,8 +307,11 @@ def to_llm_image_format(image_uri: str, *, max_long_edge_px: int) -> str | None:
 
             with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
                 image = source.convert("RGBA") if source.mode not in ("RGB", "RGBA", "L") else source.copy()
+            # Bound it here: a full-size scan would otherwise be PNG-encoded
+            # only for downscale_to_limits to decode and shrink it again.
+            image.thumbnail((max_long_edge_px, max_long_edge_px))
             buffer = io.BytesIO()
-            image.save(buffer, format="PNG", optimize=True)
+            image.save(buffer, format="PNG")
             png_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
     except Exception as e:
         logger.warning("Could not convert %s image to PNG for the LLM: %s", media_type or "svg", e)

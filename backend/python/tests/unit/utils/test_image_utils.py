@@ -57,6 +57,21 @@ class TestToLlmImageFormat:
         converted = to_llm_image_format(uri, max_long_edge_px=1568)
         assert converted.startswith("data:image/png;base64,iVBORw0KGgo")
 
+    def test_oversized_bmp_is_bounded_to_the_long_edge(self) -> None:
+        pillow = pytest.importorskip("PIL.Image")
+        import io
+
+        buffer = io.BytesIO()
+        pillow.new("RGB", (400, 200)).save(buffer, format="BMP")
+        uri = "data:image/bmp;base64," + base64.b64encode(buffer.getvalue()).decode()
+        converted = to_llm_image_format(uri, max_long_edge_px=100)
+        with pillow.open(io.BytesIO(base64.b64decode(converted.split(",", 1)[1]))) as out:
+            assert out.size == (100, 50)
+
+    def test_unrecognizable_bytes_declared_as_svg_are_unsendable(self) -> None:
+        uri = "data:image/svg+xml;base64," + base64.b64encode(b"\x1f\x8b\x08" + b"\x00" * 40).decode()
+        assert to_llm_image_format(uri, max_long_edge_px=1568) is None
+
     def test_mislabeled_raster_is_relabeled(self) -> None:
         jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 20).decode()
         assert (
