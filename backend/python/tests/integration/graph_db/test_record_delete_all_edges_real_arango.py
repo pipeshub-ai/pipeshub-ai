@@ -140,7 +140,7 @@ async def test_a_connector_record_delete_leaves_no_edge_behind(arango, connector
 
     result = await delete(provider, rec, record)
 
-    assert result is True or result["success"], result
+    assert result is True or (isinstance(result, dict) and result["success"]), result
     assert await _edges_touching(provider, ids) == {}
     assert await provider.http_client.get_document(collection=RECORDS, key=rec) is None
     assert await provider.http_client.get_document(collection=type_collection, key=rec) is None
