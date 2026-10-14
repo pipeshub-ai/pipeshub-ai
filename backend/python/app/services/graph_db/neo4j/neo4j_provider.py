@@ -16765,6 +16765,43 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ get_records_by_weburls failed: {str(e)}")
             raise
 
+    async def get_address_links_batch(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        limit_per_record: int = 20,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, list[str]]]:
+        if not record_ids or not org_id:
+            return {}
+        query = f"""
+        UNWIND $record_ids AS anchor_id
+        OPTIONAL MATCH (other:Record)-[edge:RECORD_RELATION]->(:Record {{id: anchor_id}})
+        WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
+        WITH anchor_id, collect(DISTINCT other.id)[0..$limit] AS mentioned_in
+        OPTIONAL MATCH (:Record {{id: anchor_id}})-[edge:RECORD_RELATION]->(other:Record)
+        WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
+        WITH anchor_id, mentioned_in, collect(DISTINCT other.id)[0..$limit] AS links_to
+        RETURN anchor_id AS id, mentioned_in, links_to
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "record_ids": list(dict.fromkeys(record_ids)),
+                    "org_id": org_id,
+                    "limit": limit_per_record,
+                },
+                txn_id=transaction,
+            )
+            return {
+                row["id"]: {"mentioned_in": row.get("mentioned_in") or [], "links_to": row.get("links_to") or []}
+                for row in rows or []
+            }
+        except Exception as e:
+            self.logger.error(f"❌ get_address_links_batch failed: {str(e)}")
+            return {}
+
     async def get_issue_sites(
         self,
         org_id: str,

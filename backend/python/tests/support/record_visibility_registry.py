@@ -70,6 +70,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_by_parent_record": (Rule.LIVE, "reindex keyset walk"),
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
     "get_records_by_weburls": (Rule.LIVE, "joins a record to the records at the addresses it pastes"),
+    "get_address_links_batch": (Rule.LIVE, "shown to the model as what mentions a record and what it mentions"),
     "get_issue_sites": (Rule.LIVE, "reads the Jira sites of live tickets to resolve issue keys in text"),
     "get_records_linking_to_weburls": (Rule.LIVE, "joins a newly indexed record to the records that pasted its address"),
     "get_linked_records": (Rule.LIVE, "shown to users"),

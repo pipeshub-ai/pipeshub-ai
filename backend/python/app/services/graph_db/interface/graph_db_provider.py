@@ -2133,6 +2133,34 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_address_links_batch(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        limit_per_record: int = 20,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, list[str]]]:
+        """For each record, the live records joined to it because one names the
+        other by web address or issue key (``recordRelations`` edges carrying
+        ``matchedBy``). Links the source system made itself are not included.
+
+        **No permission check**: the caller filters the ids before showing them.
+
+        Args:
+            record_ids: Records to read. Empty returns ``{}`` without querying.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            limit_per_record: Most ids per direction per record.
+            transaction: Optional transaction ID.
+
+        Returns:
+            ``{record_id: {"mentioned_in": [...], "links_to": [...]}}`` for
+            every record asked about: ``mentioned_in`` holds the records that
+            name it, ``links_to`` the records it names. ``{}`` on a query
+            failure, which is logged.
+        """
+        pass
+
+    @abstractmethod
     async def get_issue_sites(
         self,
         org_id: str,

@@ -489,6 +489,7 @@ EXERCISED_HERE: dict[str, str] = {
     "get_records_by_weburls": "test_weburl_lookup",
     "get_records_linking_to_weburls": "test_records_linking_to_an_address",
     "get_issue_sites": "test_issue_sites",
+    "get_address_links_batch": "test_address_links",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
@@ -1127,3 +1128,19 @@ async def test_a_removed_space_keeps_its_group_while_records_in_the_trash_belong
         assert group is None
         for name in ("live_shared", "trashed_shared"):
             assert await world.graph.get_document(world.ids[name], records) is None, name
+
+
+async def test_address_links(world: _World) -> None:
+    """A record joined by address to a live record and to a trashed one sees
+    only the live one."""
+    g = world.graph
+    await g.batch_upsert_record_relations([
+        {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[source]}",
+         "_to": f"{CollectionNames.RECORDS.value}/{world.ids['live_shared']}",
+         "relationshipType": "LINKED_TO", "matchedBy": "url", "constraintName": ""}
+        for source in ("live", "trashed")
+    ])
+
+    links = await g.get_address_links_batch([world.ids["live_shared"]], world.org_id)
+
+    assert links[world.ids["live_shared"]]["mentioned_in"] == [world.ids["live"]]

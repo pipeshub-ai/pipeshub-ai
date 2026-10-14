@@ -1937,6 +1937,101 @@ def build_parent_info(result: dict[str, Any]) -> str:
     parent_info = "\n".join(lines) + "\n"
     return parent_info  # noqa: RET504
 
+# Records shown per direction under a hit's "Mentioned in" / "Links to".
+MAX_ADDRESS_LINKS_PER_HIT = 10
+_ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
+
+
+async def enrich_records_with_address_links(
+    virtual_record_id_to_result: dict[str, dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str,
+    *,
+    user_id: str,
+) -> None:
+    """Attach to each hit the records that name it, and that it names, by web
+    address or issue key: a Slack thread that pasted a pull request's link, the
+    Jira issue a pull request's title names.
+
+    For every connector: these joins cross connectors, so the per-connector
+    rollout gate of ``enrich_records_with_graph_context`` does not apply. Only
+    records ``user_id`` may read are shown; if that check cannot run, nothing
+    is added. Sets ``record["address_links"]`` to
+    ``{"mentioned_in": [...], "links_to": [...]}``, each item
+    ``{"record_id", "record_name", "connector_name"}``.
+    """
+    if not graph_provider or not user_id or not org_id:
+        return
+    hits = {
+        rec["id"]: rec for rec in virtual_record_id_to_result.values()
+        if isinstance(rec, dict) and rec.get("id")
+    }
+    if not hits:
+        return
+    try:
+        links = await graph_provider.get_address_links_batch(list(hits), org_id)
+    except Exception as e:
+        logger.warning("Address link enrichment skipped: %s", e)
+        return
+    wanted: list[str] = list(dict.fromkeys(
+        rid
+        for found in (links or {}).values()
+        for direction, _title in _ADDRESS_LINK_SECTIONS
+        for rid in (found or {}).get(direction) or []
+    ))
+    if not wanted:
+        return
+    try:
+        readable = await graph_provider.filter_accessible_record_ids(wanted, user_id, org_id)
+        docs = await graph_provider.get_records_by_record_ids(
+            [rid for rid in wanted if rid in readable], org_id
+        )
+    except Exception as e:
+        # Fail closed: without a verdict a linked record may be one the user cannot open.
+        logger.warning("Address link enrichment skipped: access check unavailable: %s", e)
+        return
+    by_id = {
+        (doc.get("id") or doc.get("_key")): doc for doc in docs or [] if isinstance(doc, dict)
+    }
+    for record_id, record in hits.items():
+        found = (links or {}).get(record_id) or {}
+        attached: dict[str, list[dict[str, Any]]] = {}
+        for direction, _title in _ADDRESS_LINK_SECTIONS:
+            rows = [
+                {
+                    "record_id": rid,
+                    "record_name": _record_name_from_graph_doc(by_id[rid]),
+                    "connector_name": by_id[rid].get("connectorName") or "",
+                }
+                for rid in found.get(direction) or []
+                if rid in by_id and rid != record_id
+            ][:MAX_ADDRESS_LINKS_PER_HIT]
+            if rows:
+                attached[direction] = rows
+        if attached:
+            record["address_links"] = attached
+
+
+def build_address_links_info(record: dict[str, Any]) -> str:
+    """The records that name this one ("Mentioned in") and that it names
+    ("Links to"), as ``enrich_records_with_address_links`` attached them."""
+    links = record.get("address_links")
+    if not links:
+        return ""
+    lines: list[str] = []
+    for direction, title in _ADDRESS_LINK_SECTIONS:
+        rows = links.get(direction) or []
+        if not rows:
+            continue
+        lines.append(f"\n* {title}:")
+        for row in rows:
+            source = f" | Source: {row['connector_name']}" if row.get("connector_name") else ""
+            lines.append(
+                f"  - Record ID: {row.get('record_id', '')} | Name: {row.get('record_name', 'Unknown')}{source}"
+            )
+    return "\n".join(lines) + "\n" if lines else ""
+
+
 def build_record_relations_info(record: dict[str, Any]) -> str:
     """Build related records grouped by relation label (ATTACHMENT/CHILD/PARENT).
 
@@ -5304,6 +5399,9 @@ def build_message_content_array(
             relations_info = build_record_relations_info(record)
             if relations_info:
                 record_header_text = f"{record_header_text}{relations_info}"
+            address_links_info = build_address_links_info(record)
+            if address_links_info:
+                record_header_text = f"{record_header_text}{address_links_info}"
             if record_id_shortener is not None:
                 record_header_text = record_id_shortener.shorten_record_ids_in_text(record_header_text)
             content.append({

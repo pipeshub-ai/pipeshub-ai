@@ -233,3 +233,28 @@ async def test_issue_sites_are_read_from_the_orgs_jira_tickets(seeded: _Graph) -
     # duplicate, not GitHub's issues, not another org's site.
     assert sites == ["https://acme.atlassian.net", "https://jira.corp.example/jira"]
     assert await seeded.graph.get_issue_sites(seeded.org_id, []) == []
+
+
+async def test_address_links_in_both_directions_and_only_by_address(seeded: _Graph) -> None:
+    ids = seeded.ids
+    rel = CollectionNames.RECORDS.value
+    await seeded.graph.batch_upsert_record_relations([
+        {"_from": f"{rel}/{ids['message']}", "_to": f"{rel}/{ids['pr']}",
+         "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": "url", "constraintName": ""},
+        {"_from": f"{rel}/{ids['pr']}", "_to": f"{rel}/{ids['ticket']}",
+         "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": "key", "constraintName": ""},
+        # A link the source system made itself: not a mention.
+        {"_from": f"{rel}/{ids['other_holder']}", "_to": f"{rel}/{ids['pr']}",
+         "relationshipType": RecordRelations.LINKED_TO.value, "constraintName": ""},
+        # A trashed record that pasted the address: not shown.
+        {"_from": f"{rel}/{ids['deleted']}", "_to": f"{rel}/{ids['pr']}",
+         "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": "url", "constraintName": ""},
+    ])
+
+    links = await seeded.graph.get_address_links_batch([ids["pr"], ids["ticket"]], seeded.org_id)
+
+    assert links[ids["pr"]] == {"mentioned_in": [ids["message"]], "links_to": [ids["ticket"]]}
+    assert links[ids["ticket"]] == {"mentioned_in": [ids["pr"]], "links_to": []}
+    assert await seeded.graph.get_address_links_batch([ids["pr"]], f"{seeded.org_id}-x") == {
+        ids["pr"]: {"mentioned_in": [], "links_to": []},
+    }

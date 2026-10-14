@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 from app.modules.retrieval.context.neighbours import expand_neighbours
 from app.modules.retrieval.context.ranking import rank_units
 from app.utils.chat_helpers import (
+    enrich_records_with_address_links,
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
@@ -96,5 +97,8 @@ class KnowledgeContextBuilder:
                 org_id=self._org_id,
                 config_service=self._config_service,
                 user_id=self._user_id,
+            )
+            await enrich_records_with_address_links(
+                records, self._graph_provider, self._org_id, user_id=self._user_id,
             )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)

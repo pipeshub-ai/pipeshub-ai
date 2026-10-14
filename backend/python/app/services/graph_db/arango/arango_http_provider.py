@@ -5405,6 +5405,50 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
             raise
 
+    async def get_address_links_batch(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        limit_per_record: int = 20,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, list[str]]]:
+        if not record_ids or not org_id:
+            return {}
+        query = f"""
+        FOR anchor_id IN @record_ids
+            LET anchor = CONCAT("{CollectionNames.RECORDS.value}/", anchor_id)
+            LET mentioned_in = (
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._to == anchor AND edge.matchedBy IN ["url", "key"]
+                    LET other = DOCUMENT(edge._from)
+                    FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
+                    LIMIT @limit
+                    RETURN DISTINCT other._key
+            )
+            LET links_to = (
+                FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
+                    FILTER edge._from == anchor AND edge.matchedBy IN ["url", "key"]
+                    LET other = DOCUMENT(edge._to)
+                    FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
+                    LIMIT @limit
+                    RETURN DISTINCT other._key
+            )
+            RETURN {{id: anchor_id, mentioned_in: mentioned_in, links_to: links_to}}
+        """
+        try:
+            rows = await self.http_client.execute_aql(
+                query,
+                {"record_ids": list(dict.fromkeys(record_ids)), "org_id": org_id, "limit": limit_per_record},
+                txn_id=transaction,
+            ) or []
+            return {
+                row["id"]: {"mentioned_in": row.get("mentioned_in") or [], "links_to": row.get("links_to") or []}
+                for row in rows
+            }
+        except Exception as e:
+            self.logger.error("❌ get_address_links_batch failed: %s", str(e))
+            return {}
+
     async def get_issue_sites(
         self,
         org_id: str,

@@ -247,6 +247,7 @@ class TestAbstractMethodInventory:
         "get_records_by_weburls",
         "get_records_linking_to_weburls",
         "get_issue_sites",
+        "get_address_links_batch",
         "get_records_by_parent",
         "get_records_by_record_type",
         "get_records_by_record_group",
