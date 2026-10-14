@@ -7250,6 +7250,7 @@ components:
               maxItems: 23
               description: Lowercase, as listed. The server trims and lowercases each kind before checking it.
               items:
+                title: NamedEntityKind
                 type: string
                 enum:
                   - person
