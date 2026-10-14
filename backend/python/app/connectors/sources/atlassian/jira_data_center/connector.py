@@ -1420,33 +1420,29 @@ class JiraDataCenterConnector(BaseConnector):
         parent_issue_id: str,
         tx_store,
     ) -> int:
-        """Delete direct FILE children (attachments) of ``parent_issue_id``."""
-        try:
-            deleted_count = 0
-            child_records = await tx_store.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=parent_issue_id,
-                record_type=RecordType.FILE.value,
+        """Delete direct FILE children (attachments) of ``parent_issue_id``.
+
+        A failure is raised, so the caller's transaction rolls back rather than
+        deleting the issue and committing a half-deleted attachment.
+        """
+        deleted_count = 0
+        child_records = await tx_store.get_records_by_parent(
+            connector_id=self.connector_id,
+            parent_external_record_id=parent_issue_id,
+            record_type=RecordType.FILE.value,
+        )
+
+        for record in child_records:
+            await tx_store.delete_records_and_relations(
+                record_key=record.id,
+                hard_delete=True,
+            )
+            deleted_count += 1
+            self.logger.debug(
+                "  Deleted attachment %s", record.external_record_id,
             )
 
-            for record in child_records:
-                await tx_store.delete_records_and_relations(
-                    record_key=record.id,
-                    hard_delete=True,
-                )
-                deleted_count += 1
-                self.logger.debug(
-                    "  Deleted attachment %s", record.external_record_id,
-                )
-
-            return deleted_count
-
-        except Exception as e:
-            self.logger.error(
-                "❌ Error deleting attachments for issue %s: %s",
-                parent_issue_id, e,
-            )
-            return 0
+        return deleted_count
 
     # ============================================================================
     # User & Group Management

@@ -225,12 +225,15 @@ class TestIssueDeletionGaps:
             await conn._handle_deleted_issue("PROJ-1")
 
     @pytest.mark.asyncio
-    async def test_delete_direct_attachment_records_error_returns_zero(self):
+    async def test_a_failed_attachment_delete_is_raised(self) -> None:
+        """Swallowed, it let the issue delete commit with the attachment half deleted."""
         conn = _make_connector()
         tx = MagicMock()
-        tx.get_records_by_parent = AsyncMock(side_effect=RuntimeError("db"))
+        tx.get_records_by_parent = AsyncMock(return_value=[MagicMock(id="att-1")])
+        tx.delete_records_and_relations = AsyncMock(side_effect=RuntimeError("db"))
 
-        assert await conn._delete_direct_attachment_records("100", tx) == 0
+        with pytest.raises(RuntimeError, match="db"):
+            await conn._delete_direct_attachment_records("100", tx)
 
 
 class TestPermissionSchemeGaps:
