@@ -955,13 +955,15 @@ class RetrievalService:
                     if (
                         block_type == GroupType.TABLE.value or block_type in valid_group_labels
                     ) and child_results is not None:
-                        hit_index = result.get("hit_block_index")
+                        matched = [
+                            i for i in (result.get("hit_block_indices") or []) if isinstance(i, int)
+                        ]
                         for child in child_results:
                             child_index = child.get("block_index")
-                            if isinstance(hit_index, int) and isinstance(child_index, int):
-                                # 0 is the passage the search matched; the per-record
-                                # cap below keeps the passages nearest it.
-                                child["distanceFromMatch"] = abs(child_index - hit_index)
+                            if matched and isinstance(child_index, int):
+                                # 0 is a passage the search matched; the per-record
+                                # cap below keeps those first, then their neighbours.
+                                child["distanceFromMatch"] = min(abs(child_index - i) for i in matched)
                             final_search_results.append(child)
                     else:
                         final_search_results.append(result)
@@ -990,13 +992,18 @@ class RetrievalService:
             if knowledge_search:
                 # A match inside a thread, a pull request or a table brings back
                 # every passage of that section; one long record could fill the
-                # response with thousands of them. Each record keeps its best
-                # passages, nearest the match first.
+                # response with thousands of them. Each record keeps the passages
+                # the search matched first, best score first, then the passages
+                # nearest them. A hit that was not expanded is a match itself.
                 search_results, omitted_passages = cap_passages_per_record(
                     search_results,
                     passages_per_record(limit),
                     record_of=lambda r: (r.get("metadata") or {}).get("recordId"),
-                    priority=lambda r: (-(r.get("score") or 0.0), r.get("distanceFromMatch") or 0),
+                    priority=lambda r: (
+                        (r.get("distanceFromMatch") or 0) > 0,
+                        -(r.get("score") or 0.0),
+                        r.get("distanceFromMatch") or 0,
+                    ),
                 )
                 if omitted_passages:
                     self.logger.debug(

@@ -1950,7 +1950,7 @@ class TestSearchWithFilters:
 
     async def _knowledge_search_over_a_thread(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
-        *, passages: int, hit: int | None,
+        *, passages: int, hit: int | list[int] | None,
     ) -> dict:
         """A match inside a long thread: the thread is expanded into every passage."""
         from app.models.blocks import GroupType
@@ -1984,7 +1984,7 @@ class TestSearchWithFilters:
             ]),
         }
         if hit is not None:
-            unit["hit_block_index"] = hit
+            unit["hit_block_indices"] = hit if isinstance(hit, list) else [hit]
 
         async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
             vid_to_record[vid] = {"record_type": "MESSAGE"}
@@ -2010,6 +2010,20 @@ class TestSearchWithFilters:
 
         kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
         assert kept == [(18, 2), (19, 1), (20, 0), (21, 1)]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_every_matched_passage_of_a_section_is_kept_before_its_neighbours(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Two hits merged into one thread: both matched messages stay, and the
+        rest of the record's share goes to their nearest neighbours."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40, hit=[5, 30]
+        )
+
+        kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
+        assert kept == [(4, 1), (5, 0), (6, 1), (30, 0)]
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio

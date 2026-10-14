@@ -57,8 +57,8 @@ fill a response with hundreds or thousands of passages.
 After that expansion, each record keeps at most
 `max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages,
 the same count the record cut gives one record (4 at the default limit of 10).
-It keeps its best-scoring passages, and among passages of one section the ones
-nearest the passage the search matched. Each expanded passage carries
+It keeps the passages the search matched first, best-scoring first, then the
+passages nearest a match. Each expanded passage carries
 `distanceFromMatch` (0 is the matched passage), and the response's
 `omittedPassages` maps each record that lost passages to how many. Kept
 passages stay in the order they had.

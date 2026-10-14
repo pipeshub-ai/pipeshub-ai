@@ -2347,16 +2347,28 @@ def _payload_location(meta: dict[str, Any], record: dict[str, Any] | None) -> tu
     return index, *check
 
 
+def _note_matched_block(unit: dict[str, Any], block_index: int | None) -> None:
+    """Add a block the search matched to an expanded unit's ``hit_block_indices``.
+
+    The search API keeps the passages of an expanded section that matched, and
+    those nearest them, so every match is kept, not only the best one.
+    """
+    if block_index is None:
+        return
+    matched = unit.setdefault("hit_block_indices", [])
+    if block_index not in matched:
+        matched.append(block_index)
+
+
 def _raise_group_score(unit: dict[str, Any], score: float, hit_block_index: int | None = None) -> None:
     """Give a list unit, and the children /search unpacks from it, its best hit's score.
 
-    The block that scored it becomes the unit's ``hit_block_index``.
+    The block that scored is added to the unit's ``hit_block_indices`` whatever its score.
     """
+    _note_matched_block(unit, hit_block_index)
     if score <= float(unit.get("score") or 0.0):
         return
     unit["score"] = score
-    if hit_block_index is not None:
-        unit["hit_block_index"] = hit_block_index
     content = unit.get("content")
     if isinstance(content, tuple) and len(content) == 2 and isinstance(content[1], list):
         for child in content[1]:
@@ -2375,6 +2387,9 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
     seen_chunks = set()
     # Hits arrive in query order, not score order, on the multi-query /search path.
     emitted_groups: dict[str, dict[str, Any]] = {}
+    # A small table hit as a whole is expanded into all its rows; a row point
+    # that arrives after it is recorded on that table instead of being dropped.
+    emitted_table_rows: dict[str, dict[str, Any]] = {}
     new_type_results = []
     old_type_results = []
     # Cache for reconciliation metadata per virtual_record_id (block_id -> index mapping)
@@ -2552,6 +2567,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             chunk_id = f"{virtual_record_id}-{index}"
 
         if chunk_id in seen_chunks:
+            if chunk_id in emitted_table_rows:
+                _note_matched_block(emitted_table_rows[chunk_id], index)
             continue
         seen_chunks.add(chunk_id)
 
@@ -2637,7 +2654,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                 result["block_index"] = first_child_block_index
                 result["block_group_index"] = target_index
                 # The block the search matched; its fragments are rendered through it.
-                result["hit_block_index"] = parent_block_idx
+                result["hit_block_indices"] = [parent_block_idx]
                 result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
                 emitted_groups[group_chunk_id] = result
                 flattened_results.append(result)
@@ -2731,11 +2748,13 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
 
                 if not is_large_table:
                     child_results=[]
+                    table_row_ids = []
                     for child_block_index in all_block_indices:
                         child_id = f"{virtual_record_id}-{child_block_index}"
                         if child_id in seen_chunks:
                             continue
                         seen_chunks.add(child_id)
+                        table_row_ids.append(child_id)
                         if child_block_index < len(blocks):
                             child_block = blocks[child_block_index]
                             row_text = child_block.get("data", {}).get("row_natural_language_text", "")
@@ -2803,6 +2822,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                         "block_group_index": index,
                         "metadata": get_enhanced_metadata(record,block,meta),
                     }
+                    for row_id in table_row_ids:
+                        emitted_table_rows[row_id] = table_result
                     flattened_results.append(table_result)
                     continue
                 else:
@@ -2844,7 +2865,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             result["block_index"] = first_child_block_index
             result["block_group_index"] = target_index
             # The item the search matched, which the list is expanded around.
-            result["hit_block_index"] = index
+            result["hit_block_indices"] = [index]
             result["metadata"] = get_enhanced_metadata(record, blocks[first_child_block_index], meta)
             emitted_groups[group_chunk_id] = result
             flattened_results.append(result)

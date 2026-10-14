@@ -9803,7 +9803,7 @@ components:
           description: |
             Set on a passage returned because a match inside its section (a thread, a list,
             a table) brought the whole section back: how many blocks it sits from the passage
-            the search matched. `0` is the matched passage. Absent when the hit matched
+            the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
 
     SemanticSearchGraphRecord:
@@ -10021,7 +10021,7 @@ components:
             Present only when some records lost passages to the per-record cap: maps a
             `recordId` to how many of its passages were left out. Each record keeps at most
             `max(SEARCH_PER_RECORD_FLOOR, limit / SEARCH_PER_RECORD_DIVISOR)` passages
-            (4 at the default limit), its best-scoring ones, nearest the match first.
+            (4 at the default limit): the passages that matched first, then those nearest a match.
           additionalProperties:
             type: integer
             minimum: 1
