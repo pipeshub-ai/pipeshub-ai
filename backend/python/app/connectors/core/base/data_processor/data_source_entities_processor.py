@@ -813,6 +813,7 @@ class DataSourceEntitiesProcessor:
         if not addresses:
             return
         after: str | None = None
+        checked_target = False
         while True:
             # A failed read raises and fails the save; the next save reads again.
             holders = await tx_store.get_records_linking_to_weburls(
@@ -820,6 +821,12 @@ class DataSourceEntitiesProcessor:
                 self.ADDRESS_LINK_HOLDER_CONNECTORS, limit=self.LINK_HOLDER_PAGE, after=after,
             )
             holders = [holder_id for holder_id in holders or [] if holder_id]
+            if holders and not checked_target:
+                # Join only the record a message's own lookup would pick for
+                # this address: a ticket, not an attachment stored at its URL.
+                if not await self._is_address_target(record, tx_store):
+                    return
+                checked_target = True
             edges = [
                 self._address_link_edge(holder_id, record.id, RecordRelations.LINKED_TO.value)
                 for holder_id in holders
@@ -831,6 +838,24 @@ class DataSourceEntitiesProcessor:
             if len(holders) < self.LINK_HOLDER_PAGE or (after is not None and holders[-1] <= after):
                 return
             after = holders[-1]
+
+    async def _is_address_target(self, record: Record, tx_store: TransactionStore) -> bool:
+        """Whether ``record`` is what ``_records_at_addresses`` picks for its own
+        address: of the records stored there, this one included, the first that
+        is not a dependent node (then the smallest id)."""
+        target = link_target(record.weburl)
+        if target is None:
+            return False
+        rows = await tx_store.get_records_by_weburls(list(target.candidates), record.org_id or self.org_id)
+        mine = {"id": record.id, "webUrl": record.weburl, "isDependentNode": bool(record.is_dependent_node)}
+        for candidate in target.candidates:
+            here = [r for r in rows or [] if r.get("webUrl") == candidate and r.get("id") != record.id]
+            if record.weburl == candidate:
+                here.append(mine)
+            if here:
+                best = min(here, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))
+                return best["id"] == record.id
+        return True
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """

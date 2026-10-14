@@ -3424,22 +3424,19 @@ class SlackIndividualConnector(BaseConnector):
                 if md.get("thread_ts") and md.get("thread_ts") != ts:
                     continue
 
-                try:
-                    # ── A / B: edits ───────────────────────────────────────
-                    if self._is_edited(md):
-                        updated += await self._handle_edited_message(
-                            md, channel_id, ts
-                        )
+                # ── A / B: edits ───────────────────────────────────────────
+                # Not caught: a failed edit fails the channel's scan, so its
+                # checkpoint stays and the edit is read again. The scan reads by
+                # message time, so an edit skipped here would never come back.
+                if self._is_edited(md):
+                    updated += await self._handle_edited_message(md, channel_id, ts)
 
+                try:
                     # ── C: newly-threaded or grown thread ──────────────────
                     # reply_count > 0 and thread_ts == ts → this is a thread root.
                     if md.get("reply_count", 0) > 0 and md.get("thread_ts") == ts:
                         await self._handle_new_thread(md, channel_id, ts)
 
-                except LinkRecordsUnreadableError:
-                    # Fail the scan: the checkpoint stays, and this window is
-                    # read again, edit included, on the next run.
-                    raise
                 except Exception as exc:
                     self.logger.error(
                         f"Change check ts={ts} in {channel_id}: {exc}",
@@ -3542,8 +3539,10 @@ class SlackIndividualConnector(BaseConnector):
                 related_external_records=self._related_for_messages([md]),
             )
             held = await self._held_link_records(updated_rec)
-            await self.data_entities_processor.on_record_content_update(updated_rec)
+            # Links first: if the content write then fails, the edit is still
+            # unsaved, so the retry finds it changed and runs both again.
             await self._sync_edited_links(updated_rec, [md], ctx, held)
+            await self.data_entities_processor.on_record_content_update(updated_rec)
             return 1
 
         # ── Case B: message is a member of a burst record ─────────────────
@@ -3601,8 +3600,10 @@ class SlackIndividualConnector(BaseConnector):
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
 
         held = await self._held_link_records(burst_rec)
-        await self.data_entities_processor.on_record_content_update(burst_rec)
+        # Links first, as for a single message: a failed content write leaves the
+        # edit unsaved, so the retry runs both again.
         await self._sync_edited_links(burst_rec, burst_msgs, ctx, held)
+        await self.data_entities_processor.on_record_content_update(burst_rec)
         return 1
 
 

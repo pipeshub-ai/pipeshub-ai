@@ -5976,6 +5976,35 @@ class TestSlackTeamConnectorCoverageBoost:
         c.data_entities_processor.on_record_content_update.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["links unreadable", "content write failed"])
+    async def test_a_failed_edit_leaves_the_channel_checkpoint_for_the_next_run(self, failure: str) -> None:
+        """Any failure of an edit, not only an unreadable link read, keeps the
+        checkpoint, so the edit is read again."""
+        from app.connectors.sources.slack.team.connector import SlackConnector
+
+        c = _connector_pipeline_ready()
+        c.channel_groups_cache = {"C1": "rg"}
+        c.audit_log_sync_point.read_sync_point = AsyncMock(return_value={"last_check_time": 1000})
+        page = MagicMock(success=True, data={
+            "messages": [{"ts": "1.0", "user": "U1", "text": "x", "edited": {"ts": "1.1"}}],
+            "response_metadata": {"next_cursor": ""},
+        })
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=page)
+        with (
+            patch.object(SlackConnector, "_compute_sync_window_oldest", return_value="1.0"),
+            patch.object(SlackConnector, "_refresh_user_caches", new_callable=AsyncMock),
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(
+                SlackConnector, "_handle_edited_message", new_callable=AsyncMock,
+                side_effect=RuntimeError(failure),
+            ),
+        ):
+            await c._sync_message_changes()
+
+        c.audit_log_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_unreadable_links_leave_the_channel_checkpoint_for_the_next_run(self) -> None:
         """The scan reads by message time, not edit time: an edit dropped here
         would never be seen again, so the channel's checkpoint must stay."""
@@ -7270,6 +7299,8 @@ class TestCheckChannelChangesBranches:
 
     @pytest.mark.asyncio
     async def test_exception_in_handler_logged(self):
+        """A thread-growth failure is logged and the scan goes on; an edit
+        failure fails the scan (see test_a_failed_edit_leaves_the_channel_checkpoint)."""
         from app.connectors.sources.slack.team.connector import SlackConnector
 
         c = _connector_pipeline_ready()
@@ -7280,19 +7311,32 @@ class TestCheckChannelChangesBranches:
                 "messages": [{
                     "ts": "5.0",
                     "user": "U1",
-                    "text": "edited",
-                    "edited": {},
+                    "text": "root",
+                    "thread_ts": "5.0",
+                    "reply_count": 2,
                 }],
                 "response_metadata": {"next_cursor": ""},
             },
         ))
         with (
             patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
-            patch.object(SlackConnector, "_handle_edited_message", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
+            patch.object(SlackConnector, "_handle_new_thread", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
         ):
             count = await c._check_channel_changes("C1", "1.0")
         assert count == 0
         c.logger.error.assert_called()
+
+        edited = MagicMock(success=True, data={
+            "messages": [{"ts": "5.0", "user": "U1", "text": "edited", "edited": {}}],
+            "response_metadata": {"next_cursor": ""},
+        })
+        ds.conversations_history = AsyncMock(return_value=edited)
+        with (
+            patch.object(SlackConnector, "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(SlackConnector, "_handle_edited_message", new_callable=AsyncMock, side_effect=RuntimeError("boom")),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await c._check_channel_changes("C1", "1.0")
 
     @pytest.mark.asyncio
     async def test_oldest_ts_not_passed_when_none(self):

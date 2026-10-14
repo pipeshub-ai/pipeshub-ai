@@ -298,3 +298,32 @@ class TestBackfillRunsOnEverySave:
         assert [(e["_from"], e["_to"]) for e in _edges(tx)] == [
             (f"{CollectionNames.RECORDS.value}/msg-1", f"{CollectionNames.RECORDS.value}/pr-1"),
         ]
+
+
+class TestBackfillJoinsOnlyThePickedRecord:
+    @pytest.mark.asyncio
+    async def test_an_attachment_at_the_tickets_address_is_not_joined(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"], at_address=[
+            {"id": "ticket-1", "webUrl": JIRA, "isDependentNode": False},
+        ])
+        attachment = _pull_request("attachment-1")
+        attachment.weburl = JIRA
+        attachment.is_dependent_node = True
+
+        await proc._join_records_linking_here(attachment, tx)
+
+        assert _edges(tx) == []
+
+    @pytest.mark.asyncio
+    async def test_the_ticket_itself_is_joined(self) -> None:
+        proc = _processor()
+        tx = _tx_store(holders=["msg-1"], at_address=[
+            {"id": "attachment-1", "webUrl": JIRA, "isDependentNode": True},
+        ])
+        ticket = _pull_request("ticket-1")
+        ticket.weburl = JIRA
+
+        await proc._join_records_linking_here(ticket, tx)
+
+        assert [e["_to"] for e in _edges(tx)] == [f"{CollectionNames.RECORDS.value}/ticket-1"]
