@@ -15,6 +15,7 @@ from app.modules.retrieval.retrieval_service import (
     ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
     DEFAULT_SEARCH_LIMIT,
     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+    RetrievalService,
 )
 
 # ---------------------------------------------------------------------------
@@ -1948,7 +1949,8 @@ class TestSearchWithFilters:
         assert "text result" in contents
 
     async def _knowledge_search_over_a_thread(
-        self, retrieval_service, mock_graph_provider, *, passages: int, hit: int | None
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
+        *, passages: int, hit: int | None,
     ) -> dict:
         """A match inside a long thread: the thread is expanded into every passage."""
         from app.models.blocks import GroupType
@@ -1984,7 +1986,7 @@ class TestSearchWithFilters:
         if hit is not None:
             unit["hit_block_index"] = hit
 
-        async def fake_get_record(vid, vid_to_record, *_args) -> None:
+        async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
             vid_to_record[vid] = {"record_type": "MESSAGE"}
 
         with patch("app.modules.retrieval.retrieval_service.get_record",
@@ -1997,8 +1999,8 @@ class TestSearchWithFilters:
 
     @pytest.mark.asyncio
     async def test_one_long_thread_cannot_fill_the_search_response(
-        self, retrieval_service, mock_graph_provider
-    ):
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
         """A match in message 20 of a 40-message thread returned all 40 messages
         as separate hits. Now the thread keeps the matched message and its
         nearest neighbours, and the response says how many were left out."""
@@ -2012,8 +2014,8 @@ class TestSearchWithFilters:
 
     @pytest.mark.asyncio
     async def test_a_section_hit_as_a_whole_keeps_its_first_passages(
-        self, retrieval_service, mock_graph_provider
-    ):
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
         """No single passage matched, so the section keeps its reading order."""
         result = await self._knowledge_search_over_a_thread(
             retrieval_service, mock_graph_provider, passages=10, hit=None
@@ -2025,8 +2027,8 @@ class TestSearchWithFilters:
 
     @pytest.mark.asyncio
     async def test_a_short_section_is_returned_whole_without_an_omitted_count(
-        self, retrieval_service, mock_graph_provider
-    ):
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
         result = await self._knowledge_search_over_a_thread(
             retrieval_service, mock_graph_provider, passages=3, hit=1
         )
