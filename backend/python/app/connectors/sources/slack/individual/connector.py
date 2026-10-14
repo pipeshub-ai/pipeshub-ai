@@ -3536,8 +3536,11 @@ class SlackIndividualConnector(BaseConnector):
                 involved_user_source_ids=[md.get("user", "")] if md.get("user") else [],
                 related_external_records=self._related_for_messages([md]),
             )
+            held = await self._held_link_records(updated_rec)
+            if held is None:
+                return 0  # links could not be read; leave the record for the next pass
             await self.data_entities_processor.on_record_content_update(updated_rec)
-            await self._sync_edited_links(updated_rec, [md], ctx)
+            await self._sync_edited_links(updated_rec, [md], ctx, held)
             return 1
 
         # ── Case B: message is a member of a burst record ─────────────────
@@ -3594,8 +3597,11 @@ class SlackIndividualConnector(BaseConnector):
         # Synthetic revision forces _handle_updated_record to DB-upsert
         burst_rec.external_revision_id = str(get_epoch_timestamp_in_ms())
 
+        held = await self._held_link_records(burst_rec)
+        if held is None:
+            return 0  # links could not be read; leave the burst for the next pass
         await self.data_entities_processor.on_record_content_update(burst_rec)
-        await self._sync_edited_links(burst_rec, burst_msgs, ctx)
+        await self._sync_edited_links(burst_rec, burst_msgs, ctx, held)
         return 1
 
 
@@ -3631,8 +3637,26 @@ class SlackIndividualConnector(BaseConnector):
                 return messages
         return None
 
+    async def _held_link_records(self, rec: MessageRecord) -> Optional[list[Record]]:
+        """The link records stored under ``rec``, or None when they could not be
+        read. Read before an edit writes anything, so a failed read leaves the
+        edit undone rather than half done."""
+        try:
+            return list(await self.data_entities_processor.get_records_by_parent(
+                connector_id=self.connector_id,
+                parent_external_record_id=rec.external_record_id,
+                record_type=RecordType.LINK.value,
+            ) or [])
+        except Exception as exc:
+            self.logger.warning(f"Link records of {rec.external_record_id} not read; edit skipped: {exc}")
+            return None
+
     async def _sync_edited_links(
-        self, rec: MessageRecord, msgs: list[dict[str, Any]], ctx: ProcessingContext
+        self,
+        rec: MessageRecord,
+        msgs: list[dict[str, Any]],
+        ctx: ProcessingContext,
+        held: list[Record],
     ) -> None:
         """After an edit, keep the record's link records in step with its text.
 
@@ -3647,21 +3671,12 @@ class SlackIndividualConnector(BaseConnector):
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.LINKS):
                         lr.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
                     links.append(lr)
-        try:
-            held = await self.data_entities_processor.get_records_by_parent(
-                connector_id=self.connector_id,
-                parent_external_record_id=rec.external_record_id,
-                record_type=RecordType.LINK.value,
-            )
-        except Exception as exc:
-            self.logger.warning(f"Link records of {rec.external_record_id} not read: {exc}")
-            held = None
         if links:
             pairs: list[tuple[Record, list[Permission]]] = [(lr, []) for lr in links]
             await self._enrich_link_records_linked_id(pairs)
             await self.data_entities_processor.on_new_records(pairs)
         kept = {lr.external_record_id for lr in links}
-        for old in held or []:
+        for old in held:
             if old.external_record_id not in kept:
                 await self.data_entities_processor.delete_record_by_external_id(
                     self.connector_id, old.external_record_id

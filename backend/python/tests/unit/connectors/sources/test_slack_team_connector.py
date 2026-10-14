@@ -37,6 +37,8 @@ def _make_connector():
     logger = MagicMock()
     dep = MagicMock()
     dep.org_id = "org-test"
+    # An edit reads the message's link records before it writes anything.
+    dep.get_records_by_parent = AsyncMock(return_value=[])
     data_store = MagicMock()
     config_svc = MagicMock()
 
@@ -5948,6 +5950,26 @@ class TestSlackTeamConnectorCoverageBoost:
             assert await c._fetch_burst_window("C1", "1.0", "2.0") is None
 
     @pytest.mark.asyncio
+    async def test_an_edit_whose_links_cannot_be_read_is_not_applied(self) -> None:
+        """Reading the held link records comes first: when it fails, the edit
+        writes nothing, rather than updating the text and keeping a stale link."""
+        c = _connector_pipeline_ready()
+        c.data_entities_processor.get_records_by_parent = AsyncMock(side_effect=RuntimeError("graph down"))
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        c.data_entities_processor.on_record_content_update = AsyncMock()
+        burst = MagicMock(start_ts="1.0", end_ts="2.0", record_group_id="rg", external_record_id="burst_C1_x")
+        page = MagicMock(success=True, data={"messages": [{"ts": "1.0", "text": "x"}], "response_metadata": {}})
+        ds = MagicMock()
+        ds.conversations_history = AsyncMock(return_value=page)
+        with (
+            patch.object(type(c), "_find_burst_record_by_message_ts", new_callable=AsyncMock, return_value=burst),
+            patch.object(type(c), "_fresh_datasource", new_callable=AsyncMock, return_value=ds),
+            patch.object(type(c), "_build_burst_block_containers", return_value=MagicMock()),
+        ):
+            assert await c._handle_edited_message({"ts": "1.0", "text": "x", "edited": {}}, "C1", "1.0") == 0
+        c.data_entities_processor.on_record_content_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_edit_writes_new_link_records_and_deletes_dropped_ones(self) -> None:
         """A link the edit removed must not be found later by the record it pointed at."""
         import hashlib
@@ -5972,7 +5994,8 @@ class TestSlackTeamConnectorCoverageBoost:
         dep.get_record_by_weburl = AsyncMock(return_value=None)
         dep.delete_record_by_external_id = AsyncMock()
 
-        await c._sync_edited_links(rec, [{"ts": "1.0", "text": f"now only <{kept_url}>"}], ctx)
+        held = await c._held_link_records(rec)
+        await c._sync_edited_links(rec, [{"ts": "1.0", "text": f"now only <{kept_url}>"}], ctx, held)
 
         saved = [r for call in dep.on_new_records.await_args_list for r, _ in call.args[0]]
         assert [r.url for r in saved] == [kept_url]

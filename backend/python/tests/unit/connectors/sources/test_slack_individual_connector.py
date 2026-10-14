@@ -64,6 +64,8 @@ def _make_connector() -> Any:
     logger = MagicMock()
     dep = MagicMock()
     dep.org_id = "org-test"
+    # An edit reads the message's link records before it writes anything.
+    dep.get_records_by_parent = AsyncMock(return_value=[])
     data_store = MagicMock()
     config_svc = MagicMock()
 

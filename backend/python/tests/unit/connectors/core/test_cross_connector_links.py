@@ -248,14 +248,15 @@ class TestFailedLookupsLoseNothing:
         assert _edges(tx) == []
 
     @pytest.mark.asyncio
-    async def test_failed_backfill_lookup_does_not_fail_the_save(self) -> None:
+    async def test_failed_backfill_lookup_fails_the_save_so_it_runs_again(self) -> None:
+        """The backfill runs only while an address is new, so a read that failed
+        must not let the save commit: the next attempt still sees a new address."""
         proc = _processor()
         tx = _tx_store()
         tx.get_records_linking_to_weburls = AsyncMock(side_effect=RuntimeError("graph down"))
 
-        result, _ = await proc._process_record(_pull_request(), [], tx)
-
-        assert result is not None
+        with pytest.raises(RuntimeError, match="graph down"):
+            await proc._process_record(_pull_request(), [], tx)
 
 
 class TestBackfillReadsEveryHolder:

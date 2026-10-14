@@ -812,15 +812,12 @@ class DataSourceEntitiesProcessor:
             return
         after: str | None = None
         while True:
-            try:
-                holders = await tx_store.get_records_linking_to_weburls(
-                    list(addresses), record.org_id or self.org_id,
-                    self.ADDRESS_LINK_HOLDER_CONNECTORS, limit=self.LINK_HOLDER_PAGE, after=after,
-                )
-            except Exception as e:
-                # Only a join missed until the next save: this path never deletes edges.
-                self.logger.warning(f"Could not look for records linking to {record.id}: {e}")
-                return
+            # A failed read raises and the save does not commit: the record is
+            # still new (or at its old address) next time, so the read runs again.
+            holders = await tx_store.get_records_linking_to_weburls(
+                list(addresses), record.org_id or self.org_id,
+                self.ADDRESS_LINK_HOLDER_CONNECTORS, limit=self.LINK_HOLDER_PAGE, after=after,
+            )
             holders = [holder_id for holder_id in holders or [] if holder_id]
             edges = [
                 self._address_link_edge(holder_id, record.id, RecordRelations.LINKED_TO.value)
