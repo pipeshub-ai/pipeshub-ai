@@ -359,7 +359,7 @@ def _matches(instance: Any, schema: dict[str, Any]) -> bool:
     return _validator_for_schema(_absolute_refs(schema), _adapted_registry()).is_valid(instance)
 
 
-def _undocumented(instance: Any, schema: Any, path: str) -> set[str]:
+def _undocumented(instance: Any, schema: Any, path: str, opaque: bool = False) -> set[str]:
     schema = _deref(schema)
     if not isinstance(schema, dict):
         return set()
@@ -368,31 +368,39 @@ def _undocumented(instance: Any, schema: Any, path: str) -> set[str]:
     if alternatives:
         branches = [_deref(b) for b in alternatives]
         candidates = [b for b in branches if _matches(instance, b)] or branches
-        findings = [_undocumented(instance, b, path) for b in candidates]
+        findings = [_undocumented(instance, b, path, opaque) for b in candidates]
         return min(findings, key=len) if findings else set()
 
     found: set[str] = set()
     if isinstance(instance, dict):
         properties, extra = _flatten_all_of(schema)
         if not properties and not isinstance(extra, dict):
+            # A bare `type: object` reaches an SDK as an untyped dict.
+            if opaque and extra is not True:
+                found |= {f"{path}.{key}" if path else key for key in instance}
             return found
         for key, value in instance.items():
             child = f"{path}.{key}" if path else key
             if key in properties:
-                found |= _undocumented(value, properties[key], child)
+                found |= _undocumented(value, properties[key], child, opaque)
             elif isinstance(extra, dict):
-                found |= _undocumented(value, extra, f"{path}.<{key}>" if path else f"<{key}>")
+                found |= _undocumented(
+                    value, extra, f"{path}.<{key}>" if path else f"<{key}>", opaque
+                )
             elif extra is not True:
                 found.add(child)
     elif isinstance(instance, list) and isinstance(schema.get("items"), dict):
         for item in instance:
-            found |= _undocumented(item, schema["items"], f"{path}[*]")
+            found |= _undocumented(item, schema["items"], f"{path}[*]", opaque)
     return found
 
 
-def undocumented_fields(instance: Any, json_pointer: str) -> list[str]:
-    """Paths of keys in ``instance`` that the schema at ``json_pointer`` does not declare."""
-    return sorted(_undocumented(instance, {"$ref": json_pointer}, ""))
+def undocumented_fields(instance: Any, json_pointer: str, *, opaque: bool = False) -> list[str]:
+    """Paths of keys in ``instance`` that the schema at ``json_pointer`` does not declare.
+
+    With ``opaque``, keys of an object documented only as ``type: object`` count too.
+    """
+    return sorted(_undocumented(instance, {"$ref": json_pointer}, "", opaque))
 
 
 def _schema_errors(instance: Any, json_pointer: str) -> list[str]:
@@ -404,9 +412,9 @@ def _schema_errors(instance: Any, json_pointer: str) -> list[str]:
     ]
 
 
-def _strict_report(instance: Any, json_pointer: str) -> str | None:
+def _strict_report(instance: Any, json_pointer: str, opaque: bool = False) -> str | None:
     errors = _schema_errors(instance, json_pointer)
-    extra = undocumented_fields(instance, json_pointer)
+    extra = undocumented_fields(instance, json_pointer, opaque=opaque)
     if not errors and not extra:
         return None
     lines: list[str] = []
@@ -427,14 +435,16 @@ def assert_response_strictly_matches_openapi_operation(
     operation_id: str,
     *,
     status_code: str = "200",
+    opaque: bool = False,
 ) -> None:
     """The documented status has a JSON schema, the body satisfies it, and every
-    field in the body is documented."""
+    field in the body is documented. With ``opaque``, a bare ``type: object`` does
+    not document the fields inside it."""
     try:
         ptr = operation_response_json_pointer(operation_id, status_code)
     except KeyError as e:
         raise AssertionError(f"OpenAPI spec: {e}") from e
-    report = _strict_report(data, ptr)
+    report = _strict_report(data, ptr, opaque)
     if report:
         raise AssertionError(
             f"Response does not match OpenAPI spec for operationId={operation_id!r} "

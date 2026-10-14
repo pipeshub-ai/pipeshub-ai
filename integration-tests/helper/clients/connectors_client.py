@@ -95,6 +95,13 @@ class ConnectorsClient(APIClient):
         options.setdefault("params", {k: v for k, v in params.items() if v is not None})
         return self.get("/registry", **options)
 
+    def get_egress_ips(self, **options: Any) -> requests.Response:
+        """Public IPs connectors reach external systems from.
+
+        GET /network/egress-ips
+        """
+        return self.get("/network/egress-ips", **options)
+
     def get_registry_schema(self, connector_type: str, **options: Any) -> requests.Response:
         """Auth fields, sync options and filters for one connector type.
 
@@ -122,6 +129,34 @@ class ConnectorsClient(APIClient):
         )
 
     # ----------------------------------------------------------- instances
+
+    def list_instances(
+        self,
+        *,
+        scope: str | None = None,
+        page: int | None = None,
+        limit: int | None = None,
+        search: str | None = None,
+        is_authenticated: bool | None = None,
+        is_active: bool | None = None,
+        connector_type: str | None = None,
+        **options: Any,
+    ) -> requests.Response:
+        """List the org's connector instances.
+
+        GET /
+        """
+        params = {
+            "scope": scope,
+            "page": page,
+            "limit": limit,
+            "search": search,
+            "isAuthenticated": None if is_authenticated is None else str(is_authenticated).lower(),
+            "isActive": None if is_active is None else str(is_active).lower(),
+            "connectorType": connector_type,
+        }
+        options.setdefault("params", {k: v for k, v in params.items() if v is not None})
+        return self.get("/", **options)
 
     def list_configured(
         self, *, scope: str | None = None, limit: int | None = None, **options: Any
@@ -155,6 +190,37 @@ class ConnectorsClient(APIClient):
         """
         options.setdefault("json", {"type": toggle_type})
         return self.post(f"/{quote(connector_id, safe='')}/toggle", **options)
+
+    # ---------------------------------------------------------------- sync
+
+    def get_stats(self, connector_id: str, **options: Any) -> requests.Response:
+        """Record counts by indexing status.
+
+        GET /{connectorId}/stats
+        """
+        return self.get(f"/{quote(connector_id, safe='')}/stats", **options)
+
+    def resync(
+        self,
+        connector_id: str,
+        connector_name: str,
+        *,
+        full_sync: bool | None = None,
+        **options: Any,
+    ) -> requests.Response:
+        """Run another sync of an active connector.
+
+        POST /{connectorId}/resync
+        """
+        body: dict[str, Any] = {"connectorName": connector_name}
+        if full_sync is not None:
+            body["fullSync"] = full_sync
+        options.setdefault("json", body)
+        return self.post(f"/{quote(connector_id, safe='')}/resync", **options)
+
+    def stop_sync(self, connector_id: str, **options: Any) -> requests.Response:
+        """POST /{connectorId}/sync/stop"""
+        return self.post(f"/{quote(connector_id, safe='')}/sync/stop", **options)
 
     # -------------------------------------------------------------- config
 
@@ -256,6 +322,14 @@ class ConnectorOAuthConfigsClient(APIClient):
         """GET /{connectorType}/{configId}"""
         return self.get(
             f"/{quote(connector_type, safe='')}/{quote(config_id, safe='')}", **options
+        )
+
+    def update_config(
+        self, connector_type: str, config_id: str, body: dict[str, Any], **options: Any
+    ) -> requests.Response:
+        """PUT /{connectorType}/{configId}"""
+        return self.put(
+            f"/{quote(connector_type, safe='')}/{quote(config_id, safe='')}", json=body, **options
         )
 
     def delete_config(

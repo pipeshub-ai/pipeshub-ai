@@ -46,6 +46,7 @@ _UPDATE_AUTH = "updateConnectorAuthConfig"
 _UPDATE_FILTERS_SYNC = "updateConnectorFiltersSyncConfig"
 _TOGGLE = "toggleConnector"
 _CALLBACK = "handleOAuthCallback"
+_RESYNC = "resyncConnector"
 
 def _send(client: ConnectorsClient, method: str, path: str, raw_json: str) -> requests.Response:
     return client.post(path, data=raw_json) if method == "POST" else client.put(path, data=raw_json)
@@ -171,6 +172,34 @@ def _scope_cases() -> list[tuple[str, Callable[..., requests.Response]]]:
                 **h,
             ),
         ),
+        ("getConnectorEgressIps", lambda c, o, f, h: c.get_egress_ips(**h)),
+        ("listConnectorInstances", lambda c, o, f, h: c.list_instances(scope="team", **h)),
+        ("getConnectorStats", lambda c, o, f, h: c.get_stats(f["active"].connector_id, **h)),
+        ("resyncConnector", lambda c, o, f, h: c.resync(f["active"].connector_id, "RSS", **h)),
+        ("stopConnectorSync", lambda c, o, f, h: c.stop_sync(f["rss"].connector_id, **h)),
+        (
+            "deleteConnectorInstance",
+            lambda c, o, f, h: c.delete_instance(
+                c.create_instance(
+                    {
+                        "connectorType": "RSS",
+                        "instanceName": f"connector-spec-it-rss-{uuid4().hex[:8]}",
+                        "scope": "team",
+                        "config": {"sync": {"feed_urls": f["feed"]}},
+                    }
+                ).json()["connector"]["connectorId"],
+                **h,
+            ),
+        ),
+        (
+            "updateOAuthConfig",
+            lambda c, o, f, h: o.update_config(
+                "Jira",
+                f["jira"].oauth_config_id,
+                {"oauthInstanceName": f"connector-spec-it-jira-app-{uuid4().hex[:8]}"},
+                **h,
+            ),
+        ),
         ("listOAuthConfigs", lambda c, o, f, h: o.list_all_configs(**h)),
         ("listOAuthConfigsByType", lambda c, o, f, h: o.list_configs("Jira", **h)),
         (
@@ -195,12 +224,14 @@ class TestDocumentedScopes:
         postgres_connector: Any,
         jira_oauth_connector: Any,
         minio_connector: Any,
+        active_rss_connector: Any,
         rss_feed_url: str,
         rss_feed_reachable: None,
         scoped_token: Callable[[Sequence[str]], str],
+        wait_until_idle: Callable[[str], None],
     ) -> None:
         """A token holding exactly the scopes the spec lists -- the ones a generated SDK
-        requests -- gets the same 200 as an all-scopes token."""
+        requests -- gets the same success status as an all-scopes token."""
         documented = operation_oauth2_scopes(operation_id)
         assert documented, f"the spec lists no OAuth scopes for {operation_id}"
         token = scoped_token(documented)
@@ -210,6 +241,7 @@ class TestDocumentedScopes:
             "pg": postgres_connector,
             "jira": jira_oauth_connector,
             "minio": minio_connector,
+            "active": active_rss_connector,
             "feed": rss_feed_url,
         }
         was_active = bool(
@@ -218,13 +250,16 @@ class TestDocumentedScopes:
 
         resp = call(connectors_api, oauth_configs_api, fixtures, headers)
         try:
-            assert resp.status_code == 200, (
+            expected = 202 if operation_id == "deleteConnectorInstance" else 200
+            assert resp.status_code == expected, (
                 f"with the spec's scopes {documented}, {operation_id} answered "
                 f"{resp.status_code}: {resp.text}"
             )
         finally:
             if operation_id == "createConnectorInstance" and resp.status_code < 300:
                 connectors_api.delete_instance(resp.json()["connector"]["connectorId"])
+            if operation_id == "resyncConnector":
+                wait_until_idle(active_rss_connector.connector_id)
             if operation_id == "toggleConnector":
                 now = connectors_api.get_instance(rss_connector.connector_id).json()["connector"]
                 if bool(now["isActive"]) != was_active:
@@ -272,19 +307,25 @@ class TestMalformedBodies:
             (_TOGGLE, "POST", "/{rss}/toggle"),
             (_UPDATE_AUTH, "PUT", "/{pg}/config/auth"),
             (_UPDATE_FILTERS_SYNC, "PUT", "/{rss}/config/filters-sync"),
+            (_RESYNC, "POST", "/{active}/resync"),
         ],
-        ids=[_CREATE, _TEST_CONNECTION, _TOGGLE, _UPDATE_AUTH, _UPDATE_FILTERS_SYNC],
+        ids=[_CREATE, _TEST_CONNECTION, _TOGGLE, _UPDATE_AUTH, _UPDATE_FILTERS_SYNC, _RESYNC],
     )
     def test_body_that_is_not_an_object(
         self,
         connectors_api: ConnectorsClient,
         rss_connector: Any,
         postgres_connector: Any,
+        active_rss_connector: Any,
         operation_id: str,
         method: str,
         path: str,
     ) -> None:
-        path = path.format(rss=rss_connector.connector_id, pg=postgres_connector.connector_id)
+        path = path.format(
+            rss=rss_connector.connector_id,
+            pg=postgres_connector.connector_id,
+            active=active_rss_connector.connector_id,
+        )
         resp = _send(connectors_api, method, path, '"not-an-object"')
         assert resp.status_code == 500, f"{resp.status_code}: {resp.text}"
         assert_error_response_matches_openapi_operation(resp.json(), operation_id, 500)

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass
 from typing import Any, Callable, Iterator, Sequence, TypedDict
 from uuid import uuid4
@@ -253,6 +254,48 @@ def rss_connector(
         },
     )
     try:
+        yield created
+    finally:
+        _delete_connector(connectors_api, created.connector_id)
+
+
+SYNC_IDLE_TIMEOUT_SEC = 90
+
+
+def _wait_until_idle(connectors: ConnectorsClient, connector_id: str) -> None:
+    """Wait out the sync a toggle or resync started: a running sync locks the connector."""
+    deadline = time.monotonic() + SYNC_IDLE_TIMEOUT_SEC
+    while True:
+        connector = connectors.get_instance(connector_id).json()["connector"]
+        if connector.get("status") == "IDLE" and not connector.get("isLocked"):
+            return
+        assert time.monotonic() < deadline, f"sync still running: {connector.get('status')}"
+        time.sleep(1)
+
+
+@pytest.fixture
+def wait_until_idle(connectors_api: ConnectorsClient) -> Callable[[str], None]:
+    return lambda connector_id: _wait_until_idle(connectors_api, connector_id)
+
+
+@pytest.fixture(scope="module")
+def active_rss_connector(
+    connectors_api: ConnectorsClient, rss_feed_url: str, rss_feed_reachable: None
+) -> Iterator[CreatedConnector]:
+    """Team RSS connector with sync on and its first sync finished, ready to resync."""
+    created = _create_connector(
+        connectors_api,
+        {
+            "connectorType": "RSS",
+            "instanceName": f"connector-spec-it-rss-active-{uuid4().hex[:8]}",
+            "scope": "team",
+            "config": {"sync": {"feed_urls": rss_feed_url, "max_articles_per_feed": 1}},
+        },
+    )
+    try:
+        resp = connectors_api.toggle(created.connector_id)
+        assert resp.status_code == 200, f"enabling the RSS connector failed: {resp.status_code}"
+        _wait_until_idle(connectors_api, created.connector_id)
         yield created
     finally:
         _delete_connector(connectors_api, created.connector_id)
