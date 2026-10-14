@@ -29,9 +29,15 @@ function credentials(): { email: string; password: string } {
   return { email, password };
 }
 
-async function signedInApi(page: Page): Promise<APIRequestContext> {
+async function signedInApi(page: Page, email: string): Promise<APIRequestContext> {
   const token = await page.evaluate(() => window.localStorage.getItem('jwt_access_token'));
   expect(token, 'no access token was stored after onboarding').toBeTruthy();
+  const claims = JSON.parse(Buffer.from(token!.split('.')[1], 'base64url').toString()) as {
+    email?: string;
+    role?: string;
+  };
+  expect(claims.email, 'the stored session is not the account that signed up').toBe(email);
+  expect(claims.role, 'the first account should be an admin').toBe('admin');
   return request.newContext({
     baseURL: apiBaseURL(),
     extraHTTPHeaders: { Authorization: `Bearer ${token}` },
@@ -109,8 +115,6 @@ test.describe('First run', () => {
     // ── Onboarding, step 1: the AI model ───────────────────────────────────
     await page.waitForURL(/\/onboarding\/?\?step=ai-model/, { timeout: 30_000 });
     await expect(page.getByText('Step 1/3: Configure AI Model*', { exact: true })).toBeVisible({ timeout: 30_000 });
-    // The header names the account that was just created.
-    await expect(page.getByText(email, { exact: true })).toBeVisible();
 
     const next = page.getByRole('button', { name: /^Next/ });
     await expect(next).toBeDisabled();
@@ -169,7 +173,7 @@ test.describe('First run', () => {
     await expect(page).toHaveURL(/\/chat\//);
 
     // What the steps saved is what the server now holds, read with the stored session.
-    const api = await signedInApi(page);
+    const api = await signedInApi(page, email);
     try {
       const status = await api.get('/api/v1/org/onboarding-status');
       expect(status.ok(), `reading onboarding status failed: ${status.status()}`).toBe(true);
