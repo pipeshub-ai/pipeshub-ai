@@ -1129,6 +1129,16 @@ _RESPONSES_API_PROVIDERS = frozenset({
 _OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
 
 
+def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
+    """A custom base URL on the native OpenAI provider is some other server.
+    It does not implement /v1/responses just because the provider id is openAI."""
+    return (
+        provider == LLMProvider.OPENAI.value
+        and bool(base_url)
+        and not _targets_openai_responses_api(base_url)
+    )
+
+
 def _targets_openai_responses_api(base_url: str | None) -> bool:
     if not base_url:
         return False
@@ -1378,8 +1388,12 @@ def _reasoning_effort_kwargs(
     - ``LLMApiMode.RESPONSES``: this model needs the Responses API even
       though the name/host heuristic didn't detect it — take that branch
       whenever ``provider in _OPENAI_FAMILY`` (still gated on
-      ``effort != "none"`` like the heuristic path, since reasoning-off
-      never needs it). Gated on the provider family, not applied
+      ``effort != "none"`` like the heuristic path). It also applies with
+      ``isReasoning`` off: a model that reasons by default (Azure's gpt-6)
+      refuses tools on Chat Completions even with no reasoning setting, so
+      it gets ``use_responses_api`` alone. Neither path applies to Qwen 3.8+
+      or to the native OpenAI provider pointed at another server, which
+      have no /v1/responses. Gated on the provider family, not applied
       unconditionally, because ``api_mode`` is looked up only by
       ``(model_key, model_name)`` with no provider check — an unrelated
       provider reusing the same pair (e.g. after reconfiguring a model
@@ -1401,7 +1415,12 @@ def _reasoning_effort_kwargs(
         # gpt-6 models do this: they reason by default). Keep using the
         # Responses API, with no reasoning setting so the model keeps its own
         # default, exactly as the retry that succeeded was sent.
-        if api_mode == LLMApiMode.RESPONSES.value and provider in _OPENAI_FAMILY:
+        if (
+            api_mode == LLMApiMode.RESPONSES.value
+            and provider in _OPENAI_FAMILY
+            and not _is_qwen_38_or_later(model_name)
+            and not _is_openai_custom_endpoint(provider, base_url)
+        ):
             return {"use_responses_api": True}
         return {}
 
@@ -1445,13 +1464,7 @@ def _reasoning_effort_kwargs(
     elif provider == LLMProvider.ANTHROPIC.value:
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
-    # A custom base URL on the native OpenAI provider is some other server.
-    # It does not implement /v1/responses just because the provider id is openAI.
-    openai_custom_endpoint = (
-        provider == LLMProvider.OPENAI.value
-        and bool(base_url)
-        and not _targets_openai_responses_api(base_url)
-    )
+    openai_custom_endpoint = _is_openai_custom_endpoint(provider, base_url)
     needs_responses_api = effort != "none" and not openai_custom_endpoint and (
         provider in _RESPONSES_API_PROVIDERS
         or (

@@ -323,6 +323,25 @@ class TestReasoningEffortKwargs:
         )
         assert result == {"use_responses_api": True}
 
+    def test_learned_responses_mode_unticked_skips_qwen38(self) -> None:
+        """Qwen 3.8+ behind an OpenAI-compatible host has no /v1/responses."""
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="openAICompatible",
+            base_url="https://vllm.internal.corp/v1", model_name="qwen/qwen3.8-27b",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {}
+
+    def test_learned_responses_mode_unticked_skips_openai_custom_endpoint(self) -> None:
+        """The native OpenAI provider pointed at another server has no
+        /v1/responses either."""
+        result = _reasoning_effort_kwargs(
+            None, {"isReasoning": False}, provider="openAI",
+            base_url="https://llm-gateway.internal.corp/v1", model_name="gpt-6.1-sol",
+            api_mode=LLMApiMode.RESPONSES.value,
+        )
+        assert result == {}
+
     def test_unticked_model_without_learned_mode_gets_nothing(self) -> None:
         result = _reasoning_effort_kwargs(
             None, {"isReasoning": False}, provider="azureOpenAI", model_name="gpt-6.1-sol",
