@@ -526,7 +526,7 @@ class ZendeskConnector(BaseConnector):
                 "user" if not users_complete else "group membership",
             )
         all_access_group, roles_complete = await self._build_all_tickets_group(
-            self._role_ticket_access, self._roles_complete
+            self._role_ticket_access, roles_complete=self._roles_complete
         )
         if users_complete:
             person_groups = await self._append_empty_removed_user_groups(
@@ -981,6 +981,7 @@ class ZendeskConnector(BaseConnector):
     async def _build_all_tickets_group(
         self,
         role_ticket_access: dict[str, str] | None = None,
+        *,
         roles_complete: bool | None = None,
     ) -> tuple[tuple[AppUserGroup, list[AppUser]], bool]:
         """One group of every admin and all-access agent, granted on every ticket.
