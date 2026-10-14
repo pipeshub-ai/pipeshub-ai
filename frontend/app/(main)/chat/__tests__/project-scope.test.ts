@@ -64,6 +64,23 @@ describe('buildCatalogMcpGroups', () => {
     expect(groups).toHaveLength(1);
     expect(groups[0]).toMatchObject({ label: 'GitHub', toolsetSlug: 'mcp', instanceId: 'm1', fullNames: ['m1:mcp_github_list'] });
   });
+
+  it('keeps each description and label with its own tool when one has no namespaced name', () => {
+    const [group] = buildCatalogMcpGroups([
+      {
+        _id: 'm1',
+        name: 'GitHub',
+        isAuthenticated: true,
+        tools: [
+          { name: 'broken', namespacedName: '', description: 'not listed' },
+          { name: 'list', namespacedName: 'mcp_github_list', description: 'Lists issues' },
+        ],
+      },
+    ] as never);
+    expect(group!.fullNames).toEqual(['m1:mcp_github_list']);
+    expect(group!.toolDescriptions).toEqual({ 'm1:mcp_github_list': 'Lists issues' });
+    expect(group!.toolLabels).toEqual({ 'm1:mcp_github_list': 'list' });
+  });
 });
 
 describe('restrictGroupsToBareNames', () => {

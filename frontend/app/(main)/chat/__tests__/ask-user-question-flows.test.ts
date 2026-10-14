@@ -879,6 +879,19 @@ describe('joining an older page onto a loaded thread', () => {
     it('is false once the thread lost a row', () => {
       expect(threadMatchesRows(loadHistoricalMessages(rows).messages.slice(1), rows)).toBe(false);
     });
+
+    it('is false once Stop put a partial reply on a row the rows built', () => {
+      const messages = loadHistoricalMessages(rows).messages.map((m) =>
+        m.role === 'assistant'
+          ? {
+              ...m,
+              content: [{ type: 'text' as const, text: 'Working on EU' }],
+              metadata: { ...m.metadata, custom: { ...m.metadata?.custom, status: 'stopped' as const } },
+            }
+          : m,
+      );
+      expect(threadMatchesRows(messages, rows)).toBe(false);
+    });
   });
 
   describe('reconcilePendingAfterPrepend', () => {

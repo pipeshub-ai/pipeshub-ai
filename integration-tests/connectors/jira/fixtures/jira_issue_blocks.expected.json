@@ -1657,7 +1657,14 @@
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
-      "media_metadata": null,
+      "media_metadata": {
+        "alt_text": "image-20260716-060437.png",
+        "dimensions": null,
+        "duration_ms": null,
+        "file_size_bytes": null,
+        "mime_type": null,
+        "transcription": null
+      },
       "parent_block_index": 42,
       "parent_index": null,
       "public_data_link": null,
@@ -1747,7 +1754,14 @@
       "link_metadata": null,
       "links": null,
       "list_metadata": null,
-      "media_metadata": null,
+      "media_metadata": {
+        "alt_text": "image-20260716-060452.png",
+        "dimensions": null,
+        "duration_ms": null,
+        "file_size_bytes": null,
+        "mime_type": null,
+        "transcription": null
+      },
       "parent_block_index": 45,
       "parent_index": null,
       "public_data_link": null,

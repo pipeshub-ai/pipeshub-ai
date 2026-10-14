@@ -34,6 +34,16 @@ def test_last_real_user_query_skips_resume_rows() -> None:
     assert last_real_user_query(previous, "fallback") == "See below attached file(s)."
 
 
+def test_last_real_user_query_skips_tool_approval_answers_too() -> None:
+    previous = [
+        {"role": "user_query", "content": "file a bug"},
+        {"role": "bot_response", "content": "Waiting for your approval to run create_issue on Jira."},
+        {"role": "user_query", "content": "Tool approval: allow"},
+        {"role": "bot_response", "content": "Waiting for your approval to run add_label on Jira."},
+    ]
+    assert last_real_user_query(previous, "Tool approval: deny") == "file a bug"
+
+
 def test_terminal_ask_user_question_sets_needs_input() -> None:
     tr = SimpleNamespace(content="{}")
     call = SimpleNamespace(name="internaltools__ask_user_question")
@@ -70,6 +80,29 @@ async def test_injects_answers_on_existing_ask_tool_call() -> None:
     payload = json.loads(messages[1].content)
     assert payload["status"] == "answered"
     assert "Vim" in payload["answers"]
+    assert "do the next step now" in payload["next"]
+
+
+@pytest.mark.asyncio
+async def test_a_call_made_alongside_the_question_keeps_its_result() -> None:
+    ctx = ContextManager()
+    await ctx.add(UserMessage(content="look up the space, then ask me what to write"))
+    await ctx.add(AssistantMessage(content=[], tool_calls=[
+        ToolCall(id="tc-lookup", name="knowledgegraph__lookup_record", arguments={}),
+        ToolCall(id="tc-ask-1", name="internaltools__ask_user_question", arguments={}),
+    ]))
+    await ctx.add(ToolMessage(content="Space TS, id 4242", tool_call_id="tc-lookup"))
+    await ctx.add(ToolMessage(content='{"questions":[]}', tool_call_id="tc-ask-1"))
+    await ctx.add(AssistantMessage(content="I'll ask first."))
+
+    await inject_ask_user_question_resume(SimpleNamespace(context=ctx), 'User selections:\n1. "About?" → RAG')
+
+    messages = await ctx.messages()
+    assert [(type(m).__name__, getattr(m, "tool_call_id", None)) for m in messages[2:]] == [
+        ("ToolMessage", "tc-lookup"), ("ToolMessage", "tc-ask-1"),
+    ]
+    assert messages[2].content == "Space TS, id 4242"
+    assert "RAG" in json.loads(messages[3].content)["answers"]
 
 
 @pytest.mark.asyncio
@@ -558,7 +591,7 @@ def test_goal_stays_on_the_unanswered_card_when_the_user_chatted_on() -> None:
         {"role": "user_query", "content": "actually, who owns billing?"},
         {"role": "bot_response", "content": "Priya owns billing."},
     ]
-    assert last_real_user_query(previous, "fallback") == "Compare Asana Q3 vs Q4"
+    assert last_real_user_query(previous, "fallback", answers=_FY_ANSWER) == "Compare Asana Q3 vs Q4"
 
 
 def test_goal_after_two_later_chats_is_still_the_card() -> None:
@@ -570,7 +603,7 @@ def test_goal_after_two_later_chats_is_still_the_card() -> None:
         {"role": "user_query", "content": "what are the things i asked u to do"},
         {"role": "bot_response", "content": "You asked me to: send an email."},
     ]
-    assert last_real_user_query(previous, "fallback") == "ask me one question"
+    assert last_real_user_query(previous, "fallback", answers=_FY_ANSWER) == "ask me one question"
 
 
 def test_goal_is_the_newest_unanswered_card_not_an_older_answered_one() -> None:
@@ -584,7 +617,54 @@ def test_goal_is_the_newest_unanswered_card_not_an_older_answered_one() -> None:
         {"role": "user_query", "content": "what are the things i asked u to do"},
         {"role": "bot_response", "content": "You asked me to: plan the launch."},
     ]
-    assert last_real_user_query(previous, "fallback") == "now the report"
+    assert last_real_user_query(previous, "fallback", answers=_FY_ANSWER) == "now the report"
+
+
+_FY_ANSWER = 'User selections:\n1. "Which fiscal year?" → FY2024'
+
+
+def _asked(call_id: str, question: str) -> dict:
+    return {**_ask_result(call_id), "result": json.dumps({"questions": [{"question": question}]})}
+
+
+def _older_card_left_open_newer_answered() -> list[dict]:
+    return [
+        {"role": "user_query", "content": "plan the launch"},
+        {"role": "bot_response", "content": "", "tool_results": [_asked("ask_one", "Which region first?")]},
+        {"role": "user_query", "content": "now the report"},
+        {"role": "bot_response", "content": "", "tool_results": [_asked("ask_two", "Which quarter?")]},
+        {"role": "user_query", "content": 'User selections:\n1. "Which quarter?" → Q3'},
+        {"role": "bot_response", "content": "Here is the Q3 report."},
+    ]
+
+
+def test_goal_is_the_card_the_answers_name_not_the_newest_one() -> None:
+    previous = _older_card_left_open_newer_answered()
+    answers = 'User selections:\n1. "which region  first" → EU'
+    assert last_real_user_query(previous, "fallback", answers=answers) == "plan the launch"
+
+
+def test_a_tool_approval_answer_ignores_question_cards() -> None:
+    previous = [
+        *_older_card_left_open_newer_answered(),
+        {"role": "user_query", "content": "file a bug"},
+        {"role": "bot_response", "content": "Waiting for your approval to run create_issue on Jira."},
+    ]
+    assert last_real_user_query(previous, "Tool approval: allow") == "file a bug"
+
+
+@pytest.mark.asyncio
+async def test_inject_binds_the_answers_to_the_card_they_name() -> None:
+    ctx = await _replay(*_older_card_left_open_newer_answered())
+    await inject_ask_user_question_resume(
+        SimpleNamespace(context=ctx), 'User selections:\n1. "Which region first?" → EU',
+    )
+
+    messages = await ctx.messages()
+    assert messages[-1].tool_call_id == "ask_one"
+    assert "EU" in json.loads(messages[-1].content)["answers"]
+    assert not any(isinstance(m, UserMessage) and m.content == "now the report" for m in messages)
+    assert _calls_without_a_result(messages) == []
 
 
 def test_goal_survives_several_cards_when_each_bot_has_the_ask_tool() -> None:

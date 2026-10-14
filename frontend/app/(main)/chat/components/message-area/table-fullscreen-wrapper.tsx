@@ -124,6 +124,7 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
            * removing the normal-view width and height caps.
            */}
           <Box
+            data-table-scroll-area
             style={{
               flex: 1,
               minHeight: 0,

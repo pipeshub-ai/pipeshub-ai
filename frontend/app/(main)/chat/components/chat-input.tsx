@@ -1323,6 +1323,9 @@ export function ChatInput({
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
     function handleClickOutside(e: MouseEvent) {
       if (expansionViewMode === 'overlay') return;
+      // A dialog opened from a panel (an MCP server's key) is portaled outside the input; closing
+      // the panel on a click inside it would unmount the dialog under the person typing.
+      if ((e.target as Element | null)?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
 
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         dismissExpansionPanelsRef.current();

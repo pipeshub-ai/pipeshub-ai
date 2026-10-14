@@ -275,6 +275,16 @@ const contextFieldsSchema = {
   // {runId}` (see `cancelRunBodySchema`) can target it. Optional — a caller
   // that never sends one just can't be cooperatively cancelled.
   runId: z.string().uuid({ message: 'runId must be a valid UUID' }).optional(),
+  // The person's answer to a tool approval card (Python `tool_approvals.py`). Same
+  // declare-or-be-stripped constraint as `protocol` above. The call it answers is
+  // the one saved server-side; only its id, the decision and "don't ask again" travel here.
+  toolApproval: z
+    .object({
+      approvalId: z.string().min(1).max(64),
+      decision: z.enum(['allow', 'deny']),
+      remember: z.boolean().optional(),
+    })
+    .optional(),
 };
 
 /**
@@ -667,7 +677,11 @@ const agentMcpServerSchema = z.object({
     .max(200),
   displayName: z.string().max(200).optional(),
   typeId: z.string().max(200).optional(),
-  tools: z.array(agentToolRefSchema).max(200).optional(),
+  /** Every tool the server offers at chat time, including ones it adds later. */
+  allTools: z.boolean().optional(),
+  // A loose bound on payload size only: Python allows 500 chosen tools and, with `allTools`,
+  // keeps the first 500 of however many the server lists.
+  tools: z.array(agentToolRefSchema).max(5000).optional(),
 });
 
 /**

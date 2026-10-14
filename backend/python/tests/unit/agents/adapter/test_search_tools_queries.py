@@ -10,7 +10,11 @@ import inspect
 import pytest
 
 from app.agent_loop_lib.tools.decorators import TOOL_META_ATTR, BoundMethodTool
-from app.agent_loop_lib.tools.index import KeywordToolIndex
+from app.agent_loop_lib.tools.index import (
+    KeywordToolIndex,
+    ToolIndex,
+    ToolsetAwareToolIndex,
+)
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agents.actions.jira.jira import Jira
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
@@ -28,8 +32,14 @@ def registry() -> ToolRegistry:
     return registry
 
 
-async def _ranked(registry: ToolRegistry, query: str) -> list[tuple[str, float]]:
-    matches = await KeywordToolIndex().search(registry, query, limit=len(registry.names()))
+# `search_tools` ranks with `ToolsetAwareToolIndex`; `tool_preloading` with `KeywordToolIndex`.
+@pytest.fixture(params=[KeywordToolIndex, ToolsetAwareToolIndex])
+def index(request: pytest.FixtureRequest) -> ToolIndex:
+    return request.param()
+
+
+async def _ranked(registry: ToolRegistry, query: str, index: ToolIndex) -> list[tuple[str, float]]:
+    matches = await index.search(registry, query, limit=len(registry.names()))
     return [(m.summary.name, m.relevance) for m in matches]
 
 
@@ -38,27 +48,28 @@ def _place(ranked: list[tuple[str, float]], name: str) -> int:
     return names.index(name) if name in names else len(names)
 
 
-async def test_capability_keywords_put_the_knowledge_search_tool_first(registry: ToolRegistry) -> None:
-    ranked = await _ranked(registry, "search indexed knowledge")
+async def test_capability_keywords_put_the_knowledge_search_tool_first(registry: ToolRegistry, index: ToolIndex) -> None:
+    ranked = await _ranked(registry, "search indexed knowledge", index)
 
     assert ranked[0][0] == "knowledgegraph__search"
 
 
-async def test_the_users_question_as_the_query_buries_the_knowledge_search_tool(registry: ToolRegistry) -> None:
-    capability = await _ranked(registry, "search indexed knowledge")
+async def test_the_users_question_as_the_query_buries_the_knowledge_search_tool(registry: ToolRegistry, index: ToolIndex) -> None:
+    capability = await _ranked(registry, "search indexed knowledge", index)
     question = await _ranked(
         registry,
         "Use the knowledge search tool to find the parental leave policy for employees in Germany in 2024",
+        index,
     )
 
     assert _place(question, "knowledgegraph__search") > _place(capability, "knowledgegraph__search")
     assert dict(question).get("knowledgegraph__search", 0.0) < dict(capability)["knowledgegraph__search"]
 
 
-async def test_capability_keywords_rank_a_connector_write_tool_higher(registry: ToolRegistry) -> None:
-    capability = dict(await _ranked(registry, "create jira issue"))
+async def test_capability_keywords_rank_a_connector_write_tool_higher(registry: ToolRegistry, index: ToolIndex) -> None:
+    capability = dict(await _ranked(registry, "create jira issue", index))
     question = dict(await _ranked(
-        registry, "Use the jira tool to create an issue for the login bug Alice reported yesterday",
+        registry, "Use the jira tool to create an issue for the login bug Alice reported yesterday", index,
     ))
 
     assert capability["jira__create_issue"] > question.get("jira__create_issue", 0.0)

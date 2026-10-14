@@ -223,6 +223,78 @@ class TestChatStreamToolsets:
         assert call["query_info"]["toolsets"] == []
 
 
+class TestChatStreamMcpServers:
+    """An MCP server the run can't use stops it with a frame the chat can act on."""
+
+    def _attach(self, graph: InMemoryGraph, agent: str, instance_id: str = "inst-m", name: str = "GitHub") -> None:
+        graph.add_node("agentMcpServers", {"_key": "ms", "instanceId": instance_id, "name": "github", "displayName": name})
+        graph.add_edge("agentHasMcpServer", {"_from": f"{AGENTS}/{agent}", "_to": "agentMcpServers/ms"})
+
+    def _config(self, **records: dict) -> FakeConfigService:
+        from app.services.featureflag.platform_settings import PLATFORM_SETTINGS_KEY
+
+        return FakeConfigService({PLATFORM_SETTINGS_KEY: {"featureFlags": {"ENABLE_MCP": True}}, **records})
+
+    @staticmethod
+    def _instance(**overrides: object) -> dict:
+        return {
+            "_id": "inst-m", "orgId": "org-1", "createdBy": "u-alice", "name": "GitHub", "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp", "authMode": "oauth", "useAdminAuth": False, "scope": "org",
+            **overrides,
+        }
+
+    @staticmethod
+    def _run_error(response: Response) -> dict:
+        for block in response.text.split("\n\n"):
+            if block.startswith("event: RUN_ERROR"):
+                return json.loads(block.split("data: ", 1)[1])
+        raise AssertionError(f"no RUN_ERROR in {response.text!r}")
+
+    def test_a_server_the_user_has_not_connected_is_named_with_its_sign_in(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
+
+        error = self._run_error(_stream(c, "private", "alice"))
+
+        assert error["code"] == "mcp_server_config_missing"
+        assert error["details"] == {
+            "agentId": "private",
+            "serviceAccount": False,
+            "servers": [{
+                "instanceId": "inst-m", "name": "GitHub", "problem": "not_connected",
+                "authMode": "oauth", "sharedCredential": False,
+            }],
+        }
+        assert not loop.calls
+
+    def test_a_removed_server_is_marked_not_found(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        c, _ = make_client(graph, self._config())
+
+        error = self._run_error(_stream(c, "private", "alice"))
+
+        assert error["details"]["servers"] == [{"instanceId": "inst-m", "name": "GitHub", "problem": "not_found"}]
+
+    def test_a_missing_shared_credential_is_flagged(self, graph, loop) -> None:
+        self._attach(graph, "private")
+        shared = self._instance(authMode="api_token", useAdminAuth=True)
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": shared}))
+
+        (server,) = self._run_error(_stream(c, "private", "alice"))["details"]["servers"]
+
+        assert server["sharedCredential"] is True
+        assert server["authMode"] == "api_token"
+
+    def test_a_service_account_agent_says_so(self, graph, loop) -> None:
+        self._attach(graph, "sa")
+        c, _ = make_client(graph, self._config(**{"/services/mcp/instances/inst-m": self._instance()}))
+
+        error = self._run_error(_stream(c, "sa", "bob"))
+
+        assert error["details"]["serviceAccount"] is True
+        assert error["details"]["agentId"] == "sa"
+
+
 class TestChatStreamKnowledge:
     def test_agent_knowledge_becomes_the_retrieval_scope(self, graph, loop) -> None:
         graph.add_node("agentKnowledge", {"_key": "k1", "connectorId": "conn-1", "type": "APP"})

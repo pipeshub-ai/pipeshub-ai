@@ -8583,7 +8583,8 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
     """Try the auth settings on the setup form before they are saved.
 
     With ``connectorId`` (editing an instance) the settings are laid over the saved ones,
-    as saving them does, so the check sees what the save will store. A failed check is a
+    as saving them does, so the check sees what the save will store: a secret sent back
+    as the mask keeps the saved value. A failed check is a
     200 with ``success: false``; its ``message`` is meant for the user.
     """
     container = request.app.container
@@ -8618,7 +8619,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="auth must be an object"
         )
-    auth = _without_server_set_auth_fields(auth)
+    auth = _without_masked_secrets(
+        _without_server_set_auth_fields(auth),
+        await _secret_auth_field_names(connector_registry, connector_type),
+    )
 
     connector_id = body.get("connectorId")
     if connector_id:

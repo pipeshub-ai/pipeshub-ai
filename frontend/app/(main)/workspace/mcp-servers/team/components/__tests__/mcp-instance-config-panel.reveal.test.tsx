@@ -22,8 +22,9 @@ vi.mock('@/lib/hooks/use-secret-reveal-available', async (importOriginal) => ({
 }));
 vi.mock('@/config', () => ({ isMcpInstanceReadOnly: () => false, McpInheritedCallout: () => null }));
 vi.mock('../../../api', () => ({ McpServersApi: api }));
-vi.mock('../../../components', () => ({ McpDisabledCallout: () => null }));
+vi.mock('../../../components', () => ({ McpDisabledCallout: () => null, McpDisconnectDialog: () => null, isMcpInstanceDisabled: () => false }));
 vi.mock('../../../../components/workspace-right-panel', () => ({
+  useWorkspaceDrawerNestedModalHost: () => null,
   WorkspaceRightPanel: ({
     open,
     children,
@@ -50,6 +51,7 @@ vi.mock('../../../../components', () => ({
   ),
   SelectDropdown: () => null,
   TagInput: () => null,
+  ConfirmationDialog: () => null,
 }));
 
 import { McpInstanceConfigPanel } from '../mcp-instance-config-panel';

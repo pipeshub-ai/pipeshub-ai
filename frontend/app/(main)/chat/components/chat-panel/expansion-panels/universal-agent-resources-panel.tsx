@@ -34,7 +34,9 @@ import {
 } from '@/lib/store/feature-flags-store';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { CollectionsTab } from './connectors-collections/collections-tab';
+import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
 import {
   bareToolFullName,
@@ -260,7 +262,8 @@ let _actionsPageCache: {
 /**
  * Module-level MCP cache, mirroring `_actionsPageCache`. `getMyMcpServers` isn't paginated —
  * a single fetch on mount is enough — but the same TTL-based staleness check applies so a
- * stale prior session's data isn't served after remount.
+ * stale prior session's data isn't served after remount. Holds every server, connected or not:
+ * the ones a sign-in keeps out are listed with a Connect button.
  */
 let _mcpCache: {
   instances: McpMyServerEntry[];
@@ -292,6 +295,8 @@ export function UniversalAgentResourcesPanel({
   const [expandedGroups, setExpandedGroups] = useState<Record<string, boolean>>({});
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const isAdmin = useUserStore(selectIsAdmin) ?? false;
+  const [mcpInstances, setMcpInstances] = useState<McpMyServerEntry[]>(() => _mcpCache.instances);
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
@@ -415,18 +420,21 @@ export function UniversalAgentResourcesPanel({
   // ── MCP servers (my-mcp-servers, authenticated instances, one-shot fetch) ──
   const isFetchingMcpRef = useRef(false);
 
-  const loadMcp = useCallback(async () => {
-    if (isFetchingMcpRef.current) return;
+  /** `quiet`: refresh in place (after a sign-in) instead of showing the loading state. */
+  const loadMcp = useCallback(async ({ quiet = false }: { quiet?: boolean } = {}) => {
+    if (isFetchingMcpRef.current) return undefined;
     isFetchingMcpRef.current = true;
-    setMcpLoading(true);
+    if (!quiet) setMcpLoading(true);
     try {
       const result = await McpServersApi.getMyMcpServers(true);
-      const authenticated = (result.instances || []).filter((entry) => entry.isAuthenticated);
-      _mcpCache = { instances: authenticated, lastFetchedAt: Date.now() };
+      const instances = result.instances || [];
+      _mcpCache = { instances, lastFetchedAt: Date.now() };
+      setMcpInstances(instances);
 
-      const groups = buildCatalogMcpGroups(authenticated);
+      const groups = buildCatalogMcpGroups(instances.filter((entry) => entry.isAuthenticated));
       const catalogFullNames = groups.flatMap((g) => g.fullNames);
       hydrateMcpResources({ mcpGroups: groups, mcpCatalogFullNames: catalogFullNames });
+      return groups;
     } catch (err) {
       console.error('[UniversalAgentResourcesPanel] Failed to load my-mcp-servers', err);
       _mcpCache = { ..._mcpCache, lastFetchedAt: Date.now() };
@@ -434,6 +442,7 @@ export function UniversalAgentResourcesPanel({
         t('chat.universalAgent.mcpLoadError', { defaultValue: 'Failed to load MCP servers.' })
       );
       setMcpLoading(false);
+      return undefined;
     } finally {
       isFetchingMcpRef.current = false;
     }
@@ -602,6 +611,25 @@ export function UniversalAgentResourcesPanel({
     [filterGroupsBySearch, mcpGroups]
   );
 
+  const mcpToConnect = useMemo(
+    () => mcpServersToConnect(mcpInstances, { isAdmin, listed: new Set(mcpGroups.map((g) => g.instanceId)) }),
+    [mcpInstances, isAdmin, mcpGroups]
+  );
+  const filteredMcpToConnect = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? mcpToConnect.filter(({ entry }) => entry.name.toLowerCase().includes(q)) : mcpToConnect;
+  }, [mcpToConnect, search]);
+
+  const handleMcpConnected = useCallback(
+    async (instanceId: string) => {
+      const groups = await loadMcp({ quiet: true });
+      const connected = groups?.find((g) => g.instanceId === instanceId);
+      // Someone who picked tools by hand gets the new server's on; "all tools" already has them.
+      if (connected) setGroupToolsEnabled(connected.fullNames, true);
+    },
+    [loadMcp, setGroupToolsEnabled]
+  );
+
   const tabPlaceholders = [
     t('chat.agentResources.searchConnectors', { defaultValue: 'Search connectors' }),
     t('chat.agentResources.searchCollections', { defaultValue: 'Search collections' }),
@@ -678,6 +706,7 @@ export function UniversalAgentResourcesPanel({
     renderGroupIcon,
     renderToolIcon,
     afterGroups,
+    extraRows,
   }: {
     groups: CatalogToolGroupRow[];
     keyPrefix: string;
@@ -694,6 +723,8 @@ export function UniversalAgentResourcesPanel({
     renderGroupIcon: (group: CatalogToolGroupRow) => React.ReactNode;
     renderToolIcon: (bareFn: string) => React.ReactNode;
     afterGroups?: React.ReactNode;
+    /** Rows after the groups that aren't groups (the MCP servers still to connect). */
+    extraRows?: React.ReactNode;
   }) => {
     if (loading) {
       return (
@@ -714,7 +745,7 @@ export function UniversalAgentResourcesPanel({
       );
     }
 
-    if (groups.length === 0) {
+    if (groups.length === 0 && !extraRows) {
       return (
         <Flex direction="column" gap="2" style={{ padding: 'var(--space-3)' }}>
           <Text size="2" style={{ color: 'var(--slate-9)' }}>
@@ -817,7 +848,8 @@ export function UniversalAgentResourcesPanel({
                 group.fullNames.map((internalKey) => {
                   // Strip instanceId prefix for display and icon resolution
                   const fn = bareToolFullName(internalKey);
-                  const shortRaw = fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn;
+                  const shortRaw =
+                    group.toolLabels?.[internalKey] ?? (fn.includes('.') ? fn.slice(fn.indexOf('.') + 1) : fn);
                   const short = humanizeUnderscores(shortRaw);
                   return (
                     <Flex
@@ -857,6 +889,8 @@ export function UniversalAgentResourcesPanel({
         })}
 
         {afterGroups}
+
+        {extraRows}
 
         <Flex direction="column" gap="2" style={{ marginTop: 'var(--space-1)' }}>
           <Text size="1" style={{ color: 'var(--gray-11)' }}>
@@ -1016,14 +1050,14 @@ export function UniversalAgentResourcesPanel({
             ) : null,
           })}
 
-        {/* MCP — from my-mcp-servers (authenticated instances) */}
+        {/* MCP — from my-mcp-servers: connected servers' tools, then the ones to connect */}
         {tab === 'mcp' &&
           renderResourceGroupsTab({
             groups: filteredMcpGroups,
             keyPrefix: 'mcp',
             loading: mcpLoading,
             error: mcpError,
-            hasAnyBeforeFilter: mcpGroups.length > 0,
+            hasAnyBeforeFilter: mcpGroups.length > 0 || mcpToConnect.length > 0,
             loadingText: t('chat.universalAgent.loadingMcp', { defaultValue: 'Loading MCP servers…' }),
             noDataText: t('chat.universalAgent.noMcpServers', {
               defaultValue: 'No authenticated MCP servers found. Connect one in Workspace → MCP Servers.',
@@ -1043,6 +1077,14 @@ export function UniversalAgentResourcesPanel({
             }),
             renderGroupIcon: () => <MaterialIcon name="hub" size={18} color="var(--gray-11)" />,
             renderToolIcon: () => <MaterialIcon name="hub" size={16} color="var(--gray-9)" />,
+            extraRows:
+              filteredMcpToConnect.length > 0 ? (
+                <McpConnectRows
+                  servers={filteredMcpToConnect}
+                  rowStyle={OLIVE_ROW}
+                  onConnected={(id) => void handleMcpConnected(id)}
+                />
+              ) : undefined,
           })}
       </Flex>
 

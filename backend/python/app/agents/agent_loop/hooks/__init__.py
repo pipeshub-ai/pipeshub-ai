@@ -38,6 +38,7 @@ from app.agents.agent_loop.hooks.progressive_tools import (
     entity_tools_used_in_history,
     progressive_entity_tools,
 )
+from app.agents.agent_loop.hooks.repeated_reads import RepeatedReadGuard
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,
@@ -51,6 +52,7 @@ __all__ = [
     "ENTITY_TOOL_NAMES",
     "PROGRESSIVE_FIND_RECORDS_TOOL_NAME",
     "PROGRESSIVE_TOOL_NAMES",
+    "RepeatedReadGuard",
     "ToolErrorTracker",
     "artifact_context_reminder",
     "ask_user_question_sse",

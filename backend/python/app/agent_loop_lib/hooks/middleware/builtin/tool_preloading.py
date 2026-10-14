@@ -4,6 +4,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext
+from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.index import KeywordToolIndex, ToolIndex
 
 if TYPE_CHECKING:
@@ -92,6 +93,7 @@ def tool_preloading(
         unlocked, pointers, unlock_names = _select_toolsets(
             registry, matches, grant=grant,
             preload_threshold=preload_threshold, mention_threshold=mention_threshold,
+            visible=scope.visible_tools,
         )
 
         if unlock_names:
@@ -132,6 +134,7 @@ def _select_toolsets(
     grant: set[str] | None,
     preload_threshold: float,
     mention_threshold: float,
+    visible: set[str] | None = None,
 ) -> tuple[list[tuple[str, str]], list[tuple[str, str]], list[str]]:
     """Returns `(unlocked, pointers, unlock_names)`:
     - `unlocked` / `pointers`: `(toolset_name, toolset_description)` pairs
@@ -155,7 +158,10 @@ def _select_toolsets(
             names = [n for n in names if n in grant]
         if not names:
             continue
-        if best.relevance >= preload_threshold:
+        # Best match first; a toolset that would take the request past the tool limit is only
+        # pointed at (the provider refuses a request with more).
+        fits = len((visible or set()) | set(unlock_names) | set(names)) <= MAX_TOOLS_PER_REQUEST
+        if best.relevance >= preload_threshold and fits:
             unlocked.append((group.name, group.description))
             unlock_names.extend(names)
         elif best.relevance >= mention_threshold:

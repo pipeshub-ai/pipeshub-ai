@@ -66,6 +66,14 @@ def main() -> None:
     if tool not in CWD or not files:
         sys.exit(__doc__)
 
+    # The baseline run overwrites these files and restores them from HEAD, which would drop uncommitted edits.
+    status = git("status", "--porcelain", "--", *files)
+    if status.returncode:
+        sys.exit(f"git status failed (exit {status.returncode}), so nothing was changed: {status.stderr.decode().strip()}")
+    dirty = status.stdout.decode().strip()
+    if dirty:
+        sys.exit(f"Commit or stash these files first; the check restores them from HEAD:\n{dirty}")
+
     head = lint(tool, files)
 
     # A renamed file is compared with its old path on main, not treated as new.

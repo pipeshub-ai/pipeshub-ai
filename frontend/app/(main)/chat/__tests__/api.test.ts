@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { apiClient } from '@/lib/api';
+import { apiClient, streamSSERequest } from '@/lib/api';
 import { ChatApi } from '../api';
+import type { StreamChatRequest } from '../types';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -93,5 +94,39 @@ describe('ChatApi.cancelStream', () => {
       { runId: 'run-123' },
       { suppressErrorToast: true },
     );
+  });
+});
+
+describe('ChatApi.streamMessage — answering a tool approval card', () => {
+  const answer = { approvalId: 'ap-1', decision: 'allow_once' as const };
+  const base: StreamChatRequest = {
+    query: 'Allow once: create_issue on Jira',
+    modelKey: 'k',
+    modelName: 'm',
+    modelFriendlyName: 'M',
+    chatMode: 'agent',
+    filters: { apps: [], kb: [] },
+    conversationId: 'conv-1',
+  };
+  const sentBody = () => vi.mocked(streamSSERequest).mock.calls.at(-1)?.[1] as Record<string, unknown>;
+
+  beforeEach(() => {
+    vi.mocked(streamSSERequest).mockReset();
+    vi.mocked(streamSSERequest).mockResolvedValue(undefined as never);
+  });
+
+  it('sends the answer in an agent chat', async () => {
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1', toolApproval: answer }, {});
+    expect(sentBody().toolApproval).toEqual(answer);
+  });
+
+  it('sends the answer in an assistant chat', async () => {
+    await ChatApi.streamMessage({ ...base, toolApproval: answer }, {});
+    expect(sentBody().toolApproval).toEqual(answer);
+  });
+
+  it('sends nothing when there is no answer', async () => {
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1' }, {});
+    expect(sentBody()).not.toHaveProperty('toolApproval');
   });
 });
