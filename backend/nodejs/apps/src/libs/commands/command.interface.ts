@@ -122,6 +122,10 @@ export abstract class BaseCommand<T> implements ICommand<T> {
         const response = await fn();
         return response;
       } catch (error) {
+        // A caller that aborted a request is not waiting for another try.
+        if ((error as { name?: string } | null)?.name === 'AbortError') {
+          throw error;
+        }
         attempt++;
         if (attempt >= retries) {
           throw error;

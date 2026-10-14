@@ -11,10 +11,12 @@ import {
   IMessagePart,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
+import { randomUUID } from 'crypto';
 import mongoose, { ClientSession, FilterQuery } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -40,7 +42,10 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
+import {
+  CHAT_ERROR_MESSAGES,
+  userFacingChatError,
+} from './chat-error-messages';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -1614,6 +1619,159 @@ export const addErrorToConversation = (
   });
 };
 
+/**
+ * A run is only believed live this long after its last heartbeat, so a crashed
+ * Node frees the thread soon. Well above the heartbeat so a few missed beats
+ * never hand a live run's thread to a second writer.
+ */
+const ACTIVE_RUN_WINDOW_MS = 10 * 60 * 1000;
+const RUN_HEARTBEAT_MS = 60 * 1000;
+/** Covers Stop followed straight by a new message: the old run is still winding down after the cancel. */
+const ACTIVE_RUN_SETTLE_MS = 15_000;
+const ACTIVE_RUN_POLL_MS = 250;
+
+export interface RunReservation {
+  sessionId: mongoose.Types.ObjectId;
+  /** Set on the thread while this run owns it; release and heartbeat only act on a match. */
+  runId: string;
+  /** What the thread was before the run, for `releaseRun` to put back. */
+  previousStatus: string;
+}
+
+/**
+ * Claims the thread for a new run in one atomic update, so two requests that
+ * arrive together cannot both start one: a leftover run from before a refresh
+ * would otherwise be joined by a second writer of the same session, and the
+ * older one could overwrite the newer one's status.
+ *
+ * Waits briefly when a run is going so a quick Stop-then-send isn't refused
+ * while the cancelled run finishes saving, then refuses with a conflict.
+ * Returns null when no session matches `filter`, leaving the caller's own
+ * lookup to report that. A status older than the run cap counts as idle, so a
+ * crashed server can't lock a thread. Reads and writes without a session on
+ * purpose: inside a transaction snapshot the status would never change.
+ */
+export const reserveRun = async (
+  filter: FilterQuery<IChatSessionDocument>,
+  settleMs: number = ACTIVE_RUN_SETTLE_MS,
+): Promise<RunReservation | null> => {
+  const deadline = Date.now() + settleMs;
+  const runId = randomUUID();
+  for (;;) {
+    const now = Date.now();
+    const previous = await ChatSession.findOneAndUpdate(
+      {
+        $and: [
+          filter,
+          {
+            $or: [
+              { status: { $ne: CONVERSATION_STATUS.INPROGRESS } },
+              { lastActivityAt: null },
+              { lastActivityAt: { $lte: now - ACTIVE_RUN_WINDOW_MS } },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          status: CONVERSATION_STATUS.INPROGRESS,
+          lastActivityAt: now,
+          activeRunId: runId,
+        },
+      },
+      { new: false },
+    )
+      .select('status')
+      .lean();
+    if (previous) {
+      const was = String(previous.status ?? CONVERSATION_STATUS.COMPLETE);
+      return {
+        sessionId: previous._id,
+        runId,
+        previousStatus:
+          was === CONVERSATION_STATUS.INPROGRESS
+            ? CONVERSATION_STATUS.FAILED
+            : was,
+      };
+    }
+    const exists = await ChatSession.findOne(filter).select('_id').lean();
+    if (!exists) return null;
+    if (Date.now() >= deadline) {
+      throw new ConflictError(
+        'A response is still being generated for this conversation. Wait for it to finish, or stop it, then send your message again.',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, ACTIVE_RUN_POLL_MS));
+  }
+};
+
+/**
+ * Gives the thread back when a run that was reserved never got going, or as a
+ * safety net once one has finished. Only touches a session still marked in
+ * progress by this very reservation, so neither a status the run itself saved
+ * nor a newer request's run is ever overwritten. Best
+ * effort: it must not mask the error being handled, and the activity window
+ * frees a thread this misses.
+ */
+export const releaseRun = async (
+  reservation: RunReservation | null,
+): Promise<void> => {
+  if (!reservation) return;
+  try {
+    await ChatSession.findOneAndUpdate(
+      {
+        _id: reservation.sessionId,
+        status: CONVERSATION_STATUS.INPROGRESS,
+        activeRunId: reservation.runId,
+      },
+      { $set: { status: reservation.previousStatus } },
+    ).lean();
+  } catch (error: unknown) {
+    logger.warn('Failed to release the run reservation', {
+      sessionId: String(reservation.sessionId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+/**
+ * Keeps `lastActivityAt` fresh while a run's AI stream is open, so a long
+ * answer, or a run whose browser left, is never mistaken for a crashed one by
+ * `reserveRun`. Stops by itself when the stream closes, however it ends. Pass
+ * the reservation's `runId` where there is one so a superseded run's beats
+ * cannot touch the thread.
+ */
+export const keepRunAlive = (
+  stream: { once(event: 'close', listener: () => void): unknown },
+  sessionId: mongoose.Types.ObjectId,
+  runId?: string,
+): void => {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        await ChatSession.updateOne(
+          {
+            _id: sessionId,
+            status: CONVERSATION_STATUS.INPROGRESS,
+            ...(runId ? { activeRunId: runId } : {}),
+          },
+          { $set: { lastActivityAt: Date.now() } },
+          { timestamps: false },
+        );
+      } catch (error: unknown) {
+        logger.warn('Failed to record run activity', {
+          sessionId: String(sessionId),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }, RUN_HEARTBEAT_MS);
+  timer.unref();
+  stream.once('close', () => {
+    clearInterval(timer);
+  });
+};
+
 export const markConversationFailed = async (
   conversation: IChatSessionDocument,
   failReason: string,
@@ -1672,13 +1830,12 @@ export const markConversationFailed = async (
 };
 
 /**
- * Persists whatever the user had already seen when the connection dropped
- * before Python could send a terminal `RUN_FINISHED` — the passive-disconnect
- * counterpart to `saveCompleteConversation`/`saveCompleteAgentConversation`.
- * Must be called from the stream's `close`/`onDisconnect` path, never `end`
- * (which does not fire once `attachUpstreamAbort` has destroyed the
- * Readable). `replaceMessageId` is set for the regenerate path, which
- * replaces the original message instead of appending a new one.
+ * Persists the partial answer of a run Node gave up on: its browser went away
+ * and it outlived the detached-run cap (see `attachUpstreamAbort`), so Python
+ * never sent a terminal `RUN_FINISHED`. Must be called from the `onAbandon`
+ * path, never `end` (which does not fire once the Readable is destroyed).
+ * `replaceMessageId` is set for the regenerate path, which replaces the
+ * original message instead of appending a new one.
  */
 export const savePartialConversation = async (
   conversation: IChatSessionDocument,

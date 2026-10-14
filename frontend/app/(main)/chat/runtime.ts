@@ -15,6 +15,7 @@ import type { ThreadMessageLike } from '@assistant-ui/react';
 import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
+import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import {
   buildAssistantApiFilters,
@@ -804,6 +805,10 @@ export function buildExternalStoreConfig(
       // Stop then send: `stopping` means the user already cancelled this run
       // and a follow-up is allowed to start before the grace timer settles it.
       if (currentSlot.isStreaming && !currentSlot.stopping) return;
+      if (currentSlot.remoteRunInProgress) {
+        showRemoteRunInProgressToast();
+        return;
+      }
 
       const msgAttachments = msgAttachmentsEarly;
 

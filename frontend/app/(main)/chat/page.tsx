@@ -57,6 +57,7 @@ import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -205,6 +206,9 @@ function ChatContent() {
   );
   const activeSlotConvId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
+  );
+  const activeSlotRemoteRunInProgress = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.remoteRunInProgress ?? false : false
   );
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
@@ -753,6 +757,7 @@ function ChatContent() {
           messages: formattedMessages,
           isInitialized: true,
           hasLoaded: true,
+          remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           messagePagination: {
             currentPage: apiPagination.page,
@@ -789,6 +794,14 @@ function ChatContent() {
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
   }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+
+  // A run that outlived a refresh finishes on the server; reload once it has.
+  useRemoteRunPoll(
+    activeSlotId,
+    activeSlotConvId,
+    historyAndShareAgentId,
+    activeSlotRemoteRunInProgress && activeSlotIsInitialized && !activeSlotIsStreaming,
+  );
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)

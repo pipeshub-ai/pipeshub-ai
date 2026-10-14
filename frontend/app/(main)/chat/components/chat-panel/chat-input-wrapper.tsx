@@ -6,6 +6,7 @@ import { ChatInput } from '../chat-input';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { ChatApi } from '@/chat/api';
 import {
   buildAssistantApiFilters,
@@ -164,6 +165,10 @@ export function ChatInputWrapper() {
     // the old run's grace timer fires.
     const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (active?.isStreaming && !active.stopping) {
+      return;
+    }
+    if (active?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
       return;
     }
 

@@ -170,9 +170,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
-      // Propagates a client disconnect to the upstream fetch — without this,
-      // aborting on our end only tore down the Node-side Readable while
-      // Python kept generating against a socket nobody was reading.
+      // Lets Node abandon a run nobody is waiting for (see `attachUpstreamAbort`);
+      // aborting only the Readable would leave Python generating into the void.
       ...(signal ? { signal } : {}),
     };
 

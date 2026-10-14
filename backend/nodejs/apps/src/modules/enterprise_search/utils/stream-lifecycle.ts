@@ -27,96 +27,99 @@ interface ResponseWatchable {
 }
 
 /**
+ * How long a run may keep going after its browser connection is gone (refresh,
+ * closed tab, network drop) before it is abandoned and saved as stopped.
+ */
+export const DETACHED_RUN_MAX_MS = 30 * 60 * 1000;
+
+/**
  * Handle returned by {@link attachUpstreamAbort}. Callers pass `signal` into
- * the AI-service stream call (`executeStream`/`startAIStream`) so a browser
- * disconnect propagates all the way to the upstream fetch — otherwise
- * `res.on('close')` would only ever tear down the Node-side `Readable`
- * wrapper while Python kept generating against a socket nobody was reading
- * (see Gap 1 in the Stop Generation plan).
+ * the AI-service stream call (`executeStream`/`startAIStream`).
  */
 export interface UpstreamAbortHandle {
   /** Pass to `AIServiceCommand.executeStream(signal)` / `startAIStream(...)`. */
   readonly signal: AbortSignal;
-  /** True once the client has disconnected — lets `stream.on('error')`
-   * handlers distinguish "we did this on purpose" from a genuine upstream
-   * failure (Python 5xx, network blip) without inspecting error internals. */
+  /** True once the browser has gone away. The run is NOT stopped by this:
+   * it keeps draining the upstream stream and saves its own result. */
   isClientDisconnected(): boolean;
-  /**
-   * Bind the `Readable` returned by `executeStream()` so a disconnect that
-   * arrives after the stream exists also destroys it directly. This is
-   * belt-and-suspenders: aborting `signal` should already stop the upstream
-   * fetch/reader on its own, but destroying the Readable guarantees no
-   * further `data` events reach handlers once the client is confirmed gone.
-   */
+  /** True only once we tore the upstream down ourselves (the detached-run cap
+   * expired). Lets `stream.on('error')` tell that apart from a genuine
+   * upstream failure. */
+  isAborted(): boolean;
+  /** Bind the `Readable` returned by `executeStream()` so the detached-run cap
+   * can destroy it and stops counting once the stream ends. */
   bindStream(stream: Readable): void;
 }
 
 /**
- * Wires the SSE response's `close` event to an `AbortController`, returning
- * a handle callers thread through the AI-service stream call and the bound
- * `Readable`. Must be created BEFORE the upstream fetch is issued (its
- * `signal` needs to be on the request from the start) — call this
- * immediately before `startAIStream(...)`, then `bindStream()` once the
- * `Readable` comes back.
+ * Watches the SSE response for the browser going away. A disconnect is not a
+ * Stop: only the cancel endpoint stops a run. The upstream stream is left
+ * running so Node's `stream.on('end')` handler persists the finished answer
+ * (writes to the closed response are no-ops), and the user finds it on reload.
  *
- * `onDisconnect`, if given, runs once from the same `close` handler — used
- * by callers to persist a `StreamedContentAccumulator`'s partial text via
- * `savePartialConversation`. `res` emits `close` on BOTH a normal,
- * fully-completed response AND an abnormal disconnect, so this checks
- * `writableEnded`/`writableFinished` first and no-ops on normal completion.
- * `onDisconnect` should still itself check whether the run already
- * finalized (e.g. a `streamSettled` flag set by `stream.on('end')`/
- * `'error'`) before acting, for the case where both fire in the same tick.
+ * `res` emits `close` on both normal completion and a disconnect, so
+ * `writableEnded`/`writableFinished` gate it. Because a run no one is watching
+ * must not go on forever, the first disconnect arms a `maxDetachedMs` timer;
+ * if the stream is still open when it fires, the upstream is aborted and
+ * `onAbandon` runs once (callers persist the partial text as stopped).
+ * `onAbandon` should still check whether the run already finalized.
+ *
+ * Create it BEFORE the upstream fetch is issued so `signal` is on the request
+ * from the start, then `bindStream()` once the `Readable` comes back.
  */
 export function attachUpstreamAbort(
   res: ResponseWatchable,
   requestId: string | undefined,
-  onDisconnect?: () => void,
+  onAbandon?: () => void,
+  maxDetachedMs: number = DETACHED_RUN_MAX_MS,
 ): UpstreamAbortHandle {
   const controller = new AbortController();
   let clientDisconnected = false;
   let boundStream: Readable | null = null;
+  let streamClosed = false;
+  let abandonTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const clearAbandonTimer = (): void => {
+    if (abandonTimer) {
+      clearTimeout(abandonTimer);
+      abandonTimer = null;
+    }
+  };
 
   res.on('close', () => {
     if (clientDisconnected) return;
     if (res.writableEnded || res.writableFinished) return;
     clientDisconnected = true;
-    logger.debug('Client disconnected', { requestId });
-    controller.abort();
-    boundStream?.destroy();
-    onDisconnect?.();
+    logger.info(
+      'Client disconnected; letting the run finish in the background',
+      { requestId },
+    );
+    abandonTimer = setTimeout(() => {
+      abandonTimer = null;
+      if (streamClosed) return;
+      logger.warn('Detached run exceeded its time cap; abandoning it', {
+        requestId,
+        maxDetachedMs,
+      });
+      controller.abort();
+      boundStream?.destroy();
+      onAbandon?.();
+    }, maxDetachedMs);
+    abandonTimer.unref();
   });
 
   return {
     signal: controller.signal,
     isClientDisconnected: () => clientDisconnected,
+    isAborted: () => controller.signal.aborted,
     bindStream(stream: Readable) {
       boundStream = stream;
-      // The close event may already have fired while we were still waiting
-      // on `executeStream()` to resolve (e.g. Python was slow to respond) —
-      // in that case `controller.abort()` already ran, but there was no
-      // stream yet to destroy. Catch up now instead of waiting for a 'close'
-      // event that already happened once.
-      if (clientDisconnected && !stream.destroyed) {
-        stream.destroy();
-      }
+      stream.once('close', () => {
+        streamClosed = true;
+        clearAbandonTimer();
+      });
     },
   };
-}
-
-/**
- * True for the `AbortError` produced by our own `attachUpstreamAbort`
- * controller (or Node's equivalent `ABORT_ERR`) — as opposed to a genuine
- * upstream failure. Stream error handlers use this (together with
- * `isClientDisconnected()`) to skip `markConversationFailed`/`res.write`
- * for a stop the user asked for.
- */
-export function isUpstreamAbortError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  const name = (error as { name?: unknown }).name;
-  if (name === 'AbortError') return true;
-  const code = (error as { code?: unknown }).code;
-  return code === 'ABORT_ERR';
 }
 
 /**
@@ -167,3 +170,20 @@ export class StreamedContentAccumulator {
     return this.text.length > 0;
   }
 }
+
+/**
+ * Runs an async finalizer from a place that cannot await it (an event
+ * listener, a timer callback). A throw would otherwise be an unhandled
+ * rejection, which can take the process down.
+ */
+export const runGuarded = (
+  task: () => Promise<void>,
+  context: Record<string, unknown> = {},
+): void => {
+  task().catch((error: unknown) => {
+    logger.error('Failed to finalize the run', {
+      ...context,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
+};
