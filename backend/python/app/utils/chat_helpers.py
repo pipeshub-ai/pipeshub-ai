@@ -2,6 +2,7 @@ import asyncio
 import base64
 import bisect
 import functools
+import html
 import logging
 import math
 import re
@@ -1939,6 +1940,11 @@ def build_parent_info(result: dict[str, Any]) -> str:
 
 # Records shown per direction under a hit's "Mentioned in" / "Links to".
 MAX_ADDRESS_LINKS_PER_HIT = 10
+# Joined records read per direction per hit before the access check, so that
+# records the user cannot open do not crowd out the ones they can.
+ADDRESS_LINKS_READ_PER_HIT = 200
+# A linked record's name is one line of data in the header: no line breaks.
+_MAX_LINKED_NAME_CHARS = 200
 _ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
 
 
@@ -1966,10 +1972,16 @@ async def enrich_records_with_address_links(
         rec["id"]: rec for rec in virtual_record_id_to_result.values()
         if isinstance(rec, dict) and rec.get("id")
     }
+    # Whatever an earlier call attached was checked for another request; this
+    # one decides afresh, including when it adds nothing.
+    for rec in hits.values():
+        rec.pop("address_links", None)
     if not hits:
         return
     try:
-        links = await graph_provider.get_address_links_batch(list(hits), org_id)
+        links = await graph_provider.get_address_links_batch(
+            list(hits), org_id, limit_per_record=ADDRESS_LINKS_READ_PER_HIT,
+        )
     except Exception as e:
         logger.warning("Address link enrichment skipped: %s", e)
         return
@@ -1982,10 +1994,26 @@ async def enrich_records_with_address_links(
     if not wanted:
         return
     try:
-        readable = await graph_provider.filter_accessible_record_ids(wanted, user_id, org_id)
-        docs = await graph_provider.get_records_by_record_ids(
-            [rid for rid in wanted if rid in readable], org_id
-        )
+        readable: set[str] = set()
+        for start in range(0, len(wanted), GRAPH_BATCH_CHUNK_SIZE):
+            readable |= await graph_provider.filter_accessible_record_ids(
+                wanted[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
+            )
+        # Names only for what can be shown: at most the cap per direction per hit.
+        shown: list[str] = list(dict.fromkeys(
+            rid
+            for record_id in hits
+            for direction, _title in _ADDRESS_LINK_SECTIONS
+            for rid in [
+                r for r in ((links or {}).get(record_id) or {}).get(direction) or []
+                if r in readable and r != record_id
+            ][:MAX_ADDRESS_LINKS_PER_HIT]
+        ))
+        docs: list[dict[str, Any]] = []
+        for start in range(0, len(shown), GRAPH_BATCH_CHUNK_SIZE):
+            docs.extend(await graph_provider.get_records_by_record_ids(
+                shown[start:start + GRAPH_BATCH_CHUNK_SIZE], org_id,
+            ) or [])
     except Exception as e:
         # Fail closed: without a verdict a linked record may be one the user cannot open.
         logger.warning("Address link enrichment skipped: access check unavailable: %s", e)
@@ -2000,7 +2028,9 @@ async def enrich_records_with_address_links(
             rows = [
                 {
                     "record_id": rid,
-                    "record_name": _record_name_from_graph_doc(by_id[rid]),
+                    "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
+                        :_MAX_LINKED_NAME_CHARS
+                    ],
                     "connector_name": by_id[rid].get("connectorName") or "",
                 }
                 for rid in found.get(direction) or []
@@ -2018,6 +2048,8 @@ def build_address_links_info(record: dict[str, Any]) -> str:
     links = record.get("address_links")
     if not links:
         return ""
+    # Names come from other systems: each field is escaped data inside its own
+    # tag, so a name cannot read as an instruction or close the record header.
     lines: list[str] = []
     for direction, title in _ADDRESS_LINK_SECTIONS:
         rows = links.get(direction) or []
@@ -2025,9 +2057,12 @@ def build_address_links_info(record: dict[str, Any]) -> str:
             continue
         lines.append(f"\n* {title}:")
         for row in rows:
-            source = f" | Source: {row['connector_name']}" if row.get("connector_name") else ""
+            record_id = html.escape(str(row.get("record_id", "")), quote=True)
+            source = html.escape(str(row.get("connector_name") or ""), quote=True)
+            name = html.escape(str(row.get("record_name") or "Unknown"), quote=False)
             lines.append(
-                f"  - Record ID: {row.get('record_id', '')} | Name: {row.get('record_name', 'Unknown')}{source}"
+                f'  <linked_record record_id="{record_id}" source="{source}">'
+                f"<record_name>{name}</record_name></linked_record>"
             )
     return "\n".join(lines) + "\n" if lines else ""
 

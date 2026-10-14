@@ -16778,10 +16778,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         UNWIND $record_ids AS anchor_id
         OPTIONAL MATCH (other:Record)-[edge:RECORD_RELATION]->(:Record {{id: anchor_id}})
         WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
-        WITH anchor_id, collect(DISTINCT other.id)[0..$limit] AS mentioned_in
+        WITH anchor_id, other.id AS other_id ORDER BY other_id
+        WITH anchor_id, collect(DISTINCT other_id)[0..$limit] AS mentioned_in
         OPTIONAL MATCH (:Record {{id: anchor_id}})-[edge:RECORD_RELATION]->(other:Record)
         WHERE edge.matchedBy IN ['url', 'key'] AND other.orgId = $org_id AND {cypher_live_record("other")}
-        WITH anchor_id, mentioned_in, collect(DISTINCT other.id)[0..$limit] AS links_to
+        WITH anchor_id, mentioned_in, other.id AS other_id ORDER BY other_id
+        WITH anchor_id, mentioned_in, collect(DISTINCT other_id)[0..$limit] AS links_to
         RETURN anchor_id AS id, mentioned_in, links_to
         """
         try:

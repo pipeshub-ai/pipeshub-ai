@@ -258,3 +258,17 @@ async def test_address_links_in_both_directions_and_only_by_address(seeded: _Gra
     assert await seeded.graph.get_address_links_batch([ids["pr"]], f"{seeded.org_id}-x") == {
         ids["pr"]: {"mentioned_in": [], "links_to": []},
     }
+
+
+async def test_address_links_count_records_not_edges(seeded: _Graph) -> None:
+    ids = seeded.ids
+    rel = CollectionNames.RECORDS.value
+    await seeded.graph.batch_upsert_record_relations([
+        {"_from": f"{rel}/{ids[source]}", "_to": f"{rel}/{ids['ticket']}",
+         "relationshipType": RecordRelations.LINKED_TO.value, "matchedBy": matched, "constraintName": tag}
+        for source, matched, tag in (("message", "url", ""), ("message", "key", "dup"), ("pr", "key", ""))
+    ])
+
+    links = await seeded.graph.get_address_links_batch([ids["ticket"]], seeded.org_id, limit_per_record=2)
+
+    assert links[ids["ticket"]]["mentioned_in"] == sorted([ids["message"], ids["pr"]])

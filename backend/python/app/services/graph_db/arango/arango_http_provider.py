@@ -5422,16 +5422,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER edge._to == anchor AND edge.matchedBy IN ["url", "key"]
                     LET other = DOCUMENT(edge._from)
                     FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
+                    COLLECT key = other._key
+                    SORT key
                     LIMIT @limit
-                    RETURN DISTINCT other._key
+                    RETURN key
             )
             LET links_to = (
                 FOR edge IN {CollectionNames.RECORD_RELATIONS.value}
                     FILTER edge._from == anchor AND edge.matchedBy IN ["url", "key"]
                     LET other = DOCUMENT(edge._to)
                     FILTER other != null AND other.orgId == @org_id AND {aql_live_record("other")}
+                    COLLECT key = other._key
+                    SORT key
                     LIMIT @limit
-                    RETURN DISTINCT other._key
+                    RETURN key
             )
             RETURN {{id: anchor_id, mentioned_in: mentioned_in, links_to: links_to}}
         """
