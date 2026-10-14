@@ -2460,13 +2460,16 @@ class JiraDataCenterConnector(BaseConnector):
                 self._note_unread(response.status, ("project_role_ids", ""))
                 return None
 
-            payload = response.json() or {}
+            # A missing or malformed list, or any malformed row, is not "no groups": the
+            # groups it leaves out would look gone to a full sync's unlink.
+            payload = response.json()
             if not isinstance(payload, dict):
                 self._note_unread(None)
                 return None
 
-            raw_groups = payload.get("groups") or []
+            raw_groups = payload.get("groups")
             if not isinstance(raw_groups, list):
+                self.logger.warning("DC /groups/picker answered without a group list")
                 self._note_unread(None)
                 return None
 
@@ -2482,9 +2485,13 @@ class JiraDataCenterConnector(BaseConnector):
                 )
 
             groups = [
-                norm for row in raw_groups
-                if (norm := _normalize_jira_dc_group_row(row))
+                _normalize_jira_dc_group_row(row) if isinstance(row, dict) else None
+                for row in raw_groups
             ]
+            if any(group is None for group in groups):
+                self.logger.warning("DC /groups/picker answered with a group row that has no name")
+                self._note_unread(None)
+                return None
 
             self.logger.info(
                 "👥 Fetched %s groups from /groups/picker (server total=%s)",

@@ -1929,6 +1929,26 @@ class TestFullSyncCoverage:
         assert "qa" in [p.external_id for p in db.record_group_permissions["10000"]], "the new grant stays"
         assert [m.email for m in db.groups_saved["qa"]] == ["alice@example.com"], "and so do the group's members"
 
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            pytest.param({"groups": None, "total": 0}, id="null list"),
+            pytest.param({"total": 0}, id="no list"),
+            pytest.param({"groups": [{"name": "jira-software-users"}, {"html": "no name"}], "total": 2}, id="row without a name"),
+            pytest.param({"groups": [{"name": "jira-software-users"}, "devs"], "total": 2}, id="row not an object"),
+        ],
+    )
+    async def test_a_malformed_group_list_is_an_incomplete_read(self, jira, db, store, search, payload) -> None:
+        connector = await self._synced(jira, db, store, search)
+        devs = sorted(m.email for m in db.groups_saved["devs"])
+
+        jira.on("GET", f"{API}/groups/picker", payload)
+        graph = await run_full_sync(connector, db)
+
+        assert connector.full_sync_coverage().complete is False, "a missing group is not a group Jira removed"
+        graph.unlink_nodes_missed_by_full_sync.assert_not_awaited()
+        assert sorted(m.email for m in db.groups_saved["devs"]) == devs
+
     async def test_groups_past_the_picker_limit_are_kept_and_the_unlink_still_runs(
         self, jira, db, store, search
     ) -> None:
