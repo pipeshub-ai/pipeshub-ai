@@ -5523,7 +5523,9 @@ components:
           type: boolean
           description: >-
             Budgeted reads only. True when nothing of the record (or thread)
-            is left after this read.
+            is left to read after this one. A block larger than the largest
+            `maxChars` (140000) is returned cut and given up; when nothing
+            follows it, `complete` is true and `truncatedBy` is `clipped`.
         truncatedBy:
           type: string
           nullable: true
@@ -5554,9 +5556,9 @@ components:
             until that record has been read to its end. A block larger than
             `maxChars` holds the cursor on that block; send the same cursor
             with a larger `maxChars` to read it. Null when nothing is left to
-            read; `complete` is then true, unless a single block was larger
-            than the largest `maxChars` (140000) and could not be returned
-            in full.
+            read, and `complete` is then true. A block given up at the
+            largest `maxChars` is named in the text, and its record's entry
+            in `records` has `truncatedBy: clipped`.
         records:
           type: array
           description: Thread reads only. The records shown, oldest first.
@@ -5572,6 +5574,9 @@ components:
                 type: integer
               complete:
                 type: boolean
+              truncatedBy:
+                type: string
+                nullable: true
               nextStartBlock:
                 type: integer
                 nullable: true

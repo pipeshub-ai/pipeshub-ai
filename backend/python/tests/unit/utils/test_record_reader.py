@@ -127,6 +127,19 @@ class TestReadingInOrder:
         assert read["chars"] <= MAX_READ_CHARS
         assert read["nextStartBlock"] == 1
         assert "cannot be returned" in read["content"]
+        assert read["complete"] is False, "block 1 is still to read"
+
+    async def test_a_last_block_larger_than_the_largest_budget_ends_the_read(self) -> None:
+        """Given up at the ceiling with nothing after it: nothing is left, so
+        the read is complete -- a caller reading until complete must stop --
+        and it still says the block was cut."""
+        record = _record("doc-1", [_text_block(0, "<b0> " + "z" * 200_000)])
+
+        read = await read_record(record, max_chars=MAX_READ_CHARS)
+
+        assert read["chars"] <= MAX_READ_CHARS
+        assert (read["complete"], read["nextStartBlock"], read["truncatedBy"]) == (True, None, "clipped")
+        assert "cannot be returned" in read["content"]
 
     async def test_an_offset_past_the_end_says_so(self) -> None:
         record = _record("doc-1", [_text_block(i, f"<b{i}>") for i in range(5)])
@@ -322,6 +335,21 @@ class TestReadingAThread:
 
         seen, _ = await self._follow(records, max_chars=20_000)
         assert seen == ["0", "1"]
+
+    async def test_a_thread_ending_in_a_block_larger_than_the_largest_budget_ends(self) -> None:
+        records = [
+            _burst("t-0", 1, "<m0> a short reply"),
+            _burst("t-1", 2, "<m1> " + "q" * 200_000),
+        ]
+
+        seen, reads = await self._follow(records, max_chars=MAX_READ_CHARS)
+
+        assert seen == ["0", "1"]
+        assert reads == 2
+        read = await read_thread(records, max_chars=MAX_READ_CHARS, start_record=1)
+        assert (read["complete"], read["nextStartRecord"]) == (True, None)
+        assert read["records"][0]["truncatedBy"] == "clipped"
+        assert "cannot be returned" in read["content"]
 
     async def test_the_cursor_stays_on_a_cut_record(self) -> None:
         records = [

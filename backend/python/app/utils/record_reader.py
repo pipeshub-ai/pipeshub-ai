@@ -228,11 +228,17 @@ async def read_record(
     outcome = budget.outcome(key)
     indices = _renderable_block_indices(record)
     next_start = None if outcome.complete else outcome.stopped_at_block
+    complete = outcome.complete
     if clip["block"] is not None:
         if clip["hold"]:
             next_start = clip["block"]
         else:
             text += _oversized_note(record.get("id"), clip["block"], max_chars)
+            # At the largest `maxChars` the cut block is given up. With nothing
+            # after it there is nothing left to read: `complete` says so, so a
+            # caller reading until complete stops; `truncatedBy` stays
+            # `clipped` and the note says what was lost.
+            complete = next_start is None
 
     if start > 0 and outcome.blocks_rendered == 0 and not any(i >= start for i in indices):
         last = max(indices) if indices else -1
@@ -249,7 +255,7 @@ async def read_record(
         "startBlock": start,
         "totalBlocks": len(indices),
         "shownBlocks": _ranges(outcome.shown_blocks),
-        "complete": outcome.complete,
+        "complete": complete,
         "truncatedBy": _truncated_by(outcome),
         "nextStartBlock": next_start,
         "chars": len(text),
@@ -377,6 +383,7 @@ async def read_thread(
             "recordName": record.get("record_name"),
             "startBlock": offset,
             "complete": outcome.complete,
+            "truncatedBy": _truncated_by(outcome),
             "nextStartBlock": resume,
         })
         if not outcome.complete:
@@ -403,10 +410,13 @@ async def read_thread(
         "startRecord": start_record,
         "startBlock": start_block,
         "records": shown,
-        # Nothing of the thread is left after this read, and all of it was
-        # read in full. Null `nextStartRecord` with `complete` false means a
-        # single block was larger than the largest `maxChars`.
-        "complete": next_record is None and all(r["complete"] for r in shown),
+        # Nothing of the thread is left to read. A record whose only loss is
+        # a block given up at the largest `maxChars` (its `truncatedBy` is
+        # `clipped`, with no `nextStartBlock`) has nothing left either.
+        "complete": next_record is None and all(
+            r["complete"] or (r["truncatedBy"] == "clipped" and r["nextStartBlock"] is None)
+            for r in shown
+        ),
         "nextStartRecord": next_record,
         "nextStartBlock": next_block if next_record is not None else None,
         "chars": len(text),
