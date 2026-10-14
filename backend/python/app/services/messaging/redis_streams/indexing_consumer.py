@@ -60,6 +60,7 @@ from app.services.messaging.scheduling.key_extractors import (
     CompositeKeyExtractor,
     TieredKeyExtractor,
 )
+from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.resource_governor import ParseTier, Pool
@@ -246,8 +247,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # producing; an idle lane is not an alternative source of work.
         self._lanes_with_data: set[str] = set()
         self._last_ownership_refresh = 0.0
+        # Each connector's records in flight per index slot pool, so that
+        # while another connector is waiting no one connector can hold more
+        # than its share of the slots (see scheduling.slot_share).
+        self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
             self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
+            self._slot_share = SlotShare(
+                self.fair_scheduler_config.entity_depth, self.weight_provider
+            )
 
 
     @override
@@ -678,6 +686,24 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     def dispatch_stats(self) -> dict[str, Any]:
         """Dispatch admission state for the health endpoint."""
         return self._dispatch_budget().as_dict()
+
+    def _slot_pool_of(self, key: FairnessKey) -> str:
+        return concurrency.slot_pool_of_key(
+            self, key, tier_level=self.fair_scheduler_config.tier_level
+        )
+
+    def _slot_share_plan(self) -> SlotSharePlan | None:
+        """Each waiting connector's cap on records in flight, for one
+        dispatch decision. None when fair scheduling is off."""
+        scheduler = self._scheduler
+        slot_share = self._slot_share
+        if scheduler is None or slot_share is None:
+            return None
+        return slot_share.plan(
+            scheduler.backlogged_keys(),
+            self._slot_pool_of,
+            lambda pool: concurrency.slot_pool_limit(self, pool),
+        )
 
     def _is_in_flight(self, message_id: str) -> bool:
         with self._in_flight_lock:
@@ -1881,7 +1907,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             ):
                 break
 
-            dispatched = scheduler.dequeue(can_dispatch=can_dispatch)
+            # Rebuilt for every record: each dispatch changes one connector's
+            # count in flight, and may empty its queue.
+            plan = self._slot_share_plan()
+            dispatched = scheduler.dequeue(
+                can_dispatch=can_dispatch,
+                key_allowed=plan.allows if plan is not None else None,
+            )
             if dispatched is None:
                 break
 
@@ -1891,7 +1923,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             metrics.record_dispatch("redis", key[0] if key else "unknown")
             try:
                 await self._start_processing_task(
-                    stream_name, message_id, fields, parsed
+                    stream_name, message_id, fields, parsed, slot_key=key
                 )
             except Exception as e:
                 self.logger.error(
@@ -2046,6 +2078,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         message_id: str,
         fields: dict[str, str],
         parsed_message: "StreamMessage | None" = None,
+        slot_key: FairnessKey | None = None,
     ) -> None:
         if not self.worker_loop:
             self.logger.error("Worker loop not initialized, cannot process message")
@@ -2054,6 +2087,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
 
         self._mark_in_flight(message_id)
+        slot_share = self._slot_share
+        if slot_share is not None and slot_key is not None:
+            # Counted against the connector's share from dispatch until the
+            # task ends, including any wait at the gate: a record queued for
+            # a slot is as good as holding one, because the gate admits in
+            # arrival order.
+            slot_share.started(message_id, slot_key, self._slot_pool_of(slot_key))
         # Everything from the mark to the hand-off is guarded, not just the
         # scheduling call. `__already_held` reads an id in the in-flight set as
         # this consumer's live work, so a stranded id makes the read and
@@ -2085,6 +2125,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if processing_coro is not None:
                 processing_coro.close()
             self._unmark_in_flight(message_id)
+            if slot_share is not None:
+                slot_share.finished(message_id)
             if waiter_token is not None:
                 waiter_token.release()
             raise
@@ -2093,6 +2135,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         def on_future_done(f: Future[bool]) -> None:
             self._unmark_in_flight(message_id)
+            if slot_share is not None:
+                slot_share.finished(message_id)
             waiter_token.release()
             with self._futures_lock:
                 self._active_futures.discard(f)

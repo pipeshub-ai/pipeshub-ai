@@ -438,6 +438,47 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     return messaging_env.max_concurrent_indexing
 
 
+# The slot pool every record shares when there is no governor: the legacy
+# indexing semaphore is one pool, never split by tier.
+SHARED_INDEX_SLOT_POOL = "index"
+
+
+def slot_pool_of_key(
+    host: ConcurrencyHost, key: "tuple[str, ...]", *, tier_level: bool
+) -> str:
+    """The local index slot pool a fair-scheduler key's records draw from.
+
+    With the tier level on, the key's last level is the record's dispatch
+    tier (``dispatch_tier``), which already accounts for a collapsed light
+    budget, so it maps straight onto the governor's per-tier pool. Without a
+    governor, or without a tier level to read, every record shares one pool.
+    Used to give each connector its share of the pool its records wait on
+    (see ``scheduling.slot_share``).
+    """
+    if host.governor is None or not tier_level or not key:
+        return SHARED_INDEX_SLOT_POOL
+    try:
+        tier = ParseTier(key[-1])
+    except ValueError:
+        tier = ParseTier.HEAVY
+    return index_pool(effective_index_tier(host, tier)).value
+
+
+def slot_pool_limit(host: ConcurrencyHost, pool: str) -> int:
+    """This node's current slot limit for a pool named by ``slot_pool_of_key``.
+
+    The governor's *current* (adaptive) limit, the same number the local gate
+    admits against, so a pool the governor has shrunk is shared out at its
+    shrunk size.
+    """
+    governor = host.governor
+    if governor is None:
+        return messaging_env.max_concurrent_indexing
+    if pool == SHARED_INDEX_SLOT_POOL:
+        return governor.limit(Pool.INDEX_HEAVY) + governor.limit(Pool.INDEX_LIGHT)
+    return governor.limit(Pool(pool))
+
+
 def index_lease_pool(tier: ParseTier | None) -> str:
     """Redis pool name for the cluster-wide indexing lease of *tier*.
 

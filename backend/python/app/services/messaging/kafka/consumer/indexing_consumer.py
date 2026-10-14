@@ -64,6 +64,7 @@ from app.services.messaging.scheduling.key_extractors import (
     TieredKeyExtractor,
 )
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
+from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
@@ -308,8 +309,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._remembered_budget_logged = False
         self._fetch_back_task: asyncio.Task | None = None
         self._fetch_back_plan: dict[FairnessKey, list[tuple[TopicPartition, int]]] = {}
+        # Each connector's records in flight per index slot pool, so that
+        # while another connector is waiting no one connector can hold more
+        # than its share of the slots (see scheduling.slot_share).
+        self._slot_share: SlotShare | None = None
         if self.fair_scheduler_config.enabled:
             self._scheduler = DRRScheduler(self.fair_scheduler_config, self.weight_provider)
+            self._slot_share = SlotShare(
+                self.fair_scheduler_config.entity_depth, self.weight_provider
+            )
             self._offset_tracker = PartitionOffsetTracker(logger=logger)
             if self.fair_scheduler_config.max_remembered_positions > 0:
                 self._remembered = RememberedOffsets(
@@ -574,6 +582,24 @@ class IndexingKafkaConsumer(IMessagingConsumer):
     def dispatch_stats(self) -> dict[str, Any]:
         """Dispatch admission state for the health endpoint."""
         return self._dispatch_budget().as_dict()
+
+    def _slot_pool_of(self, key: FairnessKey) -> str:
+        return concurrency.slot_pool_of_key(
+            self, key, tier_level=self.fair_scheduler_config.tier_level
+        )
+
+    def _slot_share_plan(self) -> SlotSharePlan | None:
+        """Each waiting connector's cap on records in flight, for one
+        dispatch decision. None when fair scheduling is off."""
+        scheduler = self._scheduler
+        slot_share = self._slot_share
+        if scheduler is None or slot_share is None:
+            return None
+        return slot_share.plan(
+            scheduler.backlogged_keys(),
+            self._slot_pool_of,
+            lambda pool: concurrency.slot_pool_limit(self, pool),
+        )
 
     @override
     async def cleanup(self) -> None:
@@ -1866,7 +1892,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             ):
                 break
 
-            dispatched = scheduler.dequeue(can_dispatch=can_dispatch)
+            # Rebuilt for every record: each dispatch changes one connector's
+            # count in flight, and may empty its queue.
+            plan = self._slot_share_plan()
+            dispatched = scheduler.dequeue(
+                can_dispatch=can_dispatch,
+                key_allowed=plan.allows if plan is not None else None,
+            )
             if dispatched is None:
                 break
 
@@ -1901,7 +1933,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 self._offset_tracker.mark_dispatched(tp, message.offset)
             try:
                 await self.__start_processing_task(
-                    message, parsed, in_flight, record_key
+                    message, parsed, in_flight, record_key, slot_key=key
                 )
             except Exception as e:
                 self.__finish_partition(
@@ -2006,6 +2038,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         parsed_message: "StreamMessage | None" = None,
         in_flight: "_InFlightOffset | None" = None,
         record_key: str | None = None,
+        slot_key: FairnessKey | None = None,
     ) -> None:
         """Start a new task for processing a message with semaphore control.
         Submits the task to the worker thread's event loop instead of the main loop.
@@ -2027,6 +2060,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         processing_coro = self.__process_message_wrapper(
             message, waiter_token, parsed_message, in_flight
         )
+        slot_share = self._slot_share if slot_key is not None else None
+        slot_token = (message.topic, message.partition, message.offset)
+        if slot_share is not None and slot_key is not None:
+            # Counted against the connector's share from dispatch until the
+            # task ends, including any wait at the gate: a record queued for
+            # a slot is as good as holding one, because the gate admits in
+            # arrival order.
+            slot_share.started(slot_token, slot_key, self._slot_pool_of(slot_key))
         try:
             future = asyncio.run_coroutine_threadsafe(
                 processing_coro,
@@ -2035,6 +2076,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         except BaseException:
             processing_coro.close()
             waiter_token.release()
+            if slot_share is not None:
+                slot_share.finished(slot_token)
             raise
 
         # Track the future for cleanup during shutdown
@@ -2044,6 +2087,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # Add callback to remove future from tracking when done
         def on_future_done(f: Future[bool]) -> None:
             waiter_token.release()
+            if slot_share is not None:
+                slot_share.finished(slot_token)
             with self._futures_lock:
                 self._active_futures.discard(f)
 

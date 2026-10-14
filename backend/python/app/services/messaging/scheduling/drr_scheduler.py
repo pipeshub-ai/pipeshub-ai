@@ -112,20 +112,23 @@ class _Node(Generic[T]):
         now: float,
         can_dispatch: Callable[[T], bool] | None,
         quantum_for: Callable[[FairnessKey], int],
+        key_allowed: Callable[[FairnessKey], bool] | None = None,
     ) -> tuple[FairnessKey, _Entry[T]] | None:
         """Pop the next eligible entry in DRR order, or ``None`` if nothing
         under this node is eligible right now.
 
         A child whose head is not eligible -- not due yet, or rejected by
-        ``can_dispatch`` -- is skipped *without spending any of its deficit*
-        and keeps its place in the round. Charging it would let a blocked
-        key lose turns it never got to use.
+        ``can_dispatch`` or ``key_allowed`` -- is skipped *without spending
+        any of its deficit* and keeps its place in the round. Charging it
+        would let a blocked key lose turns it never got to use.
         """
         if self.is_leaf:
             if not self.entries:
                 return None
             head = self.entries[0]
             if head.not_before is not None and head.not_before > now:
+                return None
+            if key_allowed is not None and not key_allowed(self.prefix):
                 return None
             if can_dispatch is not None and not can_dispatch(head.item):
                 return None
@@ -146,7 +149,7 @@ class _Node(Generic[T]):
                 remaining -= 1
                 continue
 
-            popped = child.try_pop(now, can_dispatch, quantum_for)
+            popped = child.try_pop(now, can_dispatch, quantum_for, key_allowed)
             if popped is None:
                 self.order.rotate(-1)
                 remaining -= 1
@@ -211,6 +214,15 @@ class _Node(Generic[T]):
             self.order.clear()
             self.deficit.clear()
         self.count = 0
+
+    def backlogged(self, out: list[FairnessKey]) -> None:
+        if self.is_leaf:
+            if self.entries:
+                out.append(self.prefix)
+            return
+        for child in self.children.values():
+            if child.count > 0:
+                child.backlogged(out)
 
     def leaf_count(self) -> int:
         """Number of distinct fully-qualified keys with buffered items."""
@@ -299,10 +311,20 @@ class DRRScheduler(Generic[T]):
     def dequeue(
         self,
         can_dispatch: Callable[[T], bool] | None = None,
+        key_allowed: Callable[[FairnessKey], bool] | None = None,
     ) -> tuple[FairnessKey, T] | None:
         """Return the next ``(key, item)`` in fair order, or ``None`` if
-        nothing is currently eligible."""
-        popped = self._root.try_pop(time.time(), can_dispatch, self._quantum_for)
+        nothing is currently eligible.
+
+        ``can_dispatch`` judges the item at the head of a key's queue;
+        ``key_allowed`` judges the key itself (its full, leaf-level key), for
+        limits that belong to the key rather than to one item, such as a
+        connector's share of the slots. Either one returning False skips the
+        key for this call without charging it.
+        """
+        popped = self._root.try_pop(
+            time.time(), can_dispatch, self._quantum_for, key_allowed
+        )
         if popped is None:
             return None
         key, entry = popped
@@ -365,6 +387,12 @@ class DRRScheduler(Generic[T]):
                 return 0
             node = node.child(name)
         return node.count if node is not None else 0
+
+    def backlogged_keys(self) -> list[FairnessKey]:
+        """Every full (leaf-level) key that has buffered items."""
+        out: list[FairnessKey] = []
+        self._root.backlogged(out)
+        return out
 
     @property
     def is_empty(self) -> bool:
