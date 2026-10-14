@@ -286,7 +286,7 @@ class TestIndexSlotReportsItsHoldTime:
         admission = await concurrency.acquire_index_slot(host, ParseTier.LIGHT)
         concurrency.release_admission(admission)
 
-        holds = gate.drain_demand().hold_seconds
+        holds = gate.drain_demand().hold_seconds_by_sample[-1]
         assert len(holds) == 1
         assert 0.0 <= holds[0] < 5.0
 

@@ -24,12 +24,12 @@ if TYPE_CHECKING:
 # wakeup is ever missed, a waiter re-checks admission at worst this often
 # instead of stalling indefinitely.
 _SAFETY_NET_INTERVAL_SECONDS = 1.0
-# How many of the most recent permit hold times a gate remembers for the
-# pool's median (PoolDemand.hold_seconds). Kept across sample intervals, not
-# reset with the other accumulators: a pool turning over slowly may release
-# one or two permits in an interval, and the median of one or two is
-# whatever those happened to be.
-_HOLD_WINDOW = 32
+# Reported permit hold times are kept per sample interval for the last this
+# many intervals (PoolDemand.hold_seconds_by_sample), so the policy can widen
+# its view past a sample that released only one or two permits.
+_HOLD_SAMPLES_KEPT = 4
+# Bound on one interval's hold times; past it the oldest of that interval go.
+_MAX_HOLDS_PER_SAMPLE = 1024
 
 
 class StartRateLimiter:
@@ -124,8 +124,8 @@ class AdmissionGate:
         self._completions = 0
         self._max_in_use = 0
         self._rate_limited_acquires = 0
-        self._recent_holds: deque[float] = deque(maxlen=_HOLD_WINDOW)
-        self._new_holds = 0
+        self._sample_holds: deque[float] = deque(maxlen=_MAX_HOLDS_PER_SAMPLE)
+        self._holds_by_sample: deque[tuple[float, ...]] = deque(maxlen=_HOLD_SAMPLES_KEPT)
         self._last_change = clock()
 
     # -- loop binding ---------------------------------------------------
@@ -233,15 +233,14 @@ class AdmissionGate:
     def release(self, cost: int = 1, held_seconds: float | None = None) -> None:
         """Return *cost* permits. ``held_seconds``, when the holder knows it,
         is how long this permit was held; it feeds the pool's typical hold
-        time (``PoolDemand.hold_seconds``)."""
+        time (``PoolDemand.hold_seconds_by_sample``)."""
         now = self._clock()
         self._fold_permit_seconds(now)
         released = min(cost, self._in_use)
         self._in_use -= released
         self._completions += 1
         if held_seconds is not None and held_seconds >= 0:
-            self._recent_holds.append(held_seconds)
-            self._new_holds += 1
+            self._sample_holds.append(held_seconds)
         self._wake_head()
 
     @contextlib.asynccontextmanager
@@ -270,10 +269,10 @@ class AdmissionGate:
             completions=self._completions,
             max_in_use=self._max_in_use,
             rate_limited_acquires=self._rate_limited_acquires,
-            hold_seconds=tuple(self._recent_holds),
-            new_holds=min(self._new_holds, len(self._recent_holds)),
+            hold_seconds_by_sample=(*self._holds_by_sample, tuple(self._sample_holds)),
         )
-        self._new_holds = 0
+        self._holds_by_sample.append(tuple(self._sample_holds))
+        self._sample_holds.clear()
         self._permit_seconds = 0.0
         self._blocked_acquires = 0
         self._total_wait_seconds = 0.0

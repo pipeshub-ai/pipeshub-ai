@@ -232,8 +232,8 @@ class TestAdmissionGateDemandAccounting:
 
 
 class TestRecentHoldTimes:
-    """The hold times a holder reports on release, kept for the pool's
-    median (``PoolDemand.hold_seconds``)."""
+    """The hold times a holder reports on release, kept per sample for the
+    pool's median (``PoolDemand.hold_seconds_by_sample``)."""
 
     @staticmethod
     def _gate() -> AdmissionGate:
@@ -251,52 +251,34 @@ class TestRecentHoldTimes:
 
         asyncio.run(scenario())
         demand = gate.drain_demand()
-        assert demand.hold_seconds == (17.6, 18.0, 600.0)
+        assert demand.hold_seconds_by_sample == ((17.6, 18.0, 600.0),)
         assert demand.completions == 4
 
-    def test_holds_outlive_the_sample_interval(self) -> None:
-        """A pool releasing one permit an interval still has a median of
-        many, not of whichever record finished last."""
+    def test_earlier_samples_are_kept_newest_last(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[tuple[float, ...], ...]:
+            for held in (1.0, 2.0, 3.0, 4.0, 5.0, 6.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+                gate.drain_demand()
+            return gate.drain_demand().hold_seconds_by_sample
+
+        # The last four drained samples, then this (empty) one.
+        assert asyncio.run(scenario()) == ((3.0,), (4.0,), (5.0,), (6.0,), ())
+
+    def test_one_sample_keeps_a_bounded_number_of_holds(self) -> None:
         gate = self._gate()
 
         async def scenario() -> tuple[float, ...]:
-            await gate.acquire()
-            gate.release(held_seconds=17.6)
-            gate.drain_demand()
-            await gate.acquire()
-            gate.release(held_seconds=600.0)
-            return gate.drain_demand().hold_seconds
-
-        assert asyncio.run(scenario()) == (17.6, 600.0)
-
-    def test_the_demand_says_which_holds_are_new(self) -> None:
-        gate = self._gate()
-
-        async def scenario() -> tuple[int, int]:
-            for held in (1.0, 2.0, 3.0):
-                await gate.acquire()
-                gate.release(held_seconds=held)
-            first = gate.drain_demand().new_holds
-            await gate.acquire()
-            gate.release(held_seconds=4.0)
-            second = gate.drain_demand()
-            assert second.hold_seconds[-second.new_holds:] == (4.0,)
-            return first, second.new_holds
-
-        assert asyncio.run(scenario()) == (3, 1)
-
-    def test_only_the_most_recent_holds_are_kept(self) -> None:
-        gate = self._gate()
-
-        async def scenario() -> None:
-            for i in range(100):
+            for i in range(1100):
                 await gate.acquire()
                 gate.release(held_seconds=float(i))
+            return gate.drain_demand().hold_seconds_by_sample[-1]
 
-        asyncio.run(scenario())
-        holds = gate.drain_demand().hold_seconds
-        assert len(holds) == 32
-        assert holds[-1] == 99.0
+        holds = asyncio.run(scenario())
+        assert len(holds) == 1024
+        assert holds[-1] == 1099.0
 
 
 class TestArrivalOrder:
