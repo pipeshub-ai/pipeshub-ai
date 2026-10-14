@@ -5532,7 +5532,9 @@ components:
           description: >-
             Budgeted reads. Why the read stopped short: `chars`, `selection`,
             or `clipped` (a block larger than `maxChars` was cut; it takes
-            precedence over the others). Null when complete.
+            precedence over the others). Null when the read lost nothing.
+            `clipped` can come with `complete: true`: a block given up at the
+            largest `maxChars` with nothing after it.
         givenUpBlock:
           type: integer
           nullable: true

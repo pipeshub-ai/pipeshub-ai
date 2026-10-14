@@ -57,33 +57,47 @@ MIN_READ_CHARS = 2_000
 # The assistant's own ceiling for one fetch.
 MAX_READ_CHARS = FETCH_MAX_CHARS
 
-# The citation labels the renderer puts in front of what it emits: `[ref3] `
-# at the start of each block it prints, and `[12|ref3] ` (or `[12|] ` on a
-# line it adds itself) in front of each table row or group child.
-_BLOCK_LABEL = re.compile(r"\[(ref\d+)\] ")
-_ROW_LABEL = re.compile(r"^\[(\d+|…)\|(ref\d+)?\] ", re.MULTILINE)
+class _LabelMapper(CitationRefMapper):
+    """Mints citation refs no document can contain, so the labels the renderer
+    writes with them (`[ref3] `, `[12|ref3] `) can be removed exactly.
 
-
-def _strip_labels(item: str, refs: set[str]) -> str:
-    """One emitted piece of the render without the labels the renderer put on it.
-
-    A block's label is only ever at the very start of the piece the renderer
-    emitted for it, so only that position is looked at: a line inside the
-    document that happens to begin "[ref1]" is the document's text and is
-    kept. A row label is the renderer's `[<block index>|<ref>]` at the start
-    of a line, with a ref this render minted (or none); anything else in that
-    shape, such as "[note|]", is left alone. Removing text never pushes a
-    read past its budget.
+    A ref is NUL-delimited (`\\x00 3 \\x00`) and never longer than the
+    `ref3` it stands for, so a render priced with it stays within budget once
+    the labels are gone. An API caller has no use for the labels: they only
+    serve the assistant's citations.
     """
-    lead = _BLOCK_LABEL.match(item)
-    if lead and lead.group(1) in refs:
-        item = item[lead.end():]
 
-    def _row(match: re.Match[str]) -> str:
-        ref = match.group(2)
-        return f"[{match.group(1)}] " if ref is None or ref in refs else match.group(0)
+    def get_or_create_ref(self, full_url: str) -> str:
+        if full_url in self._url_to_ref:
+            return self._url_to_ref[full_url]
+        self._counter += 1
+        ref = f"\x00{self._counter}\x00"
+        self._url_to_ref[full_url] = ref
+        self._ref_to_url[ref] = full_url
+        return ref
 
-    return _ROW_LABEL.sub(_row, item)
+    def peek_ref(self, full_url: str) -> str:
+        return self._url_to_ref.get(full_url) or f"\x00{self._counter + 1}\x00"
+
+
+# `[<ref>] ` before a block, `[<block index>|<ref>]` before a table row or a
+# group child: with `_LabelMapper` refs, only the renderer writes these.
+_BLOCK_LABEL = re.compile("\\[\x00\\d+\x00\\] ?")
+_ROW_LABEL = re.compile("\\[([^\\[\\]|\\n]*)\\|\x00\\d+\x00\\]")
+# A row the renderer adds itself carries no ref, and always reads "[…": a
+# skipped range, or "the rest did not fit".
+_OWN_ROW_LABEL = re.compile("^\\[(\\d+|…)\\|\\] (?=\\[…)", re.MULTILINE)
+
+
+def _strip_labels(text: str) -> str:
+    """The rendered text without the citation labels the renderer wrote.
+
+    Document text is never touched: a line reading "[ref1] is cited",
+    "[note|] keep" or "[0|ref1] invoice" is the document's own.
+    """
+    text = _BLOCK_LABEL.sub("", text)
+    text = _ROW_LABEL.sub(lambda m: f"[{m.group(1)}]", text)
+    return _OWN_ROW_LABEL.sub(lambda m: f"[{m.group(1)}] ", text)
 
 
 def _ranges(indices: frozenset[int] | set[int]) -> list[list[int]]:
@@ -116,7 +130,7 @@ def _render(
     names the block after one that was cut, and a response must not carry two
     different places to continue from.
     """
-    mapper = CitationRefMapper()
+    mapper = _LabelMapper()
     content, mapper = record_to_message_content(
         record,
         ref_mapper=mapper,
@@ -125,8 +139,7 @@ def _render(
         include_blocks=include_blocks,
         hints=API_READ_HINTS,
     )
-    refs = set(mapper.ref_to_url)
-    texts = [_strip_labels(item.get("text", ""), refs) for item in content if item.get("type") == "text"]
+    texts = [_strip_labels(item.get("text", "")) for item in content if item.get("type") == "text"]
     note = clipped_note(budget.outcome(_record_key(record))) if clipped_note else None
     if note is not None:
         # The trailing hint is the last "[Record …" piece; the record's

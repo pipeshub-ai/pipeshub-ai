@@ -238,18 +238,32 @@ class TestWhatTheCallerReads:
         read = await read_record(record, max_chars=40_000)
 
         assert not re.search(r"\[ref\d+\]|\|ref\d+\]", read["content"])
+        assert "\x00" not in read["content"]
         assert "[0] row 0" in read["content"]
         assert "after the table" in read["content"]
+
+    async def test_a_table_cell_that_continues_on_a_label_shaped_line_keeps_it(self) -> None:
+        rows = [{"index": 0, "type": BlockType.TABLE_ROW.value, "parent_index": 0,
+                 "data": {"row_natural_language_text": "row 0\n[0|ref1] invoice"}}]
+        table = {"index": 0, "type": GroupType.TABLE.value, "data": {"table_summary": "t"},
+                 "children": {"block_ranges": [{"start": 0, "end": 0}]}}
+
+        read = await read_record(_record("t-1", rows, [table]), max_chars=40_000)
+
+        assert "[0] row 0\n[0|ref1] invoice" in read["content"]
 
     async def test_a_document_line_that_looks_like_a_label_is_kept(self) -> None:
         """`ref1` is minted by every render, so a document line starting with
         it must survive -- as must a line that only looks like a row label."""
-        record = _record("doc-1", [_text_block(0, "intro\n[ref1] is cited\n[note|] keep")])
+        record = _record("doc-1", [_text_block(0, "intro\n[ref1] is cited\n[note|] keep\n[0|ref1] invoice\n[0|] total")])
 
         read = await read_record(record, max_chars=40_000)
 
         assert "\n[ref1] is cited" in read["content"]
         assert "\n[note|] keep" in read["content"]
+        assert "\n[0|ref1] invoice" in read["content"]
+        assert "\n[0|] total" in read["content"]
+        assert "\x00" not in read["content"]
         assert "[ref1] intro" not in read["content"], "the renderer's own label is still removed"
 
 
