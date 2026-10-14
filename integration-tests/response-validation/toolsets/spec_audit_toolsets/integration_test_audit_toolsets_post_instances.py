@@ -24,6 +24,7 @@ from toolsets_audit_support import (
     ToolsetsClient,
     assert_not_found,
     error_of,
+    inline_secret,
     instance_body,
     oauth_instance_body,
     rejected_fields,
@@ -146,8 +147,8 @@ def test_create_oauth_instance_without_client_credentials_has_no_oauth_config(cr
     instance = _created(resp)
     assert_strict_openapi_exchange(resp, ROUTE)
     assert "oauthConfigId" not in instance
-    # An empty placeholder is stored inline; the mask stands for the empty secret too.
-    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": MASK}
+    # An empty placeholder is stored inline.
+    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": inline_secret("")}
 
 
 def test_create_drops_fields_the_validator_does_not_list(create: Any) -> None:
@@ -158,7 +159,7 @@ def test_create_drops_fields_the_validator_does_not_list(create: Any) -> None:
     instance = _created(resp)
     assert_strict_openapi_response(resp, ROUTE)
     # Python would read a top-level clientId, but Node never forwards it.
-    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": MASK}
+    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": inline_secret("")}
 
 
 @pytest.mark.parametrize(

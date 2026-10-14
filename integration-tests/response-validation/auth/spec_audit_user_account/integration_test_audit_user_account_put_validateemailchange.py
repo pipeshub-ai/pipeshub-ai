@@ -75,18 +75,17 @@ def test_valid_token_changes_email_and_is_single_use(
     assert "link expired" in replay.json()["error"]["message"]
 
 
-def test_new_email_is_stored_lower_cased_and_not_validated(
+def test_new_email_that_is_not_an_address_is_stored_then_refused_by_the_graph(
     user_account_audit_client: UserAccountAuditClient,
     email_change_token: MintEmailChangeToken,
     disposable_member: DisposableMember,
     users_client: UsersClient,
 ) -> None:
+    # Node stores the value trimmed and lower-cased without checking it; the graph update that
+    # follows refuses it, so the answer is 422 although the account's email has already changed.
     raw = f"  Spec-Audit-Not-An-Email-{uuid.uuid4().hex[:8]} "
-    _assert_updated(
-        user_account_audit_client.validate_email_change(
-            token=email_change_token(disposable_member.user_id, raw)
-        )
-    )
+    resp = user_account_audit_client.validate_email_change(token=email_change_token(disposable_member.user_id, raw))
+    _assert_refused(resp, 422, "HTTP_UNPROCESSABLE_ENTITY", "Value error, Invalid email")
     assert _stored_email(users_client, disposable_member.user_id) == raw.strip().lower()
 
 
@@ -101,7 +100,8 @@ def test_token_without_new_email_stores_the_word_undefined(
         token=user_token(VALIDATE_EMAIL_SCOPE, disposable_member.user_id)
     )
     try:
-        _assert_updated(resp)
+        # Stored in MongoDB, then refused by the graph update as not an address.
+        _assert_refused(resp, 422, "HTTP_UNPROCESSABLE_ENTITY", "Value error, Invalid email")
         assert _stored_email(users_client, disposable_member.user_id) == "undefined"
     finally:
         # Put a unique address back, or the next run would find "undefined" taken.
@@ -112,18 +112,14 @@ def test_token_without_new_email_stores_the_word_undefined(
         assert restored.status_code == 200, restored.text[:500]
 
 
-def test_token_naming_no_account_still_reports_success(
+def test_token_naming_no_account_is_not_found(
     user_account_audit_client: UserAccountAuditClient, email_change_token: MintEmailChangeToken
 ) -> None:
     never_created = str(ObjectId())
     try:
-        _assert_updated(
-            user_account_audit_client.validate_email_change(
-                token=email_change_token(never_created, unused_email())
-            )
-        )
+        resp = user_account_audit_client.validate_email_change(token=email_change_token(never_created, unused_email()))
+        _assert_refused(resp, 404, "HTTP_NOT_FOUND", "User not found")
     finally:
-        # The activity row is written whether or not an account was updated.
         forget_account(never_created)
 
 

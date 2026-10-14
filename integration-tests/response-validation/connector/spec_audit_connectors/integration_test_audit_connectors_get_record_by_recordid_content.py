@@ -17,7 +17,13 @@ from strict_openapi import assert_strict_openapi_exchange, outside_request_contr
 pytestmark = pytest.mark.spec_audit
 
 ROUTE = "/api/v1/connectors/record/:recordId/content"
-NOT_AVAILABLE = "No record found"
+
+
+def assert_described_as_not_indexed(content: str, record_id: str) -> None:
+    """The record is described (id, name, link, dates) and a `Not indexed:` paragraph names its status."""
+    assert content.startswith(f"Record ID: {record_id}\n"), content[:300]
+    assert f"/record/{record_id}\n" in content, content[:600]
+    assert "\nNot indexed: " in content and "(status: FILE_TYPE_NOT_SUPPORTED)" in content, content[-500:]
 
 
 def test_content_of_an_indexed_record_is_its_parsed_text(
@@ -40,14 +46,16 @@ def test_content_of_an_indexed_record_is_its_parsed_text(
     assert kb_records["text_sentinel"] in body["content"]
 
 
-def test_content_of_a_record_that_was_not_indexed_is_a_200_placeholder(
+def test_content_of_a_record_that_was_not_indexed_describes_the_record(
     connectors_client: ConnectorsAuditClient, kb_records: KbRecords
 ) -> None:
-    # The file type is not supported, so nothing was parsed: still a 200, with a fixed string.
+    # The file type is not supported, so nothing was parsed: still a 200, describing the record.
     resp = connectors_client.get_record_content(kb_records["unsupported_record_id"])
     assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
-    assert resp.json() == {"content": NOT_AVAILABLE}
+    body = resp.json()
+    assert set(body) == {"content"}
+    assert_described_as_not_indexed(body["content"], kb_records["unsupported_record_id"])
 
 
 def test_content_ignores_query_parameters(
@@ -59,7 +67,7 @@ def test_content_ignores_query_parameters(
         )
         assert resp.status_code == 200, resp.text[:500]
         assert_strict_openapi_exchange(resp, ROUTE)
-    assert resp.json() == {"content": NOT_AVAILABLE}
+    assert_described_as_not_indexed(resp.json()["content"], kb_records["unsupported_record_id"])
 
 
 def test_member_without_access_to_the_record_is_forbidden(

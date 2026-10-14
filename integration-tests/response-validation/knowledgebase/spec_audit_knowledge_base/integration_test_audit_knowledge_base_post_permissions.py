@@ -152,16 +152,19 @@ def test_grant_rejects_a_body_outside_the_validator(kb_client: KBClient, payload
         pytest.param({"teamIds": ["some-team"]}, id="user-ids-missing"),
     ],
 )
-def test_grant_without_both_id_lists_is_an_internal_error(
+def test_grant_counts_a_list_left_out_as_empty(
     kb_client: KBClient, make_kb: MakeKb, payload: dict[str, Any]
 ) -> None:
-    # The handler reads .length on both lists before checking them.
+    # Both ids are unknown, so either way the grant is refused, and for the same reason.
     kb_id = make_kb()
     resp = kb_client.post(_path(kb_id), json=payload)
-    assert resp.status_code == 500, resp.text[:500]
-    assert resp.json()["error"]["code"] == "HTTP_INTERNAL_SERVER_ERROR"
+    with_lists = kb_client.post(_path(kb_id), json={"userIds": [], "teamIds": [], **payload})
+    assert resp.status_code in (400, 404), resp.text[:500]
+    assert (resp.status_code, resp.json()["error"]["message"]) == (
+        with_lists.status_code,
+        with_lists.json()["error"]["message"],
+    )
     assert_strict_openapi_exchange(resp, ROUTE)
-    assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_grant_to_a_graph_id_or_an_unknown_user_is_bad_request(

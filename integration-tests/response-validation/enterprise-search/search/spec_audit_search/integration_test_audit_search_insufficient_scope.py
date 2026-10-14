@@ -1,8 +1,11 @@
 """An OAuth access token without the route's semantic scope is refused with 403.
 
-Reading needs `semantic:read`, searching, sharing and archiving need `semantic:write`, and
-deleting needs `semantic:delete`; no one of them implies another. The scope check runs after
-authentication and before the request is validated, so even a malformed search id gets 403.
+Reading needs `semantic:read`, sharing and archiving need `semantic:write`, and deleting needs
+`semantic:delete`; no one of them implies another. The scope check runs after authentication
+and before the request is validated, so even a malformed search id gets 403.
+
+Searching passes the gateway with `semantic:read` or `semantic:write`, but the search service
+behind it still requires `semantic:write`, so a `semantic:read` token is refused there (defect).
 """
 
 from __future__ import annotations
@@ -42,18 +45,23 @@ def tokens(pipeshub_client: PipeshubClient) -> Iterator[dict[str, str]]:
     with (
         oauth_token_with_scopes(base_url, ["semantic:read"]) as read,
         oauth_token_with_scopes(base_url, ["semantic:write"]) as write,
+        oauth_token_with_scopes(base_url, ["semantic:delete"]) as delete,
     ):
-        yield {"semantic:read": read, "semantic:write": write}
+        yield {"semantic:read": read, "semantic:write": write, "semantic:delete": delete}
 
 
 @pytest.mark.parametrize(
     ("scope", "method", "path", "route", "body", "required"),
     [
+        # The gateway lets semantic:read through; the search service refuses it (defect).
         pytest.param(
             "semantic:read", "POST", "", ROOT_TEMPLATE, {"query": SEARCH_QUERY, "limit": 1}, "semantic:write",
             id="search",
         ),
-        pytest.param("semantic:read", "POST", "", ROOT_TEMPLATE, {}, "semantic:write", id="search-invalid-body"),
+        pytest.param(
+            "semantic:delete", "POST", "", ROOT_TEMPLATE, {}, "semantic:read or semantic:write",
+            id="search-invalid-body",
+        ),
         pytest.param("semantic:write", "GET", "", ROOT_TEMPLATE, None, "semantic:read", id="history"),
         pytest.param("semantic:write", "GET", f"/{S}", SEARCH_TEMPLATE, None, "semantic:read", id="get"),
         pytest.param("semantic:write", "DELETE", "", ROOT_TEMPLATE, None, "semantic:delete", id="clear-history"),

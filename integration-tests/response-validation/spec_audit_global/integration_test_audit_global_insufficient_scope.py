@@ -37,11 +37,14 @@ def spec_admits(op: Operation, scope: str) -> bool:
 
 @pytest.mark.parametrize("op", params_for(SCOPED))
 def test_a_token_without_the_scope_is_forbidden(
-    pipeshub_client: PipeshubClient, no_scope_token: str, op: Operation
+    pipeshub_client: PipeshubClient, connector_read_token: str, team_read_token: str, op: Operation
 ) -> None:
+    # A token must carry some scope, so this one holds a single scope the route does not accept.
+    assert not {"connector:read", "team:read"} <= set(op.gate_scopes), op.id
+    token = connector_read_token if "connector:read" not in op.gate_scopes else team_read_token
     resp = call(
         pipeshub_client.base_url, op, timeout=pipeshub_client.timeout_seconds,
-        headers={"Authorization": f"Bearer {no_scope_token}"},
+        headers={"Authorization": f"Bearer {token}"},
     )
     assert resp.status_code == 403, resp.text[:500]
     error = error_of(resp)

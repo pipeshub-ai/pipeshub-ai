@@ -77,14 +77,12 @@ def test_a_key_of_another_type_is_a_400(config_client: ConfigClient, seed_llm_pr
     assert resp.json() == {"status": "error", "message": f"Model key '{key}' belongs to type 'llm', not 'embedding'"}
 
 
-def test_an_unknown_key_is_an_internal_error(config_client: ConfigClient) -> None:
-    # API bug: the lookup walks every top-level key of the stored config, modelRoles (an
-    # object, not a list) included, and throws before it can answer 404.
+def test_an_unknown_key_is_not_found(config_client: ConfigClient) -> None:
     resp = config_client.put(f"/ai-models/default/llm/{MISSING_AI_MODEL_KEY}")
 
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 404, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR"
+    assert resp.json() == {"status": "error", "message": f"Model with key '{MISSING_AI_MODEL_KEY}' not found"}
 
 
 def test_unknown_model_type_is_rejected(config_client: ConfigClient) -> None:

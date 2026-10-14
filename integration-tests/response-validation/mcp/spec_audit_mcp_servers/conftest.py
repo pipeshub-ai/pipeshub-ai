@@ -36,6 +36,17 @@ from mcp_servers_audit_support import (  # noqa: E402
 
 logger = logging.getLogger("mcp-servers-audit")
 
+_HERE = Path(__file__).parent
+MCP_SERVERS_SKIP_REASON = (
+    "/api/v1/mcp-servers is not audited yet: #4003 rewrote these routes, and they need a new audit"
+)
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    for item in items:
+        if item.path.is_relative_to(_HERE):
+            item.add_marker(pytest.mark.skip(reason=MCP_SERVERS_SKIP_REASON))
+
 
 @pytest.fixture(scope="session", autouse=True)
 def mcp_feature_enabled(

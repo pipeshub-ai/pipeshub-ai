@@ -82,13 +82,17 @@ def start_device_grant(oauth2_client: OAuth2Client) -> Iterator[StartDeviceGrant
 
 @pytest.fixture(scope="session")
 def confidential_app(user_session_client: SessionClient) -> Iterator[OAuthApp]:
-    """A confidential app with every grant /oauth-clients allows, the OIDC scopes and offline_access."""
+    """A confidential app with every grant /oauth-clients allows, the OIDC scopes, offline_access and `team:read`.
+
+    A client-credentials grant drops the user-bound scopes and refuses a token left with none, so the
+    app also holds one API scope.
+    """
     base_url, session_jwt = user_session_client.base_url, user_session_client.token
     app = create_oauth_app(
         base_url,
         session_jwt,
         f"spec-audit-oauth2-{uuid.uuid4().hex[:8]}",
-        scopes=[*OIDC_SCOPES, "offline_access"],
+        scopes=[*OIDC_SCOPES, "offline_access", "team:read"],
         grant_types=APP_GRANT_TYPES,
     )
     try:

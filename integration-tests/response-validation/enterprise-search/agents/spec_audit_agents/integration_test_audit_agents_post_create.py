@@ -63,6 +63,7 @@ def test_full_configuration_is_stored(
                 "name": "spec_audit_server",
                 "displayName": "Spec audit server",
                 "typeId": server_type,
+                "allTools": True,
             }
         ],
         "webSearch": {"provider": "duckduckgo"},

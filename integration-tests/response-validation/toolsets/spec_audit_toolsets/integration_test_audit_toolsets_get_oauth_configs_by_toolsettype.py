@@ -17,6 +17,7 @@ from toolsets_audit_support import (
     JsonObject,
     SeedToolsetInstance,
     ToolsetsClient,
+    oauth_config_secret,
     request_as,
 )
 
@@ -37,7 +38,7 @@ def _seeded_entry(body: JsonObject, oauth_config_id: str) -> JsonObject:
     return matches[0]
 
 
-def test_admin_lists_oauth_configs_with_the_client_secret_masked(
+def test_admin_lists_oauth_configs_with_their_client_fields(
     toolsets_client: ToolsetsClient, seed_toolset_instance: SeedToolsetInstance
 ) -> None:
     instance = seed_toolset_instance(oauth=True)
@@ -54,7 +55,7 @@ def test_admin_lists_oauth_configs_with_the_client_secret_masked(
     assert entry["inherited"] is False, entry
     assert entry["clientId"] == OAUTH_CLIENT_AUTH["clientId"], sorted(entry)
     assert entry["clientSecretSet"] is True, sorted(entry)
-    assert entry["clientSecret"] != OAUTH_CLIENT_AUTH["clientSecret"], "client secret returned in clear"
+    assert entry["clientSecret"] == oauth_config_secret(OAUTH_CLIENT_AUTH["clientSecret"])
 
 
 def test_member_lists_oauth_configs_without_any_client_credentials(

@@ -20,12 +20,10 @@ from configuration_manager_audit_support import (
 )
 from helper.clients.config_client import ConfigClient
 from strict_openapi import assert_strict_openapi_exchange
+from xss_refusal import xss_message
 
 pytestmark = pytest.mark.spec_audit
 
-HTML_REFUSED_MESSAGE = (
-    "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again."
-)
 BODY_OPERATIONS = [(method, sub_path) for method, sub_path in PRE_ROUTER_OPERATIONS if method in ("POST", "PUT", "PATCH")]
 
 _MICROSOFT_APP = {
@@ -100,7 +98,8 @@ def test_markup_in_the_query_string_is_refused_before_the_token_check(
 
     assert resp.status_code == 400, resp.text[:500]
     error = resp.json()["error"]
-    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", HTML_REFUSED_MESSAGE)
+    expected = xss_message(value, 'the query parameter "specAudit"')
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", expected)
     assert_strict_openapi_exchange(resp, f"{CONFIGURATION_MANAGER_BASE}{sub_path}")
 
 
@@ -117,7 +116,8 @@ def test_markup_in_the_body_is_refused_before_the_token_check(
 
     assert resp.status_code == 400, resp.text[:500]
     error = resp.json()["error"]
-    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", HTML_REFUSED_MESSAGE)
+    expected = xss_message("<i>spec audit</i>", 'the field "nested.specAudit[0]"')
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", expected)
     assert_strict_openapi_exchange(resp, f"{CONFIGURATION_MANAGER_BASE}{sub_path}")
 
 
@@ -134,7 +134,8 @@ def test_a_certificate_whose_last_line_reads_like_an_event_handler_is_refused(
 
     assert resp.status_code == 400, resp.text[:500]
     error = resp.json()["error"]
-    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", HTML_REFUSED_MESSAGE)
+    expected = xss_message(certificate, 'the field "certificate"')
+    assert (error["code"], error["message"]) == ("HTTP_BAD_REQUEST", expected)
     assert_strict_openapi_exchange(resp, f"{CONFIGURATION_MANAGER_BASE}/authConfig/sso")
 
 

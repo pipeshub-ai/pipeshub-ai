@@ -19,9 +19,9 @@ from global_audit_support import forget_access_token, mint_token  # noqa: E402
 
 
 @pytest.fixture(scope="session")
-def no_scope_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
-    """A client-credentials token of the suite's own OAuth client that carries no scope at all."""
-    token = mint_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds, "openid")
+def team_read_token(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """A client-credentials token of the suite's own OAuth client holding only `team:read`."""
+    token = mint_token(pipeshub_client.base_url, pipeshub_client.timeout_seconds, "team:read")
     try:
         yield token
     finally:

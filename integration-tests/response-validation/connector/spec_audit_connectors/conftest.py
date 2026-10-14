@@ -142,7 +142,7 @@ def member_connector(
 def token_without_connector_scopes(
     pipeshub_client: PipeshubClient, user_session_client: SessionClient
 ) -> Iterator[str]:
-    """Admin's access token from an OAuth app granted no connector or kb scope.
+    """Admin's access token from an OAuth app granted no connector or kb scope (only `team:read`).
 
     Every connectors route sits behind requireScopes, so this isolates the scope
     refusal from the role and ownership checks that also answer 403 or 404.
@@ -153,7 +153,7 @@ def token_without_connector_scopes(
     resp = apps.create_app(
         name=f"spec-audit-connectors-noscope-{uuid.uuid4().hex[:8]}",
         allowedGrantTypes=["client_credentials"],
-        allowedScopes=["openid", "profile"],
+        allowedScopes=["team:read"],
     )
     assert resp.status_code < 300, f"OAuth app create failed: {resp.status_code} {resp.text[:300]}"
     app = resp.json()["app"]

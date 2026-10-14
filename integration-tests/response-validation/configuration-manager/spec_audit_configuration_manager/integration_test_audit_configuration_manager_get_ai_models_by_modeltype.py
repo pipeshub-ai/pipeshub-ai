@@ -61,6 +61,8 @@ def test_a_new_entry_is_listed_without_its_credentials(
         "contextLength": 4096,
         # The add route copies the friendly name next to the configuration too.
         "modelFriendlyName": "Spec audit model",
+        # The names of every stored setting, credentials included; never their values.
+        "configuredFields": sorted({**azure_llm_configuration(), **configuration}),
     }
 
 

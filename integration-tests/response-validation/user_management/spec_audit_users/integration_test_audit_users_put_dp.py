@@ -69,7 +69,7 @@ def test_a_second_upload_replaces_the_first(no_picture: SecondUser) -> None:
 
 
 def test_the_declared_type_is_trusted_not_the_bytes(no_picture: SecondUser) -> None:
-    # The type check reads the part's Content-Type only; sharp then decodes whatever arrives.
+    # The declared type only has to be an allowed one; the bytes are checked to be some allowed image.
     resp = _put(no_picture, files={"file": ("dp.gif", TINY_PNG, "image/gif")})
     assert resp.status_code == 201, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
@@ -86,10 +86,10 @@ def test_other_form_fields_are_ignored(no_picture: SecondUser) -> None:
     assert len(read_display_pictures(no_picture.user_id)) == 1
 
 
-def test_bytes_that_are_not_an_image_are_an_internal_error(no_picture: SecondUser) -> None:
+def test_bytes_that_are_not_an_image_are_bad_request(no_picture: SecondUser) -> None:
     resp = _put(no_picture, files={"file": ("dp.png", b"not an image at all", "image/png")})
-    assert resp.status_code == 500, resp.text[:500]
-    assert resp.json()["error"]["code"] == "INTERNAL_ERROR", resp.text[:500]
+    assert resp.status_code == 400, resp.text[:500]
+    assert resp.json()["error"]["message"] == "Profile photo must be a PNG, JPEG, WebP or GIF image", resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
     assert read_display_pictures(no_picture.user_id) == []
 

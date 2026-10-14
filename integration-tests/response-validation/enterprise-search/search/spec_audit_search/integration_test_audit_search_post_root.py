@@ -149,19 +149,18 @@ def test_invalid_body_is_rejected(
     assert_strict_openapi_exchange(resp, ROUTE)
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        pytest.param("<script>alert(1)</script>", id="markup"),
-        pytest.param("show %s of the files", id="format-specifier"),
-    ],
-)
-def test_markup_or_format_specifiers_in_the_query_are_rejected(
-    search_audit_client: SearchAuditClient, query: str
-) -> None:
-    resp = search_audit_client.post("/", json={"query": query, "limit": 1})
+def test_a_format_specifier_in_the_query_is_rejected(search_audit_client: SearchAuditClient) -> None:
+    resp = search_audit_client.post("/", json={"query": "show %s of the files", "limit": 1})
 
     assert error_of(resp, 400)["code"] == "HTTP_BAD_REQUEST"
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+def test_markup_in_the_query_is_searched_for(search_audit_client: SearchAuditClient) -> None:
+    # The app-wide markup filter skips the search question, so text such as `List<String>` is accepted.
+    resp = search_audit_client.post("/", json={"query": f"{SEARCH_QUERY} <script>alert(1)</script>", "limit": 1})
+
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
 
 

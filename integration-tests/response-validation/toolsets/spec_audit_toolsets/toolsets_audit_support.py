@@ -80,6 +80,20 @@ JSON_HEADERS = {"Content-Type": "application/json"}
 # The global sanitizer refuses any query or body string that holds markup.
 HTML_VALUE = "<b>spec-audit</b>"
 HTML_REFUSAL = "HTML tags, scripts, and XSS content are not allowed"
+
+MASK = "\u2022" * 8
+# The stack's own setting: a declared secret comes back masked only when HIDE_SECRET_CONFIG=true.
+HIDE_SECRETS = os.getenv("HIDE_SECRET_CONFIG") == "true"
+
+
+def oauth_config_secret(stored: str) -> str:
+    """A client secret in an OAuth configuration, as an administrator reads it back."""
+    return MASK if HIDE_SECRETS else stored
+
+
+def inline_secret(stored: str) -> str:
+    """A declared secret stored on an instance, as an administrator reads it back; empty stays empty."""
+    return MASK if HIDE_SECRETS and stored else stored
 # A scope the suite's OAuth client holds and no toolsets route accepts.
 NARROW_SCOPE = "org:read"
 

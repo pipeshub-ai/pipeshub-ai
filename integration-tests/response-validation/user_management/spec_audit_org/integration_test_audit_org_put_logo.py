@@ -111,11 +111,11 @@ def test_json_body_instead_of_multipart_is_refused(org_client: OrgClient, logo_r
     assert error_of(resp)["message"] == "No files available for processing"
 
 
-def test_raster_that_does_not_decode_is_an_internal_error(org_client: OrgClient, logo_restored: str) -> None:
+def test_bytes_that_are_not_an_image_are_bad_request(org_client: OrgClient, logo_restored: str) -> None:
     resp = _upload(org_client, files={"file": ("logo.png", b"not really a png", "image/png")})
-    assert resp.status_code == 500, resp.text[:500]
+    assert resp.status_code == 400, resp.text[:500]
     assert_strict_openapi_exchange(resp, LOGO_ROUTE)
-    assert error_of(resp)["code"] == "INTERNAL_ERROR"
+    assert error_of(resp)["message"] == "Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image"
 
 
 @pytest.mark.parametrize(

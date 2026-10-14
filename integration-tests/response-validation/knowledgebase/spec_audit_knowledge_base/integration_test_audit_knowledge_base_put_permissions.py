@@ -113,18 +113,23 @@ def test_update_with_two_empty_lists_is_bad_request(kb_client: KBClient) -> None
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "status"),
     [
-        pytest.param({"userIds": ["someone"], "role": "READER"}, id="team-ids-missing"),
-        pytest.param({"teamIds": [], "role": "READER"}, id="user-ids-missing"),
+        pytest.param({"userIds": ["someone"], "role": "READER"}, 404, id="team-ids-missing"),
+        pytest.param({"teamIds": [], "role": "READER"}, 400, id="user-ids-missing"),
     ],
 )
-def test_update_without_both_id_lists_is_an_internal_error(kb_client: KBClient, payload: dict[str, Any]) -> None:
+def test_update_counts_a_list_left_out_as_empty(kb_client: KBClient, payload: dict[str, Any], status: int) -> None:
     resp = kb_client.put(_path(MISSING_RECORD_ID), json=payload)
-    assert resp.status_code == 500, resp.text[:500]
-    assert resp.json()["error"]["code"] == "HTTP_INTERNAL_SERVER_ERROR"
+    with_lists = kb_client.put(_path(MISSING_RECORD_ID), json={"userIds": [], "teamIds": [], **payload})
+    assert resp.status_code == status, resp.text[:500]
+    assert (resp.status_code, resp.json()["error"]["message"]) == (
+        with_lists.status_code,
+        with_lists.json()["error"]["message"],
+    )
     assert_strict_openapi_exchange(resp, ROUTE)
-    assert_spec_forbids_request(resp, ROUTE)
+    if status == 400:
+        assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_update_with_a_graph_id_or_an_unknown_user_is_bad_request(

@@ -237,7 +237,7 @@ def test_navigate_date_the_time_parser_refuses(
             "inverted range",
             id="modified-range-inverted",
         ),
-        pytest.param({"createdAfter": "2024-02-31"}, "invalid calendar date", id="date-not-on-the-calendar"),
+        pytest.param({"createdAfter": "2024-02-32"}, "invalid calendar date", id="date-not-on-the-calendar"),
     ],
 )
 def test_navigate_well_formed_dates_that_make_no_sense_are_bad_request(
@@ -247,6 +247,16 @@ def test_navigate_well_formed_dates_that_make_no_sense_are_bad_request(
     resp = connectors_client.get("/navigate", params=params)
     assert resp.status_code == 400, resp.text[:500]
     assert message in resp.json()["error"]["message"], resp.text[:500]
+    assert_strict_openapi_exchange(resp, ROUTE)
+
+
+@pytest.mark.parametrize("field", ["createdAfter", "createdBefore"])
+def test_navigate_a_day_past_the_end_of_its_month_is_accepted(
+    connectors_client: ConnectorsAuditClient, field: str
+) -> None:
+    # 2024-02-31 rolls forward to March 1 as a lower bound and clamps to February 29 as an upper one.
+    resp = connectors_client.get("/navigate", params={field: "2024-02-31"})
+    assert resp.status_code == 200, resp.text[:500]
     assert_strict_openapi_exchange(resp, ROUTE)
 
 

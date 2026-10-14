@@ -146,24 +146,27 @@ def test_remove_with_two_empty_lists_is_bad_request(kb_client: KBClient) -> None
 
 
 @pytest.mark.parametrize(
-    "payload",
+    ("payload", "status"),
     [
-        pytest.param({}, id="empty-object"),
-        pytest.param({"userIds": ["someone"]}, id="team-ids-missing"),
-        pytest.param({"teamIds": ["some-team"]}, id="user-ids-missing"),
-        pytest.param(None, id="no-body"),
+        pytest.param({}, 400, id="empty-object"),
+        pytest.param({"userIds": ["someone"]}, 404, id="team-ids-missing"),
+        pytest.param({"teamIds": ["some-team"]}, 404, id="user-ids-missing"),
+        pytest.param(None, 400, id="no-body"),
     ],
 )
-def test_remove_without_both_id_lists_is_an_internal_error(kb_client: KBClient, payload: Any) -> None:
+def test_remove_counts_a_list_left_out_as_empty(kb_client: KBClient, payload: Any, status: int) -> None:
     resp = (
         kb_client.delete(_path(MISSING_RECORD_ID), json=payload)
         if payload is not None
         else kb_client.delete(_path(MISSING_RECORD_ID))
     )
-    assert resp.status_code == 500, resp.text[:500]
-    assert resp.json()["error"]["code"] == "HTTP_INTERNAL_SERVER_ERROR"
+    with_lists = kb_client.delete(_path(MISSING_RECORD_ID), json={"userIds": [], "teamIds": [], **(payload or {})})
+    assert resp.status_code == status, resp.text[:500]
+    assert resp.json()["error"]["message"] == with_lists.json()["error"]["message"], resp.text[:500]
+    assert resp.status_code == with_lists.status_code
     assert_strict_openapi_exchange(resp, ROUTE)
-    assert_spec_forbids_request(resp, ROUTE)
+    if status == 400:
+        assert_spec_forbids_request(resp, ROUTE)
 
 
 def test_remove_with_a_graph_id_or_an_unknown_user_is_bad_request(

@@ -17,7 +17,6 @@ from global_audit_support import (
     JSON,
     TRIM_MARKER,
     XSS_DESCRIPTION_MARKER,
-    XSS_MESSAGE,
     XSS_QUERY_PARAMETER,
     XSS_VALUE,
     Operation,
@@ -28,6 +27,7 @@ from global_audit_support import (
     spec,
 )
 from strict_openapi import assert_strict_openapi_exchange
+from xss_refusal import xss_message
 
 from helper.clients.teams_client import TeamsClient
 from helper.pipeshub_client import PipeshubClient
@@ -49,11 +49,11 @@ REFUSED_VALUES = [
 ]
 
 
-def _assert_refused(resp: requests.Response, op: Operation) -> None:
+def _assert_refused(resp: requests.Response, op: Operation, message: str) -> None:
     assert resp.status_code == 400, resp.text[:500]
     error = error_of(resp)
     assert error["code"] == "HTTP_BAD_REQUEST", resp.text[:500]
-    assert error["message"] == XSS_MESSAGE, resp.text[:500]
+    assert error["message"] == message, resp.text[:500]
     assert_strict_openapi_exchange(resp, op.spec_path)
     described = (op.response("400") or {}).get("description", "")
     assert XSS_DESCRIPTION_MARKER in described, f"the 400 of {op.id} does not describe the markup refusal"
@@ -68,7 +68,7 @@ def test_markup_in_a_query_value_is_refused_before_authentication(
         pipeshub_client.base_url, op, timeout=pipeshub_client.timeout_seconds,
         params={XSS_QUERY_PARAMETER: value},
     )
-    _assert_refused(resp, op)
+    _assert_refused(resp, op, xss_message(value, f'the query parameter "{XSS_QUERY_PARAMETER}"'))
 
 
 @pytest.mark.parametrize(
@@ -83,7 +83,7 @@ def test_a_json_body_string_the_filter_dislikes_is_refused_before_authentication
         pipeshub_client.base_url, op, timeout=pipeshub_client.timeout_seconds,
         json={"specAudit": {"nested": [value]}},
     )
-    _assert_refused(resp, op)
+    _assert_refused(resp, op, xss_message(value, 'the field "specAudit.nested[0]"'))
 
 
 @pytest.mark.parametrize("where", ["query", "json-body"])

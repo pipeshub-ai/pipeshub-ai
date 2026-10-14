@@ -51,7 +51,7 @@ def test_client_credentials_issues_an_access_token(
 ) -> None:
     body = _assert_tokens(oauth2_client.token(form=form, **_cc_body(confidential_app)), refresh=False)
     # User-bound scopes are dropped from a client-credentials token.
-    assert body["scope"] == ""
+    assert body["scope"] == "team:read"
 
 
 def test_client_credentials_with_basic_authentication(
@@ -230,6 +230,12 @@ def test_device_code_poll_after_denial_is_access_denied(
             "invalid_scope",
             "Scopes not allowed for this app: kb:write",
             id="scope_not_allowed",
+        ),
+        pytest.param(
+            {"grant_type": "client_credentials", "scope": "openid profile"},
+            "invalid_scope",
+            "A token must carry at least one scope",
+            id="client_credentials_left_with_no_scope",
         ),
         pytest.param(
             {"grant_type": DEVICE_GRANT_TYPE, "device_code": "spec-audit-no-such-code"},

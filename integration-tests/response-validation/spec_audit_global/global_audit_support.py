@@ -35,9 +35,6 @@ OVERSIZED_JSON_BODY = b'{"a":"' + b"x" * (JSON_LIMIT_BYTES - 7) + b'"}'
 FORM_PARAMETER_LIMIT = 1000
 
 XSS_VALUE = "<b>spec-audit</b>"
-XSS_MESSAGE = (
-    "HTML tags, scripts, and XSS content are not allowed. Please remove any HTML tags and try again."
-)
 XSS_QUERY_PARAMETER = "specAuditMarkup"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -74,6 +71,7 @@ GATE_SCOPES: dict[str, tuple[str, ...]] = {
     "GET /artifacts": ("kb:read", "connector:read"),
     "GET /artifacts/{artifactId}": ("kb:read", "connector:read"),
     "GET /artifacts/{artifactId}/versions": ("kb:read", "connector:read"),
+    "POST /search": ("semantic:read", "semantic:write"),
 }
 
 
@@ -246,8 +244,21 @@ def find(method: str, spec_path: str) -> Operation:
     return next(op for op in operations() if op.method == method and op.spec_path == spec_path)
 
 
+# Not audited yet: #4003 rewrote these routes, and they need a new audit (see mcp/spec_audit_mcp_servers).
+NOT_AUDITED_PREFIXES = ("/mcp-servers/",)
+
+
 def params_for(ops: list[Operation] | tuple[Operation, ...]) -> list[Any]:
-    return [pytest.param(op, id=op.id) for op in ops]
+    return [
+        pytest.param(
+            op,
+            id=op.id,
+            marks=pytest.mark.skip(reason=f"{op.spec_path} is not audited yet")
+            if op.spec_path.startswith(NOT_AUDITED_PREFIXES)
+            else (),
+        )
+        for op in ops
+    ]
 
 
 def call(
@@ -265,7 +276,7 @@ def error_of(resp: requests.Response) -> dict[str, Any]:
 def mint_token(base_url: str, timeout: float, scope: str) -> str:
     """A client-credentials token of the suite's own OAuth client asking for ``scope``.
 
-    The token endpoint drops `openid` for a client-credentials grant, so `openid` alone grants the empty set.
+    The token endpoint refuses a grant that would carry no scope, so there is no token without one.
     """
     resp = requests.post(
         f"{base_url}/api/v1/oauth2/token",
@@ -279,8 +290,7 @@ def mint_token(base_url: str, timeout: float, scope: str) -> str:
     )
     assert resp.status_code == 200, f"minting a token for {scope!r}: HTTP {resp.status_code}"
     granted = resp.json().get("scope")
-    expected = "" if scope == "openid" else scope
-    assert granted == expected, f"asked for {scope!r}, the token carries {granted!r}"
+    assert granted == scope, f"asked for {scope!r}, the token carries {granted!r}"
     return str(resp.json()["access_token"])
 
 

@@ -17,6 +17,8 @@ from toolsets_audit_support import (
     SeedToolsetInstance,
     ToolsetsClient,
     assert_not_found,
+    inline_secret,
+    oauth_config_secret,
     request_as,
 )
 
@@ -51,7 +53,8 @@ def test_admin_gets_an_oauth_instance_with_its_oauth_config_and_user_count(
     assert oauth_config["_id"] == seeded["oauthConfigId"], oauth_config
     assert oauth_config["oauthInstanceName"] == seeded["instanceName"]
     assert oauth_config["clientId"] == OAUTH_CLIENT_AUTH["clientId"]
-    assert (oauth_config["clientSecret"], oauth_config["clientSecretSet"]) == (MASK, True)
+    assert oauth_config["clientSecret"] == oauth_config_secret(OAUTH_CLIENT_AUTH["clientSecret"])
+    assert oauth_config["clientSecretSet"] is True
     assert instance["authenticatedUserCount"] == 0, instance
 
 
@@ -103,7 +106,7 @@ def test_admin_gets_an_oauth_instance_without_a_config_with_its_placeholder(
 
     instance = resp.json()["instance"]
     assert "oauthConfig" not in instance
-    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": MASK}
+    assert instance["auth"] == {"type": "OAUTH", "clientId": "", "clientSecret": inline_secret("")}
     assert instance["authenticatedUserCount"] == 0
 
 

@@ -19,7 +19,6 @@ from global_audit_support import (
     FORM_PARAMETER_LIMIT,
     INTERNAL_ERROR,
     JSON,
-    XSS_MESSAGE,
     XSS_VALUE,
     Operation,
     call,
@@ -30,6 +29,7 @@ from global_audit_support import (
     text_only_problem,
 )
 from strict_openapi import assert_strict_openapi_exchange
+from xss_refusal import xss_message
 
 from helper.clients.teams_client import TeamsClient
 from helper.pipeshub_client import PipeshubClient
@@ -61,7 +61,7 @@ def test_a_form_body_reaches_the_request_body(pipeshub_client: PipeshubClient, o
         headers=FORM_HEADERS, data={"specAudit": XSS_VALUE},
     )
     assert resp.status_code == 400, resp.text[:500]
-    assert error_of(resp)["message"] == XSS_MESSAGE, resp.text[:500]
+    assert error_of(resp)["message"] == xss_message(XSS_VALUE, 'the field "specAudit"'), resp.text[:500]
     assert_strict_openapi_exchange(resp, op.spec_path)
 
 
