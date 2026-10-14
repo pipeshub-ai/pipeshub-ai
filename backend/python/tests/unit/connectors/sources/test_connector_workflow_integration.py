@@ -276,7 +276,7 @@ class MockTransactionStore:
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
 
-    async def get_records_by_weburls(self, weburls: List[str], org_id: str) -> List[Dict]:
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
         wanted = set(weburls)
         return [
             {"id": doc["_key"], "recordType": doc.get("recordType"), "webUrl": doc.get("webUrl"),
@@ -287,8 +287,8 @@ class MockTransactionStore:
         ]
 
     async def get_records_linking_to_weburls(
-        self, weburls: List[str], org_id: str, connector_names: List[str]
-    ) -> List[str]:
+        self, weburls: list[str], org_id: str, connector_names: list[str]
+    ) -> list[str]:
         return []
 
     async def batch_upsert_records(
