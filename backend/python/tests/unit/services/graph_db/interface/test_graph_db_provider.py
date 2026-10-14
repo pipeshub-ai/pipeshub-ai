@@ -244,6 +244,8 @@ class TestAbstractMethodInventory:
         "get_record_by_conversation_index",
         "get_record_by_issue_key",
         "get_record_by_weburl",
+        "get_records_by_weburls",
+        "get_records_linking_to_weburls",
         "get_records_by_parent",
         "get_records_by_record_type",
         "get_records_by_record_group",

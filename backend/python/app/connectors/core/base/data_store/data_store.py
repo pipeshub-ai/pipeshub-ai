@@ -502,6 +502,18 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        """Records of the org stored under any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self, weburls: list[str], org_id: str, connector_names: list[str]
+    ) -> list[str]:
+        """Records holding a link to any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
     async def delete_records_and_relations(self, record_key: str, hard_delete: bool = False) -> None:
         pass
 

@@ -214,11 +214,16 @@ class RelatedExternalRecord(BaseModel):
 
     This model ensures type safety and validation for related external records.
     Only external_record_id and record_type are required; relation_type defaults to LINKED_TO.
+    Optional weburl names the related record by its web address instead (see the field).
     Optional source_column, target_column, constraint_name are used for SQL FK edges.
     """
     external_record_id: str = Field(description="External ID of the related record")
     record_type: RecordType = Field(description="Type of the related record")
     record_name: Optional[str] = Field(default=None, description="Human-readable name for the related record placeholder (e.g., table name for SQL FK targets). Defaults to external_record_id if not provided.")
+    # Set when the related record is named by its web address, as a pasted link
+    # names it. It is then looked up by that address in every connector of the
+    # org, and no placeholder is made when it is not there yet.
+    weburl: Optional[str] = Field(default=None, description="Web address of the related record, looked up across connectors; never creates a placeholder")
     relation_type: RecordRelations = Field(
         default=RecordRelations.LINKED_TO,
         description="Type of relation to create (e.g., BLOCKS, CLONES, etc.)"

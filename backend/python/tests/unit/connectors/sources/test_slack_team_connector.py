@@ -5865,6 +5865,51 @@ class TestSlackTeamConnectorCoverageBoost:
         assert rec.weburl is None
 
     @pytest.mark.asyncio
+    async def test_thread_burst_names_the_records_its_messages_link(self) -> None:
+        """The message, not its link record, is joined to the PR and the Jira issue
+        it pastes, by address, in whichever connector holds them."""
+        from app.connectors.sources.slack.team.connector import (
+            ConversationalBurst,
+            ProcessingContext,
+        )
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {"U1": "A"}, {"C1": "g"}, c.rate_limiter)
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "1.0", "user": "U1", "text": "review <https://github.com/acme/api/pull/7|#7> please"},
+                {"ts": "2.0", "user": "U1", "text": "tracks <https://acme.atlassian.net/browse/PA-1718?atlOrigin=x>"},
+                {"ts": "3.0", "user": "U1", "text": "same one https://github.com/acme/api/pull/7/files"},
+            ],
+            start_ts=1.0,
+            end_ts=3.0,
+        )
+        rec = await c._build_thread_burst_record(burst, "1.0", "trg", ctx)
+        assert [r.weburl for r in rec.related_external_records] == [
+            "https://github.com/acme/api/pull/7",
+            "https://acme.atlassian.net/browse/PA-1718?atlOrigin=x",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_link_record_no_longer_names_a_jira_key_in_slack(self) -> None:
+        """A Jira key on the link record would be looked up inside Slack's own
+        connector, where no Jira issue lives, and become a placeholder ticket."""
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import ProcessingContext
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "g"}, c.rate_limiter)
+        parent = MessageRecord(
+            org_id="org-test", record_name="p", record_type=RecordType.MESSAGE,
+            external_record_id="1.0", external_record_group_id="C1", record_group_id="rg",
+            version=1, origin=OriginTypes.CONNECTOR, connector_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id, mime_type=MimeTypes.BLOCKS.value,
+        )
+        lr = await c._process_link("https://acme.atlassian.net/browse/PA-1718", parent, ctx, {})
+        assert lr.related_external_records == []
+
+    @pytest.mark.asyncio
     async def test_process_link_exception_returns_none(self):
         from app.connectors.sources.slack.team.connector import ProcessingContext, SlackConnector
         from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
@@ -5886,7 +5931,7 @@ class TestSlackTeamConnectorCoverageBoost:
             mime_type=MimeTypes.BLOCKS.value,
         )
         parent.id = "mid"
-        with patch.object(SlackConnector, "_classify_url", side_effect=RuntimeError("bad")):
+        with patch.object(SlackConnector, "_unfurl_data", side_effect=RuntimeError("bad")):
             lr = await c._process_link("https://x.com", parent, ctx, {"text": ""})
         assert lr is None
 

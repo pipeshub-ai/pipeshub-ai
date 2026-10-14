@@ -260,6 +260,12 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_record_by_weburl(self, weburl, org_id=None):
         return None
 
+    async def get_records_by_weburls(self, weburls, org_id) -> list:
+        return []
+
+    async def get_records_linking_to_weburls(self, weburls, org_id, connector_names) -> list:
+        return []
+
     async def delete_records_and_relations(self, record_key, hard_delete=False):
         pass
 

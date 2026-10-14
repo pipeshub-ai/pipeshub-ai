@@ -1097,6 +1097,38 @@ class TestProcessFileAndLink:
         assert out and out.parent_node_id == "mid"
 
     @pytest.mark.asyncio
+    async def test_thread_burst_names_the_records_its_messages_link(self) -> None:
+        from app.connectors.sources.slack.individual.connector import (
+            ConversationalBurst,
+        )
+
+        c = _make_connector()
+        ctx = _ctx(c)
+        burst = ConversationalBurst(
+            messages=[
+                {"ts": "1.0", "user": "U1", "text": "see <https://github.com/acme/api/pull/7>"},
+                {"ts": "2.0", "user": "U1", "text": "and https://acme.atlassian.net/browse/PA-1718"},
+            ],
+            start_ts=1.0,
+            end_ts=2.0,
+        )
+        rec = await c._build_thread_burst_record(burst, "1.0", "trg", ctx)
+        assert [r.weburl for r in rec.related_external_records] == [
+            "https://github.com/acme/api/pull/7",
+            "https://acme.atlassian.net/browse/PA-1718",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_link_record_no_longer_names_a_jira_key_in_slack(self) -> None:
+        c = _make_connector()
+        ctx = _ctx(c)
+        parent = MagicMock(spec=MessageRecord)
+        parent.id = "p"
+        parent.external_record_id = "1.0"
+        lr = await c._process_link("https://x.atlassian.net/browse/ABC-9", parent, ctx, {})
+        assert lr.related_external_records == []
+
+    @pytest.mark.asyncio
     async def test_process_link(self):
         c = _make_connector()
         ctx = _ctx(c)

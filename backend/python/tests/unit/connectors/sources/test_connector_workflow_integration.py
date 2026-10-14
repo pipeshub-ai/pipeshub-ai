@@ -276,6 +276,21 @@ class MockTransactionStore:
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
 
+    async def get_records_by_weburls(self, weburls: List[str], org_id: str) -> List[Dict]:
+        wanted = set(weburls)
+        return [
+            {"id": doc["_key"], "recordType": doc.get("recordType"), "webUrl": doc.get("webUrl"),
+             "isDependentNode": bool(doc.get("isDependentNode"))}
+            for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values()
+            if doc.get("webUrl") in wanted and doc.get("orgId") == org_id
+            and doc.get("recordType") != RecordType.LINK.value and doc.get("isDeleted") is not True
+        ]
+
+    async def get_records_linking_to_weburls(
+        self, weburls: List[str], org_id: str, connector_names: List[str]
+    ) -> List[str]:
+        return []
+
     async def batch_upsert_records(
         self, records: List[Record], *, release_trashed_external_ids: bool = False
     ) -> None:

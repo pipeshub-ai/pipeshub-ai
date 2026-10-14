@@ -721,6 +721,19 @@ class GraphTransactionStore(TransactionStore):
         """Get record by weburl (exact match)."""
         return await self.graph_provider.get_record_by_weburl(weburl, org_id, transaction=self.txn)
 
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        # Room for every record one address can hold (a ticket and its attachments).
+        return await self.graph_provider.get_records_by_weburls(
+            weburls, org_id, limit=200, transaction=self.txn
+        )
+
+    async def get_records_linking_to_weburls(
+        self, weburls: list[str], org_id: str, connector_names: list[str]
+    ) -> list[str]:
+        return await self.graph_provider.get_records_linking_to_weburls(
+            weburls, org_id, connector_names, transaction=self.txn
+        )
+
     async def get_records_by_parent(
         self,
         connector_id: str,

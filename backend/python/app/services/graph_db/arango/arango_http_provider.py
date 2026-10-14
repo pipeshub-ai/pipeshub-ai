@@ -5421,6 +5421,83 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error("❌ Failed to retrieve record by weburl %s: %s", weburl, str(e))
             return None
 
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not weburls or not org_id:
+            return []
+        # Served by the (webUrl, orgId) index.
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value}
+            FILTER record.webUrl IN @weburls
+                AND record.orgId == @org_id
+                AND record.recordType != "LINK"
+                AND record.isPlaceholder != true
+                AND {aql_live_record("record")}
+            LIMIT @limit
+            RETURN {{
+                id: record._key,
+                recordType: record.recordType,
+                connectorName: record.connectorName,
+                webUrl: record.webUrl,
+                isDependentNode: record.isDependentNode == true
+            }}
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {"weburls": list(weburls), "org_id": org_id, "limit": limit},
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_records_by_weburls failed: %s", str(e))
+            return []
+
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not weburls or not org_id or not connector_names:
+            return []
+        query = f"""
+        FOR link IN {CollectionNames.RECORDS.value}
+            FILTER link.webUrl IN @weburls
+                AND link.orgId == @org_id
+                AND link.recordType == "LINK"
+                AND link.connectorName IN @connector_names
+                AND {aql_live_record("link")}
+            FOR holder, edge IN 1..1 INBOUND link {CollectionNames.RECORD_RELATIONS.value}
+                FILTER edge.relationshipType == "PARENT_CHILD"
+                    AND IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", holder)
+                    AND holder.orgId == @org_id
+                    AND {aql_live_record("holder")}
+                COLLECT id = holder._key
+                LIMIT @limit
+                RETURN id
+        """
+        try:
+            return await self.http_client.execute_aql(
+                query,
+                {
+                    "weburls": list(weburls),
+                    "org_id": org_id,
+                    "connector_names": list(connector_names),
+                    "limit": limit,
+                },
+                txn_id=transaction,
+            ) or []
+        except Exception as e:
+            self.logger.error("❌ get_records_linking_to_weburls failed: %s", str(e))
+            return []
+
     async def get_records_by_parent(
         self,
         connector_id: str,

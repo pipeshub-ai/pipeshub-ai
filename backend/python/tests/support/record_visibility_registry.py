@@ -69,6 +69,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_by_record_group": (Rule.LIVE, "reindex keyset walk"),
     "get_records_by_parent_record": (Rule.LIVE, "reindex keyset walk"),
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
+    "get_records_by_weburls": (Rule.LIVE, "joins a record to the records at the addresses it pastes"),
+    "get_records_linking_to_weburls": (Rule.LIVE, "joins a newly indexed record to the records that pasted its address"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),

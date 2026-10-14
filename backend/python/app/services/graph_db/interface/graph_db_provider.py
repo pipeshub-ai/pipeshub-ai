@@ -2100,6 +2100,62 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The live records of the org stored under any of ``weburls`` (exact
+        match), in any connector. Link records and placeholders are left out:
+        they hold an address, they do not live at it.
+
+        Used to join a record to the records whose addresses it pastes.
+
+        Args:
+            weburls: Exact ``webUrl`` values. Empty returns ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            limit: Most rows returned.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Rows ``{"id", "recordType", "connectorName", "webUrl",
+            "isDependentNode"}``, in no particular order. ``[]`` on a query
+            failure, which is logged: a missed join must not fail a record write.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Ids of the live records that hold a link to any of ``weburls``.
+
+        A connector that keeps each pasted address as a ``LINK`` record under
+        the record that pasted it (a Slack message) is read here: the link
+        record is matched by its ``webUrl`` (exact), then its parent through
+        the ``PARENT_CHILD`` relation is returned.
+
+        Args:
+            weburls: Exact ``webUrl`` values of the link records. Empty returns
+                ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only link records of these connectors are read.
+            limit: Most ids returned.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct record ids. ``[]`` on a query failure, which is logged.
+        """
+        pass
+
+    @abstractmethod
     async def get_records_by_parent(
         self,
         connector_id: str,

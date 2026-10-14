@@ -16731,6 +16731,76 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.error(f"❌ Get record by web URL failed: {str(e)}")
             return None
 
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        limit: int = 50,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not weburls or not org_id:
+            return []
+        # Served by the (webUrl, orgId) index.
+        query = f"""
+        MATCH (r:Record)
+        WHERE r.webUrl IN $weburls AND r.orgId = $org_id
+          AND r.recordType <> 'LINK'
+          AND (r.isPlaceholder IS NULL OR r.isPlaceholder = false)
+          AND {cypher_live_record("r")}
+        RETURN r.id AS id, r.recordType AS recordType, r.connectorName AS connectorName,
+               r.webUrl AS webUrl, coalesce(r.isDependentNode, false) AS isDependentNode
+        LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={"weburls": list(weburls), "org_id": org_id, "limit": limit},
+                txn_id=transaction,
+            )
+            return [dict(row) for row in rows or []]
+        except Exception as e:
+            self.logger.error(f"❌ get_records_by_weburls failed: {str(e)}")
+            return []
+
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        transaction: str | None = None,
+    ) -> list[str]:
+        if not weburls or not org_id or not connector_names:
+            return []
+        query = f"""
+        MATCH (link:Record)
+        WHERE link.webUrl IN $weburls AND link.orgId = $org_id
+          AND link.recordType = 'LINK'
+          AND link.connectorName IN $connector_names
+          AND {cypher_live_record("link")}
+        MATCH (holder:Record)-[rel:RECORD_RELATION]->(link)
+        WHERE rel.relationshipType = 'PARENT_CHILD'
+          AND holder.orgId = $org_id
+          AND {cypher_live_record("holder")}
+        RETURN DISTINCT holder.id AS id
+        LIMIT $limit
+        """
+        try:
+            rows = await self.client.execute_query(
+                query,
+                parameters={
+                    "weburls": list(weburls),
+                    "org_id": org_id,
+                    "connector_names": list(connector_names),
+                    "limit": limit,
+                },
+                txn_id=transaction,
+            )
+            return [row["id"] for row in rows or [] if row.get("id")]
+        except Exception as e:
+            self.logger.error(f"❌ get_records_linking_to_weburls failed: {str(e)}")
+            return []
+
     async def get_record_parent_info(
         self,
         record_id: str,

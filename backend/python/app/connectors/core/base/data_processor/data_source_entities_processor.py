@@ -56,6 +56,10 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
+from app.connectors.core.base.data_processor.record_links import (
+    addresses_linking_to,
+    link_target,
+)
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.cache.invalidation_hooks import (
     notify_connector_permissions_changed,
@@ -650,6 +654,7 @@ class DataSourceEntitiesProcessor:
                 self.logger.warning(f"Failed to delete existing edges for record {record.id}: {str(e)}")
 
         edges_to_create = []
+        at_addresses = await self._records_at_addresses(record, related_external_records, tx_store)
 
         for related_ext_record in related_external_records:
             if not isinstance(related_ext_record, RelatedExternalRecord):
@@ -657,6 +662,16 @@ class DataSourceEntitiesProcessor:
                     f"Skipping invalid related_external_record: expected RelatedExternalRecord, "
                     f"got {type(related_ext_record).__name__}"
                 )
+                continue
+
+            if related_ext_record.weburl:
+                # Named by address: the record at that address, in any connector,
+                # or nothing yet. Joined from its side when it is indexed later.
+                target_id = at_addresses.get(related_ext_record.weburl)
+                if target_id:
+                    edges_to_create.append(self._address_link_edge(
+                        record.id, target_id, related_ext_record.relation_type.value
+                    ))
                 continue
 
             external_record_id = related_ext_record.external_record_id
@@ -708,6 +723,91 @@ class DataSourceEntitiesProcessor:
         # Batch upsert all relation edges at once
         if edges_to_create:
             await tx_store.batch_upsert_record_relations(edges_to_create)
+
+    # Connectors that keep each pasted address as a LINK record under the record
+    # that pasted it. Their link records are how a record indexed after the
+    # message that linked it finds that message.
+    ADDRESS_LINK_HOLDER_CONNECTORS = [Connectors.SLACK_WORKSPACE.value, Connectors.SLACK.value]
+
+    @staticmethod
+    def _address_link_edge(from_id: str, to_id: str, relation_type: str) -> dict:
+        now = get_epoch_timestamp_in_ms()
+        return {
+            "_from": f"{CollectionNames.RECORDS.value}/{from_id}",
+            "_to": f"{CollectionNames.RECORDS.value}/{to_id}",
+            "relationshipType": relation_type,
+            # How the two were joined: one record pastes the other's address.
+            "matchedBy": "url",
+            "createdAtTimestamp": now,
+            "updatedAtTimestamp": now,
+            "constraintName": "",
+        }
+
+    async def _records_at_addresses(
+        self,
+        record: Record,
+        related_external_records: list[RelatedExternalRecord],
+        tx_store: TransactionStore,
+    ) -> dict[str, str]:
+        """For each related record named by address, the id of the record stored
+        at that address in any connector of the org, when there is one.
+
+        One indexed read for all of the record's addresses. Of several records
+        at one address (a ticket and the attachments that share its address),
+        the one that is not a dependent node is taken.
+        """
+        targets = {}
+        for related in related_external_records:
+            weburl = getattr(related, "weburl", None)
+            if isinstance(related, RelatedExternalRecord) and weburl and weburl not in targets:
+                target = link_target(weburl)
+                if target is not None:
+                    targets[weburl] = target
+        if not targets:
+            return {}
+        candidates = list(dict.fromkeys(c for t in targets.values() for c in t.candidates))
+        rows = await tx_store.get_records_by_weburls(candidates, record.org_id or self.org_id)
+        by_address: dict[str, list[dict]] = {}
+        for row in rows or []:
+            if row.get("id") and row["id"] != record.id:
+                by_address.setdefault(row.get("webUrl"), []).append(row)
+        found: dict[str, str] = {}
+        for weburl, target in targets.items():
+            for candidate in target.candidates:
+                here = by_address.get(candidate)
+                if here:
+                    best = min(here, key=lambda r: (bool(r.get("isDependentNode")), str(r["id"])))
+                    found[weburl] = best["id"]
+                    break
+        return found
+
+    async def _join_records_linking_here(self, record: Record, tx_store: TransactionStore) -> None:
+        """Join the records that pasted this record's address before it was indexed.
+
+        A message linking a pull request is saved with no edge when the pull
+        request is not indexed yet. When the pull request is saved, its address
+        finds the message's link record, and the message gets the edge it would
+        have had. Idempotent: the edge is upserted.
+        """
+        if (
+            record.record_type == RecordType.LINK
+            or record.is_placeholder
+            or not record.weburl
+        ):
+            return
+        addresses = addresses_linking_to(record.weburl)
+        if not addresses:
+            return
+        holders = await tx_store.get_records_linking_to_weburls(
+            list(addresses), record.org_id or self.org_id, self.ADDRESS_LINK_HOLDER_CONNECTORS
+        )
+        edges = [
+            self._address_link_edge(holder_id, record.id, RecordRelations.LINKED_TO.value)
+            for holder_id in holders
+            if holder_id and holder_id != record.id
+        ]
+        if edges:
+            await tx_store.batch_upsert_record_relations(edges)
 
     async def _handle_record_group(self, record: Record, tx_store: TransactionStore) -> str | None:
         """
@@ -1830,8 +1930,13 @@ class DataSourceEntitiesProcessor:
         # Handle related external records (issue links, project links, FK relations, etc.)
         # For TicketRecord, ProjectRecord, SQLTableRecord and SQLViewRecord, ALWAYS call this
         # to clean up stale link edges even when related_external_records is empty (handles removed links)
-        if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord)):
+        # A MessageRecord's links are pasted addresses (see record_links), and an
+        # edit can remove one, so it is always cleaned up as well.
+        if isinstance(record, (TicketRecord, ProjectRecord, SQLTableRecord, SQLViewRecord, MessageRecord)):
             await self._handle_related_external_records(record, record.related_external_records or [], tx_store)
+
+        # Records that pasted this record's address before it was indexed.
+        await self._join_records_linking_here(record, tx_store)
 
         # Create ticket-user relationship edges (ASSIGNED_TO, CREATED_BY, REPORTED_BY) if record is a TicketRecord
         if isinstance(record, TicketRecord):
