@@ -605,22 +605,23 @@ describe('MCP Controller — handleMCPRequest', () => {
     let errorStub: sinon.SinonStub
 
     beforeEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      infoStub = sinon.stub()
+      errorStub = sinon.stub()
+      const mockLogger = {
+        info: infoStub,
+        error: errorStub,
+        warn: sinon.stub(),
+        debug: sinon.stub(),
       }
-      infoStub = sinon.stub(Logger.prototype, 'info')
-      errorStub = sinon.stub(Logger.prototype, 'error')
+      sinon.stub(Logger, 'getInstance').returns(mockLogger as any)
     })
 
     afterEach(() => {
-      if (typeof (Logger.prototype.info as any).restore === 'function') {
-        (Logger.prototype.info as any).restore()
-      }
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
     })
 
@@ -768,15 +769,22 @@ describe('MCP Controller — handleMCPRequest', () => {
     let errorStub: sinon.SinonStub
 
     beforeEach(() => {
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
-      errorStub = sinon.stub(Logger.prototype, 'error')
+      errorStub = sinon.stub()
+      const mockLogger = {
+        info: sinon.stub(),
+        error: errorStub,
+        warn: sinon.stub(),
+        debug: sinon.stub(),
+      }
+      sinon.stub(Logger, 'getInstance').returns(mockLogger as any)
     })
 
     afterEach(() => {
-      if (typeof (Logger.prototype.error as any).restore === 'function') {
-        (Logger.prototype.error as any).restore()
+      if (typeof (Logger.getInstance as any).restore === 'function') {
+        (Logger.getInstance as any).restore()
       }
     })
 
