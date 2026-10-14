@@ -149,9 +149,10 @@ async def _main(args: argparse.Namespace) -> dict:
                 out["loop_stall_ms"] = await probe.stop() * 1000
             out["peak_extra_mib"] = (_status("VmHWM") - base) / 2**20
             big = [r for r in results if r[0] == "vr-big"]
-            out["big_ok"] = sum(r[2] == "ok" for r in big)
-            out["big_errors"] = sorted({r[2] for r in big if r[2] != "ok"})
-            out["big_latency_ms_max"] = max(r[1] for r in big) * 1000
+            if big:
+                out["big_ok"] = sum(r[2] == "ok" for r in big)
+                out["big_errors"] = sorted({r[2] for r in big if r[2] != "ok"})
+                out["big_latency_ms_max"] = max(r[1] for r in big) * 1000
             smalls = [r[1] * 1000 for r in results if r[0] != "vr-big"]
             if smalls:
                 out["small_ok"] = sum(r[2] == "ok" for r in results if r[0] != "vr-big")
