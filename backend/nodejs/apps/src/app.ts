@@ -41,9 +41,7 @@ import {
   UserManagerContainer,
   AuthServiceContainer,
   createUserAccountRouter,
-  createSamlRouter,
   createOrgAuthConfigRouter,
-  SamlController,
   MailServiceContainer,
   createMailServiceRouter,
   EnterpriseSearchAgentContainer,
@@ -565,8 +563,6 @@ export class Application {
       createFeatureFlagRouter(this.entityManagerContainer),
     );
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
-
     this.app.use(
       '/api/v1/userAccount',
       createUserAccountRouter(this.authServiceContainer),
@@ -827,10 +823,6 @@ export class Application {
           resolve();
         });
       });
-      if (this.authServiceContainer) {
-        await this.updateSamlStrategies();
-      }
-
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1098,16 +1090,6 @@ export class Application {
       this.logger.info('OAuth token service registered for AuthMiddleware factory');
     } catch (error) {
       this.logger.warn('Failed to register OAuth token service', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-  async updateSamlStrategies(): Promise<void> {
-    try {
-      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      await samlController.updateSamlStrategiesWithCallback();
-    } catch (error) {
-      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }
