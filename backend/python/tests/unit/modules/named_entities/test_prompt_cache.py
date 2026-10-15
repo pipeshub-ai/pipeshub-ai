@@ -31,3 +31,27 @@ async def test_an_unknown_provider_gets_no_cache_parameters() -> None:
     from unittest.mock import MagicMock
 
     assert await _cache_kwargs(MagicMock(), org_id="org-1", shard_key="report.pdf") == {}
+
+
+async def test_a_refusal_the_transport_records_stops_the_next_record_asking() -> None:
+    """With no model in the configuration the transport is named by the model key;
+    the strategy must be chosen under that same name, or the refusal never applies."""
+    from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+
+    class _Refused(Exception):
+        status_code = 400
+
+    config = {"provider": "azureOpenAI", "modelKey": "key-1", "configuration": {}}
+    REJECTED_CACHE_PARAMS.clear()
+    try:
+        with patch("app.utils.llm.get_llm_for_role", AsyncMock(return_value=(_azure(), config))):
+            _, transport, _, _ = await indexing_llm(object(), org_id="org-1", shard_key="a.pdf")
+            assert transport._inner._cache.finalize([])[1]
+            assert transport._inner._drop_cache_params(
+                _Refused("Error code: 400 - Unrecognized request argument supplied: prompt_cache_key"),
+            )
+            _, later, _, _ = await indexing_llm(object(), org_id="org-1", shard_key="b.pdf")
+        assert later._inner._cache.finalize([])[1] == {}
+    finally:
+        REJECTED_CACHE_PARAMS.clear()
+

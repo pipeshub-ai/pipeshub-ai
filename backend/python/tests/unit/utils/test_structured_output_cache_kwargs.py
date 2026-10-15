@@ -82,3 +82,39 @@ async def test_no_kwargs_by_default() -> None:
     llm = _Llm(['{"value": 1}'])
     await invoke_with_structured_output_and_reflection(llm, [HumanMessage(content="q")], _Answer)
     assert llm.seen == [{}]
+
+
+async def test_a_reflection_call_refused_is_resent_without_them() -> None:
+    refused = _BadRequest("Error code: 400 - Unrecognized request argument supplied: prompt_cache_key")
+    llm = _Llm(["not json", refused, '{"value": 3}'])
+    with patch.object(streaming, "forget_cache_params"):
+        result = await invoke_with_structured_output_and_reflection(
+            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+        )
+    assert result == _Answer(value=3)
+    assert llm.seen == [KWARGS, KWARGS, {}]
+
+
+async def test_calls_after_a_refusal_carry_no_cache_parameters() -> None:
+    refused = _BadRequest("Error code: 400 - Unrecognized request argument supplied: prompt_cache_key")
+    llm = _Llm([refused, "not json", '{"value": 5}'])
+    with patch.object(streaming, "forget_cache_params"):
+        result = await invoke_with_structured_output_and_reflection(
+            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+        )
+    assert result == _Answer(value=5)
+    assert llm.seen == [KWARGS, {}, {}]
+
+
+async def test_the_refusal_is_recorded_through_the_callers_callback() -> None:
+    refused = _BadRequest("Error code: 400 - Unrecognized request argument supplied: prompt_cache_key")
+    llm = _Llm([refused, '{"value": 7}'])
+    recorded: list[str] = []
+    with patch.object(streaming, "forget_cache_params") as forget:
+        await invoke_with_structured_output_and_reflection(
+            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+            on_cache_rejected=lambda: recorded.append("caller"),
+        )
+    assert recorded == ["caller"]
+    forget.assert_not_called()
+

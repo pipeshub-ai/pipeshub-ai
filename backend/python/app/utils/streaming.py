@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import AsyncGenerator, Mapping
+from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import (
     Any,
     TypeVar,
@@ -1149,6 +1149,7 @@ async def invoke_with_structured_output_and_reflection(
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
     call_kwargs: Mapping[str, Any] | None = None,
+    on_cache_rejected: Callable[[], None] | None = None,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1169,7 +1170,12 @@ async def invoke_with_structured_output_and_reflection(
             the schema.
         call_kwargs: Request parameters for every call, such as a prompt
             cache's ``CacheStrategy.finalize`` kwargs. If the provider refuses
-            one of them as a cache parameter, the call is resent without them.
+            one of them as a cache parameter, that call (the first or a
+            reflection) is resent without them, and so is every later call.
+        on_cache_rejected: Called once when the provider refuses a cache
+            parameter. Pass the callback that records the refusal under the
+            identity the cache strategy was chosen with; by default it is
+            recorded for ``llm`` with no model name.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1178,23 +1184,33 @@ async def invoke_with_structured_output_and_reflection(
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
     invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
+    kwargs = dict(call_kwargs or {})
+
+    async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
+        nonlocal kwargs
+        try:
+            return await _ainvoke_throttled(
+                llm_with_structured_output, request, config=invoke_config,
+                call_timeout=call_timeout, call_kwargs=kwargs,
+            )
+        except Exception as exc:
+            if not kwargs or not is_prompt_cache_param_conflict(exc, kwargs):
+                raise
+            logger.warning("Prompt-cache parameters rejected; resending without them: %s", exc)
+            if on_cache_rejected is not None:
+                on_cache_rejected()
+            else:
+                forget_cache_params(llm)
+            kwargs = {}
+            return await _ainvoke_throttled(
+                llm_with_structured_output, request, config=invoke_config, call_timeout=call_timeout,
+            )
 
     try:
-        response = await _ainvoke_throttled(
-            llm_with_structured_output, messages, config=invoke_config,
-            call_timeout=call_timeout, call_kwargs=call_kwargs,
-        )
+        response = await _call(messages)
     except NonRetryableError:
         raise
     except Exception as e:
-        if call_kwargs and is_prompt_cache_param_conflict(e, call_kwargs):
-            logger.warning("Prompt-cache parameters rejected; resending without them: %s", e)
-            forget_cache_params(llm)
-            return await invoke_with_structured_output_and_reflection(
-                llm, messages, schema, max_retries,
-                enable_opik_tracing=enable_opik_tracing, call_timeout=call_timeout,
-                raise_call_errors=raise_call_errors,
-            )
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
@@ -1268,10 +1284,7 @@ Respond only with valid JSON that matches the schema."""
             # reply to show the model on the next attempt.
             reflection_content = None
             try:
-                reflection_response = await _ainvoke_throttled(
-                    llm_with_structured_output, reflection_messages, config=invoke_config,
-                    call_timeout=call_timeout, call_kwargs=call_kwargs,
-                )
+                reflection_response = await _call(reflection_messages)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)

@@ -7,7 +7,10 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
-from app.agents.agent_loop.prompt_cache import family_cache_strategy
+from app.agents.agent_loop.prompt_cache import (
+    family_cache_strategy,
+    forget_cache_params,
+)
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, SemanticMetadata
@@ -455,17 +458,17 @@ class DocumentExtraction(Transformer):
         ]
         # The instructions go first and alone, so every record of the org sends
         # the same prefix and the provider can serve it from cache.
+        llm = self.llm
+        model_name = str((config.get("configuration") or {}).get("model") or "")
         cache = family_cache_strategy(
-            self.llm,
-            family=PROMPT_FAMILY,
-            org_id=org_id,
-            shard_key=record_name,
-            model_name=str((config.get("configuration") or {}).get("model") or ""),
+            llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
         system = cache.system(self._fill_prompt(department_list), "")
         messages, call_kwargs = cache.finalize([system, HumanMessage(content=document)])
         parsed_response = await invoke_with_structured_output_and_reflection(
-            self.llm, messages, DocumentClassification, call_kwargs=call_kwargs,
+            llm, messages, DocumentClassification, call_kwargs=call_kwargs,
+            # Recorded under the name the strategy was chosen with, so the next record skips it.
+            on_cache_rejected=lambda: forget_cache_params(llm, model_name),
         )
         if parsed_response is not None:
             self.logger.debug("✅ Document classification parsed successfully")

@@ -1275,6 +1275,36 @@ class TestCacheablePrefix:
         assert other_org["prompt_cache_key"] != kwargs_a["prompt_cache_key"]
 
     @pytest.mark.asyncio
+    async def test_a_refusal_is_remembered_under_the_configured_model(self) -> None:
+        """The deployment name differs from the configured model: the refusal must be
+        recorded under the name the strategy is chosen with, or every record resends it."""
+        from langchain_openai import AzureChatOpenAI
+
+        from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+
+        llm = AzureChatOpenAI(
+            azure_endpoint="https://acme.openai.azure.com", azure_deployment="prod-54",
+            api_version="2025-04-01-preview", api_key="test",
+        )
+        ext = _build_extractor()
+        REJECTED_CACHE_PARAMS.clear()
+        try:
+            with patch(
+                "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+                new_callable=AsyncMock, return_value=None,
+            ) as mock_invoke, patch.object(ext, "_fallback_summary", AsyncMock(return_value=None)), patch(
+                "app.modules.transformers.document_extraction.get_llm_for_role",
+                return_value=(llm, {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}),
+            ):
+                await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
+                assert mock_invoke.call_args.kwargs["call_kwargs"]
+                mock_invoke.call_args.kwargs["on_cache_rejected"]()
+                await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
+            assert mock_invoke.call_args.kwargs["call_kwargs"] == {}
+        finally:
+            REJECTED_CACHE_PARAMS.clear()
+
+    @pytest.mark.asyncio
     async def test_unknown_providers_get_no_cache_parameters(self) -> None:
         ext = _build_extractor()
         _, kwargs = await self._messages(ext, MagicMock(), record_name="a.pdf", record_type="FILE", text="x")

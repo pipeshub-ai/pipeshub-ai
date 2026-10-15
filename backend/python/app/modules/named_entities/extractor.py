@@ -213,8 +213,7 @@ async def indexing_llm(
     provider = str((config or {}).get("provider") or "indexing")
     configuration = (config or {}).get("configuration") or {}
     model = str(configuration.get("model") or (config or {}).get("modelKey") or "indexing")
-    cache = family_cache_strategy(
-        llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=shard_key, model_name=str(configuration.get("model") or ""),
-    )
+    # The transport records a refused cache parameter under this same name.
+    cache = family_cache_strategy(llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=shard_key, model_name=model)
     transport = LangChainTransport(llm, model_name=model, cache_strategy=cache)
     return llm, SlottedTransport(transport), provider, model
