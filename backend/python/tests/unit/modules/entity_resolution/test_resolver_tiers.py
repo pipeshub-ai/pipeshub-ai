@@ -1,5 +1,8 @@
 """EntityResolver tiers: name collection, exact match, winner lookup, model call."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +10,10 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import ResolutionMode
+
+if TYPE_CHECKING:
+    from app.modules.entity_resolution.models import EntityResolution
+
 
 TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
@@ -425,7 +432,7 @@ class TestWinnerCheckedAgainstTheGraph:
             EntityRecord(entity_id=entity_id, entity_type=EntityType.TOPIC, name=name, org_id=org),
         ])
 
-    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic):
+    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic) -> EntityResolution | None:
         return await make_resolver().resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=[topic]))
         )

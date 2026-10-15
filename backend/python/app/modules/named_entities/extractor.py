@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.modules.named_entities.domain.config import NamedEntityBudgets
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
@@ -14,7 +15,6 @@ from app.modules.named_entities.domain.models import (
     TerminationReason,
 )
 from app.modules.named_entities.guardrails import apply_caps
-from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.merge import mentions_to_entities
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.normalizers.dates import NormalizationContext
@@ -35,6 +35,13 @@ from app.modules.named_entities.strategies.single_call import (
 )
 from app.modules.named_entities.text import TextUnit, text_units_from_blocks
 from app.telemetry.modules.named_entity_metrics import record_fallback
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.config.configuration_service import ConfigurationService
+    from app.modules.named_entities.mentions import RawMention
+    from app.modules.named_entities.strategies.agent.transport import SlottedTransport
 
 _MAX_RECORD_CHARS = 1_000_000
 _COMPLETED = {"deterministic", "finish_ok", "single_call", "empty"}
@@ -192,7 +199,9 @@ def _single_outcome(model: StrategyResult) -> tuple[str, TerminationReason]:
 PROMPT_FAMILY = "named-entities"
 
 
-async def indexing_llm(config_service, *, org_id: str = "", shard_key: str = ""):
+async def indexing_llm(
+    config_service: ConfigurationService, *, org_id: str = "", shard_key: str = "",
+) -> tuple[BaseChatModel, SlottedTransport, str, str]:
     """The indexing-role model, wrapped so each agent turn takes a slot. Every
     turn of one record (``shard_key``) goes to the same prompt cache."""
     from app.agents.agent_loop.langchain_transport import LangChainTransport

@@ -18,10 +18,8 @@ from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, sp
 from app.modules.named_entities.grounding import Grounder
 from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.normalizers import normalize_value
-from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.recognizers.pattern import is_suppressed_secret
 from app.modules.named_entities.strategies.agent.staging import StagingSet
-from app.modules.named_entities.text import TextUnit
 from app.modules.named_entities.wire import (
     WireEntity,
     parse_wire_kind,
@@ -30,6 +28,12 @@ from app.modules.named_entities.wire import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    from app.agent_loop_lib.core.types import ToolCall
+    from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
+    from app.agent_loop_lib.tools.base import Tag
+    from app.modules.named_entities.normalizers.dates import NormalizationContext
+    from app.modules.named_entities.text import TextUnit
 
 T = TypeVar("T")
 
@@ -308,7 +312,7 @@ def _schema_error(exc: ValidationError) -> str:
     return "; ".join(problems)[:300]
 
 
-def stage_wire_entity(session: ExtractionSession, index: int, item, *, extractor: str = "agent") -> dict:
+def stage_wire_entity(session: ExtractionSession, index: int, item: WireEntity, *, extractor: str = "agent") -> dict:
     """Ground one wire item into the staging set. Invalid items are counted, not stored."""
     session.staging.submitted += 1
     kind = parse_wire_kind(item.kind)
@@ -366,7 +370,7 @@ class FinishTool(_NerTool):
         )
 
     @property
-    def tags(self):
+    def tags(self) -> list[Tag]:
         return [TAG_LIFECYCLE_TERMINAL]
 
     async def execute(self, reason: str = "", **_: object) -> ToolOutput:
@@ -383,7 +387,7 @@ class FinishTool(_NerTool):
         self._session.finished = True
         return ToolOutput(success=True, data={"reason": reason or "done", "accepted": len(self._session.staging)})
 
-    def extract_outcome(self, tr, call, fallback_text: str) -> TaskCompletionOutcome:
+    def extract_outcome(self, tr: CoreToolResult, call: ToolCall, fallback_text: str) -> TaskCompletionOutcome:
         return TaskCompletionOutcome(
             task_done=True,
             final_output={"accepted": len(self._session.staging), "reason": "finish_ok"},

@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 from bisect import bisect_left, insort
-from typing import NamedTuple
+from typing import TYPE_CHECKING, NamedTuple
 
 from app.modules.named_entities.domain.kinds import EntityKind, EntitySource, spec_for
 from app.modules.named_entities.domain.models import Mention, NamedEntity
 from app.modules.named_entities.domain.values import ContactValue, TypedValue
-from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.normalizers import normalize_value
-from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.normalizers.names import canonical_name, norm_key_for
 from app.modules.named_entities.recognizers.pattern import is_suppressed_secret
+
+if TYPE_CHECKING:
+    from app.modules.named_entities.mentions import RawMention
+    from app.modules.named_entities.normalizers.dates import NormalizationContext
 
 _PRIORITY = {"pattern": 0, "value": 1, "agent": 2, "single_call": 3}
 
