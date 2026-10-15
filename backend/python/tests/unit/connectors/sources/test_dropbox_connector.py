@@ -683,6 +683,7 @@ class TestProcessDropboxEntry:
         existing = MagicMock()
         existing.id = "existing-id"
         existing.version = 1
+        existing.external_record_group_id = "rg1"
         existing.record_name = "old_name.pdf"
         existing.external_revision_id = "0123456789abcdef"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
@@ -1387,6 +1388,7 @@ class TestDropboxProcessDropboxEntry:
         existing = MagicMock()
         existing.id = "existing-id"
         existing.version = 1
+        existing.external_record_group_id = "rg1"
         existing.record_name = "doc.pdf"
         existing.external_revision_id = "old-revision"
         dropbox_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
@@ -2390,6 +2392,7 @@ class TestProcessDropboxEntryBranches:
         existing.record_name = "doc.pdf"
         existing.external_revision_id = "0123456789abcdef"
         existing.version = 1
+        existing.external_record_group_id = "rg1"
 
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
 

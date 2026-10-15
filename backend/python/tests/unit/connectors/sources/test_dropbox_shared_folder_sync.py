@@ -185,9 +185,10 @@ class TestFileGrants:
         entry.path_lower = entry.path_display = "/a.txt"
         return entry
 
-    def _stub_source(self, connector: DropboxConnector) -> None:
+    def _stub_source(self, connector: DropboxConnector, stored_group: str = "dbmid:a") -> None:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
-            return_value=MagicMock(id="rec-a", record_name="a.txt", external_revision_id="0123456789abcdef", version=1)
+            return_value=MagicMock(id="rec-a", record_name="a.txt", external_revision_id="0123456789abcdef", version=1,
+                                   external_record_group_id=stored_group)
         )
         connector.data_source.files_get_temporary_link = AsyncMock(return_value=DropboxResponse(success=False))
         connector.data_source.sharing_create_shared_link_with_settings = AsyncMock(
@@ -216,6 +217,27 @@ class TestFileGrants:
 
         assert update.permissions_changed is False
         assert update.record.rewrite_permissions is False
+
+    @pytest.mark.asyncio
+    async def test_a_record_left_under_a_members_home_is_moved_to_its_shared_folder(self, connector) -> None:
+        """The update path keeps the stored group edge; only on_new_records moves a record."""
+        self._stub_source(connector, stored_group="dbmid:a")
+        connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+
+        update = await connector._process_dropbox_entry(self._file(), "dbmid:a", "a@x.com", "sf-1", False)
+
+        assert update.is_updated is False
+        assert update.record.external_record_group_id == "sf-1"
+        assert update.record.rewrite_permissions is True
+
+    @pytest.mark.asyncio
+    async def test_a_record_already_in_its_group_takes_the_update_path(self, connector) -> None:
+        self._stub_source(connector, stored_group="sf-1")
+        connector._convert_dropbox_permissions_to_permissions = AsyncMock(return_value=[])
+
+        update = await connector._process_dropbox_entry(self._file(), "dbmid:a", "a@x.com", "sf-1", False)
+
+        assert update.is_updated is True
 
 
 def test_the_team_connector_is_registered_as_a_connector() -> None:
