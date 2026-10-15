@@ -37,7 +37,6 @@ from app.modules.named_entities.strategies.base import (
 
 logger = logging.getLogger(__name__)
 
-_WINDOW = 5
 
 
 def _summary(seed: list[RawMention]) -> str:
@@ -63,7 +62,8 @@ class AgenticExtractionStrategy:
         session = ExtractionSession(
             doc.units, enabled=ctx.enabled, norm_ctx=ctx.norm, seed_count=len(seed)
         )
-        first = session.show(doc.units[:_WINDOW])
+        first_units = session.window(doc.units[0].block_index) if doc.units else []
+        first = session.show(first_units)
         tools = build_tools(session)
         registry = ToolRegistry()
         for tool in tools:
@@ -85,12 +85,14 @@ class AgenticExtractionStrategy:
         stop: dict[str, str | None] = {"reason": None}
 
         def _install(hooks) -> None:
-            state = {"streak": 0, "staged": 0, "read": 0, "rejected": 0, "feedback": 0}
+            state = {"streak": 0, "staged": 0, "read": 0, "rejected": 0, "feedback": 0, "submits": 0, "all_shown": False}
 
             async def _pre(hook_ctx, next_fn) -> None:
                 state["staged"] = len(session.staging)
                 state["read"] = sum(session.shown.values())
                 state["rejected"] = session.staging.rejected
+                state["submits"] = session.submits
+                state["all_shown"] = not session.unread()
                 await next_fn()
 
             async def _post(hook_ctx, next_fn) -> None:
@@ -104,7 +106,12 @@ class AgenticExtractionStrategy:
                 elif rejected:
                     state["feedback"] += 1
                 progressed = grew or corrected
-                if progressed or session.finished:
+                if state["all_shown"] and session.submits > state["submits"] and not rejected:
+                    # The model had seen every block and submitted cleanly: a finish turn would only say so.
+                    session.finished = True
+                    stop["reason"] = "finish_ok"
+                    token.cancel()
+                elif progressed or session.finished:
                     state["streak"] = 0
                 else:
                     state["streak"] += 1
@@ -140,7 +147,6 @@ class AgenticExtractionStrategy:
             max_turns=budgets.max_turns,
             middleware=[_install],
         )
-        windows = max(1, (len(doc.units) + _WINDOW - 1) // _WINDOW) if doc.units else 0
         goal = Goal(
             description=goal_message(
                 record_name=doc.record_name,
@@ -149,7 +155,8 @@ class AgenticExtractionStrategy:
                 kinds=sorted(kind.value for kind in ctx.enabled),
                 spotlight=first,
                 deterministic_summary=_summary(seed),
-                window_count=windows,
+                window_count=session.window_count(),
+                whole=not session.unread(),
             )
         )
         try:

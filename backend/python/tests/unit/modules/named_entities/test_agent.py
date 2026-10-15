@@ -54,7 +54,8 @@ async def test_agent_submits_and_finishes():
     result = await AgenticExtractionStrategy().extract(doc, [], _ctx(transport))
     assert result.termination_reason == "finish_ok"
     assert [mention.surface for mention in result.mentions] == ["Acme"]
-    assert result.tool_calls == 2
+    # A clean submit of the last window ends the run; the finish turn is never asked for.
+    assert (result.turns, result.tool_calls) == (1, 1)
 
 
 async def test_a_short_document_is_not_stopped_by_its_own_prompt_overhead():
@@ -88,9 +89,7 @@ async def test_the_configured_input_cap_still_stops_the_run():
         org_id=ctx.org_id, norm=ctx.norm, enabled=ctx.enabled, transport=ctx.transport,
         budgets=NamedEntityBudgets(max_turns=4, wall_clock_seconds=30, max_input_tokens=500),
     )
-    doc = ExtractionDocument(units=[TextUnit(0, "b", "Acme signed the deal")], token_estimate=8)
-
-    result = await AgenticExtractionStrategy().extract(doc, [], ctx)
+    result = await AgenticExtractionStrategy().extract(_long_doc(15), [], ctx)
 
     assert result.termination_reason == "budget_tokens"
     assert [mention.surface for mention in result.mentions] == ["Acme"]
@@ -105,10 +104,9 @@ async def test_no_progress_keeps_accepted_items():
         }, "1"),
         *(_call("submit_entities", rejected, str(turn)) for turn in range(2, 7)),
     ])
-    doc = ExtractionDocument(units=[TextUnit(0, "b", "Acme signed the deal")], token_estimate=8)
     ctx = _ctx(transport)
     ctx.budgets = NamedEntityBudgets(max_turns=8, wall_clock_seconds=30)
-    result = await AgenticExtractionStrategy().extract(doc, [], ctx)
+    result = await AgenticExtractionStrategy().extract(_long_doc(8), [], ctx)
     assert result.termination_reason == "no_progress"
     assert [mention.surface for mention in result.mentions] == ["Acme"]
     assert result.rejected_reasons == {"not_in_block": 4}
@@ -154,8 +152,9 @@ def _tool_texts(transport: ScriptedTransport) -> list[str]:
 
 
 def _long_doc(blocks: int) -> ExtractionDocument:
-    units = [TextUnit(i, f"b{i}", f"Block {i} mentions Acme") for i in range(blocks)]
-    return ExtractionDocument(units=units, token_estimate=blocks * 6)
+    """Blocks of ~1,000 characters: five of them make a window."""
+    units = [TextUnit(i, f"b{i}", f"Block {i} mentions Acme. " + "Filler text. " * 75) for i in range(blocks)]
+    return ExtractionDocument(units=units, token_estimate=blocks * 250)
 
 
 async def test_finish_is_refused_until_every_block_is_read():
@@ -204,7 +203,7 @@ async def test_token_budget_keeps_accepted_items():
     }, "1")
     first.usage = heavy
     transport = ScriptedTransport([first, _call("read_blocks", {"start": 5}, "2")])
-    result = await AgenticExtractionStrategy().extract(_long_doc(8), [], _ctx(transport))
+    result = await AgenticExtractionStrategy().extract(_long_doc(15), [], _ctx(transport))
     assert result.termination_reason == "budget_tokens"
     assert {mention.surface for mention in result.mentions} == {"Acme"}
 
@@ -220,7 +219,7 @@ async def test_timeout_keeps_accepted_items():
     ])
     ctx = _ctx(transport)
     ctx.budgets = NamedEntityBudgets(max_turns=4, wall_clock_seconds=0.2)
-    result = await AgenticExtractionStrategy().extract(_long_doc(8), [], ctx)
+    result = await AgenticExtractionStrategy().extract(_long_doc(15), [], ctx)
     assert result.termination_reason == "timeout"
     assert {mention.surface for mention in result.mentions} == {"Acme"}
 
@@ -309,7 +308,93 @@ async def test_a_value_the_text_does_not_state_is_rejected_with_a_fix():
         {"text": "the kickoff", "block": 0, "kind": "date", "normalized": "2026-03-15"},
         {"text": "$5", "block": 0, "kind": "currency", "normalized": "USD 999"},
     ])
-    first, second = output.data["results"]
+    assert output.data["accepted"] == 1
+    (first,) = output.data["rejected"]
+    assert first["index"] == 0
     assert first["status"] == "rejected" and "does not state a date" in first["error"]
-    assert second["status"] == "accepted"
     assert session.staging.rejected_reasons == {"unparsed": 1}
+
+
+def _calls(*calls: tuple[str, dict]) -> ScriptedStep:
+    return ScriptedStep(
+        message=AssistantMessage(
+            content="",
+            tool_calls=[ToolCall(id=f"c{i}", name=name, arguments=args) for i, (name, args) in enumerate(calls)],
+        ),
+        stop_reason=StopReason.TOOL_USE,
+    )
+
+
+def _chat_doc(lines: int) -> ExtractionDocument:
+    units = [TextUnit(i, f"b{i}", f"{i:03d} Priya: the Acme renewal is on track for review today.") for i in range(lines)]
+    return ExtractionDocument(units=units, token_estimate=lines * 15)
+
+
+async def test_a_document_of_short_blocks_is_read_in_one_turn() -> None:
+    """Forty chat lines fit one window: the model submits and finishes in its
+    first turn instead of reading five lines a turn."""
+    acme = {"entities": [{"text": "Acme", "block": 0, "kind": "organization"}]}
+    transport = ScriptedTransport([_calls(("submit_entities", acme), ("finish", {"reason": "done"}))])
+    result = await AgenticExtractionStrategy().extract(_chat_doc(40), [], _ctx(transport))
+    assert result.termination_reason == "finish_ok"
+    assert result.turns == 1
+    goal = transport.calls[0]["messages"][0].content
+    assert "[B39]" in goal
+    assert "The whole document is below" in goal
+
+
+async def test_a_window_stops_at_the_character_budget() -> None:
+    from app.modules.named_entities.strategies.agent.tools import ExtractionSession
+
+    session = ExtractionSession(
+        _chat_doc(100).units, enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
+    )
+    first = session.window(0)
+    assert 5 < len(first) < 100
+    assert sum(len(unit.text) for unit in first) <= 4_000
+    assert session.window_count() == -(-100 // len(first))
+    long_session = ExtractionSession(
+        _long_doc(8).units, enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
+    )
+    assert [unit.block_index for unit in long_session.window(0)] == [0, 1, 2, 3, 4]
+    assert [unit.block_index for unit in long_session.window(5, count=1)] == [5, 6, 7]
+
+
+async def test_a_clean_submit_after_the_last_window_ends_the_run() -> None:
+    """Two windows, two turns: the finish turn after the last submit would only say so."""
+    both = {"entities": [
+        {"text": "Acme", "block": 0, "kind": "organization"},
+        {"text": "Acme", "block": 7, "kind": "organization"},
+    ]}
+    transport = ScriptedTransport([
+        _call("read_blocks", {"start": 5}, "1"),
+        _call("submit_entities", both, "2"),
+        _call("finish", {"reason": "unreachable"}, "3"),
+    ])
+    result = await AgenticExtractionStrategy().extract(_long_doc(8), [], _ctx(transport))
+    assert (result.termination_reason, result.turns) == ("finish_ok", 2)
+    assert {mention.block_index for mention in result.mentions} == {0, 7}
+
+
+async def test_a_submit_before_the_last_window_does_not_end_the_run() -> None:
+    acme = {"entities": [{"text": "Acme", "block": 0, "kind": "organization"}]}
+    transport = ScriptedTransport([
+        _call("submit_entities", acme, "1"),
+        _call("read_blocks", {"start": 5}, "2"),
+        _call("finish", {"reason": "done"}, "3"),
+    ])
+    result = await AgenticExtractionStrategy().extract(_long_doc(8), [], _ctx(transport))
+    assert (result.termination_reason, result.turns) == ("finish_ok", 3)
+
+
+async def test_a_rejected_last_submit_gets_a_turn_to_fix_it() -> None:
+    acme = {"entities": [{"text": "Acme", "block": 0, "kind": "organization"}]}
+    wrong = {"entities": [{"text": "Globex", "block": 0, "kind": "organization"}]}
+    transport = ScriptedTransport([
+        _call("submit_entities", wrong, "1"),
+        _call("submit_entities", acme, "2"),
+    ])
+    doc = ExtractionDocument(units=[TextUnit(0, "b", "Acme signed the deal")], token_estimate=8)
+    result = await AgenticExtractionStrategy().extract(doc, [], _ctx(transport))
+    assert (result.termination_reason, result.turns) == ("finish_ok", 2)
+    assert [mention.surface for mention in result.mentions] == ["Acme"]

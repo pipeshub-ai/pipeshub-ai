@@ -33,16 +33,22 @@ def goal_message(
     spotlight: str,
     deterministic_summary: str,
     window_count: int,
+    whole: bool,
 ) -> str:
+    """The first user turn. What is the same for every record of an org comes first."""
     kind_list = ", ".join(kinds)
     # Titles are user-controlled (email subjects) and sit outside the boundary tag.
     title = " ".join((record_name or "").split())[:200] or "(untitled)"
+    position = (
+        "The whole document is below." if whole
+        else "The first window is below. Read the rest with read_blocks, then call finish."
+    )
     return (
+        f"Enabled kinds: {kind_list}.\n"
+        "Blocks shown to you are read: never read them again.\n\n"
         f"Record title (untrusted): {title!r} ({record_type or 'document'}).\n"
         f"Reference date: {reference}.\n"
-        f"Enabled kinds: {kind_list}.\n"
         f"{deterministic_summary}\n"
-        f"This document has {window_count} window(s) of blocks. "
-        "The first window is below. Read the rest with read_blocks, then call finish.\n\n"
+        f"This document has {window_count} window(s) of blocks. {position}\n\n"
         f"{spotlight}"
     )

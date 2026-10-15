@@ -37,6 +37,9 @@ _WINDOW = 5
 # A window of _WINDOW blocks stays under 16k characters. A longer block is shown
 # 3,000 characters at a time, each part pointing at the read that continues it.
 _MAX_UNIT_CHARS = 3_000
+# Short blocks (chat lines, list items) fill a window up to this many characters,
+# the single-call window size, instead of costing the model a turn per five lines.
+_WINDOW_CHARS = 4_000
 _MAX_HITS = 20
 _MAX_RETRIES = 2
 
@@ -61,6 +64,7 @@ class ExtractionSession:
         self.shown: dict[int, int] = {}
         self.boundary = secrets.token_hex(4)
         self.seed_count = seed_count
+        self.submits = 0
         self.retries: dict[tuple, int] = {}
         self.finished = False
         self._staging_lock = asyncio.Lock()
@@ -71,6 +75,32 @@ class ExtractionSession:
         tool calls of one turn, which run concurrently, from staging at once."""
         async with self._staging_lock:
             return await asyncio.to_thread(stage)
+
+    def window(self, start: int, count: int = _WINDOW, offset: int = 0) -> list[TextUnit]:
+        """Blocks from index ``start``: at least ``count`` of them (at most
+        ``_WINDOW``), then more while the text shown stays within ``_WINDOW_CHARS``."""
+        count = max(1, min(count, _WINDOW))
+        chosen: list[TextUnit] = []
+        used = 0
+        for unit in self.units:
+            if unit.block_index < start:
+                continue
+            skip = min(max(offset, 0), len(unit.text)) if not chosen and unit.block_index == start else 0
+            size = min(len(unit.text) - skip, _MAX_UNIT_CHARS)
+            if len(chosen) >= count and used + size > _WINDOW_CHARS:
+                break
+            chosen.append(unit)
+            used += size
+        return chosen
+
+    def window_count(self) -> int:
+        """Windows a front-to-back read takes, a long block counting once."""
+        windows = 0
+        start = self.units[0].block_index if self.units else 0
+        while chosen := self.window(start):
+            windows += 1
+            start = chosen[-1].block_index + 1
+        return windows
 
     def unread(self) -> list[int]:
         return [unit.block_index for unit in self.units if unit.block_index not in self.read]
@@ -132,11 +162,12 @@ class ReadBlocksTool(_NerTool):
             session,
             "read_blocks",
             "Read a window of document blocks",
-            "Return spotlighted block text. count is at most 5. A block longer than 3,000 "
+            "Return spotlighted block text: at least count blocks from start, then more while "
+            "the window stays under about 4,000 characters. A block longer than 3,000 "
             "characters is shown in parts; continue it with the offset its text ends with.",
             [
                 ToolParameter("start", ParameterType.INTEGER, "First block index to read", required=True),
-                ToolParameter("count", ParameterType.INTEGER, "How many blocks, max 5", required=False),
+                ToolParameter("count", ParameterType.INTEGER, "Fewest blocks to return, max 5", required=False),
                 ToolParameter(
                     "offset", ParameterType.INTEGER, "Character offset in the first block, to continue it",
                     required=False,
@@ -145,12 +176,13 @@ class ReadBlocksTool(_NerTool):
         )
 
     async def execute(self, start: int = 0, count: int = _WINDOW, offset: int = 0, **_: object) -> ToolOutput:
-        count = max(1, min(int(count or _WINDOW), _WINDOW))
         start = int(start)
-        chosen = [unit for unit in self._session.units if unit.block_index >= start][:count]
+        first_offset = int(offset or 0)
+        chosen = self._session.window(start, int(count or _WINDOW), first_offset)
         if not chosen:
             return ToolOutput(success=True, data="No blocks at that index.")
-        first_offset = int(offset or 0) if chosen[0].block_index == start else 0
+        if chosen[0].block_index != start:
+            first_offset = 0
         return ToolOutput(success=True, data=self._session.show(chosen, first_offset))
 
 
@@ -231,14 +263,19 @@ class SubmitEntitiesTool(_NerTool):
             return ToolOutput(success=False, error="at most 100 entities per call")
         before = len(self._session.staging)
         results = await self._session.staged(lambda: [_stage_raw(self._session, i, raw) for i, raw in enumerate(items)])
+        self._session.submits += 1
         if len(self._session.staging) == before:
             self._session.staging.empty_submits += 1
         else:
             self._session.staging.empty_submits = 0
-        note = ""
+        # Only what the model can act on: an accepted item needs no answer.
+        data: dict[str, object] = {"accepted": sum(1 for result in results if result["status"] == "accepted")}
+        problems = [result for result in results if result["status"] != "accepted"]
+        if problems:
+            data["rejected"] = problems
         if self._session.staging.empty_submits >= 2:
-            note = " No new entities. Call finish if the document is covered."
-        return ToolOutput(success=True, data={"results": results, "note": note})
+            data["note"] = "No new entities. Call finish if the document is covered."
+        return ToolOutput(success=True, data=data)
 
 
 def _stage_raw(session: ExtractionSession, index: int, raw: object) -> dict:

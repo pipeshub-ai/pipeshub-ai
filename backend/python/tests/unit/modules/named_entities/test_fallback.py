@@ -378,9 +378,9 @@ async def test_an_agent_that_gives_up_with_nothing_hands_the_document_to_the_sin
 
 async def test_a_plain_reply_with_blocks_unread_is_not_a_finished_run() -> None:
     transport = ScriptedTransport([ScriptedStep(message=AssistantMessage(content="All done."), stop_reason=StopReason.END_TURN)])
-    units = [TextUnit(i, f"b{i}", f"Block {i} mentions Acme") for i in range(12)]
+    units = [TextUnit(i, f"b{i}", f"Block {i} mentions Acme. " + "Filler text. " * 75) for i in range(12)]
     result = await AgenticExtractionStrategy().extract(
-        ExtractionDocument(units=units, token_estimate=72), [], _ctx(transport=transport),
+        ExtractionDocument(units=units, token_estimate=3_000), [], _ctx(transport=transport),
     )
     assert result.termination_reason == "budget_turns"
     assert result.incomplete is True
