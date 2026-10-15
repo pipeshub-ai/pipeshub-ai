@@ -31,6 +31,7 @@ import {
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
@@ -995,18 +996,28 @@ export const getMicrosoftAuthConfig =
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.microsoft,
-      );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
+      const readAuthConfig = async (
+        path: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const encrypted = await keyValueStoreService.get<string>(path);
+        if (!encrypted) return null;
+        return JSON.parse(
           EncryptionService.getInstance(
             configManagerConfig.algorithm,
             configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
+          ).decrypt(encrypted),
+        ) as Record<string, unknown>;
+      };
+
+      let authConfig = await readAuthConfig(configPaths.auth.microsoft);
+      // Azure AD sign-in became Microsoft sign-in; until the startup migration
+      // copies its settings over, serve those.
+      if (!authConfig?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
+        const azureAd = await readAuthConfig(configPaths.auth.azureAD);
+        if (azureAd?.clientId) authConfig = azureAd;
+      }
+
+      if (authConfig) {
         const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
         res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
       } else {

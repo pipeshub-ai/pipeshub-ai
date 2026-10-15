@@ -2921,12 +2921,11 @@ describe('UserAccountController', () => {
         ],
       } as any);
 
-      // Before the migration copies them, the settings live only under Azure AD.
-      mockConfigService.getConfig.callsFake(async (_b: string, path: string) =>
-        path.includes('azureAd')
-          ? { data: { clientId: 'az-client', tenantId: 'azure-tenant-id' } }
-          : { data: {} },
-      );
+      // Until the migration copies them, the Microsoft settings route serves
+      // the Azure AD settings (see getMicrosoftAuthConfig).
+      mockConfigService.getConfig.resolves({
+        data: { clientId: 'az-client', tenantId: 'azure-tenant-id' },
+      });
 
       mockSessionService.createSession.resolves({
         token: 'session-azure-123',
@@ -2948,27 +2947,6 @@ describe('UserAccountController', () => {
       expect(mockSessionService.createSession.firstCall.args[0].authConfig).to.deep.equal([
         { order: 1, allowedMethods: [{ type: 'microsoft' }] },
       ]);
-    });
-  });
-
-  describe('getMicrosoftSignInConfig', () => {
-    it('uses the Microsoft settings when they are saved, without reading Azure AD', async () => {
-      mockConfigService.getConfig.resolves({ data: { clientId: 'ms-client', tenantId: 't' } });
-
-      const config = await (controller as any).getMicrosoftSignInConfig({ orgId: 'o1' });
-
-      expect(config).to.include({ clientId: 'ms-client' });
-      expect(mockConfigService.getConfig.calledOnce).to.be.true;
-      expect(mockConfigService.getConfig.firstCall.args[1]).to.include('microsoft');
-    });
-
-    it('keeps the empty Microsoft settings when Azure AD has none either', async () => {
-      mockConfigService.getConfig.resolves({ data: {} });
-
-      const config = await (controller as any).getMicrosoftSignInConfig({ orgId: 'o1' });
-
-      expect(config).to.deep.equal({});
-      expect(mockConfigService.getConfig.calledTwice).to.be.true;
     });
   });
 

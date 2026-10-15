@@ -73,11 +73,9 @@ import { domainFromEmail } from '../../../libs/services/telemetry/identity';
 import {
   ConfigurationManagerService,
   GOOGLE_AUTH_CONFIG_PATH,
-  AZURE_AD_AUTH_CONFIG_PATH,
   MICROSOFT_AUTH_CONFIG_PATH,
 } from '../services/cm.service';
 import { withoutRemovedSignInMethods } from '../utils/removedSignInMethods';
-import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Org } from '../../user_management/schema/org.schema';
 import { Users } from '../../user_management/schema/users.schema';
@@ -545,17 +543,14 @@ export class UserAccountController {
           if (!mapping) continue;
 
           try {
-            const configData =
-              method === 'microsoft'
-                ? await this.getMicrosoftSignInConfig(newUser)
-                : (
-                    await this.configurationManagerService.getConfig(
-                      this.config.cmBackend,
-                      mapping.path,
-                      newUser,
-                      this.config.scopedJwtSecret,
-                    )
-                  ).data;
+            const configResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend,
+              mapping.path,
+              newUser,
+              this.config.scopedJwtSecret,
+            );
+
+            const configData = configResponse.data;
 
             // Always add to allowed list if config exists
             allowedMethods.push(method);
@@ -1589,38 +1584,19 @@ export class UserAccountController {
     });
   }
 
-  /**
-   * Microsoft sign-in settings. Azure AD sign-in became Microsoft sign-in, so
-   * until the startup migration copies its settings over, read them from there.
-   */
-  protected async getMicrosoftSignInConfig(
-    user: Record<string, any>,
-  ): Promise<MicrosoftSignInConfig & Record<string, unknown>> {
-    const read = async (
-      path: string,
-    ): Promise<MicrosoftSignInConfig & Record<string, unknown>> =>
-      ((
-        await this.configurationManagerService.getConfig(
-          this.config.cmBackend,
-          path,
-          user,
-          this.config.scopedJwtSecret,
-        )
-      ).data ?? {}) as MicrosoftSignInConfig & Record<string, unknown>;
-    const microsoft = await read(MICROSOFT_AUTH_CONFIG_PATH);
-    if (microsoft.clientId || RENAMED_SIGN_IN_METHODS.azureAd !== 'microsoft') {
-      return microsoft;
-    }
-    const azureAd = await read(AZURE_AD_AUTH_CONFIG_PATH);
-    return azureAd.clientId ? azureAd : microsoft;
-  }
-
   async authenticateWithMicrosoft(
     user: Record<string, any>,
     credentials: Record<string, string>,
     ip: string,
   ) {
-    const { clientId, tenantId } = await this.getMicrosoftSignInConfig(user);
+    const configManagerResponse =
+      await this.configurationManagerService.getConfig(
+        this.config.cmBackend,
+        MICROSOFT_AUTH_CONFIG_PATH,
+        user,
+        this.config.scopedJwtSecret,
+      );
+    const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
     const decodedToken = await validateAzureAdUser(credentials, {
       clientId,
       tenantId,
@@ -1716,7 +1692,10 @@ export class UserAccountController {
           }
 
           case AuthMethodType.MICROSOFT: {
-            const { clientId, tenantId } = await this.getMicrosoftSignInConfig(newUserMock);
+            const configManagerResponse = await this.configurationManagerService.getConfig(
+              this.config.cmBackend, MICROSOFT_AUTH_CONFIG_PATH, newUserMock, this.config.scopedJwtSecret
+            );
+            const { clientId, tenantId } = configManagerResponse.data as MicrosoftSignInConfig;
             const decodedToken = await validateAzureAdUser(credentials, {
               clientId,
               tenantId,
@@ -1812,7 +1791,8 @@ export class UserAccountController {
           authProviders.google = cfg.data;
         }
         if (allowedMethods.includes(AuthMethodType.MICROSOFT)) {
-          authProviders.microsoft = await this.getMicrosoftSignInConfig(user);
+          const cfg = await this.configurationManagerService.getConfig(this.config.cmBackend, MICROSOFT_AUTH_CONFIG_PATH, user, this.config.scopedJwtSecret);
+          authProviders.microsoft = cfg.data;
         }
 
         res.json({
