@@ -12,6 +12,7 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
@@ -165,6 +166,7 @@ class IndexingPipeline:
 
                 status_fields = {
                     "indexingStatus": ProgressStatus.EMPTY.value,
+                    **indexed_copy_fields(ProgressStatus.EMPTY),
                     "processingStartedAt": None,
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,

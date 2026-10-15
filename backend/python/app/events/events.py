@@ -63,6 +63,7 @@ from app.services.vector_db.strategy import (
     RecordContext,
     resolve_write_collection_name,
 )
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
 from app.utils.indexing_timing import stage
@@ -476,6 +477,7 @@ class EventProcessor:
                 {
                     # parsingStatus is already COMPLETED from the write above.
                     "indexingStatus": ProgressStatus.EMPTY.value,
+                    **indexed_copy_fields(ProgressStatus.EMPTY),
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
                     "isDirty": False,
                 },
@@ -1105,6 +1107,7 @@ class EventProcessor:
                     {
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
+                        **indexed_copy_fields(twin.get("indexingStatus")),
                         "processingStartedAt": None,
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         # EMPTY duplicates never ran extraction, so this can be

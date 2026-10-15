@@ -11,6 +11,8 @@ Every provider query that filters on deletion builds its clause from here, so
 from collections.abc import Mapping
 from enum import Enum
 
+from app.config.constants.arangodb import ProgressStatus
+
 
 class RecordVisibility(str, Enum):
     LIVE = "LIVE"
@@ -25,6 +27,31 @@ def aql_live_record(var: str) -> str:
 def cypher_live_record(var: str) -> str:
     # `<> true` alone is null for a node without the property, and WHERE drops null.
     return f"({var}.isDeleted IS NULL OR {var}.isDeleted = false)"
+
+
+# Set when indexing completes and cleared only when the record turns out empty, so
+# a record queued again after an edit keeps serving its previous indexed copy.
+HAS_INDEXED_COPY = "hasIndexedCopy"
+
+
+def indexed_copy_fields(indexing_status: object) -> dict[str, bool]:
+    """The ``hasIndexedCopy`` write that goes with an ``indexingStatus`` write."""
+    status = getattr(indexing_status, "value", indexing_status)
+    if status == ProgressStatus.COMPLETED.value:
+        return {HAS_INDEXED_COPY: True}
+    if status == ProgressStatus.EMPTY.value:
+        return {HAS_INDEXED_COPY: False}
+    return {}
+
+
+def aql_searchable_record(var: str) -> str:
+    """Indexed now, or still holding a previous indexed copy. Needs ``@completedStatus``."""
+    return f"({var}.indexingStatus == @completedStatus OR {var}.{HAS_INDEXED_COPY} == true)"
+
+
+def cypher_searchable_record(var: str) -> str:
+    """Indexed now, or still holding a previous indexed copy. Needs ``$completedStatus``."""
+    return f"({var}.indexingStatus = $completedStatus OR {var}.{HAS_INDEXED_COPY} = true)"
 
 
 def aql_record_visibility(var: str, visibility: RecordVisibility) -> str:

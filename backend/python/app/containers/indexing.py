@@ -217,6 +217,19 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
                 "may be missing until a service that runs it starts successfully"
             )
 
+        # Records indexed before ``hasIndexedCopy`` existed would otherwise leave
+        # search the first time they are edited. Idempotent, so every boot may run it.
+        try:
+            marked = await graph_provider.backfill_indexed_copy_flags()
+            if marked:
+                logger.info("✅ Marked %d indexed record(s) as having an indexed copy", marked)
+        except Exception:
+            logger.warning(
+                "⚠️ Could not mark existing indexed records; an edit may hide one "
+                "from search until it is indexed again",
+                exc_info=True,
+            )
+
         await Health.system_health_check(container)
         return True
 

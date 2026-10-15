@@ -3939,6 +3939,14 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
+        """Mark every COMPLETED record that predates ``hasIndexedCopy`` as having one.
+
+        Idempotent and batched; returns how many records it marked.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_accessible_virtual_record_ids(
         self,
         user_id: str,

@@ -97,9 +97,12 @@ from app.services.graph_db.common.full_sync_unlink import (
     unseen_node_keys,
 )
 from app.services.graph_db.common.record_visibility import (
+    HAS_INDEXED_COPY,
     RecordVisibility,
     cypher_live_record,
     cypher_record_visibility,
+    cypher_searchable_record,
+    indexed_copy_fields,
     is_live_record,
 )
 from app.services.graph_db.common.utils import (
@@ -5623,6 +5626,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 update_doc = {
                     "id": record_key,
                     "indexingStatus": new_indexing_status,
+                    **indexed_copy_fields(new_indexing_status),
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
@@ -5878,6 +5882,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         clause = " AND " + " AND ".join(conditions) if conditions else ""
         return clause, parameters
 
+    async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
+        query = f"""
+        MATCH (r:Record)
+        WHERE r.indexingStatus = $completedStatus AND r.{HAS_INDEXED_COPY} IS NULL
+        WITH r LIMIT $batchSize
+        SET r.{HAS_INDEXED_COPY} = true
+        RETURN count(r) AS marked
+        """
+        bind_vars = {"completedStatus": ProgressStatus.COMPLETED.value, "batchSize": batch_size}
+        total = 0
+        while True:
+            rows = await self.execute_query(query, bind_vars=bind_vars) or []
+            marked = int(rows[0]["marked"]) if rows else 0
+            total += marked
+            if marked < batch_size:
+                return total
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -5934,7 +5955,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Path 1: User -> Direct Records
                 OPTIONAL MATCH (userDoc)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records1
@@ -5945,7 +5966,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 // Path 2: User -> Group (BELONGS_TO) -> Records
                 OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(g:Group)-[:PERMISSION]->(r:Record)
                 WHERE r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records2
@@ -5957,7 +5978,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:PERMISSION]->(g)-[:PERMISSION]->(r:Record)
                 WHERE (g:Group OR g:Role)
                   AND r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records3
@@ -5969,7 +5990,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:BELONGS_TO]->(o:Organization)-[orgPerm:PERMISSION]->(r:Record)
                 WHERE orgPerm.type IN $orgShareTypes
                   AND r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records4
@@ -5983,7 +6004,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND rg.connectorId = $connectorId
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..2]->(rg)
                 WHERE r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records5
@@ -5998,7 +6019,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE rg.connectorId = $connectorId
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
                 WHERE r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records6
@@ -6011,7 +6032,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE rg.connectorId = $connectorId
                 OPTIONAL MATCH (r:Record)-[:INHERIT_PERMISSIONS*0..5]->(rg)
                 WHERE r.connectorId = $connectorId
-                  AND r.indexingStatus = $completedStatus
+                  AND {cypher_searchable_record("r")}
                     AND {live_record}
                   {metadata_filter_clause}{time_range_filter_clause}
                 RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS records7
@@ -6114,7 +6135,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OPTIONAL MATCH (userDoc)-[:PERMISSION]->(kb:App {{type: "KB"}})
                 {kb_filter_clause}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                WHERE r.indexingStatus = $completedStatus
+                WHERE {cypher_searchable_record("r")}
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
@@ -6129,7 +6150,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 OPTIONAL MATCH (team)-[tke:PERMISSION]->(kb:App {{type: "KB"}})
                 WHERE tke.type = "TEAM" {' AND kb.id IN $kb_ids' if kb_ids else ' AND coalesce(kb.isHidden, false) = false'}
                 OPTIONAL MATCH (r:Record)-[:BELONGS_TO]->(kb)
-                WHERE r.indexingStatus = $completedStatus
+                WHERE {cypher_searchable_record("r")}
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
@@ -6395,7 +6416,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         query = f"""
         MATCH (r:Record)-[:BELONGS_TO]->(kb:App {{id: $kbId, type: "KB"}})
-        WHERE r.indexingStatus = $completedStatus
+        WHERE {cypher_searchable_record("r")}
           AND {cypher_live_record("r")}
           AND r.origin = $uploadOrigin
           AND r.virtualRecordId IS NOT NULL
@@ -6429,7 +6450,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         query = """
         MATCH (r:Record {connectorId: $connectorId})
-        WHERE r.indexingStatus = $completedStatus
+        WHERE (r.indexingStatus = $completedStatus OR r.hasIndexedCopy = true)
           AND (r.isDeleted IS NULL OR r.isDeleted = false)
           AND r.virtualRecordId IS NOT NULL
           AND r.id IS NOT NULL
