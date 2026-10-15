@@ -46,6 +46,7 @@ from app.modules.entity_resolution.models import (
     ResolutionMode,
 )
 from app.modules.entity_resolution.normalizer import display_form
+from app.modules.entity_resolution.prompt import _hex
 from app.modules.entity_resolution.resolver import EntityResolver
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
@@ -116,6 +117,11 @@ class GoldOracle:
     def learn(self, node_key: str, entity: str) -> None:
         self.node_entity.setdefault(node_key, entity)
 
+    def _entity_of(self, handle: str) -> str | None:
+        """The prompt shows a node by a prefix of its id's hex digits; the answer
+        names it the same way and the resolver maps it back."""
+        return next((entity for key, entity in self.node_entity.items() if _hex(key).startswith(handle)), None)
+
     async def __call__(self, llm: object, messages: list, schema: object, **_: object) -> MergeDecisions:
         found = _PROMPT_ITEMS.search(messages[0].content)
         if found is None:
@@ -128,7 +134,7 @@ class GoldOracle:
         for item in items:
             entity = self.record_gold.get(item["name"])
             target = next(
-                (m["id"] for m in item.get("matches") or [] if entity and self.node_entity.get(m["id"]) == entity),
+                (m["id"] for m in item.get("matches") or [] if entity and self._entity_of(m["id"]) == entity),
                 None,
             )
             if target is not None:
