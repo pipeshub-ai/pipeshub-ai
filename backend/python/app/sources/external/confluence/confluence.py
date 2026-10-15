@@ -8784,7 +8784,10 @@ class ConfluenceDataSource:
         # Only accept "atlassian" accounts or empty string (for compatibility)
         if not account_id or account_type not in ("atlassian", ""):
             return None
-        
+        # A deactivated account must not be linked back to the connector.
+        if not user.get("active", True):
+            return None
+
         return account_id
 
     async def get_group_members(

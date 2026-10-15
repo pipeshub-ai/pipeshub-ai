@@ -2414,6 +2414,46 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
+    async def test_inactive_members_are_left_out_and_recorded(self):
+        c = _conn()
+        mock_ds = MagicMock()
+        mock_ds.get_group_members = AsyncMock(return_value=_resp(200, {"results": [
+            {"accountId": "acc-a", "email": "a@t.com", "accountStatus": "active"},
+            {"accountId": "acc-d", "email": "d@t.com", "accountStatus": "inactive"},
+            {"accountId": "acc-x", "accountStatus": "closed"},
+            {"accountId": "acc-n", "email": "n@t.com"},
+        ]}))
+        c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        emails, account_ids = await c._fetch_group_members("g1", "Group 1")
+        assert emails == ["a@t.com", "n@t.com"]
+        assert account_ids == []
+        assert c._inactive_account_ids == {"acc-d", "acc-x"}
+
+    @pytest.mark.asyncio
+    async def test_withdraws_stored_users_reported_inactive(self):
+        c = _conn()
+        dep = c.data_entities_processor
+        stored = [
+            AppUser(app_name=Connectors.CONFLUENCE, connector_id="conn-cov-1", source_user_id=sid,
+                    org_id="org", email=email, full_name=email, id=f"u-{sid}")
+            for sid, email in (("acc-a", "a@t.com"), ("acc-d", "d@t.com"), ("acc-e", "e@t.com"))
+        ]
+        dep.get_all_app_users = AsyncMock(return_value=stored)
+        dep.withdraw_app_user_access = AsyncMock()
+        # acc-e is inactive but another active account of the same email is a member.
+        c._inactive_account_ids = {"acc-d", "acc-e"}
+        c._active_member_emails = {"a@t.com", "e@t.com"}
+        await c._withdraw_inactive_app_users()
+        dep.withdraw_app_user_access.assert_awaited_once_with("conn-cov-1", [stored[1]])
+
+    @pytest.mark.asyncio
+    async def test_withdraw_noop_without_inactive_members(self):
+        c = _conn()
+        c.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        await c._withdraw_inactive_app_users()
+        c.data_entities_processor.withdraw_app_user_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_api_failure_returns_none(self):
         c = _conn()
         mock_ds = MagicMock()
@@ -4407,6 +4447,20 @@ class TestSyncUsersHappyPath:
         saved = c.data_entities_processor.on_new_app_users.call_args[0][0]
         assert len(saved) == 1
         assert saved[0].email == "user1@example.com"
+
+    @pytest.mark.asyncio
+    async def test_skips_accounts_last_seen_inactive(self):
+        c = _mk_connector()
+        c._inactive_account_ids = {"acc-d"}
+        ds = MagicMock()
+        ds.search_users = AsyncMock(return_value=_mk_resp(200, {"results": [
+            {"user": {"accountId": "acc-d", "email": "d@example.com", "displayName": "D"}},
+            {"user": {"accountId": "acc-1", "email": "a@example.com", "displayName": "A"}},
+        ]}))
+        c._get_fresh_datasource = AsyncMock(return_value=ds)
+        await c._sync_users()
+        saved = c.data_entities_processor.on_new_app_users.call_args[0][0]
+        assert [u.source_user_id for u in saved] == ["acc-1"]
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):
@@ -9343,3 +9397,21 @@ class TestIncludeJiraScopeSetting:
             await c._link_platform_users_via_jira()
 
         c._get_fresh_datasource.assert_awaited_once()
+
+
+class TestFindUserAccountIdByEmail:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("active, expected", [(True, "acc-1"), (False, None)])
+    async def test_deactivated_jira_account_is_not_returned(self, active, expected):
+        from app.sources.external.confluence.confluence import ConfluenceDataSource
+
+        client = MagicMock()
+        client.get_base_url.return_value = "https://site.atlassian.net/wiki/api/v2"
+        http = MagicMock()
+        http.get_base_url.return_value = "https://site.atlassian.net/wiki/api/v2"
+        http.execute = AsyncMock(return_value=_resp(200, [
+            {"accountId": "acc-1", "accountType": "atlassian", "emailAddress": "a@t.com", "active": active},
+        ]))
+        client.get_client.return_value = http
+        ds = ConfluenceDataSource(client)
+        assert await ds.find_user_account_id_by_email("a@t.com") == expected

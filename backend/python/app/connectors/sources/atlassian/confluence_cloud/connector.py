@@ -491,6 +491,9 @@ class ConfluenceConnector(BaseConnector):
 
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
+        # Filled by each group sync from the members' accountStatus.
+        self._inactive_account_ids: set[str] = set()
+        self._active_member_emails: set[str] = set()
         self._space_listing_complete = False
 
     async def _build_confluence_client(self):
@@ -669,6 +672,7 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
+            await self._withdraw_inactive_app_users()
 
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
@@ -890,6 +894,9 @@ class ConfluenceConnector(BaseConnector):
                         total_skipped += 1
                         continue
 
+                    # search/user carries no account status: use what the last group sync saw.
+                    if user_data.get("accountId") in self._inactive_account_ids:
+                        continue
                     app_user = self._transform_to_app_user(user_data)
                     if app_user:
                         app_users.append(app_user)
@@ -1154,6 +1161,8 @@ class ConfluenceConnector(BaseConnector):
 
             # Groups may change between sync runs on a long-lived connector instance.
             self._group_name_to_external_id = None
+            self._inactive_account_ids = set()
+            self._active_member_emails = set()
 
             # Pagination variables for groups
             batch_size = 50
@@ -4032,7 +4041,14 @@ class ConfluenceConnector(BaseConnector):
                 for member_data in members_data:
                     email = (member_data.get("email") or "").strip()
                     account_id = (member_data.get("accountId") or member_data.get("id") or "").strip()
+                    # Deactivated accounts keep their memberships in Confluence; the product
+                    # API reports the status only here (search/user leaves it out).
+                    if member_data.get("accountStatus", "active") != "active":
+                        if account_id:
+                            self._inactive_account_ids.add(account_id)
+                        continue
                     if email:
+                        self._active_member_emails.add(email.lower())
                         member_emails.append(email)
                     elif account_id:
                         member_account_ids.append(account_id)
@@ -4052,6 +4068,19 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return None
+
+    async def _withdraw_inactive_app_users(self) -> None:
+        """Take the connector away from stored users whose account a group listing reported
+        inactive, unless another account with their email is an active member."""
+        if not self._inactive_account_ids:
+            return
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id)
+            if u.source_user_id in self._inactive_account_ids
+            and (u.email or "").lower() not in self._active_member_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
 
     async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
         """Build AppUser for a Confluence accountId linked to this connector.
