@@ -10716,49 +10716,57 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 # A sync that did not stop in time can commit a record after the
                 # collect above. One more pass removes those, then the sweeps.
-                # Best-effort: a failure must not flip a committed delete.
+                # Only after this method committed: a caller-owned transaction
+                # has not committed, and a read outside it would see rows this
+                # delete is removing.
                 orphan_types = 0
                 orphan_labels = 0
-                try:
-                    late_rows = await self.http_client.execute_aql(
-                        """
-                        FOR r IN @@records
-                            FILTER r.connectorId == @connector_id
-                            RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
-                        """,
-                        bind_vars={
-                            "@records": CollectionNames.RECORDS.value,
-                            "connector_id": connector_id,
-                        },
-                    )
-                    late_keys = [row["key"] for row in late_rows or [] if isinstance(row, dict) and row.get("key")]
-                    vrids = collected.get("virtual_record_ids")
-                    if needs_virtual_record_ids and isinstance(vrids, list):
-                        vrids.extend(
-                            row["virtualRecordId"]
-                            for row in late_rows or []
-                            if isinstance(row, dict)
-                            and isinstance(row.get("virtualRecordId"), str)
-                            and row["virtualRecordId"]
+                if created_transaction:
+                    try:
+                        late_rows = await self.http_client.execute_aql(
+                            """
+                            FOR r IN @@records
+                                FILTER r.connectorId == @connector_id
+                                RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
+                            """,
+                            bind_vars={
+                                "@records": CollectionNames.RECORDS.value,
+                                "connector_id": connector_id,
+                            },
                         )
-                    if late_keys:
+                        late_keys = [
+                            row["key"] for row in late_rows or []
+                            if isinstance(row, dict) and row.get("key")
+                        ]
+                        if late_keys:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            )
+                            await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
+                            deleted_records += len(late_keys)
+                            vrids = collected.get("virtual_record_ids")
+                            if needs_virtual_record_ids and isinstance(vrids, list):
+                                removed = set(late_keys)
+                                vrids.extend(
+                                    row["virtualRecordId"]
+                                    for row in late_rows or []
+                                    if isinstance(row, dict)
+                                    and row.get("key") in removed
+                                    and isinstance(row.get("virtualRecordId"), str)
+                                    and row["virtualRecordId"]
+                                )
+                    except Exception as late_err:
                         self.logger.warning(
-                            f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                         )
-                        await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
-                        deleted_records += len(late_keys)
-                except Exception as late_err:
-                    self.logger.warning(
-                        f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                    )
-                try:
-                    orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
-                    orphan_labels = await self._sweep_orphan_taxonomy_nodes_for_org(org_id)
-                except Exception as sweep_err:
-                    self.logger.warning(
-                        f"⚠️ Post-delete orphan sweep failed for connector {connector_id} "
-                        f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                    )
+                    try:
+                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                        orphan_labels = await self._sweep_orphan_taxonomy_nodes_for_org(org_id)
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
 
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "

@@ -9771,40 +9771,46 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 orphan_types = 0
                 orphan_labels = 0
-                try:
-                    late = await self.client.execute_query(
-                        """
-                        MATCH (r:Record {connectorId: $connector_id})
-                        RETURN r.id AS id, r.virtualRecordId AS virtualRecordId
-                        """,
-                        parameters={"connector_id": connector_id},
-                    )
-                    late_keys = [row["id"] for row in late or [] if row.get("id")]
-                    vrids = collected.get("virtual_record_ids")
-                    if needs_virtual_record_ids and isinstance(vrids, list):
-                        vrids.extend(
-                            row["virtualRecordId"]
-                            for row in late or []
-                            if isinstance(row.get("virtualRecordId"), str) and row["virtualRecordId"]
+                # A caller-owned transaction has not committed. Reading late
+                # records outside it would see rows this delete is removing.
+                if created_transaction:
+                    try:
+                        late = await self.client.execute_query(
+                            """
+                            MATCH (r:Record {connectorId: $connector_id})
+                            RETURN r.id AS id, r.virtualRecordId AS virtualRecordId
+                            """,
+                            parameters={"connector_id": connector_id},
                         )
-                    if late_keys:
+                        late_keys = [row["id"] for row in late or [] if row.get("id")]
+                        if late_keys:
+                            self.logger.warning(
+                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            )
+                            await self._delete_records_with_their_types(late_keys, None)
+                            deleted_records += len(late_keys)
+                            vrids = collected.get("virtual_record_ids")
+                            if needs_virtual_record_ids and isinstance(vrids, list):
+                                removed = {row["id"] for row in late or [] if row.get("id")}
+                                vrids.extend(
+                                    row["virtualRecordId"]
+                                    for row in late or []
+                                    if row.get("id") in removed
+                                    and isinstance(row.get("virtualRecordId"), str)
+                                    and row["virtualRecordId"]
+                                )
+                    except Exception as late_err:
                         self.logger.warning(
-                            f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                         )
-                        await self._delete_records_with_their_types(late_keys, None)
-                        deleted_records += len(late_keys)
-                except Exception as late_err:
-                    self.logger.warning(
-                        f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                    )
-                try:
-                    orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
-                    orphan_labels = await self._sweep_orphan_taxonomy_nodes_for_org(org_id)
-                except Exception as sweep_err:
-                    self.logger.warning(
-                        f"⚠️ Post-delete orphan sweep failed for connector {connector_id} "
-                        f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                    )
+                    try:
+                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                        orphan_labels = await self._sweep_orphan_taxonomy_nodes_for_org(org_id)
+                    except Exception as sweep_err:
+                        self.logger.warning(
+                            f"⚠️ Post-delete orphan sweep failed for connector {connector_id} "
+                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                        )
 
                 self.logger.debug(
                     f"✅ Connector instance {connector_id} deleted successfully. "
