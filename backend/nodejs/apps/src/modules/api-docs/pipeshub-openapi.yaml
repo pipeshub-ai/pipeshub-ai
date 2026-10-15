@@ -26916,11 +26916,13 @@ paths:
         - Updates `updatedAtTimestamp`
         - Increments version if file content changed
         - Triggers re-indexing for content changes
+
+        **OAuth scopes:** `kb:write`, plus `kb:read`: replacing the file first reads the record and its knowledge base with the caller's token.
       operationId: updateRecord
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:write]
+        - oauth2: [kb:write, kb:read]
       parameters:
         - name: recordId
           in: path
@@ -33173,11 +33175,13 @@ paths:
         Requires editor access. `visibility` and `chatSharing` are
         owner-only fields — including either as a non-owner editor
         returns `403`.
+
+        **OAuth scopes:** `project:write`, plus `kb:write` (`visibility: org`) or `kb:delete` (`visibility: private`) to update access on the project's knowledge base when it has one. The project is saved before that call, so a token without them gets `403` with the change already saved.
       operationId: updateProject
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
+        - oauth2: [project:write, kb:write, kb:delete]
       parameters:
         - name: projectId
           in: path
@@ -33223,11 +33227,13 @@ paths:
         a deleted project; wrapped in a transaction when the deployment's
         replica set supports it. Idempotent — deleting an already-deleted
         project returns `200` without re-running the unlink step.
+
+        **OAuth scopes:** `project:delete`, plus `kb:delete` to delete the project's knowledge base when it has one; without it the delete answers `403` and the project stays.
       operationId: deleteProject
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:delete]
+        - oauth2: [project:delete, kb:delete]
       parameters:
         - name: projectId
           in: path
@@ -33485,11 +33491,13 @@ paths:
         always included in this project's own chat scope
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
+
+        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, and `kb:read` to read it back when the project already has one. These knowledge base calls carry the caller's token.
       operationId: ensureProjectKnowledgeBase
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
+        - oauth2: [project:write, kb:write, kb:read]
       parameters:
         - name: projectId
           in: path
@@ -33562,11 +33570,13 @@ paths:
         `POST /conversations/{conversationId}/share` — a `principalId` with
         no matching user returns `400`. Upserts by `principalId`; the owner
         is silently skipped if included.
+
+        **OAuth scopes:** `project:write`, plus `user:read` to look up each user with the caller's token (without it every user answers `400` "User not found"), and `kb:write` to grant the members on the project's knowledge base when it has one.
       operationId: upsertProjectMembers
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
+        - oauth2: [project:write, user:read, kb:write]
       parameters:
         - name: projectId
           in: path
@@ -33607,12 +33617,15 @@ paths:
       tags:
         - Projects
       summary: Remove a project member
-      description: Owner-only.
+      description: |
+        Owner-only.
+
+        **OAuth scopes:** `project:write`, plus `kb:delete` to revoke the member on the project's knowledge base when it has one. The member is removed from the project before that call, so a token without `kb:delete` gets `403` with the member already removed.
       operationId: removeProjectMember
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:write]
+        - oauth2: [project:write, kb:delete]
       parameters:
         - name: projectId
           in: path
