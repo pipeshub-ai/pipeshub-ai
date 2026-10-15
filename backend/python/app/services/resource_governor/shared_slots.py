@@ -71,7 +71,16 @@ class SharedSlots:
         return self._capacity
 
     def _open(self, name: str) -> int:
-        return os.open(self._directory / name, os.O_RDWR | os.O_CREAT, 0o600)
+        path = self._directory / name
+        try:
+            return os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+        except FileNotFoundError:
+            # A temp cleaner removed the directory under a running service.
+            # Locks still held live on the unlinked files, so a new directory
+            # counts from zero until they are released; that is bounded by
+            # the parses already running.
+            self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            return os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
 
     def _try_lock(self, name: str) -> int | None:
         fd = self._open(name)

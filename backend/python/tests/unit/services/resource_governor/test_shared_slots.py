@@ -121,6 +121,15 @@ class TestSharedSlots:
             if holder.stdout is not None:
                 holder.stdout.close()
 
+    def test_a_removed_directory_is_made_again(self, tmp_path: Path) -> None:
+        directory = tmp_path / "slots"
+        slots = SharedSlots(directory, 2)
+        for name in os.listdir(directory):
+            os.unlink(directory / name)
+        directory.rmdir()
+        assert slots.try_acquire(2) is not None
+        assert directory.is_dir()
+
     def test_an_unusable_directory_turns_sharing_off(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
