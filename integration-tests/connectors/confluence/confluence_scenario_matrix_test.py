@@ -28,6 +28,7 @@ import pytest_asyncio
 from app.sources.external.confluence.confluence import (  # type: ignore[import-not-found]
     ConfluenceDataSource,
 )
+from connectors.confluence.constants import RUN_PREFIX
 from connectors.confluence.confluence_v1_test_utils import (
     check_page_in_v1_search_bool,
     check_page_title_bool,
@@ -78,7 +79,7 @@ class ConfluenceAdapter(ScenarioAdapter):
         )
 
     async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
-        title = f"PipesHub IT matrix {role.value} {token}"
+        title = f"{RUN_PREFIX}PipesHub IT matrix {role.value} {token}"
         resp = await self.confluence.create_page(
             root_level=True,
             body={"spaceId": self.space_id, "status": "current", "title": title,
@@ -113,7 +114,7 @@ class ConfluenceAdapter(ScenarioAdapter):
                           token=token, external_id=item.external_id, extra=dict(item.extra))
 
     async def update_metadata(self, item: SourceItem) -> SourceItem:
-        title = f"PipesHub IT matrix renamed {item.token}"
+        title = f"{RUN_PREFIX}PipesHub IT matrix renamed {item.token}"
         resp = await self.confluence.update_page_title(
             id=int(item.key), body={"status": "current", "title": title},
         )

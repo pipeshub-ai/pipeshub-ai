@@ -1857,6 +1857,9 @@ class TestGitHubTeamsIncremental:
                     f"Conversation comment from {PINNED_PR_COMMENT_MARKER} {GH_IT_RUN_ID}.",
                 )
                 comment_id = comment.get("id")
+                # Read now: another run may edit this shared PR before we resync, so the
+                # synced revision can only be at or past our own last edit.
+                edited_ms = epoch_ms((await get_pull(github_rest, org, repo_name, number))["updated_at"])
 
                 pipeshub_client.wait(5)
                 await _resync(pipeshub_client, graph_provider, connector_id)
@@ -1873,9 +1876,9 @@ class TestGitHubTeamsIncremental:
                     f"version must advance after an edit ({before_version} → "
                     f"{after.version})"
                 )
-                live = await get_pull(github_rest, org, repo_name, number)
-                assert str(after.external_revision_id) == str(epoch_ms(live["updated_at"])), (
-                    "external_revision_id must track the source updated_at in epoch ms"
+                assert int(after.external_revision_id) >= edited_ms, (
+                    "external_revision_id must track the source updated_at in epoch ms "
+                    f"({after.external_revision_id} < {edited_ms})"
                 )
                 after_typed = await graph_provider.get_typed_record_by_external_id(
                     connector_id, external_id,

@@ -12,7 +12,7 @@ the others decides how long the whole nightly takes.
 Run: python3 scripts/shard_balance.py --check
 Rebalance: move markers between the CONN_SHARD_* lines until this reports even
 shards, using the measured minutes in scripts/shard_durations.json. Refresh
-those minutes from a recent nightly's reports-both-<shard> artifacts.
+those minutes from a recent nightly's reports-<backend>-<shard> artifacts.
 """
 
 from __future__ import annotations
@@ -160,8 +160,9 @@ def _always_excludes(expression: str, name: str) -> bool:
     except ValueError:
         return False
     others = sorted(_marker_names(tree) - {name})
-    # A core line names a handful of markers. Past this, fail closed.
-    if len(others) > 12:
+    # Core names every shard list plus a few markers; 2**16 cases is still instant.
+    # Past this, fail closed.
+    if len(others) > 16:
         return False
     for mask in range(1 << len(others)):
         env = {var: bool(mask & (1 << index)) for index, var in enumerate(others)}
@@ -362,8 +363,10 @@ def check(
     if unmeasured:
         report.append(f"  no measured time yet (counted as 0): {', '.join(unmeasured)}")
 
-    if mean:
-        worst, worst_total = max(totals.items(), key=lambda item: item[1])
+    # A one-suite shard cannot be split, so it only sets the floor the others pack up to.
+    splittable = {shard: total for shard, total in totals.items() if len(shards[shard]) > 1}
+    if mean and splittable:
+        worst, worst_total = max(splittable.items(), key=lambda item: item[1])
         if worst_total / mean > MAX_OVER_MEAN:
             problems.append(
                 f"{worst} is {worst_total / mean:.2f}x the average shard "

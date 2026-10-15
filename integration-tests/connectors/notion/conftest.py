@@ -167,8 +167,8 @@ async def notion_connector(
     try:
         swept = await sweep_stale_runs(notion_source_helper, root_page_id)
         if swept:
-            logger.warning("SETUP: swept %d stale run root(s) before seeding", swept)
-            await wait_for_swept_runs_gone(notion_source_helper, root_page_id)
+            logger.warning("SETUP: swept %d stale run root(s) before seeding", len(swept))
+            await wait_for_swept_runs_gone(notion_source_helper, swept)
 
         logger.info("SETUP: seeding Notion fixture tree (run=%s)", run_id)
         seed = await seed_notion_workspace(

@@ -181,8 +181,8 @@ async def sweep_stale_runs(
     *,
     min_age_seconds: float = STALE_RUN_MIN_AGE_SECONDS,
     only_run_id: Optional[str] = None,
-) -> int:
-    """Trash run roots left behind by an earlier crashed run. Returns how many were trashed.
+) -> set[str]:
+    """Trash run roots left behind by an earlier crashed run. Returns the ids it trashed.
 
     Roots younger than ``min_age_seconds`` are left alone: CI can run the neo4j and arango
     legs on separate runners at the same time, and both sweep before they seed, so a young
@@ -194,7 +194,7 @@ async def sweep_stale_runs(
     """
     target = f"{RUN_ROOT_PREFIX}{only_run_id}" if only_run_id else None
     now = datetime.now(timezone.utc)
-    trashed = 0
+    trashed: set[str] = set()
     for page in await helper.search_objects("page"):
         parent = page.get("parent") or {}
         if parent.get("type") != "page_id" or parent.get("page_id") != root_page_id:
@@ -220,7 +220,7 @@ async def sweep_stale_runs(
                 continue
         logger.warning("SWEEP: trashing stale run root %s (%s)", title, page.get("id"))
         await helper.trash_page(str(page["id"]))
-        trashed += 1
+        trashed.add(str(page["id"]))
     return trashed
 
 
@@ -257,35 +257,32 @@ async def foreign_run_object_ids(
 
 async def wait_for_swept_runs_gone(
     helper: NotionSourceHelper,
-    root_page_id: str,
+    page_ids: set[str],
     *,
     timeout: int = 120,
     interval: int = 5,
 ) -> None:
-    """Wait until Search no longer returns trashed PHIT-Notion-* run roots under the IT root.
+    """Wait until Search no longer returns the run roots ``sweep_stale_runs`` trashed.
 
     Notion's search index lags trash; seeding before that settles causes TC-SYNC-001 failures
-    with unexpected leftover pages in the graph.
+    with unexpected leftover pages in the graph. Only the trashed ids: a concurrent run's root
+    is young, so the sweep left it alone, and waiting for it to vanish would time out.
     """
     import asyncio
 
     deadline = asyncio.get_event_loop().time() + timeout
     while True:
-        stale = []
-        for page in await helper.search_objects("page"):
-            parent = page.get("parent") or {}
-            if parent.get("type") != "page_id" or parent.get("page_id") != root_page_id:
-                continue
-            title = _plain_title(page)
-            if title.startswith(RUN_ROOT_PREFIX):
-                stale.append((title, str(page.get("id"))))
+        stale = [
+            str(page.get("id"))
+            for page in await helper.search_objects("page")
+            if str(page.get("id")) in page_ids
+        ]
         if not stale:
             return
         if asyncio.get_event_loop().time() >= deadline:
-            sample = ", ".join(f"{t} ({i})" for t, i in stale[:3])
             raise AssertionError(
                 f"Notion search still lists {len(stale)} swept run root(s) after {timeout}s "
-                f"(e.g. {sample})"
+                f"(e.g. {', '.join(stale[:3])})"
             )
         logger.info(
             "SWEEP: waiting for search index to drop %d stale run root(s)",

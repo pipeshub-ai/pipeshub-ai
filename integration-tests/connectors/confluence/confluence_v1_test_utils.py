@@ -20,7 +20,9 @@ from app.sources.external.confluence.confluence import (
     ConfluenceDataSource,  # type: ignore[import-not-found]
 )
 from connectors.confluence.constants import (
+    ARTIFACT_PREFIX,  # type: ignore[import-not-found]
     CONFLUENCE_TEST_SETTLE_WAIT_SEC,  # type: ignore[import-not-found]
+    is_other_run_artifact,  # type: ignore[import-not-found]
 )
 from helper.graph_provider_utils import (
     async_poll_until,  # type: ignore[import-not-found]
@@ -129,6 +131,9 @@ async def _fetch_content_by_type(
 
         data = resp.json()
         for item_data in data.get("results", []):
+            # Any run's test pages, ours included: the snapshot is the space's permanent content.
+            if str(item_data.get("title", "")).startswith(ARTIFACT_PREFIX):
+                continue
             try:
                 version_obj = item_data.get("version", {})
                 items.append(ContentItem(
@@ -247,7 +252,10 @@ async def count_confluence_space_pages_v1_search(
     datasource: ConfluenceDataSource,
     space_key: str,
 ) -> int:
-    """Count pages in ``space_key`` via Confluence v1 ``/rest/api/content/search`` (paginated)."""
+    """Count pages in ``space_key`` via Confluence v1 ``/rest/api/content/search`` (paginated).
+
+    Leaves out other runs' test pages (``is_other_run_artifact``).
+    """
     cursor: str | None = None
     seen: set[str] = set()
     batch_size = 50
@@ -267,7 +275,7 @@ async def count_confluence_space_pages_v1_search(
         data = resp.json()
         for item in data.get("results") or []:
             cid = item.get("id")
-            if cid is not None:
+            if cid is not None and not is_other_run_artifact(str(item.get("title", ""))):
                 seen.add(str(cid))
         next_url = (data.get("_links") or {}).get("next")
         if not next_url:
@@ -306,6 +314,18 @@ async def wait_for_space_page_count_at_least(
         await asyncio.sleep(min(poll_interval, remaining))
 
 
+async def count_run_records(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    *,
+    record_type: str = "",
+    scoped: bool = False,
+) -> int:
+    """The connector's records minus other runs' test pages (``is_other_run_artifact``)."""
+    records = await graph_provider.fetch_records_by_type(connector_id, record_type, scoped=scoped)
+    return sum(1 for r in records if not is_other_run_artifact(str(r.get("recordName") or "")))
+
+
 async def assert_confluence_pages_match_graph_records(
     datasource: ConfluenceDataSource,
     graph_provider: "GraphProviderProtocol",
@@ -321,8 +341,8 @@ async def assert_confluence_pages_match_graph_records(
     counts page records only.
     """
     api_count = await count_confluence_space_pages_v1_search(datasource, space_key)
-    graph_count = await graph_provider.count_records_by_type(
-        connector_id, RecordType.CONFLUENCE_PAGE.value
+    graph_count = await count_run_records(
+        graph_provider, connector_id, record_type=RecordType.CONFLUENCE_PAGE.value
     )
     if api_count != graph_count:
         raise AssertionError(

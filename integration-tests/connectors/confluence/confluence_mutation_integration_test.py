@@ -31,6 +31,7 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     assert_confluence_pages_match_graph_records,
     count_confluence_space_pages_v1_search,
+    count_run_records,
     wait_for_space_page_count_at_least,
     get_confluence_page_version_number_v1,
     wait_until_confluence_condition,
@@ -40,6 +41,7 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     check_ancestors_contain_bool,
     check_multiple_pages_in_search_bool,
 )
+from connectors.confluence.constants import RUN_PREFIX  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
@@ -104,9 +106,9 @@ class TestConfluenceIncrementalSync:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         space_key = confluence_connector["space_key"]
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await count_run_records(graph_provider, connector_id)
 
-        title = f"TC-CF-024 Test Page {uuid.uuid4().hex[:8]}"
+        title = f"{RUN_PREFIX}TC-CF-024 Test Page {uuid.uuid4().hex[:8]}"
         content = f"<p>Test content for TC-CF-024 at {uuid.uuid4().hex}</p>"
 
         resp = await confluence_datasource.create_page(
@@ -344,13 +346,13 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         space_key = confluence_connector["space_key"]
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await count_run_records(graph_provider, connector_id)
         api_before = await count_confluence_space_pages_v1_search(
             confluence_datasource, space_key
         )
 
-        title_1 = f"Integration Test Page Alpha {uuid.uuid4().hex[:8]}"
-        title_2 = f"Integration Test Page Beta {uuid.uuid4().hex[:8]}"
+        title_1 = f"{RUN_PREFIX}Integration Test Page Alpha {uuid.uuid4().hex[:8]}"
+        title_2 = f"{RUN_PREFIX}Integration Test Page Beta {uuid.uuid4().hex[:8]}"
 
         resp_1 = await confluence_datasource.create_page(
             root_level=True,
@@ -417,7 +419,7 @@ class TestConfluenceConnectorMutation:
             phase="TC-INCR-001 after incremental sync",
         )
 
-        after_count = await graph_provider.count_records(connector_id)
+        after_count = await count_run_records(graph_provider, connector_id)
 
         confluence_connector["incr_page_id"] = str(new_page_1["id"])
         confluence_connector["incr_page_title"] = new_page_1["title"]
@@ -440,7 +442,7 @@ class TestConfluenceConnectorMutation:
         """TC-UPDATE-001: Update page content, verify record is updated."""
         connector_id = confluence_connector["connector_id"]
         page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await count_run_records(graph_provider, connector_id)
 
         page_resp = await confluence_datasource.get_page_by_id(page_id, body_format="storage")
         page_data = page_resp.json()
@@ -472,12 +474,13 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_count = await wait_for_sync_completion(
+        await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
             timeout=120,
         )
+        after_count = await count_run_records(graph_provider, connector_id)
         assert after_count == before_count, (
             f"Record count should be stable after update; before={before_count}, after={after_count}"
         )
@@ -494,9 +497,9 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
         old_title = confluence_connector["incr_page_title"]
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await count_run_records(graph_provider, connector_id)
 
-        new_title = f"Renamed-{old_title}"
+        new_title = old_title.replace(RUN_PREFIX, f"{RUN_PREFIX}Renamed-", 1)
 
         await confluence_datasource.update_page_title(
             id=page_id,
@@ -515,12 +518,13 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_count = await wait_for_sync_completion(
+        await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
             timeout=120,
         )
+        after_count = await count_run_records(graph_provider, connector_id)
 
         await graph_provider.assert_record_paths_or_names_contain(connector_id, [new_title])
         await graph_provider.assert_record_not_exists(connector_id, old_title)
@@ -542,9 +546,9 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         page_id = _page_from_earlier_step(confluence_connector, "renamed_page_id", "TC-RENAME-001")
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await count_run_records(graph_provider, connector_id)
 
-        parent_title = f"Parent Page {uuid.uuid4().hex[:8]}"
+        parent_title = f"{RUN_PREFIX}Parent Page {uuid.uuid4().hex[:8]}"
         parent_resp = await confluence_datasource.create_page(
             root_level=True,
             body={
@@ -570,13 +574,14 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_parent_count = await wait_for_sync_completion(
+        await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
             min_records=before_count + 1,
             timeout=120,
         )
+        after_parent_count = await count_run_records(graph_provider, connector_id)
         assert after_parent_count == before_count + 1, (
             f"Expected 1 new record (parent page); before={before_count}, after={after_parent_count}"
         )
@@ -592,12 +597,13 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        final_count = await wait_for_sync_completion(
+        await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
             timeout=120,
         )
+        final_count = await count_run_records(graph_provider, connector_id)
         assert final_count == after_parent_count, (
             f"Record count should be stable after move; before_move={after_parent_count}, "
             f"after_move={final_count}"
