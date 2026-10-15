@@ -102,6 +102,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
     GoogleDriveError,
 )
 from app.connectors.sources.google.common.impersonation import (
+    MAX_IMPERSONATION_CANDIDATES,
     get_impersonation_candidates,
     is_delegation_error,
     resolve_explicit_user,
@@ -4227,6 +4228,35 @@ class GoogleDriveTeamConnector(BaseConnector):
         self.logger.info("Using service account drive client")
         return self.drive_client.get_client()
 
+    async def _group_member_candidates(self, record: Record) -> list[User]:
+        """Members of the groups granted on a record or above it, to impersonate when no user is granted.
+
+        A file shared only with a group names no user, so without this it fell straight
+        to the service account, which cannot open a file in someone's My Drive.
+        """
+        candidates: list[User] = []
+        seen: set[str] = set()
+        try:
+            groups = await self.data_entities_processor.get_groups_with_access_to_record(record)
+        except Exception as e:
+            self.logger.warning(f"Could not read the groups granted on record {record.id}: {e}")
+            return candidates
+        for group in groups:
+            try:
+                members = await self._fetch_group_members(group.source_user_group_id, include_derived=True)
+            except Exception as e:
+                self.logger.warning(f"Could not list the members of group {group.source_user_group_id}: {e}")
+                continue
+            for member in members:
+                email = (member.get("email") or "").lower()
+                if member.get("type", "USER") != "USER" or not email or email in seen:
+                    continue
+                seen.add(email)
+                candidates.append(User(email=email))
+                if len(candidates) >= MAX_IMPERSONATION_CANDIDATES:
+                    return candidates
+        return candidates
+
     async def _get_drive_service_with_fallback(
         self,
         candidates: List[User],
@@ -4320,6 +4350,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                 candidates.extend(
                     user for user in fallback if (user.email or "").lower() not in seen
                 )
+                if not candidates:
+                    candidates = await self._group_member_candidates(record)
                 if not candidates:
                     self.logger.warning(f"No user found with permission to node: {record.id}, falling back to service account")
 
@@ -4521,7 +4553,7 @@ class GoogleDriveTeamConnector(BaseConnector):
 
             candidates = await get_impersonation_candidates(
                 self.data_entities_processor, record.id, self.synced_user_emails, self.logger
-            )
+            ) or await self._group_member_candidates(record)
             if not candidates:
                 self.logger.warning(f"No user found with permission to node: {record.id}")
                 return None
