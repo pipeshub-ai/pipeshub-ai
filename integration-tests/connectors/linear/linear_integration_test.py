@@ -31,6 +31,7 @@ own sync history runs on ``_dedicated_connector``, and every created issue carri
 import logging
 import os
 import sys
+from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict
@@ -54,9 +55,7 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
-    async_poll_until,
     count_owned_records,
-    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from connectors.linear.linear_expected import LinearExpected  # noqa: E402
@@ -101,6 +100,31 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
+
+
+_SYNC_ATTEMPTS = 3
+
+
+async def _sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    condition: Callable[[], Awaitable[bool]],
+    description: str,
+) -> None:
+    """Incremental-sync until ``condition`` holds.
+
+    The connector finds changes with filtered queries (``updatedAt``, ``archivedAt``) that
+    can lag a write the issue query already returns; that sync logs "No new/updated issues"
+    or "No deleted issues found" and only a later one sees it.
+    """
+    for attempt in range(1, _SYNC_ATTEMPTS + 1):
+        _restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+        if await condition():
+            return
+        logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
+    raise AssertionError(f"{description} not seen after {_SYNC_ATTEMPTS} incremental syncs")
 
 
 def _team_filters(team_ids: list[str], **extra: Any) -> Dict[str, Any]:
@@ -167,6 +191,12 @@ async def _record_absent(
     graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
 ) -> bool:
     return await graph_provider.get_record_by_external_id(connector_id, external_id) is None
+
+
+async def _record_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
+) -> bool:
+    return not await _record_absent(graph_provider, connector_id, external_id)
 
 
 pytestmark = [
@@ -304,13 +334,10 @@ class TestLinearConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
-                )
-                await wait_for_record_by_external_id(
-                    graph_provider, connector_id, issue_id,
-                    timeout=120, description="TC-INCR-001 new issue",
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, issue_id),
+                    f"TC-INCR-001 new issue {issue_id}",
                 )
 
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, issue_id)
@@ -336,14 +363,10 @@ class TestLinearConnector:
                 assert await delete_artifact_issue(
                     linear_datasource, issue_id=issue_id, context="TC-INCR-001",
                 ), f"TC-INCR-001: {issue_id} was not confirmed trashed in Linear"
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
-                )
-                await async_poll_until(
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
                     lambda: _record_absent(graph_provider, connector_id, issue_id),
-                    timeout=90, interval=5,
-                    description=f"TC-INCR-001: trashed issue {issue_id} removed from the graph",
+                    f"TC-INCR-001 removal of trashed issue {issue_id}",
                 )
                 logger.info("TC-INCR-001 passed: %s synced, then removed after trashing", issue_id)
             finally:
@@ -385,14 +408,12 @@ class TestLinearConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, target_id),
+                    f"TC-UPDATE-001 baseline record {target_id}",
                 )
-                record_before = await wait_for_record_by_external_id(
-                    graph_provider, connector_id, target_id,
-                    timeout=120, description="TC-UPDATE-001 baseline record",
-                )
+                record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 old_version = int(record_before.version)
 
                 new_title = artifact_title("Edited")
@@ -403,9 +424,13 @@ class TestLinearConnector:
 
                 pipeshub_client.wait(5)
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(
-                    pipeshub_client, graph_provider, connector_id, timeout=240,
+                async def _edit_synced() -> bool:
+                    record = await graph_provider.get_record_by_external_id(connector_id, target_id)
+                    return record is not None and new_title in (record.record_name or "")
+
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id, _edit_synced,
+                    f"TC-UPDATE-001 edited title of {target_id}",
                 )
 
                 record_after = await graph_provider.get_record_by_external_id(connector_id, target_id)

@@ -94,6 +94,8 @@ async def gh_call_with_retry(
 
     ``retry_server_errors=False`` for non-idempotent creates: a 5xx that actually
     committed would otherwise leave a duplicate issue/PR behind on the shared org.
+    Git tree and commit creates are safe to retry: they are content-addressed and
+    unreachable until the ref update moves the branch.
     """
     last_error: Optional[Exception] = None
     for attempt in range(_MAX_ATTEMPTS):
@@ -683,12 +685,12 @@ async def _commit_once(
     tree = await gh_call_with_retry(
         rest.post_json, f"/repos/{owner}/{repo}/git/trees",
         {"base_tree": base_tree_sha, "tree": tree_entries},
-        context=f"create_tree {owner}/{repo}", retry_server_errors=False,
+        context=f"create_tree {owner}/{repo}",
     )
     commit = await gh_call_with_retry(
         rest.post_json, f"/repos/{owner}/{repo}/git/commits",
         {"message": message, "tree": tree["sha"], "parents": [base_commit_sha]},
-        context=f"create_commit {owner}/{repo}", retry_server_errors=False,
+        context=f"create_commit {owner}/{repo}",
     )
     new_sha = commit["sha"]
     await gh_call_with_retry(
@@ -912,7 +914,7 @@ async def _force_delete_once(
                 {"path": p, "mode": _BLOB_MODE, "type": "blob", "sha": None} for p in paths
             ],
         },
-        context="sweep create_tree", retry_server_errors=False,
+        context="sweep create_tree",
     )
     commit = await gh_call_with_retry(
         rest.post_json, f"/repos/{owner}/{repo}/git/commits",
@@ -921,7 +923,7 @@ async def _force_delete_once(
             "tree": tree["sha"],
             "parents": [base_commit_sha],
         },
-        context="sweep create_commit", retry_server_errors=False,
+        context="sweep create_commit",
     )
     await gh_call_with_retry(
         rest.request, "PATCH", f"/repos/{owner}/{repo}/git/refs/heads/{branch}",

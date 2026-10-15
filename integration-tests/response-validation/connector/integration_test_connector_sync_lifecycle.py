@@ -15,6 +15,7 @@ the fields inside nested objects: an object the spec leaves as a bare
 from __future__ import annotations
 
 import sys
+import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 from uuid import uuid4
@@ -275,7 +276,13 @@ class TestDeleteConnector:
             resp.json(), _DELETE, status_code="202", opaque=True
         )
 
+        # The delete runs in the background; until it finishes a repeat DELETE gets the documented 409.
         again = connectors_api.delete_instance(connector_id)
+        deadline = time.monotonic() + 60
+        while again.status_code == 409 and time.monotonic() < deadline:
+            assert_error_response_matches_openapi_operation(again.json(), _DELETE, 409)
+            time.sleep(0.5)
+            again = connectors_api.delete_instance(connector_id)
         assert again.status_code == 404, again.text
         assert_error_response_matches_openapi_operation(again.json(), _DELETE, 404)
 
