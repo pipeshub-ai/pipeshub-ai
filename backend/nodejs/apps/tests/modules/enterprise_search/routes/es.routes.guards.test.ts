@@ -196,11 +196,14 @@ describe('conversation routers: guard mounting', () => {
     )
   })
 
-  it('projects router: the conversation list is the only guarded route and uses listScope', () => {
+  it('projects router: the project list (for its chat counts) and the conversation list are the only guarded routes and use listScope', () => {
     const rows = rowsOf(createProjectsRouter(container()))
     const guarded = rows.filter((r) => guardsOf(r).length > 0)
-    expect(guarded.map((r) => [r.key, guardsOf(r)])).to.deep.equal([['GET /:projectId/conversations', [list('any')]]])
-    expect(guarded[0]!.marks[guarded[0]!.length - 2]).to.deep.equal(list('any'))
+    expect(guarded.map((r) => [r.key, guardsOf(r)])).to.deep.equal([
+      ['GET /', [list('any')]],
+      ['GET /:projectId/conversations', [list('any')]],
+    ])
+    for (const r of guarded) expect(r.marks[r.length - 2]).to.deep.equal(list('any'))
     expect(rows.some((r) => r.path.includes(':conversationId'))).to.equal(false)
   })
 

@@ -79,7 +79,15 @@ export const listProjects =
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived, isArchived },
+        {
+          page,
+          limit,
+          search,
+          scope,
+          includeArchived,
+          isArchived,
+          visibleConversations: listFilterOf(req),
+        },
         callerTeamIds,
       );
       res.status(200).json({

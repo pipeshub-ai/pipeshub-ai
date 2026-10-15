@@ -5,7 +5,10 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { CONVERSATION_TYPES } from '../../enterprise_search/services/conversation/conversation.types';
-import { IConversationGuards } from '../../enterprise_search/services/conversation/http/conversation-guards';
+import {
+  IConversationGuards,
+  ListScopeOptions,
+} from '../../enterprise_search/services/conversation/http/conversation-guards';
 import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
@@ -34,6 +37,12 @@ import {
   upsertProjectMembers,
 } from '../controller/project.controller';
 
+// The project list counts exactly the chats the project conversation list shows.
+const PROJECT_CONVERSATIONS_SCOPE: ListScopeOptions = {
+  shareRows: 'extendedOnly',
+  archived: 'exclude',
+};
+
 export function createProjectsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
@@ -55,6 +64,7 @@ export function createProjectsRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(listProjectsQuerySchema),
+    guards.listScope('any', PROJECT_CONVERSATIONS_SCOPE),
     listProjects(appConfig),
   );
 
@@ -121,7 +131,7 @@ export function createProjectsRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.PROJECT_READ),
     ValidationMiddleware.validate(listProjectConversationsQuerySchema),
-    guards.listScope('any', { shareRows: 'extendedOnly', archived: 'exclude' }),
+    guards.listScope('any', PROJECT_CONVERSATIONS_SCOPE),
     getProjectConversations(appConfig),
   );
 

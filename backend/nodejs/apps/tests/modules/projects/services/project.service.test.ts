@@ -36,6 +36,7 @@ const OTHER_ORG_ID = new mongoose.Types.ObjectId().toString();
 const OWNER_ID = new mongoose.Types.ObjectId().toString();
 const MEMBER_ID = new mongoose.Types.ObjectId().toString();
 const OUTSIDER_ID = new mongoose.Types.ObjectId().toString();
+const VISIBLE = { $and: [{ userId: new mongoose.Types.ObjectId(OWNER_ID) }] };
 
 function makeProjectDoc(overrides: Record<string, any> = {}): any {
   const doc: any = {
@@ -258,6 +259,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       const filter = findStub.firstCall.args[0];
@@ -276,6 +278,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: true,
+        visibleConversations: VISIBLE,
       });
 
       const filter = findStub.firstCall.args[0];
@@ -292,6 +295,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'all',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         isArchived: true,
       });
 
@@ -308,6 +312,7 @@ describe('ProjectService', () => {
         scope: 'all',
         includeArchived: true,
         isArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(findStub.firstCall.args[0].isArchived).to.equal(false);
@@ -322,7 +327,7 @@ describe('ProjectService', () => {
       await ProjectService.list(
         ORG_ID,
         OWNER_ID,
-        { page: 1, limit: 20, scope: 'all', includeArchived: true },
+        { page: 1, limit: 20, scope: 'all', includeArchived: true, visibleConversations: VISIBLE },
         [teamId],
       );
 
@@ -342,6 +347,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'road',
       });
 
@@ -362,6 +368,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(totalCount).to.equal(1);
@@ -378,6 +385,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
         search: 'Q3 (draft).*',
       });
 
@@ -406,9 +414,34 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(projects.map((p) => p.conversationCount)).to.deep.equal([5, 0]);
+    });
+
+    it('counts only the conversations the list filter admits, cast so string ids still match', async () => {
+      const projectId = new mongoose.Types.ObjectId();
+      stubFindChain([
+        { _id: projectId, orgId: new mongoose.Types.ObjectId(ORG_ID), userId: new mongoose.Types.ObjectId(OWNER_ID), members: [], visibility: 'private' },
+      ]);
+      sinon.stub(Project, 'countDocuments').resolves(1);
+      const aggregateStub = sinon.stub(ChatSession, 'aggregate').resolves([]);
+
+      await ProjectService.list(ORG_ID, OWNER_ID, {
+        page: 1,
+        limit: 20,
+        scope: 'mine',
+        includeArchived: false,
+        visibleConversations: { $and: [{ orgId: ORG_ID, isDeleted: false, $or: [{ userId: OWNER_ID }] }] },
+      });
+
+      const match = (aggregateStub.firstCall.args[0][0] as any).$match;
+      const [visible, scoped] = match.$and;
+      expect(visible.$and[0].orgId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId).to.be.instanceOf(mongoose.Types.ObjectId);
+      expect(visible.$and[0].$or[0].userId.toString()).to.equal(OWNER_ID);
+      expect(scoped.projectId.$in.map(String)).to.deep.equal([projectId.toString()]);
     });
 
     it('skips the aggregate entirely when there are no projects on the page', async () => {
@@ -421,6 +454,7 @@ describe('ProjectService', () => {
         limit: 20,
         scope: 'mine',
         includeArchived: false,
+        visibleConversations: VISIBLE,
       });
 
       expect(aggregateStub.called).to.equal(false);

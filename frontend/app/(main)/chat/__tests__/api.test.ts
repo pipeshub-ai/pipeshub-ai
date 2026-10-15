@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { apiClient, streamSSERequest } from '@/lib/api';
-import { ChatApi } from '../api';
-import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type StreamChatRequest } from '../types';
+import { ChatApi, mapApiConversationToConversation } from '../api';
+import { CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS, type ConversationApiResponse, type StreamChatRequest } from '../types';
 
 vi.mock('@/lib/api', () => ({
   apiClient: {
@@ -146,5 +146,20 @@ describe('ChatApi.uploadAttachments', () => {
     const config = mockedPost.mock.calls[0][2] as { timeout?: number };
     expect(config.timeout).toBe(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS);
     expect(CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS).toBeGreaterThan(90_000);
+  });
+});
+
+describe('mapApiConversationToConversation', () => {
+  it('keeps the project link so "Move to project" shows the current project', () => {
+    const row = {
+      _id: 'conv-1',
+      title: 'Hello',
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    } as ConversationApiResponse;
+    expect(mapApiConversationToConversation(row)).toMatchObject({
+      projectId: 'proj-1',
+      projectVisibility: 'project',
+    });
   });
 });

@@ -16,6 +16,7 @@ import {
   projectRoleFor,
 } from './project-access.adapter';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSession } from '../../enterprise_search/types/conversation.interfaces';
 import {
   ConversationAclExtension,
   conversationExtensions,
@@ -70,6 +71,8 @@ export interface ListProjectsOptions {
   scope: 'mine' | 'shared' | 'all';
   includeArchived: boolean;
   isArchived?: boolean;
+  /** Conversations the caller may list; each project's count covers only these. */
+  visibleConversations: FilterQuery<IChatSession>;
 }
 
 const accessAdapter = new ProjectServiceAccessAdapter();
@@ -219,10 +222,13 @@ export class ProjectService {
     const counts = projectIds.length
       ? await ChatSession.aggregate<{ _id: Types.ObjectId; count: number }>([
           {
-            $match: {
-              projectId: { $in: projectIds },
-              isDeleted: false,
-            },
+            // `$match` skips the casting `find` does, so string ids would match nothing.
+            $match: ChatSession.where({
+              $and: [
+                opts.visibleConversations,
+                { projectId: { $in: projectIds } },
+              ],
+            }).cast() as FilterQuery<IChatSession>,
           },
           { $group: { _id: '$projectId', count: { $sum: 1 } } },
         ])

@@ -124,6 +124,8 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     sharedBy: conv.sharedBy,
+    projectId: conv.projectId,
+    projectVisibility: conv.projectVisibility,
     ...chatExtension.conversationFields(conv),
   };
 }

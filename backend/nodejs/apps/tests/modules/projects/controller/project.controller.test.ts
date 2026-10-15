@@ -136,6 +136,8 @@ describe('project.controller', () => {
   })
 
   describe('listProjects', () => {
+    const LIST_FILTER = { $and: [{ marker: 'from-guard' }] }
+
     it('paginates and returns totalPages computed from totalCount/limit', async () => {
       stubNoTeamMemberships()
       const rows = [makeProjectDoc()]
@@ -144,6 +146,7 @@ describe('project.controller', () => {
       const req = createMockRequest({
         query: { page: 1, limit: 10, scope: 'mine', includeArchived: false },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -156,7 +159,7 @@ describe('project.controller', () => {
       expect(body.pagination).to.deep.equal({ page: 1, limit: 10, totalCount: 25, totalPages: 3 })
     })
 
-    it('passes the exact archive filter through to ProjectService.list', async () => {
+    it('passes the exact archive filter and the guard list filter through to ProjectService.list', async () => {
       stubNoTeamMemberships()
       const listStub = sinon.stub(ProjectService, 'list').resolves({
         projects: [],
@@ -172,6 +175,7 @@ describe('project.controller', () => {
           isArchived: true,
         },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -181,6 +185,7 @@ describe('project.controller', () => {
       expect(listStub.firstCall.args[2]).to.deep.include({
         includeArchived: false,
         isArchived: true,
+        visibleConversations: LIST_FILTER,
       })
     })
 
@@ -190,6 +195,7 @@ describe('project.controller', () => {
       sinon.stub(ProjectService, 'list').rejects(error)
 
       const req = createMockRequest({ query: { page: 1, limit: 10, scope: 'mine', includeArchived: false } })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -207,6 +213,7 @@ describe('project.controller', () => {
       const req = createMockRequest({
         query: { page: 1, limit: 10, scope: 'all', includeArchived: false },
       })
+      setConversationContext(req, { caller: { userId: VALID_OID, orgId: VALID_OID2, teamIds: [] }, listFilter: LIST_FILTER })
       const res = createMockResponse()
       const next = createMockNext()
 
