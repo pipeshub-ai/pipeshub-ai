@@ -156,6 +156,7 @@ class TestShare:
         assert shared == 1
         edge = graph.edges[("key-bob", ARTIFACT_ID)]
         assert edge["grantedVia"] == ARTIFACT_SHARE_GRANT
+        assert edge["chatGranted"] is True
         assert edge["createdAtTimestamp"] == 7
 
     @pytest.mark.asyncio
@@ -265,3 +266,66 @@ class TestMembers:
         graph = FakeGraph(edges={("key-bob", ARTIFACT_ID): {"role": "READER", "grantedVia": ARTIFACT_SHARE_GRANT}})
         with pytest.raises(AccessDeniedError):
             await _service(graph).list_members(_actor("bob"), ARTIFACT_ID)
+
+
+class TestDirectShareAndChatShareTogether:
+    """A shared chat and a direct share can both cover the same reader. They share
+    one READER edge, so taking either grant away must leave the other in place."""
+
+    @staticmethod
+    async def _apply(graph: FakeGraph, kind: str, action: str) -> None:
+        from app.api.routes.chatbot import (
+            _grant_reader_permissions,
+            _revoke_reader_permissions,
+        )
+
+        if kind == "chat":
+            grant = _grant_reader_permissions if action == "share" else _revoke_reader_permissions
+            await grant(graph, "owner", ["bob"], [ARTIFACT_ID])
+            return
+        service = _service(graph, AsyncMock())
+        if action == "share":
+            await service.share(_actor(), ARTIFACT_ID, ["bob"])
+        else:
+            await service.unshare(_actor(), ARTIFACT_ID, ["bob"])
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "steps",
+        [
+            pytest.param(["chat share", "direct share", "direct unshare", "chat unshare"], id="chat-first-direct-removed-first"),
+            pytest.param(["chat share", "direct share", "chat unshare", "direct unshare"], id="chat-first-chat-removed-first"),
+            pytest.param(["direct share", "chat share", "direct unshare", "chat unshare"], id="direct-first-direct-removed-first"),
+            pytest.param(["direct share", "chat share", "chat unshare", "direct unshare"], id="direct-first-chat-removed-first"),
+        ],
+    )
+    async def test_the_reader_keeps_access_until_both_grants_are_gone(self, steps: list[str]) -> None:
+        graph = FakeGraph()
+        can_read = []
+        for step in steps:
+            kind, action = step.split()
+            await self._apply(graph, kind, action)
+            can_read.append(("key-bob", ARTIFACT_ID) in graph.edges)
+        assert can_read == [True, True, True, False]
+        assert graph.edges[("key-owner", ARTIFACT_ID)]["role"] == "OWNER"
+
+    @pytest.mark.asyncio
+    async def test_the_member_list_shows_only_a_live_direct_share(self) -> None:
+        graph = FakeGraph()
+        await self._apply(graph, "chat", "share")
+        await self._apply(graph, "direct", "share")
+        members = await _service(graph).list_members(_actor(), ARTIFACT_ID)
+        assert {"userId": "bob", "role": "READER"} in members
+
+        await self._apply(graph, "direct", "unshare")
+        members = await _service(graph).list_members(_actor(), ARTIFACT_ID)
+        assert members == [{"userId": "owner", "role": "OWNER"}]
+
+    @pytest.mark.asyncio
+    async def test_opening_a_shared_chat_again_writes_nothing_new(self) -> None:
+        graph = FakeGraph()
+        await self._apply(graph, "direct", "share")
+        await self._apply(graph, "chat", "share")
+        writes = len(graph.created)
+        await self._apply(graph, "chat", "share")
+        assert len(graph.created) == writes

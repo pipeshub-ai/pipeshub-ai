@@ -1,7 +1,8 @@
 """Owner-driven sharing of one artifact with users of the same org.
 
 A direct share is a READER ``permission`` edge tagged ``grantedVia:
-ARTIFACT_SHARE_GRANT``. Every read path (gallery, record stream,
+ARTIFACT_SHARE_GRANT`` (see ``access.py`` for how it coexists with a
+conversation grant on the same edge). Every read path (gallery, record stream,
 ``AccessPolicy.authorize_read``) already accepts a READER edge, so sharing
 writes edges and nothing else. Graph access goes through
 ``IGraphDBProvider`` so this works unchanged on Neo4j and ArangoDB.
@@ -21,7 +22,7 @@ from app.services.notification.types import (
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
-from .access import ARTIFACT_SHARE_GRANT, AccessPolicy, ArtifactNotFoundError
+from .access import AccessPolicy, ArtifactNotFoundError, is_direct_share, reader_edge
 from .gallery import ArtifactDisplayPolicy
 
 if TYPE_CHECKING:
@@ -50,10 +51,6 @@ def _user_key_from_edge(edge: dict) -> str | None:
     return key if collection == CollectionNames.USERS.value and key else None
 
 
-def _is_direct_share(edge: dict | None) -> bool:
-    return bool(edge) and edge.get("role") == "READER" and edge.get("grantedVia") == ARTIFACT_SHARE_GRANT
-
-
 class ArtifactSharingService:
     def __init__(
         self, graph: IGraphDBProvider, notification_service: NotificationService | None = None
@@ -73,7 +70,7 @@ class ArtifactSharingService:
         )
         members: list[dict[str, str]] = []
         for edge in edges or []:
-            if edge.get("role") != "OWNER" and not _is_direct_share(edge):
+            if edge.get("role") != "OWNER" and not is_direct_share(edge):
                 continue
             user_key = _user_key_from_edge(edge)
             if not user_key:
@@ -88,7 +85,7 @@ class ArtifactSharingService:
     async def share(self, actor: Actor, artifact_id: str, user_ids: list[str]) -> int:
         """Grant READER to each target that cannot already read the artifact
         directly, and notify them. A READER edge from a shared conversation is
-        tagged instead, so it outlives that chat being unshared."""
+        tagged and keeps a note of that grant, so each outlives the other."""
         artifact_name = await self._authorize(actor, artifact_id)
         targets = await self._resolve_targets(actor, user_ids)
         now = get_epoch_timestamp_in_ms()
@@ -96,20 +93,18 @@ class ArtifactSharingService:
         recipients: list[str] = []
         for user_id, user_key in targets.items():
             edge = await self._get_permission_edge(user_key, artifact_id)
-            if edge and (edge.get("role") != "READER" or _is_direct_share(edge)):
+            if edge and (edge.get("role") != "READER" or is_direct_share(edge)):
                 continue
+            # Any edge left here is an untagged READER edge: a shared conversation's grant.
             edges.append(
-                {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": artifact_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "USER",
-                    "role": "READER",
-                    "grantedVia": ARTIFACT_SHARE_GRANT,
-                    "createdAtTimestamp": (edge or {}).get("createdAtTimestamp") or now,
-                    "updatedAtTimestamp": now,
-                }
+                reader_edge(
+                    user_key,
+                    artifact_id,
+                    direct=True,
+                    chat=edge is not None,
+                    now=now,
+                    created_at=(edge or {}).get("createdAtTimestamp"),
+                )
             )
             recipients.append(user_id)
         if edges:
@@ -118,19 +113,35 @@ class ArtifactSharingService:
         return len(edges)
 
     async def unshare(self, actor: Actor, artifact_id: str, user_ids: list[str]) -> int:
-        """Remove direct-share READER edges only: never the owner's edge, and
-        never a READER edge that a shared conversation granted."""
+        """Take back direct shares only. The owner's edge is never touched, and a
+        reader a shared conversation also covers keeps that conversation's grant."""
         await self._authorize(actor, artifact_id)
         if len(user_ids) > MAX_SHARE_TARGETS:
             raise InvalidShareTargetError(f"At most {MAX_SHARE_TARGETS} users per request")
-        edges: list[dict[str, str]] = []
+        now = get_epoch_timestamp_in_ms()
+        to_delete: list[dict[str, str]] = []
+        to_keep_for_chat: list[dict[str, Any]] = []
         for user_id in dict.fromkeys(user_ids):
             user = await self._graph.get_user_by_user_id(user_id, raise_on_error=True)
             user_key = user and (user.get("_key") or user.get("id"))
             if not user_key:
                 continue
-            if _is_direct_share(await self._get_permission_edge(user_key, artifact_id)):
-                edges.append(
+            edge = await self._get_permission_edge(user_key, artifact_id)
+            if not is_direct_share(edge):
+                continue
+            if edge.get("chatGranted"):
+                to_keep_for_chat.append(
+                    reader_edge(
+                        user_key,
+                        artifact_id,
+                        direct=False,
+                        chat=True,
+                        now=now,
+                        created_at=edge.get("createdAtTimestamp"),
+                    )
+                )
+            else:
+                to_delete.append(
                     {
                         "from_id": user_key,
                         "from_collection": CollectionNames.USERS.value,
@@ -138,9 +149,11 @@ class ArtifactSharingService:
                         "to_collection": CollectionNames.RECORDS.value,
                     }
                 )
-        if edges:
-            await self._graph.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-        return len(edges)
+        if to_keep_for_chat:
+            await self._graph.batch_create_edges(to_keep_for_chat, CollectionNames.PERMISSION.value)
+        if to_delete:
+            await self._graph.batch_delete_edges(to_delete, CollectionNames.PERMISSION.value)
+        return len(to_keep_for_chat) + len(to_delete)
 
     async def _authorize(self, actor: Actor, artifact_id: str) -> str:
         """Only the owner manages sharing, and only of an artifact the gallery

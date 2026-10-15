@@ -57,7 +57,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
-from app.services.artifact_registry.access import ARTIFACT_SHARE_GRANT
+from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -1011,19 +1011,28 @@ async def _grant_reader_permissions(
     record_ids: list[str],
 ) -> int:
     """Create READER edges for pairs with no permission edge yet, on records the
-    grantor owns. Existing edges are left alone: `batch_create_edges` overwrites
+    grantor owns. Other edges are left alone: `batch_create_edges` overwrites
     every property, so re-granting would downgrade an OWNER edge and rewrite edges
-    on every shared conversation view."""
+    on every shared conversation view. The exception is an artifact the owner also
+    shared directly: its edge records the conversation grant once, so taking the
+    direct share away later leaves the chat's access."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
-    if not missing:
+    direct_only = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and not edge.get("chatGranted")
+    ]
+    if not missing and not direct_only:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in missing))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in missing] + [rid for (_, rid), _ in direct_only])),
     )
     ts = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = [
@@ -1040,6 +1049,11 @@ async def _grant_reader_permissions(
         for user_key, record_id in missing
         if record_id in owned
     ]
+    edges += [
+        reader_edge(user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in direct_only
+        if record_id in owned
+    ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
     return len(edges)
@@ -1053,8 +1067,8 @@ async def _revoke_reader_permissions(
 ) -> int:
     """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
     `(_from, _to)` regardless of role, so without the READER filter an unshare that
-    names the owner would delete the owner's own OWNER edges. Edges from sharing
-    an artifact directly are kept: that share does not depend on the chat."""
+    names the owner would delete the owner's own OWNER edges. An artifact the
+    owner also shared directly keeps its edge and only loses the chat's grant."""
     if not user_ids or not record_ids:
         return 0
 
@@ -1062,14 +1076,29 @@ async def _revoke_reader_permissions(
     readers = [
         pair
         for pair, edge in zip(pairs, existing)
-        if edge and edge.get("role") == "READER" and edge.get("grantedVia") != ARTIFACT_SHARE_GRANT
+        if edge and edge.get("role") == "READER" and not is_direct_share(edge)
     ]
-    if not readers:
+    also_direct = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and edge.get("chatGranted")
+    ]
+    if not readers and not also_direct:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in readers))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in readers] + [rid for (_, rid), _ in also_direct])),
     )
+    ts = get_epoch_timestamp_in_ms()
+    direct_kept = [
+        reader_edge(user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in also_direct
+        if record_id in owned
+    ]
+    if direct_kept:
+        await graph_provider.batch_create_edges(direct_kept, CollectionNames.PERMISSION.value)
     edges: list[dict[str, Any]] = [
         {
             "from_id": user_key,
@@ -1082,7 +1111,7 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-    return len(edges)
+    return len(edges) + len(direct_kept)
 
 
 async def _get_artifact_record_ids_for_conversation(
