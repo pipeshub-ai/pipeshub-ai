@@ -11,13 +11,14 @@ const KEY_NEW = 'pipeshub-chat-draft:u1:-:new';
 interface HarnessProps {
   draftKey: string | null;
   slotId: string | null;
+  userId?: string | null;
   paused?: boolean;
   initial?: string;
 }
 
-function Harness({ draftKey, slotId, paused, initial = '' }: HarnessProps) {
+function Harness({ draftKey, slotId, paused, initial = '', userId = 'u1' }: HarnessProps) {
   const [message, setMessage] = useState(initial);
-  useComposerDraft({ draftKey, slotId, message, setMessage, paused });
+  useComposerDraft({ draftKey, userId, slotId, message, setMessage, paused });
   return (
     <textarea
       aria-label="Message"
@@ -81,12 +82,21 @@ describe('useComposerDraft — coming back', () => {
 
   it('restores the draft once the signed-in user becomes known', () => {
     saveDraft(KEY_A, 'half a question');
-    const { rerender } = render(<Harness draftKey={null} slotId="s1" />);
+    const { rerender } = render(<Harness draftKey={null} slotId="s1" userId={null} />);
     expect(box().value).toBe('');
 
     rerender(<Harness draftKey={KEY_A} slotId="s1" />);
 
     expect(box().value).toBe('half a question');
+  });
+
+  it('keeps text typed before the account became known', () => {
+    const { rerender } = render(<Harness draftKey={null} slotId="s1" userId={null} />);
+    type('typed while loading');
+
+    rerender(<Harness draftKey={KEY_A} slotId="s1" />);
+
+    expect(box().value).toBe('typed while loading');
   });
 });
 
@@ -304,5 +314,60 @@ describe('useComposerDraft — sending the first message of a new chat', () => {
     rerender(<Harness draftKey={KEY_NEW} slotId="s1" />);
 
     expect(box().value).toBe(tooLongToStore);
+  });
+});
+
+describe('useComposerDraft — a different person on the same tab', () => {
+  const KEY_U2_A = 'pipeshub-chat-draft:u2:-:conv-a';
+
+  it('does not hand one user\u2019s unsent text to the next user', () => {
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
+    type('private to the first user');
+
+    rerender(<Harness draftKey={KEY_U2_A} slotId="s1" userId="u2" />);
+    wait(DRAFT_SAVE_DEBOUNCE_MS * 3);
+
+    expect(box().value).toBe('');
+    expect(stored(KEY_U2_A)).toBeNull();
+  });
+
+  it('keeps the first user\u2019s text under the first user\u2019s key', () => {
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
+    type('private to the first user');
+
+    rerender(<Harness draftKey={KEY_U2_A} slotId="s1" userId="u2" />);
+
+    expect(loadDraft(KEY_A)).toBe('private to the first user');
+  });
+
+  it('shows the new user\u2019s own draft', () => {
+    saveDraft(KEY_U2_A, 'second user draft');
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
+    type('private to the first user');
+
+    rerender(<Harness draftKey={KEY_U2_A} slotId="s1" userId="u2" />);
+
+    expect(box().value).toBe('second user draft');
+  });
+
+  it('does not carry text across a signed-out gap between two users', () => {
+    const { rerender } = render(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
+    type('private to the first user');
+
+    rerender(<Harness draftKey={null} slotId="s1" userId={null} />);
+    rerender(<Harness draftKey={KEY_U2_A} slotId="s1" userId="u2" />);
+    wait(DRAFT_SAVE_DEBOUNCE_MS * 3);
+
+    expect(box().value).toBe('');
+    expect(stored(KEY_U2_A)).toBeNull();
+  });
+
+  it('still carries text when the same user\u2019s new chat gets its id', () => {
+    const { rerender } = render(<Harness draftKey={KEY_NEW} slotId="s1" userId="u1" />);
+    type('follow-up while it answers');
+
+    rerender(<Harness draftKey={KEY_A} slotId="s1" userId="u1" />);
+
+    expect(box().value).toBe('follow-up while it answers');
   });
 });

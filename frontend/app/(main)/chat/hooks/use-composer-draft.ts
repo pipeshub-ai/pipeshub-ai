@@ -8,6 +8,8 @@ export const DRAFT_SAVE_DEBOUNCE_MS = 400;
 interface UseComposerDraftOptions {
   /** Storage key for the open conversation; null turns drafts off. */
   draftKey: string | null;
+  /** Who is signed in. Text never moves from one user to another. */
+  userId?: string | null;
   /** Identifies the thread; a new id with the same text means the reader changed thread. */
   slotId: string | null;
   message: string;
@@ -22,6 +24,7 @@ interface UseComposerDraftOptions {
  */
 export function useComposerDraft({
   draftKey,
+  userId = null,
   slotId,
   message,
   setMessage,
@@ -39,6 +42,9 @@ export function useComposerDraft({
   // switch can never be filed under the wrong conversation.
   const ownerKeyRef = useRef<string | null>(null);
   const lastRef = useRef<{ key: string | null; slotId: string | null } | null>(null);
+  // The last user seen, kept across a signed-out gap so A -> signed out -> B is
+  // still a change of person.
+  const knownUserRef = useRef<string | null>(null);
 
   useEffect(() => {
     const last = lastRef.current;
@@ -47,8 +53,10 @@ export function useComposerDraft({
 
     const leavingKey = last?.key ?? null;
     const sameThread = last !== null && last.slotId === slotId;
+    const userChanged = Boolean(userId && knownUserRef.current && knownUserRef.current !== userId);
+    if (userId) knownUserRef.current = userId;
 
-    if (leavingKey && draftKey && sameThread) {
+    if (leavingKey && draftKey && sameThread && !userChanged) {
       // A new chat just got its real id: the text in the box moves with it.
       clearDraft(leavingKey);
       ownerKeyRef.current = draftKey;
@@ -63,14 +71,14 @@ export function useComposerDraft({
     // Read now, not inside the state updater: a strict-mode remount flushes the
     // still-empty box in between, which would otherwise erase the draft first.
     const stored = loadDraft(draftKey);
-    if (leavingKey) {
-      // The reader opened another conversation: show its own draft, or nothing.
+    if (leavingKey || userChanged) {
+      // Another conversation, or another person: show that draft, or nothing.
       setMessage(stored);
     } else {
       // First load, or the account became known: never overwrite text already there.
       setMessage((current) => (current === '' ? stored : current));
     }
-  }, [draftKey, slotId, setMessage]);
+  }, [draftKey, userId, slotId, setMessage]);
 
   useEffect(() => {
     const key = ownerKeyRef.current;

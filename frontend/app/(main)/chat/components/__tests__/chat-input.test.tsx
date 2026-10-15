@@ -1279,6 +1279,20 @@ describe('ChatInput — keeping an unsent message', () => {
     expect(composer().value).toBe('For agent seven');
   });
 
+  it('does not hand text left in the box to the next user when another tab signs in as someone else', () => {
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('Private to the first user');
+    pause();
+
+    act(() => useAuthStore.setState({ user: { id: 'u2' } }));
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem('pipeshub-chat-draft:u2:-:conv-1')).toBeNull();
+    expect(loadDraft(KEY_CONV_1)).toBe('Private to the first user');
+  });
+
   it('does not keep anything for a signed-out visitor', () => {
     useAuthStore.setState({ user: null });
     renderInput({ persistDraft: true });

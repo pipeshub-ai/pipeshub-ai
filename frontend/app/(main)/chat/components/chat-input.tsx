@@ -237,6 +237,7 @@ export function ChatInput({
     draftKey: persistDraft
       ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
       : null,
+    userId: draftUserId,
     slotId: draftSlotId,
     message,
     setMessage,
