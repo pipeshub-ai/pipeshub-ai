@@ -54,7 +54,9 @@ def bootstrap_expected(path: Path, actual: dict[str, Any]) -> None:
     )
 
 
-def keep_actual_if_different(path: Path, actual: dict[str, Any], expected: dict[str, Any]) -> None:
+def keep_actual_if_different(
+    path: Path, actual: dict[str, Any], expected: dict[str, Any],
+) -> None:
     """Save what the run produced next to the reports when it differs from the snapshot."""
     if actual != expected:
         bootstrap_expected(_MISMATCH_DIR / path.name.replace(".expected.", ".actual."), actual)
