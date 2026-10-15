@@ -57,6 +57,8 @@ import {
   searchArchivedConversations,
   setConversationProject,
   setConversationProjectVisibility,
+  forkConversation,
+  forkAgentConversation,
 } from '../controller/es_controller';
 import {
   addMessage,
@@ -117,6 +119,8 @@ import {
   getModelUsageRequestSchema,
   listAgentsQuerySchema,
   getAgentConversationByIdSchema,
+  forkConversationParamsSchema,
+  forkAgentConversationParamsSchema,
 } from '../validators/es_validators';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -416,6 +420,18 @@ export function createConversationalRouter(container: Container): Router {
     ValidationMiddleware.validate(regenerateAnswersParamsSchema),
     defaultChatModel,
     regenerateAnswers(appConfig),
+  );
+
+  /**
+   * @route POST /api/v1/conversations/:conversationId/message/:messageId/fork
+   * @desc Copy this conversation into a new chat, including every message up to messageId
+   */
+  router.post(
+    '/:conversationId/message/:messageId/fork',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
+    ValidationMiddleware.validate(forkConversationParamsSchema),
+    forkConversation,
   );
 
   /**
@@ -736,6 +752,18 @@ export function createAgentConversationalRouter(container: Container): Router {
       ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
       regenerateAgentAnswers(appConfig),
     );
+
+  /**
+   * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/fork
+   * @desc Copy this agent conversation into a new chat, including every message up to messageId
+   */
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/fork',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(forkAgentConversationParamsSchema),
+    forkAgentConversation,
+  );
 
   /**
    * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/cancel
