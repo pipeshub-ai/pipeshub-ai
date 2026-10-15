@@ -54,7 +54,7 @@ def _document_url(document_id: str) -> str:
 
 
 def _body_text(body: dict[str, Any]) -> str:
-    """A body's text, paragraph by paragraph and table cell by cell, in reading order."""
+    """A body's text in reading order; a table is one line per row, its cells split by " | "."""
     parts: list[str] = []
 
     def walk(content: list[dict[str, Any]]) -> None:
@@ -64,8 +64,14 @@ def _body_text(body: dict[str, Any]) -> str:
                 for run in (element.get("paragraph") or {}).get("elements", [])
             )
             for row in (element.get("table") or {}).get("tableRows", []):
-                for cell in row.get("tableCells", []):
+                for i, cell in enumerate(row.get("tableCells", [])):
+                    if i:
+                        parts.append(" | ")
+                    # A cell's paragraphs end in a newline; inside a row that would split the row.
+                    start = len(parts)
                     walk(cell.get("content", []))
+                    parts[start:] = ["".join(parts[start:]).rstrip("\n")]
+                parts.append("\n")
 
     walk(body.get("content", []))
     return "".join(parts)

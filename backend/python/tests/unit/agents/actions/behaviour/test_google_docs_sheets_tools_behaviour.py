@@ -65,12 +65,13 @@ def sheets(http: FakeGoogleHttp) -> GoogleSheets:
     return GoogleSheets(_service(http, "sheets", "v4"))
 
 
-def _body(text_runs: list[str], table_cells: list[str] | None = None) -> dict[str, Any]:
+def _body(text_runs: list[str], table_rows: list[list[str]] | None = None) -> dict[str, Any]:
     content: list[dict[str, Any]] = [{"paragraph": {"elements": [{"textRun": {"content": t}} for t in text_runs]}}]
-    if table_cells:
+    if table_rows:
+        # Google ends every paragraph, including the one in each table cell, with a newline.
         content.append({"table": {"tableRows": [{"tableCells": [
-            {"content": [{"paragraph": {"elements": [{"textRun": {"content": c}}]}}]} for c in table_cells
-        ]}]}})
+            {"content": [{"paragraph": {"elements": [{"textRun": {"content": f"{c}\n"}}]}}]} for c in row
+        ]} for row in table_rows]}})
     return {"content": content}
 
 
@@ -89,13 +90,13 @@ def _document(tabs: list[dict[str, Any]]) -> dict[str, Any]:
 
 class TestDocs:
     async def test_reads_title_and_text_including_tables(self, docs, http) -> None:
-        http.on("GET", f"{DOCS}/doc-1", _document([_tab("t.0", "Plan", _body(["Goals\n", "Ship it.\n"], ["North", "South"]))]), base="")
+        http.on("GET", f"{DOCS}/doc-1", _document([_tab("t.0", "Plan", _body(["Goals\n", "Ship it.\n"], [["Region", "Total"], ["North", "42"]]))]), base="")
 
         ok, data = result(await docs.get_document("doc-1"))
 
         assert ok is True
         assert data["title"] == "Q3 plan"
-        assert data["tabs"] == [{"tab_id": "t.0", "title": "Plan", "parent_tab_id": None, "text": "Goals\nShip it.\nNorthSouth"}]
+        assert data["tabs"] == [{"tab_id": "t.0", "title": "Plan", "parent_tab_id": None, "text": "Goals\nShip it.\nRegion | Total\nNorth | 42\n"}]
         assert data["url"] == "https://docs.google.com/document/d/doc-1/edit"
         assert data["truncated"] is False
         assert http.requests[0].query["includeTabsContent"] == "true"
@@ -297,6 +298,23 @@ class TestSheets:
 
         assert ok is True and [r["values"] for r in data["ranges"]] == [[["x"]], [["y"]]]
         assert "ranges" in http.requests[0].query
+
+    async def test_batch_reads_share_one_cell_budget(self, sheets, http, monkeypatch) -> None:
+        monkeypatch.setattr("app.agents.actions.google.sheets.sheets._MAX_CELLS_RETURNED", 5)
+        http.on("GET", f"{SHEETS}/s-1/values:batchGet", {"valueRanges": [
+            {"range": "A!A1:B2", "values": [["1", "2"], ["3", "4"]]},
+            {"range": "B!A1:B2", "values": [["5", "6"], ["7", "8"]]},
+            {"range": "C!A1", "values": [["9"]]},
+        ]}, base="")
+
+        ok, data = result(await sheets.batch_get_values("s-1", ["A!A1:B2", "B!A1:B2", "C!A1"]))
+
+        assert ok is True
+        assert [(r["range"], r["values"], r["truncated"]) for r in data["ranges"]] == [
+            ("A!A1:B2", [["1", "2"], ["3", "4"]], False),
+            ("B!A1:B2", [], True),
+            ("C!A1", [["9"]], False),
+        ]
 
     async def test_update_writes_rows_as_typed_by_default(self, sheets, http) -> None:
         http.on("PUT", f"{SHEETS}/s-1/values/Sheet1!A1", {"updatedRange": "Sheet1!A1:B2", "updatedRows": 2, "updatedCells": 4}, base="")

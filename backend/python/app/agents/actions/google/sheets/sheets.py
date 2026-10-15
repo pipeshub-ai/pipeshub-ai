@@ -75,16 +75,20 @@ def _rows(values: object) -> list[list[Any]]:
     return values
 
 
-def _capped(value_range: dict[str, Any]) -> dict[str, Any]:
-    rows = value_range.get("values", [])
-    kept: list[list[Any]] = []
-    cells = 0
-    for row in rows:
-        if cells + len(row) > _MAX_CELLS_RETURNED:
-            break
-        kept.append(row)
-        cells += len(row)
-    return {"range": value_range.get("range", ""), "values": kept, "truncated": len(kept) < len(rows)}
+def _capped(value_ranges: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Whole rows of each range while one shared cell budget lasts; one entry per range, cut ones flagged."""
+    room = _MAX_CELLS_RETURNED
+    capped: list[dict[str, Any]] = []
+    for value_range in value_ranges:
+        rows = value_range.get("values", [])
+        kept: list[list[Any]] = []
+        for row in rows:
+            if len(row) > room:
+                break
+            kept.append(row)
+            room -= len(row)
+        capped.append({"range": value_range.get("range", ""), "values": kept, "truncated": len(kept) < len(rows)})
+    return capped
 
 
 @ToolsetBuilder("Sheets")\
@@ -226,7 +230,7 @@ class GoogleSheets:
     async def get_values(self, spreadsheet_id: str, range: str) -> tuple[bool, str]:  # noqa: A002
         try:
             found = await self._execute(self._values().get(spreadsheetId=spreadsheet_id, range=range))
-            return True, json.dumps(_capped(found))
+            return True, json.dumps(_capped([found])[0])
         except Exception as e:
             return _failure(e, "read the cells")
 
@@ -247,7 +251,7 @@ class GoogleSheets:
             if not ranges:
                 raise _SheetsInputError("Say which ranges to read, for example ['Sheet1!A1:B5'].")
             found = await self._execute(self._values().batchGet(spreadsheetId=spreadsheet_id, ranges=ranges))
-            return True, json.dumps({"ranges": [_capped(r) for r in found.get("valueRanges", [])]})
+            return True, json.dumps({"ranges": _capped(found.get("valueRanges", []))})
         except Exception as e:
             return _failure(e, "read the cells")
 
