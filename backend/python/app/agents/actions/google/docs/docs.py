@@ -13,9 +13,9 @@ from app.connectors.core.registry.auth_builder import (
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.google.google import GoogleClient
 from app.sources.client.http.http_response import HTTPResponse
@@ -75,7 +75,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Docs")\
     .in_group("Google Workspace")\
     .with_description("Google Docs integration for document creation and editing")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Docs",

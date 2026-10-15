@@ -1182,7 +1182,7 @@ class GraphTransactionStore(TransactionStore):
     async def remove_nodes_by_field(self, collection: str, field: str, value) -> int:
         """Remove nodes matching field value"""
         return await self.graph_provider.remove_nodes_by_field(
-            collection, field, value, transaction=self.txn
+            collection, field, field_value=value, transaction=self.txn
         )
 
     async def get_nodes_by_filters(

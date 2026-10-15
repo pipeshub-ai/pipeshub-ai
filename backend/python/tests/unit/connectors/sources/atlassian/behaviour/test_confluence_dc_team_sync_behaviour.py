@@ -26,12 +26,12 @@ from atlassian_behaviour_fakes import (
 from confluence_dc_removal_fakes import RemovalRecordsDb
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import AccessRule
+from app.config.constants.arangodb import AccessRule, CollectionNames, Connectors
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
 from app.connectors.sources.atlassian.core import confluence_dc_removal
-from app.models.entities import Record, RecordType
+from app.models.entities import AppUserGroup, Record, RecordType
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -74,8 +74,17 @@ class TeamStore(FakeCheckpointStore):
         super().__init__()
         self.db = db
 
-    async def get_user_group_by_name(self, connector_id: str, group_name: str) -> object:
-        return next((g for g, _ in reversed(self.db.user_groups) if g.name == group_name), None)
+    async def get_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any],
+        return_fields: list[str] | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        assert collection == CollectionNames.GROUPS.value
+        nodes = {g.source_user_group_id: g.to_arango_base_user_group() for g, _ in self.db.user_groups}
+        return [n for n in nodes.values() if all(n.get(k) == v for k, v in filters.items())]
 
 
 @pytest.fixture
@@ -545,6 +554,49 @@ class TestSpacePermissions:
 
         (grant,) = db.record_group_permissions["10"]
         assert (grant.entity_type, grant.external_id) == (EntityType.GROUP, "g-uuid-1")
+
+    @pytest.mark.parametrize(
+        "groups",
+        [
+            pytest.param([{"type": "group", "id": "g-uuid-2", "name": "readers"}], id="no-group-has-the-name"),
+            pytest.param(
+                [{"type": "group", "id": "g-uuid-1", "name": "writers"}, {"type": "group", "id": "g-uuid-2", "name": "writers"}],
+                id="name-is-ambiguous",
+            ),
+        ],
+    )
+    async def test_group_name_without_a_single_match_grants_nothing(
+        self, atlassian_api, db, store, search, groups
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        atlassian_api.on("GET", f"{API}/group", {"results": groups})
+        for g in groups:
+            atlassian_api.on("GET", f"{API}/group/{g['name']}/member", {"results": []})
+        atlassian_api.on(
+            "GET",
+            f"{API}/space/ENG/permissions",
+            json_response([{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "writers"}}]),
+        )
+
+        await connector.run_sync()
+
+        assert db.record_group_permissions.get("10", []) == []
+
+    async def test_same_group_name_in_another_connector_grants_nothing(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        db.user_groups.append(
+            (AppUserGroup(app_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id="other-connector",
+                          source_user_group_id="other-uuid", name="writers", org_id="org-1"), [])
+        )
+        atlassian_api.on(
+            "GET",
+            f"{API}/space/ENG/permissions",
+            json_response([{"operation": {"operationKey": "read", "targetType": "space"}, "subject": {"type": "group", "name": "writers"}}]),
+        )
+
+        await connector.run_sync()
+
+        assert db.record_group_permissions.get("10", []) == []
 
     async def test_old_server_without_permissions_api_is_not_asked(self, atlassian_api, db, store, search) -> None:
         connector = await make_connector(atlassian_api, db, store)

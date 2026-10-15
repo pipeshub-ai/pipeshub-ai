@@ -1,3 +1,4 @@
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -5893,3 +5894,19 @@ class TestPrincipalLookupsCanRaise:
         neo4j_provider.client.execute_query.return_value = []
 
         assert await self._call(neo4j_provider, method, raise_on_error=True) is None
+
+
+class TestGetUserKbPermissionLogging:
+    @pytest.mark.asyncio
+    async def test_no_role_is_logged_below_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """Callers probe non-KB apps through this method, so an empty answer is routine, not a warning."""
+        logger_name = "test.neo4j.get_user_kb_permission"
+        provider = Neo4jProvider(logger=logging.getLogger(logger_name), config_service=MagicMock())
+        provider.client = AsyncMock()
+        provider.client.execute_query.return_value = []
+
+        with caplog.at_level(logging.DEBUG, logger=logger_name):
+            assert await provider.get_user_kb_permission("app-1", "u1") is None
+
+        assert any("No permission found" in r.getMessage() for r in caplog.records)
+        assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []

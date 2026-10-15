@@ -782,7 +782,7 @@ class TestGetConnectorInstanceGaps:
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(side_effect=RuntimeError("boom"))
+        registry.get_connector_instance_for_view = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -792,7 +792,7 @@ class TestGetConnectorInstanceGaps:
     @pytest.mark.asyncio
     async def test_not_found_raises_404(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(return_value=None)
+        registry.get_connector_instance_for_view = AsyncMock(return_value=None)
         req = _mock_request(connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -2686,7 +2686,7 @@ class TestGetConnectorInstanceAdditional:
     @pytest.mark.asyncio
     async def test_success(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(return_value={"_key": "c1", "type": "SLACK"})
+        registry.get_connector_instance_for_view = AsyncMock(return_value={"_key": "c1", "type": "SLACK"})
         req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):
@@ -4001,7 +4001,7 @@ class TestGetConnectorInstanceGapsCoverage:
     @pytest.mark.asyncio
     async def test_generic_exception_raises_500(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(side_effect=RuntimeError("boom"))
+        registry.get_connector_instance_for_view = AsyncMock(side_effect=RuntimeError("boom"))
         req = _mock_request(connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -4011,7 +4011,7 @@ class TestGetConnectorInstanceGapsCoverage:
     @pytest.mark.asyncio
     async def test_not_found_raises_404(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(return_value=None)
+        registry.get_connector_instance_for_view = AsyncMock(return_value=None)
         req = _mock_request(connector_registry=registry)
 
         with pytest.raises(HTTPException) as exc_info:
@@ -5905,7 +5905,7 @@ class TestGetConnectorInstanceAdditionalCoverage:
     @pytest.mark.asyncio
     async def test_success(self):
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(return_value={"_key": "c1", "type": "SLACK"})
+        registry.get_connector_instance_for_view = AsyncMock(return_value={"_key": "c1", "type": "SLACK"})
         req = _mock_request(connector_registry=registry)
 
         with patch(f"{_ROUTER}.check_beta_connector_access", new_callable=AsyncMock):

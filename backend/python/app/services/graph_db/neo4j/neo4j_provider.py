@@ -11651,7 +11651,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 self.logger.debug(f"✅ Effective KB role for user {user_id} on KB {kb_id}: '{role}'")
                 return role
 
-            self.logger.warning(f"⚠️ No permission found for user {user_id} on KB {kb_id}")
+            self.logger.debug(f"No permission found for user {user_id} on KB {kb_id}")
             return None
 
         except Exception as e:
