@@ -670,12 +670,17 @@ describe('UserAccountController', () => {
   });
 
   describe('hasPasswordMethod', () => {
+  const stubPolicy = (policy: unknown) =>
+    sinon.stub(OrgAuthConfig, 'findOne').returns({
+      select: () => ({ lean: async () => policy }),
+    } as any);
+
     it('should return isPasswordAuthEnabled true when password method exists', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').resolves({ _id: 'some-id' } as any);
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] });
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -688,7 +693,7 @@ describe('UserAccountController', () => {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').resolves(null);
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'google' }] }] });
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -696,12 +701,28 @@ describe('UserAccountController', () => {
       expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.false;
     });
 
+    it('should return false when the org has no sign-in policy', async () => {
+      stubPolicy(null);
+
+      await controller.hasPasswordMethod({ tokenPayload: { orgId: 'o1' } } as any, res, next);
+
+      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.false;
+    });
+
+    it('counts password for a SAML-only policy saved before 1.0, before the migration rewrites it', async () => {
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'samlSso' }] }] });
+
+      await controller.hasPasswordMethod({ tokenPayload: { orgId: 'o1' } } as any, res, next);
+
+      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.true;
+    });
+
     it('should call next(error) on exception', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').rejects(new Error('DB error'));
+      sinon.stub(OrgAuthConfig, 'findOne').throws(new Error('DB error'));
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -3547,7 +3568,11 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('hasPasswordMethod - via tokenPayload', () => {
     it('should return isPasswordAuthEnabled based on OrgAuthConfig', async () => {
-      sinon.stub(OrgAuthConfig, 'exists').resolves(true as any);
+      sinon.stub(OrgAuthConfig, 'findOne').returns({
+        select: () => ({
+          lean: async () => ({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] }),
+        }),
+      } as any);
 
       const req: any = {
         tokenPayload: { orgId: 'o1' },

@@ -484,14 +484,16 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const orgId = req.tokenPayload?.orgId;
-      const isPasswordAuthEnabled = !!(await OrgAuthConfig.exists({
-        orgId,
-        authSteps: {
-          $elemMatch: {
-            allowedMethods: { $elemMatch: { type: 'password' } },
-          },
-        },
-      }));
+      const orgAuthConfig = await OrgAuthConfig.findOne({ orgId })
+        .select('authSteps')
+        .lean<{ authSteps?: { order: number; allowedMethods: { type: string }[] }[] }>();
+      // Read like sign-in does: a policy saved before 1.0 that named a removed
+      // method already offers password, before the migration writes it.
+      const isPasswordAuthEnabled =
+        !!orgAuthConfig &&
+        withoutRemovedSignInMethods(orgAuthConfig.authSteps).steps.some((step) =>
+          step.allowedMethods.some((m) => m.type === 'password'),
+        );
       res.json({
         isPasswordAuthEnabled,
       });
