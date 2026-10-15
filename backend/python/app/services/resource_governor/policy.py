@@ -377,10 +377,10 @@ def resolve_ceilings(
     they hold below these ceilings exactly as long as the memory isn't there
     and no longer.
 
-    ``worker_count > 1`` divides the result, since each worker process runs
-    its own governor against the same cgroup.
+    ``worker_count > 1`` returns one worker process's share
+    (``split_ceilings``), since each runs its own governor against the same
+    cgroup.
     """
-    workers = max(1, worker_count)
     cpus = max(0.0, snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
@@ -446,21 +446,33 @@ def resolve_ceilings(
         max(1, min(light_parse_ceiling, index_light_ceiling)) if index_light_ceiling else 1
     )
 
-    if workers > 1:
-        heavy_parse_ceiling = max(1, heavy_parse_ceiling // workers)
-        light_parse_ceiling = max(1, light_parse_ceiling // workers)
-        index_heavy_ceiling = max(1, index_heavy_ceiling // workers)
-        # Floor at 1 only if the tier exists at all; a collapsed light tier
-        # must stay collapsed, not be resurrected to 1 by the division.
-        index_light_ceiling = (
-            max(1, index_light_ceiling // workers) if index_light_ceiling else 0
-        )
+    return split_ceilings(
+        Ceilings(
+            heavy=heavy_parse_ceiling,
+            light=light_parse_ceiling,
+            index_heavy=index_heavy_ceiling,
+            index_light=index_light_ceiling,
+        ),
+        worker_count,
+    )
 
+
+def split_ceilings(total: Ceilings, worker_count: int) -> Ceilings:
+    """One worker process's share of ceilings resolved for all of them.
+
+    Every share is floored at 1, so with more workers than slots the shares
+    add up to more than ``total``; the cluster-wide leases, which are sized
+    from ``total``, are what hold every worker together to it.
+    """
+    workers = max(1, worker_count)
+    if workers == 1:
+        return total
     return Ceilings(
-        heavy=heavy_parse_ceiling,
-        light=light_parse_ceiling,
-        index_heavy=index_heavy_ceiling,
-        index_light=index_light_ceiling,
+        heavy=max(1, total.heavy // workers),
+        light=max(1, total.light // workers),
+        index_heavy=max(1, total.index_heavy // workers),
+        # A collapsed light tier must stay collapsed, not be resurrected to 1.
+        index_light=max(1, total.index_light // workers) if total.index_light else 0,
     )
 
 

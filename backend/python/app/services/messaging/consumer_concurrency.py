@@ -360,8 +360,9 @@ async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, 
 # ---------------------------------------------------------------------------
 # ResourceGovernor-backed node-local gates (Phase 1 of the adaptive-concurrency
 # plan). The distributed Redis lease stays sized to the *resolved ceiling*
-# (never the adaptive value) — the lease is the cluster-wide cap, the gate
-# below is the node-local cap; see plan section "Phase 1 — Indexing consumers".
+# (never the adaptive value) for every worker process together — the lease is
+# the cluster-wide cap, the gate below is the node-local cap; see plan section
+# "Phase 1 — Indexing consumers".
 # ---------------------------------------------------------------------------
 
 
@@ -429,15 +430,18 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     governor = host.governor
     if governor is not None:
         tier = effective_index_tier(host, tier)
+        # Every worker process takes the same lease, so it is sized from the
+        # budget for all of them, not from this process's share of it.
+        ceilings = governor.fleet_ceilings
         if tier is ParseTier.LIGHT and messaging_env.split_index_lease_pools:
-            return governor.ceilings.index_light
+            return ceilings.index_light
         # On the shared pool this must be the *total* budget, matching what a
         # previous-build replica passes for the same pool — the Lua script
         # enforces whichever limit the caller sends.
         return (
-            governor.ceilings.index_heavy
+            ceilings.index_heavy
             if messaging_env.split_index_lease_pools
-            else governor.ceilings.index
+            else ceilings.index
         )
     return messaging_env.max_concurrent_indexing
 
@@ -519,8 +523,8 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
-            return governor.ceilings.light
-        return governor.ceilings.heavy
+            return governor.fleet_ceilings.light
+        return governor.fleet_ceilings.heavy
     return messaging_env.max_concurrent_parsing
 
 

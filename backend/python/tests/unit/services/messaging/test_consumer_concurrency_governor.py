@@ -97,6 +97,91 @@ class TestIndexAndParseCeiling:
         assert concurrency.parse_ceiling(host) == 4
 
 
+class TestLeasesAcrossWorkerProcesses:
+    """``INDEXING_UVICORN_WORKERS=N`` runs N processes, each with its own
+    governor holding 1/N of the budget, and all of them take the *same*
+    Redis leases. Each lease is the cap for every process together, so it
+    must be sized from the whole budget: sized from one process's share, N
+    processes queued on one process's worth of leases (8 workers configured
+    for 768 records in flight were held to 71)."""
+
+    @staticmethod
+    def _governors(workers: int, **kwargs) -> tuple:
+        one = make_test_governor(logger_name="test.lease.one", **kwargs)
+        many = make_test_governor(
+            logger_name="test.lease.many", worker_count=workers, **kwargs
+        )
+        return one, many
+
+    def test_one_worker_leases_equal_its_own_ceilings(self) -> None:
+        governor = make_test_governor(env_index=24)
+        host = _host(governor=governor)
+        assert concurrency.index_ceiling(host) == governor.ceilings.index == 24
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == governor.ceilings.heavy
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == governor.ceilings.light
+
+    @pytest.mark.parametrize("workers", [2, 6, 8])
+    def test_the_indexing_lease_is_the_whole_budget_not_one_workers_share(
+        self, workers: int
+    ) -> None:
+        # The reported host: 32 CPUs, MAX_CONCURRENT_INDEXING=768.
+        one, many = self._governors(workers, env_index=768, cpu_quota=32.0)
+        lease = concurrency.index_ceiling(_host(governor=many))
+        assert lease == concurrency.index_ceiling(_host(governor=one))
+        assert lease == many.fleet_ceilings.index
+        assert lease > many.ceilings.index
+        assert lease <= 768
+
+    @pytest.mark.parametrize("workers", [2, 8])
+    def test_split_indexing_leases_are_the_whole_tier_budgets(
+        self, workers: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
+        one, many = self._governors(workers, env_index=768, cpu_quota=32.0)
+        for tier in (ParseTier.HEAVY, ParseTier.LIGHT):
+            assert concurrency.index_ceiling(
+                _host(governor=many), tier
+            ) == concurrency.index_ceiling(_host(governor=one), tier)
+
+    @pytest.mark.parametrize("workers", [2, 8])
+    def test_parsing_leases_are_the_whole_budget(self, workers: int) -> None:
+        one, many = self._governors(workers, env_index=768, cpu_quota=32.0)
+        for tier in (ParseTier.HEAVY, ParseTier.LIGHT):
+            assert concurrency.parse_ceiling(
+                _host(governor=many), tier
+            ) == concurrency.parse_ceiling(_host(governor=one), tier)
+        assert concurrency.parse_ceiling(_host(governor=many), ParseTier.HEAVY) == 32
+        assert concurrency.parse_ceiling(_host(governor=many), ParseTier.LIGHT) == 256
+
+    def test_the_heavy_parse_lease_holds_the_total_when_each_worker_is_floored_at_one(
+        self,
+    ) -> None:
+        """Four heavy parses split over eight workers floors every worker at
+        one, eight in all. The lease is what keeps the container at four
+        Docling working sets."""
+        governor = make_test_governor(env_index=24, worker_count=8)
+        assert governor.ceilings.heavy == 1
+        assert concurrency.parse_ceiling(_host(governor=governor), ParseTier.HEAVY) == 4
+
+    def test_max_concurrent_indexing_sizes_the_lease_for_every_worker_together(self) -> None:
+        governor = make_test_governor(env_index=100, cpu_quota=32.0, worker_count=4)
+        assert governor.ceilings.index == 25
+        assert concurrency.index_ceiling(_host(governor=governor)) == 100
+
+    def test_max_concurrent_parsing_sizes_the_leases_for_every_worker_together(self) -> None:
+        governor = make_test_governor(env_parse=6, env_index=None, cpu_quota=32.0, worker_count=4)
+        host = _host(governor=governor)
+        assert governor.ceilings.heavy == 1
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 6
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 6
+
+    def test_a_collapsed_light_tier_keeps_a_lease_of_one(self) -> None:
+        governor = make_test_governor(env_parse=1, env_index=1, worker_count=4)
+        host = _host(governor=governor)
+        assert concurrency.effective_index_tier(host, ParseTier.LIGHT) is ParseTier.HEAVY
+        assert concurrency.index_ceiling(host, ParseTier.LIGHT) == 1
+
+
 class TestPendingTaskCeiling:
     """Phase 6: the in-flight-task cap derives from the resolved governor
     ceilings (when present) instead of the static MAX_CONCURRENT_* env

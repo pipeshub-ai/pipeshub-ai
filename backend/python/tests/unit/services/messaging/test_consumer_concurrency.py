@@ -72,6 +72,13 @@ def _make_host(
     )
 
 
+def _one_worker_governor(**ceilings) -> SimpleNamespace:
+    """A governor stand-in for one worker process, whose share of the budget
+    is the whole budget."""
+    resolved = SimpleNamespace(**ceilings)
+    return SimpleNamespace(ceilings=resolved, fleet_ceilings=resolved)
+
+
 def _waiters(count: int, tier: ParseTier = ParseTier.HEAVY) -> GateWaiters:
     waiters = GateWaiters()
     for _ in range(count):
@@ -530,9 +537,7 @@ class TestRetryHelpers:
 class TestCeilings:
     def test_index_ceiling_with_governor(self, monkeypatch) -> None:
         monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
-        gov = SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        gov = _one_worker_governor(index=10, index_heavy=4, index_light=6)
         host = _make_host(governor=gov)
         assert index_ceiling(host, ParseTier.HEAVY) == 4
         assert index_ceiling(host, ParseTier.LIGHT) == 6
@@ -542,9 +547,7 @@ class TestCeilings:
         the ceiling lookup has to agree — an unclassifiable record must draw
         on the smaller budget, never the one sized for fast records."""
         monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
-        gov = SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        gov = _one_worker_governor(index=10, index_heavy=4, index_light=6)
         host = _make_host(governor=gov)
         assert index_ceiling(host, None) == 4
 
@@ -555,17 +558,17 @@ class TestCeilings:
             assert index_ceiling(host) == 4
 
     def test_parse_ceiling_heavy_with_governor(self) -> None:
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, ParseTier.HEAVY) == 8
 
     def test_parse_ceiling_light_with_governor(self) -> None:
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, ParseTier.LIGHT) == 20
 
     def test_parse_ceiling_none_tier_defaults_heavy(self) -> None:
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, None) == 8
 
@@ -596,9 +599,7 @@ class TestIndexLeasePoolSplitFlag:
     exceed MAX_CONCURRENT_INDEXING by ``index_light``."""
 
     def _gov(self) -> None:
-        return SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        return _one_worker_governor(index=10, index_heavy=4, index_light=6)
 
     def test_off_by_default_light_shares_the_legacy_pool_and_budget(self) -> None:
         host = _make_host(governor=self._gov())
@@ -742,10 +743,8 @@ class TestEffectiveIndexTier:
 
     def _host(self, index_light: int) -> None:
         return _make_host(
-            governor=SimpleNamespace(
-                ceilings=SimpleNamespace(
-                    index=1 + index_light, index_heavy=1, index_light=index_light
-                )
+            governor=_one_worker_governor(
+                index=1 + index_light, index_heavy=1, index_light=index_light
             )
         )
 

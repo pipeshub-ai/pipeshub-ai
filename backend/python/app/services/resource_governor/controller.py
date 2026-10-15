@@ -41,6 +41,7 @@ from app.services.resource_governor.policy import (
     floor_for,
     next_limits,
     resolve_ceilings,
+    split_ceilings,
     start_rate_limiter_params,
     warm_start_limits,
 )
@@ -103,13 +104,13 @@ class ResourceGovernor:
                 "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
             )
             initial_snapshot = self._probe.snapshot()
-        self._ceilings: Ceilings = resolve_ceilings(
+        self._fleet_ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
             env_index,
-            self._worker_count,
             reserve_embedding_cpus=reserve_embedding_cpus,
         )
+        self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
         if self._ceilings.index_light == 0:
             # Only reachable when an explicit MAX_CONCURRENT_INDEXING is too
             # small to split (a total of 1 cannot be two tiers each floored at
@@ -253,7 +254,15 @@ class ResourceGovernor:
 
     @property
     def ceilings(self) -> Ceilings:
+        """This process's share: what its own gates are clamped to."""
         return self._ceilings
+
+    @property
+    def fleet_ceilings(self) -> Ceilings:
+        """The ceilings for every worker process of this service together,
+        before ``ceilings`` split them. The cluster-wide leases are sized
+        from these, since every worker takes the same ones."""
+        return self._fleet_ceilings
 
     def limit(self, pool: Pool) -> int:
         """Current adaptive limit for *pool*. Safe from any thread."""
@@ -461,6 +470,13 @@ class ResourceGovernor:
             "mem_working_set_raw_bytes": snapshot.mem_working_set_raw_bytes,
             "mem_baseline_bytes": snapshot.mem_baseline_bytes,
             "worker_count": self._worker_count,
+            "fleet_ceilings": {
+                "heavy_parse": self._fleet_ceilings.heavy,
+                "light_parse": self._fleet_ceilings.light,
+                "index": self._fleet_ceilings.index,
+                "index_heavy": self._fleet_ceilings.index_heavy,
+                "index_light": self._fleet_ceilings.index_light,
+            },
             "ceilings": {
                 "heavy_parse": self._ceilings.heavy,
                 "light_parse": self._ceilings.light,
