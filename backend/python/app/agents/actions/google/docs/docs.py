@@ -59,8 +59,10 @@ def _plain_text(document: dict[str, Any]) -> str:
 
     def walk(content: list[dict[str, Any]]) -> None:
         for element in content:
-            for run in (element.get("paragraph") or {}).get("elements", []):
-                parts.append((run.get("textRun") or {}).get("content", ""))
+            parts.extend(
+                (run.get("textRun") or {}).get("content", "")
+                for run in (element.get("paragraph") or {}).get("elements", [])
+            )
             for row in (element.get("table") or {}).get("tableRows", []):
                 for cell in row.get("tableCells", []):
                     walk(cell.get("content", []))
@@ -225,7 +227,7 @@ class GoogleDocs:
         args_summary=args_template("Replacing \"{old_text}\" in Google Doc {document_id}", "old_text", "document_id"),
         result_summary=entity_summary(lambda d: f"Replaced {d.get('occurrences_changed', 0)} occurrence(s)", path=()),
     )
-    async def replace_text(self, document_id: str, old_text: str, new_text: str, match_case: bool = True) -> tuple[bool, str]:
+    async def replace_text(self, document_id: str, old_text: str, new_text: str, *, match_case: bool = True) -> tuple[bool, str]:
         try:
             if not old_text:
                 raise _DocsInputError("Say which text to replace.")

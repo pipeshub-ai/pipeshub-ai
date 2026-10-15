@@ -5,8 +5,15 @@ from typing import Any, Optional
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.actions.util.google_api_errors import GoogleToolWording, google_error_message
-from app.agents.actions.util.tool_summaries import args_template, confirmation, entity_summary
+from app.agents.actions.util.google_api_errors import (
+    GoogleToolWording,
+    google_error_message,
+)
+from app.agents.actions.util.tool_summaries import (
+    args_template,
+    confirmation,
+    entity_summary,
+)
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
