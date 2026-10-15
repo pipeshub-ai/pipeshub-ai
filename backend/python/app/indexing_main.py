@@ -5,14 +5,15 @@ import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+import app.utils.runtime_threads  # must precede all ML library imports
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -27,15 +28,17 @@ from app.modules.indexing.duplicate_reconcile import (
     retry_pending_duplicate_reconciles,
 )
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
-from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
-from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.named_entity_completion import (
     record_consumer_loop,
     run_named_entity_completion_loop,
 )
-from app.modules.indexing.named_entity_persist_retry import retry_pending_named_entity_persists
+from app.modules.indexing.named_entity_persist_retry import (
+    retry_pending_named_entity_persists,
+)
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
+from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
@@ -77,6 +80,7 @@ from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.loop_lag_monitor import LoopLagMonitor
 from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
+from app.utils.request_context import set_service_suffix
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -84,6 +88,10 @@ from app.utils.user_errors import (
     RECOVERY_REQUEUED,
     RECOVERY_RETRY,
 )
+
+if TYPE_CHECKING:
+    from app.modules.indexing.run import IndexingPipeline
+    from app.services.messaging.interface.producer import IMessagingProducer
 
 _T = TypeVar("_T")
 
@@ -756,9 +764,9 @@ _orphan_sweep_cursor = 0
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
-    graph_provider,
-    pipeline,
-    logger,
+    graph_provider: IGraphDBProvider,
+    pipeline: "IndexingPipeline",
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Clean up VRIDs whose vectors outlived every graph record referencing them.
@@ -780,7 +788,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     rather than all at once. The cursor is per-process and resets on restart —
     acceptable, since nothing here is required to be timely.
     """
-    global _orphan_sweep_cursor
+    global _orphan_sweep_cursor  # noqa: PLW0603 - the cursor is per process by design
 
     swept = 0
     offset = _orphan_sweep_cursor
@@ -864,8 +872,8 @@ async def _sweep_orphaned_virtual_record_mappings(
 
 async def _sweep_queued_records_for_inactive_connectors(
     *,
-    graph_provider,
-    logger,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
@@ -1047,11 +1055,11 @@ def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
 
 async def _republish_stranded_records(
     *,
-    graph_provider,
-    logger,
-    producer,
-    run_coordination,
-    concurrency_manager,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    producer: "IMessagingProducer",
+    run_coordination: CoordinationRunner,
+    concurrency_manager: DistributedConcurrencyManager | None,
     page_size: int,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
@@ -2045,9 +2053,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
-
-from app.api.middlewares.request_context import RequestContextMiddleware
-from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-is")
 
