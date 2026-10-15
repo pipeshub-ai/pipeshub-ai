@@ -24,15 +24,11 @@ interface ConfigurePanelProps {
 const METHOD_DOC_URLS: Record<ConfigurableMethod, string> = {
   google: 'https://docs.pipeshub.com/auth/google',
   microsoft: 'https://docs.pipeshub.com/auth/microsoft-azureAd',
-  samlSso: 'https://docs.pipeshub.com/auth/saml',
-  oauth: 'https://docs.pipeshub.com/auth',
 };
 
 const METHOD_ICONS: Record<ConfigurableMethod, string> = {
   google: 'google',
   microsoft: 'window',
-  samlSso: 'security',
-  oauth: 'vpn_key',
 };
 
 // ========================================

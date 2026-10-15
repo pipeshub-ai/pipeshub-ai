@@ -2225,17 +2225,11 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0",
         "github": "Configurar la autenticación de GitHub"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
-      },
-      "xmlUpload": {
-        "parseError": "No se pudieron analizar los metadatos SAML de este archivo. Comprueba que se trata de un XML de metadatos de IdP válido.",
-        "readError": "No se pudo leer el archivo."
       },
       "riskDialog": {
         "title": "Confirmar cambios de autenticación",
@@ -2248,6 +2242,24 @@
       "userMethods": {
         "heading": "Métodos de inicio de sesión de los usuarios",
         "subtitle": "Controla qué métodos de inicio de sesión están disponibles para todos los usuarios, en todas las organizaciones."
+      },
+      "signInRemoval": {
+        "title_one": "El inicio de sesión con {{methods}} se eliminó en PipesHub 1.0",
+        "title_many": "El inicio de sesión con {{methods}} se eliminó en PipesHub 1.0",
+        "title_other": "El inicio de sesión con {{methods}} se eliminó en PipesHub 1.0",
+        "nowSignsInWith": "Ahora en este espacio de trabajo se inicia sesión con {{methods}}.",
+        "peopleIntro": "Estas personas ya han iniciado sesión, pero todavía no tienen contraseña:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "y {{count}} más",
+        "howToSetPassword": "Quien no inicie sesión con Google, Microsoft o un código OTP por correo debe establecer una contraseña. Puede usar «¿Olvidaste tu contraseña?» en la página de inicio de sesión, para lo que hace falta tener configurado el correo (SMTP), o quien administre tu servidor de PipesHub puede crearle un enlace para establecer la contraseña, como se describe en la guía de actualización a PipesHub 1.0.",
+        "methodNames": {
+          "password": "contraseña",
+          "otp": "código OTP por correo",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4454,9 +4466,6 @@
       "emailVerifiedDescription": "Tu dirección de correo fue actualizada. Inicia sesión con tu nuevo correo.",
       "emailVerifyFailedTitle": "Error al verificar correo",
       "emailVerifyFailedDescription": "El enlace puede ser inválido o haber expirado.",
-      "samlErrorTitle": "Error al iniciar sesión con SAML",
-      "samlSignInFailedTitle": "Error al iniciar sesión",
-      "samlSignInFailedDescription": "SAML SSO no pudo completarse. Por favor, inténtalo de nuevo.",
       "orgEmailVerifiedTitle": "Organización verificada",
       "orgEmailVerifiedDescription": "Tu organización ya está activa. Inicia sesión para continuar.",
       "orgEmailVerifyFailedTitle": "Verificación fallida",
@@ -4486,13 +4495,10 @@
       "signInWithEmailOtp": "Iniciar sesión con OTP por correo",
       "orContinueWith": "o continuar con {{provider}}",
       "orContinueWithAny": "o continuar con cualquiera de ellos",
-      "orContinueWithSso": "o continuar con inicio de sesión único",
       "googleNotConfigured": "El inicio de sesión con Google no está configurado para tu organización.",
       "microsoftNotConfigured": "El inicio de sesión con Microsoft no está configurado para tu organización.",
-      "oauthNotConfigured": "El inicio de sesión OAuth no está configurado para tu organización.",
       "googleUnavailable": "El inicio de sesión con Google no está disponible. Contacta a tu administrador.",
       "microsoftUnavailable": "El inicio de sesión con Microsoft no está disponible. Contacta a tu administrador.",
-      "oauthUnavailable": "El inicio de sesión OAuth no está disponible. Contacta a tu administrador.",
       "showPassword": "Mostrar contraseña",
       "hidePassword": "Ocultar contraseña",
       "accountDisabled": "Su cuenta se ha deshabilitado.",

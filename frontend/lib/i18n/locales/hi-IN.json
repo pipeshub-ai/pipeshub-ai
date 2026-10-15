@@ -2202,17 +2202,11 @@
       "panels": {
         "google": "Configure Google Authentication",
         "microsoft": "Configure Microsoft Authentication",
-        "samlSso": "Configure SAML SSO",
-        "oauth": "Configure OAuth 2.0",
         "github": "GitHub प्रमाणीकरण कॉन्फ़िगर करें"
       },
       "jit": {
         "title": "Enable Just-In-Time (JIT) Provisioning",
         "description": "Automatically create user accounts when they sign in with {{providerName}} for the first time"
-      },
-      "xmlUpload": {
-        "parseError": "इस फ़ाइल से SAML मेटाडेटा पार्स नहीं किया जा सका। जाँच लें कि यह एक मान्य IdP मेटाडेटा XML है।",
-        "readError": "फ़ाइल पढ़ने में विफल।"
       },
       "riskDialog": {
         "title": "प्रमाणीकरण परिवर्तन की पुष्टि करें",
@@ -2225,6 +2219,23 @@
       "userMethods": {
         "heading": "उपयोगकर्ता साइन-इन विधियाँ",
         "subtitle": "नियंत्रित करता है कि हर संगठन में हर उपयोगकर्ता के लिए कौन-सी साइन-इन विधियाँ उपलब्ध हैं।"
+      },
+      "signInRemoval": {
+        "title_one": "PipesHub 1.0 में {{methods}} से साइन इन हटा दिया गया है",
+        "title_other": "PipesHub 1.0 में {{methods}} से साइन इन हटा दिया गया है",
+        "nowSignsInWith": "अब इस वर्कस्पेस में {{methods}} से साइन इन होता है।",
+        "peopleIntro": "इन लोगों ने पहले साइन इन किया है, लेकिन इनका अभी तक कोई पासवर्ड नहीं है:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "और {{count}} अन्य",
+        "howToSetPassword": "जो लोग Google, Microsoft या ईमेल OTP से साइन इन नहीं करते, उन्हें पासवर्ड सेट करना होगा। वे साइन-इन पेज पर \"पासवर्ड भूल गए\" का उपयोग कर सकते हैं, जिसके लिए ईमेल (SMTP) सेट होना ज़रूरी है, या आपका PipesHub सर्वर चलाने वाला व्यक्ति उनके लिए पासवर्ड सेट करने का लिंक बना सकता है, जैसा कि PipesHub 1.0 अपग्रेड गाइड में बताया गया है।",
+        "methodNames": {
+          "password": "पासवर्ड",
+          "otp": "ईमेल OTP",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4420,9 +4431,6 @@
       "emailVerifiedDescription": "आपका ईमेल पता अपडेट किया गया। नए ईमेल से साइन इन करें।",
       "emailVerifyFailedTitle": "ईमेल सत्यापन विफल",
       "emailVerifyFailedDescription": "लिंक अमान्य या समयाप्त हो सकता है।",
-      "samlErrorTitle": "SAML से लॉगइन में त्रुटि",
-      "samlSignInFailedTitle": "साइन-इन विफल",
-      "samlSignInFailedDescription": "SAML SSO पूरा नहीं हो सका। कृपया पुनः प्रयास करें।",
       "orgEmailVerifiedTitle": "संगठन सत्यापित",
       "orgEmailVerifiedDescription": "आपका संगठन अब सक्रिय है। जारी रखने के लिए साइन इन करें।",
       "orgEmailVerifyFailedTitle": "सत्यापन विफल",
@@ -4452,13 +4460,10 @@
       "signInWithEmailOtp": "ईमेल OTP से साइन इन करें",
       "orContinueWith": "या {{provider}} से जारी रखें",
       "orContinueWithAny": "या इनमें से किसी एक से जारी रखें",
-      "orContinueWithSso": "या सिंगल साइन-ऑन से जारी रखें",
       "googleNotConfigured": "Google साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
       "microsoftNotConfigured": "Microsoft साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
-      "oauthNotConfigured": "OAuth साइन-इन आपके संगठन के लिए कॉन्फ़िगर नहीं है।",
       "googleUnavailable": "Google साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "microsoftUnavailable": "Microsoft साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
-      "oauthUnavailable": "OAuth साइन-इन अभी उपलब्ध नहीं। अपने प्रशासक से संपर्क करें।",
       "showPassword": "पासवर्ड दिखाएं",
       "hidePassword": "पासवर्ड छुपाएं",
       "accountDisabled": "आपका खाता अक्षम कर दिया गया है।",

@@ -2207,17 +2207,11 @@
       "panels": {
         "google": "Google-Authentifizierung konfigurieren",
         "microsoft": "Microsoft-Authentifizierung konfigurieren",
-        "samlSso": "SAML-SSO konfigurieren",
-        "oauth": "OAuth 2.0 konfigurieren",
         "github": "GitHub-Authentifizierung konfigurieren"
       },
       "jit": {
         "title": "Just-In-Time-(JIT)-Bereitstellung aktivieren",
         "description": "Erstellt automatisch Benutzerkonten, wenn sich diese zum ersten Mal mit {{providerName}} anmelden"
-      },
-      "xmlUpload": {
-        "parseError": "SAML-Metadaten konnten aus dieser Datei nicht gelesen werden. Prüfen Sie, ob es sich um eine gültige IdP-Metadaten-XML handelt.",
-        "readError": "Datei konnte nicht gelesen werden."
       },
       "riskDialog": {
         "title": "Authentifizierungsänderungen bestätigen",
@@ -2230,6 +2224,23 @@
       "userMethods": {
         "heading": "Anmeldemethoden für Benutzer",
         "subtitle": "Legen Sie fest, welche Anmeldemethoden allen Benutzern in allen Organisationen zur Verfügung stehen."
+      },
+      "signInRemoval": {
+        "title_one": "Die Anmeldung über {{methods}} wurde in PipesHub 1.0 entfernt",
+        "title_other": "Die Anmeldung über {{methods}} wurde in PipesHub 1.0 entfernt",
+        "nowSignsInWith": "In diesem Workspace meldet man sich jetzt mit {{methods}} an.",
+        "peopleIntro": "Diese Personen haben sich schon angemeldet, haben aber noch kein Passwort:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "und {{count}} weitere",
+        "howToSetPassword": "Wer sich nicht mit Google, Microsoft oder einem E-Mail-Einmalcode anmeldet, muss ein Passwort festlegen. Dafür gibt es „Passwort vergessen“ auf der Anmeldeseite, wofür der E-Mail-Versand (SMTP) eingerichtet sein muss. Alternativ kann die Person, die Ihren PipesHub-Server betreibt, einen Link zum Festlegen des Passworts erstellen, wie im Upgrade-Leitfaden für PipesHub 1.0 beschrieben.",
+        "methodNames": {
+          "password": "Passwort",
+          "otp": "E-Mail-Einmalcode",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4420,9 +4431,6 @@
       "emailVerifiedDescription": "Ihre E-Mail-Adresse wurde aktualisiert. Melden Sie sich mit Ihrer neuen E-Mail an.",
       "emailVerifyFailedTitle": "E-Mail-Verifizierung fehlgeschlagen",
       "emailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen.",
-      "samlErrorTitle": "Fehler bei der SAML-Anmeldung",
-      "samlSignInFailedTitle": "Anmeldung fehlgeschlagen",
-      "samlSignInFailedDescription": "SAML SSO konnte nicht abgeschlossen werden. Bitte versuchen Sie es erneut.",
       "orgEmailVerifiedTitle": "Organisation verifiziert",
       "orgEmailVerifiedDescription": "Ihre Organisation ist jetzt aktiv. Melden Sie sich an, um fortzufahren.",
       "orgEmailVerifyFailedTitle": "Verifizierung fehlgeschlagen",
@@ -4452,13 +4460,10 @@
       "signInWithEmailOtp": "Mit E-Mail-OTP anmelden",
       "orContinueWith": "oder weiter mit {{provider}}",
       "orContinueWithAny": "oder mit einem davon fortfahren",
-      "orContinueWithSso": "oder weiter mit Single Sign-On",
       "googleNotConfigured": "Google-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
       "microsoftNotConfigured": "Microsoft-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
-      "oauthNotConfigured": "OAuth-Anmeldung ist für Ihre Organisation nicht konfiguriert.",
       "googleUnavailable": "Google-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
       "microsoftUnavailable": "Microsoft-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
-      "oauthUnavailable": "OAuth-Anmeldung ist derzeit nicht verfügbar. Kontaktieren Sie Ihren Administrator.",
       "showPassword": "Passwort anzeigen",
       "hidePassword": "Passwort verbergen",
       "accountDisabled": "Ihr Konto wurde deaktiviert.",
