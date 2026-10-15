@@ -14,6 +14,9 @@ as reached:
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait neo4j-graph-it arango-graph-it
   cd backend/python && pytest tests/integration/graph_db/test_kb_record_entity_cleanup_real_backends.py -m integration
+
+Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD. Naming them here is
+also what puts this file in the backend-matrix graph jobs, which find their tests by these names.
 """
 from __future__ import annotations
 
