@@ -293,6 +293,55 @@ services:
       timeout: 3s
       retries: 20
 
+  # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
+  # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
+  # generated site with the same people and groups. Seed, sizes and build time are
+  # pinned, so every run gets the same world and the suites can name fixture issues
+  # (integration-tests/connectors/atlassian_sim.env). The test process uses the
+  # published ports; the connector uses the aliases. The Confluence connector only
+  # resolves users through Jira on an *.atlassian.net host on port 80, hence that
+  # alias. Never recreate confluence-sim while a connector syncs from it: without the
+  # alias the name resolves to the real atlassian.net.
+  confluence-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["confluence"]
+    environment: &connsim-site
+      CONNSIM_SOURCES: confluence,jira
+      CONNSIM_PRESET: small
+      CONNSIM_SEED: "12"
+      CONNSIM_PAGES: "1000"
+      CONNSIM_JIRA_ISSUES: "1000"
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+      CONNSIM_MEDIA_BASE_URL: http://confluence-sim-media.atlassian.net
+    volumes:
+      - connsim_data:/data
+    ports:
+      - "127.0.0.1:8101:80"
+    networks:
+      default:
+        aliases:
+          - confluence-sim.atlassian.net
+          - confluence-sim-media.atlassian.net
+    mem_limit: 1g
+
+  jira-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["jira"]
+    environment: *connsim-site
+    volumes:
+      - connsim_data:/data
+    ports:
+      - "127.0.0.1:8102:80"
+    networks:
+      default:
+        aliases:
+          - jira-sim.internal
+    mem_limit: 1g
+
   # An external MCP server that agent tests register and call, so "an agent
   # calls an MCP tool" is checked without a third-party service. Its call log
   # is read through the published port (integration-tests/helper/mcp_fixture.py).
@@ -693,6 +742,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
 volumes:
+  connsim_data:
   zammad-storage:
   mongodb_data:
     driver: local
