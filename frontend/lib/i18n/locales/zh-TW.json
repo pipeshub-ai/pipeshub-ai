@@ -342,7 +342,23 @@
       "DATA_FILE": "資料檔",
       "CODE": "程式碼",
       "CODE_OUTPUT": "程式碼輸出"
-    }
+    },
+    "tabs": {
+      "all": "所有產物",
+      "mine": "我的",
+      "shared": "與我分享"
+    },
+    "tabsShort": {
+      "all": "全部",
+      "mine": "我的",
+      "shared": "分享"
+    },
+    "share": {
+      "title": "分享產物"
+    },
+    "emptyShared": "尚無與你分享的內容",
+    "emptySharedHint": "隊友與你分享的產物會顯示在這裡。",
+    "notAvailable": "此產物已無法使用"
   },
   "notifications": {
     "title": "通知",

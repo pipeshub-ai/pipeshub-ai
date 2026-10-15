@@ -16,6 +16,7 @@ interface ArtifactsListViewProps {
   onPreview: (item: ArtifactListItem) => void;
   onDownload: (item: ArtifactListItem) => void;
   onOpenChat: (item: ArtifactListItem) => void;
+  onShare: (item: ArtifactListItem) => void;
   pagination: { page: number; limit: number; totalCount: number; totalPages: number };
   onPageChange: (page: number) => void;
 }
@@ -75,6 +76,7 @@ export function ArtifactsListView({
   onPreview,
   onDownload,
   onOpenChat,
+  onShare,
   pagination,
   onPageChange,
 }: ArtifactsListViewProps) {
@@ -107,7 +109,7 @@ export function ArtifactsListView({
         <SortHeader label={t('artifacts.conversation', { defaultValue: 'Conversation' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} flex={1} />
         <SortHeader label={t('filter.dateCreated')} field="createdAtTimestamp" sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="140px" />
         <SortHeader label={t('artifacts.size', { defaultValue: 'Size' })} sortBy={sortBy} sortOrder={sortOrder} onSort={onSort} width="90px" />
-        <Box style={{ width: '88px' }} />
+        <Box style={{ width: '120px' }} />
       </Flex>
       <Box style={{ flex: 1, overflow: 'auto' }}>
         {items.map((item) => (
@@ -143,13 +145,18 @@ export function ArtifactsListView({
             <Text size="2" style={{ width: '90px', color: 'var(--slate-11)' }}>
               {formatSize(item.sizeInBytes ?? undefined)}
             </Text>
-            <Flex gap="1" style={{ width: '88px' }} onClick={(e) => e.stopPropagation()}>
+            <Flex gap="1" style={{ width: '120px' }} onClick={(e) => e.stopPropagation()}>
               <Button variant="ghost" size="1" color="gray" onClick={() => onDownload(item)} aria-label={t('action.download')}>
                 <MaterialIcon name="download" size={16} />
               </Button>
               {item.conversationTitle && (
                 <Button variant="ghost" size="1" color="gray" onClick={() => onOpenChat(item)} aria-label={t('artifacts.openInChat', { defaultValue: 'Open in chat' })}>
                   <MaterialIcon name="chat" size={16} />
+                </Button>
+              )}
+              {item.role === 'OWNER' && (
+                <Button variant="ghost" size="1" color="gray" onClick={() => onShare(item)} aria-label={t('action.share')}>
+                  <MaterialIcon name="person_add" size={16} />
                 </Button>
               )}
             </Flex>

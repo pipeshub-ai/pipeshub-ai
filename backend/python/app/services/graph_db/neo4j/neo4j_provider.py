@@ -14982,12 +14982,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         date_to: int | None,
         sort_by: str,
         sort_order: str,
-    ) -> tuple[list[dict], int]:
+        ownership: str = "all",
+    ) -> tuple[list[dict], dict[str, int]]:
         """Permission-first gallery listing. ``user_id`` is the graph user key."""
         try:
             extra, extra_params = self._artifact_gallery_where(
                 search, artifact_types, conversation_id, date_from, date_to,
             )
+            ownership_filter = {
+                "mine": ' AND perm.role = "OWNER"',
+                "shared": ' AND coalesce(perm.role, "") <> "OWNER"',
+            }.get(ownership, "")
             sort_expr = self._artifact_gallery_sort_expr(sort_by)
             sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
             params = {
@@ -15001,6 +15006,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = (
                 match
                 + extra
+                + ownership_filter
                 + f"""
             WITH rec, art, perm
             ORDER BY {sort_expr} {sort_dir}, rec.id
@@ -15009,14 +15015,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
                 + self._artifact_gallery_return()
             )
-            count_query = match + extra + "\n            RETURN count(rec) AS total\n            "
+            # Counted without the ownership filter so every tab's count comes from one query.
+            count_query = (
+                match
+                + extra
+                + '\n            RETURN coalesce(perm.role = "OWNER", false) AS owned, count(rec) AS total\n            '
+            )
             results = await self.client.execute_query(query, parameters=params)
             count_results = await self.client.execute_query(count_query, parameters=params)
             records = [row.get("result", row) for row in (results or [])]
-            total = 0
-            if count_results:
-                total = count_results[0].get("total", 0) if isinstance(count_results[0], dict) else count_results[0]
-            return records, int(total or 0)
+            counts = {"mine": 0, "shared": 0}
+            for row in count_results or []:
+                counts["mine" if row.get("owned") else "shared"] += int(row.get("total") or 0)
+            return records, counts
         except Exception as e:
             self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
             raise

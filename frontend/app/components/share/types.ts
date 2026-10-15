@@ -7,7 +7,7 @@ import type { TFunction } from 'i18next';
 // ============================================================================
 
 /** Supported entity types for sharing */
-export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project';
+export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project' | 'artifact';
 
 /** Permission roles */
 export type ShareRole = 'OWNER' | 'WRITER' | 'READER';

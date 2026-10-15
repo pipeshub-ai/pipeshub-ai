@@ -12,8 +12,10 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
+import { ShareSidebar } from '@/app/components/share';
 import { toast } from '@/lib/store/toast-store';
 import { ArtifactsApi } from './api';
+import { createArtifactShareAdapter } from './share-adapter';
 import { useArtifactsStore, DEFAULT_PAGE_SIZE } from './store';
 import { parseArtifactsParams, serializeArtifactsParams } from './url-params';
 import type { ArtifactListItem, ArtifactsSortField } from './types';
@@ -35,6 +37,8 @@ function ArtifactsPageContent() {
   const [previewVersion, setPreviewVersion] = useState<number | undefined>();
   const [latestVersion, setLatestVersion] = useState<number | undefined>();
   const [isSwitchingVersion, setIsSwitchingVersion] = useState(false);
+  const [shareItem, setShareItem] = useState<ArtifactListItem | null>(null);
+  const [isShareOpen, setIsShareOpen] = useState(false);
   const blobUrlRef = useRef<string | null>(null);
   const listRequestIdRef = useRef(0);
   const previewRequestIdRef = useRef(0);
@@ -51,6 +55,7 @@ function ArtifactsPageContent() {
   const sortBy = useArtifactsStore((s) => s.sortBy);
   const sortOrder = useArtifactsStore((s) => s.sortOrder);
   const viewMode = useArtifactsStore((s) => s.viewMode);
+  const ownership = useArtifactsStore((s) => s.ownership);
   const isLoading = useArtifactsStore((s) => s.isLoading);
   const error = useArtifactsStore((s) => s.error);
   const setItems = useArtifactsStore((s) => s.setItems);
@@ -77,6 +82,7 @@ function ArtifactsPageContent() {
       sortOrder: parsed.sortOrder,
       page: parsed.page,
       viewMode: parsed.viewMode,
+      ownership: parsed.ownership,
     });
     if (parsed.search) setIsSearchActive(true);
     hydratedRef.current = true;
@@ -92,8 +98,9 @@ function ArtifactsPageContent() {
       dateTo,
       sortBy,
       sortOrder,
+      ownership,
     }),
-    [page, limit, search, artifactTypes, dateFrom, dateTo, sortBy, sortOrder],
+    [page, limit, search, artifactTypes, dateFrom, dateTo, sortBy, sortOrder, ownership],
   );
 
   const load = useCallback(async () => {
@@ -103,7 +110,7 @@ function ArtifactsPageContent() {
     try {
       const result = await ArtifactsApi.list(listParams);
       if (requestId !== listRequestIdRef.current) return;
-      setItems(result.items, result.pagination);
+      setItems(result.items, result.pagination, result.counts);
     } catch {
       if (requestId !== listRequestIdRef.current) return;
       setError(t('artifacts.loadFailed', { defaultValue: "Couldn't load artifacts" }));
@@ -124,6 +131,8 @@ function ArtifactsPageContent() {
       skipUrlSyncRef.current = false;
       return;
     }
+    // The deep-link effect owns the URL until it drops the id.
+    if (searchParams.has('artifactId')) return;
     const qs = serializeArtifactsParams({
       search,
       artifactTypes,
@@ -133,11 +142,12 @@ function ArtifactsPageContent() {
       sortOrder,
       page,
       viewMode,
+      ownership,
     });
     if (qs === searchParams.toString()) return;
     const next = qs ? `/artifacts/?${qs}` : '/artifacts/';
     router.replace(next, { scroll: false });
-  }, [search, artifactTypes, dateFrom, dateTo, sortBy, sortOrder, page, viewMode, router, searchParams]);
+  }, [search, artifactTypes, dateFrom, dateTo, sortBy, sortOrder, page, viewMode, ownership, router, searchParams]);
 
   const revokePreviewUrl = useCallback(() => {
     if (blobUrlRef.current) {
@@ -199,6 +209,23 @@ function ArtifactsPageContent() {
     await loadPreview(item, item.version, requestId);
   }, [loadPreview]);
 
+  // A shared-artifact notification links to `?tab=shared&artifactId=…`, also
+  // while this page is already open: show that tab, open the preview, and drop
+  // the id so a reload does not reopen it.
+  const deepLinkId = searchParams.get('artifactId');
+  useEffect(() => {
+    if (!deepLinkId) return;
+    const parsed = parseArtifactsParams(searchParams);
+    hydrateFromUrl(parsed);
+    const qs = serializeArtifactsParams(parsed);
+    router.replace(qs ? `/artifacts/?${qs}` : '/artifacts/', { scroll: false });
+    ArtifactsApi.get(deepLinkId)
+      .then((detail) => openPreview(detail))
+      .catch(() => {
+        toast.error(t('artifacts.notAvailable'));
+      });
+  }, [deepLinkId, searchParams, hydrateFromUrl, router, openPreview, t]);
+
   const handleVersionChange = useCallback(async (version: number) => {
     if (!previewItem) return;
     setIsSwitchingVersion(true);
@@ -219,6 +246,16 @@ function ArtifactsPageContent() {
     if (!item.conversationId) return;
     router.push(`/chat/?conversationId=${encodeURIComponent(item.conversationId)}`);
   }, [router]);
+
+  const handleShare = useCallback((item: ArtifactListItem) => {
+    setShareItem(item);
+    setIsShareOpen(true);
+  }, []);
+
+  const shareAdapter = useMemo(
+    () => (shareItem ? createArtifactShareAdapter(shareItem.artifactId) : null),
+    [shareItem],
+  );
 
   const handleSort = useCallback((field: ArtifactsSortField) => {
     const nextOrder = sortBy === field && sortOrder === 'asc' ? 'desc' : 'asc';
@@ -248,6 +285,7 @@ function ArtifactsPageContent() {
       <ArtifactsDataTable
         items={items}
         viewMode={viewMode}
+        ownership={ownership}
         isLoading={isLoading}
         error={error}
         sortBy={sortBy}
@@ -256,6 +294,7 @@ function ArtifactsPageContent() {
         onPreview={(item) => void openPreview(item)}
         onDownload={(item) => void handleDownload(item)}
         onOpenChat={handleOpenChat}
+        onShare={handleShare}
         pagination={{ page, limit, totalCount, totalPages }}
         onPageChange={setPage}
       />
@@ -295,6 +334,9 @@ function ArtifactsPageContent() {
             }
           }}
         />
+      )}
+      {shareAdapter && (
+        <ShareSidebar open={isShareOpen} onOpenChange={setIsShareOpen} adapter={shareAdapter} />
       )}
     </Flex>
   );

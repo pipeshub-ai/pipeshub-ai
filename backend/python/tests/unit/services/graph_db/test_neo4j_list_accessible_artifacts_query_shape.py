@@ -47,7 +47,7 @@ class TestNeo4jListAccessibleArtifactsQueryShape:
         assert "coalesce(art.isTemporary, false) = false" in list_query
         assert "SKIP $skip" in list_query
         assert "LIMIT $limit" in list_query
-        assert "count(rec) AS total" in count_query
+        assert 'RETURN coalesce(perm.role = "OWNER", false) AS owned, count(rec) AS total' in count_query
         params = provider.client.execute_query.await_args_list[0].kwargs["parameters"]
         assert params["user_id"] == "user-key"
 
@@ -80,6 +80,56 @@ class TestNeo4jListAccessibleArtifactsQueryShape:
         assert list_params["date_to"] == 2
         assert count_params["date_from"] == 1
         assert count_params["date_to"] == 2
+
+
+class TestNeo4jGalleryOwnership:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ownership", "clause"),
+        [("mine", 'AND perm.role = "OWNER"'), ("shared", 'AND coalesce(perm.role, "") <> "OWNER"')],
+    )
+    async def test_a_tab_filters_the_page_but_not_the_counts(self, provider, ownership, clause) -> None:
+        provider.client.execute_query = AsyncMock(
+            side_effect=[[{"result": {"id": "a1"}}], [{"owned": True, "total": 4}, {"owned": False, "total": 7}]]
+        )
+        rows, counts = await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+            ownership=ownership,
+        )
+        list_query, count_query = _queries(provider)
+        assert clause in list_query
+        assert clause not in count_query
+        assert rows == [{"id": "a1"}]
+        assert counts == {"mine": 4, "shared": 7}
+
+    @pytest.mark.asyncio
+    async def test_all_adds_no_role_filter(self, provider) -> None:
+        await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+        )
+        list_query, _ = _queries(provider)
+        assert "perm.role =" not in list_query
+        assert "perm.role, \"\") <>" not in list_query
 
 
 class TestNeo4jGetArtifactDetailQueryShape:

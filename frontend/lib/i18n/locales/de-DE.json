@@ -262,7 +262,23 @@
       "DATA_FILE": "Datendatei",
       "CODE": "Code",
       "CODE_OUTPUT": "Codeausgabe"
-    }
+    },
+    "tabs": {
+      "all": "Alle Artefakte",
+      "mine": "Meine",
+      "shared": "Mit mir geteilt"
+    },
+    "tabsShort": {
+      "all": "Alle",
+      "mine": "Meine",
+      "shared": "Geteilt"
+    },
+    "share": {
+      "title": "Artefakt teilen"
+    },
+    "emptyShared": "Noch nichts mit Ihnen geteilt",
+    "emptySharedHint": "Artefakte, die Ihre Teammitglieder mit Ihnen teilen, erscheinen hier.",
+    "notAvailable": "Dieses Artefakt ist nicht mehr verfügbar"
   },
   "notifications": {
     "title": "Benachrichtigungen",

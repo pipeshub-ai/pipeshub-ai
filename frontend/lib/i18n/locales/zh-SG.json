@@ -342,7 +342,23 @@
       "DATA_FILE": "数据文件",
       "CODE": "代码",
       "CODE_OUTPUT": "代码输出"
-    }
+    },
+    "tabs": {
+      "all": "所有产物",
+      "mine": "我的",
+      "shared": "与我共享"
+    },
+    "tabsShort": {
+      "all": "全部",
+      "mine": "我的",
+      "shared": "共享"
+    },
+    "share": {
+      "title": "分享产物"
+    },
+    "emptyShared": "暂无与你共享的内容",
+    "emptySharedHint": "队友与你共享的产物会显示在这里。",
+    "notAvailable": "该产物已不可用"
   },
   "notifications": {
     "title": "通知",

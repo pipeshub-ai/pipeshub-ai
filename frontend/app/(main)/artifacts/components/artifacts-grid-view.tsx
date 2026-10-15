@@ -13,6 +13,7 @@ interface ArtifactsGridViewProps {
   onPreview: (item: ArtifactListItem) => void;
   onDownload: (item: ArtifactListItem) => void;
   onOpenChat: (item: ArtifactListItem) => void;
+  onShare: (item: ArtifactListItem) => void;
   pagination: { page: number; limit: number; totalCount: number; totalPages: number };
   onPageChange: (page: number) => void;
 }
@@ -22,6 +23,7 @@ export function ArtifactsGridView({
   onPreview,
   onDownload,
   onOpenChat,
+  onShare,
   pagination,
   onPageChange,
 }: ArtifactsGridViewProps) {
@@ -90,6 +92,17 @@ export function ArtifactsGridView({
                     onClick={() => onOpenChat(item)}
                   >
                     <MaterialIcon name="chat" size={16} />
+                  </IconButton>
+                )}
+                {item.role === 'OWNER' && (
+                  <IconButton
+                    variant="ghost"
+                    size="1"
+                    color="gray"
+                    aria-label={t('action.share')}
+                    onClick={() => onShare(item)}
+                  >
+                    <MaterialIcon name="person_add" size={16} />
                   </IconButton>
                 )}
               </Flex>

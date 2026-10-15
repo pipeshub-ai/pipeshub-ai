@@ -21,7 +21,12 @@ from .models import Actor
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AccessPolicy", "AccessDeniedError", "ArtifactNotFoundError"]
+__all__ = ["ARTIFACT_SHARE_GRANT", "AccessPolicy", "AccessDeniedError", "ArtifactNotFoundError"]
+
+# `grantedVia` on a READER edge the owner created by sharing the artifact itself.
+# Conversation sharing leaves its READER edges untagged and its revoke skips
+# tagged ones, so unsharing a chat never takes back an artifact shared on its own.
+ARTIFACT_SHARE_GRANT = "ARTIFACT_SHARE"
 
 
 class AccessDeniedError(PermissionError):

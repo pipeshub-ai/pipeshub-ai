@@ -4,6 +4,7 @@ import type {
   ArtifactGalleryVersion,
   ArtifactListParams,
   ArtifactListResponse,
+  ArtifactMember,
 } from './types';
 
 const BASE_URL = '/api/v1/artifacts';
@@ -20,6 +21,7 @@ function toQuery(params: ArtifactListParams): Record<string, string | number> {
   if (params.dateTo != null) query.dateTo = params.dateTo;
   if (params.sortBy) query.sortBy = params.sortBy;
   if (params.sortOrder) query.sortOrder = params.sortOrder;
+  if (params.ownership && params.ownership !== 'all') query.ownership = params.ownership;
   return query;
 }
 
@@ -31,8 +33,11 @@ export const ArtifactsApi = {
     return data;
   },
 
+  /** The caller reports a failure (a stale link says the artifact is gone), so no global toast. */
   async get(artifactId: string): Promise<ArtifactDetail> {
-    const { data } = await apiClient.get<ArtifactDetail>(`${BASE_URL}/${artifactId}`);
+    const { data } = await apiClient.get<ArtifactDetail>(`${BASE_URL}/${artifactId}`, {
+      suppressErrorToast: true,
+    });
     return data;
   },
 
@@ -41,5 +46,21 @@ export const ArtifactsApi = {
       `${BASE_URL}/${artifactId}/versions`,
     );
     return data.versions ?? [];
+  },
+
+  async listMembers(artifactId: string): Promise<ArtifactMember[]> {
+    const { data } = await apiClient.get<{ members: ArtifactMember[] }>(
+      `${BASE_URL}/${artifactId}/permissions`,
+    );
+    return data.members ?? [];
+  },
+
+  // The share sidebar toasts share/unshare failures itself.
+  async share(artifactId: string, userIds: string[]): Promise<void> {
+    await apiClient.post(`${BASE_URL}/${artifactId}/share`, { userIds }, { suppressErrorToast: true });
+  },
+
+  async unshare(artifactId: string, userIds: string[]): Promise<void> {
+    await apiClient.post(`${BASE_URL}/${artifactId}/unshare`, { userIds }, { suppressErrorToast: true });
   },
 };

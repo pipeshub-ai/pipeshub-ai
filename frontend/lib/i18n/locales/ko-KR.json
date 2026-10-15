@@ -342,7 +342,23 @@
       "DATA_FILE": "데이터 파일",
       "CODE": "코드",
       "CODE_OUTPUT": "코드 출력"
-    }
+    },
+    "tabs": {
+      "all": "모든 아티팩트",
+      "mine": "내 아티팩트",
+      "shared": "나와 공유됨"
+    },
+    "tabsShort": {
+      "all": "전체",
+      "mine": "내 항목",
+      "shared": "공유됨"
+    },
+    "share": {
+      "title": "아티팩트 공유"
+    },
+    "emptyShared": "아직 공유받은 항목이 없습니다",
+    "emptySharedHint": "팀원이 공유한 아티팩트가 여기에 표시됩니다.",
+    "notAvailable": "이 아티팩트는 더 이상 사용할 수 없습니다"
   },
   "notifications": {
     "title": "알림",

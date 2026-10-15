@@ -3105,12 +3105,18 @@ class IGraphDBProvider(ABC):
         date_to: int | None,
         sort_by: str,
         sort_order: str,
-    ) -> tuple[list[dict], int]:
+        ownership: str = "all",
+    ) -> tuple[list[dict], dict[str, int]]:
         """Permission-first listing of user-visible artifacts.
 
         ``user_id`` is the graph user key (``_key`` / ``id``), not the
         external auth ``userId``. The caller resolves that key first,
         matching ``list_all_records``.
+
+        ``ownership`` narrows the page: ``mine`` keeps the user's OWNER edges,
+        ``shared`` every other role, anything else keeps both. The second
+        element is ``{"mine": n, "shared": n}`` counted with every filter but
+        ``ownership``, so one call yields the count of each gallery tab.
 
         Display-policy filters must run in the query (not post-fetch) so
         pagination totals stay correct:

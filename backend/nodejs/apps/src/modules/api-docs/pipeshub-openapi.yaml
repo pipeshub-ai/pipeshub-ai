@@ -781,6 +781,10 @@ components:
         updatedAt:
           type: integer
           nullable: true
+        role:
+          type: string
+          nullable: true
+          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them.
       required:
         - artifactId
         - name
@@ -838,6 +842,10 @@ components:
         updatedAt:
           type: integer
           nullable: true
+        role:
+          type: string
+          nullable: true
+          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them.
         versions:
           type: array
           items:
@@ -872,6 +880,43 @@ components:
               type: integer
             totalPages:
               type: integer
+        counts:
+          type: object
+          description: Artifacts in each gallery tab under the same filters, ignoring `ownership`.
+          properties:
+            all:
+              type: integer
+            mine:
+              type: integer
+            shared:
+              type: integer
+
+    ArtifactMember:
+      type: object
+      additionalProperties: false
+      properties:
+        userId:
+          type: string
+        role:
+          type: string
+          enum: [OWNER, READER]
+      required:
+        - userId
+        - role
+
+    ArtifactShareRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        userIds:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            pattern: '^[a-fA-F0-9]{24}$'
+      required:
+        - userIds
 
     # ==================== AUTH SCHEMAS ====================
     AuthMethod:
@@ -25602,6 +25647,13 @@ paths:
             type: string
             enum: [asc, desc]
             default: desc
+        - name: ownership
+          in: query
+          description: Gallery tab. `mine` lists artifacts the caller owns, `shared` the ones shared with them.
+          schema:
+            type: string
+            enum: [all, mine, shared]
+            default: all
       responses:
         '200':
           description: Paginated artifact gallery
@@ -25694,6 +25746,176 @@ paths:
                       $ref: '#/components/schemas/ArtifactGalleryVersion'
         '401':
           description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/permissions:
+    get:
+      tags:
+        - Artifacts
+      summary: List who an artifact is shared with
+      description: The owner and the users the owner shared the artifact with directly. Users who can read it through a shared conversation are managed from that conversation. Only the owner may call this.
+      operationId: listArtifactMembers
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:read]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '200':
+          description: Artifact members
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  members:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ArtifactMember'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/share:
+    post:
+      tags:
+        - Artifacts
+      summary: Share an artifact
+      description: Give users of the caller's organization read access (view and download, including later versions) and notify them. Only the owner may share. Users who already have direct access are skipped.
+      operationId: shareArtifact
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactShareRequest'
+      responses:
+        '200':
+          description: Number of users whose access changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  shared:
+                    type: integer
+        '400':
+          description: A user ID is invalid or the user is not in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact, or lacks the OAuth scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /artifacts/{artifactId}/unshare:
+    post:
+      tags:
+        - Artifacts
+      summary: Stop sharing an artifact
+      description: Remove the read access the owner gave users directly. Access through a shared conversation is not affected.
+      operationId: unshareArtifact
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [kb:write]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ArtifactShareRequest'
+      responses:
+        '200':
+          description: Number of users whose access changed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  unshared:
+                    type: integer
+        '400':
+          description: A user ID is invalid or the user is not in the caller's organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller does not own the artifact, or lacks the OAuth scope
           content:
             application/json:
               schema:

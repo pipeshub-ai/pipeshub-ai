@@ -269,7 +269,23 @@
       "DATA_FILE": "Archivo de datos",
       "CODE": "Código",
       "CODE_OUTPUT": "Salida de código"
-    }
+    },
+    "tabs": {
+      "all": "Todos los artefactos",
+      "mine": "Míos",
+      "shared": "Compartidos conmigo"
+    },
+    "tabsShort": {
+      "all": "Todos",
+      "mine": "Míos",
+      "shared": "Compartidos"
+    },
+    "share": {
+      "title": "Compartir artefacto"
+    },
+    "emptyShared": "Aún no se ha compartido nada contigo",
+    "emptySharedHint": "Los artefactos que tus compañeros compartan contigo aparecerán aquí.",
+    "notAvailable": "Este artefacto ya no está disponible"
   },
   "notifications": {
     "title": "Notificaciones",

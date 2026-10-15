@@ -57,6 +57,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
+from app.services.artifact_registry.access import ARTIFACT_SHARE_GRANT
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -1052,13 +1053,16 @@ async def _revoke_reader_permissions(
 ) -> int:
     """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
     `(_from, _to)` regardless of role, so without the READER filter an unshare that
-    names the owner would delete the owner's own OWNER edges."""
+    names the owner would delete the owner's own OWNER edges. Edges from sharing
+    an artifact directly are kept: that share does not depend on the chat."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     readers = [
-        pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
+        pair
+        for pair, edge in zip(pairs, existing)
+        if edge and edge.get("role") == "READER" and edge.get("grantedVia") != ARTIFACT_SHARE_GRANT
     ]
     if not readers:
         return 0

@@ -627,6 +627,29 @@ async def test_revoke_artifact_permissions_removes_reader_edges():
 
 
 @pytest.mark.asyncio
+async def test_unsharing_a_chat_keeps_an_artifact_shared_on_its_own() -> None:
+    from app.api.routes.chatbot import revoke_artifact_permissions
+    from app.services.artifact_registry.access import ARTIFACT_SHARE_GRANT
+
+    edges = {
+        ("key-owner", "artifact-1"): {"role": "OWNER"},
+        ("key-owner", "artifact-2"): {"role": "OWNER"},
+        ("key-viewer", "artifact-1"): {"role": "READER"},
+        ("key-viewer", "artifact-2"): {"role": "READER", "grantedVia": ARTIFACT_SHARE_GRANT},
+    }
+    gp = _permission_graph()
+    gp.get_edge = AsyncMock(side_effect=lambda **kw: edges.get((kw["from_id"], kw["to_id"])))
+    gp.get_documents_paginated = AsyncMock(return_value=[{"_key": "artifact-1"}, {"_key": "artifact-2"}])
+
+    out = await revoke_artifact_permissions(
+        _json_request({"conversationId": "conv-1", "userIds": ["viewer"]}), gp, _GRANTOR_CLAIMS
+    )
+
+    assert out["revoked"] == 1
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "artifact-1")]
+
+
+@pytest.mark.asyncio
 async def test_delete_chat_attachment_paths():
     from app.api.routes.chatbot import delete_chat_attachment
 

@@ -5,13 +5,19 @@ from __future__ import annotations
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
-from app.services.artifact_registry.access import ArtifactNotFoundError
+from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.services.artifact_registry.gallery import ArtifactGalleryService, ArtifactListQuery
 from app.services.artifact_registry.models import Actor
+from app.services.artifact_registry.sharing import (
+    MAX_SHARE_TARGETS,
+    ArtifactSharingService,
+    InvalidShareTargetError,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
@@ -21,6 +27,19 @@ artifacts_router = APIRouter(tags=["Artifacts"])
 
 async def get_graph_provider(request: Request) -> IGraphDBProvider:
     return request.app.state.graph_provider
+
+
+async def get_sharing_service(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+) -> ArtifactSharingService:
+    container = getattr(request.app, "container", None)
+    notifications = container.connector_notification_service() if container else None
+    return ArtifactSharingService(graph_provider, notifications)
+
+
+class ArtifactShareRequest(BaseModel):
+    userIds: list[str] = Field(min_length=1, max_length=MAX_SHARE_TARGETS)
 
 
 def _parse_comma_separated_str(value: str | None) -> list[str] | None:
@@ -56,6 +75,7 @@ async def list_artifacts_gallery(
     date_to: int | None = None,
     sort_by: str = "createdAtTimestamp",
     sort_order: str = "desc",
+    ownership: str = Query("all", description="all, mine or shared"),
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
 ) -> dict:
     actor = _actor_from_request(request)
@@ -70,6 +90,7 @@ async def list_artifacts_gallery(
         date_to=date_to,
         sort_by=sort_by,
         sort_order=sort_order,
+        ownership=ownership,
     )
     try:
         result = await gallery.list(actor, query)
@@ -83,6 +104,7 @@ async def list_artifacts_gallery(
             "totalCount": result.total_count,
             "totalPages": result.total_pages,
         },
+        "counts": result.counts,
     }
 
 
@@ -126,3 +148,67 @@ async def list_artifact_versions(
             detail="Artifact not found",
         ) from None
     return {"versions": [v.model_dump(by_alias=True) for v in versions]}
+
+
+def _sharing_error(error: Exception) -> HTTPException:
+    if isinstance(error, ArtifactNotFoundError):
+        return HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Artifact not found")
+    if isinstance(error, AccessDeniedError):
+        return HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail="Only the artifact's owner can manage its sharing",
+        )
+    return HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(error))
+
+
+@artifacts_router.get(
+    "/api/v1/artifacts/{artifact_id}/permissions",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))],
+)
+async def list_artifact_members(
+    request: Request,
+    artifact_id: str,
+    sharing: ArtifactSharingService = Depends(get_sharing_service),
+) -> dict:
+    actor = _actor_from_request(request)
+    try:
+        members = await sharing.list_members(actor, artifact_id)
+    except (ArtifactNotFoundError, AccessDeniedError) as e:
+        raise _sharing_error(e) from None
+    return {"members": members}
+
+
+@artifacts_router.post(
+    "/api/v1/artifacts/{artifact_id}/permissions",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE, OAuthScopes.KB_WRITE))],
+)
+async def share_artifact(
+    request: Request,
+    artifact_id: str,
+    body: ArtifactShareRequest,
+    sharing: ArtifactSharingService = Depends(get_sharing_service),
+) -> dict:
+    actor = _actor_from_request(request)
+    try:
+        shared = await sharing.share(actor, artifact_id, body.userIds)
+    except (ArtifactNotFoundError, AccessDeniedError, InvalidShareTargetError) as e:
+        raise _sharing_error(e) from None
+    return {"shared": shared}
+
+
+@artifacts_router.delete(
+    "/api/v1/artifacts/{artifact_id}/permissions",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE, OAuthScopes.KB_WRITE))],
+)
+async def unshare_artifact(
+    request: Request,
+    artifact_id: str,
+    body: ArtifactShareRequest,
+    sharing: ArtifactSharingService = Depends(get_sharing_service),
+) -> dict:
+    actor = _actor_from_request(request)
+    try:
+        unshared = await sharing.unshare(actor, artifact_id, body.userIds)
+    except (ArtifactNotFoundError, AccessDeniedError, InvalidShareTargetError) as e:
+        raise _sharing_error(e) from None
+    return {"unshared": unshared}
