@@ -155,6 +155,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
     ),
     # Writes.
+    "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
