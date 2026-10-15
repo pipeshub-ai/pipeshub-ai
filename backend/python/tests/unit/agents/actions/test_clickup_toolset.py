@@ -573,7 +573,7 @@ class TestFailuresInPlainLanguage:
         message = fail(await clickup.get_authorized_user())["error"]
         assert message == (
             "ClickUp did not accept the saved sign-in. ClickUp said: Token invalid. "
-            "Authenticate ClickUp again under Your actions, then try again."
+            "Reconnect ClickUp under Your actions, then try again."
         )
 
     @pytest.mark.asyncio

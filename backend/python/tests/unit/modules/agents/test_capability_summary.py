@@ -551,6 +551,8 @@ class TestBuildAuthStatusSection:
         assert "Needs Authentication" in combined
         assert "- jira" in combined and "- slack" in combined
         assert "gmail" not in combined
+        assert "Your actions" in combined
+        assert "Settings >" not in combined
 
     def test_sorted_alphabetically(self):
         parts = []

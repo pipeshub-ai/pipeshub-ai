@@ -3178,7 +3178,7 @@ async def _require_agent_edit_access(
     agent_key: str,
     request: Request,
     feature_name: str = "toolsets",
-    settings_path: str = "Settings → Toolsets",
+    settings_path: str = "Your actions",
 ) -> dict:
     """
     Verify the caller has edit access to a service-account agent.
@@ -3199,7 +3199,7 @@ async def _require_agent_edit_access(
         )
 
     # Per-agent credentials only apply to service account agents.
-    # Regular agents use per-user credentials via Settings.
+    # Regular agents use each person's own credentials, set under Your actions.
     if not agent.get("isServiceAccount", False):
         raise HTTPException(
             status_code=HttpStatusCode.BAD_REQUEST.value,

@@ -89,7 +89,7 @@ def _github_file_change_label(entry: dict) -> str:
 # GitHub's list-commits-on-a-pull-request endpoint stops at this many.
 _PR_COMMIT_LIST_CAP = 250
 
-_RECONNECT_STEP = "Authenticate GitHub again under Your actions, then try again."
+_RECONNECT_STEP = "Reconnect GitHub under Your actions, then try again."
 
 
 def _github_error_message(response: GitHubResponse, action: str) -> str:
@@ -155,7 +155,7 @@ def _unexpected_failure(doing: str, error: Exception) -> tuple[bool, str]:
     return False, json.dumps({
         "error": (
             f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
-            "authenticate GitHub again under Your actions."
+            "reconnect GitHub under Your actions."
         )
     })
 

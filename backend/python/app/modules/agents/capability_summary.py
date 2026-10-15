@@ -252,8 +252,8 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
         "The following toolsets are configured for this agent but are NOT "
         "authenticated yet — their tools are unavailable until the user "
         "authenticates. If the user's query targets one of these, tell them "
-        "plainly that it needs authentication and to go to Settings > "
-        "Toolsets to connect it, instead of saying the toolset doesn't exist:"
+        "plainly that it needs authentication and to authenticate it under "
+        "Your actions, instead of saying the toolset doesn't exist:"
     )
     for name in unauthenticated:
         parts.append(f"- {name}")

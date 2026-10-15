@@ -57,13 +57,13 @@ def _teams_meeting_label(meeting: dict) -> str:
 
 
 _GRAPH_STATUS_RE = re.compile(r"\(status (\d{3})\)\s*$")
-_RECONNECT_TEAMS = "Authenticate Teams again under Your actions, then try again."
+_RECONNECT_TEAMS = "Reconnect Teams under Your actions, then try again."
 _GRAPH_STATUS_HINTS = {
     HTTPStatus.TOO_MANY_REQUESTS: "Microsoft Teams is limiting how fast requests can be made. Wait a minute and try again.",
     HTTPStatus.UNAUTHORIZED: f"Microsoft did not accept the saved sign-in. {_RECONNECT_TEAMS}",
     HTTPStatus.FORBIDDEN: (
-        "The signed-in account does not have permission to do this. If it should, authenticate Teams "
-        "again under Your actions and approve the requested permissions."
+        "The signed-in account does not have permission to do this. If it should, reconnect Teams "
+        "under Your actions and approve the requested permissions."
     ),
     HTTPStatus.NOT_FOUND: "Check the id, or look it up first with get_teams, get_channels or get_users_list.",
 }

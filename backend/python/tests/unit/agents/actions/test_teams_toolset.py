@@ -1398,7 +1398,7 @@ class TestFailuresTellTheAgentWhatToDo:
     async def test_rejected_sign_in_asks_to_reconnect(self, teams, graph, case) -> None:
         call, method, path = _call_and_route(case)
         graph.on(method, path, graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."))
-        assert "Authenticate Teams again under Your actions" in err(await call(teams))
+        assert "Reconnect Teams under Your actions" in err(await call(teams))
 
     @pytest.mark.asyncio
     async def test_forbidden_explains_the_missing_permission(self, teams, graph) -> None:

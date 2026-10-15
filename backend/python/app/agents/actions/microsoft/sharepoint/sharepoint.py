@@ -191,7 +191,7 @@ class GetNotebookPageContentInput(BaseModel):
 # Toolset registration
 # ---------------------------------------------------------------------------
 
-_RECONNECT_STEP = "Authenticate SharePoint again under Your actions, then try again."
+_RECONNECT_STEP = "Reconnect SharePoint under Your actions, then try again."
 _KIOTA_UNMAPPED = "The server returned an unexpected status code"
 _STATUS_SUFFIX = re.compile(r"\s*\(status \d{3}\)$")
 

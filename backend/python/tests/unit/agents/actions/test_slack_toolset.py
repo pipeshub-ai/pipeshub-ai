@@ -5022,7 +5022,7 @@ class TestExpiredSignIn:
         assert ok is False
         message = json.loads(payload)["message"]
         assert "renews it automatically" in message
-        assert "authenticate Slack again under Your actions" in message
+        assert "reconnect Slack under Your actions" in message
 
     @pytest.mark.asyncio
     async def test_a_refused_sign_in_still_asks_for_a_reconnect(self) -> None:

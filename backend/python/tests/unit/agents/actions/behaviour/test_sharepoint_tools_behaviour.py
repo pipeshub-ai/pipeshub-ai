@@ -476,7 +476,7 @@ class TestNotebooks:
 class TestFailures:
     @pytest.mark.parametrize(("response", "expected"), [
         (graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."),
-         "Authenticate SharePoint again under Your actions"),
+         "Reconnect SharePoint under Your actions"),
         (graph_error(403, "accessDenied", "Access denied"), "access"),
         (graph_error(404, "itemNotFound", "The resource could not be found."), "list_files"),
         (graph_error(503, "serviceNotAvailable", "Service unavailable"), "Try again"),

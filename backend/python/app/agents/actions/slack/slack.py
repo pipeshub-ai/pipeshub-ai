@@ -156,16 +156,16 @@ def _is_user_id(value: Any) -> bool:
     )
 
 
-_RECONNECT_SLACK = "Authenticate Slack again under Your actions, then try again."
+_RECONNECT_SLACK = "Reconnect Slack under Your actions, then try again."
 _SLACK_SIGN_IN_REJECTED = f"Slack did not accept the saved sign-in. {_RECONNECT_SLACK}"
 # Only apps with token rotation get token_expired, and those are renewed on a schedule.
 _SLACK_SIGN_IN_EXPIRED = (
     "The Slack sign-in has expired. PipesHub renews it automatically, so try again in a few "
-    "minutes. If this keeps happening, authenticate Slack again under Your actions."
+    "minutes. If this keeps happening, reconnect Slack under Your actions."
 )
 _SLACK_PERMISSION_MISSING = (
-    "The connected Slack account has not given permission for this. Authenticate Slack "
-    "again under Your actions and approve the requested permissions."
+    "The connected Slack account has not given permission for this. Reconnect Slack "
+    "under Your actions and approve the requested permissions."
 )
 # Worded for the agent's user token: the datasource's own texts talk about bots and xoxb tokens.
 _SLACK_ERROR_EXPLANATIONS: Dict[str, str] = {
