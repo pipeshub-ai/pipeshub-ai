@@ -51,7 +51,7 @@ def no_structured_output() -> Iterator[None]:
 async def test_the_kwargs_reach_the_first_call_and_every_reflection() -> None:
     llm = _Llm(["not json", '{"value": 3}'])
     result = await invoke_with_structured_output_and_reflection(
-        llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+        llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
     )
     assert result == _Answer(value=3)
     assert llm.seen == [KWARGS, KWARGS]
@@ -62,7 +62,7 @@ async def test_a_refused_cache_parameter_is_dropped_and_the_call_resent() -> Non
     llm = _Llm([refused, '{"value": 7}'])
     with patch.object(streaming, "forget_cache_params") as forget:
         result = await invoke_with_structured_output_and_reflection(
-            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+            llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
         )
     assert result == _Answer(value=7)
     assert llm.seen == [KWARGS, {}]
@@ -72,7 +72,7 @@ async def test_a_refused_cache_parameter_is_dropped_and_the_call_resent() -> Non
 async def test_any_other_error_is_not_resent() -> None:
     llm = _Llm([_BadRequest("Error code: 400 - context length exceeded")])
     result = await invoke_with_structured_output_and_reflection(
-        llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+        llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
     )
     assert result is None
     assert llm.seen == [KWARGS]
@@ -89,7 +89,7 @@ async def test_a_reflection_call_refused_is_resent_without_them() -> None:
     llm = _Llm(["not json", refused, '{"value": 3}'])
     with patch.object(streaming, "forget_cache_params"):
         result = await invoke_with_structured_output_and_reflection(
-            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+            llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
         )
     assert result == _Answer(value=3)
     assert llm.seen == [KWARGS, KWARGS, {}]
@@ -100,7 +100,7 @@ async def test_calls_after_a_refusal_carry_no_cache_parameters() -> None:
     llm = _Llm([refused, "not json", '{"value": 5}'])
     with patch.object(streaming, "forget_cache_params"):
         result = await invoke_with_structured_output_and_reflection(
-            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+            llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
         )
     assert result == _Answer(value=5)
     assert llm.seen == [KWARGS, {}, {}]
@@ -112,9 +112,23 @@ async def test_the_refusal_is_recorded_through_the_callers_callback() -> None:
     recorded: list[str] = []
     with patch.object(streaming, "forget_cache_params") as forget:
         await invoke_with_structured_output_and_reflection(
-            llm, [HumanMessage(content="q")], _Answer, call_kwargs=KWARGS,
+            llm, [HumanMessage(content="q")], _Answer, cache_kwargs=KWARGS,
             on_cache_rejected=lambda: recorded.append("caller"),
         )
     assert recorded == ["caller"]
     forget.assert_not_called()
 
+
+
+async def test_a_refusal_turns_the_whole_cache_off() -> None:
+    """The kwargs are one cache strategy's: a refused retention also drops the key,
+    as LangChainTransport falls back to no strategy at all."""
+    both = {**KWARGS, "prompt_cache_retention": "24h"}
+    refused = _BadRequest("Error code: 400 - Unrecognized request argument supplied: prompt_cache_retention")
+    llm = _Llm([refused, '{"value": 2}'])
+    with patch.object(streaming, "forget_cache_params"):
+        result = await invoke_with_structured_output_and_reflection(
+            llm, [HumanMessage(content="q")], _Answer, cache_kwargs=both,
+        )
+    assert result == _Answer(value=2)
+    assert llm.seen == [both, {}]

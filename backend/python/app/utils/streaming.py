@@ -1148,7 +1148,7 @@ async def invoke_with_structured_output_and_reflection(
     enable_opik_tracing: bool = True,
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
-    call_kwargs: Mapping[str, Any] | None = None,
+    cache_kwargs: Mapping[str, Any] | None = None,
     on_cache_rejected: Callable[[], None] | None = None,
 ) -> SchemaT | None:
     """
@@ -1168,10 +1168,11 @@ async def invoke_with_structured_output_and_reflection(
             and the last reflection call's timeout, instead of returning None,
             so a caller can tell a starved call from a reply that did not fit
             the schema.
-        call_kwargs: Request parameters for every call, such as a prompt
-            cache's ``CacheStrategy.finalize`` kwargs. If the provider refuses
-            one of them as a cache parameter, that call (the first or a
-            reflection) is resent without them, and so is every later call.
+        cache_kwargs: A prompt cache's request parameters, the kwargs of
+            ``CacheStrategy.finalize``, sent with every call. If the provider
+            refuses one, that call (the first or a reflection) is resent
+            without any of them, and so is every later call: the cache is off
+            for this model, as ``LangChainTransport`` drops its whole strategy.
         on_cache_rejected: Called once when the provider refuses a cache
             parameter. Pass the callback that records the refusal under the
             identity the cache strategy was chosen with; by default it is
@@ -1184,7 +1185,7 @@ async def invoke_with_structured_output_and_reflection(
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
     invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
-    kwargs = dict(call_kwargs or {})
+    kwargs = dict(cache_kwargs or {})
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
         nonlocal kwargs

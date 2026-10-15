@@ -1239,7 +1239,7 @@ class TestCacheablePrefix:
                 [_make_text_block(text)], org_id, departments=["Engineering", "Sales"],
                 record_name=record_name, record_type=record_type,
             )
-        return mock_invoke.call_args[0][1], mock_invoke.call_args.kwargs.get("call_kwargs")
+        return mock_invoke.call_args[0][1], mock_invoke.call_args.kwargs.get("cache_kwargs")
 
     @pytest.mark.asyncio
     async def test_prefix_is_byte_identical_across_records(self) -> None:
@@ -1297,10 +1297,10 @@ class TestCacheablePrefix:
                 return_value=(llm, {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}),
             ):
                 await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
-                assert mock_invoke.call_args.kwargs["call_kwargs"]
+                assert mock_invoke.call_args.kwargs["cache_kwargs"]
                 mock_invoke.call_args.kwargs["on_cache_rejected"]()
                 await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
-            assert mock_invoke.call_args.kwargs["call_kwargs"] == {}
+            assert mock_invoke.call_args.kwargs["cache_kwargs"] == {}
         finally:
             REJECTED_CACHE_PARAMS.clear()
 

@@ -464,9 +464,9 @@ class DocumentExtraction(Transformer):
             llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=record_name, model_name=model_name,
         )
         system = cache.system(self._fill_prompt(department_list), "")
-        messages, call_kwargs = cache.finalize([system, HumanMessage(content=document)])
+        messages, cache_kwargs = cache.finalize([system, HumanMessage(content=document)])
         parsed_response = await invoke_with_structured_output_and_reflection(
-            llm, messages, DocumentClassification, call_kwargs=call_kwargs,
+            llm, messages, DocumentClassification, cache_kwargs=cache_kwargs,
             # Recorded under the name the strategy was chosen with, so the next record skips it.
             on_cache_rejected=lambda: forget_cache_params(llm, model_name),
         )
