@@ -38,6 +38,13 @@ class TestPlan:
         plan = plan_shared_folders({"dbmid:b": [_entry("1", "x", "editor")], "dbmid:a": [_entry("1", "x", "editor")]})
         assert plan["1"].syncer == "dbmid:a"
 
+    def test_a_member_who_joined_the_folder_lists_it_over_a_stronger_one_who_did_not(self) -> None:
+        unjoined = _entry("1", "x", "owner")
+        joined = _entry("1", "x", "viewer")
+        joined.path_lower = "/x"
+        plan = plan_shared_folders({"dbmid:a": [unjoined], "dbmid:b": [joined]})
+        assert plan["1"].syncer == "dbmid:b"
+
     def test_only_a_nested_inheriting_folder_inherits(self) -> None:
         plan = plan_shared_folders({"dbmid:a": [
             _entry("top", "Top"),

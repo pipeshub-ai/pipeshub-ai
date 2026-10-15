@@ -30,11 +30,19 @@ class SharedFolder:
     inherits: bool
     is_team_folder: bool
     access: dict[str, str] = field(default_factory=dict)  # team member id -> access level
+    mounted: set[str] = field(default_factory=set)  # members who joined it (it has a path in their Dropbox)
 
     @property
     def syncer(self) -> str:
-        """The member who lists this folder: the strongest access, then the lowest id, so it stays the same run to run."""
-        return min(self.access, key=lambda member: (_ACCESS_RANK.get(self.access[member], 9), member))
+        """The member who lists this folder: one who joined it, the strongest access, then the lowest id.
+
+        A member who never joined the folder may not be able to list its namespace,
+        which would leave the folder's group empty. The lowest id keeps the choice,
+        and so the cursor, the same run to run.
+        """
+        return min(self.access, key=lambda member: (
+            member not in self.mounted, _ACCESS_RANK.get(self.access[member], 9), member,
+        ))
 
 
 def plan_shared_folders(listings: dict[str, Iterable]) -> dict[str, SharedFolder]:
@@ -55,6 +63,8 @@ def plan_shared_folders(listings: dict[str, Iterable]) -> dict[str, SharedFolder
                 )
                 folders[entry.shared_folder_id] = folder
             folder.access[member_id] = getattr(getattr(entry, "access_type", None), "_tag", "viewer")
+            if getattr(entry, "path_lower", None):
+                folder.mounted.add(member_id)
     return folders
 
 

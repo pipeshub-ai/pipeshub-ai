@@ -639,6 +639,11 @@ class DropboxConnector(BaseConnector):
                     file_record.rewrite_permissions = True
                     permissions_changed = True
                     is_updated = True
+                # The update path keeps the stored group edge, so a record written under a
+                # member's home before its shared folder became a group would stay there.
+                # Left un-updated, it goes through on_new_records, which moves it.
+                if existing_record.external_record_group_id != record_group_id:
+                    is_updated = False
 
             return RecordUpdate(
                 record=file_record,
@@ -1365,13 +1370,15 @@ class DropboxConnector(BaseConnector):
                 if folder_id is None:
                     # This is the user's personal root folder
                     sync_context_id = user_id
-                    sync_group = "users"
+                    # _v2: listings from before shared folders were their own groups re-run once
+                    # from the start, so records they left under a member's home are moved.
+                    sync_group = "users_v2"
                     sync_log_name = f"personal folder for user {user_email}"
                     current_record_group_id = user_id
                 else:
                     # This is a shared folder
                     sync_context_id = f"{user_id}_{folder_id}" # Safer key than using '/'
-                    sync_group = "shared_folders"
+                    sync_group = "shared_folders_v2"
                     sync_log_name = f"shared folder {folder_id} for user {user_email}"
                     current_record_group_id = folder_id
 
