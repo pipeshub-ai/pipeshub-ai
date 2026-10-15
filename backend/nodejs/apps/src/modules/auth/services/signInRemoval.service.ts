@@ -31,10 +31,13 @@ export async function findSignInRemovalNotice(
     return { removedMethods, peopleWithoutPassword: [] };
   }
 
+  // Only people who may sign in: not disabled accounts or service accounts.
   const people = await Users.find({
     orgId,
     isDeleted: { $ne: true },
     hasLoggedIn: true,
+    isDisabled: { $ne: true },
+    kind: { $ne: 'service' },
   })
     .select('_id fullName email')
     .lean<{ _id: Types.ObjectId; fullName?: string; email: string }[]>();

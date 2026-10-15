@@ -46,7 +46,11 @@ export class SignInMethodsRemovalMigration {
     }
 
     await this.copyAzureAdConfig(result);
-    await this.rewritePolicies(result);
+    // A policy turned to Microsoft before its settings were copied could not
+    // sign anyone in; leave both for the next boot to retry.
+    if (result.errored === 0) {
+      await this.rewritePolicies(result);
+    }
 
     if (result.errored === 0) {
       try {

@@ -246,6 +246,19 @@ describe('SignInMethodsRemovalMigration', () => {
       expect(logger.error.firstCall.args[1]).to.deep.equal({ error: 'kv down' });
     });
 
+    it('leaves every policy as it was when the copy failed, so sign-in still finds Azure AD', async () => {
+      const find = stubFind([policy(['azureAd'])]);
+      const updateOne = sinon.stub(OrgAuthConfig, 'updateOne').resolves({} as any);
+      const kv = makeKvStore({ [configPaths.auth.azureAD]: 'encrypted-azure' });
+      kv.set.withArgs(configPaths.auth.microsoft).rejects(new Error('kv down'));
+
+      const result = await run(kv);
+
+      expect(result.policiesUpdated).to.equal(0);
+      expect(find.called).to.equal(false);
+      expect(updateOne.called).to.equal(false);
+    });
+
     it('logs a non-Error copy failure as unknown', async () => {
       stubFind([]);
       const kv = makeKvStore({ [configPaths.auth.azureAD]: 'encrypted-azure' });

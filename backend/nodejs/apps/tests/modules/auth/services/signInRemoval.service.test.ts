@@ -73,6 +73,8 @@ describe('findSignInRemovalNotice', () => {
       orgId,
       isDeleted: { $ne: true },
       hasLoggedIn: true,
+      isDisabled: { $ne: true },
+      kind: { $ne: 'service' },
     });
     expect((credsFind.firstCall.args as unknown[])[0]).to.deep.equal({
       orgId,
