@@ -1,3 +1,5 @@
+from logging import Logger
+
 from dependency_injector import containers, providers  # type: ignore
 from dotenv import find_dotenv, load_dotenv  # type: ignore
 
@@ -7,6 +9,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import (
     VECTOR_DB_ENTITIES_COLLECTION_NAME,
 )
@@ -184,6 +187,23 @@ class IndexingAppContainer(BaseAppContainer):
         ]
     )
 
+async def _backfill_indexed_copy_flags(graph_provider: IGraphDBProvider, logger: Logger) -> None:
+    """Records indexed before ``hasIndexedCopy`` existed would otherwise leave search
+    the first time they are edited. Idempotent, so every boot may run it; it needs
+    the schema that allows the field."""
+    try:
+        marked = await graph_provider.backfill_indexed_copy_flags()
+    except Exception:
+        logger.warning(
+            "⚠️ Could not mark existing indexed records; an edit may hide one "
+            "from search until it is indexed again",
+            exc_info=True,
+        )
+        return
+    if marked:
+        logger.info("✅ Marked %d indexed record(s) as having an indexed copy", marked)
+
+
 async def initialize_container(container: IndexingAppContainer) -> bool:
     """Initialize container resources"""
     logger = container.logger()
@@ -211,23 +231,11 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         # the same bootstrap.
         if await graph_provider.ensure_schema():
             logger.info("✅ Schema ensured")
+            await _backfill_indexed_copy_flags(graph_provider, logger)
         else:
             logger.warning(
                 "⚠️ Graph schema bootstrap failed; taxonomy and alias constraints "
                 "may be missing until a service that runs it starts successfully"
-            )
-
-        # Records indexed before ``hasIndexedCopy`` existed would otherwise leave
-        # search the first time they are edited. Idempotent, so every boot may run it.
-        try:
-            marked = await graph_provider.backfill_indexed_copy_flags()
-            if marked:
-                logger.info("✅ Marked %d indexed record(s) as having an indexed copy", marked)
-        except Exception:
-            logger.warning(
-                "⚠️ Could not mark existing indexed records; an edit may hide one "
-                "from search until it is indexed again",
-                exc_info=True,
             )
 
         await Health.system_health_check(container)

@@ -83,6 +83,8 @@ stateDiagram-v2
 
 `extractionStatus` moves independently (`NOT_STARTED → IN_PROGRESS → COMPLETED | FAILED`) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`.
 
+A record also stays searchable while `hasIndexedCopy` is true. Indexing sets it with every `COMPLETED` write and clears it when a record turns out `EMPTY`; nothing else touches it, and connector upserts merge rather than replace, so it survives a re-queue. An edited record queued again (`NOT_STARTED`, `QUEUED`, `IN_PROGRESS`), or one whose re-index failed, therefore keeps serving its previous copy until the new one is indexed. The search gate is `aql_searchable_record` / `cypher_searchable_record` in `app/services/graph_db/common/record_visibility.py`. Records indexed before the field existed are marked by `backfill_indexed_copy_flags`, which the indexing service runs at startup once the schema is ensured. A type that is not reconciled block by block still loses its vectors while it is processed, because the handler deletes them first.
+
 ### 2.2 Data flow for one record (happy path)
 
 ```mermaid
