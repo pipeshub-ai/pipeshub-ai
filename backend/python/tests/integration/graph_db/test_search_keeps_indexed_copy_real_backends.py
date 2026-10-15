@@ -163,7 +163,7 @@ class _Graph:
         self.nodes.append(("records", rid, props))
 
 
-async def _seed_neo4j(provider: Any, g: _Graph) -> None:
+async def _seed_neo4j(provider, g: _Graph) -> None:
     for coll, key, props in g.nodes:
         await provider.client.execute_query(
             f"CREATE (n:{_NEO4J_LABELS[coll]}) SET n = $props",
@@ -177,11 +177,11 @@ async def _seed_neo4j(provider: Any, g: _Graph) -> None:
         )
 
 
-async def _clean_neo4j(provider: Any, g: _Graph) -> None:
+async def _clean_neo4j(provider, g: _Graph) -> None:
     await provider.client.execute_query("MATCH (n {itRun: $r}) DETACH DELETE n", parameters={"r": g.run})
 
 
-async def _seed_arango(provider: Any, g: _Graph) -> None:
+async def _seed_arango(provider, g: _Graph) -> None:
     for coll, key, props in g.nodes:
         await provider.http_client.execute_aql(
             f"INSERT MERGE(@props, {{_key: @k, itRun: @r}}) INTO {coll}",
@@ -194,14 +194,14 @@ async def _seed_arango(provider: Any, g: _Graph) -> None:
         )
 
 
-async def _clean_arango(provider: Any, g: _Graph) -> None:
+async def _clean_arango(provider, g: _Graph) -> None:
     for coll in _DOC_COLLECTIONS + _EDGE_COLLECTIONS:
         await provider.http_client.execute_aql(
             f"FOR d IN {coll} FILTER d.itRun == @r REMOVE d IN {coll}", bind_vars={"r": g.run}
         )
 
 
-async def _set_status(provider: Any, rid: str, status: str) -> None:
+async def _set_status(provider, rid: str, status: str) -> None:
     if hasattr(provider, "client"):
         await provider.client.execute_query(
             "MATCH (r:Record {id: $id}) SET r.indexingStatus = $s", parameters={"id": rid, "s": status}
@@ -216,7 +216,7 @@ class _Contract:
     seed = None
     clean = None
 
-    async def _with_graph(self, provider: Any, check: Any) -> None:
+    async def _with_graph(self, provider, check) -> None:
         g = _Graph()
         await type(self).seed(provider, g)
         try:
@@ -224,22 +224,22 @@ class _Contract:
         finally:
             await type(self).clean(provider, g)
 
-    async def test_an_edited_record_waiting_to_be_indexed_is_still_found(self, provider: Any) -> None:
-        async def check(provider: Any, g: _Graph) -> None:
+    async def test_an_edited_record_waiting_to_be_indexed_is_still_found(self, provider) -> None:
+        async def check(provider, g: _Graph) -> None:
             found = await provider._get_virtual_ids_for_connector(g.user_id, ORG, g.app, None, raise_on_error=True)
             assert found == g.found(*sorted(_SEARCHABLE))
 
         await self._with_graph(provider, check)
 
-    async def test_an_edited_upload_waiting_to_be_indexed_is_still_found(self, provider: Any) -> None:
-        async def check(provider: Any, g: _Graph) -> None:
+    async def test_an_edited_upload_waiting_to_be_indexed_is_still_found(self, provider) -> None:
+        async def check(provider, g: _Graph) -> None:
             found = await provider._get_kb_virtual_ids(g.user_id, ORG, [g.kb], None, raise_on_error=True)
             assert found == g.found("kb_edited_and_queued")
 
         await self._with_graph(provider, check)
 
-    async def test_the_backfill_marks_records_indexed_before_the_flag_existed(self, provider: Any) -> None:
-        async def check(provider: Any, g: _Graph) -> None:
+    async def test_the_backfill_marks_records_indexed_before_the_flag_existed(self, provider) -> None:
+        async def check(provider, g: _Graph) -> None:
             assert await provider.backfill_indexed_copy_flags(batch_size=1) >= 1
             assert await provider.backfill_indexed_copy_flags() == 0
             await _set_status(provider, g.rid("indexed_before_the_flag"), "NOT_STARTED")

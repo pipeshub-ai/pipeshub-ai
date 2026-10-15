@@ -789,7 +789,7 @@ class TestMarkRecordOutcomes:
         return next(a for a in gp.update_node.await_args.args if isinstance(a, dict))
 
     @pytest.mark.asyncio
-    async def test_an_empty_record_no_longer_has_an_indexed_copy(self):
+    async def test_an_empty_record_no_longer_has_an_indexed_copy(self) -> None:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
         gp.update_node.return_value = True
@@ -799,7 +799,7 @@ class TestMarkRecordOutcomes:
         assert self._written(gp)["hasIndexedCopy"] is False
 
     @pytest.mark.asyncio
-    async def test_a_failed_reindex_keeps_the_indexed_copy(self):
+    async def test_a_failed_reindex_keeps_the_indexed_copy(self) -> None:
         proc, _, gp, _ = _make_processor()
         gp.get_document.return_value = {"_key": "rec-1"}
         gp.update_node.return_value = True
