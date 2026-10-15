@@ -18518,7 +18518,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER record.virtualRecordId == vid
                            AND record.orgId == @org_id
                            AND record.isDeleted != true
-                           AND record.indexingStatus == @completed
+                           AND {aql_searchable_record("record", "completed")}
                            AND (record.origin != @connector_origin
                                 OR record.connectorId IN reachable_apps)
                            // Scope is re-checked per record, not trusted from
@@ -19018,7 +19018,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER STARTS_WITH(edge._from, "{records}/")
                         LET rec = DOCUMENT(edge._from)
                         FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER rec.indexingStatus == @completed
+                        FILTER {aql_searchable_record("rec", "completed")}
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         LIMIT @scan_cap
@@ -19050,7 +19050,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR ref IN @refs
                 LET rec = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET ok = rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                    AND rec.indexingStatus == @completed
+                    AND {aql_searchable_record("rec", "completed")}
                     AND rec.connectorId IN ref.connectorIds
                     {record_type_check}
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
@@ -19092,7 +19092,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             window = f"""
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
-                    AND one.isDeleted != true AND one.indexingStatus == @completed
+                    AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
                     AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
                 LET capped = false"""
         else:
@@ -23429,6 +23429,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return f"{metadata_filter_clause}\n                    {time_filter_clause}"
         return time_filter_clause
 
+    async def records_accept_indexed_copy(self) -> bool:
+        schema = await self.http_client.get_collection_schema(CollectionNames.RECORDS.value)
+        rule = (schema or {}).get("rule") or {}
+        return (
+            not schema
+            or HAS_INDEXED_COPY in (rule.get("properties") or {})
+            or rule.get("additionalProperties") is not False
+        )
+
     async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
         query = f"""
         FOR record IN @@records
@@ -24192,7 +24201,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     // direct-grant budget and could tip a tenant into an
                     // unnecessary fallback.
                     FILTER rec.isDeleted != true
-                    FILTER rec.indexingStatus == @completed
+                    FILTER {aql_searchable_record("rec", "completed")}
                     FILTER rec.connectorId NOT IN covered_app_ids
                     // The verifier's reachability gate, applied early: a grant
                     // that outlived the user's access to its connector would

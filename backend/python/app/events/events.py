@@ -645,11 +645,41 @@ class EventProcessor:
         if not success:
             raise IndexingError(what, details={"record_id": _record_key(doc)})
 
+    async def _drop_the_previous_vectors_of_an_emptied_record(
+        self, doc: dict[str, Any], virtual_record_id: str | None, event_type: str | None
+    ) -> None:
+        """An update that leaves a record empty must not leave its old content searchable.
+
+        Types not reconciled block by block lost their vectors before this
+        event ran; reconciled ones still hold them. A VRID another record also
+        holds is that record's content, so it is left alone.
+        """
+        if not virtual_record_id or event_type not in (
+            EventTypes.UPDATE_RECORD.value,
+            EventTypes.REINDEX_RECORD.value,
+        ):
+            return
+        holders = await self.graph_provider.get_records_by_virtual_record_id(virtual_record_id)
+        if len(holders or []) > 1:
+            return
+        pipeline = self._indexing_pipeline()
+        if pipeline is None:
+            self.logger.error(
+                "No indexing pipeline available — the previous vectors of emptied record %s "
+                "were not deleted",
+                _record_key(doc),
+            )
+            return
+        await pipeline.delete_points_for_virtual_record(
+            virtual_record_id, RecordContext.from_graph_document(doc)
+        )
+
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
         record_id = _record_key(doc) or "unknown"
         fields = {
             "indexingStatus": status.value,
+            **indexed_copy_fields(status),
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
                 if status == ProgressStatus.IN_PROGRESS
@@ -1338,6 +1368,9 @@ class EventProcessor:
                 file_content = file_content.strip()
 
             if not file_content or file_content == b"":
+                await self._drop_the_previous_vectors_of_an_emptied_record(
+                    doc, virtual_record_id, event_type
+                )
                 await self.mark_record_status(doc, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

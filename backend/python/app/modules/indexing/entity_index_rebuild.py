@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
@@ -45,6 +45,7 @@ from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
@@ -512,7 +513,7 @@ class EntityIndexRebuilder:
             if phase == _RECORD_GROUPS:
                 entities.append(EntityRecord.for_record_group(key, name, org_id, run.key))
                 continue
-            if row.get("indexingStatus") != ProgressStatus.COMPLETED.value or row.get("isDeleted"):
+            if not is_searchable_record(row) or row.get("isDeleted"):
                 continue
             entities.append(EntityRecord.for_record(
                 key, name, org_id, run.key, _text(row.get("recordGroupId")) or None,

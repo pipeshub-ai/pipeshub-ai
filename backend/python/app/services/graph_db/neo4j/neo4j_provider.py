@@ -5882,6 +5882,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         clause = " AND " + " AND ".join(conditions) if conditions else ""
         return clause, parameters
 
+    async def records_accept_indexed_copy(self) -> bool:
+        return True  # Neo4j does not validate node properties.
+
     async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
         query = f"""
         MATCH (r:Record)
@@ -6830,7 +6833,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  app_level_ids + kb_app_ids AS covered_app_ids
             WHERE rec.virtualRecordId IS NOT NULL
               AND (rec.isDeleted IS NULL OR rec.isDeleted = false)
-              AND rec.indexingStatus = $completed
+              AND (rec.indexingStatus = $completed OR rec.hasIndexedCopy = true)
               AND NOT rec.connectorId IN covered_app_ids
               // The verifier's reachability gate, applied early: a grant that
               // outlived the user's access to its connector would enter the
@@ -18085,7 +18088,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH vid, reachable_apps
             MATCH (candidate:Record {{virtualRecordId: vid, orgId: $org_id}})
             WHERE (candidate.isDeleted IS NULL OR candidate.isDeleted = false)
-              AND candidate.indexingStatus = $completed
+              AND {cypher_searchable_record("candidate", "completed")}
               AND (candidate.origin <> $connector_origin
                    OR candidate.connectorId IN reachable_apps)
               // Scope is re-checked per record, not trusted from the search:
@@ -18561,9 +18564,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 {branches}
               }}"""
 
-    _ENTITY_CANDIDATE_RECORD_FILTER = """rec.orgId = $org_id
+    _ENTITY_CANDIDATE_RECORD_FILTER = f"""rec.orgId = $org_id
                 AND coalesce(rec.isDeleted, false) = false
-                AND rec.indexingStatus = $completed
+                AND {cypher_searchable_record("rec", "completed")}
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
     _ENTITY_CANDIDATE_ORDER = (

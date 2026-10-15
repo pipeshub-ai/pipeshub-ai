@@ -189,8 +189,7 @@ class IndexingAppContainer(BaseAppContainer):
 
 async def _backfill_indexed_copy_flags(graph_provider: IGraphDBProvider, logger: Logger) -> None:
     """Records indexed before ``hasIndexedCopy`` existed would otherwise leave search
-    the first time they are edited. Idempotent, so every boot may run it; it needs
-    the schema that allows the field."""
+    the first time they are edited. Idempotent, so every boot may run it."""
     try:
         marked = await graph_provider.backfill_indexed_copy_flags()
     except Exception:
@@ -231,12 +230,21 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
         # the same bootstrap.
         if await graph_provider.ensure_schema():
             logger.info("✅ Schema ensured")
-            await _backfill_indexed_copy_flags(graph_provider, logger)
         else:
             logger.warning(
                 "⚠️ Graph schema bootstrap failed; taxonomy and alias constraints "
                 "may be missing until a service that runs it starts successfully"
             )
+        # Unlike a missing constraint, a records schema without this field refuses
+        # every finished-indexing write, so indexing must not start on it.
+        if not await graph_provider.records_accept_indexed_copy():
+            logger.error(
+                "❌ The graph database's records schema does not allow hasIndexedCopy yet, so "
+                "it would refuse every finished-indexing write. Check that this service or "
+                "the connector service can update collection properties, then restart."
+            )
+            raise RuntimeError("The records schema does not allow hasIndexedCopy")
+        await _backfill_indexed_copy_flags(graph_provider, logger)
 
         await Health.system_health_check(container)
         return True

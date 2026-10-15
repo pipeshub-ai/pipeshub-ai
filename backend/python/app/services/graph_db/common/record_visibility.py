@@ -44,14 +44,22 @@ def indexed_copy_fields(indexing_status: object) -> dict[str, bool]:
     return {}
 
 
-def aql_searchable_record(var: str) -> str:
-    """Indexed now, or still holding a previous indexed copy. Needs ``@completedStatus``."""
-    return f"({var}.indexingStatus == @completedStatus OR {var}.{HAS_INDEXED_COPY} == true)"
+def is_searchable_record(record: Mapping[str, object]) -> bool:
+    """The Python form of the search gate below, for a record already read."""
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        or record.get(HAS_INDEXED_COPY) is True
+    )
 
 
-def cypher_searchable_record(var: str) -> str:
-    """Indexed now, or still holding a previous indexed copy. Needs ``$completedStatus``."""
-    return f"({var}.indexingStatus = $completedStatus OR {var}.{HAS_INDEXED_COPY} = true)"
+def aql_searchable_record(var: str, completed_param: str = "completedStatus") -> str:
+    """Indexed now, or still holding a previous indexed copy. Needs ``@<completed_param>``."""
+    return f"({var}.indexingStatus == @{completed_param} OR {var}.{HAS_INDEXED_COPY} == true)"
+
+
+def cypher_searchable_record(var: str, completed_param: str = "completedStatus") -> str:
+    """Indexed now, or still holding a previous indexed copy. Needs ``$<completed_param>``."""
+    return f"({var}.indexingStatus = ${completed_param} OR {var}.{HAS_INDEXED_COPY} = true)"
 
 
 def aql_record_visibility(var: str, visibility: RecordVisibility) -> str:

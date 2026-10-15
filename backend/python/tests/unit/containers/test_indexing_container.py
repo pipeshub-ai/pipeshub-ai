@@ -97,6 +97,7 @@ class TestInitializeContainer:
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
         mock_graph_provider.ensure_schema = AsyncMock()
+        mock_graph_provider.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -117,6 +118,7 @@ class TestInitializeContainer:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock()
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp
@@ -130,6 +132,7 @@ class TestInitializeContainer:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock()
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_gp)
 
         await initialize_container(container)
@@ -145,6 +148,7 @@ class TestInitializeContainer:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock(return_value=True)
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         mock_gp.backfill_indexed_copy_flags = AsyncMock(return_value=3)
         container.graph_provider = AsyncMock(return_value=mock_gp)
 
@@ -155,10 +159,33 @@ class TestInitializeContainer:
     @pytest.mark.asyncio
     @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
     @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
+    async def test_a_records_schema_that_refuses_the_flag_stops_indexing_from_starting(
+        self, mock_sys_health, mock_conn_health
+    ) -> None:
+        container, logger = self._make_mock_container()
+        mock_gp = MagicMock()
+        mock_gp.ensure_schema = AsyncMock(return_value=False)
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=False)
+        mock_gp.backfill_indexed_copy_flags = AsyncMock()
+        container.graph_provider = AsyncMock(return_value=mock_gp)
+
+        with pytest.raises(RuntimeError, match="hasIndexedCopy"):
+            await initialize_container(container)
+
+        assert any(
+            "refuse every finished-indexing write" in str(c.args[0]) for c in logger.error.call_args_list
+        )
+        mock_gp.backfill_indexed_copy_flags.assert_not_awaited()
+        mock_sys_health.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @patch("app.containers.indexing.Health.health_check_connector_service", new_callable=AsyncMock)
+    @patch("app.containers.indexing.Health.system_health_check", new_callable=AsyncMock)
     async def test_a_failed_backfill_warns_and_continues(self, mock_sys_health, mock_conn_health) -> None:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock(return_value=True)
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         mock_gp.backfill_indexed_copy_flags = AsyncMock(side_effect=RuntimeError("graph down"))
         container.graph_provider = AsyncMock(return_value=mock_gp)
 
@@ -174,13 +201,12 @@ class TestInitializeContainer:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock(return_value=False)
-        mock_gp.backfill_indexed_copy_flags = AsyncMock()
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
+        mock_gp.backfill_indexed_copy_flags = AsyncMock(return_value=0)
         container.graph_provider = AsyncMock(return_value=mock_gp)
 
         assert await initialize_container(container) is True
 
-        # Without the schema, ArangoDB would refuse the field the backfill writes.
-        mock_gp.backfill_indexed_copy_flags.assert_not_awaited()
         logger.warning.assert_called_once()
         assert "schema" in logger.warning.call_args.args[0].lower()
         assert not any("Schema ensured" in str(c.args[0]) for c in logger.info.call_args_list)
@@ -325,6 +351,7 @@ class TestInitializeContainerFullCoverage:
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
         mock_graph_provider.ensure_schema = AsyncMock()
+        mock_graph_provider.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -345,6 +372,7 @@ class TestInitializeContainerFullCoverage:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock()
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp

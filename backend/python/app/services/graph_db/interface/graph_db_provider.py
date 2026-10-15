@@ -3939,6 +3939,15 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def records_accept_indexed_copy(self) -> bool:
+        """Whether record writes that carry ``hasIndexedCopy`` will be accepted.
+
+        A store that validates record documents refuses the field until its
+        schema allows it, and then refuses every finished-indexing write.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
         """Mark every COMPLETED record that predates ``hasIndexedCopy`` as having one.
 

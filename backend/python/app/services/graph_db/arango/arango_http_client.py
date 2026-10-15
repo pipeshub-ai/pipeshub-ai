@@ -1014,6 +1014,17 @@ class ArangoHTTPClient:
 
     # ==================== Graph Operations ====================
 
+    async def get_collection_schema(self, name: str) -> dict | None:
+        """The validation schema a collection holds now, or None when it has none."""
+        url = f"{self.base_url}/_db/{self.database}/_api/collection/{name}/properties"
+        session = await self._get_session()
+        async with session.get(url) as resp:
+            if resp.status != HttpStatusCode.OK.value:
+                raise RuntimeError(
+                    f"Could not read the properties of collection '{name}' (HTTP {resp.status})"
+                )
+            return (await resp.json()).get("schema") or None
+
     async def has_collection(self, name: str) -> bool:
         """
         Check if a collection exists.
