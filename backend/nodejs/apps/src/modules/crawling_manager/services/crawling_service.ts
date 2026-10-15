@@ -59,6 +59,9 @@ interface PausedJobInfo {
   pausedAt: Date;
 }
 
+const CLEAR_IF_UNCHANGED =
+  "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0";
+
 @injectable()
 export class CrawlingSchedulerService {
   private queue: Queue;
@@ -121,9 +124,15 @@ export class CrawlingSchedulerService {
   ): Promise<void> {
     const client = this.provider.getClient();
     const raw = await client.hget(this.reconcilePendingKey, connectorId);
-    if (raw === null) return;
-    const { at } = JSON.parse(raw) as { at: number };
-    if (at <= since) await client.hdel(this.reconcilePendingKey, connectorId);
+    if (raw === null || (JSON.parse(raw) as { at: number }).at > since) return;
+    // Deleted only if still the mark just read: a save may set a newer one in between.
+    await client.eval(
+      CLEAR_IF_UNCHANGED,
+      1,
+      this.reconcilePendingKey,
+      connectorId,
+      raw,
+    );
   }
 
   async listReconcilesPending(): Promise<

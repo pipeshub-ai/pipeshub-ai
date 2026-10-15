@@ -388,7 +388,8 @@ export class ScheduledJobsBackfillMigration {
             error: error instanceof Error ? error.message : String(error),
           },
         );
-        return errored + 1;
+        errored++;
+        continue; // the next batch may still be readable
       }
       for (const item of items) {
         if (item.unreadable) continue; // still owed; never read as "sync is off"

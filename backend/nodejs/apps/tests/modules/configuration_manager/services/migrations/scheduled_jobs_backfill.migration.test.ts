@@ -244,6 +244,23 @@ describe('ScheduledJobsBackfillMigration', () => {
         expect(scheduler.clearReconcilePending.called).to.equal(false);
       });
 
+      it('still applies later batches when one batch cannot be read', async () => {
+        const owedIds = Array.from({ length: 51 }, (_, i) => `conn-${i}`)
+        const scheduler = makeScheduler({
+          listReconcilesPending: sinon.stub().resolves(owedIds.map((connectorId) => ({ connectorId, orgId: 'org-1', at: 1 }))),
+        });
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().rejects(new Error('connector service busy'));
+        executeStub.onThirdCall().resolves(byId({ ...sampleScheduledItem, connectorId: 'conn-50' }));
+
+        const result = await run(scheduler);
+
+        expect(executeStub.thirdCall.args[0]).to.contain('connectorIds=conn-50');
+        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+        expect(scheduler.clearReconcilePending.calledOnceWith('conn-50')).to.equal(true);
+        expect(result.errored).to.equal(1);
+      });
+
       it('loses its job when the connector no longer exists', async () => {
         const scheduler = owed('conn-1');
         executeStub.onFirstCall().resolves(okEnumerationResponse([]));

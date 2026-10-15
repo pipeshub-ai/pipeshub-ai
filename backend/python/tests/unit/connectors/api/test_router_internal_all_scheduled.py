@@ -403,11 +403,14 @@ class TestListedConnectors:
                 raise doc
             return doc
 
-        async def get_config(path: str) -> dict | None:
+        async def get_config(path: str, *, use_cache: bool = True, raise_on_error: bool = False) -> dict | None:
+            # Like ConfigurationService: a store error is None unless the caller asks it to raise.
             for cid, cfg in configs.items():
                 if cid in path:
                     if isinstance(cfg, Exception):
-                        raise cfg
+                        if raise_on_error:
+                            raise cfg
+                        return None
                     return cfg
             return None
 

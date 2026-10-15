@@ -3358,7 +3358,10 @@ async def _connector_schedule_state(
         "isActive": bool(doc.get("isActive")),
     }
     try:
-        config = await config_service.get_config(_get_config_path_for_instance(connector_id))
+        # Raising, and uncached: a store error otherwise reads as no settings, which removes the schedule.
+        config = await config_service.get_config(
+            _get_config_path_for_instance(connector_id), use_cache=False, raise_on_error=True,
+        )
     except Exception as e:
         logger.warning("Failed to read config for connector %s: %s", connector_id, e)
         return {**item, "sync": None, "unreadable": True}

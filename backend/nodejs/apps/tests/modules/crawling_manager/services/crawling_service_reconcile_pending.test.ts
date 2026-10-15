@@ -8,6 +8,7 @@ import { createFakeRedisProvider, makeFakeRedisClient, stubGetRedisProvider } fr
 describe('CrawlingSchedulerService: schedule changes owed by failed saves', () => {
   let restore: () => void
   let hash: Map<string, string>
+  let onHget: (() => void) | undefined
   let scheduler: CrawlingSchedulerService
 
   beforeEach(() => {
@@ -15,10 +16,21 @@ describe('CrawlingSchedulerService: schedule changes owed by failed saves', () =
     const client = () =>
       makeFakeRedisClient({
         hset: sinon.stub().callsFake(async (_key: string, field: string, value: string) => void hash.set(field, value)),
-        hget: sinon.stub().callsFake(async (_key: string, field: string) => hash.get(field) ?? null),
+        hget: sinon.stub().callsFake(async (_key: string, field: string) => {
+          const value = hash.get(field) ?? null
+          onHget?.()
+          return value
+        }),
         hdel: sinon.stub().callsFake(async (_key: string, field: string) => Number(hash.delete(field))),
         hgetall: sinon.stub().callsFake(async () => Object.fromEntries(hash)),
+        // The compare-and-delete script, as Redis runs it: atomically.
+        eval: sinon.stub().callsFake(async (_script: string, _n: number, _key: string, field: string, expected: string) => {
+          if (hash.get(field) !== expected) return 0
+          hash.delete(field)
+          return 1
+        }),
       } as any)
+    onHget = undefined
     restore = stubGetRedisProvider(createFakeRedisProvider(client))
     scheduler = new CrawlingSchedulerService({ host: 'localhost', port: 6379, db: 0 } as any)
   })
@@ -51,6 +63,15 @@ describe('CrawlingSchedulerService: schedule changes owed by failed saves', () =
     await scheduler.markReconcilePending('conn-1', 'org-1')
 
     await scheduler.clearReconcilePending('conn-1', olderStartedAt)
+
+    expect(await scheduler.listReconcilesPending()).to.have.length(1)
+  })
+
+  it('keeps a mark a save wrote between the read and the delete', async () => {
+    await scheduler.markReconcilePending('conn-1', 'org-1')
+    onHget = () => hash.set('conn-1', JSON.stringify({ orgId: 'org-1', at: Date.now() + 1 }))
+
+    await scheduler.clearReconcilePending('conn-1', Date.now() + 60_000)
 
     expect(await scheduler.listReconcilesPending()).to.have.length(1)
   })

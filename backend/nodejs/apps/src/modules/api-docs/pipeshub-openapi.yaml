@@ -47557,7 +47557,8 @@ paths:
                           description: Only with connectorIds. Its settings could not be read; sync is null.
                         sync:
                           type: object
-                          description: Full sync block from etcd config
+                          nullable: true
+                          description: Full sync block from etcd config; null when unreadable
                           properties:
                             selectedStrategy:
                               type: string
