@@ -35,18 +35,18 @@ import re
 from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.models.blocks import SemanticMetadata
+from app.modules.entity_resolution import prompt as prompt_module
 from app.modules.entity_resolution.models import (
     MergeDecision,
     MergeDecisions,
     ResolutionMode,
 )
 from app.modules.entity_resolution.normalizer import display_form
-from app.modules.entity_resolution.prompt import _hex
 from app.modules.entity_resolution.resolver import EntityResolver
 from app.modules.transformers.entity_vectorstore import EntityVectorStore
 from app.modules.transformers.graphdb import GraphDBTransformer
@@ -54,6 +54,9 @@ from tests.evals.entity_resolution.metrics import bcubed, pairwise
 from tests.support.embedding_config import config_service as embedding_config_service
 from tests.support.fake_entity_graph import FakeGraph
 from tests.support.in_memory_vector_db import InMemoryVectorDBService
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 DATASET = Path(__file__).with_name("dataset.json")
 logger = logging.getLogger("entity-resolution-eval")
@@ -110,6 +113,7 @@ class GoldOracle:
     def __init__(self) -> None:
         self.record_gold: dict[str, str] = {}
         self.node_entity: dict[str, str] = {}
+        self.offered: dict[str, str] = {}
 
     def start_record(self, gold: dict[str, str]) -> None:
         self.record_gold = {display_form(raw): entity for raw, entity in gold.items()}
@@ -117,10 +121,14 @@ class GoldOracle:
     def learn(self, node_key: str, entity: str) -> None:
         self.node_entity.setdefault(node_key, entity)
 
+    def offer(self, handles: dict[str, str]) -> None:
+        """The handles the prompt about to be asked shows, by node id. A handle is
+        unique among one prompt's offered nodes only, so it is read against them."""
+        self.offered = {handle: node_id for node_id, handle in handles.items()}
+
     def _entity_of(self, handle: str) -> str | None:
-        """The prompt shows a node by a prefix of its id's hex digits; the answer
-        names it the same way and the resolver maps it back."""
-        return next((entity for key, entity in self.node_entity.items() if _hex(key).startswith(handle)), None)
+        node_id = self.offered.get(handle)
+        return self.node_entity.get(node_id) if node_id is not None else None
 
     async def __call__(self, llm: object, messages: list, schema: object, **_: object) -> MergeDecisions:
         found = _PROMPT_ITEMS.search(messages[0].content)
@@ -146,6 +154,17 @@ class GoldOracle:
                     first_of_entity[entity] = item["i"]
                 decisions.append(MergeDecision(i=item["i"], same=False))
         return MergeDecisions(decisions=decisions)
+
+
+def _recording_handles(oracle: GoldOracle) -> Callable[..., dict[str, str]]:
+    real = prompt_module.candidate_handles
+
+    def record(*args: object, **kwargs: object) -> dict[str, str]:
+        handles = real(*args, **kwargs)
+        oracle.offer(handles)
+        return handles
+
+    return record
 
 
 def _model(spec: str) -> object | None:
@@ -221,6 +240,8 @@ async def evaluate(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=oracle if oracle is not None else AsyncMock(return_value=None),
         ))
+    if oracle is not None:
+        patches.append(patch.object(prompt_module, "candidate_handles", new=_recording_handles(oracle)))
     for active in patches:
         active.start()
     try:
