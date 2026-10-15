@@ -52,6 +52,7 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     FOLDER_MIME_TYPE,
     assert_api_content_matches_graph,
     assert_confluence_page_in_v1_space_content_search,
+    count_run_records,
 )
 from connectors.confluence.confluence_knowledge_hub_test_utils import (  # noqa: E402
     KH_CHILDREN_LIMIT,
@@ -522,7 +523,7 @@ class TestConfluenceFilters:
         snapshot = confluence_connector["content_snapshot"]
 
         baseline_app_edges = await graph_provider.count_app_record_group_edges(connector_id)
-        baseline_scoped = await graph_provider.count_records(connector_id, scoped=True)
+        baseline_scoped = await count_run_records(graph_provider, connector_id, scoped=True)
         assert baseline_app_edges >= 1 and baseline_scoped > 0, (
             f"TC-CF-036 baseline: expected the test space in scope, got {baseline_app_edges} "
             f"App edges and {baseline_scoped} scoped records"
@@ -560,7 +561,7 @@ class TestConfluenceFilters:
             )
 
         assert await graph_provider.count_app_record_group_edges(connector_id) == baseline_app_edges
-        restored = await graph_provider.count_records(connector_id, scoped=True)
+        restored = await count_run_records(graph_provider, connector_id, scoped=True)
         assert restored == baseline_scoped, (
             f"TC-CF-036: after restoring the filter {restored} records are in scope, "
             f"expected {baseline_scoped}"
