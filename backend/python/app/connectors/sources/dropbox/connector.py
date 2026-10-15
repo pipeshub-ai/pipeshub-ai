@@ -1252,7 +1252,32 @@ class DropboxConnector(BaseConnector):
             entries = await self._list_shared_folders(user.source_user_id)
             if entries is not None:
                 listings[user.source_user_id] = entries
-        return plan_shared_folders(listings)
+        plan = plan_shared_folders(listings)
+        # A member whose list could not be read may be the one who has a folder in their Dropbox.
+        if len(listings) == len(users):
+            await self._drop_unmounted_shared_folders(plan)
+        return plan
+
+    async def _drop_unmounted_shared_folders(self, plan: dict[str, SharedFolder]) -> None:
+        """Leave out, and delete, the shared folders no member has in their Dropbox.
+
+        A deleted shared folder stays in ``sharing/list_folders``, with no path for
+        anyone, and its namespace still lists its files as live; Dropbox has no
+        deleted flag for it. Team folders are synced from the team folder list.
+        """
+        for folder in [folder for folder in plan.values() if not folder.mounted and not folder.is_team_folder]:
+            del plan[folder.folder_id]
+            try:
+                stored = await self.data_entities_processor.get_record_group_by_external_id(
+                    self.connector_id, folder.folder_id
+                )
+                if stored is not None:
+                    self.logger.info(f"Shared folder '{folder.name}' ({folder.folder_id}) is in no member's Dropbox; deleting it")
+                    await self.data_entities_processor.on_record_group_deleted(
+                        external_group_id=folder.folder_id, connector_id=self.connector_id, trash_live_records=True,
+                    )
+            except Exception as e:
+                self.logger.error(f"Could not delete shared folder '{folder.name}' ({folder.folder_id}): {e}", exc_info=True)
 
     async def _list_shared_folders(self, member_id: str) -> list | None:
         """A member's shared folders, every page; None when Dropbox could not be read."""

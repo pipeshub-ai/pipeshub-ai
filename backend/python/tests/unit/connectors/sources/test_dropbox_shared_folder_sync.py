@@ -124,6 +124,43 @@ class TestSharedFolderGroups:
         connector._shared_folder_members.assert_awaited_once_with("sf-1", "dbmid:a")
 
 
+class TestDeletedSharedFolders:
+    """A deleted shared folder stays in sharing/list_folders with no path for anyone (DB-09)."""
+
+    @staticmethod
+    def _entry(folder_id: str, path: str | None) -> SimpleNamespace:
+        return SimpleNamespace(shared_folder_id=folder_id, name=folder_id, path_lower=path,
+                               access_type=SimpleNamespace(_tag="owner"), parent_shared_folder_id=None,
+                               access_inheritance=SimpleNamespace(_tag="inherit"), is_team_folder=False)
+
+    def _users(self, connector, listings: list) -> list:
+        connector._list_shared_folders = AsyncMock(side_effect=listings)
+        connector.data_entities_processor.on_record_group_deleted = AsyncMock()
+        return [MagicMock(source_user_id=f"dbmid:{i}") for i in range(len(listings))]
+
+    @pytest.mark.asyncio
+    async def test_a_folder_in_no_members_dropbox_is_left_out_and_deleted(self, connector) -> None:
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock())
+        users = self._users(connector, [[self._entry("gone", None), self._entry("live", None)],
+                                        [self._entry("live", "/live")]])
+
+        plan = await connector._plan_shared_folders(users)
+
+        assert list(plan) == ["live"]
+        connector.data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
+            external_group_id="gone", connector_id=CONNECTOR_ID, trash_live_records=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_nothing_is_deleted_when_a_members_list_could_not_be_read(self, connector) -> None:
+        users = self._users(connector, [[self._entry("maybe", None)], None])
+
+        plan = await connector._plan_shared_folders(users)
+
+        assert list(plan) == ["maybe"]
+        connector.data_entities_processor.on_record_group_deleted.assert_not_awaited()
+
+
 class TestListing:
     @pytest.mark.asyncio
     async def test_a_home_listing_leaves_out_shared_folder_content_and_drops_an_old_mount_record(self, connector) -> None:
