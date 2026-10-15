@@ -89,6 +89,10 @@ from app.models.entities import (
 )
 from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
+from app.modules.named_entities.graph_ops import (
+    NamedEntityGraphMixin,
+    named_entity_neo4j_indexes,
+)
 from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.full_sync_unlink import (
@@ -142,7 +146,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
-    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -151,27 +154,39 @@ from app.services.graph_db.interface.graph_db_provider import (
     _containers_from_row,
     _distinct_connector_types,
     _unsupported_container_filters,
+    promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
 from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     Neo4jClient,
 )
-from app.modules.named_entities.graph_ops import NamedEntityGraphMixin, named_entity_neo4j_indexes
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
+    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
     is_taxonomy_collection,
     own_record_labels,
     subcategory_level,
-    RECORD_ENRICHMENT_EDGE_COLLECTIONS,
+)
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
+)
+from app.services.graph_db.user_email_identity import (
+    PERMISSION_ROLE_RANK,
+    STUB_EDGE_COLLECTIONS,
+    STUB_EDGE_IDENTITY_FIELDS,
+    VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    GraphUserEmailConflictError,
+    classify_email_peer,
+    connector_ids_of_users,
+    graph_user_key,
 )
 from app.services.graph_db.vector_membership_queries import (
     PAGE_RECORD_FIELDS,
@@ -181,16 +196,6 @@ from app.services.graph_db.vector_membership_queries import (
 )
 from app.utils.env_config import env_int
 from app.utils.env_utils import env_bool
-from app.services.graph_db.user_email_identity import (
-    GraphUserEmailConflictError,
-    PERMISSION_ROLE_RANK,
-    STUB_EDGE_COLLECTIONS,
-    STUB_EDGE_IDENTITY_FIELDS,
-    VERIFIED_EMAIL_WRITE_COLLECTIONS,
-    classify_email_peer,
-    connector_ids_of_users,
-    graph_user_key,
-)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_messages import folder_in_trash
 
@@ -9293,8 +9298,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (t:`{label}` {{id: $key}})
             WHERE t.mergedInto IS NULL
               AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
-            WITH t
-            DETACH DELETE t
+            OPTIONAL MATCH (a:TaxonomyAlias)-[:ALIAS_OF]->(t)
+            DETACH DELETE a, t
             RETURN 1 AS deleted
             """,
             parameters={"key": key},
@@ -9317,7 +9322,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE t.mergedInto IS NULL
                   AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
                 WITH t, t.id AS id
-                DETACH DELETE t
+                OPTIONAL MATCH (a:TaxonomyAlias)-[:ALIAS_OF]->(t)
+                DETACH DELETE a, t
                 RETURN id
                 """,
                 parameters={"org_id": org_id},
@@ -9769,11 +9775,18 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     late = await self.client.execute_query(
                         """
                         MATCH (r:Record {connectorId: $connector_id})
-                        RETURN r.id AS id
+                        RETURN r.id AS id, r.virtualRecordId AS virtualRecordId
                         """,
                         parameters={"connector_id": connector_id},
                     )
                     late_keys = [row["id"] for row in late or [] if row.get("id")]
+                    vrids = collected.get("virtual_record_ids")
+                    if needs_virtual_record_ids and isinstance(vrids, list):
+                        vrids.extend(
+                            row["virtualRecordId"]
+                            for row in late or []
+                            if isinstance(row.get("virtualRecordId"), str) and row["virtualRecordId"]
+                        )
                     if late_keys:
                         self.logger.warning(
                             f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"

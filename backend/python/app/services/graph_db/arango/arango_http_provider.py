@@ -79,6 +79,7 @@ from app.models.entities import (
     substitute_user_email,
 )
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES
+from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.schema.arango.documents import (
     agent_schema,
     agent_skill_candidates_schema,
@@ -92,9 +93,6 @@ from app.schema.arango.documents import (
     comment_record_schema,
     deal_record_schema,
     department_schema,
-    named_entity_schema,
-    named_entity_persist_retry_schema,
-    value_mention_schema,
     file_record_schema,
     knowledge_schema,
     link_record_schema,
@@ -102,6 +100,8 @@ from app.schema.arango.documents import (
     mcp_server_schema,
     meeting_record_schema,
     message_record_schema,
+    named_entity_persist_retry_schema,
+    named_entity_schema,
     orgs_schema,
     people_schema,
     product_record_schema,
@@ -116,6 +116,7 @@ from app.schema.arango.documents import (
     tool_schema,
     toolset_schema,
     user_schema,
+    value_mention_schema,
     webpage_record_schema,
 )
 from app.schema.arango.edges import (
@@ -137,11 +138,11 @@ from app.schema.arango.edges import (
     lead_schema,
     mcp_server_has_tool_schema,
     member_of_schema,
+    mentions_entity_schema,
     permissions_schema,
     prospect_schema,
     record_relations_schema,
     sold_in_schema,
-    mentions_entity_schema,
     taxonomy_edge_schema,
     toolset_has_tool_schema,
     user_app_relation_schema,
@@ -200,7 +201,6 @@ from app.services.graph_db.interface.graph_db_provider import (
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
     DUPLICATE_RECONCILE_DUE_AT_FIELD,
     DUPLICATE_RECONCILE_GRACE_MS,
-    promoted_duplicate_extraction_status,
     DUPLICATE_RECONCILE_PENDING_FIELD,
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
     STRICT_SCOPE_FILTER_KEY,
@@ -210,9 +210,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     _containers_from_row,
     _distinct_connector_types,
     _unsupported_container_filters,
+    promoted_duplicate_extraction_status,
     requested_scope_ids,
 )
-from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -220,7 +220,6 @@ from app.services.graph_db.taxonomy import (
     TAXONOMY_COLLECTIONS,
     TAXONOMY_EDGE_COLLECTIONS,
     TAXONOMY_ENTITY_TYPES,
-    alias_pairs as _alias_pairs,
     check_edge_move,
     check_edge_move_target,
     global_department_key,
@@ -229,12 +228,15 @@ from app.services.graph_db.taxonomy import (
     own_record_labels,
     subcategory_level,
 )
+from app.services.graph_db.taxonomy import (
+    alias_pairs as _alias_pairs,
+)
 from app.services.graph_db.user_email_identity import (
-    GraphUserEmailConflictError,
     PERMISSION_ROLE_RANK,
     STUB_EDGE_COLLECTIONS,
     STUB_EDGE_IDENTITY_FIELDS,
     VERIFIED_EMAIL_WRITE_COLLECTIONS,
+    GraphUserEmailConflictError,
     classify_email_peer,
     connector_ids_of_users,
     graph_user_key,
@@ -9914,6 +9916,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET record_id = CONCAT('records/', record._key)
             FOR edge IN @@isOfType
                 FILTER edge._from == record_id
+                FILTER DOCUMENT(edge._to) != null
                 LET target = PARSE_IDENTIFIER(edge._to)
                 RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
         """
@@ -9946,6 +9949,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET record_id = CONCAT('records/', key)
             FOR edge IN @@isOfType
                 FILTER edge._from == record_id
+                FILTER DOCUMENT(edge._to) != null
                 LET target = PARSE_IDENTIFIER(edge._to)
                 RETURN DISTINCT { collection: target.collection, key: target.key, full_id: edge._to }
         """
@@ -10716,17 +10720,27 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 orphan_types = 0
                 orphan_labels = 0
                 try:
-                    late_keys = await self.http_client.execute_aql(
+                    late_rows = await self.http_client.execute_aql(
                         """
                         FOR r IN @@records
                             FILTER r.connectorId == @connector_id
-                            RETURN r._key
+                            RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
                         """,
                         bind_vars={
                             "@records": CollectionNames.RECORDS.value,
                             "connector_id": connector_id,
                         },
                     )
+                    late_keys = [row["key"] for row in late_rows or [] if isinstance(row, dict) and row.get("key")]
+                    vrids = collected.get("virtual_record_ids")
+                    if needs_virtual_record_ids and isinstance(vrids, list):
+                        vrids.extend(
+                            row["virtualRecordId"]
+                            for row in late_rows or []
+                            if isinstance(row, dict)
+                            and isinstance(row.get("virtualRecordId"), str)
+                            and row["virtualRecordId"]
+                        )
                     if late_keys:
                         self.logger.warning(
                             f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"

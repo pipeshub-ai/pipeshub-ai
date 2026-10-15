@@ -656,7 +656,7 @@ async def test_a_record_committed_during_delete_is_removed(arango) -> None:
         nonlocal armed
         if (
             armed and isinstance(query, str) and "FILTER r.connectorId" in query
-            and "RETURN r._key" in query
+            and "virtualRecordId" in query
         ):
             armed = False
             await provider.batch_upsert_nodes([{
