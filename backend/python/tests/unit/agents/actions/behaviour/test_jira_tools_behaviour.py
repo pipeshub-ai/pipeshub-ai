@@ -498,7 +498,7 @@ class TestFailuresInPlainLanguage:
 
         assert ok is False
         message = assert_safe_error(data)
-        assert "did not accept the saved sign-in" in message and "Reconnect the Jira toolset" in message
+        assert "did not accept the saved sign-in" in message and "Authenticate Jira again under Your actions" in message
 
     async def test_missing_issue_says_how_to_find_it(self, jira, api) -> None:
         ok, data = result(await jira.get_comments("PA-404"))

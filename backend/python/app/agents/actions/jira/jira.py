@@ -373,7 +373,7 @@ def _with_notes(message: str, notes: list[str]) -> str:
 
 
 _ERROR_DETAILS_LIMIT = 500
-_RECONNECT_STEP = "Reconnect the Jira toolset in Settings > Toolsets and try again."
+_RECONNECT_STEP = "Authenticate Jira again under Your actions, then try again."
 
 
 def _jira_error_message(status: int, reason: object, headers: dict[str, str]) -> str:
@@ -407,7 +407,7 @@ def _jira_failure(doing: str, error: Exception) -> tuple[bool, str]:
     else:
         message = (
             f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
-            "reconnect the Jira toolset in Settings > Toolsets."
+            "authenticate Jira again under Your actions."
         )
     return False, json.dumps({"error": message})
 

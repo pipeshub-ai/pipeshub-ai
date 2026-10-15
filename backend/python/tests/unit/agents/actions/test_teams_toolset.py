@@ -208,7 +208,7 @@ class TestConstructionAndAuth:
     async def test_tool_call_without_client_tells_agent_to_authenticate(self) -> None:
         message = err(await Teams(None).get_teams())
         assert AUTH_MESSAGE_FRAGMENT in message
-        assert "Settings > Toolsets" in message
+        assert "Your actions" in message
 
     @pytest.mark.asyncio
     async def test_graph_unauthorized_error_maps_to_authenticate_message(self, teams, graph) -> None:
@@ -1398,7 +1398,7 @@ class TestFailuresTellTheAgentWhatToDo:
     async def test_rejected_sign_in_asks_to_reconnect(self, teams, graph, case) -> None:
         call, method, path = _call_and_route(case)
         graph.on(method, path, graph_error(401, "InvalidAuthenticationToken", "Access token has expired or is not yet valid."))
-        assert "Reconnect the Teams toolset" in err(await call(teams))
+        assert "Authenticate Teams again under Your actions" in err(await call(teams))
 
     @pytest.mark.asyncio
     async def test_forbidden_explains_the_missing_permission(self, teams, graph) -> None:

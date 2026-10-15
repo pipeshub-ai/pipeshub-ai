@@ -81,7 +81,7 @@ def _lumos_error_message(response: HTTPResponse) -> str:
     if status == HTTPStatus.UNAUTHORIZED:
         return (
             "Lumos did not accept the saved API key. Ask an admin to check the Lumos API key "
-            "in Settings > Toolsets, then try again."
+            "under Workspace → Actions, then try again."
         )
     if status == HTTPStatus.FORBIDDEN:
         return (

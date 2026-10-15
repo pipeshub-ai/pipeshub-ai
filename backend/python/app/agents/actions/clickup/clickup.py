@@ -50,7 +50,7 @@ _CREATE_COMMENT_TARGET_REQUIRED = (
 
 
 _FAILED_STATUS = re.compile(r"Failed with status (\d+)")
-_RECONNECT_STEP = "Reconnect the ClickUp toolset in Settings > Toolsets and try again."
+_RECONNECT_STEP = "Authenticate ClickUp again under Your actions, then try again."
 
 
 def _clickup_error_message(response: ClickUpResponse) -> str:
@@ -82,7 +82,7 @@ def _unexpected_failure(tool_name: str, error: Exception) -> tuple[bool, str]:
     logger.error("Error in %s: %s", tool_name, error)
     return False, json.dumps({"error": (
         f"Something unexpected went wrong in {tool_name}. Try again, and if it keeps failing, "
-        "reconnect the ClickUp toolset in Settings > Toolsets."
+        "authenticate ClickUp again under Your actions."
     )})
 
 

@@ -156,7 +156,7 @@ class ToolInstanceCreator:
                     raise ValueError(
                         f"{app_name.capitalize()} toolset is not authenticated. "
                         "Please complete the OAuth flow first. "
-                        f"Go to Settings > Toolsets to authenticate your {app_name.capitalize()} account."
+                        f"Authenticate your {app_name.capitalize()} account under Your actions."
                     ) from e
                 raise RuntimeError(
                     f"Failed to create {app_name} client: {e}"

@@ -305,8 +305,8 @@ class PipesHubGlobalCatalogFallback:
                     toolset=group_name,
                     description=(
                         f"{description} — configured but not authenticated; "
-                        "tell the user to authenticate this toolset in "
-                        "Settings > Toolsets."
+                        "tell the user to authenticate this toolset "
+                        "under Your actions."
                         if reason == "not_authenticated" else description
                     ),
                     reason=reason,

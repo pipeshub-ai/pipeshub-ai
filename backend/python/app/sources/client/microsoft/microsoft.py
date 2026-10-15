@@ -484,7 +484,7 @@ class MSGraphClient(IClient):
             raise ValueError(
                 f"Invalid access token in Microsoft {service_name} toolset credentials. "
                 f"The stored token appears to be a placeholder value. "
-                f"Please re-authenticate the toolset by going to Settings > Toolsets and completing the OAuth flow again."
+                f"Authenticate the toolset again under Your actions to complete the OAuth flow."
             )
 
         # Basic JWT token validation (JWT tokens have 3 parts separated by dots)
@@ -656,7 +656,7 @@ class MSGraphClient(IClient):
                 raise ValueError(
                     f"Invalid access token for Microsoft {service_name} toolset. "
                     f"The token (stored or refreshed) appears to be a placeholder value: '{final_token_str[:50]}...'. "
-                    f"Please re-authenticate the toolset by going to Settings > Toolsets and completing the OAuth flow again."
+                    f"Authenticate the toolset again under Your actions to complete the OAuth flow."
                 )
 
             # Log token info for debugging (first/last few chars only for security)

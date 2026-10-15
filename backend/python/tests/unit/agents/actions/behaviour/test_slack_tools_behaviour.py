@@ -112,7 +112,7 @@ class TestSendMessage:
         data = failure(await slack.send_message(GENERAL, "hi"))
 
         assert data["error"] == code
-        assert "Reconnect the Slack toolset" in explanation(data)
+        assert "Authenticate Slack again under Your actions" in explanation(data)
 
     async def test_missing_permission_asks_to_reconnect_and_approve(self, slack, api) -> None:
         api.on("chat.postMessage", slack_error("missing_scope", needed="chat:write"))
@@ -120,7 +120,7 @@ class TestSendMessage:
         data = failure(await slack.send_message(GENERAL, "hi"))
 
         message = explanation(data)
-        assert "permission" in message and "Reconnect the Slack toolset" in message
+        assert "permission" in message and "Authenticate Slack again under Your actions" in message
         assert "xoxb" not in message and "bot" not in message.lower()
 
     async def test_not_in_channel_speaks_to_the_user_not_a_bot(self, slack, api) -> None:
@@ -349,7 +349,7 @@ class TestDirectMessages:
         data = failure(await slack.get_dm_history("ann@example.com"))
 
         assert data["error"] == "missing_scope"
-        assert "Reconnect the Slack toolset" in explanation(data)
+        assert "Authenticate Slack again under Your actions" in explanation(data)
         assert api.called("conversations.open") == []
 
     @pytest.mark.xfail(strict=True, reason=(
@@ -593,7 +593,7 @@ class TestPeopleAndChannelDetails:
 
         data = failure(await slack.get_user_groups())
 
-        assert "Reconnect the Slack toolset" in explanation(data)
+        assert "Authenticate Slack again under Your actions" in explanation(data)
 
     async def test_user_group_info_finds_the_group_by_id(self, slack, api) -> None:
         # Slack has no usergroups.info method; the group comes from usergroups.list.
@@ -819,7 +819,7 @@ class TestPartialListsKeepTheirGuidance:
         ok, data = result(await slack.get_users_list())
 
         assert ok is True
-        assert "only part" in data["message"] and "Reconnect the Slack toolset" in data["message"]
+        assert "only part" in data["message"] and "Authenticate Slack again under Your actions" in data["message"]
 
     async def test_partial_search_keeps_the_permission_guidance(self, slack, api) -> None:
         api.on("users.list", members_page([ANN], "c2"), slack_error("missing_scope"))

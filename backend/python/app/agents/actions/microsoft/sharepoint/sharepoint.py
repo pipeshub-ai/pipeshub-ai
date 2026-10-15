@@ -191,7 +191,7 @@ class GetNotebookPageContentInput(BaseModel):
 # Toolset registration
 # ---------------------------------------------------------------------------
 
-_RECONNECT_STEP = "Reconnect the SharePoint toolset in Settings > Toolsets and try again."
+_RECONNECT_STEP = "Authenticate SharePoint again under Your actions, then try again."
 _KIOTA_UNMAPPED = "The server returned an unexpected status code"
 _STATUS_SUFFIX = re.compile(r"\s*\(status \d{3}\)$")
 
@@ -363,7 +363,7 @@ class SharePoint:
                 "error": (
                     "SharePoint toolset is not authenticated. "
                     "Please complete the OAuth flow first. "
-                    "Go to Settings > Toolsets to authenticate your SharePoint account."
+                    "Authenticate your SharePoint account under Your actions."
                 )
             })
 
@@ -379,7 +379,7 @@ class SharePoint:
                 "error": (
                     "SharePoint toolset is not authenticated. "
                     "Please complete the OAuth flow first. "
-                    "Go to Settings > Toolsets to authenticate your SharePoint account."
+                    "Authenticate your SharePoint account under Your actions."
                 )
             })
 

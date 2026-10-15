@@ -619,7 +619,7 @@ class TestFailuresInPlainLanguage:
         api.on("GET", REPO_PATH, (401, {"message": "Bad credentials", "documentation_url": "https://docs.github.com/rest"}))
         message = err(await github.get_repository("acme", "web"))
         assert "did not accept the saved sign-in" in message
-        assert "Reconnect the GitHub toolset" in message
+        assert "Authenticate GitHub again under Your actions" in message
 
     @pytest.mark.asyncio
     async def test_missing_repository_says_how_to_find_the_right_one(self, github, api) -> None:
