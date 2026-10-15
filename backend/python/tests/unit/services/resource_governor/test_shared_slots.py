@@ -18,7 +18,25 @@ from app.services.resource_governor.shared_slots import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _close_shared_slots(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each ``SharedSlots`` keeps its files open; close them so a run of
+    these tests does not exhaust descriptors for the tests after it."""
+    opened: list[SharedSlots] = []
+    original = SharedSlots.__init__
+
+    def tracking_init(self: SharedSlots, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)
+        opened.append(self)
+
+    monkeypatch.setattr(SharedSlots, "__init__", tracking_init)
+    yield
+    for slots in opened:
+        slots.close()
 
 
 def _hold_all(slots: SharedSlots, limit: int) -> list[SlotHold]:
@@ -121,14 +139,42 @@ class TestSharedSlots:
             if holder.stdout is not None:
                 holder.stdout.close()
 
-    def test_a_removed_directory_is_made_again(self, tmp_path: Path) -> None:
+    def test_slots_held_when_the_directory_is_removed_still_count(
+        self, tmp_path: Path
+    ) -> None:
+        """A lock belongs to the open file, not its name: workers already
+        running keep counting each other's slots after a cleaner removes the
+        directory, instead of filling a new one up to the limit again."""
         directory = tmp_path / "slots"
-        slots = SharedSlots(directory, 2)
+        one, two = SharedSlots(directory, 4), SharedSlots(directory, 4)
+        held = [one.try_acquire(2), two.try_acquire(2)]
+        assert all(hold is not None for hold in held)
         for name in os.listdir(directory):
             os.unlink(directory / name)
         directory.rmdir()
-        assert slots.try_acquire(2) is not None
-        assert directory.is_dir()
+
+        assert one.try_acquire(2) is None
+        assert two.try_acquire(2) is None
+        held[0].release()
+        assert two.try_acquire(2) is not None
+
+    def test_each_worker_holds_the_directory_against_cleaners(self, tmp_path: Path) -> None:
+        """``systemd-tmpfiles`` does not clean a directory with a BSD lock on it."""
+        slots = SharedSlots(tmp_path, 1)
+        directory = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(directory, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(directory)
+        assert slots.capacity == 1
+
+    def test_closing_gives_every_held_slot_back(self, tmp_path: Path) -> None:
+        one, two = SharedSlots(tmp_path, 2), SharedSlots(tmp_path, 2)
+        assert one.try_acquire(2, count=2) is not None
+        assert two.try_acquire(2) is None
+        one.close()
+        assert two.try_acquire(2, count=2) is not None
 
     def test_an_unusable_directory_turns_sharing_off(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture

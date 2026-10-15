@@ -22,7 +22,25 @@ from app.services.resource_governor.tiers import XL_HEAVY_BYTES
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _close_shared_slots(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Each ``SharedSlots`` keeps its files open; close them so a run of
+    these tests does not exhaust descriptors for the tests after it."""
+    opened: list[SharedSlots] = []
+    original = SharedSlots.__init__
+
+    def tracking_init(self: SharedSlots, *args: object, **kwargs: object) -> None:
+        original(self, *args, **kwargs)
+        opened.append(self)
+
+    monkeypatch.setattr(SharedSlots, "__init__", tracking_init)
+    yield
+    for slots in opened:
+        slots.close()
 
 
 def _make_governor(*, env_parse: int | None = None, env_index: int = 8) -> ResourceGovernor:

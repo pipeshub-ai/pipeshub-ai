@@ -13,12 +13,20 @@ The kernel drops a lock when its holder exits, however it exits, so a worker
 that is OOM-killed mid-parse gives its slots back with it and nothing needs
 renewing or expiring. Counting the held slots and taking free ones happen
 under a mutex file, so two workers cannot both see room for the last one.
+
+Every file is opened once, when the worker starts, and locked and unlocked
+through that descriptor. A lock belongs to the open file, not to its name, so
+if something removes the directory the workers already running still count
+each other's slots. Each worker also holds a shared lock on the directory
+itself, which ``systemd-tmpfiles`` honours by not cleaning it. A worker
+started after the directory was removed regardless opens new files and does
+not see slots held on the old ones until they are released.
 """
 from __future__ import annotations
 
 import logging
 import os
-from dataclasses import dataclass, field
+import threading
 from typing import TYPE_CHECKING
 
 try:
@@ -34,23 +42,29 @@ logger = logging.getLogger(__name__)
 _MUTEX_FILE = "mutex"
 
 
-@dataclass
 class SlotHold:
     """Slots taken by one ``try_acquire``; ``release`` gives them back once."""
 
-    _fds: list[int] = field(default_factory=list)
+    def __init__(self, owner: SharedSlots | None = None, indices: list[int] | None = None) -> None:
+        self._owner = owner
+        self._indices = indices or []
 
     def release(self) -> None:
-        fds, self._fds = self._fds, []
-        for fd in fds:
-            _unlock_and_close(fd)
+        indices, self._indices = self._indices, []
+        if self._owner is not None and indices:
+            self._owner._release(indices)
 
 
-def _unlock_and_close(fd: int) -> None:
+def _try_lock(fd: int) -> bool:
     try:
-        fcntl.flock(fd, fcntl.LOCK_UN)
-    finally:
-        os.close(fd)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 class SharedSlots:
@@ -59,53 +73,37 @@ class SharedSlots:
     def __init__(self, directory: Path, capacity: int) -> None:
         if fcntl is None:
             raise OSError("shared slots need POSIX file locks")
-        self._directory = directory
         self._capacity = max(1, capacity)
+        # A lock on an open file does not conflict with itself, so this
+        # process's own holds are tracked here, and the lock keeps two threads
+        # from counting through the same descriptors at once.
+        self._lock = threading.Lock()
+        self._held_here: set[int] = set()
+        self._closed = False
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        # Fail at startup, not on the first parse, if the directory belongs to
-        # someone else or is not writable.
-        os.close(self._open(_MUTEX_FILE))
+        opened: list[int] = []
+        try:
+            self._directory_fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+            opened.append(self._directory_fd)
+            fcntl.flock(self._directory_fd, fcntl.LOCK_SH)
+            self._mutex_fd = self._open(directory, _MUTEX_FILE, opened)
+            self._slot_fds = [
+                self._open(directory, str(index), opened) for index in range(self._capacity)
+            ]
+        except BaseException:
+            for fd in opened:
+                os.close(fd)
+            raise
+
+    @staticmethod
+    def _open(directory: Path, name: str, opened: list[int]) -> int:
+        fd = os.open(directory / name, os.O_RDWR | os.O_CREAT, 0o600)
+        opened.append(fd)
+        return fd
 
     @property
     def capacity(self) -> int:
         return self._capacity
-
-    def _open(self, name: str) -> int:
-        path = self._directory / name
-        try:
-            return os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-        except FileNotFoundError:
-            # A temp cleaner removed the directory under a running service.
-            # Locks still held live on the unlinked files, so a new directory
-            # counts from zero until they are released; that is bounded by
-            # the parses already running.
-            self._directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-            return os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
-
-    def _try_lock(self, name: str) -> int | None:
-        fd = self._open(name)
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            os.close(fd)
-            return None
-        except BaseException:
-            os.close(fd)
-            raise
-        return fd
-
-    def _count_held(self, keep: list[int], want: int = 0) -> int:
-        """Count held slots; lock and append up to *want* free ones to *keep*."""
-        held = 0
-        for index in range(self._capacity):
-            fd = self._try_lock(str(index))
-            if fd is None:
-                held += 1
-            elif len(keep) < want:
-                keep.append(fd)
-            else:
-                _unlock_and_close(fd)
-        return held
 
     def try_acquire(self, limit: int, count: int = 1) -> SlotHold | None:
         """Take *count* slots if that keeps the held total within *limit*.
@@ -116,23 +114,50 @@ class SharedSlots:
         process is counting at this instant; the caller polls.
         """
         count = min(max(1, count), self._capacity)
-        mutex = self._try_lock(_MUTEX_FILE)
-        if mutex is None:
-            return None
-        taken: list[int] = []
-        try:
-            held = self._count_held(taken, want=count)
-            if len(taken) == count and (held == 0 or held + count <= limit):
-                return SlotHold(taken)
-            for fd in taken:
-                _unlock_and_close(fd)
-            return None
-        except BaseException:
-            for fd in taken:
-                _unlock_and_close(fd)
-            raise
-        finally:
-            _unlock_and_close(mutex)
+        with self._lock:
+            if not _try_lock(self._mutex_fd):
+                return None
+            taken: list[int] = []
+            try:
+                held = 0
+                for index, fd in enumerate(self._slot_fds):
+                    if index in self._held_here or not _try_lock(fd):
+                        held += 1
+                    elif len(taken) < count:
+                        taken.append(index)
+                    else:
+                        _unlock(fd)
+                if len(taken) == count and (held == 0 or held + count <= limit):
+                    self._held_here.update(taken)
+                    return SlotHold(self, taken)
+                for index in taken:
+                    _unlock(self._slot_fds[index])
+                return None
+            except BaseException:
+                for index in taken:
+                    _unlock(self._slot_fds[index])
+                raise
+            finally:
+                _unlock(self._mutex_fd)
+
+    def close(self) -> None:
+        """Close every file, which drops this process's locks with them."""
+        with self._lock:
+            if self._closed:
+                return
+            self._closed = True
+            fds = [self._directory_fd, self._mutex_fd, *self._slot_fds]
+            self._slot_fds = []
+            self._held_here.clear()
+            for fd in fds:
+                os.close(fd)
+
+    def _release(self, indices: list[int]) -> None:
+        with self._lock:
+            for index in indices:
+                if index in self._held_here:
+                    self._held_here.discard(index)
+                    _unlock(self._slot_fds[index])
 
 
 def open_shared_slots(directory: Path, capacity: int) -> SharedSlots | None:

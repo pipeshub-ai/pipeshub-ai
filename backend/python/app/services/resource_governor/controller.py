@@ -356,6 +356,9 @@ class ResourceGovernor:
             self._gates.clear()
         for gate in gates:
             gate.close()
+        slots, self._heavy_parse_slots = self._heavy_parse_slots, None
+        if slots is not None:
+            slots.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
