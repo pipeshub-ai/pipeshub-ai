@@ -42,6 +42,9 @@ TOOLS = [
             },
             "required": ["order_id"],
         },
+        # A lookup changes nothing. Without the hint PipesHub would hold the call for
+        # someone to approve, and the agent under test could never run it.
+        "annotations": {"readOnlyHint": True},
     },
 ]
 
