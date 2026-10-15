@@ -1160,7 +1160,11 @@ class WebConnector(BaseConnector):
                     **self._render_verdict_fields(),
                     "lastRun": report.to_json(),
                     # A partial crawl carries on from here next time; a finished one starts over.
-                    "resume": self._checkpoint_text() if report.outcome is RunOutcome.PARTIAL else "",
+                    "resume": (
+                        self._checkpoint_text()
+                        if report.outcome is RunOutcome.PARTIAL and self._resume_made_progress()
+                        else ""
+                    ),
                 }
             )
             self.full_sync = False
@@ -1671,6 +1675,15 @@ class WebConnector(BaseConnector):
             "external": self.follow_external, "start_path": self.restrict_to_start_path,
             "robots": self.respect_robots_txt,
         })
+
+    def _resume_made_progress(self) -> bool:
+        """False for a resumed crawl that reached no page beyond its checkpoint.
+
+        Its queue was only pages that keep failing until the time runs out (a hanging page, one that
+        is always rate limited), so resuming again would do the same on every sync and never revisit
+        the site: changed and new pages would go unseen. The next sync starts over instead.
+        """
+        return not self._resumed or self._resume is None or len(self.visited_urls) > len(self._resume.visited)
 
     def _checkpoint_text(self) -> str:
         """This crawl's progress, encoded for the sync point; empty when there is no crawl to resume."""

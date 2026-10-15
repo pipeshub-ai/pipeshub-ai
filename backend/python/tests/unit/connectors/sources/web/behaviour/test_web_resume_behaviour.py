@@ -255,3 +255,32 @@ async def test_a_sync_that_fails_before_crawling_after_a_finished_one_leaves_not
 
     assert json.loads(_saved(checkpoints)["lastRun"])["outcome"] == "failed"
     assert _saved(checkpoints)["resume"] == ""
+
+
+async def test_a_resume_left_with_only_pages_that_keep_failing_starts_over_and_sees_site_changes(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A scheduled crawl got stuck resuming the same failing pages each run, so it never revisited the
+    site: edited pages were never re-indexed and new ones never found."""
+    _site(site)
+    site.add(SLOW, Page(status=429))  # never answers, and its back-off uses up each sync's time
+    monkeypatch.setenv(MAX_RUN_HOURS_ENV, "0.005")
+    connector = await make_connector()
+    await connector.run_sync()
+    assert _saved(checkpoints)["resume"], "the first sync ran out of time, so it carries on"
+    db.mark_indexed()
+    # The start page is the one page the first sync surely stored; its links stay as they were.
+    edited, start_fetches = START_URL, site.gets(START_URL)
+    assert edited in db.pages()
+    site.html(START_URL, "Home", "/slow", *(p.removeprefix("http://site.test") for p in PAGES),
+              text="The start page changed since the first sync")
+
+    # Each sync resumes while it gets somewhere; once only the failing page is left, it starts over.
+    for _ in range(4):
+        await connector.run_sync()
+        if site.gets(START_URL) > start_fetches:
+            break
+
+    assert site.gets(START_URL) > start_fetches, "the crawl started over from the start page"
+    assert edited in [r.weburl for r in db.content_updates], "the edited page was re-indexed"
