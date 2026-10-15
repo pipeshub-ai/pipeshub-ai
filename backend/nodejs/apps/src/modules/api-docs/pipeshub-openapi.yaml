@@ -33492,12 +33492,12 @@ paths:
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
 
-        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, and `kb:read` to read it back when the project already has one. These knowledge base calls carry the caller's token.
+        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, `kb:read` to read it back when the project already has one, and `kb:delete` to delete the losing request's knowledge base after a race. These knowledge base calls carry the caller's token.
       operationId: ensureProjectKnowledgeBase
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [project:write, kb:write, kb:read]
+        - oauth2: [project:write, kb:write, kb:read, kb:delete]
       parameters:
         - name: projectId
           in: path
