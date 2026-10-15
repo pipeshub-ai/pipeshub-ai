@@ -130,8 +130,9 @@ class Tenant:
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
 
-    def add_user(self, user_id: str, email: str, name: str) -> TokenFeed:
-        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email, "accountEnabled": True})
+    def add_user(self, user_id: str, email: str, name: str, user_type: str = "Member") -> TokenFeed:
+        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email,
+                           "accountEnabled": True, "userType": user_type})
         self.db.add_active_user(email)
         drive = f"drive-{user_id.removeprefix('u-')}"
         self.cloud.on("GET", f"/v1.0/users/{user_id}/drive", {"id": drive, "webUrl": f"https://acme-my.sharepoint.com/personal/{user_id}"})
@@ -628,11 +629,29 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.ORG, "anyone_in_org", None, PermissionType.READ),
+            (EntityType.GROUP, "tenant-members", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }, "the anonymous link names nobody, so it is not stored as a grant"
+        }, "the anonymous link names nobody, so it is not stored as a grant; the organization link reaches members"
         assert db.records["f1"].is_shared is True
+
+    async def test_an_organization_link_reaches_the_tenants_members_not_its_guests(self, cloud, tenant, db, checkpoints) -> None:
+        """A guest of the tenant cannot open an organization-wide link, so the group it grants leaves guests out."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"}},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert db.user_groups["tenant-members"] == ["ana@acme.com"]
+        assert (EntityType.GROUP, "tenant-members", None, PermissionType.WRITE) in perms(db, "f1"), \
+            "an edit link carries write access"
+        assert not any(kind == EntityType.ORG for kind, *_ in perms(db, "f1"))
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")

@@ -10,6 +10,7 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
     map_msgraph_role_to_permission_type,
+    map_msgraph_roles_to_permission_type,
 )
 from app.models.permission import PermissionType
 from app.connectors.sources.microsoft.common.msgraph_client import (
@@ -22,6 +23,19 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
 # ===========================================================================
 # map_msgraph_role_to_permission_type
 # ===========================================================================
+
+
+class TestMapMsgraphRolesToPermissionType:
+    def test_the_strongest_role_wins_whatever_its_position(self) -> None:
+        assert map_msgraph_roles_to_permission_type(["read", "write"]) == PermissionType.WRITE
+        assert map_msgraph_roles_to_permission_type(["write", "owner", "read"]) == PermissionType.OWNER
+
+    def test_an_edit_link_is_write(self) -> None:
+        assert map_msgraph_roles_to_permission_type(["edit"]) == PermissionType.WRITE
+
+    def test_no_roles_reads_as_read(self) -> None:
+        assert map_msgraph_roles_to_permission_type(None) == PermissionType.READ
+        assert map_msgraph_roles_to_permission_type([]) == PermissionType.READ
 
 
 class TestMapMsgraphRoleToPermissionType:

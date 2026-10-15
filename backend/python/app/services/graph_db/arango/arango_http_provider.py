@@ -1024,6 +1024,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ["orgId"],
         )
 
+        # SINGLE: files.path (get_records_by_file_path: a delete reported by path only)
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.FILES.value,
+            ["path"],
+        )
+
         # COMPOSITE: webUrl + orgId (URL-based record lookup, get_record_by_weburl)
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
@@ -3829,6 +3835,28 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     # These will be implemented similar to ArangoDBProvider
 
 
+
+    async def get_records_by_file_path(
+        self,
+        connector_id: str,
+        path: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        query = f"""
+        FOR file IN {CollectionNames.FILES.value}
+            FILTER file.path == @path
+            LET doc = DOCUMENT({CollectionNames.RECORDS.value}, file._key)
+            FILTER doc != null AND doc.connectorId == @connector_id
+            RETURN doc
+        """
+        try:
+            results = await self.http_client.execute_aql(
+                query, bind_vars={"path": path, "connector_id": connector_id}, txn_id=transaction
+            )
+            return [Record.from_arango_base_record(self._translate_node_from_arango(doc)) for doc in results or []]
+        except Exception as e:
+            self.logger.error(f"❌ Get records by file path failed: {str(e)}")
+            raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_record_by_external_id(
         self,

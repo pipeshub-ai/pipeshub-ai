@@ -1602,6 +1602,26 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_records_by_file_path(
+        self,
+        connector_id: str,
+        path: str,
+        transaction: str | None = None,
+    ) -> list['Record']:
+        """
+        Get the records of a connector whose file node stores exactly ``path``, trashed or not.
+
+        For sources that report a delete by path only (Dropbox gives no id for a
+        deleted entry); a record already in the trash goes too when its item does.
+        Several records can share a path when the source has more than one
+        namespace, so every match is returned and the caller decides.
+
+        Raises:
+            GraphQueryError: The lookup could not be read, so an empty list would be a guess.
+        """
+        pass
+
+    @abstractmethod
     async def get_record_by_external_id(
         self,
         connector_id: str,

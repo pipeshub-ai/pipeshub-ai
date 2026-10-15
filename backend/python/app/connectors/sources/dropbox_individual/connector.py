@@ -67,6 +67,7 @@ from app.connectors.core.constants import (
 )
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
+from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
@@ -423,6 +424,14 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
+            # A delete has no id, dates or extension to filter on.
+            if isinstance(entry, DeletedMetadata):
+                await apply_deleted_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower,
+                    self._item_still_exists, self.logger,
+                )
+                return None
+
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
@@ -432,35 +441,6 @@ class DropboxIndividualConnector(BaseConnector):
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return None
-
-            # 1. Handle Deleted Items (Deletion from db not implemented yet)
-            if isinstance(entry, DeletedMetadata):
-                # return None
-                # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
-
-
-                # async with self.data_store_provider.transaction() as tx_store:
-                #     record = await tx_store.get_record_by_path(
-                #         connector_name=self.connector_name,
-                #         path=entry.path_lower,
-                #     )
-
-                # await self.data_entities_processor.on_record_deleted(
-                #     record_id=record["_key"]
-                # )
-
-
-                # return RecordUpdate(
-                #     record=None,
-                #     external_record_id=entry.id,
-                #     is_new=False,
-                #     is_updated=False,
-                #     is_deleted=True,
-                #     metadata_changed=False,
-                #     content_changed=False,
-                #     permissions_changed=False
-                # )
-                pass
 
             # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -639,6 +619,10 @@ class DropboxIndividualConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
             return None
+
+    async def _item_still_exists(self, record: Record) -> bool | None:
+        """Whether a deleted path's record still resolves by id (a move also reports a delete at the old path)."""
+        return item_still_exists(await self.data_source.files_get_metadata(path=record.external_record_id))
 
     async def _process_dropbox_items_generator(
         self,

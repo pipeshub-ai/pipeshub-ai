@@ -99,6 +99,9 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_typed_records_batch": (Rule.ALL, _BY_KEY),
     "get_file_record_by_id": (Rule.ALL, _BY_KEY),
     "get_record_by_path": (Rule.ALL, _SYNC_LOOKUP),
+    "get_records_by_file_path": (
+        Rule.ALL, "a delete reported by path only: a trashed record goes too once its item is gone",
+    ),
     "get_record_key_by_external_id": (Rule.ALL, _SYNC_LOOKUP),
     "get_record_by_conversation_index": (Rule.ALL, _SYNC_LOOKUP),
     "get_record_by_issue_key": (Rule.ALL, _SYNC_LOOKUP),

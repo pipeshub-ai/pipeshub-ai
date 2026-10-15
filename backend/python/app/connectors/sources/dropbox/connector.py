@@ -21,7 +21,7 @@ from dropbox.files import (
 )
 from dropbox.sharing import AccessLevel, LinkAudience, SharedLinkSettings
 from dropbox.team import UserSelectorArg
-from dropbox.team_log import EventCategory
+from dropbox.team_log import EventCategory, TeamEvent
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -76,6 +76,7 @@ from app.connectors.core.constants import (
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox.access import DropboxGrants, member_is_direct
 from app.connectors.sources.dropbox.common.apps import DropboxApp
+from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
@@ -107,6 +108,20 @@ from app.utils.streaming import create_stream_record_response, stream_content
 
 # from dropbox.team import GroupSelector
 
+
+
+# How far up, and how many members, a delete's existence check looks: it runs only
+# when the reporting member no longer sees the item, so it stays a handful of calls.
+_ACCESS_ANCESTOR_HOPS = 6
+_MAX_MEMBERS_TO_ASK = 5
+
+# Team-log sharing events after which an item's members are read again.
+SHARING_CHANGE_EVENTS = frozenset({
+    "shared_content_add_member",
+    "shared_content_remove_member",
+    "shared_content_change_member_role",
+    "shared_content_unshare",
+})
 
 class GroupAccessRemovalError(Exception):
     """A member removal or group deletion in the group event log that could not be saved.
@@ -388,6 +403,13 @@ class DropboxConnector(BaseConnector):
             RecordUpdate object containing the record and change information.
         """
         try:
+            # A delete has no id, dates or extension to filter on.
+            if isinstance(entry, DeletedMetadata):
+                await apply_deleted_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower,
+                    lambda record: self._team_item_still_exists(record, user_id), self.logger,
+                )
+                return None
 
             # 0. Apply date filters if provided
             if not self._pass_date_filters(entry, modified_after, modified_before, created_after, created_before):
@@ -396,37 +418,6 @@ class DropboxConnector(BaseConnector):
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return
-
-            # 1. Handle Deleted Items (Deletion from db not implemented yet)
-            if isinstance(entry, DeletedMetadata):
-                pass
-                # return None
-                # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
-
-
-                # async with self.data_store_provider.transaction() as tx_store:
-                #     record = await tx_store.get_record_by_path(
-                #         connector_id=self.connector_id,
-                #         path=entry.path_lower,
-                #     )
-
-                # print("GOING TO RUN ON_RECORD_DELETED 1: ", record["_key"], record["name"])
-                # await self.data_entities_processor.on_record_deleted(
-                #     record_id=record["_key"]
-                # )
-
-
-                # return RecordUpdate(
-                #     record=None,
-                #     external_record_id=entry.id,
-                #     is_new=False,
-                #     is_updated=False,
-                #     is_deleted=True,
-                #     metadata_changed=False,
-                #     content_changed=False,
-                #     permissions_changed=False
-                # )
-
 
             # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -700,6 +691,44 @@ class DropboxConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
             return None
+
+    async def _team_item_still_exists(self, record: Record, member_id: str) -> bool | None:
+        """Whether a deleted path's record still resolves by id for anyone who can open it.
+
+        A member who leaves a shared folder sees a delete there while the owner
+        keeps the item, so the id is asked as the reporting member first, then as
+        each member the graph says can open the record or a folder above it, and
+        the member whose sync wrote the record. Stops at the first that resolves.
+        """
+        unknown = False
+        for member in await self._members_to_ask(record, member_id):
+            answer = item_still_exists(await self.data_source.files_get_metadata(
+                path=record.external_record_id, team_member_id=member,
+            ))
+            if answer:
+                return True
+            unknown = unknown or answer is None
+        return None if unknown else False
+
+    async def _members_to_ask(self, record: Record, member_id: str) -> list[str]:
+        """The reporting member, the members granted on the record or the folders above it, and its writer."""
+        members = [member_id]
+        node: Record | None = record
+        for _ in range(_ACCESS_ANCESTOR_HOPS):
+            if node is None or len(members) > _MAX_MEMBERS_TO_ASK:
+                break
+            for user in await self.data_entities_processor.get_users_with_permission_to_node(
+                node.id, CollectionNames.RECORDS.value
+            ):
+                app_user = await self.data_entities_processor.get_app_user_by_email(user.email, self.connector_id) if user.email else None
+                if app_user and app_user.source_user_id not in members:
+                    members.append(app_user.source_user_id)
+            parent = node.parent_external_record_id
+            node = await self.data_entities_processor.get_record_by_external_id(self.connector_id, parent) if parent else None
+        writer = record.external_record_group_id
+        if writer and writer.startswith("dbmid:") and writer not in members:
+            members.append(writer)
+        return members[: _MAX_MEMBERS_TO_ASK + 1]
 
     async def _process_dropbox_items_generator(
         self, entries: List[Union[FileMetadata, FolderMetadata, DeletedMetadata]], user_id: str, user_email: str, record_group_id: str, is_person_folder: bool,
@@ -2303,11 +2332,12 @@ class DropboxConnector(BaseConnector):
                 )
                 return False
 
+            # A membership is the user's grant on the group: typed USER, as access queries expect.
             permission = Permission(
                 external_id=user.id,
                 email=user_email,
                 type=new_permission_type,
-                entity_type=EntityType.GROUP,
+                entity_type=EntityType.USER,
             )
             await self.data_entities_processor.upsert_permission_edge(
                 from_id=user.id,
@@ -2808,21 +2838,14 @@ class DropboxConnector(BaseConnector):
                         event_type = event.event_type._tag
 
                         # 1. Check for the correct, specific event types
-                        if event_type in [
-                            "shared_content_add_member",
-                            "shared_content_remove_member",
-                            "shared_content_change_member_role" # This is a likely name for role changes
-                        ]:
+                        if event_type in SHARING_CHANGE_EVENTS:
                             self.logger.info(f"Processing permission change event: {event_type}")
 
-                            # 2. Get the actor's information
-                            actor = event.actor.get_admin() if event.actor.is_admin() else event.actor.get_user()
-                            if not actor:
-                                self.logger.warning("Could not determine actor for event. Skipping.")
+                            member = self._sharing_event_member(event)
+                            if member is None:
+                                self.logger.warning(f"{event_type} names no team member to read the item as. Skipping.")
                                 continue
-
-                            team_member_id = actor.team_member_id
-                            user_email = actor.email
+                            team_member_id, user_email = member
 
                             # 3. Iterate through assets to find the file/folder ID (CORRECTED LOGIC)
                             if not event.assets:
@@ -2880,6 +2903,50 @@ class DropboxConnector(BaseConnector):
             sync_point_data={"cursor": latest_cursor_to_save}
         )
 
+    @staticmethod
+    def _sharing_event_member(event: TeamEvent) -> tuple[str, str] | None:
+        """The team member to re-read a shared item as: whose content it is (the event's context).
+
+        The actor is only a fallback. A change made through an app has an app
+        actor, which is no member, and the actor need not have access anyway.
+        """
+        context = event.context
+        if context is not None and context.is_team_member():
+            info = context.get_team_member()
+            return info.team_member_id, info.email
+        actor = event.actor
+        for is_kind, get in ((actor.is_user, actor.get_user), (actor.is_admin, actor.get_admin)):
+            if is_kind():
+                info = get()
+                if getattr(info, "team_member_id", None):
+                    return info.team_member_id, info.email
+        return None
+
+    async def _resync_descendants(
+        self, folder_external_id: str, member_id: str, member_email: str,
+        record_group_id: str, *, is_person_folder: bool,
+    ) -> None:
+        """Re-read the access of everything stored below a folder whose sharing changed.
+
+        Items under a shared folder can carry their own member edges, so re-reading
+        the folder alone leaves a removed member on them.
+        """
+        pending = [folder_external_id]
+        while pending:
+            parent = pending.pop()
+            for child in await self.data_entities_processor.get_records_by_parent(self.connector_id, parent):
+                result = await self.data_source.files_get_metadata(path=child.external_record_id, team_member_id=member_id)
+                if not result.success:
+                    self.logger.warning(f"Could not re-read {child.external_record_id} below {folder_external_id}: {result.error}")
+                    continue
+                update = await self._process_dropbox_entry(
+                    result.data, member_id, member_email, record_group_id, is_person_folder,
+                )
+                if update and update.is_updated:
+                    await self._handle_record_updates(update)
+                if isinstance(result.data, FolderMetadata):
+                    pending.append(child.external_record_id)
+
     async def _resync_record_by_external_id(
         self,
         external_id: str,
@@ -2908,12 +2975,12 @@ class DropboxConnector(BaseConnector):
                     team_folder_id=ns_id
                 )
             else:  # It's a Folder
-                # For shared folders, use ns: prefix AND provide team_folder_id
+                # An "ns:<id>" path resolves only from the member's own root: rooted at that
+                # same namespace, Dropbox answers not_found, which dropped every folder event.
                 self.logger.info(f"Fetching FolderMetadata with files/get_metadata for ns:{external_id}")
                 ns_metadata_result = await self.data_source.files_get_metadata(
                     path=f"ns:{external_id}",
                     team_member_id=team_member_id,
-                    team_folder_id=external_id
                 )
 
                 if not ns_metadata_result or not ns_metadata_result.success:
@@ -2926,8 +2993,10 @@ class DropboxConnector(BaseConnector):
                 metadata_result = await self.data_source.files_get_metadata(
                     path=file_id,
                     team_member_id=team_member_id,
-                    team_folder_id=external_id
                 )
+                if not metadata_result.success:
+                    self.logger.error(f"Could not fetch metadata for re-sync: {file_id}. Error: {metadata_result.error}")
+                    return
                 file_id = metadata_result.data.id
 
             if not metadata_result or not metadata_result.success:
@@ -2967,6 +3036,10 @@ class DropboxConnector(BaseConnector):
                 await self._handle_record_updates(record_update)
             else:
                 self.logger.info(f"Re-sync for {external_id} did not result in an update.")
+            if isinstance(entry, FolderMetadata):
+                await self._resync_descendants(
+                    entry.id, team_member_id, user_email, record_group_id, is_person_folder=is_person_folder,
+                )
 
         except Exception as e:
             self.logger.error(f"Error during single record re-sync for {external_id}: {e}", exc_info=True)

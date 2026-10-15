@@ -450,6 +450,17 @@ class TestOnUserGroupMemberAdded:
         tx.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_the_membership_edge_is_a_user_grant(self) -> None:
+        """Access queries follow only USER-typed edges into a group, as on_new_user_groups writes them."""
+        proc, tx = _make_processor()
+        tx.get_user_by_email.return_value = _make_user()
+        tx.get_user_group_by_external_id.return_value = _make_user_group()
+        tx.get_edge.return_value = None
+        await proc.on_user_group_member_added("ext-g1", "alice@x.com", PermissionType.WRITE, "conn-1")
+        (edges,), _ = tx.batch_create_edges.await_args
+        assert edges[0]["type"] == "USER"
+
+    @pytest.mark.asyncio
     async def test_exception_returns_false(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.side_effect = Exception("db down")

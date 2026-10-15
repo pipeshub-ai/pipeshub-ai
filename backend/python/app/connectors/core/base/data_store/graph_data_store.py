@@ -252,6 +252,9 @@ class GraphTransactionStore(TransactionStore):
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
 
+    async def get_records_by_file_path(self, connector_id: str, path: str) -> list[Record]:
+        return await self.graph_provider.get_records_by_file_path(connector_id, path, transaction=self.txn)
+
     async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_document(
             key, CollectionNames.RECORDS.value, transaction=self.txn, raise_on_error=raise_on_error
