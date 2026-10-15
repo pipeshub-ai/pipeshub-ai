@@ -219,7 +219,9 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["matches"] == [{"id": "m1", "name": "Bug bash testing", "aliases": ["bbt"]}]
+        (match,) = items[0]["matches"]
+        assert match["name"] == "Bug bash testing" and match["aliases"] == ["bbt"]
+        assert match["id"] != "k-bug" and len(match["id"]) == 8
         assert resolution.stats.winners_offered == 1
         assert resolution.get("topics", "Bug bash testing session").key == "k-bug"
 

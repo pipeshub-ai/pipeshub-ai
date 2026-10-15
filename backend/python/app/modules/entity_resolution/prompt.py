@@ -14,6 +14,7 @@ _SUMMARY_MAX_CHARS = 1200
 # Spellings shown per offered match; a node keeps up to MAX_TAXONOMY_ALIASES,
 # and the prompt pays for every alias of every candidate of every item.
 PROMPT_ALIASES_PER_MATCH = 10
+_HANDLE_HEX = 8
 
 _PROMPT = """# Task
 You maintain a knowledge-graph taxonomy for one organisation. A document was just classified and produced the names below. For each name decide whether it denotes the SAME concept as one of the existing entities offered next to it (its nearest matches, listed in no particular order), or the same concept as another name in this list, or a genuinely new concept.
@@ -80,14 +81,25 @@ def candidate_handles(
     """The short id the prompt shows for each offered node, by node id.
 
     A node id is a UUID, about 35 tokens the model reads for every match and
-    copies into every merge; "m1", "m2", ... cost two. Numbered in the order
-    the prompt lists them, so the number says nothing about search rank.
+    copies into every merge. The prompt shows its first 8 hex digits, longer
+    only where two offered ids share them. Opaque ids, not "m1", "m2": with
+    numbered handles the model merged a fifth less often than with UUIDs.
     """
-    handles: dict[str, str] = {}
-    for item in items:
-        for candidate in _shuffled(item, candidates.get(item.index) or ()):
-            handles.setdefault(candidate.entity_id, f"m{len(handles) + 1}")
-    return handles
+    ids = sorted({c.entity_id for item in items for c in candidates.get(item.index) or ()})
+    width = _HANDLE_HEX
+    while True:
+        handles = {node_id: _hex(node_id)[:width] for node_id in ids}
+        if len(set(handles.values())) == len(handles) or width >= 64:
+            return handles
+        width *= 2
+
+
+def _hex(node_id: str) -> str:
+    """The id's hex digits, or a digest for an id that is not a UUID."""
+    digits = node_id.replace("-", "").lower()
+    if digits and all(ch in "0123456789abcdef" for ch in digits):
+        return digits
+    return hashlib.sha256(node_id.encode()).hexdigest()
 
 
 def _shuffled(item: ExtractedName, offered: tuple[WinnerCandidate, ...]) -> list[WinnerCandidate]:

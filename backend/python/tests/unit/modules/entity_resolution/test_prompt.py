@@ -9,7 +9,7 @@ from app.modules.entity_resolution.models import (
     MergeDecisions,
     WinnerCandidate,
 )
-from app.modules.entity_resolution.prompt import build_prompt
+from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
 
 
 def _name(index, kind, raw) -> ExtractedName:
@@ -35,11 +35,12 @@ def test_items_carry_kind_and_candidates_without_scores() -> None:
     }
     prompt = build_prompt("Notes from the bug bash", items, candidates)
     rendered = _items_block(prompt)
+    handles = candidate_handles(items, candidates)
     assert rendered[0] == {
         "i": 0, "name": "Bug bash testing session", "kind": "topic",
-        "matches": [{"id": "m1", "name": "Bug bash testing", "aliases": ["bbt"]}],
+        "matches": [{"id": handles["k-bug"], "name": "Bug bash testing", "aliases": ["bbt"]}],
     }
-    assert rendered[1]["matches"] == [{"id": "m2", "name": "Manual Testing", "aliases": []}]
+    assert rendered[1]["matches"] == [{"id": handles["k-manual"], "name": "Manual Testing", "aliases": []}]
     assert rendered[1]["kind"] == "subcategory level 2"
     assert rendered[2]["matches"] == []
     assert "score" not in prompt
@@ -55,7 +56,6 @@ def test_candidate_order_is_shuffled_but_reproducible() -> None:
         rendered = _items_block(build_prompt(None, [_name(0, TOPIC, raw)], {0: offered}))
         ids = tuple(m["name"] for m in rendered[0]["matches"])
         assert sorted(ids) == ["Release 0", "Release 1", "Release 2"]
-        assert [m["id"] for m in rendered[0]["matches"]] == ["m1", "m2", "m3"]
         again = _items_block(build_prompt(None, [_name(0, TOPIC, raw)], {0: offered}))
         assert tuple(m["name"] for m in again[0]["matches"]) == ids
         orders.add(ids)
@@ -103,9 +103,8 @@ def test_aliases_shown_per_candidate_are_capped() -> None:
 
 def test_node_ids_never_reach_the_prompt() -> None:
     """A node id is a UUID the model would read for every match and copy into
-    every merge; the prompt shows a short handle, one per node."""
+    every merge; the prompt shows the first 8 hex digits, one handle per node."""
     from app.modules.entity_resolution.keys import taxonomy_node_key
-    from app.modules.entity_resolution.prompt import candidate_handles
 
     shared = WinnerCandidate(taxonomy_node_key("acme", "topics", "release notes"), "Release notes")
     other = WinnerCandidate(taxonomy_node_key("acme", "topics", "release plan"), "Release plan")
@@ -115,7 +114,8 @@ def test_node_ids_never_reach_the_prompt() -> None:
     assert shared.entity_id not in prompt and other.entity_id not in prompt
     handles = candidate_handles(items, candidates)
     assert sorted(handles) == sorted([shared.entity_id, other.entity_id])
-    assert sorted(handles.values()) == ["m1", "m2"]
+    assert handles[shared.entity_id] == shared.entity_id.replace("-", "")[:8]
+    assert len(set(handles.values())) == 2
     rendered = _items_block(prompt)
     assert rendered[1]["matches"][0]["id"] == handles[shared.entity_id]
 
@@ -130,3 +130,12 @@ def test_items_are_one_per_line() -> None:
         '{"i":1,"name":"Release plan","kind":"topic","matches":[]}',
         "]",
     ]
+
+
+def test_handles_grow_until_they_are_unique() -> None:
+    a = WinnerCandidate("abcdef01-0000-4000-8000-000000000001", "Release notes")
+    b = WinnerCandidate("abcdef01-0000-4000-8000-000000000002", "Release plan")
+    handles = candidate_handles([_name(0, TOPIC, "Release")], {0: (a, b)})
+    assert len(set(handles.values())) == 2
+    assert all(a.entity_id.replace("-", "").startswith(h) or b.entity_id.replace("-", "").startswith(h)
+               for h in handles.values())
