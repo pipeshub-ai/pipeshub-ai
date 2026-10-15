@@ -26974,7 +26974,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: OAuth token is missing the required kb:write scope
+          description: "OAuth token is missing `kb:write`, or `kb:read` when a replacement file is sent."
           content:
             application/json:
               schema:
@@ -33213,7 +33213,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`.
+          description: "Caller can see the project but has only viewer access, or has editor (not owner) access and the request includes `visibility` or `chatSharing`. Also when `visibility` changes on a project with a knowledge base and the OAuth token lacks `kb:write` (`org`) or `kb:delete` (`private`); the project is already saved by then."
         '404':
           description: Project not found or not visible to the caller.
     delete:
@@ -33254,7 +33254,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: "Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:delete`; the project is not deleted."
         '404':
           description: Project not found or not visible to the caller.
 
@@ -33521,7 +33521,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller can see the project but has only viewer access; this action needs editor.
+          description: "Caller can see the project but has only viewer access; this action needs editor. Also when the OAuth token lacks `kb:write` (create the knowledge base, grant members) or `kb:read` (read an existing one)."
         '404':
           description: Project not found or not visible to the caller.
 
@@ -33604,11 +33604,11 @@ paths:
                     items:
                       $ref: '#/components/schemas/ProjectMember'
         '400':
-          description: A `principalId` does not exist in this org's IAM service.
+          description: "A `principalId` does not exist in this org's IAM service. Also returned for every user when the OAuth token lacks `user:read`, because the user lookup is refused."
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: "Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:write`."
         '404':
           description: Project not found or not visible to the caller.
 
@@ -33665,7 +33665,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Caller has access but is not the owner.
+          description: "Caller has access but is not the owner. Also when the project has a knowledge base and the OAuth token lacks `kb:delete`; the member is already removed by then."
         '404':
           description: Project not found or not visible to the caller.
 
