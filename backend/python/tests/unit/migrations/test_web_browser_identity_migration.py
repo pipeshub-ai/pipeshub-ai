@@ -5,8 +5,11 @@ import copy
 import logging
 from types import SimpleNamespace
 
+import pytest
+
 from app.migrations.web_browser_identity_migration import (
     MIGRATION_FLAG_KEY,
+    backfill_sync_settings,
     run_web_browser_identity_backfill,
 )
 
@@ -121,14 +124,27 @@ async def test_a_connector_without_maximum_pages_keeps_the_1000_it_crawls_with()
 
 async def test_out_of_range_numbers_are_stored_as_the_crawler_clamps_them() -> None:
     """Saving any setting would otherwise be refused for a value the user never touched."""
-    over = {"depth": 25, "max_pages": "50000", "max_size_mb": 0}
+    over = {"depth": 25, "max_pages": "50000", "max_size_mb": "0"}
     config = _MemoryConfigService({_path("big"): _web_config(**over, customValues={"url": "x", **over})})
 
     await run_web_browser_identity_backfill(_container(config), _Graph(["big"]), LOGGER)
 
     sync = config.store[_path("big")]["sync"]
     for values in (sync, sync["customValues"]):
+        # The string "0" is truthy, so the crawler clamps it to 1.
         assert (values["depth"], values["max_pages"], values["max_size_mb"]) == (10, 10_000, 1)
+
+
+async def test_a_numeric_zero_is_stored_as_the_default_the_crawler_reads_it_as() -> None:
+    """The crawler reads ``int(value or default)``: 0 means 3 clicks, 1,000 pages, 10 MB, not 1."""
+    zeros = {"depth": 0, "max_pages": 0.0, "max_size_mb": 0}
+    config = _MemoryConfigService({_path("zero"): _web_config(**zeros, customValues={"url": "x", **zeros})})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["zero"]), LOGGER)
+
+    sync = config.store[_path("zero")]["sync"]
+    for values in (sync, sync["customValues"]):
+        assert (values["depth"], values["max_pages"], values["max_size_mb"]) == (3, 1000, 10)
 
 
 async def test_an_empty_form_copy_stays_empty_so_the_form_keeps_reading_every_setting() -> None:
@@ -151,3 +167,19 @@ async def test_settings_already_as_crawled_are_not_written() -> None:
     await run_web_browser_identity_backfill(_container(config), _Graph(["ok"]), LOGGER)
 
     assert config.writes == [MIGRATION_FLAG_KEY]
+
+
+def _crawled(value: object, default: int, high: int) -> int:
+    # WebConnector._load_config: int(sync.get(name) or default), then clamped to 1..high.
+    return min(max(int(value or default), 1), high)
+
+
+@pytest.mark.parametrize("raw", [None, "", 0, 0.0, "0", 1, "1", 3, "3", 7.9, -4, "-4", 25, "25", 99_999, True, False])
+@pytest.mark.parametrize("name, default, high", [("depth", 3, 10), ("max_pages", 1000, 10_000), ("max_size_mb", 10, 100)])
+def test_the_backfill_never_changes_what_the_crawler_uses(raw: object, name: str, default: int, high: int) -> None:
+    sync = {"url": "https://docs.example.org/", name: raw, "customValues": {}}
+
+    backfill_sync_settings(sync)
+
+    assert _crawled(sync[name], default, high) == _crawled(raw, default, high)
+    assert _crawled(sync[name], default, high) == sync[name] or isinstance(sync[name], str)

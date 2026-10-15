@@ -30,28 +30,31 @@ MIGRATION_FLAG_KEY = "/migrations/web_sync_settings_backfill_v2"
 SETTING = "browser_like_identity"
 # What connectors without the setting crawled with.
 LEGACY_VALUE = True
-# What the crawler uses when Maximum pages is not stored (the form's default is 100).
-LEGACY_MAX_PAGES = 1000
-# The ranges the crawler has always clamped these to.
-CLAMPED_RANGES = {"depth": (1, MAX_DEPTH_LIMIT), "max_pages": (1, MAX_PAGES_LIMIT), "max_size_mb": (1, MAX_SIZE_MB_LIMIT)}
+# What the crawler reads for each number when it is unset, empty or zero: ``int(value or default)``,
+# then clamps to the range. Only Maximum pages has a form default (100) that differs.
+CRAWLED_AS = {
+    "depth": (3, 1, MAX_DEPTH_LIMIT),
+    "max_pages": (1000, 1, MAX_PAGES_LIMIT),
+    "max_size_mb": (10, 1, MAX_SIZE_MB_LIMIT),
+}
 
 
 def _as_crawled(values: dict[str, Any]) -> bool:
-    """Store Maximum pages and the clamped numbers the crawler uses for ``values``; True when changed."""
+    """Store each number as the crawler reads it from ``values``; True when changed."""
     changed = False
-    if values.get("max_pages") in (None, ""):
-        values["max_pages"] = LEGACY_MAX_PAGES
-        changed = True
-    for name, (low, high) in CLAMPED_RANGES.items():
+    for name, (default, low, high) in CRAWLED_AS.items():
+        if name not in values and name != "max_pages":
+            continue  # unset reads as the form's default, which is what the crawler uses too
         raw = values.get(name)
-        if isinstance(raw, bool):
-            continue
         try:
-            number = int(raw)  # as the crawler reads it: "12" and 12.7 are both 12
+            number = int(raw or default)  # exactly as the crawler reads it
         except (TypeError, ValueError):
-            continue
+            continue  # a value the crawler can't read either; left for the user
         crawled = min(max(number, low), high)
-        if crawled != number or (isinstance(raw, float) and not raw.is_integer()):
+        if raw != crawled or isinstance(raw, bool):
+            # "12" stays: the form and the crawler both read it as 12.
+            if isinstance(raw, str) and raw.strip().isdigit() and int(raw) == crawled:
+                continue
             values[name] = crawled
             changed = True
     return changed
