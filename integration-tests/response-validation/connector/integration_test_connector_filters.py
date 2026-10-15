@@ -303,6 +303,18 @@ class TestUpdateConfig:
         assert auth["password"] not in resp.text
         assert_response_strictly_matches_openapi_operation(resp.json(), _UPDATE_CONFIG)
 
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_locked_connector_is_409(
+        self,
+        connectors_api: ConnectorsClient,
+        rss_connector: Any,
+        lock_connector: Callable[[str], Awaitable[None]],
+    ) -> None:
+        await lock_connector(rss_connector.connector_id)
+        resp = connectors_api.update_config(rss_connector.connector_id, {"filters": {}})
+        assert resp.status_code == 409, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _UPDATE_CONFIG, 409)
+
     def test_unknown_connector_is_404(self, connectors_api: ConnectorsClient) -> None:
         resp = connectors_api.update_config(str(uuid4()), {"sync": {"selectedStrategy": "MANUAL"}})
         assert resp.status_code == 404, resp.text
