@@ -475,7 +475,9 @@ class DocumentExtraction(Transformer):
         self.logger.warning(
             "⚠️ Structured extraction failed after all attempts. Falling back to plain LLM summary."
         )
-        return await self._fallback_summary(document)
+        # The instructions carry the summary rules, which the fallback summary follows too.
+        instructions = {"type": "text", "text": self._fill_prompt(department_list)}
+        return await self._fallback_summary([instructions, *document])
 
     async def _fallback_summary(
         self, message_content: list[dict]
