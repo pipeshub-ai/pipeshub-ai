@@ -132,6 +132,8 @@ import {
 } from '../utils/chat-error-messages';
 import {
   copySessionUpToMessage,
+  ForkChatSessionResult,
+  ForkSessionFields,
   resolveForkProjectId,
 } from '../utils/fork-conversation';
 import { ProjectService } from '../../projects/services/project.service';
@@ -3975,14 +3977,22 @@ export const updateTitle = async (
   }
 };
 
+interface ForkConversationBody {
+  id: string;
+  title: string | undefined;
+  projectId: string | undefined;
+  forkedFrom: { conversationId: string; messageId: string };
+  messageCount: number;
+  meta: { requestId: string | undefined; timestamp: string; duration: number };
+}
+
 const forkConversationResponse = (
-  conversation: IChatSessionDocument,
-  messageCount: number,
+  { conversation, messageCount }: ForkChatSessionResult,
   conversationId: string,
   messageId: string,
   requestId: string | undefined,
   startTime: number,
-) => ({
+): ForkConversationBody => ({
   id: String(conversation._id),
   title: conversation.title,
   projectId: conversation.projectId
@@ -3997,54 +4007,60 @@ const forkConversationResponse = (
   },
 });
 
-/**
- * Copy a conversation into a new private chat owned by the caller, including
- * every message up to and including `messageId`. The original is unchanged.
- */
-export const forkConversation = async (
+interface ForkTarget {
+  /** Names the kind of chat in the error log. */
+  label: string;
+  fields: Omit<ForkSessionFields, 'projectId'>;
+  findSource: (
+    orgId: string,
+    userId: string,
+    conversationId: string,
+  ) => Promise<IChatSessionDocument | null>;
+}
+
+const runFork = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
-) => {
+  target: ForkTarget,
+): Promise<void> => {
   const requestId = req.context?.requestId;
   const startTime = Date.now();
   let session: ClientSession | null = null;
   const conversationId = req.params.conversationId ?? '';
   const messageId = req.params.messageId ?? '';
   try {
+    const userId = req.user?.userId as string | undefined;
+    const orgId = req.user?.orgId as string | undefined;
     if (!conversationId || !messageId) {
       throw new BadRequestError('conversationId and messageId are required');
     }
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
 
-    // Owner only: a shared recipient's access to the original's attachments and
-    // artifacts is revoked on unshare, which would leave a fork pointing at
-    // files it can no longer open.
-    const source = await ChatSession.findOne({
-      ...buildFilter(req, orgId, userId, conversationId, true, false),
-      ...EXCLUDE_AGENT,
-    });
+    const source = await target.findSource(orgId, userId, conversationId);
     if (!source) {
       throw new NotFoundError('Conversation not found');
     }
 
-    const projectId = await resolveForkProjectId(
-      source,
-      orgId as string,
-      userId as string,
-    );
-    const performFork = (txnSession: ClientSession | null) =>
+    const fields: ForkSessionFields = {
+      ...target.fields,
+      projectId: await resolveForkProjectId(source, orgId, userId),
+    };
+    const performFork = (
+      txnSession: ClientSession | null,
+    ): Promise<ForkChatSessionResult> =>
       copySessionUpToMessage(
         source,
         messageId,
-        userId as string,
-        orgId as string,
-        { sessionType: 'chat', projectId },
+        userId,
+        orgId,
+        fields,
         txnSession,
       );
 
-    let result;
+    let result: ForkChatSessionResult;
     if (rsAvailable) {
       session = await mongoose.startSession();
       result = await session.withTransaction(() => performFork(session));
@@ -4056,21 +4072,21 @@ export const forkConversation = async (
       .status(HTTP_STATUS.CREATED)
       .json(
         forkConversationResponse(
-          result.conversation,
-          result.messageCount,
+          result,
           conversationId,
           messageId,
           requestId,
           startTime,
         ),
       );
-  } catch (error: any) {
-    logger.error('Error forking conversation', {
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    logger.error(`Error forking ${target.label}`, {
       requestId,
       conversationId,
       messageId,
-      error: error.message,
-      stack: error.stack,
+      error: failure.message,
+      stack: failure.stack,
       duration: Date.now() - startTime,
     });
     next(error);
@@ -4082,86 +4098,61 @@ export const forkConversation = async (
   }
 };
 
+/**
+ * Copy a conversation into a new private chat owned by the caller, including
+ * every message up to and including `messageId`. The original is unchanged.
+ *
+ * Owner only: a shared recipient's access to the original's attachments and
+ * artifacts is revoked on unshare, which would leave a fork pointing at files
+ * it can no longer open.
+ */
+export const forkConversation = (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> =>
+  runFork(req, res, next, {
+    label: 'conversation',
+    fields: { sessionType: 'chat' },
+    findSource: (orgId, userId, conversationId) =>
+      ChatSession.findOne({
+        ...(buildFilter(
+          req,
+          orgId,
+          userId,
+          conversationId,
+          true,
+          false,
+        ) as FilterQuery<IChatSessionDocument>),
+        ...EXCLUDE_AGENT,
+      }),
+  });
+
+/** Owner only, for the same reason as `forkConversation`. */
 export const forkAgentConversation = async (
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
-) => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  let session: ClientSession | null = null;
-  const conversationId = req.params.conversationId ?? '';
-  const messageId = req.params.messageId ?? '';
+): Promise<void> => {
   const agentKey = req.params.agentKey ?? '';
-  try {
-    if (!conversationId || !messageId || !agentKey) {
-      throw new BadRequestError(
-        'agentKey, conversationId and messageId are required',
-      );
-    }
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-
-    // Owner only, for the same reason as forkConversation.
-    const source = await ChatSession.findOne(
-      buildAgentConversationFilter(req, orgId, userId, agentKey, conversationId),
-    );
-    if (!source) {
-      throw new NotFoundError('Conversation not found');
-    }
-
-    const projectId = await resolveForkProjectId(
-      source,
-      orgId as string,
-      userId as string,
-    );
-    const performFork = (txnSession: ClientSession | null) =>
-      copySessionUpToMessage(
-        source,
-        messageId,
-        userId as string,
-        orgId as string,
-        { sessionType: 'agent', agentKey, projectId },
-        txnSession,
-      );
-
-    let result;
-    if (rsAvailable) {
-      session = await mongoose.startSession();
-      result = await session.withTransaction(() => performFork(session));
-    } else {
-      result = await performFork(null);
-    }
-
-    res
-      .status(HTTP_STATUS.CREATED)
-      .json(
-        forkConversationResponse(
-          result.conversation,
-          result.messageCount,
-          conversationId,
-          messageId,
-          requestId,
-          startTime,
-        ),
-      );
-  } catch (error: any) {
-    logger.error('Error forking agent conversation', {
-      requestId,
-      conversationId,
-      messageId,
-      agentKey,
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
-    next(error);
-  } finally {
-    if (session) {
-      await session.endSession();
-      session = null;
-    }
+  if (!agentKey) {
+    next(new BadRequestError('agentKey is required'));
+    return;
   }
+  await runFork(req, res, next, {
+    label: 'agent conversation',
+    fields: { sessionType: 'agent', agentKey },
+    findSource: (orgId, userId, conversationId) =>
+      ChatSession.findOne(
+        buildAgentConversationFilter(
+          req,
+          orgId,
+          userId,
+          agentKey,
+          conversationId,
+        ) as FilterQuery<IChatSessionDocument>,
+      ),
+  });
 };
 
 async function performFeedbackUpdate(params: {
