@@ -19,6 +19,16 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, RECORD_TYPE_COLLECTION_MAPPING
+from app.models.blocks import SemanticMetadata
+from app.modules.entity_resolution.keys import taxonomy_node_key
+from app.modules.entity_resolution.models import (
+    TOPIC,
+    EntityResolution,
+    ResolutionMode,
+    ResolvedEntity,
+)
+from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.transformers.graphdb import GraphDBTransformer
 from app.services.graph_db.taxonomy import TAXONOMY_COLLECTIONS, TAXONOMY_EDGE_COLLECTIONS
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_arango
@@ -539,3 +549,190 @@ async def test_connector_delete_sweeps_orphan_mail_without_org_id(arango) -> Non
     result = await provider.delete_connector_instance(connector_id, org_id)
     assert result.get("success") is True, result
     assert await provider.get_document(mail_key, CollectionNames.MAILS.value) is None
+
+
+def _resolution(org_id: str, name: str, *, is_new: bool, key: str | None = None) -> EntityResolution:
+    normalized = normalize_name(name)
+    resolution = EntityResolution(org_id=org_id, mode=ResolutionMode.APPLY)
+    resolution.add(ResolvedEntity(
+        kind=TOPIC,
+        key=key or taxonomy_node_key(org_id, TOPICS, normalized),
+        name=name,
+        normalized=normalized,
+        is_new=is_new,
+        decision="new" if is_new else "match",
+        extracted_names=[name],
+    ))
+    return resolution
+
+
+async def test_enrichment_after_the_record_is_gone_does_not_leave_its_new_label(arango) -> None:
+    """Indexing writes the label before it reads the record. The record is already gone."""
+    provider, org_id = arango
+    connector_id = f"{org_id}-conn"
+    record_key = f"{org_id}-rec"
+    await _seed_app(provider, connector_id, org_id)
+    await _seed_record_with_type_and_labels(
+        provider, org_id, record_key=record_key, type_collection=FILES,
+        topic_key=f"{org_id}-old-topic", category_key=f"{org_id}-old-cat",
+        connector_id=connector_id,
+    )
+    result = await provider.delete_connector_instance(connector_id, org_id)
+    assert result.get("success") is True, result
+
+    name = "Left after delete"
+    resolution = _resolution(org_id, name, is_new=True)
+    topic_key = next(iter(resolution.entries.values())).key
+    transformer = GraphDBTransformer(provider, logger)
+    with pytest.raises(Exception, match="not found"):
+        await transformer.save_metadata_to_db(
+            record_key, SemanticMetadata(topics=[name]), "vr-gone", resolution=resolution,
+        )
+    assert await provider.get_document(topic_key, TOPICS) is None
+
+
+async def test_enrichment_after_delete_keeps_a_label_another_record_still_links(arango) -> None:
+    provider, org_id = arango
+    conn_a = f"{org_id}-a"
+    conn_b = f"{org_id}-b"
+    rec_a = f"{org_id}-ra"
+    rec_b = f"{org_id}-rb"
+    shared = f"{org_id}-shared"
+    now = get_epoch_timestamp_in_ms()
+    for connector_id, title in ((conn_a, "A"), (conn_b, "B")):
+        await provider.batch_upsert_nodes([{
+            "id": connector_id, "name": title, "type": "NOTION", "appGroup": "Notion",
+            "scope": "team", "isActive": True, "orgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }], APPS)
+    await provider.http_client.execute_aql(
+        f"INSERT {{_key: @k, orgId: @o, name: 'Shared'}} INTO {TOPICS}",
+        {"k": shared, "o": org_id},
+    )
+    for record_key, connector_id in ((rec_a, conn_a), (rec_b, conn_b)):
+        await provider.batch_upsert_nodes([{
+            "id": record_key, "orgId": org_id, "recordName": record_key,
+            "externalRecordId": record_key, "recordType": "FILE", "origin": "CONNECTOR",
+            "connectorId": connector_id, "connectorName": "NOTION",
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }], RECORDS)
+        await provider.http_client.execute_aql(
+            f"INSERT {{_from: @f, _to: @t, createdAtTimestamp: 1}} INTO {BELONGS_TO_TOPIC}",
+            {"f": f"{RECORDS}/{record_key}", "t": f"{TOPICS}/{shared}"},
+        )
+
+    assert (await provider.delete_connector_instance(conn_a, org_id)).get("success") is True
+    resolution = _resolution(org_id, "Shared", is_new=True, key=shared)
+    transformer = GraphDBTransformer(provider, logger)
+    with pytest.raises(Exception, match="not found"):
+        await transformer.save_metadata_to_db(
+            rec_a, SemanticMetadata(topics=["Shared"]), "vr", resolution=resolution,
+        )
+    assert await provider.get_document(shared, TOPICS) is not None
+    kept = await provider.http_client.execute_aql(
+        f"FOR e IN {BELONGS_TO_TOPIC} FILTER e._from == @f RETURN e._to",
+        {"f": f"{RECORDS}/{rec_b}"},
+    )
+    assert kept == [f"{TOPICS}/{shared}"]
+
+
+async def test_a_record_committed_during_delete_is_removed(arango) -> None:
+    """The post-commit pass removes a record that lands after the first collect."""
+    provider, org_id = arango
+    connector_id = f"{org_id}-conn"
+    late_key = f"{org_id}-late"
+    await _seed_app(provider, connector_id, org_id)
+    now = get_epoch_timestamp_in_ms()
+    real_execute = provider.http_client.execute_aql
+    armed = True
+
+    async def execute_and_slip_in_a_record(query, bind_vars=None, txn_id=None, **kwargs):
+        nonlocal armed
+        if (
+            armed and isinstance(query, str) and "FILTER r.connectorId" in query
+            and "RETURN r._key" in query
+        ):
+            armed = False
+            await provider.batch_upsert_nodes([{
+                "id": late_key, "orgId": org_id, "recordName": "late",
+                "externalRecordId": late_key, "recordType": "FILE", "origin": "CONNECTOR",
+                "connectorId": connector_id, "connectorName": "NOTION",
+                "createdAtTimestamp": now, "updatedAtTimestamp": now,
+            }], RECORDS)
+        return await real_execute(query, bind_vars, txn_id, **kwargs)
+
+    provider.http_client.execute_aql = execute_and_slip_in_a_record
+    result = await provider.delete_connector_instance(connector_id, org_id)
+    assert result.get("success") is True, result
+    assert armed is False, "the late-record query never ran, so nothing was inserted"
+    assert (result.get("deleted_records_count") or 0) >= 1
+    assert await provider.get_document(late_key, RECORDS) is None
+
+
+async def test_a_record_written_after_delete_returns_stays(arango) -> None:
+    """A sync that commits after delete_connector_instance has returned is not seen."""
+    provider, org_id = arango
+    connector_id = f"{org_id}-conn"
+    late_key = f"{org_id}-after"
+    await _seed_app(provider, connector_id, org_id)
+    now = get_epoch_timestamp_in_ms()
+    result = await provider.delete_connector_instance(connector_id, org_id)
+    assert result.get("success") is True, result
+
+    await provider.batch_upsert_nodes([{
+        "id": late_key, "orgId": org_id, "recordName": "after",
+        "externalRecordId": late_key, "recordType": "FILE", "origin": "CONNECTOR",
+        "connectorId": connector_id, "connectorName": "NOTION",
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], RECORDS)
+    assert await provider.get_document(late_key, RECORDS) is not None
+    assert await provider.get_document(connector_id, APPS) is None
+
+
+async def test_connector_delete_keeps_a_type_doc_another_record_links_by_edge(arango) -> None:
+    """A type document whose key is not the record id stays while isOfType remains."""
+    provider, org_id = arango
+    conn_a = f"{org_id}-a"
+    conn_b = f"{org_id}-b"
+    rec_b = f"{org_id}-rb"
+    page_key = f"{org_id}-page-other-key"
+    now = get_epoch_timestamp_in_ms()
+    for connector_id, title in ((conn_a, "A"), (conn_b, "B")):
+        await provider.batch_upsert_nodes([{
+            "id": connector_id, "name": title, "type": "NOTION", "appGroup": "Notion",
+            "scope": "team", "isActive": True, "orgId": org_id,
+            "createdAtTimestamp": now, "updatedAtTimestamp": now,
+        }], APPS)
+    await provider.batch_upsert_nodes([{
+        "id": rec_b, "orgId": org_id, "recordName": "page",
+        "externalRecordId": rec_b, "recordType": "WEBPAGE", "origin": "CONNECTOR",
+        "connectorId": conn_b, "connectorName": "NOTION",
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], RECORDS)
+    await provider.http_client.execute_aql(
+        f"INSERT {{_key: @k, orgId: @o, domain: 'example.com'}} INTO {WEBPAGES}",
+        {"k": page_key, "o": org_id},
+    )
+    await provider.http_client.execute_aql(
+        f"INSERT {{_from: @f, _to: @t}} INTO {IS_OF_TYPE}",
+        {"f": f"{RECORDS}/{rec_b}", "t": f"{WEBPAGES}/{page_key}"},
+    )
+
+    result = await provider.delete_connector_instance(conn_a, org_id)
+    assert result.get("success") is True, result
+    assert await provider.get_document(page_key, WEBPAGES) is not None
+    assert await provider.get_document(rec_b, RECORDS) is not None
+
+
+async def test_connector_delete_keeps_a_merged_label_with_no_edges(arango) -> None:
+    provider, org_id = arango
+    connector_id = f"{org_id}-conn"
+    loser = f"{org_id}-merged"
+    await _seed_app(provider, connector_id, org_id)
+    await provider.http_client.execute_aql(
+        f"INSERT {{_key: @k, orgId: @o, name: 'Old', mergedInto: 'winner'}} INTO {TOPICS}",
+        {"k": loser, "o": org_id},
+    )
+    result = await provider.delete_connector_instance(connector_id, org_id)
+    assert result.get("success") is True, result
+    assert await provider.get_document(loser, TOPICS) is not None

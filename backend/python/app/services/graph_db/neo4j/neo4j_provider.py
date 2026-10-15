@@ -9247,6 +9247,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"""
                 MATCH (t:`{label}` {{orgId: $org_id}})
                 WHERE NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
                 WITH t, t.id AS id
                 DETACH DELETE t
                 RETURN id
@@ -9265,7 +9266,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 f"""
                 MATCH (t:`{label}`)
-                WHERE t.orgId IS NULL AND NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                WHERE t.orgId IS NULL
+                  AND NOT EXISTS {{ MATCH (:Record {{id: t.id}}) }}
+                  AND NOT EXISTS {{ MATCH (:Record)-[:IS_OF_TYPE]->(t) }}
                 WITH t, t.id AS id
                 DETACH DELETE t
                 RETURN id
@@ -9278,6 +9281,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"🧹 Swept {deleted} orphan type node(s) for org {org_id}"
             )
         return deleted
+
+    async def delete_taxonomy_node_if_unlinked(self, collection: str, key: str) -> bool:
+        """Remove a taxonomy node only while no live record links it."""
+        if not is_taxonomy_collection(collection) or not key or not self.client:
+            return False
+        label = collection_to_label(collection)
+        rel = edge_collection_to_relationship(TAXONOMY_EDGE_COLLECTIONS[collection])
+        results = await self.client.execute_query(
+            f"""
+            MATCH (t:`{label}` {{id: $key}})
+            WHERE t.mergedInto IS NULL
+              AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+            WITH t
+            DETACH DELETE t
+            RETURN 1 AS deleted
+            """,
+            parameters={"key": key},
+        )
+        return bool(results)
 
     async def _sweep_orphan_taxonomy_nodes_for_org(
         self, org_id: str, transaction: str | None = None
@@ -9292,7 +9314,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             results = await self.client.execute_query(
                 f"""
                 MATCH (t:`{label}` {{orgId: $org_id}})
-                WHERE NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
+                WHERE t.mergedInto IS NULL
+                  AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
                 WITH t, t.id AS id
                 DETACH DELETE t
                 RETURN id

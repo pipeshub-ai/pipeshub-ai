@@ -143,3 +143,48 @@ async def test_connector_delete_keeps_the_other_connectors_label_link(neo4j) -> 
     assert result.get("success") is True, result
     assert await provider.get_document(topic, TOPICS) is None
     assert await provider.get_document(rec_b, FILES) is None
+
+
+async def test_enrichment_after_connector_delete_does_not_leave_a_new_label(neo4j) -> None:
+    from app.models.blocks import SemanticMetadata
+    from app.modules.entity_resolution.keys import taxonomy_node_key
+    from app.modules.entity_resolution.models import (
+        TOPIC,
+        EntityResolution,
+        ResolutionMode,
+        ResolvedEntity,
+    )
+    from app.modules.entity_resolution.normalizer import normalize_name
+    from app.modules.transformers.graphdb import GraphDBTransformer
+
+    provider, org_id = neo4j
+    connector_id = f"{org_id}-conn"
+    record_key = f"{org_id}-rec"
+    now = get_epoch_timestamp_in_ms()
+    await provider.batch_upsert_nodes([{
+        "id": connector_id, "name": "Notion", "type": "NOTION", "appGroup": "Notion",
+        "scope": "team", "isActive": True, "orgId": org_id,
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], APPS)
+    await provider.batch_upsert_nodes([{
+        "id": record_key, "orgId": org_id, "recordName": "doc",
+        "externalRecordId": record_key, "recordType": "FILE", "origin": "CONNECTOR",
+        "connectorId": connector_id, "connectorName": "NOTION",
+        "createdAtTimestamp": now, "updatedAtTimestamp": now,
+    }], RECORDS)
+    result = await provider.delete_connector_instance(connector_id, org_id)
+    assert result.get("success") is True, result
+
+    name = "Left after delete"
+    normalized = normalize_name(name)
+    key = taxonomy_node_key(org_id, TOPICS, normalized)
+    resolution = EntityResolution(org_id=org_id, mode=ResolutionMode.APPLY)
+    resolution.add(ResolvedEntity(
+        kind=TOPIC, key=key, name=name, normalized=normalized,
+        is_new=True, decision="new", extracted_names=[name],
+    ))
+    with pytest.raises(Exception, match="not found"):
+        await GraphDBTransformer(provider, logger).save_metadata_to_db(
+            record_key, SemanticMetadata(topics=[name]), "vr", resolution=resolution,
+        )
+    assert await provider.get_document(key, TOPICS) is None

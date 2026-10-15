@@ -10002,6 +10002,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR d IN @@collection
                     FILTER d.orgId == @org_id
                     FILTER DOCUMENT(CONCAT(@records, '/', d._key)) == null
+                    FILTER LENGTH(
+                        FOR e IN @@is_of_type
+                            FILTER e._to == d._id
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
                     REMOVE d IN @@collection
                     RETURN 1
                 """,
@@ -10009,6 +10015,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "@collection": collection,
                     "org_id": org_id,
                     "records": CollectionNames.RECORDS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 },
                 txn_id=transaction,
             )
@@ -10025,12 +10032,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """
                 FOR d IN @@collection
                     FILTER DOCUMENT(CONCAT(@records, '/', d._key)) == null
+                    FILTER LENGTH(
+                        FOR e IN @@is_of_type
+                            FILTER e._to == d._id
+                            LIMIT 1
+                            RETURN 1
+                    ) == 0
                     REMOVE d IN @@collection
                     RETURN 1
                 """,
                 bind_vars={
                     "@collection": collection,
                     "records": CollectionNames.RECORDS.value,
+                    "@is_of_type": CollectionNames.IS_OF_TYPE.value,
                 },
                 txn_id=transaction,
             )
@@ -10040,6 +10054,44 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"🧹 Swept {deleted} orphan type document(s) for org {org_id}"
             )
         return deleted
+
+    async def delete_taxonomy_node_if_unlinked(self, collection: str, key: str) -> bool:
+        """Remove a taxonomy node only while no live record links it.
+
+        One statement, so a belongsTo edge that is already committed keeps the
+        node. A merge loser (mergedInto set) is left for the redirect.
+        """
+        if not is_taxonomy_collection(collection) or not key:
+            return False
+        edge_collection = TAXONOMY_EDGE_COLLECTIONS[collection]
+        results = await self.http_client.execute_aql(
+            """
+            LET node = DOCUMENT(@@collection, @key)
+            FILTER node != null AND node.mergedInto == null
+            FILTER LENGTH(
+                FOR e IN @@edge
+                    FILTER e._to == node._id
+                    FILTER DOCUMENT(e._from) != null
+                    LIMIT 1
+                    RETURN 1
+            ) == 0
+            LET removed_edges = (
+                FOR e IN @@hierarchy
+                    FILTER e._from == node._id OR e._to == node._id
+                    REMOVE e IN @@hierarchy
+                    RETURN 1
+            )
+            REMOVE node IN @@collection
+            RETURN 1
+            """,
+            bind_vars={
+                "@collection": collection,
+                "@edge": edge_collection,
+                "@hierarchy": CollectionNames.INTER_CATEGORY_RELATIONS.value,
+                "key": key,
+            },
+        )
+        return bool(results)
 
     async def _sweep_orphan_taxonomy_nodes_for_org(
         self, org_id: str, transaction: str | None = None
@@ -10058,6 +10110,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 """
                 FOR t IN @@collection
                     FILTER t.orgId == @org_id
+                    FILTER t.mergedInto == null
                     FILTER LENGTH(
                         FOR x IN @@edge
                             FILTER x._to == t._id
