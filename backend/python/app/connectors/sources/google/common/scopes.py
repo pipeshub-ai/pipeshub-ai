@@ -161,13 +161,6 @@ GOOGLE_TOOLSET_SCOPES = {
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
     ],
-    "meet": [
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/calendar.events",
-        "https://www.googleapis.com/auth/meetings.space.created",
-        # meetings.space.created only covers meetings this app created; the conference-record tools read any.
-        "https://www.googleapis.com/auth/meetings.space.readonly",
-    ],
 }
 
 # What the Gmail Workspace connector's service account asks for when it impersonates a
