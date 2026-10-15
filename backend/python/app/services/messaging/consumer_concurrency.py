@@ -518,15 +518,13 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     Light must not share the heavy ceiling: that cap is sized for Docling
     RSS, and a Jira/Slack/Markdown parse waiting on it will never occupy
     more than a handful of local LIGHT_PARSE slots, so the node-local
-    gate never sees demand and stays on its floor. With several worker
-    processes the heavy limit also follows free memory
-    (``ResourceGovernor.heavy_parse_lease_limit``).
+    gate never sees demand and stays on its floor.
     """
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
             return governor.fleet_ceilings.light
-        return governor.heavy_parse_lease_limit()
+        return governor.fleet_ceilings.heavy
     return messaging_env.max_concurrent_parsing
 
 

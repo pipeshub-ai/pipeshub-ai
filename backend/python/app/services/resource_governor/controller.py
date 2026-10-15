@@ -39,7 +39,6 @@ from app.services.resource_governor.policy import (
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
     floor_for,
-    heavy_parse_lease_limit,
     next_limits,
     resolve_ceilings,
     split_ceilings,
@@ -264,13 +263,6 @@ class ResourceGovernor:
         before ``ceilings`` split them. The cluster-wide leases are sized
         from these, since every worker takes the same ones."""
         return self._fleet_ceilings
-
-    def heavy_parse_lease_limit(self) -> int:
-        """The heavy ``parsing`` lease limit for the last sampled memory.
-        Safe from any thread."""
-        with self._stats_lock:
-            snapshot = self._last_snapshot
-        return heavy_parse_lease_limit(snapshot, self._fleet_ceilings, self._worker_count)
 
     def limit(self, pool: Pool) -> int:
         """Current adaptive limit for *pool*. Safe from any thread."""

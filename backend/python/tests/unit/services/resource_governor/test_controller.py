@@ -130,29 +130,6 @@ class TestWorkerMemoryShare:
 
 
 @pytest.mark.asyncio
-class TestHeavyParseLeaseFollowsMemory:
-    async def test_the_limit_follows_the_last_sample(self) -> None:
-        probe = ScriptedProbe([
-            _snap(mem_pressure_working_set_gb=13.0, mem_limit_gb=20.0, cpu_quota=32.0)
-        ])
-        governor = ResourceGovernor(
-            logger=logging.getLogger("test.heavy_lease"),
-            probe=probe,
-            sample_interval=1.0,
-            clock=ManualClock(),
-            worker_count=8,
-        )
-        assert governor.fleet_ceilings.heavy == 32
-        assert governor.heavy_parse_lease_limit() == 4  # 7 GiB free / 1.5
-
-        probe._snapshots = [
-            _snap(mem_pressure_working_set_gb=13.0, mem_limit_gb=64.0, cpu_quota=32.0)
-        ]
-        await governor._sample_once()
-        assert governor.heavy_parse_lease_limit() == 32
-
-
-@pytest.mark.asyncio
 class TestResourceGovernorController:
     async def test_shrink_then_ramp_with_hysteresis(self) -> None:
         """Drives ``_sample_once`` directly (rather than the background

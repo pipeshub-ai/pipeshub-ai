@@ -465,30 +465,6 @@ class TestMemoryCapsAcrossWorkerProcesses:
         ) == policy_mod.COUNT_POOL_FLOOR
 
 
-class TestHeavyParseLeaseLimit:
-    FLEET = Ceilings(heavy=32, light=256, index_heavy=64, index_light=512)
-
-    def test_several_workers_are_held_to_what_free_memory_holds(self) -> None:
-        snap = _snapshot(mem_limit_bytes=20 * 1024 ** 3, mem_working_set_bytes=13 * 1024 ** 3)
-        assert policy_mod.heavy_parse_lease_limit(snap, self.FLEET, 8) == 4
-
-    def test_never_above_the_heavy_budget(self) -> None:
-        snap = _snapshot(mem_limit_bytes=256 * 1024 ** 3, mem_working_set_bytes=1 * 1024 ** 3)
-        assert policy_mod.heavy_parse_lease_limit(snap, self.FLEET, 8) == 32
-
-    def test_exhausted_memory_still_admits_one(self) -> None:
-        snap = _snapshot(mem_limit_bytes=4 * 1024 ** 3, mem_working_set_raw_bytes=4 * 1024 ** 3)
-        assert policy_mod.heavy_parse_lease_limit(snap, self.FLEET, 8) == 1
-
-    def test_unknown_memory_keeps_the_budget(self) -> None:
-        snap = _snapshot(mem_limit_bytes=None, mem_working_set_bytes=None)
-        assert policy_mod.heavy_parse_lease_limit(snap, self.FLEET, 8) == 32
-
-    def test_one_worker_keeps_the_static_ceiling(self) -> None:
-        snap = _snapshot(mem_limit_bytes=20 * 1024 ** 3, mem_working_set_bytes=13 * 1024 ** 3)
-        assert policy_mod.heavy_parse_lease_limit(snap, self.FLEET, 1) == 32
-
-
 class TestFloorFor:
     def test_count_pool_floor_is_two_unless_ceiling_smaller(self) -> None:
         assert floor_for(Pool.HEAVY_PARSE, 12) == 2
