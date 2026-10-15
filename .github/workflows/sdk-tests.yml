@@ -180,23 +180,29 @@ jobs:
           TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
           TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
           TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
-        # Mask the OAuth client secret in this step: the header of every later step lists
-        # the $GITHUB_ENV values.
         run: |
           set -o pipefail
           uv run --no-project --with requests --with pydantic python sdk_tests/provision_sdk_test_env.py 2>&1 \
             | tee "$SDK_REPORTS_DIR/provision.log"
-          echo "::add-mask::$(sed -n 's/^PIPESHUB_CLIENT_SECRET=//p' "$GITHUB_ENV")"
 
-      # The suites get only the OAuth app the provisioning step wrote to $GITHUB_ENV.
+      # with_oauth_app.py gives each run a new OAuth app in its environment only, so the
+      # client secret is in no file, and the suites do not get the admin login.
       - name: 'Current run: generated SDKs'
         id: current
         continue-on-error: true
-        run: integration-tests/sdk_tests/run_sdk_tests.sh current "$SDK_WORK_DIR" "$SDK_REPORTS_DIR"
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
+        run: |
+          uv run --no-project --with requests --with pydantic python integration-tests/sdk_tests/with_oauth_app.py \
+            integration-tests/sdk_tests/run_sdk_tests.sh current "$SDK_WORK_DIR" "$SDK_REPORTS_DIR"
 
       - name: 'Previous run: last released SDKs'
         id: previous
         continue-on-error: true
+        env:
+          PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
+          PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
         run: |
           mapfile -t passed < <(python3 integration-tests/sdk_tests/report.py "$SDK_REPORTS_DIR" --current-passed)
           if [ ${#passed[@]} -eq 0 ]; then
@@ -204,7 +210,8 @@ jobs:
             exit 0
           fi
           integration-tests/sdk_tests/checkout_released_sdks.sh .github/sdk-test-matrix.yaml "$SDK_RELEASED_DIR" "${passed[@]}"
-          integration-tests/sdk_tests/run_sdk_tests.sh previous "$SDK_RELEASED_DIR" "$SDK_REPORTS_DIR" "${passed[@]}"
+          uv run --no-project --with requests --with pydantic python integration-tests/sdk_tests/with_oauth_app.py \
+            integration-tests/sdk_tests/run_sdk_tests.sh previous "$SDK_RELEASED_DIR" "$SDK_REPORTS_DIR" "${passed[@]}"
 
       - name: Report
         id: report

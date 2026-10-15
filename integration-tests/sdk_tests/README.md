@@ -74,17 +74,17 @@ an org, an OAuth app, AI models and a knowledge base.
 ```bash
 cd integration-tests/sdk_tests
 
-# 1. Org, OAuth app, AI models and one indexed document. Writes the PIPESHUB_* variables.
-SDK_TEST_ENV_PATH=/tmp/sdk.env python provision_sdk_test_env.py
-set -a; source /tmp/sdk.env; set +a
+# 1. Org, AI models and one indexed document.
+python provision_sdk_test_env.py
 
 # 2. Generate the SDKs and their tests.
 ./generate_sdks.sh ~/open-api /tmp/sdk-work
 
-# 3. Current run, then the previous run for the SDKs that passed.
-./run_sdk_tests.sh current /tmp/sdk-work /tmp/sdk-reports
+# 3. Current run, then the previous run for the SDKs that passed. with_oauth_app.py
+#    gives each run an OAuth app (the PIPESHUB_* variables).
+./with_oauth_app.py ./run_sdk_tests.sh current /tmp/sdk-work /tmp/sdk-reports
 ./checkout_released_sdks.sh ../../.github/sdk-test-matrix.yaml /tmp/sdk-released
-./run_sdk_tests.sh previous /tmp/sdk-released /tmp/sdk-reports
+./with_oauth_app.py ./run_sdk_tests.sh previous /tmp/sdk-released /tmp/sdk-reports
 
 # 4. Verdict and report.
 python report.py /tmp/sdk-reports --out /tmp/sdk-reports/report --releases ../../.github/sdk-test-matrix.yaml

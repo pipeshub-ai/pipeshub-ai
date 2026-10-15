@@ -3,9 +3,8 @@
 
 Creates the org and admin user, marks onboarding configured, mints one OAuth app
 (client_credentials, all scopes), adds the default LLM and embedding model, and
-indexes one document so search has something to answer from. The tests read the
-four PIPESHUB_* variables this script writes to $GITHUB_ENV and, when
-SDK_TEST_ENV_PATH is set, to that file. The workflow masks the client secret.
+indexes one document so search has something to answer from. The suites get their
+own OAuth app from with_oauth_app.py.
 
 Env vars:
     PIPESHUB_BASE_URL            default http://localhost:3000
@@ -162,14 +161,6 @@ def seed_search_document(base_url: str, token: str) -> None:
     log.info("Seed document indexed (knowledge base %s)", kb_id)
 
 
-def export_env(values: dict[str, str]) -> None:
-    lines = "".join(f"{key}={value}\n" for key, value in values.items())
-    for target in (os.getenv("GITHUB_ENV"), os.getenv("SDK_TEST_ENV_PATH")):
-        if target:
-            with open(target, "a", encoding="utf-8") as handle:
-                handle.write(lines)
-
-
 def main() -> int:
     base_url = (os.getenv("PIPESHUB_BASE_URL") or "http://localhost:3000").rstrip("/")
     email = os.getenv("PIPESHUB_TEST_USER_EMAIL", "").strip()
@@ -191,14 +182,6 @@ def main() -> int:
         base_url, client_credentials_token(base_url, client_id, client_secret)
     )
 
-    export_env(
-        {
-            "PIPESHUB_API_URL": f"{base_url}/api/v1",
-            "PIPESHUB_TOKEN_URL": f"{base_url}/api/v1/oauth2/token",
-            "PIPESHUB_CLIENT_ID": client_id,
-            "PIPESHUB_CLIENT_SECRET": client_secret,
-        }
-    )
     log.info("Provisioning complete")
     return 0
 
