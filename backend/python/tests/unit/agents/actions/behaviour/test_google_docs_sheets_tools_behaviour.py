@@ -235,7 +235,8 @@ class TestDocs:
 
         message = assert_safe_error(data)
         assert ok is False
-        assert "Reconnect the Docs toolset" in message and "Google Docs access" in message
+        assert "Authenticate Docs again under Your actions" in message and "Google Docs access" in message
+        assert "Workspace > Actions" in message
 
     async def test_unknown_document_says_how_to_find_the_id(self, docs, http) -> None:
         http.on("GET", f"{DOCS}/nope", NOT_FOUND, base="")
@@ -346,7 +347,7 @@ class TestSheets:
         ok, data = result(await sheets.get_values("s-1", "A1"))
 
         message = assert_safe_error(data)
-        assert ok is False and "Reconnect the Sheets toolset" in message and "Google Sheets access" in message
+        assert ok is False and "Authenticate Sheets again under Your actions" in message and "Google Sheets access" in message
 
     async def test_unknown_spreadsheet_says_how_to_find_the_id(self, sheets, http) -> None:
         http.on("GET", f"{SHEETS}/nope", NOT_FOUND, base="")
