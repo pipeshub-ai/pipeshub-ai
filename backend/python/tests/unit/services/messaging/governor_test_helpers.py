@@ -20,6 +20,7 @@ def make_test_governor(
     feedback: DownstreamFeedback | None = None,
     worker_count: int = 1,
     cpu_quota: float = 4.0,
+    mem_limit_gb: float = 8.0,
 ) -> ResourceGovernor:
     """A governor with deterministic ceilings: the fixed 4-CPU probe below
     derives heavy=4, and ``env_index`` caps the index total at 24, which
@@ -33,7 +34,7 @@ def make_test_governor(
         cpu_utilisation=0.1,
         cpu_throttled_ratio=0.0,
         cpu_pressure=0.0,
-        mem_limit_bytes=8 * 1024 ** 3,
+        mem_limit_bytes=int(mem_limit_gb * 1024 ** 3),
         mem_working_set_bytes=1 * 1024 ** 3,
         source="test",
     )

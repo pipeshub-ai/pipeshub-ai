@@ -105,8 +105,13 @@ class TestLeasesAcrossWorkerProcesses:
     processes queued on one process's worth of leases (8 workers configured
     for 768 records in flight were held to 71)."""
 
+    # Free memory for far more heavy parses than the budget, so the heavy
+    # parsing lease is not held below it (see the memory test below).
+    ROOMY_GB = 128.0
+
     @staticmethod
     def _governors(workers: int, **kwargs) -> tuple:
+        kwargs.setdefault("mem_limit_gb", TestLeasesAcrossWorkerProcesses.ROOMY_GB)
         one = make_test_governor(logger_name="test.lease.one", **kwargs)
         many = make_test_governor(
             logger_name="test.lease.many", worker_count=workers, **kwargs
@@ -169,11 +174,24 @@ class TestLeasesAcrossWorkerProcesses:
         assert concurrency.index_ceiling(_host(governor=governor)) == 100
 
     def test_max_concurrent_parsing_sizes_the_leases_for_every_worker_together(self) -> None:
-        governor = make_test_governor(env_parse=6, env_index=None, cpu_quota=32.0, worker_count=4)
+        governor = make_test_governor(
+            env_parse=6, env_index=None, cpu_quota=32.0, worker_count=4,
+            mem_limit_gb=self.ROOMY_GB,
+        )
         host = _host(governor=governor)
         assert governor.ceilings.heavy == 1
         assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 6
         assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 6
+
+    def test_the_heavy_parse_lease_is_held_to_what_free_memory_holds(self) -> None:
+        """Each worker keeps a floor of one heavy parse whatever its memory
+        share, so eight workers could run eight conversions on 7 GiB that
+        holds four. The lease is the one counter they share."""
+        one, many = self._governors(8, env_index=768, cpu_quota=32.0, mem_limit_gb=8.0)
+        assert many.ceilings.heavy == 4
+        assert concurrency.parse_ceiling(_host(governor=many), ParseTier.HEAVY) == 4  # 7 GiB / 1.5
+        assert concurrency.parse_ceiling(_host(governor=one), ParseTier.HEAVY) == 32
+        assert concurrency.parse_ceiling(_host(governor=many), ParseTier.LIGHT) == 256
 
     def test_a_collapsed_light_tier_keeps_a_lease_of_one(self) -> None:
         governor = make_test_governor(env_parse=1, env_index=1, worker_count=4)

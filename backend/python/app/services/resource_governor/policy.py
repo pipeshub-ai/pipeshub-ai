@@ -492,6 +492,24 @@ def split_ceilings(total: Ceilings, worker_count: int) -> Ceilings:
     )
 
 
+def heavy_parse_lease_limit(
+    snap: ResourceSnapshot, fleet: Ceilings, worker_count: int
+) -> int:
+    """The cluster-wide ``parsing`` lease limit for heavy parses.
+
+    With several worker processes each one keeps a floor of one heavy parse
+    whatever its memory share says, so under memory pressure N workers could
+    run N Docling conversions on memory that holds fewer. The lease is the
+    one counter every worker shares, so it is also held to what the cgroup's
+    free memory can hold. One worker keeps the static ceiling: its own
+    memory cap already binds, and replicas in other cgroups share this lease.
+    """
+    if worker_count <= 1:
+        return fleet.heavy
+    mem_cap = heavy_memory_cap(snap)
+    return fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap)
+
+
 def start_rate_limiter_params(reference_ceiling: int) -> tuple[float, int]:
     """``(interval, capacity)`` for a pool's ``StartRateLimiter``.
 
