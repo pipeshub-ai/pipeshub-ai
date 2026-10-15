@@ -106,9 +106,33 @@ async def test_a_merge_request_streams_comments_file_changes_and_commits(harness
     assert "Comment by bob on merge request 1" in names
     assert "System Comment by alice on merge request 1" in names
     change = next(g for g in groups if g["name"] == "block for file src/app.py")
-    assert "print('app')" in change["data"]
+    # The diff describes the change; the file itself is not indexed again.
+    assert change["data"] == "Existing file\n\nDiff content\n\n@@ -1 +1 @@"
     assert change["comments"][0][0]["text"] == "Rename this"
     assert [b["data"] for b in blocks["blocks"]] == ["Fix login bug"]
+
+
+async def test_a_merge_request_fetches_only_the_files_gitlab_gives_no_diff_for(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    diffed = [{"new_path": path, "old_path": path, "diff": "@@ -1 +1 @@\n-old\n+new", "new_file": False,
+               "deleted_file": False, "too_large": False} for path in ("README.md", "src/app.py", "src/util/helpers.py")]
+    too_large = {"new_path": ".gitignore", "old_path": ".gitignore", "diff": "", "new_file": False,
+                 "deleted_file": False, "too_large": True}
+    gitlab.add_merge_request(WEB, 1, "Touch four files", "2026-09-01T11:00:00Z", changes=[*diffed, too_large])
+    connector = await harness.sync()
+    seen_before = len(gitlab.requests)
+
+    blocks = json.loads(await body_of(await connector.stream_record(db.records[next(iter(web_mr_ids(1)))])))
+
+    streamed = gitlab.requests[seen_before:]
+    file_fetches = [r.path for r in streamed if "/repository/files/" in r.path]
+    mr_fetches = [r for r in streamed if r.method == "GET" and r.path == f"/api/v4/projects/{WEB}/merge_requests/1"]
+    assert file_fetches == [f"/api/v4/projects/{WEB}/repository/files/.gitignore"]
+    assert len(mr_fetches) == 1
+    groups = {g["name"]: g["data"] for g in blocks["block_groups"]}
+    assert "print('app')" not in groups["block for file src/app.py"]
+    assert "*.pyc" in groups["block for file .gitignore"]
+    assert groups["block for file .gitignore"].endswith("[TRUNCATED] Diff")
 
 
 async def test_reindex_refreshes_changed_issues_and_requeues_everything_else(harness, gitlab, db) -> None:
