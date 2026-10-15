@@ -548,11 +548,32 @@ async def commit_actions(
                     f"refusing to commit {path!r}: outside this run's namespace "
                     f"({GL_IT_PATH_ROOT}/{GL_IT_RUN_ID}/) and not in allow_paths"
                 )
-    return await gl_call(
-        rest.post_json, f"/projects/{enc(project)}/repository/commits",
-        {"branch": branch, "commit_message": message, "actions": actions},
-        context=f"commit {project}@{branch}", retry_server_errors=False,
-    )
+    # Concurrent runs share these branches. GitLab builds the commit on the tip it
+    # reads, and if another commit lands first the ref update fails with a 400 and
+    # nothing is committed. Posting again rebuilds on the new tip. gl_call never
+    # retries a 400.
+    for attempt in range(_MAX_ATTEMPTS):
+        try:
+            return await gl_call(
+                rest.post_json, f"/projects/{enc(project)}/repository/commits",
+                {"branch": branch, "commit_message": message, "actions": actions},
+                context=f"commit {project}@{branch}", retry_server_errors=False,
+            )
+        except GitLabHTTPError as e:
+            if not lost_commit_race(e) or attempt == _MAX_ATTEMPTS - 1:
+                raise
+            delay = _BASE_DELAY_SEC * (2**attempt) * (0.5 + random.random())
+            logger.warning(
+                "commit to %s@%s lost a race (HTTP 400); retrying on the new tip in %.1fs",
+                project, branch, delay,
+            )
+            await asyncio.sleep(delay)
+    raise AssertionError(f"commit {project}@{branch}: exhausted retries")
+
+
+def lost_commit_race(e: GitLabHTTPError) -> bool:
+    """Gitaly's reference-update conflict, as GitLab's commits API reports it."""
+    return e.status == 400 and "Please refresh and try again" in str(e)
 
 
 async def blob_sha_for_path(rest: GitLabRestClient, project: str, path: str,

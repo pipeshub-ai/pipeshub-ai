@@ -1038,8 +1038,11 @@ jobs:
           mkdir -p reports
           zip -r reports.zip reports/
 
+      # Slack is reporting only: an outage or rate limit must not turn a passing
+      # job red. A test failure still fails its own test step.
       - name: Send Slack report
         if: ${{ !cancelled() }}
+        continue-on-error: true
         id: slack-message
         uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
         with:
@@ -1148,6 +1151,7 @@ jobs:
 
       - name: Upload reports zip to Slack
         if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -1187,6 +1191,7 @@ jobs:
 
       - name: Send failed tests list to Slack thread
         if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.UNIT_FAILED != '0' || steps.test-results.outputs.UNIT_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -1254,10 +1259,9 @@ jobs:
           try:
               with urllib.request.urlopen(req) as resp:
                   print(resp.read().decode())
-          # A warning only: with a job per shard and backend, Slack's rate limit is
-          # reachable, and it must not fail a job whose tests passed.
           except urllib.error.URLError as e:
               print(f"::warning::Slack postMessage failed: {e}", file=sys.stderr)
+              sys.exit(1)
           PYEOF
 
       # A green run that skipped a connector entirely looks like a run that
