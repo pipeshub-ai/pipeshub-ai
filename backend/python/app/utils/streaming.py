@@ -3,7 +3,7 @@ import json
 import logging
 import random
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from typing import (
     Any,
     TypeVar,
@@ -20,6 +20,8 @@ from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
+from app.agent_loop_lib.transport.provider_conflicts import is_prompt_cache_param_conflict
+from app.agents.agent_loop.prompt_cache import forget_cache_params
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import map_source_status
 from app.exceptions.non_retryable import NonRetryableError
@@ -67,6 +69,7 @@ async def _ainvoke_throttled(
     config: dict | None = None,
     *,
     call_timeout: float | None = None,
+    call_kwargs: Mapping[str, Any] | None = None,
 ) -> Any:  # noqa: ANN401
     """Invoke *llm*, holding a slot in the process-wide indexing budget.
 
@@ -82,7 +85,10 @@ async def _ainvoke_throttled(
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         async with indexing_llm_slot():
             try:
-                call = llm.ainvoke(messages, config=config) if config else llm.ainvoke(messages)
+                kwargs = dict(call_kwargs or {})
+                if config:
+                    kwargs["config"] = config
+                call = llm.ainvoke(messages, **kwargs)
                 result = await (
                     asyncio.wait_for(call, timeout=call_timeout) if call_timeout else call
                 )
@@ -1140,6 +1146,7 @@ async def invoke_with_structured_output_and_reflection(
     enable_opik_tracing: bool = True,
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
+    call_kwargs: Mapping[str, Any] | None = None,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1158,6 +1165,9 @@ async def invoke_with_structured_output_and_reflection(
             and the last reflection call's timeout, instead of returning None,
             so a caller can tell a starved call from a reply that did not fit
             the schema.
+        call_kwargs: Request parameters for every call, such as a prompt
+            cache's ``CacheStrategy.finalize`` kwargs. If the provider refuses
+            one of them as a cache parameter, the call is resent without them.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1169,11 +1179,20 @@ async def invoke_with_structured_output_and_reflection(
 
     try:
         response = await _ainvoke_throttled(
-            llm_with_structured_output, messages, config=invoke_config, call_timeout=call_timeout,
+            llm_with_structured_output, messages, config=invoke_config,
+            call_timeout=call_timeout, call_kwargs=call_kwargs,
         )
     except NonRetryableError:
         raise
     except Exception as e:
+        if call_kwargs and is_prompt_cache_param_conflict(e, call_kwargs):
+            logger.warning("Prompt-cache parameters rejected; resending without them: %s", e)
+            forget_cache_params(llm)
+            return await invoke_with_structured_output_and_reflection(
+                llm, messages, schema, max_retries,
+                enable_opik_tracing=enable_opik_tracing, call_timeout=call_timeout,
+                raise_call_errors=raise_call_errors,
+            )
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
@@ -1248,7 +1267,8 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _ainvoke_throttled(
-                    llm_with_structured_output, reflection_messages, config=invoke_config, call_timeout=call_timeout,
+                    llm_with_structured_output, reflection_messages, config=invoke_config,
+                    call_timeout=call_timeout, call_kwargs=call_kwargs,
                 )
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:

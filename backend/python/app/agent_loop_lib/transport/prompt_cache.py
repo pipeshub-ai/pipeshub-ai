@@ -76,14 +76,15 @@ def anthropic_breakpoint(ttl: str = "5m") -> dict[str, str]:
     return {"type": "ephemeral", "ttl": ttl}
 
 
-def routing_key(org_id: str, conversation_id: str | None, shards: int) -> str:
+def routing_key(org_id: str, conversation_id: str | None, shards: int, *, family: str = "") -> str:
     """``prompt_cache_key`` for one conversation: the org (hashed, so no id
     leaves the process) and a shard of the conversation, so one org's traffic
     spreads over a few cache keys instead of saturating one. Stable across
-    processes, unlike ``hash()``."""
+    processes, unlike ``hash()``. ``family`` names a fixed prompt (an indexing
+    prompt), so each one warms keys of its own."""
     org = hashlib.sha256((org_id or "").encode()).hexdigest()[:12]
     shard = zlib.crc32((conversation_id or "").encode()) % max(1, shards)
-    return f"pipeshub:{org}:{shard}"
+    return f"pipeshub:{org}:{family}:{shard}" if family else f"pipeshub:{org}:{shard}"
 
 
 def anthropic_top_level_allowed(base_url: str | None) -> bool:
