@@ -45,6 +45,7 @@ _MAX_UNIT_CHARS = 3_000
 # the single-call window size, instead of costing the model a turn per five lines.
 _WINDOW_CHARS = 4_000
 _MAX_HITS = 20
+_MAX_SUBMIT_ITEMS = 100
 _MAX_RETRIES = 2
 
 
@@ -69,6 +70,8 @@ class ExtractionSession:
         self.boundary = secrets.token_hex(4)
         self.seed_count = seed_count
         self.submits = 0
+        # Submits that filled the per-call cap: the model may have more to send.
+        self.full_submits = 0
         self.retries: dict[tuple, int] = {}
         self.finished = False
         self._staging_lock = asyncio.Lock()
@@ -260,7 +263,7 @@ class SubmitEntitiesTool(_NerTool):
                 ToolParameter(
                     "entities",
                     ParameterType.ARRAY,
-                    "Entities in order of appearance, at most 100",
+                    f"Entities in order of appearance, at most {_MAX_SUBMIT_ITEMS}",
                     required=True,
                     items=wire_item_schema(),
                 ),
@@ -271,11 +274,13 @@ class SubmitEntitiesTool(_NerTool):
         items = _submitted_items(entities)
         if items is None:
             return ToolOutput(success=False, error="entities must be a list of objects")
-        if len(items) > 100:
-            return ToolOutput(success=False, error="at most 100 entities per call")
+        if len(items) > _MAX_SUBMIT_ITEMS:
+            return ToolOutput(success=False, error=f"at most {_MAX_SUBMIT_ITEMS} entities per call")
         before = len(self._session.staging)
         results = await self._session.staged(lambda: [_stage_raw(self._session, i, raw) for i, raw in enumerate(items)])
         self._session.submits += 1
+        if len(items) == _MAX_SUBMIT_ITEMS:
+            self._session.full_submits += 1
         if len(self._session.staging) == before:
             self._session.staging.empty_submits += 1
         else:

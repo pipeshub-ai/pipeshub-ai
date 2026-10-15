@@ -91,13 +91,14 @@ class AgenticExtractionStrategy:
         stop: dict[str, str | None] = {"reason": None}
 
         def _install(hooks: HookRegistry) -> None:
-            state = {"streak": 0, "staged": 0, "read": 0, "rejected": 0, "feedback": 0, "submits": 0, "all_shown": False}
+            state = {"streak": 0, "staged": 0, "read": 0, "rejected": 0, "feedback": 0, "submits": 0, "full_submits": 0, "all_shown": False}
 
             async def _pre(hook_ctx: object, next_fn: Next) -> None:
                 state["staged"] = len(session.staging)
                 state["read"] = sum(session.shown.values())
                 state["rejected"] = session.staging.rejected
                 state["submits"] = session.submits
+                state["full_submits"] = session.full_submits
                 state["all_shown"] = not session.unread()
                 await next_fn()
 
@@ -112,7 +113,9 @@ class AgenticExtractionStrategy:
                 elif rejected:
                     state["feedback"] += 1
                 progressed = grew or corrected
-                if state["all_shown"] and session.submits > state["submits"] and not rejected:
+                # A submit at the per-call cap may not be the last one, so it does not end the run.
+                more_to_send = session.full_submits > state["full_submits"]
+                if state["all_shown"] and session.submits > state["submits"] and not rejected and not more_to_send:
                     # The model had seen every block and submitted cleanly: a finish turn would only say so.
                     session.finished = True
                     stop["reason"] = "finish_ok"

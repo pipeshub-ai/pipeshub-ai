@@ -404,6 +404,24 @@ async def test_a_clean_submit_after_the_last_window_ends_the_run() -> None:
     assert {mention.block_index for mention in result.mentions} == {0, 7}
 
 
+async def test_a_submit_at_the_per_call_cap_does_not_end_the_run() -> None:
+    """A submit holds at most 100 items, so a full one may not be the last: the
+    model gets the turn it needs for the rest."""
+    units = [TextUnit(i, f"b{i}", f"Acme{i:02d} Ltd and Globex{i:02d} Inc renewed.") for i in range(60)]
+    names = [f"{org}{i:02d} {suffix}" for i in range(60) for org, suffix in (("Acme", "Ltd"), ("Globex", "Inc"))]
+    items = [{"text": name, "block": int(name[-6:-4]), "kind": "organization"} for name in names]
+    transport = ScriptedTransport([
+        _call("submit_entities", {"entities": items[:100]}, "1"),
+        _call("submit_entities", {"entities": items[100:]}, "2"),
+        _call("finish", {"reason": "done"}, "3"),
+    ])
+    result = await AgenticExtractionStrategy().extract(
+        ExtractionDocument(units=units, token_estimate=900), [], _ctx(transport),
+    )
+    assert {mention.surface for mention in result.mentions} == set(names)
+    assert result.termination_reason == "finish_ok"
+
+
 async def test_a_submit_before_the_last_window_does_not_end_the_run() -> None:
     acme = {"entities": [{"text": "Acme", "block": 0, "kind": "organization"}]}
     transport = ScriptedTransport([
