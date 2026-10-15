@@ -892,6 +892,17 @@ class GoogleDriveDataSource:
             fields='id,name,mimeType,webViewLink,parents,size',
             **kwargs
         ) # type: ignore
+        # googleapiclient retries the upload's data PUT only on 5xx/429, not on a
+        # socket timeout. Re-executing the same request asks the upload session how
+        # much it received and resumes, so a retry cannot create a second file.
+        for attempt in range(1, GOOGLE_HTTP_NUM_RETRIES + 1):
+            try:
+                return await self._execute(request)
+            except (TimeoutError, ConnectionError) as e:
+                logger.warning(
+                    "Drive media upload of %r failed (%s), resuming (retry %d of %d)",
+                    file_metadata.get("name"), e, attempt, GOOGLE_HTTP_NUM_RETRIES,
+                )
         return await self._execute(request)
 
     async def files_delete(
