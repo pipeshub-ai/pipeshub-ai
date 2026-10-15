@@ -7,7 +7,6 @@ legacy-semaphore fallback when no governor is configured).
 from __future__ import annotations
 
 import asyncio
-import threading
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -15,13 +14,13 @@ import pytest
 
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import messaging_env
-from app.services.resource_governor import Pool
+from app.services.resource_governor import Pool, ResourceGovernor
 from app.services.resource_governor.models import ParseTier
 from app.services.resource_governor.tiers import XL_HEAVY_BYTES
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
 
-def _make_governor(*, env_parse: int | None = None, env_index: int = 8):
+def _make_governor(*, env_parse: int | None = None, env_index: int = 8) -> ResourceGovernor:
     return make_test_governor(
         env_parse=env_parse, env_index=env_index, logger_name="test.consumer_concurrency.governor",
     )

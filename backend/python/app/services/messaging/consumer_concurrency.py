@@ -33,7 +33,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import (
@@ -47,7 +47,7 @@ from app.services.resource_governor.models import ParseTier, Pool
 from app.utils.loop_bridge import run_on_loop
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
     from logging import Logger
 
     from app.services.messaging.config import StreamMessage
@@ -59,6 +59,8 @@ if TYPE_CHECKING:
     from app.services.resource_governor import ResourceGovernor
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 
@@ -109,8 +111,10 @@ class ConcurrencyHost(Protocol):
 
 
 async def bridge_to_main_loop(
-    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
-) -> Any:
+    host: ConcurrencyHost,
+    coro: Coroutine[Any, Any, T],
+    timeout: float = _MAIN_LOOP_OP_TIMEOUT,
+) -> T:
     """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
     return await run_on_loop(host.main_loop, coro, timeout)
 
