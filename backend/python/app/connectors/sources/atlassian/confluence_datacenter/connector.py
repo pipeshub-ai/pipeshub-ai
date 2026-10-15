@@ -20,6 +20,7 @@ from fastapi.responses import StreamingResponse
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     AccessRule,
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -3277,18 +3278,25 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
                 self.logger.debug(
                     f"  ⚠️ Group {principal_id} not found by ID, trying name fallback"
                 )
-                # get_user_group_by_name has no processor equivalent; use tx_store directly
                 async with self.data_store_provider.transaction() as tx_store:
-                    group = await tx_store.get_user_group_by_name(
-                        connector_id=self.connector_id,
-                        group_name=principal_id,
+                    groups = await tx_store.get_nodes_by_filters(
+                        collection=CollectionNames.GROUPS.value,
+                        filters={"connectorId": self.connector_id, "name": principal_id},
+                        raise_on_error=True,
                     )
-                if group:
+                if len(groups) > 1:
+                    # Granting to one of several same-named groups could give the space to the wrong members.
+                    self.logger.warning(
+                        f"  ⚠️ Group name {principal_id} matches {len(groups)} groups, skipping permission"
+                    )
+                    return None
+                if groups and groups[0].get("externalGroupId"):
+                    external_group_id = groups[0]["externalGroupId"]
                     self.logger.debug(
-                        f"  ✓ Found group by name: {principal_id} -> {group.source_user_group_id}"
+                        f"  ✓ Found group by name: {principal_id} -> {external_group_id}"
                     )
                     return Permission(
-                        external_id=group.source_user_group_id,
+                        external_id=external_group_id,
                         type=permission_type,
                         entity_type=entity_type
                     )

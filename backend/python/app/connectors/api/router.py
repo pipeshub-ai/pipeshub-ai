@@ -4581,7 +4581,7 @@ async def get_connector_instance(
                 detail="User not authenticated"
             )
 
-        connector = await connector_registry.get_connector_instance(
+        connector = await connector_registry.get_connector_instance_for_view(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,

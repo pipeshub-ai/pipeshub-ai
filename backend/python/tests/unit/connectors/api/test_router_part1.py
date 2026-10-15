@@ -1784,7 +1784,7 @@ class TestGetConnectorInstance:
         from app.connectors.api.router import get_connector_instance
 
         registry = AsyncMock()
-        registry.get_connector_instance = AsyncMock(return_value=None)
+        registry.get_connector_instance_for_view = AsyncMock(return_value=None)
         container = MagicMock()
         container.logger = MagicMock(return_value=MagicMock())
 

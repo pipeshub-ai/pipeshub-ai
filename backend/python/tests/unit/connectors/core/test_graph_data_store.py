@@ -6,7 +6,7 @@ import logging
 import random
 from collections.abc import Callable
 from typing import Never
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -22,6 +22,7 @@ from app.connectors.core.base.data_store.graph_data_store import (
 )
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
 def create_deadlock_error() -> Exception:
@@ -993,8 +994,19 @@ class TestGraphTransactionStore:
         result = await tx_store.remove_nodes_by_field("records", "status", "deleted")
         assert result == 0
         mock_graph_provider.remove_nodes_by_field.assert_awaited_once_with(
-            "records", "status", "deleted", transaction="txn-123"
+            "records", "status", field_value="deleted", transaction="txn-123"
         )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", ["deleted", None, 0, False])
+    async def test_remove_nodes_by_field_fits_provider_signature(self, value) -> None:
+        provider = create_autospec(IGraphDBProvider, instance=True)
+        provider.logger = logging.getLogger("test_graph")
+        provider.remove_nodes_by_field.return_value = 1
+
+        assert await GraphTransactionStore(provider, "txn-123").remove_nodes_by_field(
+            "records", "status", value
+        ) == 1
 
     @pytest.mark.asyncio
     async def test_get_nodes_by_filters(self, tx_store, mock_graph_provider) -> None:
