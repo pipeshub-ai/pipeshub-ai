@@ -4255,7 +4255,7 @@ class JiraConnector(BaseConnector):
         comment_field = issue_fields.get("comment")
         if isinstance(comment_field, dict):
             for comment in comment_field.get("comments") or []:
-                if not isinstance(comment, dict):
+                if not isinstance(comment, dict) or comment.get("visibility"):
                     continue
                 c_names, c_ids = self._inline_refs_from_body(comment.get("body"))
                 filenames |= c_names
@@ -4858,6 +4858,8 @@ class JiraConnector(BaseConnector):
             if c.get("id") is not None
         }
         comment_referenced_ids: set[str] = set()
+        # A comment restricted to a role or group would reach everyone who can open the issue.
+        comments_data = [c for c in comments_data or [] if not c.get("visibility")]
 
         if comments_data:
             comment_bgs, comment_referenced_ids, _ = await self._build_comment_block_groups(

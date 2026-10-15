@@ -2565,6 +2565,24 @@ async def test_parse_issue_to_blocks_plain_string_comment_body():
 
 
 @pytest.mark.asyncio
+async def test_parse_issue_to_blocks_leaves_out_restricted_comments():
+    conn = _make_connector()
+    issue_data = {
+        "id": "10", "key": "K-1", "fields": {"summary": "T"},
+        "comments": [
+            {"id": "c1", "author": {"displayName": "A"}, "renderedBody": "<p>open</p>", "created": "2024-01-01T00:00:00.000+0000"},
+            {"id": "c2", "author": {"displayName": "B"}, "renderedBody": "<p>role secret</p>", "created": "2024-01-02T00:00:00.000+0000",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "renderedBody": "<p>group secret</p>", "created": "2024-01-03T00:00:00.000+0000",
+             "visibility": {"type": "group", "value": "jira-administrators"}},
+        ],
+    }
+    box = await conn._parse_issue_to_blocks(issue_data, issue_key="K-1", weburl="https://jira.example/browse/K-1")
+    assert {bg.source_group_id for bg in box.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+    assert "secret" not in box.model_dump_json()
+
+
+@pytest.mark.asyncio
 async def test_process_issue_attachments_for_children_creates_file_and_maps():
     conn = _make_connector()
     conn.data_source = MagicMock()

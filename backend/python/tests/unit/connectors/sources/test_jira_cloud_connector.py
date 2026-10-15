@@ -2699,6 +2699,42 @@ class TestParseIssueToBlocksCoverage:
         assert comment_bg.data == "<p>Comment 1</p>"
 
     @pytest.mark.asyncio
+    async def test_restricted_comments_are_left_out(self):
+        connector = _make_connector()
+        issue_data = {"id": "100", "fields": {"summary": "Test"}}
+        comments_data = [
+            {"id": "c1", "author": {"displayName": "A"}, "created": "2024-01-15T10:00:00.000Z"},
+            {"id": "c2", "author": {"displayName": "B"}, "created": "2024-01-16T10:00:00.000Z",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "created": "2024-01-17T10:00:00.000Z",
+             "visibility": {"type": "group", "value": "jira-admins", "identifier": "g1"}},
+        ]
+        rendered_fields = {"description": "", "comment": {"comments": [
+            {"id": "c1", "body": "<p>open</p>"},
+            {"id": "c2", "body": "<p>role secret</p>"},
+            {"id": "c3", "body": "<p>group secret</p>"},
+        ]}}
+
+        result = await connector._parse_issue_to_blocks(
+            issue_data, "PROJ-1", weburl="https://jira/browse/PROJ-1",
+            rendered_fields=rendered_fields, comments_data=comments_data,
+        )
+        assert {bg.source_group_id for bg in result.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+        assert "secret" not in result.model_dump_json()
+
+    def test_restricted_comment_images_are_not_treated_as_inline(self):
+        connector = _make_connector()
+        fields = {
+            "attachment": [{"id": "9", "filename": "s.png", "mimeType": "image/png", "size": 10}],
+            "comment": {"comments": [{"id": "c2", "body": "!s.png!",
+                                      "visibility": {"type": "role", "value": "Administrators"}}]},
+        }
+        # The attachment is still visible on the issue in Jira, so it keeps its own record.
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+        fields["comment"]["comments"][0].pop("visibility")
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"9"}
+
+    @pytest.mark.asyncio
     async def test_comment_rendered_body_fallback(self):
         """Comment HTML may arrive on the comment object itself (renderedBody) rather than in
         renderedFields.comment — that path is used when present."""
