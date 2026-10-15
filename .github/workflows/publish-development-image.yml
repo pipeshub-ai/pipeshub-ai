@@ -1,0 +1,69 @@
+name: Publish development image
+
+# This workflow is deliberately manual. It publishes a selected ref from the
+# personal fork for development deployment; it does not run fork code on every
+# pull request with Docker Hub credentials.
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: Git ref to build
+        required: true
+        type: string
+        default: fix/snowflake-connector-registration
+      image_tag:
+        description: Docker Hub tag to publish
+        required: true
+        type: string
+        default: 4f4f145f3-slim
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-development-image-${{ inputs.image_tag }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-push:
+    name: Build and push slim image
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout selected ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref }}
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push multi-architecture slim image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-slim
+            RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/pipeshub-ai:${{ inputs.image_tag }}
+          cache-from: type=gha,scope=development-image
+          cache-to: type=gha,scope=development-image,mode=max
+
+      - name: Verify published image manifest
+        run: docker buildx imagetools inspect "${{ secrets.DOCKERHUB_USERNAME }}/pipeshub-ai:${{ inputs.image_tag }}"
