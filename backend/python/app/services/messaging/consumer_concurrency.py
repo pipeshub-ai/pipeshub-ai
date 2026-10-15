@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from app.services.messaging.lease import LeaseHandle, LeaseRenewer
     from app.services.messaging.retry_manager import RetryManager
     from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.shared_slots import SlotHold
 
 logger = logging.getLogger(__name__)
 
@@ -996,6 +997,31 @@ async def parse_admission_wait(
             host.logger.debug("%s waited %.2fs for a parse slot", message_id, waited)
 
 
+# How often a heavy parse rechecks the slots its container's workers share.
+# Checking is a few local file-lock calls, and a heavy parse runs for seconds
+# to minutes, so a quarter second is cheap and adds no visible latency.
+HEAVY_PARSE_SLOT_POLL_SECONDS = 0.25
+
+
+async def _wait_for_heavy_parse_slots(
+    governor: "ResourceGovernor", cost: int, timeout: float | None
+) -> "SlotHold | None":
+    """The heavy-parse slots shared by this container's workers, or ``None``
+    once *timeout* has passed without room."""
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    while True:
+        slots = governor.try_acquire_heavy_parse_slots(cost)
+        if slots is not None:
+            return slots
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
+        else:
+            await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+
+
 async def acquire_parsing_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,
@@ -1006,6 +1032,10 @@ async def acquire_parsing_slot(
     governor when one is configured, else falling back to the single legacy
     ``parsing_semaphore`` (pre-governor behaviour, cost always 1).
 
+    A heavy parse also takes the slots this container's worker processes
+    share (``ResourceGovernor.try_acquire_heavy_parse_slots``), so together
+    they run no more Docling conversions than free memory holds.
+
     With *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
@@ -1014,9 +1044,29 @@ async def acquire_parsing_slot(
         cost = parse_cost(resolved_tier, size_bytes)
         pool = gate_pool(resolved_tier)
         gate = governor.gate(pool)
+        started = time.monotonic()
         if not await gate.acquire(cost=cost, timeout=timeout):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
-        return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
+        if pool is not Pool.HEAVY_PARSE:
+            return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
+        try:
+            slots = await _wait_for_heavy_parse_slots(
+                governor,
+                cost,
+                None if timeout is None else timeout - (time.monotonic() - started),
+            )
+        except BaseException:
+            gate.release(cost)
+            raise
+        if slots is None:
+            gate.release(cost)
+            raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
+
+        def _release() -> None:
+            slots.release()
+            gate.release(cost)
+
+        return Admission(tier=resolved_tier, cost=cost, _release=_release)
 
     legacy_semaphore = host.parsing_semaphore
     if legacy_semaphore is None:

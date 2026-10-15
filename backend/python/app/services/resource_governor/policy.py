@@ -309,6 +309,18 @@ def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | Non
     return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
 
 
+def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
+    """Heavy parses the whole cgroup may run at once: the heavy budget for all
+    of its worker processes, held to what free memory holds.
+
+    The same target one process's heavy gate walks toward (``_target_for``):
+    a parse already running is not counted back into free memory, and a
+    smaller value never revokes one.
+    """
+    mem_cap = heavy_memory_cap(snap)
+    return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
+
+
 def index_memory_cap(
     snap: ResourceSnapshot, pool: Pool, worker_count: int = 1
 ) -> int | None:

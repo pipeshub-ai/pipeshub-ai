@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock
 
 import pytest
@@ -16,8 +17,12 @@ from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import messaging_env
 from app.services.resource_governor import Pool, ResourceGovernor
 from app.services.resource_governor.models import ParseTier
+from app.services.resource_governor.shared_slots import SharedSlots
 from app.services.resource_governor.tiers import XL_HEAVY_BYTES
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _make_governor(*, env_parse: int | None = None, env_index: int = 8) -> ResourceGovernor:
@@ -357,6 +362,76 @@ class TestAcquireReleaseParsingSlot:
     def test_release_is_noop_for_none_admission(self) -> None:
         # Must not raise: called unconditionally from finally blocks.
         concurrency.release_admission(None)
+
+
+class TestHeavyParseSlotsAcrossWorkers:
+    """Two workers on a 4-CPU, 7 GiB-free container: four heavy parses for
+    the container, held on slots both workers share."""
+
+    @staticmethod
+    def _host(slots_dir: Path) -> SimpleNamespace:
+        return _host(governor=make_test_governor(worker_count=2, heavy_parse_slots_dir=slots_dir))
+
+    @staticmethod
+    def _fill(slots_dir: Path) -> tuple[SharedSlots, list]:
+        other_worker = SharedSlots(slots_dir, 4)
+        held = [other_worker.try_acquire(4) for _ in range(4)]
+        assert all(hold is not None for hold in held)
+        return other_worker, held
+
+    @pytest.mark.asyncio
+    async def test_a_heavy_parse_waits_for_a_slot_and_gives_back_its_permit(
+        self, tmp_path: Path
+    ) -> None:
+        host = self._host(tmp_path)
+        other_worker, held = self._fill(tmp_path)
+
+        with pytest.raises(concurrency.ParseAdmissionTimeout):
+            await concurrency.acquire_parsing_slot(host, ParseTier.HEAVY, 1024, timeout=0.3)
+        assert host.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+
+        held.pop().release()
+        admission = await concurrency.acquire_parsing_slot(host, ParseTier.HEAVY, 1024, timeout=1.0)
+        assert host.governor.gate(Pool.HEAVY_PARSE).in_use == 1
+        assert other_worker.try_acquire(4) is None
+
+        concurrency.release_admission(admission)
+        assert host.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+        assert other_worker.try_acquire(4) is not None
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_wait_gives_back_its_permit(self, tmp_path: Path) -> None:
+        host = self._host(tmp_path)
+        self._fill(tmp_path)
+
+        waiting = asyncio.create_task(
+            concurrency.acquire_parsing_slot(host, ParseTier.HEAVY, 1024)
+        )
+        await asyncio.sleep(0.1)
+        assert host.governor.gate(Pool.HEAVY_PARSE).in_use == 1
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert host.governor.gate(Pool.HEAVY_PARSE).in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_an_extra_large_parse_takes_two_slots(self, tmp_path: Path) -> None:
+        host = self._host(tmp_path)
+        admission = await concurrency.acquire_parsing_slot(
+            host, ParseTier.HEAVY, XL_HEAVY_BYTES + 1, timeout=1.0
+        )
+        assert admission.cost == 2
+        other_worker = SharedSlots(tmp_path, 4)
+        assert other_worker.try_acquire(4, count=2) is not None
+        assert other_worker.try_acquire(4) is None
+        concurrency.release_admission(admission)
+
+    @pytest.mark.asyncio
+    async def test_light_parses_do_not_use_the_slots(self, tmp_path: Path) -> None:
+        host = self._host(tmp_path)
+        self._fill(tmp_path)
+        admission = await concurrency.acquire_parsing_slot(host, ParseTier.LIGHT, 128, timeout=0.3)
+        concurrency.release_admission(admission)
 
 
 class TestIndexSlotReportsItsHoldTime:

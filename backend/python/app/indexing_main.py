@@ -2,9 +2,11 @@ import asyncio
 import inspect
 import logging
 import os
+import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
@@ -1746,6 +1748,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
         worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        # Every worker of this container opens the same directory; another
+        # container has its own /tmp. Per uid so a directory left by another
+        # user on a shared host cannot block startup.
+        heavy_parse_slots_dir=Path(tempfile.gettempdir())
+        / f"pipeshub-indexing-heavy-parse-slots-{os.getuid()}",
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
