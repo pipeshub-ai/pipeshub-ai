@@ -579,12 +579,15 @@ async def _rollback_attachment_records(
             )
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.post(
     "/chat/attachments/upload",
     dependencies=[
         Depends(
             require_scopes(
                 OAuthScopes.CONVERSATION_CHAT,
+                OAuthScopes.AGENT_EXECUTE,
                 service_scopes=(TokenScopes.CONVERSATION_CREATE,),
             )
         )
@@ -1189,10 +1192,12 @@ async def revoke_artifact_permissions(
     return {"revoked": revoked}
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))],
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
 async def delete_chat_attachment(
@@ -1619,7 +1624,12 @@ async def askAIStream(
     )
 
 
-@router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
+@router.post(
+    "/chat/cancel",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
+)
 async def cancel_chat_stream(
     request: Request,
     cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
