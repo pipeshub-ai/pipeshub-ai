@@ -1643,7 +1643,8 @@ class NotionConnector(BaseConnector):
             latest_edit_time = None
             should_stop = False
             cursor_restarts = 0
-            # id -> last_edited_time, so a restarted search skips work it already did.
+            # id -> last_edited_time of saved records, so a restarted search skips them but
+            # retries anything it skipped or failed to transform.
             processed_edit_times: dict[str, str | None] = {}
 
             while True:
@@ -1706,7 +1707,6 @@ class NotionConnector(BaseConnector):
 
                     if obj_id in processed_edit_times and processed_edit_times[obj_id] == last_edited_time:
                         continue
-                    processed_edit_times[obj_id] = last_edited_time
 
                     # Skip archived/trashed
                     if obj_data.get("archived") or obj_data.get("in_trash"):
@@ -1780,6 +1780,7 @@ class NotionConnector(BaseConnector):
 
                         records_with_permissions.append((record, []))
                         total_synced += 1
+                        processed_edit_times[obj_id] = last_edited_time
                         # Only advance the checkpoint watermark for successfully processed
                         # records (after parent lookup), so skips/aborts cannot hide work.
                         if last_edited_time and (

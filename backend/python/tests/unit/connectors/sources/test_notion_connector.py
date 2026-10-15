@@ -1686,6 +1686,24 @@ class TestNotionSyncObjectsByType:
         connector.pages_sync_point.update_sync_point.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_invalid_cursor_restart_retries_object_that_was_not_saved(self) -> None:
+        p1 = {"id": "p1", "last_edited_time": "2024-06-01T10:00:00Z"}
+        p2 = {"id": "p2", "last_edited_time": "2024-06-01T09:00:00Z"}
+        connector, _ = self._connector_with_search([
+            _make_api_response(data={"results": [p1], "has_more": True, "next_cursor": "c2"}),
+            _make_api_response(success=False, error=self._INVALID_CURSOR_ERROR, status=400),
+            _make_api_response(data={"results": [p1, p2], "has_more": False}),
+        ])
+        rec1, rec2 = MagicMock(), MagicMock()
+        connector._transform_to_webpage_record = AsyncMock(side_effect=[None, rec1, rec2])
+
+        await connector._sync_objects_by_type("page")
+
+        synced = [c.args[0]["id"] for c in connector._transform_to_webpage_record.await_args_list]
+        assert synced == ["p1", "p1", "p2"]
+        connector.data_entities_processor.on_new_records.assert_awaited_once_with([(rec1, []), (rec2, [])])
+
+    @pytest.mark.asyncio
     async def test_invalid_cursor_restarts_are_capped(self) -> None:
         page = _make_api_response(
             data={"results": [{"id": "p1", "last_edited_time": "t"}], "has_more": True, "next_cursor": "c2"}
