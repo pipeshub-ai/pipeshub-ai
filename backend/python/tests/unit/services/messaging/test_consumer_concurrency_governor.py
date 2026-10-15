@@ -149,8 +149,10 @@ class TestLeasesAcrossWorkerProcesses:
             ) == concurrency.index_ceiling(_host(governor=one), tier)
 
     @pytest.mark.parametrize("workers", [2, 8])
-    def test_parsing_leases_are_the_whole_budget(self, workers: int) -> None:
-        one, many = self._governors(workers, env_index=768, cpu_quota=32.0)
+    def test_parsing_leases_are_the_whole_budget(self, workers: int, tmp_path: Path) -> None:
+        one, many = self._governors(
+            workers, env_index=768, cpu_quota=32.0, heavy_parse_slots_dir=tmp_path
+        )
         for tier in (ParseTier.HEAVY, ParseTier.LIGHT):
             assert concurrency.parse_ceiling(
                 _host(governor=many), tier
@@ -159,12 +161,12 @@ class TestLeasesAcrossWorkerProcesses:
         assert concurrency.parse_ceiling(_host(governor=many), ParseTier.LIGHT) == 256
 
     def test_the_heavy_parse_lease_holds_the_total_when_each_worker_is_floored_at_one(
-        self,
+        self, tmp_path: Path
     ) -> None:
         """Four heavy parses split over eight workers floors every worker at
         one, eight in all. The lease is what keeps the container at four
         Docling working sets."""
-        governor = make_test_governor(env_index=24, worker_count=8)
+        governor = make_test_governor(env_index=24, worker_count=8, heavy_parse_slots_dir=tmp_path)
         assert governor.ceilings.heavy == 1
         assert concurrency.parse_ceiling(_host(governor=governor), ParseTier.HEAVY) == 4
 
@@ -173,8 +175,13 @@ class TestLeasesAcrossWorkerProcesses:
         assert governor.ceilings.index == 25
         assert concurrency.index_ceiling(_host(governor=governor)) == 100
 
-    def test_max_concurrent_parsing_sizes_the_leases_for_every_worker_together(self) -> None:
-        governor = make_test_governor(env_parse=6, env_index=None, cpu_quota=32.0, worker_count=4)
+    def test_max_concurrent_parsing_sizes_the_leases_for_every_worker_together(
+        self, tmp_path: Path
+    ) -> None:
+        governor = make_test_governor(
+            env_parse=6, env_index=None, cpu_quota=32.0, worker_count=4,
+            heavy_parse_slots_dir=tmp_path,
+        )
         host = _host(governor=governor)
         assert governor.ceilings.heavy == 1
         assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == 6
@@ -433,6 +440,10 @@ class TestHeavyParseSlotsAcrossWorkers:
             worker_count=8, cpu_quota=32.0, env_index=768, heavy_parse_slots_dir=tmp_path
         )
         assert concurrency.parse_ceiling(_host(governor=governor), ParseTier.HEAVY) == 32
+
+    def test_without_shared_slots_the_heavy_lease_is_one_workers_share(self) -> None:
+        governor = make_test_governor(worker_count=8, cpu_quota=32.0, env_index=768)
+        assert concurrency.parse_ceiling(_host(governor=governor), ParseTier.HEAVY) == 4
 
     def test_without_the_slots_the_heavy_lease_falls_back_to_one_workers_share(
         self, tmp_path: Path

@@ -129,13 +129,10 @@ class ResourceGovernor:
         # Without the slots nothing holds N workers' heavy parses to free
         # memory, so the cluster lease falls back to one worker's share, as
         # it was sized before the leases covered every worker.
-        slots_unavailable = (
-            heavy_parse_slots_dir is not None
-            and self._worker_count > 1
-            and self._heavy_parse_slots is None
-        )
         self._heavy_parse_lease_limit = (
-            self._ceilings.heavy if slots_unavailable else self._fleet_ceilings.heavy
+            self._ceilings.heavy
+            if self._worker_count > 1 and self._heavy_parse_slots is None
+            else self._fleet_ceilings.heavy
         )
         if self._ceilings.index_light == 0:
             # Only reachable when an explicit MAX_CONCURRENT_INDEXING is too
@@ -293,8 +290,8 @@ class ResourceGovernor:
     @property
     def heavy_parse_lease_limit(self) -> int:
         """The cluster-wide heavy ``parsing`` lease limit: the heavy budget
-        for every worker, or one worker's share when the slots that hold the
-        workers to free memory could not be opened."""
+        for every worker, or, with several workers and no shared slots to
+        hold them to free memory, one worker's share."""
         return self._heavy_parse_lease_limit
 
     def try_acquire_heavy_parse_slots(self, count: int = 1) -> SlotHold | None:
