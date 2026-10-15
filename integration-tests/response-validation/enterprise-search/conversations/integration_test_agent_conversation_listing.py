@@ -630,37 +630,45 @@ class TestAgentConversationListing:
             )
             archived_by_agent[agent_key] = conversation_id
 
-        # Other xdist workers archive under their own agents for the same user, so any page may
-        # hold one of theirs: walk every page and check each of ours turns up.
-        seen: list[str] = []
-        page = 1
-        while True:
-            resp = self._list_grouped_archived_agent_conversations(
-                params={"agentPage": str(page), "agentLimit": "1"},
-            )
-            assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
-            body = _response_json(resp)
+        # Other xdist workers archive and delete under their own agents for the same user, so
+        # any page may hold one of theirs and a walk can shift by one mid-way: walk every page,
+        # and walk again if one of ours slipped past.
+        seen: set[str] = set()
+        for _walk in range(3):
+            page = 1
+            while True:
+                resp = self._list_grouped_archived_agent_conversations(
+                    params={"agentPage": str(page), "agentLimit": "1"},
+                )
+                assert resp.status_code == 200, f"{resp.status_code}: {resp.text}"
+                body = _response_json(resp)
 
-            groups = body.get("groups")
-            assert isinstance(groups, list) and len(groups) == 1, (
-                f"Expected exactly one group on page {page}: {body!r}"
-            )
-            seen.append(groups[0].get("agentKey"))
+                pagination = body.get("agentPagination")
+                assert isinstance(pagination, dict), (
+                    f"Missing agentPagination on page {page}: {body!r}"
+                )
+                assert pagination.get("page") == page
+                assert pagination.get("limit") == 1
+                assert pagination.get("hasPrevPage") is (page > 1)
 
-            pagination = body.get("agentPagination")
-            assert isinstance(pagination, dict), (
-                f"Missing agentPagination on page {page}: {body!r}"
-            )
-            assert pagination.get("page") == page
-            assert pagination.get("limit") == 1
-            assert pagination.get("totalCount", 0) >= len(seeded_agents)
-            assert pagination.get("hasPrevPage") is (page > 1)
-            if not pagination.get("hasNextPage") or page >= 200:
+                groups = body.get("groups")
+                assert isinstance(groups, list) and len(groups) <= 1, (
+                    f"Expected at most one group on page {page}: {body!r}"
+                )
+                if not groups:
+                    # Only a page past a group deleted mid-walk may come back empty.
+                    assert page > 1, f"Expected a group on page one: {body!r}"
+                    break
+                seen.add(groups[0].get("agentKey"))
+                assert pagination.get("totalCount", 0) >= len(seeded_agents)
+                if not pagination.get("hasNextPage") or page >= 200:
+                    break
+                page += 1
+            if set(archived_by_agent) <= seen:
                 break
-            page += 1
 
-        assert set(archived_by_agent) <= set(seen), (
-            f"Not every seeded agent was paged through: seeded={list(archived_by_agent)!r} seen={seen!r}"
+        assert set(archived_by_agent) <= seen, (
+            f"Not every seeded agent was paged through: seeded={list(archived_by_agent)!r} seen={sorted(seen)!r}"
         )
 
     def test_list_grouped_archived_agent_conversations_normalizes_query_values(
