@@ -308,7 +308,7 @@ export function MessageActions({
         buildChatHref({
           agentId,
           conversationId: result.id,
-          projectId: result.projectId ?? slot.projectId,
+          projectId: result.projectId,
         }),
       );
       toast.success(t('chat.toasts.forkSuccess'));
