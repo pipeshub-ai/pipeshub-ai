@@ -1082,7 +1082,7 @@ class TestRecordMetadataSubstitution:
             )
 
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "Q3 Board Deck.pdf" in filled_prompt
         assert "FILE" in filled_prompt
         assert "{record_name}" not in filled_prompt
@@ -1123,7 +1123,7 @@ class TestRecordMetadataSubstitution:
             await ext.extract_metadata(blocks, "org-1")
 
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "(unknown)" in filled_prompt
 
     @pytest.mark.asyncio
@@ -1167,7 +1167,7 @@ class TestRecordMetadataSubstitution:
 
         assert result is not None
         messages = mock_invoke.call_args[0][1]
-        filled_prompt = messages[0].content[0]["text"]
+        filled_prompt = messages[1].content[0]["text"]
         assert "report_{final}.pdf" in filled_prompt
 
 
@@ -1199,3 +1199,79 @@ class TestDownscaleDeeper:
 
         result = _call_downscale(uri)
         assert result is None
+
+
+# =========================================================================
+# Prompt caching — the instructions are a prefix shared by every record
+# =========================================================================
+class TestCacheablePrefix:
+    """Providers cache a request's prefix only when it is byte-identical, so
+    nothing that varies per record may appear before the document."""
+
+    @staticmethod
+    async def _messages(
+        ext: object, llm: object, *, record_name: str, record_type: str, text: str, org_id: str = "org-1",
+    ) -> tuple[list, dict | None]:
+        from app.modules.transformers.document_extraction import (
+            DocumentClassification,
+            SubCategories,
+        )
+
+        fake = DocumentClassification(
+            departments=[], category="General",
+            subcategories=SubCategories(level1="", level2="", level3=""),
+            languages=["English"], topics=[], summary="Summary.",
+        )
+        config = {"isMultimodal": False, "contextLength": 128000, "configuration": {"model": "gpt-5.4"}}
+        with patch(
+            "app.modules.transformers.document_extraction.get_llm_for_role",
+            return_value=(llm, config),
+        ), patch(
+            "app.modules.transformers.document_extraction.invoke_with_structured_output_and_reflection",
+            new_callable=AsyncMock,
+            return_value=fake,
+        ) as mock_invoke:
+            await ext.classify(
+                [_make_text_block(text)], org_id, departments=["Engineering", "Sales"],
+                record_name=record_name, record_type=record_type,
+            )
+        return mock_invoke.call_args[0][1], mock_invoke.call_args.kwargs.get("call_kwargs")
+
+    @pytest.mark.asyncio
+    async def test_prefix_is_byte_identical_across_records(self) -> None:
+        ext = _build_extractor()
+        first, _ = await self._messages(
+            ext, MagicMock(), record_name="Q3 Board Deck.pdf", record_type="FILE", text="Revenue grew 12%.",
+        )
+        second, _ = await self._messages(
+            ext, MagicMock(), record_name="ENG-42 outage.md", record_type="TICKET", text="The API returned 502s.",
+        )
+        assert type(first[0]).__name__ == "SystemMessage"
+        assert first[0].content == second[0].content
+        assert "Q3 Board Deck.pdf" not in first[0].content
+        assert "Engineering" in first[0].content
+        assert "Q3 Board Deck.pdf" in first[1].content[0]["text"]
+        assert first[1].content[-1]["text"] == "Revenue grew 12%."
+
+    @pytest.mark.asyncio
+    async def test_azure_requests_name_the_extraction_cache(self) -> None:
+        from langchain_openai import AzureChatOpenAI
+
+        llm = AzureChatOpenAI(
+            azure_endpoint="https://acme.openai.azure.com", azure_deployment="gpt-5.4",
+            api_version="2025-04-01-preview", api_key="test",
+        )
+        ext = _build_extractor()
+        _, kwargs_a = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="x")
+        _, kwargs_b = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="y")
+        _, other_org = await self._messages(ext, llm, record_name="a.pdf", record_type="FILE", text="x", org_id="org-2")
+        assert kwargs_a["prompt_cache_key"].startswith("pipeshub:")
+        assert ":document-extraction:" in kwargs_a["prompt_cache_key"]
+        assert kwargs_a == kwargs_b
+        assert other_org["prompt_cache_key"] != kwargs_a["prompt_cache_key"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_providers_get_no_cache_parameters(self) -> None:
+        ext = _build_extractor()
+        _, kwargs = await self._messages(ext, MagicMock(), record_name="a.pdf", record_type="FILE", text="x")
+        assert kwargs == {}

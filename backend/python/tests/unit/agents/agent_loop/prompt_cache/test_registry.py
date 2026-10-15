@@ -184,7 +184,10 @@ class TestPromptFamily:
         assert 1 < len(keys) <= PromptCacheSettings().routing_shards
 
     def test_a_refused_model_is_not_asked_again(self) -> None:
-        from app.agents.agent_loop.prompt_cache import family_cache_strategy, forget_cache_params
+        from app.agents.agent_loop.prompt_cache import (
+            family_cache_strategy,
+            forget_cache_params,
+        )
 
         llm = _openai()
         forget_cache_params(llm)

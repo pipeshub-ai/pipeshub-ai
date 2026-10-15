@@ -8,11 +8,13 @@ from langchain_core.messages import HumanMessage
 from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
+from app.agents.agent_loop.prompt_cache import family_cache_strategy
 from app.config.constants.arangodb import DepartmentNames
 from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, SemanticMetadata
 from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
+    document_extraction_record_header,
     prompt_for_document_extraction,
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
@@ -23,6 +25,7 @@ from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 DEFAULT_CONTEXT_LENGTH = 128000
+PROMPT_FAMILY = "document-extraction"
 CONTENT_TOKEN_RATIO = 0.85
 MAX_IMAGE_DIMENSION = 2000
 
@@ -358,15 +361,18 @@ class DocumentExtraction(Transformer):
         return content
 
     @staticmethod
-    def _fill_prompt(department_list: str, record_name: str, record_type: str) -> str:
+    def _fill_prompt(department_list: str) -> str:
+        return prompt_for_document_extraction.replace("{department_list}", department_list)
+
+    @staticmethod
+    def _record_header(record_name: str, record_type: str) -> str:
         """Substitute template placeholders via `.replace()`, not `.format()`.
 
         A record name containing braces (e.g. "report_{final}.pdf") would raise
         inside `.format()`, and record names come from connector data.
         """
         return (
-            prompt_for_document_extraction
-            .replace("{department_list}", department_list)
+            document_extraction_record_header
             .replace("{record_name}", record_name or "(unknown)")
             .replace("{record_type}", record_type or "(unknown)")
         )
@@ -388,34 +394,11 @@ class DocumentExtraction(Transformer):
         """
         self.logger.debug("🎯 Extracting domain metadata (pre-fetched departments)")
         self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
-        is_multimodal_llm = config.get("isMultimodal")
-        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-        self.logger.debug(f"Context length: {context_length}")
-
         try:
             resolved_departments: List[str] = departments or [dept.value for dept in DepartmentNames]
-            department_list = "\n".join(f'     - "{dept}"' for dept in resolved_departments)
-            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
-            content = self._prepare_content(blocks, is_multimodal_llm, context_length)
-            if len(content) == 0:
-                self.logger.info("No content to process in document extraction")
-                return None
-            message_content = [
-                {"type": "text", "text": filled_prompt},
-                {"type": "text", "text": "Document Content: "},
-            ]
-            message_content.extend(content)
-            messages = [HumanMessage(content=message_content)]
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, DocumentClassification
+            return await self._classify_blocks(
+                blocks, org_id, resolved_departments, config, record_name, record_type,
             )
-            if parsed_response is not None:
-                self.logger.debug("✅ Document classification parsed successfully")
-                return parsed_response
-            self.logger.warning(
-                "⚠️ Structured extraction failed after all attempts. Falling back to summary."
-            )
-            return await self._fallback_summary(message_content)
         except Exception as e:
             self.logger.error(f"❌ Error during classify: {str(e)}")
             raise
@@ -432,61 +415,58 @@ class DocumentExtraction(Transformer):
         """
         self.logger.debug("🎯 Extracting domain metadata")
         self.llm, config = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
-        is_multimodal_llm = config.get("isMultimodal")
-        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
-
-        self.logger.debug(f"Context length: {context_length}")
-
         try:
             self.logger.debug(f"🎯 Extracting departments for org_id: {org_id}")
             departments = await self.graph_provider.get_departments(org_id)
             if not departments:
                 departments = [dept.value for dept in DepartmentNames]
-
-            department_list = "\n".join(f'     - "{dept}"' for dept in departments)
-            filled_prompt = self._fill_prompt(department_list, record_name, record_type)
-
-            # Prepare multimodal content
-            content = self._prepare_content(blocks, is_multimodal_llm, context_length)
-
-            if len(content) == 0:
-                self.logger.info("No content to process in document extraction")
-                return None
-            # Create the multimodal message
-            message_content = [
-                {
-                    "type": "text",
-                    "text": filled_prompt
-                },
-                {
-                    "type": "text",
-                    "text": "Document Content: "
-                }
-            ]
-            # Add the multimodal content
-            message_content.extend(content)
-
-            # Create the message for VLM
-            messages = [HumanMessage(content=message_content)]
-
-            # Use centralized utility with reflection
-            parsed_response = await invoke_with_structured_output_and_reflection(
-                self.llm, messages, DocumentClassification
-            )
-
-            if parsed_response is not None:
-                self.logger.debug("✅ Document classification parsed successfully")
-                return parsed_response
-
-            self.logger.warning(
-                "⚠️ Structured extraction failed after all attempts. "
-                "Falling back to plain LLM summary."
-            )
-            return await self._fallback_summary(message_content)
-
+            return await self._classify_blocks(blocks, org_id, departments, config, record_name, record_type)
         except Exception as e:
             self.logger.error(f"❌ Error during metadata extraction: {str(e)}")
             raise
+
+    async def _classify_blocks(
+        self,
+        blocks: list[Block],
+        org_id: str,
+        departments: list[str],
+        config: dict,
+        record_name: str,
+        record_type: str,
+    ) -> DocumentClassification | None:
+        context_length = config.get("contextLength") or DEFAULT_CONTEXT_LENGTH
+        self.logger.debug(f"Context length: {context_length}")
+        content = self._prepare_content(blocks, config.get("isMultimodal"), context_length)
+        if len(content) == 0:
+            self.logger.info("No content to process in document extraction")
+            return None
+        department_list = "\n".join(f'     - "{dept}"' for dept in departments)
+        document = [
+            {"type": "text", "text": self._record_header(record_name, record_type)},
+            {"type": "text", "text": "Document Content: "},
+            *content,
+        ]
+        # The instructions go first and alone, so every record of the org sends
+        # the same prefix and the provider can serve it from cache.
+        cache = family_cache_strategy(
+            self.llm,
+            family=PROMPT_FAMILY,
+            org_id=org_id,
+            shard_key=record_name,
+            model_name=str((config.get("configuration") or {}).get("model") or ""),
+        )
+        system = cache.system(self._fill_prompt(department_list), "")
+        messages, call_kwargs = cache.finalize([system, HumanMessage(content=document)])
+        parsed_response = await invoke_with_structured_output_and_reflection(
+            self.llm, messages, DocumentClassification, call_kwargs=call_kwargs,
+        )
+        if parsed_response is not None:
+            self.logger.debug("✅ Document classification parsed successfully")
+            return parsed_response
+        self.logger.warning(
+            "⚠️ Structured extraction failed after all attempts. Falling back to plain LLM summary."
+        )
+        return await self._fallback_summary(document)
 
     async def _fallback_summary(
         self, message_content: List[dict]
