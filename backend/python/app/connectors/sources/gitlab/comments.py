@@ -268,6 +268,10 @@ class CommentsHelper:
                         c.data_source.get_merge_request, project_id=int(project_id), mr_iid=mr_number,
                     )
                     head_sha = getattr(mr_res.data, "sha", None) if mr_res.success else None
+                    if not mr_res.success:
+                        self.logger.warning(
+                            "Could not fetch MR %s for its head commit: %s", mr_url, mr_res.error,
+                        )
                 if head_sha:
                     content_res = await c.runtime.ds_call(
                         c.data_source.get_file_content,

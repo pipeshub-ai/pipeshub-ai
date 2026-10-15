@@ -128,6 +128,10 @@ async def test_a_merge_request_fetches_only_the_files_gitlab_gives_no_diff_for(h
     file_fetches = [r.path for r in streamed if "/repository/files/" in r.path]
     mr_fetches = [r for r in streamed if r.method == "GET" and r.path == f"/api/v4/projects/{WEB}/merge_requests/1"]
     assert file_fetches == [f"/api/v4/projects/{WEB}/repository/files/.gitignore"]
+    # Without raw diffs GitLab empties every patch over 10% of its hard limit
+    # on a multi-file merge request, which would leave those files diff-less.
+    changes_calls = [r for r in streamed if r.path.endswith("/merge_requests/1/changes")]
+    assert [r.params.get("access_raw_diffs") for r in changes_calls] == ["true"]
     assert len(mr_fetches) == 1
     groups = {g["name"]: g["data"] for g in blocks["block_groups"]}
     assert "print('app')" not in groups["block for file src/app.py"]
