@@ -219,8 +219,9 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["matches"] == [{"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}]
+        assert items[0]["matches"] == [{"id": "m1", "name": "Bug bash testing", "aliases": ["bbt"]}]
         assert resolution.stats.winners_offered == 1
+        assert resolution.get("topics", "Bug bash testing session").key == "k-bug"
 
     async def test_store_failure_falls_back_to_new_without_raising(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, scripted_model

@@ -45,6 +45,7 @@ def build_prompt(
     candidates: dict[int, tuple[WinnerCandidate, ...]],
 ) -> str:
     """Render the merge prompt for ``items`` and their offered candidates."""
+    handles = candidate_handles(items, candidates)
     rendered: list[dict[str, Any]] = []
     for item in items:
         entry: dict[str, Any] = {
@@ -53,7 +54,7 @@ def build_prompt(
             "kind": _kind_label(item),
         }
         entry["matches"] = [
-            {"id": c.entity_id, "name": c.name, "aliases": list(c.aliases[:PROMPT_ALIASES_PER_MATCH])}
+            {"id": handles[c.entity_id], "name": c.name, "aliases": list(c.aliases[:PROMPT_ALIASES_PER_MATCH])}
             for c in _shuffled(item, candidates.get(item.index) or ())
         ]
         rendered.append(entry)
@@ -64,10 +65,29 @@ def build_prompt(
     if not text:
         text = "(no summary available)"
 
+    # One item per line: the indented form spent a third of the items' tokens on whitespace.
+    items_json = "[\n" + ",\n".join(
+        json.dumps(entry, ensure_ascii=False, separators=(",", ":")) for entry in rendered
+    ) + "\n]"
     # str.replace, not str.format: names and summaries can contain braces.
-    return _PROMPT.replace("{summary}", text).replace(
-        "{items}", json.dumps(rendered, ensure_ascii=False, indent=2)
-    )
+    return _PROMPT.replace("{summary}", text).replace("{items}", items_json)
+
+
+def candidate_handles(
+    items: list[ExtractedName],
+    candidates: dict[int, tuple[WinnerCandidate, ...]],
+) -> dict[str, str]:
+    """The short id the prompt shows for each offered node, by node id.
+
+    A node id is a UUID, about 35 tokens the model reads for every match and
+    copies into every merge; "m1", "m2", ... cost two. Numbered in the order
+    the prompt lists them, so the number says nothing about search rank.
+    """
+    handles: dict[str, str] = {}
+    for item in items:
+        for candidate in _shuffled(item, candidates.get(item.index) or ()):
+            handles.setdefault(candidate.entity_id, f"m{len(handles) + 1}")
+    return handles
 
 
 def _shuffled(item: ExtractedName, offered: tuple[WinnerCandidate, ...]) -> list[WinnerCandidate]:
@@ -86,4 +106,4 @@ def _kind_label(item: ExtractedName) -> str:
     return item.kind.entity_type.value
 
 
-__all__ = ["build_prompt"]
+__all__ = ["build_prompt", "candidate_handles"]
