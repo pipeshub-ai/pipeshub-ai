@@ -731,7 +731,10 @@
       "browseWorkspaceMcp": "MCP 서버 살펴보기",
       "browseWorkspaceMcpAria": "연결을 추가하거나 관리하려면 MCP 서버를 여세요",
       "noActionMatches": "검색과 일치하는 작업이 없습니다.",
-      "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다."
+      "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다.",
+      "notConnected": "연결 안 됨",
+      "connect": "연결",
+      "actionConnected": "{{name}} 연결됨"
     },
     "projectResources": {
       "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",

@@ -731,7 +731,10 @@
       "browseWorkspaceMcp": "浏览 MCP 服务器",
       "browseWorkspaceMcpAria": "打开 MCP 服务器以添加或管理连接",
       "noActionMatches": "没有与您的搜索匹配的操作。",
-      "noMcpMatches": "没有与您的搜索匹配的 MCP 服务器。"
+      "noMcpMatches": "没有与您的搜索匹配的 MCP 服务器。",
+      "notConnected": "未连接",
+      "connect": "连接",
+      "actionConnected": "{{name}} 已连接"
     },
     "projectResources": {
       "noConnectors": "此项目未启用任何连接器。",

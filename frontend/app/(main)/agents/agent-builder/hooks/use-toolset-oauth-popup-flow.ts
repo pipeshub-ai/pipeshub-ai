@@ -13,6 +13,7 @@ import {
   isToolsetOAuthErrorMessageType,
   isToolsetOAuthSuccessMessageType,
 } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
+import { isWebUrl } from '@/app/(main)/workspace/mcp-servers/hooks/use-mcp-oauth-popup';
 
 export interface UseToolsetOauthPopupFlowOptions {
   t: TFunction;
@@ -32,6 +33,10 @@ export interface ToolsetOauthBeginHandlers {
 /**
  * Popup OAuth for toolsets: open window, poll until it closes, verify with backoff,
  * listen for toolset OAuth popup messages (`TOOLSET_OAUTH_POST_MESSAGE` success/error payloads).
+ *
+ * Call `beginOAuth` straight from the click handler: the popup opens (blank) before the sign-in
+ * address is fetched, because browsers with strict popup rules block a window opened after an
+ * async gap.
  */
 export function useToolsetOauthPopupFlow({
   t,
@@ -180,19 +185,30 @@ export function useToolsetOauthPopupFlow({
 
   const beginOAuth = useCallback(
     async (
-      fetchAuthorization: () => Promise<{ authorizationUrl: string; windowName: string }>,
+      windowName: string,
+      fetchAuthorizationUrl: () => Promise<string>,
       handlers: ToolsetOauthBeginHandlers
     ) => {
       oauthCompletionHandledRef.current = false;
       oauthVerifyAbortRef.current = false;
       setAuthenticating(true);
+      const popup = openCenteredOAuthWindow('about:blank', windowName);
       try {
-        const { authorizationUrl, windowName } = await fetchAuthorization();
-        const popup = openCenteredOAuthWindow(authorizationUrl, windowName);
-        if (!popup) {
+        if (!popup || popup.closed) {
           throw new Error(t('agentBuilder.oauthPopupBlocked'));
         }
         oauthPopupRef.current = popup;
+        const authorizationUrl = await fetchAuthorizationUrl();
+        if (!isWebUrl(authorizationUrl)) {
+          throw new Error(t('agentBuilder.oauthUrlFailed'));
+        }
+        if (popup.closed) {
+          // Closed while the address was on its way: the person changed their mind.
+          oauthPopupRef.current = null;
+          setAuthenticating(false);
+          return;
+        }
+        popup.location.href = authorizationUrl;
         popup.focus();
 
         let statusChecked = false;
@@ -222,6 +238,7 @@ export function useToolsetOauthPopupFlow({
       } catch (e) {
         clearOAuthPoll();
         oauthPopupRef.current = null;
+        if (popup && !popup.closed) popup.close();
         setAuthenticating(false);
         handlers.onOpenError(e);
       }

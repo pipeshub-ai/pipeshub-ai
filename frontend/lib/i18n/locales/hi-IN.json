@@ -646,7 +646,10 @@
       "browseWorkspaceMcp": "MCP सर्वर ब्राउज़ करें",
       "browseWorkspaceMcpAria": "कनेक्शन जोड़ने या प्रबंधित करने के लिए MCP सर्वर खोलें",
       "noActionMatches": "आपकी खोज से कोई क्रिया मेल नहीं खाती।",
-      "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।"
+      "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।",
+      "notConnected": "कनेक्ट नहीं है",
+      "connect": "कनेक्ट करें",
+      "actionConnected": "{{name}} कनेक्ट है"
     },
     "projectResources": {
       "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",

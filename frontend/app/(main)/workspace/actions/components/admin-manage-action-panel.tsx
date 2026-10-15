@@ -675,6 +675,7 @@ export function AdminManageActionPanel({
   const handleAuthenticate = useCallback(async () => {
     setError(null);
     await beginOAuth(
+      'oauth_admin_toolset',
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
@@ -683,10 +684,7 @@ export function AdminManageActionPanel({
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));
         }
-        return {
-          authorizationUrl: result.authorizationUrl,
-          windowName: 'oauth_admin_toolset',
-        };
+        return result.authorizationUrl;
       },
       {
         onTimeout: () => setError(t('agentBuilder.authTimeout')),

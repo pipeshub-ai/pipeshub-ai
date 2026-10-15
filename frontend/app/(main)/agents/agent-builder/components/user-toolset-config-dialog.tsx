@@ -260,6 +260,7 @@ export function UserToolsetConfigDialog({
   const handleOAuthAuthenticate = async () => {
     setError(null);
     await beginOAuth(
+      'oauth_user_toolset',
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
@@ -268,10 +269,7 @@ export function UserToolsetConfigDialog({
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));
         }
-        return {
-          authorizationUrl: result.authorizationUrl,
-          windowName: 'oauth_user_toolset',
-        };
+        return result.authorizationUrl;
       },
       {
         onTimeout: () => setError(t('agentBuilder.authTimeout')),

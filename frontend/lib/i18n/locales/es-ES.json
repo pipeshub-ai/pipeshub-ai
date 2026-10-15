@@ -653,7 +653,10 @@
       "browseWorkspaceMcp": "Explorar servidores MCP",
       "browseWorkspaceMcpAria": "Abrir los servidores MCP para añadir o gestionar conexiones",
       "noActionMatches": "Ninguna acción coincide con su búsqueda.",
-      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda."
+      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda.",
+      "notConnected": "No conectado",
+      "connect": "Conectar",
+      "actionConnected": "{{name}} está conectado"
     },
     "projectResources": {
       "noConnectors": "No hay conectores habilitados para este proyecto.",

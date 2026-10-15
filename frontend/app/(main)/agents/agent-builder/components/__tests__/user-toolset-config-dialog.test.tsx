@@ -138,12 +138,14 @@ describe('UserToolsetConfigDialog', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     toolsetsApi.getInstanceOAuthAuthorizationUrl.mockResolvedValue({ success: true, authorizationUrl: 'https://auth.example.com/me' });
     toolsetsApi.findMyToolsetByInstanceId.mockResolvedValue({ isAuthenticated: true });
-    const open = vi.spyOn(window, 'open').mockReturnValue({ closed: false, close: vi.fn(), focus: vi.fn() } as unknown as Window);
+    const popup = { closed: false, close: vi.fn(), focus: vi.fn(), location: { href: 'about:blank' } };
+    const open = vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
     const { onClose } = renderDialog(toolset({ authType: 'OAUTH', isAuthenticated: false }));
     const dialog = await configDialog();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Authenticate with OAuth' }));
-    await waitFor(() => expect(open).toHaveBeenCalledWith('https://auth.example.com/me', 'oauth_user_toolset', expect.any(String)));
+    expect(open).toHaveBeenCalledWith('about:blank', 'oauth_user_toolset', expect.any(String));
+    await waitFor(() => expect(popup.location.href).toBe('https://auth.example.com/me'));
     await act(async () => {
       window.dispatchEvent(new MessageEvent('message', { data: { type: 'TOOLSET_OAUTH_SUCCESS' }, origin: window.location.origin }));
       await vi.advanceTimersByTimeAsync(2000);
@@ -155,11 +157,14 @@ describe('UserToolsetConfigDialog', () => {
 
   it('explains when the sign-in link could not be created', async () => {
     toolsetsApi.getInstanceOAuthAuthorizationUrl.mockResolvedValue({ success: false });
+    const popup = { closed: false, close: vi.fn(), focus: vi.fn(), location: { href: 'about:blank' } };
+    vi.spyOn(window, 'open').mockReturnValue(popup as unknown as Window);
     renderDialog(toolset({ authType: 'OAUTH', isAuthenticated: false }));
     const dialog = await configDialog();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Authenticate with OAuth' }));
 
     expect(await within(dialog).findByText('Failed to get authorization URL')).toBeTruthy();
+    expect(popup.close).toHaveBeenCalled();
   });
 });

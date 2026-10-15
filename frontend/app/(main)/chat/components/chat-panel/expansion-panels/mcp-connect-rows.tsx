@@ -17,6 +17,7 @@ import {
   useMcpOAuthPopup,
 } from '@/app/(main)/workspace/mcp-servers/hooks/use-mcp-oauth-popup';
 import type { McpMyServerEntry, McpServerTemplate } from '@/app/(main)/workspace/mcp-servers/types';
+import { ConnectRow } from './connect-row';
 
 type SignInState = Extract<
   McpConnectionState,
@@ -30,8 +31,6 @@ const SIGN_IN_ORDER: Record<SignInState, number> = {
   shared_credential_missing: 2,
   waiting_for_admin: 3,
 };
-// Radix's size-1 checkbox: the connected rows' names line up with these.
-const CHECKBOX_SPACE = 'calc(var(--space-4) * 0.875)';
 
 export interface McpServerToConnect {
   entry: McpMyServerEntry;
@@ -121,39 +120,32 @@ export function McpConnectRows({ servers, rowStyle, onConnected }: McpConnectRow
       {servers.map(({ entry, state }) => {
         const canConnect = state === 'needs_connect' || state === 'needs_reconnect';
         return (
-          <Flex
+          <ConnectRow
             key={entry._id}
-            align="center"
-            justify="between"
-            gap="2"
-            data-testid="mcp-connect-row"
-            style={{ ...rowStyle, padding: 'var(--space-2)' }}
-          >
-            <Flex align="center" gap="2" style={{ minWidth: 0 }}>
-              <span aria-hidden style={{ width: CHECKBOX_SPACE, flexShrink: 0 }} />
-              <MaterialIcon name="hub" size={18} color="var(--gray-9)" />
-              <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
-                {entry.name}
-              </Text>
-            </Flex>
-            {canConnect ? (
-              <Button
-                type="button"
-                size="1"
-                variant="soft"
-                loading={busyId === entry._id}
-                disabled={busyId !== null && busyId !== entry._id}
-                onClick={() => connect(entry)}
-                style={{ flexShrink: 0 }}
-              >
-                {t(state === 'needs_reconnect' ? 'workspace.mcpServers.cta.reconnect' : 'workspace.mcpServers.cta.connect')}
-              </Button>
-            ) : (
-              <Badge size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
-                {t(mcpStatusLook(state).key)}
-              </Badge>
-            )}
-          </Flex>
+            testId="mcp-connect-row"
+            rowStyle={rowStyle}
+            icon={<MaterialIcon name="hub" size={18} color="var(--gray-9)" />}
+            name={entry.name}
+            action={
+              canConnect ? (
+                <Button
+                  type="button"
+                  size="1"
+                  variant="soft"
+                  loading={busyId === entry._id}
+                  disabled={busyId !== null && busyId !== entry._id}
+                  onClick={() => connect(entry)}
+                  style={{ flexShrink: 0 }}
+                >
+                  {t(state === 'needs_reconnect' ? 'workspace.mcpServers.cta.reconnect' : 'workspace.mcpServers.cta.connect')}
+                </Button>
+              ) : (
+                <Badge size="1" variant="soft" color="gray" style={{ flexShrink: 0 }}>
+                  {t(mcpStatusLook(state).key)}
+                </Badge>
+              )
+            }
+          />
         );
       })}
       <McpAuthDialog
