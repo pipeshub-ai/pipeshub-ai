@@ -400,3 +400,17 @@ async def test_a_crawl_cut_off_by_the_fetch_cap_removes_no_stored_page(
     await connector.run_sync()
 
     assert {f"http://site.test{page}" for page in stored} <= set(db.pages())
+
+
+async def test_a_single_page_max_pages_has_no_room_for_is_not_written_on_a_full_sync(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    site.html(START_URL, "Home")
+    connector = await make_connector(crawl_type="single")  # no sync point yet, so a full sync
+    # Stands in for a store already holding Max Pages pages.
+    monkeypatch.setattr(connector, "_admit_new_record", lambda record: False)
+
+    await connector.run_sync()
+
+    assert START_URL not in db.pages()
+    assert not db.permission_updates, "a refused page was written through the permissions update"

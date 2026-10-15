@@ -341,6 +341,18 @@ describe('SchemaFormField: file upload', () => {
     expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
   });
 
+  it('replaces a saved file from the keyboard, clearing it before the picker opens', () => {
+    const { container, onChange } = renderField(keyFileField, { value: '{"private_key":"secret"}' });
+    const input = fileInput(container);
+    const pick = vi.spyOn(input, 'click');
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Service account key' }), { key: ' ' });
+
+    expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
+    expect(input.value).toBe('');
+    expect(pick).toHaveBeenCalledTimes(1);
+  });
+
   it('opens the file picker from the keyboard and announces a refused file', async () => {
     const { container } = renderField(keyFileField);
     const zone = screen.getByRole('button', { name: 'Service account key' });

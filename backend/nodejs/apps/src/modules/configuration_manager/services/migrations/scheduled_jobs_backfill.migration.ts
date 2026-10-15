@@ -13,6 +13,10 @@ import {
   buildCrawlingScheduleFromSync,
   isScheduledSyncStrategy,
 } from '../../../crawling_manager/utils/schedule_config_mapper';
+import {
+  pendingScheduleReconciles,
+  reconcileConnectorSchedule,
+} from '../../../crawling_manager/services/connector_schedule_orchestrator';
 
 interface ScheduledConnectorRecord {
   connectorId: string;
@@ -123,6 +127,9 @@ export class ScheduledJobsBackfillMigration {
     let scheduled = 0;
     let skipped = 0;
     let errored = 0;
+    // Taken now: one added during this pass may sit on a page already read, and must not look unlisted.
+    const pending = new Map(pendingScheduleReconciles);
+    let listComplete = false;
 
     let { items, hasMore } = firstBatch;
     let page = 1;
@@ -138,6 +145,27 @@ export class ScheduledJobsBackfillMigration {
           orgId: item.orgId,
         };
         try {
+          if (pending.delete(item.connectorId)) {
+            // Its job may follow settings that have since changed, so it is rewritten, not skipped.
+            const outcome = await reconcileConnectorSchedule(
+              this.scheduler,
+              this.logger,
+              {
+                connector: item.type,
+                connectorId: item.connectorId,
+                orgId: item.orgId,
+                userId:
+                  (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
+                  'system',
+                isActive: item.isActive,
+                sync: item.sync,
+              },
+            );
+            pendingScheduleReconciles.delete(item.connectorId);
+            if (outcome === 'scheduled') scheduled++;
+            else skipped++;
+            continue;
+          }
           if (!item.isActive || !isScheduledSyncStrategy(item.sync)) {
             skipped++;
             continue;
@@ -190,7 +218,10 @@ export class ScheduledJobsBackfillMigration {
         }
       }
 
-      if (!hasMore) break;
+      if (!hasMore) {
+        listComplete = true;
+        break;
+      }
 
       page++;
       if (page > BACKFILL_MAX_PAGES) {
@@ -225,6 +256,26 @@ export class ScheduledJobsBackfillMigration {
           },
         );
         break;
+      }
+    }
+
+    // The list holds every active, scheduled connector: one it left out has nothing to run on a schedule.
+    if (listComplete) {
+      for (const [connectorId, orgId] of pending) {
+        try {
+          await this.scheduler.removeJobsForConnector(connectorId, orgId);
+          pendingScheduleReconciles.delete(connectorId);
+        } catch (err) {
+          errored++;
+          this.logger.error(
+            'Could not remove the schedule of a connector no longer scheduled',
+            {
+              connectorId,
+              orgId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        }
       }
     }
 

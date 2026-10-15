@@ -23,6 +23,13 @@ export interface ScheduleReconcileInput {
 }
 
 /**
+ * Connectors (id -> org id) whose settings could not be read after a save, so their job may still
+ * follow the old settings. The hourly repair rewrites or removes those jobs from the list it reads.
+ * shortcut: kept in memory, so a restart before the next repair forgets them; persist them if that matters.
+ */
+export const pendingScheduleReconciles = new Map<string, string>();
+
+/**
  * Reconcile the BullMQ crawling job for a connector against its saved
  * sync config. Idempotent — `scheduleJob` removes any existing job before
  * creating a new one, and we explicitly remove on disable / non-SCHEDULED.

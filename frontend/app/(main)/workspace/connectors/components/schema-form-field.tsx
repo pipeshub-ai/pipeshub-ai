@@ -1297,6 +1297,8 @@ function FileInput({
   const labelId = `${ids}-label`;
   const errorId = displayError ? `${ids}-error` : undefined;
   // The hidden file input can't take focus, so the zone is the control keyboard and screen-reader users reach.
+  // Once a file is loaded, a key press replaces it, as the Replace link does: picking the same file again
+  // needs the input reset first.
   const zoneProps = {
     role: 'button',
     tabIndex: disabled ? -1 : 0,
@@ -1304,10 +1306,10 @@ function FileInput({
     'aria-describedby': errorId,
     'aria-disabled': disabled || undefined,
     onKeyDown: (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' || e.key === ' ') {
-        e.preventDefault();
-        handleClick();
-      }
+      if (disabled || (e.key !== 'Enter' && e.key !== ' ')) return;
+      e.preventDefault();
+      if (isLoaded) handleReplace();
+      else handleClick();
     },
   } as const;
 
@@ -1343,8 +1345,8 @@ function FileInput({
     }
   };
 
-  const handleReplace = (e: React.MouseEvent) => {
-    e.stopPropagation();
+  const handleReplace = (e?: React.SyntheticEvent) => {
+    e?.stopPropagation();
     setFileName(null);
     setLocalError(null);
     onChange(field.name, '');

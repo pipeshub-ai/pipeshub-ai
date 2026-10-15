@@ -9,6 +9,7 @@ import { Logger } from '../../../../../src/libs/services/logger.service';
 import { KeyValueStoreService } from '../../../../../src/libs/services/keyValueStore.service';
 import { CrawlingSchedulerService } from '../../../../../src/modules/crawling_manager/services/crawling_service';
 import { createFakeRedisProvider, stubGetRedisProvider } from '../../../../helpers/fake-redis-provider';
+import { pendingScheduleReconciles } from '../../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator';
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -191,6 +192,57 @@ describe('ScheduledJobsBackfillMigration', () => {
       await m.run({ ignoreDoneFlag: true });
 
       expect(scheduler.scheduleJob.called).to.equal(false);
+    });
+
+    describe('a connector whose settings could not be read after a save', () => {
+      afterEach(() => pendingScheduleReconciles.clear());
+
+      it('has its existing job rewritten with the listed settings', async () => {
+        pendingScheduleReconciles.set('conn-1', 'org-1');
+        const scheduler = makeScheduler({ getJobStatus: sinon.stub().resolves({ id: 'old-interval' }) });
+        executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+        const m = new ScheduledJobsBackfillMigration(
+          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
+        );
+
+        await m.run({ ignoreDoneFlag: true });
+
+        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+        expect(scheduler.scheduleJob.firstCall.args[2].scheduleConfig.intervalMinutes).to.equal(30);
+        expect(pendingScheduleReconciles.size).to.equal(0);
+      });
+
+      it('loses its job once the full list leaves it out (sync off or not scheduled)', async () => {
+        pendingScheduleReconciles.set('conn-off', 'org-1');
+        const scheduler = makeScheduler({ removeJobsForConnector: sinon.stub().resolves() });
+        executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+        const m = new ScheduledJobsBackfillMigration(
+          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
+        );
+
+        await m.run({ ignoreDoneFlag: true });
+
+        expect(scheduler.removeJobsForConnector.calledOnceWith('conn-off', 'org-1')).to.equal(true);
+        expect(pendingScheduleReconciles.size).to.equal(0);
+      });
+
+      it('keeps its job, and stays pending, when the list could not be read in full', async () => {
+        pendingScheduleReconciles.set('conn-off', 'org-1');
+        const scheduler = makeScheduler({ removeJobsForConnector: sinon.stub().resolves() });
+        executeStub.onFirstCall().resolves({
+          statusCode: 200,
+          data: { success: true, items: [sampleScheduledItem], hasMore: true },
+        });
+        executeStub.onSecondCall().rejects(new Error('connector service down'));
+        const m = new ScheduledJobsBackfillMigration(
+          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
+        );
+
+        await m.run({ ignoreDoneFlag: true });
+
+        expect(scheduler.removeJobsForConnector.called).to.equal(false);
+        expect(pendingScheduleReconciles.get('conn-off')).to.equal('org-1');
+      });
     });
   });
 

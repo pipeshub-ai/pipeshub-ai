@@ -101,6 +101,8 @@ class TestTheSingleProcessCaseStillWorks:
         (written,) = _written(gp)
         assert written["lastSyncOutcome"] == "failed"
         assert written["lastSyncFinishedAtTimestamp"] == written["updatedAtTimestamp"]
+        # The stored summary is the run before; left, it would read as this failed run's.
+        assert "lastSyncSummary" in written and written["lastSyncSummary"] is None
 
     @pytest.mark.asyncio
     async def test_nothing_stale_writes_nothing(self) -> None:

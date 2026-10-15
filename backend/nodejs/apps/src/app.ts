@@ -162,6 +162,7 @@ export class Application {
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
   private scheduleRepairTimer: NodeJS.Timeout | null = null;
+  private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -927,6 +928,17 @@ export class Application {
     try {
       this.logger.info('Shutting down application...');
       if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
+      // A pass still running calls the scheduler: let it end before its services are disposed, but
+      // never hold the shutdown longer than the request drain does.
+      if (this.scheduleRepairPass) {
+        let waited: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.scheduleRepairPass,
+          new Promise<void>((resolve) => {
+            waited = setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS);
+          }),
+        ]).finally(() => clearTimeout(waited));
+      }
       // Stop accepting first, and only dispose Mongo/Redis/brokers once the
       // requests already in flight have finished — otherwise they fail
       // mid-request on closed clients. Socket.IO connections are closed by
@@ -1038,14 +1050,13 @@ export class Application {
             this.configurationManagerContainer.get(MigrationService);
           // Before the migration: the repair is the safety net, so a failed migration must not turn it off.
           // A schedule that failed to be written after a save would otherwise stay missing for ever.
-          let repairing = false;
           this.scheduleRepairTimer = setInterval(() => {
-            if (repairing) return; // a slow pass must not overlap the next one
-            repairing = true;
-            void runWithRequestContext({ rootId: newSystemRoot() }, () =>
-              migrations.repairConnectorSchedules(scheduler, appConfig),
+            if (this.scheduleRepairPass) return; // a slow pass must not overlap the next one
+            this.scheduleRepairPass = runWithRequestContext(
+              { rootId: newSystemRoot() },
+              () => migrations.repairConnectorSchedules(scheduler, appConfig),
             ).finally(() => {
-              repairing = false;
+              this.scheduleRepairPass = null;
             });
           }, SCHEDULE_REPAIR_INTERVAL_MS);
           this.scheduleRepairTimer.unref();

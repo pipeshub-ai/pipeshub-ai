@@ -1082,6 +1082,8 @@ class WebConnector(BaseConnector):
             self._kept_urls.clear()
             self._robots.clear()
             self._robots_skipped.clear()
+            # A body the last sync's rendering check read but never used is not this sync's answer.
+            self._served_pages.clear()
             self.retry_urls.clear()
             self._domain_next_retry_at.clear()
             self.processed_urls = 0
@@ -1127,6 +1129,7 @@ class WebConnector(BaseConnector):
             else:
                 self.logger.warning(f"Unknown crawl type {self.crawl_type!r}; skipping crawl")
 
+            self._served_pages.clear()
             budget_stop = self._budget.stop_reason
             # Pages still waiting for a retry when the budget ran out never got their answer:
             # they are left for the next sync, not shown as failed.
@@ -1388,11 +1391,12 @@ class WebConnector(BaseConnector):
                     await self._handle_record_updates(record_update)
                 elif (
                     record_update.is_new and record_update.record is not None and record_update.new_permissions is not None
-                    and self._admit_new_record(record_update.record)
                 ):
-                    pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
-                    await self._write_new_records([pair])
-                    self.processed_urls += 1
+                    # A new page Max Pages has no room for is not written at all, not even its permissions.
+                    if self._admit_new_record(record_update.record):
+                        pair: Tuple[Record, List[Permission]] = (record_update.record, record_update.new_permissions)
+                        await self._write_new_records([pair])
+                        self.processed_urls += 1
                 elif self.full_sync and record_update.record is not None:
                     await self.data_entities_processor.on_updated_record_permissions(record_update.record, record_update.new_permissions)
                     self.processed_urls += 1

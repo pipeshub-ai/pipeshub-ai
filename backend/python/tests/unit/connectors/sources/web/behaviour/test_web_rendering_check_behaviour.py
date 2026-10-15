@@ -187,3 +187,19 @@ async def test_a_short_page_without_scripts_is_never_checked_in_the_browser(
     await (await make_connector()).run_sync()
 
     assert "http://site.test/notes/short.html" not in browser.browser_visits
+
+
+async def test_a_page_the_rendering_check_read_is_not_served_to_a_later_sync(
+    browser: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    browser.html(START_URL, "Home", "/next", text=LONG_TEXT)
+    browser.html("http://site.test/next", "Next")
+    connector = await make_connector()
+    await connector.run_sync()
+    # A check whose read the crawl never used (a single-page crawl, or a resumed one that had the page).
+    assert await connector._served_text_length(START_URL)
+
+    browser.html(START_URL, "Home v2", "/next", text=LONG_TEXT)
+    await connector.run_sync()
+
+    assert db.pages()[START_URL].record_name == "Home v2"

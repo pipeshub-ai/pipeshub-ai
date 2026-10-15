@@ -30,6 +30,7 @@ import {
 } from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
+  pendingScheduleReconciles,
   reconcileConnectorSchedule,
   ScheduleReconcileInput,
 } from '../../crawling_manager/services/connector_schedule_orchestrator';
@@ -185,6 +186,9 @@ interface ConnectorSnapshot {
  * (the filters-sync endpoint writes only to etcd), so it would silently return
  * the stale initial strategy (e.g. "MANUAL") even after the user changes it.
  */
+/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
+const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
+
 const fetchConnectorSnapshot = async (
   req: AuthenticatedUserRequest,
   connectorId: string,
@@ -197,6 +201,9 @@ const fetchConnectorSnapshot = async (
       `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
       HttpMethod.GET,
       headers,
+      undefined,
+      // Aborted, not just abandoned: a hung backend must not pile up reads across the retries.
+      { timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS },
     );
     if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) return null;
 
@@ -236,16 +243,6 @@ const fetchConnectorSnapshot = async (
   }
 };
 
-/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
-const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
-
-/**
- * Sentinel returned by the timeout side of the Promise.race so we can
- * distinguish "timed out" from "fetch returned null (error / 404)".
- * Using a Symbol prevents any accidental equality with real return values.
- */
-const SNAPSHOT_TIMEOUT = Symbol('SNAPSHOT_TIMEOUT');
-
 /** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
 const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
 
@@ -265,42 +262,24 @@ const fireConnectorScheduleReconcile = (
       let snapshot: ConnectorSnapshot | null = null;
       for (const wait of RECONCILE_RETRY_WAITS_MS) {
         if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
-        // Race the snapshot fetch against a hard timeout so a hung Python
-        // backend cannot block this background task indefinitely.
-        let timer: NodeJS.Timeout | undefined;
-        const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>(
-          (resolve) => {
-            timer = setTimeout(
-              () => resolve(SNAPSHOT_TIMEOUT),
-              RECONCILE_SNAPSHOT_TIMEOUT_MS,
-            );
-          },
-        );
-        const result = await Promise.race([
-          fetchConnectorSnapshot(req, connectorId, appConfig),
-          timeoutPromise,
-        ]).finally(() => clearTimeout(timer));
-        if (result !== SNAPSHOT_TIMEOUT && result) {
-          snapshot = result;
-          break;
-        }
+        snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
+        if (snapshot) break;
         logger.warn(
           'Connector snapshot unavailable for schedule reconcile; will retry',
-          {
-          connectorId,
-            timedOut: result === SNAPSHOT_TIMEOUT,
-          timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
-        });
-      }
-      if (!snapshot) {
-        logger.error(
-          'Could not read connector settings to update its schedule; the hourly repair will retry',
           {
             connectorId,
           },
         );
+      }
+      if (!snapshot) {
+        pendingScheduleReconciles.set(connectorId, String(orgId));
+        logger.error(
+          'Could not read connector settings to update its schedule; the hourly repair will apply them',
+          { connectorId },
+        );
         return;
       }
+      pendingScheduleReconciles.delete(connectorId);
 
       logger.debug('Connector snapshot fetched for schedule reconcile', {
         connectorId,
@@ -319,10 +298,14 @@ const fireConnectorScheduleReconcile = (
       };
       await reconcileConnectorSchedule(scheduler, logger, input);
     } catch (error) {
-      logger.error('Background schedule reconcile failed', {
-        connectorId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      pendingScheduleReconciles.set(connectorId, String(orgId));
+      logger.error(
+        'Background schedule reconcile failed; the hourly repair will apply it',
+        {
+          connectorId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   });
 };
