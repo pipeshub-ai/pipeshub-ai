@@ -915,6 +915,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "FOR (n:Record) ON (n.externalRecordId, n.connectorId)"
         )
 
+        # SINGLE: File.path (get_records_by_file_path: a delete reported by path only)
+        indexes.append(
+            "CREATE INDEX file_path IF NOT EXISTS "
+            "FOR (n:File) ON (n.path)"
+        )
+
         # SINGLE: orgId (queried independently and with other fields)
         indexes.append(
             "CREATE INDEX record_org_id IF NOT EXISTS "
@@ -2977,6 +2983,31 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return []
 
     # ==================== Record Operations ====================
+
+    async def get_records_by_file_path(
+        self,
+        connector_id: str,
+        path: str,
+        transaction: str | None = None,
+    ) -> list[Record]:
+        query = """
+        MATCH (f:File {path: $path})
+        MATCH (r:Record {id: f.id, connectorId: $connector_id})
+        RETURN r
+        """
+        try:
+            results = await self.client.execute_query(
+                query, parameters={"path": path, "connector_id": connector_id}, txn_id=transaction
+            )
+            return [
+                Record.from_arango_base_record(
+                    self._neo4j_to_arango_node(dict(row["r"]), CollectionNames.RECORDS.value)
+                )
+                for row in results or []
+            ]
+        except Exception as e:
+            self.logger.error(f"❌ Get records by file path failed: {str(e)}")
+            raise GraphQueryError(f"Could not look up records at path {path}: {e}") from e
 
     async def get_record_by_external_id(
         self,

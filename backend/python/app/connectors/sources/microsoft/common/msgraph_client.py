@@ -36,13 +36,21 @@ def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
     role_lower = role.lower()
     if role_lower in ["owner", "fullcontrol"]:
         return PermissionType.OWNER
-    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
+    elif role_lower in ["write", "edit", "editor", "contributor", "writeaccess"]:
         return PermissionType.WRITE
     elif role_lower in ["read", "reader", "readaccess"]:
         return PermissionType.READ
     else:
         # Default to read for unknown roles
         return PermissionType.READ
+
+
+_ROLE_RANK = {PermissionType.READ: 0, PermissionType.WRITE: 1, PermissionType.OWNER: 2}
+
+
+def map_msgraph_roles_to_permission_type(roles: list[str] | None) -> PermissionType:
+    """The strongest of a grant's roles: Graph can list several, in no set order."""
+    return max((map_msgraph_role_to_permission_type(role) for role in roles or ["read"]), key=_ROLE_RANK.__getitem__)
 
 
 

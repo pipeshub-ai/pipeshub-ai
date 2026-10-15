@@ -3,10 +3,23 @@
 from app.models.permission import EntityType, Permission, PermissionType
 
 
+class RoleAccess(dict):
+    """Effective role map of one item, plus the roles no content permission override reaches.
+
+    BookStack honours a role's ``*-view-own`` only while no override applies to that
+    role on the item or any ancestor; any override row, or an Everyone Else setting,
+    switches ownership off for it. ``default_roles`` carries that set down the tree.
+    """
+
+    def __init__(self, effective: dict[int, PermissionType], default_roles: frozenset[int]) -> None:
+        super().__init__(effective)
+        self.default_roles = default_roles
+
+
 class BookStackGrants(list):
     """Role and owner grants. ``inherit`` is false when this item's own rules replace its parent."""
 
-    def __init__(self, permissions: list, *, inherit: bool, effective: dict[int, PermissionType]) -> None:
+    def __init__(self, permissions: list, *, inherit: bool, effective: RoleAccess) -> None:
         super().__init__(permissions)
         self.inherit = inherit
         self.effective = effective
@@ -59,12 +72,31 @@ def _grant_admins(effective: dict[int, PermissionType], roles_details: dict) -> 
             effective[int(role_id)] = PermissionType.WRITE
 
 
+def _default_roles(
+    *,
+    inheriting: bool,
+    rows: dict[int, dict],
+    roles_details: dict,
+    content_type: str,
+    parent_roles: dict[int, PermissionType] | None,
+) -> frozenset[int]:
+    """Roles still on BookStack's default path for this item (no override here or above)."""
+    if not inheriting:
+        return frozenset()
+    if content_type == "book" and parent_roles is None:
+        above = frozenset(int(role_id) for role_id in roles_details)
+    else:
+        # An unknown parent may carry an override, so ownership is not assumed.
+        above = getattr(parent_roles, "default_roles", frozenset())
+    return above - frozenset(rows)
+
+
 def resolve_bookstack_roles(
     permissions_data: dict,
     roles_details: dict,
     content_type: str,
     parent_roles: dict[int, PermissionType] | None,
-) -> tuple[dict[int, PermissionType], bool]:
+) -> tuple[RoleAccess, bool]:
     """Return ``(effective role map, inherit)``.
 
     A child that only inherits stores nothing of its own. A role row, including a
@@ -78,7 +110,26 @@ def resolve_bookstack_roles(
         role_id = row.get("role_id")
         if role_id is not None:
             rows[int(role_id)] = row
+    default_roles = _default_roles(
+        inheriting=inheriting, rows=rows, roles_details=roles_details,
+        content_type=content_type, parent_roles=parent_roles,
+    )
+    effective, inherit = _resolve_effective(
+        inheriting=inheriting, rows=rows, roles_details=roles_details,
+        content_type=content_type, parent_roles=parent_roles, fallback=fallback,
+    )
+    return RoleAccess(effective, default_roles), inherit
 
+
+def _resolve_effective(
+    *,
+    inheriting: bool,
+    rows: dict[int, dict],
+    roles_details: dict,
+    content_type: str,
+    parent_roles: dict[int, PermissionType] | None,
+    fallback: dict,
+) -> tuple[dict[int, PermissionType], bool]:
     # While Everyone Else inherits defaults, a book has no parent map, so the
     # role permissions are that default. A role row then overrides one role.
     # When Everyone Else does not inherit, role permissions are not used.
@@ -141,14 +192,36 @@ def resolve_bookstack_roles(
     return effective, False
 
 
+def owner_has_own_access(
+    owner_role_ids: list[int], effective: RoleAccess, roles_details: dict, content_type: str
+) -> bool:
+    """True when the owner sees the item only because they own it.
+
+    A role already in ``effective`` reaches the owner as a role grant, so the owner
+    grant is stored only where ownership is what opens the item.
+    """
+    for role_id in owner_role_ids:
+        if role_id not in effective.default_roles or role_id in effective:
+            continue
+        details = roles_details.get(role_id) or roles_details.get(str(role_id)) or {}
+        names = set(details.get("permissions") or [])
+        if f"{content_type}-view-own" in names:
+            return True
+    return False
+
+
 def bookstack_grants(
     owner: Permission | None,
     permissions_data: dict,
     roles_details: dict,
     content_type: str,
     parent_roles: dict[int, PermissionType] | None,
+    owner_role_ids: list[int] | None = None,
 ) -> BookStackGrants:
-    """Owner plus the role grants this item stores. Inherited roles stay on the parent."""
+    """Owner, when ownership grants access, plus the role grants this item stores.
+
+    Inherited roles stay on the parent.
+    """
     effective, inherit = resolve_bookstack_roles(
         permissions_data, roles_details, content_type, parent_roles
     )
@@ -164,7 +237,7 @@ def bookstack_grants(
     else:
         stored = effective
     permissions: list[Permission] = []
-    if owner is not None:
+    if owner is not None and owner_has_own_access(owner_role_ids or [], effective, roles_details, content_type):
         permissions.append(owner)
     permissions.extend(
         Permission(external_id=str(role_id), type=kind, entity_type=EntityType.ROLE)

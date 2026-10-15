@@ -672,6 +672,49 @@ class TestOnRecordContentUpdate:
             ProgressStatus.QUEUED.value,
         )
 
+    @staticmethod
+    def _stub_process_record(proc: DataSourceEntitiesProcessor) -> AsyncMock:
+        tx_store = _make_tx_store()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        proc._process_record = AsyncMock(return_value=(None, []))
+        return proc._process_record
+
+    @pytest.mark.asyncio
+    async def test_content_update_without_permissions_keeps_stored_grants(self) -> None:
+        """A rewrite-flagged record updated with no grant list must not have its grants wiped."""
+        proc = _make_processor()
+        process_record = self._stub_process_record(proc)
+        record = _make_record()
+        record.rewrite_permissions = True
+
+        await proc.on_record_content_update(record)
+
+        args, kwargs = process_record.await_args
+        assert args[1] == []
+        assert kwargs["replace_permissions"] is False
+
+    @pytest.mark.asyncio
+    async def test_content_update_with_permissions_replaces_them(self) -> None:
+        """An explicit grant list (even an empty one) still replaces a rewrite-flagged record's grants."""
+        proc = _make_processor()
+        process_record = self._stub_process_record(proc)
+        record = _make_record()
+        record.rewrite_permissions = True
+        grant = MagicMock()
+
+        await proc.on_record_content_update(record, [grant])
+        args, kwargs = process_record.await_args
+        assert args[1] == [grant]
+        assert kwargs["replace_permissions"] is True
+
+        await proc.on_record_content_update(record, [])
+        args, kwargs = process_record.await_args
+        assert args[1] == []
+        assert kwargs["replace_permissions"] is True
+
 
 # ===========================================================================
 # on_record_metadata_update

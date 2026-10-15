@@ -223,6 +223,7 @@ class TestAbstractMethodInventory:
         "get_nodes_by_field_in",
         # Record operations
         "get_record_by_path",
+        "get_records_by_file_path",
         "get_record_by_external_id",
         "get_record_by_external_revision_id",
         "get_child_record_ids_by_relation_type",

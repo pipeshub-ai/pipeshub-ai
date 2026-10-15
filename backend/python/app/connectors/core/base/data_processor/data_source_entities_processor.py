@@ -2892,11 +2892,14 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove] = []
         should_publish = False
         processed_record: Record | None = None
-        replace = bool(record.rewrite_permissions)
+        # A content update that brings no grants must keep the stored ones: a
+        # record flagged ``rewrite_permissions`` would otherwise be rewritten
+        # with nothing and lose all access. Only an explicit list (even []) replaces.
+        replace = permissions is not None and bool(record.rewrite_permissions)
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction() as tx_store:
             processed_record, pending_moves = await self._process_record(
                 record,
-                list(permissions or []) if replace else [],
+                list(permissions) if replace else [],
                 tx_store,
                 moved_virtual_record_ids,
                 narrowed_connectors=narrowed_connectors,
@@ -5056,6 +5059,11 @@ class DataSourceEntitiesProcessor:
             )
         await self._access_changed([connector_id])
 
+    async def get_records_by_file_path(self, connector_id: str, path: str) -> list[Record]:
+        """Records of a connector whose file node stores exactly ``path``, trashed or not."""
+        async with self.data_store_provider.transaction() as tx_store:
+            return await tx_store.get_records_by_file_path(connector_id, path)
+
     async def get_record_group_by_external_id(
         self, connector_id: str, external_id: str
     ) -> RecordGroup | None:
@@ -5352,12 +5360,14 @@ class DataSourceEntitiesProcessor:
                     self.logger.debug(f"Permission edge already exists between {user_email} and group {user_group.name}")
                     return False
 
-                # 4. Create the permission object (external_id is not used when storing in arango)
+                # 4. Create the permission object (external_id is not used when storing in arango).
+                # A membership is the user's grant on the group, typed USER like the ones
+                # on_new_user_groups writes: access queries follow only USER edges into a group.
                 permission = Permission(
                     external_id=user.id,
                     email=user_email,
                     type=permission_type,
-                    entity_type=EntityType.GROUP
+                    entity_type=EntityType.USER
                 )
 
                 # 5. Create new permission edge since it doesn't exist

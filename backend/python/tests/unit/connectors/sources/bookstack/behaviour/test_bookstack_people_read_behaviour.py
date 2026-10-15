@@ -291,8 +291,9 @@ def emails(*user_ids: int) -> set[str]:
     return {f"u{uid}@example.com" for uid in user_ids}
 
 
-OWNER_GRANT = ("OWNER", "u1@example.com")
-DEFAULT_BOOK_GRANTS = {OWNER_GRANT, ("WRITER", f"role {EDITOR}"), ("READER", f"role {VIEWER}")}
+# The owner (user 1) is an editor, so the editor role grant is what opens the
+# book to them; no separate owner grant is stored.
+DEFAULT_BOOK_GRANTS = {("WRITER", f"role {EDITOR}"), ("READER", f"role {VIEWER}")}
 
 
 @pytest.fixture
@@ -424,7 +425,7 @@ async def test_a_failed_role_list_leaves_book_grants_as_stored_and_is_tried_agai
     del world.api.fail[("/api/roles", None)]
     await world.sync_books()
 
-    assert world.book_grants(DEFAULT_BOOK) == {OWNER_GRANT, ("WRITER", f"role {EDITOR}")}
+    assert world.book_grants(DEFAULT_BOOK) == {("WRITER", f"role {EDITOR}")}
 
 
 async def test_a_complete_role_read_removes_a_deleted_role_from_book_grants(world: World) -> None:
@@ -432,7 +433,7 @@ async def test_a_complete_role_read_removes_a_deleted_role_from_book_grants(worl
 
     await world.sync_books()
 
-    assert world.book_grants(DEFAULT_BOOK) == {OWNER_GRANT, ("WRITER", f"role {EDITOR}")}
+    assert world.book_grants(DEFAULT_BOOK) == {("WRITER", f"role {EDITOR}")}
 
 
 # ---- the role list and role details in the full role sync ----

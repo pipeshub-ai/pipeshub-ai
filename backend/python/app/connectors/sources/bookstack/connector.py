@@ -96,11 +96,11 @@ _AUDIT_LOG_PAGE_SIZE = 500
 _RECORD_SCAN_PAGE_SIZE = 1000
 
 
-def _deleted_page_id(event: dict) -> int | None:
-    """The page id of a page_delete audit event, when it still has one.
+def _deleted_item_id(event: dict) -> int | None:
+    """The item id of a page, chapter, book or shelf delete audit event, when it still has one.
 
     Only loggable_id is trusted. A purge (the recycle bin emptied, or set to
-    keep nothing) clears it and rewrites the detail to the bare page name, and
+    keep nothing) clears it and rewrites the detail to the bare item name, and
     a name can itself look like "(1) Introduction".
     """
     loggable_id = event.get("loggable_id")
@@ -1467,7 +1467,10 @@ class BookStackConnector(BaseConnector):
             )
         else:
             last_sync_timestamp = bookstack_record_group_sync_point.get('timestamp')
-            await self._sync_record_groups_incremental(last_sync_timestamp, roles_details)
+            if not await self._sync_record_groups_incremental(last_sync_timestamp, roles_details):
+                # Moving on would leave an unconfirmed or failed delete behind the cursor for good.
+                self.logger.warning("Book/chapter deletes were not all applied; the next sync starts from the same point")
+                return False
             await self.record_sync_point.update_sync_point(
                 bookstack_record_group_sync_key,
                 {"timestamp": current_timestamp}
@@ -1671,8 +1674,9 @@ class BookStackConnector(BaseConnector):
         content_type_name: str,
         parent_roles: dict[int, PermissionType] | None = None,
     ) -> list[Permission]:
-        """Owner, plus role grants that are not already supplied by the parent."""
+        """Owner where ownership grants access, plus role grants not already supplied by the parent."""
         owner_permission = None
+        owner_role_ids: list[int] = []
         owner = permissions_data.get("owner")
         if owner and owner.get("id"):
             try:
@@ -1684,11 +1688,14 @@ class BookStackConnector(BaseConnector):
                         type=PermissionType.OWNER,
                         entity_type=EntityType.USER,
                     )
+                    owner_role_ids = [
+                        int(role["id"]) for role in user_response.data.get("roles") or [] if role.get("id") is not None
+                    ]
             except Exception as e:
                 self.logger.error(f"Failed to fetch owner details for user ID {owner.get('id')}: {e}")
 
         return bookstack_grants(
-            owner_permission, permissions_data, roles_details, content_type_name, parent_roles
+            owner_permission, permissions_data, roles_details, content_type_name, parent_roles, owner_role_ids
         )
 
     async def _parent_role_access(
@@ -1739,22 +1746,24 @@ class BookStackConnector(BaseConnector):
 
         return permissions_list
 
-    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
+    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: dict[int, dict]) -> bool:
         """
         Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
+
+        Returns False when a delete could not be confirmed or applied.
         """
         self.logger.info("Starting incremental sync for record groups (books, shelves, and chapters).")
 
         # Get book ID filter
         book_ids, book_ids_operator = self._get_book_id_filter()
 
-        await self._sync_record_groups_events(
+        shelves_done = await self._sync_record_groups_events(
             content_type="bookshelf",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp
         )
 
-        await self._sync_record_groups_events(
+        books_done = await self._sync_record_groups_events(
             content_type="book",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp,
@@ -1762,13 +1771,14 @@ class BookStackConnector(BaseConnector):
             book_ids_operator=book_ids_operator
         )
 
-        await self._sync_record_groups_events(
+        chapters_done = await self._sync_record_groups_events(
             content_type="chapter",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp,
             book_ids=book_ids,
             book_ids_operator=book_ids_operator
         )
+        return shelves_done and books_done and chapters_done
 
 
     async def _sync_record_groups_events(
@@ -1778,7 +1788,8 @@ class BookStackConnector(BaseConnector):
         last_sync_timestamp: str,
         book_ids: Optional[Set[int]] = None,
         book_ids_operator: Optional[str] = None
-    ) -> None:
+    ) -> bool:
+        """Apply one content type's audit events. Returns False when a delete was not confirmed or applied."""
 
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
@@ -1804,11 +1815,15 @@ class BookStackConnector(BaseConnector):
                 await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
 
         # --- Handle Delete Events ---
+        deletes_done = True
         delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
+        if isinstance(delete_response, BaseException) or not delete_response.success or not _is_listing(delete_response.data):
+            self.logger.warning(f"Could not read {content_type} deletes from the audit log; reading them again next sync")
+            deletes_done = False
+        elif delete_response.data['data']:
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
             for event in delete_response.data['data']:
-                await self._handle_record_group_delete_event(event, content_type)
+                deletes_done = await self._handle_record_group_delete_event(event, content_type) and deletes_done
 
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
@@ -1816,6 +1831,7 @@ class BookStackConnector(BaseConnector):
             for event in permissions_update_response.data['data']:
                 if event.get("loggable_type") == content_type:
                     await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
+        return deletes_done
 
 
     async def _handle_record_group_create_event(
@@ -1958,8 +1974,49 @@ class BookStackConnector(BaseConnector):
         existing.rewrite_permissions = True
         await self.data_entities_processor.on_updated_record_permissions(existing, list(grants))
 
-    async def _handle_record_group_delete_event(self, event: Dict, content_type: str) -> None:
-        self.logger.warning("!! method not implemented yet !!")
+    async def _handle_record_group_delete_event(self, event: dict, content_type: str) -> bool:
+        """Remove a deleted shelf, book or chapter with everything below it, once BookStack confirms it is gone.
+
+        BookStack sends no page_delete for the pages of a deleted chapter or book,
+        so the group delete takes its pages and child chapters with it. Deleted
+        items go to the recycle bin and can be restored under the same id, so the
+        event alone is not proof. Returns False when the lookup or the delete
+        failed, so the event is read again next sync.
+        """
+        item_id = _deleted_item_id(event)
+        if item_id is None:
+            # TODO(pr3880-fixes): a purge clears the id, and a full sync does not yet remove
+            # groups BookStack no longer lists, so such a group stays until it is reconciled.
+            self.logger.warning(f"A {content_type} delete event no longer names its {content_type}; it is not removed")
+            return True
+        exists = await self._content_exists(content_type, item_id)
+        if exists is None:
+            self.logger.warning(f"Could not confirm {content_type} {item_id} was deleted; keeping its record group.")
+            return False
+        if exists:
+            self.logger.info(f"{content_type.capitalize()} {item_id} was restored after its delete; keeping its record group.")
+            return True
+        external_id = f"{content_type}/{item_id}"
+        try:
+            group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id)
+        except Exception as e:
+            self.logger.warning(f"Could not look up the record group of deleted {external_id}: {e}")
+            return False
+        if group is None:
+            return True
+        return await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id)
+
+    async def _content_exists(self, content_type: str, item_id: int) -> bool | None:
+        """Whether BookStack still lists a shelf, book or chapter by id; None when it gives no usable answer."""
+        list_method = {
+            "bookshelf": self.data_source.list_shelves,
+            "book": self.data_source.list_books,
+            "chapter": self.data_source.list_chapters,
+        }[content_type]
+        response = await list_method(filter={"id": str(item_id)})
+        if not response.success or not _is_listing(response.data):
+            return None
+        return bool(response.data["data"])
 
     #---------------------------Records Sync-----------------------------------#
     async def _sync_records(self, full_sync:bool = False) -> None:
@@ -2487,7 +2544,7 @@ class BookStackConnector(BaseConnector):
                 self.logger.info(f"Found {len(delete_events)} page(s) to delete.")
             unnamed = False
             for event in delete_events:
-                page_id = _deleted_page_id(event)
+                page_id = _deleted_item_id(event)
                 if page_id is None:
                     unnamed = True
                     continue
