@@ -59,7 +59,9 @@ def test_same_result_as_a_direct_call(text: str, base: datetime) -> None:
 
 
 def _registered_settings() -> int:
-    return len(getattr(dateparser.conf.Settings, "__registry_dict", {}))
+    registry = getattr(dateparser.conf.Settings, "__registry_dict", None)
+    assert registry is not None, "dateparser's settings registry moved; this test no longer checks it"
+    return len(registry)
 
 
 def test_new_reference_times_register_no_new_settings() -> None:
@@ -79,6 +81,6 @@ def test_concurrent_reference_times_do_not_leak_into_each_other() -> None:
     cases = [(text, base) for text in ("tomorrow", "3 days ago", "yesterday") for base in BASES] * 20
 
     with ThreadPoolExecutor(max_workers=8) as pool:
-        results = list(pool.map(lambda case: dates._parse_date.__wrapped__(*case), cases))
+        results = list(pool.map(lambda case: dates._parse_date_uncached(*case), cases))
 
     assert results == [_direct(text, base) for text, base in cases]

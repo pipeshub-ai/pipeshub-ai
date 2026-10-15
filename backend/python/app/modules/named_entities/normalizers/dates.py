@@ -393,13 +393,16 @@ def _dateparser_engine() -> tuple[DateDataParser, Settings]:
     return DateDataParser(settings=shared), shared
 
 
-@lru_cache(maxsize=4096)
-def _parse_date(text: str, base: datetime) -> datetime | None:
+def _parse_date_uncached(text: str, base: datetime) -> datetime | None:
     parser, shared = _dateparser_engine()
     with _DATEPARSER_LOCK:
         shared.RELATIVE_BASE = base
         data = parser.get_date_data(text)
     return data["date_obj"] if data else None
+
+
+# Only a fixed reference time is memoized: without one the base is "now", which never repeats.
+_parse_date = lru_cache(maxsize=4096)(_parse_date_uncached)
 
 
 def _dateparser(text: str, kind: EntityKind, ctx: NormalizationContext) -> DateRangeValue | None:
@@ -413,7 +416,7 @@ def _dateparser(text: str, kind: EntityKind, ctx: NormalizationContext) -> DateR
         parsed = _parse_date(text, base.replace(tzinfo=None))
     else:
         base = datetime.now(tz)
-        parsed = _parse_date.__wrapped__(text, base.replace(tzinfo=None))
+        parsed = _parse_date_uncached(text, base.replace(tzinfo=None))
     if parsed is None:
         return None
     start = parsed.replace(tzinfo=tz)

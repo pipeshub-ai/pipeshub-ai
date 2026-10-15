@@ -258,5 +258,6 @@ async def test_pipeline_output_is_unchanged() -> None:
     if os.getenv("NER_GOLDEN_REGENERATE"):
         FIXTURE.write_text(json.dumps(produced, indent=1, sort_keys=True, ensure_ascii=False) + "\n")
     expected = json.loads(FIXTURE.read_text())
+    assert produced.keys() == expected.keys()
     for name in expected:
         assert produced[name] == expected[name], name
