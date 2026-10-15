@@ -455,7 +455,8 @@
     "required": "此欄位為必填",
     "invalidEmail": "電子郵件地址無效",
     "invalidUrl": "URL 無效",
-    "name": "名稱"
+    "name": "名稱",
+    "optional": "（選填）"
   },
   "dialog": {
     "newFolder": "新增集合資料夾",
@@ -2198,7 +2199,10 @@
         "maxLength": "{{field}}不能超過 {{maxLength}} 個字元",
         "email": "{{field}}必須是有效的電子郵件地址",
         "url": "{{field}}必須是有效的 URL",
-        "urlProtocol": "{{field}}必須使用 http 或 https"
+        "urlProtocol": "{{field}}必須使用 http 或 https",
+        "numberRange": "請輸入 {{min, number}} 到 {{max, number}} 之間的整數。",
+        "numberMin": "請輸入不小於 {{min, number}} 的整數。",
+        "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
       "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
       "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。"
@@ -2581,7 +2585,13 @@
         "syncStrategyHelper": "選擇要如何從 {{name}} 同步資料",
         "syncInterval": "同步間隔",
         "syncIntervalPlaceholder": "選取間隔...",
-        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率"
+        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率",
+        "lastRunLimit": {
+          "saved": "上次同步：已儲存 {{count, number}} 個頁面",
+          "stoppedAtLimit": "已在此上限停止",
+          "leftOut": "{{count, number}} 個未納入",
+          "nearLimit": "此連接器儲存的頁面已達此上限的 90% 以上。若要保留此網站的更多頁面，請提高上限。"
+        }
       },
       "instancePanel": {
         "overview": "總覽",
@@ -2614,7 +2624,31 @@
         "recordsByType": "依類型統計的記錄",
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
-        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗"
+        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "lastRun": {
+          "title": "上次同步",
+          "outcome": {
+            "succeeded": "已完成",
+            "failed": "失敗",
+            "stopped": "已停止",
+            "skipped": "已略過"
+          },
+          "stopReason": {
+            "max_pages": "已達到最大頁數限制",
+            "time_limit": "已達到時間限制；下次同步將繼續",
+            "stalled": "網站停止回應；下次同步將繼續",
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+          },
+          "pagesSaved": "已儲存 {{count}} 個頁面",
+          "failed": "{{count}} 個頁面失敗",
+          "robotsSkipped": "因 robots.txt 略過 {{count}} 個",
+          "noindexSkipped": "{{count}} 個頁面要求不被索引",
+          "skippedMaxPages": "因最大頁數限制排除 {{count}} 個",
+          "pruned": "已移除 {{count}} 個已不在網站上的頁面",
+          "sitemapUrls": "在網站地圖中找到 {{count}} 個",
+          "resumed": "已繼續未完成的同步",
+          "lastSyncedWithOutcome": "{{time}}（{{outcome}}）"
+        }
       },
       "settingsTab": {
         "instanceName": "執行個體名稱",
@@ -2804,6 +2838,108 @@
           "confirm": "開始重新索引"
         },
         "typePrompt": "請輸入 {{token}} 以確認。"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "起始 URL",
+            "help": "PipesHub 造訪的第一個頁面。儲存後無法變更；如要爬取其他網站，請再新增一個連接器。"
+          },
+          "type": {
+            "label": "爬取範圍",
+            "options": {
+              "single": "僅此頁面",
+              "recursive": "此頁面及其連結到的頁面"
+            }
+          },
+          "discovery": {
+            "label": "尋找頁面的方式",
+            "help": "網站地圖最快；連結可以找到網站地圖遺漏的頁面。",
+            "options": {
+              "sitemap_and_links": "網站地圖和連結（建議）",
+              "links": "僅連結",
+              "sitemap": "僅網站地圖"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "僅限此區段",
+            "help": "僅包含起始 URL 路徑下的頁面，例如 /docs/。"
+          },
+          "max_pages": {
+            "label": "頁面數上限",
+            "help": "PipesHub 最多保留此網站的這麼多頁面。PDF 等檔案也計為頁面。",
+            "unit": "頁"
+          },
+          "url_should_contain": {
+            "label": "僅儲存 URL 包含以下內容的頁面",
+            "help": "留空即儲存所有頁面。不符合的頁面不會被造訪，因此也不會追蹤其中的連結。"
+          },
+          "ignore_query_params": {
+            "label": "同一頁面，不同 URL",
+            "help": "不會改變頁面內容的 URL 參數，例如 sort 或 ref。使用 * 代表全部。追蹤參數（utm_…）一律會被忽略。"
+          },
+          "depth": {
+            "label": "距起始頁的點擊次數",
+            "help": "追蹤連結的深度。網站地圖中列出的頁面計為一次點擊。",
+            "unit": "次點擊"
+          },
+          "max_size_mb": {
+            "label": "可下載的最大檔案",
+            "help": "更大的頁面和檔案會被略過，並列在上次同步中。",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "也追蹤指向其他網站的連結",
+            "help": "通常關閉：爬取可能會遠遠超出此網站。"
+          },
+          "use_headless_browser": {
+            "label": "一律使用瀏覽器（較慢）",
+            "help": "關閉時：PipesHub 會偵測需要 JavaScript 的頁面，只對這些網站使用瀏覽器。"
+          },
+          "browser_like_identity": {
+            "label": "以網頁瀏覽器身分存取",
+            "help": "關閉時：要求會以 PipesHub 爬蟲的身分送出。僅對允許你爬取但會封鎖爬蟲的網站開啟；仍會遵守 robots.txt。"
+          },
+          "respect_robots_txt": {
+            "label": "遵守 robots.txt",
+            "help": "略過網站要求爬蟲不要造訪或建立索引的頁面。"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "網站"
+          },
+          "crawl": {
+            "title": "爬取內容"
+          },
+          "skip": {
+            "title": "略過內容"
+          },
+          "advanced": {
+            "title": "進階",
+            "description": "爬取深度、檔案大小、瀏覽器和爬蟲身分。"
+          }
+        },
+        "summaryOn": "{{label}}：開",
+        "summaryOff": "{{label}}：關",
+        "summaryValue": "{{label}}：{{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "從範本開始",
+        "custom": "自訂",
+        "suggested": "依此網址建議：{{name}}",
+        "replaceTitle": "要取代目前的設定嗎？",
+        "replaceMessage": "「{{name}}」將取代你目前的爬取設定。",
+        "replaceConfirm": "取代",
+        "web": {
+          "docs": "文件網站",
+          "helpCenter": "說明中心",
+          "wholeSite": "整個網站",
+          "onePage": "單一頁面"
+        }
       }
     },
     "mcpServers": {

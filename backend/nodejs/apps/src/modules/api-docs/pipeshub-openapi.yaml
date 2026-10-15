@@ -14167,6 +14167,29 @@ components:
         updatedAtTimestamp:
           type: integer
           description: Epoch milliseconds
+        lastSyncStartedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run started; absent before the first run
+        lastSyncFinishedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run ended, however it ended; absent until a run ends
+        lastSyncOutcome:
+          type: string
+          nullable: true
+          enum: [succeeded, failed, stopped, skipped]
+          description: How the last sync run ended
+        lastSyncSummary:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
+            deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         config:
           $ref: '#/components/schemas/ConnectorSchema'
 

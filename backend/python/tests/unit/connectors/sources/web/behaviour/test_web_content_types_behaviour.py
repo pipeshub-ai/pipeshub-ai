@@ -3,10 +3,12 @@ oversized downloads, and pages the user's filters exclude.
 """
 
 import base64
+import json
 
 import pytest
 from web_behaviour_fakes import (
     START_URL,
+    FakeCheckpointStore,
     FakeRecordsDb,
     FakeWeb,
     MakeConnector,
@@ -19,7 +21,7 @@ from app.config.constants.arangodb import MimeTypes, ProgressStatus
 MB = 1024 * 1024
 TOO_LARGE = (
     "This file is larger than this connector's 1 MB size limit, so it wasn't downloaded. "
-    "Raise the Maximum Size in MB setting to include it, then sync again."
+    "Raise Largest file to download (Advanced settings) to include it, then sync again."
 )
 OFFICE_TYPES = "application/vnd.openxmlformats-officedocument"
 
@@ -137,12 +139,11 @@ async def test_an_oversized_download_does_not_start_the_headless_browser(
     site.html(START_URL, "Home", "/huge.pdf")
     site.add(big, Page(body=b"x" * (2 * MB), content_type="application/pdf"))
     connector = await make_connector(max_size_mb=1)
-    starts_after_init = site.browser_starts
 
     await connector.run_sync()
 
     assert big not in site.browser_visits
-    assert site.browser_starts == starts_after_init
+    assert site.browser_starts <= 1, "only the start page's rendering check may use the browser"
 
 
 async def test_an_oversized_page_without_a_declared_size_is_shown_as_too_large(
@@ -322,3 +323,18 @@ async def test_robust_mode_fetches_a_document_served_from_a_url_without_an_exten
     record = db.pages()[url]
     assert record.mime_type == MimeTypes.PDF.value
     assert site_bytes(browser, db, url) == b"%PDF-1.4 report"
+
+
+async def test_robust_mode_reports_an_oversized_page_as_413_like_plain_mode(
+    browser: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector
+) -> None:
+    """The browser answers 200 for the page; the run report counts it as too large either way."""
+    big = "http://site.test/big"
+    browser.html(START_URL, "Home", "/big")
+    browser.html(big, "Big", text="x" * (2 * MB))
+
+    await (await make_connector(use_headless_browser=True, max_size_mb=1)).run_sync()
+
+    assert db.pages()[big].reason == TOO_LARGE
+    (saved,) = checkpoints.sync_points.values()
+    assert json.loads(saved["lastRun"])["failed_by_status"] == {"413": 1}

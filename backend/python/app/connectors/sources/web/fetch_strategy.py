@@ -26,6 +26,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from http import HTTPStatus
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -65,6 +66,9 @@ REQUEST_TIMEOUT = 15
 # asyncio.sleep yields to the event loop, so other concurrent domain fetches are
 # never blocked while one URL is backing off.
 MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
+# All the waiting one fetch may do on 429/503 answers, across every strategy and attempt. Longer
+# waits are the crawl's per-site retry's to make, which go on crawling other pages meanwhile.
+RATE_LIMIT_WAIT_BUDGET = 60.0
 
 
 def _hop_deadline(timeout: float) -> float:
@@ -103,6 +107,29 @@ _FETCH_THREADS = ThreadPoolExecutor(max_workers=32, thread_name_prefix="web-fetc
 # ---------------------------------------------------------------------------
 # Shared stealth headers
 # ---------------------------------------------------------------------------
+
+
+# Who the crawler says it is when not asked to look like a browser; robots.txt groups for "PipesHub" apply to it.
+PIPESHUB_USER_AGENT = "Mozilla/5.0 (compatible; PipesHub/1.0; +https://docs.pipeshub.com/connectors/web)"
+
+
+def build_crawler_headers(
+    url: str, referer: str | None = None, extra: dict | None = None, *, browser_like: bool = True,
+) -> dict:
+    """The request headers for a crawl: a browser's, or PipesHub's own."""
+    if browser_like:
+        return build_stealth_headers(url, referer=referer, extra=extra)
+    parsed = urlparse(url)
+    headers = {
+        "User-Agent": PIPESHUB_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": referer or f"{parsed.scheme}://{parsed.netloc}/",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
 
 
 def build_stealth_headers(url: str, referer: Optional[str] = None, extra: Optional[dict] = None) -> dict:
@@ -253,6 +280,7 @@ class _HopWalk:
     allow_hop: Callable[[str], Awaitable[bool]] | None
     validators_for: Callable[[str], Awaitable[dict | None]] | None
     max_bytes: int | None
+    browser_like: bool = True
 
 
 class _RequestsLike(Protocol):
@@ -455,7 +483,9 @@ async def _walk_hops(
             pin = await resolve_target(current)
         except UnsafeAddressError:
             return unsafe_address_response(current)
-        headers = build_stealth_headers(current, referer=walk.referer, extra=walk.extra_headers)
+        headers = build_crawler_headers(
+            current, referer=walk.referer, extra=walk.extra_headers, browser_like=walk.browser_like,
+        )
         if walk.validators_for is not None:
             headers.update(await walk.validators_for(current) or {})
         hop = await get(current, headers, pin)
@@ -792,6 +822,7 @@ async def fetch_url_with_fallback(
     preferred_strategy: Optional[str] = None,
     allow_hop: Callable[[str], Awaitable[bool]] | None = None,
     validators_for: Callable[[str], Awaitable[dict | None]] | None = None,
+    browser_like: bool = True,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -832,10 +863,13 @@ async def fetch_url_with_fallback(
                                    fetches to the same strategy that worked for the parent page.
                                    If the name doesn't match any known strategy the full chain is
                                    used as a safety net.
+        browser_like:              Look like a browser: its headers, the impersonating strategies, and
+                                   another try past a 403. False sends PipesHub's own headers through
+                                   aiohttp only, and takes a 403 as the site's answer.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
-    headers = build_stealth_headers(url, referer=referer, extra=extra_headers)
+    headers = build_crawler_headers(url, referer=referer, extra=extra_headers, browser_like=browser_like)
 
     if max_size_mb is not None:
         max_size_bytes = max_size_mb * 1024 * 1024
@@ -871,12 +905,17 @@ async def fetch_url_with_fallback(
         url=url, referer=referer, extra_headers=extra_headers, allow_hop=allow_hop,
         validators_for=validators_for,
         max_bytes=max_size_mb * 1024 * 1024 if max_size_mb is not None else None,
+        browser_like=browser_like,
     )
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("curl_cffi(H2)", lambda: _hops_curl_cffi(walk, timeout, logger)),
         ("cloudscraper", lambda: _hops_cloudscraper(walk, timeout, logger)),
         ("aiohttp", lambda: _hops_aiohttp(session, walk, timeout, logger)),
     ]
+
+    if not browser_like:
+        # The other strategies exist to pass for a browser.
+        all_strategies = [(name, fn) for name, fn in all_strategies if name == "aiohttp"]
 
     # When a preferred strategy is given (e.g. from a cached page-level fetch),
     # use ONLY that strategy — no fallback — to avoid wasted attempts.
@@ -903,10 +942,13 @@ async def fetch_url_with_fallback(
     # decide whether to queue the URL for a post-crawl retry.
     last_failed_result: FetchResponse | None = None
     pool_busy = False
+    wait_left = RATE_LIMIT_WAIT_BUDGET
 
     for strategy_name, strategy_fn in strategies:
         if pool_busy and strategy_name in _POOLED_STRATEGIES:
             continue
+        rate_limited_out = False
+        no_answer = False
         for attempt in range(max_retries_per_strategy):
             if attempt > 0:
                 # Backoff between retries of same strategy: 1s, 2s, ...
@@ -937,7 +979,10 @@ async def fetch_url_with_fallback(
                     logger.debug(
                         f"🔄 [{strategy_name}] No result on attempt {attempt + 1}/{max_retries_per_strategy}"
                     )
-                    break  # exit backoff loop, go to next strategy attempt
+                    # A site that didn't answer this client likely won't on a second try either:
+                    # the next strategy is the retry, and the crawl's per-site retry comes later.
+                    no_answer = True
+                    break
 
                 status = result.status_code
 
@@ -971,12 +1016,13 @@ async def fetch_url_with_fallback(
                         result.retry_after = delay
                         return result
 
-                    if exp_delay >= MAX_RATE_LIMIT_BACKOFF:
+                    if exp_delay >= MAX_RATE_LIMIT_BACKOFF or delay > wait_left:
                         logger.warning(
-                            "⚠️ [%s] HTTP %s persists after max backoff (%.0fs) for %s, trying next strategy",
-                            strategy_name, status, exp_delay, url,
+                            "⚠️ [%s] HTTP %s persists for %s after this fetch's back-off; trying next strategy",
+                            strategy_name, status, url,
                         )
                         last_failed_result = result
+                        rate_limited_out = True
                         break
 
                     logger.warning(
@@ -984,9 +1030,14 @@ async def fetch_url_with_fallback(
                         strategy_name, status, url, delay, _rl_attempt + 1,
                     )
                     await asyncio.sleep(delay)
+                    wait_left -= delay
 
                     _rl_attempt += 1
                     continue
+
+                # Without disguises there is nothing new to try: a refusal is the site's answer.
+                if status == HTTPStatus.FORBIDDEN and not browser_like:
+                    return result
 
                 # ---- Bot detection (403, 999, 520-530) -> backoff, then try next strategy attempt ----
                 if status in _BOT_DETECTION_CODES:
@@ -997,11 +1048,13 @@ async def fetch_url_with_fallback(
                     retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
                     server_delay = parse_retry_after(retry_after)
                     delay = server_delay if server_delay else 2.0
-                    if delay > MAX_RATE_LIMIT_BACKOFF:
+                    if delay > MAX_RATE_LIMIT_BACKOFF or delay > wait_left:
+                        # Longer than this fetch may still wait: the crawl's per-site retry waits instead.
                         result.retry_after = delay
                         last_failed_result = result
                         break
                     await asyncio.sleep(delay)
+                    wait_left -= delay
                     last_failed_result = result
                     break  # break backoff loop, go to next strategy attempt
 
@@ -1025,8 +1078,14 @@ async def fetch_url_with_fallback(
                     logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
                     return result
 
-            if pool_busy:
-                break
+            if rate_limited_out and last_failed_result is not None and (
+                last_failed_result.status_code == HTTPStatus.TOO_MANY_REQUESTS or not browser_like
+            ):
+                # Another client is no answer to "slow down" (only a 503 challenge page may pass a
+                # disguise): the crawl's per-site retry and pacing take it from here.
+                return last_failed_result
+            if pool_busy or rate_limited_out or no_answer:
+                break  # another attempt of the same strategy would meet the same limit, or the same silence
 
         logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 

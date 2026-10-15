@@ -375,7 +375,8 @@
     "required": "Dieses Feld ist erforderlich",
     "invalidEmail": "Ungültige E-Mail-Adresse",
     "invalidUrl": "Ungültige URL",
-    "name": "Name"
+    "name": "Name",
+    "optional": "(optional)"
   },
   "dialog": {
     "newFolder": "Neuer Sammlungsordner",
@@ -2061,7 +2062,10 @@
         "maxLength": "{{field}} darf höchstens {{maxLength}} Zeichen lang sein",
         "email": "{{field}} muss eine gültige E-Mail-Adresse sein",
         "url": "{{field}} muss eine gültige URL sein",
-        "urlProtocol": "{{field}} muss http oder https verwenden"
+        "urlProtocol": "{{field}} muss http oder https verwenden",
+        "numberRange": "Geben Sie eine ganze Zahl von {{min, number}} bis {{max, number}} ein.",
+        "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
+        "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
       "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
       "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können."
@@ -2444,7 +2448,13 @@
         "syncStrategyHelper": "Wählen Sie, wie Daten von {{name}} synchronisiert werden",
         "syncInterval": "Synchronisierungsintervall",
         "syncIntervalPlaceholder": "Intervall wählen...",
-        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
+        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden",
+        "lastRunLimit": {
+          "saved": "Letzte Synchronisierung: {{count, number}} Seiten gespeichert",
+          "stoppedAtLimit": "bei diesem Limit angehalten",
+          "leftOut": "{{count, number}} ausgelassen",
+          "nearLimit": "Dieser Connector speichert bereits mindestens 90 % dieses Limits. Erhöhen Sie es, um mehr Seiten dieser Website zu behalten."
+        }
       },
       "instancePanel": {
         "overview": "Übersicht",
@@ -2477,7 +2487,31 @@
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "lastRun": {
+          "title": "Letzte Synchronisierung",
+          "outcome": {
+            "succeeded": "Abgeschlossen",
+            "failed": "Fehlgeschlagen",
+            "stopped": "Angehalten",
+            "skipped": "Übersprungen"
+          },
+          "stopReason": {
+            "max_pages": "Seitenlimit erreicht",
+            "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
+            "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+          },
+          "pagesSaved": "{{count}} Seiten gespeichert",
+          "failed": "{{count}} Seiten fehlgeschlagen",
+          "robotsSkipped": "{{count}} durch robots.txt übersprungen",
+          "noindexSkipped": "{{count}} sollen nicht indexiert werden",
+          "skippedMaxPages": "{{count}} wegen des Seitenlimits ausgelassen",
+          "pruned": "{{count}} entfernt, nicht mehr auf der Website",
+          "sitemapUrls": "{{count}} in Sitemaps gefunden",
+          "resumed": "Unvollständige Synchronisierung fortgesetzt",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -2667,6 +2701,108 @@
           "confirm": "Neuindizierung starten"
         },
         "typePrompt": "Geben Sie zur Bestätigung {{token}} ein."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "Start-URL",
+            "help": "Die erste Seite, die PipesHub aufruft. Nach dem Speichern lässt sie sich nicht mehr ändern; für eine andere Website fügen Sie einen weiteren Connector hinzu."
+          },
+          "type": {
+            "label": "Crawlen",
+            "options": {
+              "single": "Nur diese Seite",
+              "recursive": "Diese Seite und die darauf verlinkten Seiten"
+            }
+          },
+          "discovery": {
+            "label": "Seiten finden über",
+            "help": "Sitemaps sind am schnellsten; Links finden Seiten, die in keiner Sitemap stehen.",
+            "options": {
+              "sitemap_and_links": "Sitemaps und Links (empfohlen)",
+              "links": "Nur Links",
+              "sitemap": "Nur Sitemaps"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "In diesem Bereich bleiben",
+            "help": "Nur Seiten unterhalb des Pfads der Start-URL, etwa /docs/."
+          },
+          "max_pages": {
+            "label": "Maximale Seitenzahl",
+            "help": "PipesHub behält höchstens so viele Seiten dieser Website. Dateien wie PDFs zählen als Seiten.",
+            "unit": "Seiten"
+          },
+          "url_should_contain": {
+            "label": "Nur Seiten speichern, deren URL Folgendes enthält",
+            "help": "Leer lassen, um alle Seiten zu speichern. Nicht passende Seiten werden nicht aufgerufen, ihren Links wird also auch nicht gefolgt."
+          },
+          "ignore_query_params": {
+            "label": "Gleiche Seite, andere URL",
+            "help": "URL-Parameter, die die Seite nicht verändern, etwa sort oder ref. * steht für alle. Tracking-Parameter (utm_…) werden immer ignoriert."
+          },
+          "depth": {
+            "label": "Klicks von der Startseite",
+            "help": "Wie weit Links gefolgt wird. Seiten aus einer Sitemap zählen als ein Klick.",
+            "unit": "Klicks"
+          },
+          "max_size_mb": {
+            "label": "Größte herunterzuladende Datei",
+            "help": "Größere Seiten und Dateien werden übersprungen und in der letzten Synchronisierung aufgeführt.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Auch Links zu anderen Websites folgen",
+            "help": "Meist aus: Der Crawl kann sich weit über diese Website hinaus ausdehnen."
+          },
+          "use_headless_browser": {
+            "label": "Immer einen Browser verwenden (langsamer)",
+            "help": "Aus: PipesHub erkennt Seiten, die JavaScript brauchen, und nutzt nur für diese Websites einen Browser."
+          },
+          "browser_like_identity": {
+            "label": "Als Webbrowser ausgeben",
+            "help": "Aus: Anfragen geben sich als PipesHub-Crawler zu erkennen. Nur für eine Website einschalten, die Sie crawlen dürfen und die Crawler blockiert; robots.txt wird weiterhin beachtet."
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt beachten",
+            "help": "Seiten überspringen, die Crawler laut Website nicht besuchen oder indexieren sollen."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Website"
+          },
+          "crawl": {
+            "title": "Was gecrawlt wird"
+          },
+          "skip": {
+            "title": "Was übersprungen wird"
+          },
+          "advanced": {
+            "title": "Erweitert",
+            "description": "Crawl-Tiefe, Dateigröße, Browser und Crawler-Kennung."
+          }
+        },
+        "summaryOn": "{{label}} an",
+        "summaryOff": "{{label}} aus",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Ausgangspunkt",
+        "custom": "Benutzerdefiniert",
+        "suggested": "Vorschlag für diese Adresse: {{name}}",
+        "replaceTitle": "Aktuelle Einstellungen ersetzen?",
+        "replaceMessage": "„{{name}}“ ersetzt Ihre aktuellen Crawl-Einstellungen.",
+        "replaceConfirm": "Ersetzen",
+        "web": {
+          "docs": "Dokumentation",
+          "helpCenter": "Hilfe-Center",
+          "wholeSite": "Ganze Website",
+          "onePage": "Eine Seite"
+        }
       }
     },
     "mcpServers": {

@@ -375,7 +375,8 @@
     "required": "यह फ़ील्ड आवश्यक है",
     "invalidEmail": "अमान्य ईमेल पता",
     "invalidUrl": "अमान्य URL",
-    "name": "नाम"
+    "name": "नाम",
+    "optional": "(वैकल्पिक)"
   },
   "dialog": {
     "newFolder": "नया कलेक्शन फ़ोल्डर",
@@ -2056,7 +2057,10 @@
         "maxLength": "{{field}} में {{maxLength}} से अधिक अक्षर नहीं हो सकते",
         "email": "{{field}} एक मान्य ईमेल पता होना चाहिए",
         "url": "{{field}} एक मान्य URL होना चाहिए",
-        "urlProtocol": "{{field}} में http या https का उपयोग होना चाहिए"
+        "urlProtocol": "{{field}} में http या https का उपयोग होना चाहिए",
+        "numberRange": "{{min, number}} से {{max, number}} तक कोई पूर्ण संख्या दर्ज करें।",
+        "numberMin": "कम से कम {{min, number}} की कोई पूर्ण संख्या दर्ज करें।",
+        "numberMax": "अधिकतम {{max, number}} तक की कोई पूर्ण संख्या दर्ज करें।"
       },
       "adminRequiredToast": "केवल व्यवस्थापक नई क्रियाएँ जोड़ सकते हैं। अपने व्यवस्थापक से पहले यह क्रिया कॉन्फ़िगर करने को कहें।",
       "personalNonAdminHint": "\"कॉन्फ़िगर नहीं\" चिह्नित क्रियाओं को उपयोग करने से पहले व्यवस्थापक द्वारा सेट किया जाना आवश्यक है।"
@@ -2439,7 +2443,13 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "lastRunLimit": {
+          "saved": "पिछला सिंक: {{count, number}} पेज संग्रहीत",
+          "stoppedAtLimit": "इस सीमा पर रुका",
+          "leftOut": "{{count, number}} छोड़े गए",
+          "nearLimit": "यह कनेक्टर इस सीमा का कम से कम 90% पहले से संग्रहीत करता है। इस साइट के और पेज रखने के लिए इसे बढ़ाएँ।"
+        }
       },
       "instancePanel": {
         "overview": "Overview",
@@ -2472,7 +2482,31 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "लोकल वॉचर",
-        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
+        "lastRun": {
+          "title": "पिछला सिंक",
+          "outcome": {
+            "succeeded": "पूरा हुआ",
+            "failed": "विफल",
+            "stopped": "रोका गया",
+            "skipped": "छोड़ा गया"
+          },
+          "stopReason": {
+            "max_pages": "अधिकतम पेज सीमा तक पहुँचा",
+            "time_limit": "समय सीमा तक पहुँचा; अगला सिंक यहीं से जारी रहेगा",
+            "stalled": "साइट ने जवाब देना बंद कर दिया; अगला सिंक यहीं से जारी रहेगा",
+            "rate_limited": "साइट बार-बार कम अनुरोध भेजने को कहती रही; अगला सिंक यहीं से जारी रहेगा"
+          },
+          "pagesSaved": "{{count}} पेज सहेजे गए",
+          "failed": "{{count}} पेज विफल",
+          "robotsSkipped": "robots.txt के कारण {{count}} छोड़े गए",
+          "noindexSkipped": "{{count}} ने इंडेक्स न करने को कहा",
+          "skippedMaxPages": "अधिकतम पेज सीमा के कारण {{count}} छोड़े गए",
+          "pruned": "{{count}} हटाए गए, अब साइट पर नहीं हैं",
+          "sitemapUrls": "साइटमैप में {{count}} मिले",
+          "resumed": "अधूरे सिंक को आगे बढ़ाया",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -2662,6 +2696,108 @@
           "confirm": "पुनः इंडेक्सिंग शुरू करें"
         },
         "typePrompt": "पुष्टि के लिए {{token}} टाइप करें।"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "शुरुआती URL",
+            "help": "वह पहला पेज जिस पर PipesHub जाता है। सेव करने के बाद इसे बदला नहीं जा सकता; किसी दूसरी साइट को क्रॉल करने के लिए एक और कनेक्टर जोड़ें।"
+          },
+          "type": {
+            "label": "क्रॉल करें",
+            "options": {
+              "single": "केवल यह पेज",
+              "recursive": "यह पेज और इससे लिंक किए गए पेज"
+            }
+          },
+          "discovery": {
+            "label": "पेज इनसे खोजें",
+            "help": "साइटमैप सबसे तेज़ हैं; लिंक उन पेजों को ढूँढते हैं जो साइटमैप में नहीं हैं।",
+            "options": {
+              "sitemap_and_links": "साइटमैप और लिंक (अनुशंसित)",
+              "links": "केवल लिंक",
+              "sitemap": "केवल साइटमैप"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "इसी सेक्शन में रहें",
+            "help": "केवल शुरुआती URL के पाथ के नीचे के पेज, जैसे /docs/।"
+          },
+          "max_pages": {
+            "label": "अधिकतम पेज",
+            "help": "PipesHub इस साइट से अधिकतम इतने पेज रखता है। PDF जैसी फ़ाइलें भी पेज गिनी जाती हैं।",
+            "unit": "पेज"
+          },
+          "url_should_contain": {
+            "label": "केवल वे पेज सेव करें जिनके URL में यह हो",
+            "help": "हर पेज सेव करने के लिए खाली छोड़ें। जो पेज मेल नहीं खाते उन पर जाया नहीं जाता, इसलिए उनके लिंक भी फ़ॉलो नहीं होते।"
+          },
+          "ignore_query_params": {
+            "label": "वही पेज, अलग URL",
+            "help": "ऐसे URL पैरामीटर जो पेज नहीं बदलते, जैसे sort या ref। सभी के लिए * लिखें। ट्रैकिंग पैरामीटर (utm_…) हमेशा अनदेखे किए जाते हैं।"
+          },
+          "depth": {
+            "label": "शुरुआती पेज से क्लिक",
+            "help": "लिंक कितनी दूर तक फ़ॉलो करने हैं। साइटमैप में दिए पेज एक क्लिक गिने जाते हैं।",
+            "unit": "क्लिक"
+          },
+          "max_size_mb": {
+            "label": "डाउनलोड होने वाली सबसे बड़ी फ़ाइल",
+            "help": "इससे बड़े पेज और फ़ाइलें छोड़ दी जाती हैं और पिछले सिंक में दिखाई जाती हैं।",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "दूसरी साइटों के लिंक भी फ़ॉलो करें",
+            "help": "आमतौर पर बंद: क्रॉल इस साइट से बहुत आगे तक जा सकता है।"
+          },
+          "use_headless_browser": {
+            "label": "हमेशा ब्राउज़र का उपयोग करें (धीमा)",
+            "help": "बंद: PipesHub उन पेजों को पहचानता है जिन्हें JavaScript चाहिए और केवल उन्हीं साइटों के लिए ब्राउज़र का उपयोग करता है।"
+          },
+          "browser_like_identity": {
+            "label": "वेब ब्राउज़र के रूप में पहचान दें",
+            "help": "बंद: अनुरोध PipesHub क्रॉलर के रूप में पहचाने जाते हैं। इसे केवल ऐसी साइट के लिए चालू करें जिसे आप क्रॉल कर सकते हैं और जो क्रॉलर को रोकती है; robots.txt का पालन तब भी होता है।"
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt का पालन करें",
+            "help": "वे पेज छोड़ें जिन पर साइट क्रॉलर से न जाने या उन्हें इंडेक्स न करने को कहती है।"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "वेबसाइट"
+          },
+          "crawl": {
+            "title": "क्या क्रॉल करना है"
+          },
+          "skip": {
+            "title": "क्या छोड़ना है"
+          },
+          "advanced": {
+            "title": "उन्नत",
+            "description": "क्रॉल गहराई, फ़ाइल आकार, ब्राउज़र और क्रॉलर पहचान।"
+          }
+        },
+        "summaryOn": "{{label}} चालू",
+        "summaryOff": "{{label}} बंद",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "इससे शुरू करें",
+        "custom": "कस्टम",
+        "suggested": "इस पते के लिए सुझाव: {{name}}",
+        "replaceTitle": "अपनी मौजूदा सेटिंग्स बदलें?",
+        "replaceMessage": "{{name}} आपकी मौजूदा क्रॉल सेटिंग्स की जगह ले लेगा।",
+        "replaceConfirm": "बदलें",
+        "web": {
+          "docs": "डॉक्स साइट",
+          "helpCenter": "हेल्प सेंटर",
+          "wholeSite": "पूरी साइट",
+          "onePage": "एक पेज"
+        }
       }
     },
     "mcpServers": {

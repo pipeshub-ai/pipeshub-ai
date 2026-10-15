@@ -69,23 +69,32 @@ export class ScheduledJobsBackfillMigration {
     this.backoffInitialDelayMs = backoffOptions.initialDelayMs ?? BACKFILL_INITIAL_DELAY_MS;
   }
 
-  async run(): Promise<{ scheduled: number; skipped: number; errored: number }> {
+  /**
+   * `ignoreDoneFlag` makes this a repair pass rather than a migration: it recreates the job of any
+   * scheduled connector that lost it (a schedule write that failed after a save, a Redis flush),
+   * and leaves every connector that has one alone.
+   */
+  async run(
+    { ignoreDoneFlag = false }: { ignoreDoneFlag?: boolean } = {},
+  ): Promise<{ scheduled: number; skipped: number; errored: number }> {
     // Guard: skip if a previous successful run already set the flag.
-    try {
-      const flag = await this.kvStore.get<string>(
-        configPaths.connectorSyncScheduledJobsMigrationV2,
-      );
-      if (flag === MIGRATION_FLAG_DONE) {
-        this.logger.info(
-          'Connector-sync scheduled-jobs migration already completed; skipping',
+    if (!ignoreDoneFlag) {
+      try {
+        const flag = await this.kvStore.get<string>(
+          configPaths.connectorSyncScheduledJobsMigrationV2,
         );
-        return { scheduled: 0, skipped: 0, errored: 0 };
+        if (flag === MIGRATION_FLAG_DONE) {
+          this.logger.info(
+            'Connector-sync scheduled-jobs migration already completed; skipping',
+          );
+          return { scheduled: 0, skipped: 0, errored: 0 };
+        }
+      } catch (error) {
+        this.logger.warn(
+          'Failed to read migration flag; proceeding with idempotent run',
+          { error: error instanceof Error ? error.message : 'Unknown error' },
+        );
       }
-    } catch (error) {
-      this.logger.warn(
-        'Failed to read migration flag; proceeding with idempotent run',
-        { error: error instanceof Error ? error.message : 'Unknown error' },
-      );
     }
 
     this.logger.info('Starting connector-sync scheduled-jobs backfill migration');
@@ -94,7 +103,7 @@ export class ScheduledJobsBackfillMigration {
     // more -- the queue and the worker both look under the hash-tagged prefix
     // now -- so leaving them behind means the old repeatable-job schedules sit
     // in Redis forever, invisible and un-removable through the BullMQ API.
-    await this.sweepLegacyQueueKeys();
+    if (!ignoreDoneFlag) await this.sweepLegacyQueueKeys();
 
     // Fetch the first batch with exponential backoff — the connector service
     // may still be starting up on the first boot.

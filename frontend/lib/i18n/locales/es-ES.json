@@ -382,7 +382,8 @@
     "required": "Este campo es obligatorio",
     "invalidEmail": "Correo electrónico no válido",
     "invalidUrl": "URL no válida",
-    "name": "Nombre"
+    "name": "Nombre",
+    "optional": "(opcional)"
   },
   "dialog": {
     "newFolder": "Nueva carpeta de colección",
@@ -2079,7 +2080,10 @@
         "maxLength": "{{field}} no puede tener más de {{maxLength}} caracteres",
         "email": "{{field}} debe ser una dirección de correo electrónico válida",
         "url": "{{field}} debe ser una URL válida",
-        "urlProtocol": "{{field}} debe usar http o https"
+        "urlProtocol": "{{field}} debe usar http o https",
+        "numberRange": "Introduce un número entero de {{min, number}} a {{max, number}}.",
+        "numberMin": "Introduce un número entero de al menos {{min, number}}.",
+        "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
       "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
       "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas."
@@ -2462,7 +2466,13 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "lastRunLimit": {
+          "saved": "Última sincronización: {{count, number}} páginas almacenadas",
+          "stoppedAtLimit": "detenida en este límite",
+          "leftOut": "{{count, number}} omitidas",
+          "nearLimit": "Este conector ya almacena al menos el 90 % de este límite. Auméntalo para conservar más páginas de este sitio."
+        }
       },
       "instancePanel": {
         "overview": "Overview",
@@ -2495,7 +2505,31 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
-        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "lastRun": {
+          "title": "Última sincronización",
+          "outcome": {
+            "succeeded": "Completada",
+            "failed": "Fallida",
+            "stopped": "Detenida",
+            "skipped": "Omitida"
+          },
+          "stopReason": {
+            "max_pages": "Alcanzó el límite de páginas",
+            "time_limit": "Alcanzó su límite de tiempo; la próxima sincronización continúa",
+            "stalled": "El sitio dejó de responder; la próxima sincronización continúa",
+            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa"
+          },
+          "pagesSaved": "{{count}} páginas guardadas",
+          "failed": "{{count}} páginas con error",
+          "robotsSkipped": "{{count}} omitidas por robots.txt",
+          "noindexSkipped": "{{count}} pidieron no ser indexadas",
+          "skippedMaxPages": "{{count}} excluidas por el límite de páginas",
+          "pruned": "{{count}} eliminadas, ya no están en el sitio",
+          "sitemapUrls": "{{count}} encontradas en sitemaps",
+          "resumed": "Continuó una sincronización sin terminar",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -2685,6 +2719,108 @@
           "confirm": "Iniciar la reindexación"
         },
         "typePrompt": "Escriba {{token}} para confirmar."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "URL de inicio",
+            "help": "La primera página que visita PipesHub. No se puede cambiar después de guardar; para rastrear otro sitio, añade otro conector."
+          },
+          "type": {
+            "label": "Rastrear",
+            "options": {
+              "single": "Solo esta página",
+              "recursive": "Esta página y las páginas a las que enlaza"
+            }
+          },
+          "discovery": {
+            "label": "Buscar páginas mediante",
+            "help": "Los sitemaps son lo más rápido; los enlaces encuentran páginas que faltan en el sitemap.",
+            "options": {
+              "sitemap_and_links": "Sitemaps y enlaces (recomendado)",
+              "links": "Solo enlaces",
+              "sitemap": "Solo sitemaps"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "Quedarse en esta sección",
+            "help": "Solo páginas bajo la ruta de la URL de inicio, como /docs/."
+          },
+          "max_pages": {
+            "label": "Máximo de páginas",
+            "help": "PipesHub conserva como máximo este número de páginas de este sitio. Los archivos como los PDF cuentan como páginas.",
+            "unit": "páginas"
+          },
+          "url_should_contain": {
+            "label": "Guardar solo páginas cuya URL contenga",
+            "help": "Déjalo vacío para guardar todas las páginas. Las páginas que no coinciden no se visitan, así que tampoco se siguen sus enlaces."
+          },
+          "ignore_query_params": {
+            "label": "Misma página, otra URL",
+            "help": "Parámetros de URL que no cambian la página, como sort o ref. Usa * para todos. Los parámetros de seguimiento (utm_…) se ignoran siempre."
+          },
+          "depth": {
+            "label": "Clics desde la página de inicio",
+            "help": "Hasta dónde seguir los enlaces. Las páginas de un sitemap cuentan como un clic.",
+            "unit": "clics"
+          },
+          "max_size_mb": {
+            "label": "Archivo más grande que se descarga",
+            "help": "Las páginas y archivos más grandes se omiten y aparecen en la última sincronización.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Seguir también enlaces a otros sitios",
+            "help": "Normalmente desactivado: el rastreo puede extenderse mucho más allá de este sitio."
+          },
+          "use_headless_browser": {
+            "label": "Usar siempre un navegador (más lento)",
+            "help": "Desactivado: PipesHub detecta las páginas que necesitan JavaScript y usa un navegador solo para esos sitios."
+          },
+          "browser_like_identity": {
+            "label": "Identificarse como navegador web",
+            "help": "Desactivado: las solicitudes se identifican como el rastreador de PipesHub. Actívalo solo para un sitio que puedas rastrear y que bloquee rastreadores; robots.txt se sigue respetando."
+          },
+          "respect_robots_txt": {
+            "label": "Respetar robots.txt",
+            "help": "Omitir las páginas que el sitio pide a los rastreadores no visitar ni indexar."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Sitio web"
+          },
+          "crawl": {
+            "title": "Qué rastrear"
+          },
+          "skip": {
+            "title": "Qué omitir"
+          },
+          "advanced": {
+            "title": "Avanzado",
+            "description": "Profundidad del rastreo, tamaño de archivo, navegador e identidad del rastreador."
+          }
+        },
+        "summaryOn": "{{label}} activado",
+        "summaryOff": "{{label}} desactivado",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Empezar desde",
+        "custom": "Personalizado",
+        "suggested": "Sugerido para esta dirección: {{name}}",
+        "replaceTitle": "¿Reemplazar la configuración actual?",
+        "replaceMessage": "«{{name}}» reemplaza tu configuración de rastreo actual.",
+        "replaceConfirm": "Reemplazar",
+        "web": {
+          "docs": "Sitio de documentación",
+          "helpCenter": "Centro de ayuda",
+          "wholeSite": "Sitio completo",
+          "onePage": "Una página"
+        }
       }
     },
     "mcpServers": {

@@ -165,6 +165,35 @@ describe('ScheduledJobsBackfillMigration', () => {
   // ------------------------------------------------------------
   // Successful schedule
   // ------------------------------------------------------------
+  describe('repair pass (ignoreDoneFlag)', () => {
+    it('recreates a missing job even after the migration has completed', async () => {
+      const kv = makeKvStore('true');
+      const scheduler = makeScheduler();
+      executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+      const m = new ScheduledJobsBackfillMigration(
+        makeLogger() as any, kv as any, scheduler as any, makeAppConfig(), noBackoff,
+      );
+
+      const result = await m.run({ ignoreDoneFlag: true });
+
+      expect(kv.get.called).to.equal(false);
+      expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+      expect(result.scheduled).to.equal(1);
+    });
+
+    it('leaves a connector that still has its job alone', async () => {
+      const scheduler = makeScheduler({ getJobStatus: sinon.stub().resolves({ id: 'existing-job' }) });
+      executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+      const m = new ScheduledJobsBackfillMigration(
+        makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
+      );
+
+      await m.run({ ignoreDoneFlag: true });
+
+      expect(scheduler.scheduleJob.called).to.equal(false);
+    });
+  });
+
   describe('successful schedule', () => {
     it('schedules each SCHEDULED+active connector and sets the flag', async () => {
       const logger = makeLogger();

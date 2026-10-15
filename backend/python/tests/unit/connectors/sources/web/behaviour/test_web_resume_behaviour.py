@@ -1,0 +1,203 @@
+"""An unfinished crawl carries on where it stopped (scenario DI-09).
+
+Before, every sync started again from the start page, so a crawl that couldn't finish in one go
+(rate limits, a restart, a stop) redid the same first pages for ever and never reached the rest.
+"""
+
+import asyncio
+import json
+
+import pytest
+from web_behaviour_fakes import (
+    START_URL,
+    FakeCheckpointStore,
+    FakeRecordsDb,
+    FakeWeb,
+    MakeConnector,
+    Page,
+)
+
+from app.config.constants.arangodb import ProgressStatus
+from app.connectors.sources.web import connector as connector_module
+from app.connectors.sources.web.budget import MAX_RUN_HOURS_ENV
+from app.connectors.sources.web.connector import MAX_RETRIES
+
+PAGES = [f"http://site.test/p{i}" for i in range(6)]
+SLOW = "http://site.test/slow"
+
+
+def _site(site: FakeWeb) -> None:
+    site.html(START_URL, "Home", "/slow", *(p.removeprefix("http://site.test") for p in PAGES))
+    for page in PAGES:
+        site.html(page, page)
+
+
+def _saved(checkpoints: FakeCheckpointStore) -> dict:
+    (saved,) = checkpoints.sync_points.values()
+    return saved
+
+
+@pytest.fixture
+def checkpoint_every_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(connector_module, "CHECKPOINT_EVERY_PAGES", 1)
+
+
+async def test_a_crawl_that_ran_out_of_time_carries_on_without_redoing_its_pages(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _site(site)
+    site.add(SLOW, Page(status=429))  # its back-off uses up the first sync's (virtual) time
+    monkeypatch.setenv(MAX_RUN_HOURS_ENV, "0.005")
+    connector = await make_connector()
+    await connector.run_sync()
+    assert json.loads(_saved(checkpoints)["lastRun"])["outcome"] == "partial"
+    assert _saved(checkpoints)["resume"]
+    start_fetches = site.gets(START_URL)
+
+    monkeypatch.delenv(MAX_RUN_HOURS_ENV)
+    site.html(SLOW, "Slow")
+    await connector.run_sync()
+
+    assert site.gets(START_URL) == start_fetches, "the start page was done last time"
+    assert {*PAGES, SLOW} <= set(db.pages())
+    saved = _saved(checkpoints)
+    assert json.loads(saved["lastRun"])["resumed"] is True
+    assert saved["resume"] == "", "a finished crawl leaves nothing to resume"
+
+
+async def test_a_stopped_crawl_resumes_from_its_last_checkpoint(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    checkpoint_every_page: None,
+) -> None:
+    _site(site)
+    site.add(SLOW, Page(status=429))
+    connector = await make_connector()
+    task = asyncio.ensure_future(connector.run_sync())
+    while site.gets(SLOW) < 2:  # noqa: ASYNC110 - the fake site has no event to wait on
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)
+    assert _saved(checkpoints)["resume"]
+    first = {url: r.id for url, r in db.pages().items()}
+
+    site.html(SLOW, "Slow")
+    await connector.run_sync()
+
+    assert {*PAGES, SLOW} <= set(db.pages())
+    assert {url: db.pages()[url].id for url in first} == first
+
+
+async def test_pages_fetched_but_not_written_before_a_failure_are_done_on_resume(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    checkpoint_every_page: None,
+) -> None:
+    """The checkpoint never counts a page as done before its record is written."""
+    _site(site)
+    connector = await make_connector()
+    db.fail_writes = True
+    with pytest.raises(RuntimeError):
+        await connector.run_sync()
+    assert db.pages() == {}
+
+    db.fail_writes = False
+    await connector.run_sync()
+
+    assert {START_URL, *PAGES} <= set(db.pages())
+
+
+async def test_a_checkpoint_taken_under_other_settings_is_not_used(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _site(site)
+    site.add(SLOW, Page(status=429))
+    monkeypatch.setenv(MAX_RUN_HOURS_ENV, "0.005")
+    connector = await make_connector()
+    await connector.run_sync()
+    start_fetches = site.gets(START_URL)
+
+    monkeypatch.delenv(MAX_RUN_HOURS_ENV)
+    connector.config_service.sync["depth"] = 2  # read again at the next sync
+    await connector.run_sync()
+
+    assert site.gets(START_URL) == start_fetches + 1, "a different crawl starts from the start page"
+    assert json.loads(_saved(checkpoints)["lastRun"])["resumed"] is False
+
+
+async def test_a_short_database_blip_does_not_fail_the_sync(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+) -> None:
+    """RS-16: a failed write is tried again before the sync gives up."""
+    _site(site)
+    connector = await make_connector()
+    write = db.on_new_records
+    failures = [1]
+
+    async def flaky(pairs: list) -> None:
+        if failures[0]:
+            failures[0] -= 1
+            raise RuntimeError("records database unavailable")
+        await write(pairs)
+
+    db.on_new_records = flaky
+    await connector.run_sync()
+
+    assert {START_URL, *PAGES} <= set(db.pages())
+    assert json.loads(_saved(checkpoints)["lastRun"])["outcome"] == "completed"
+
+
+async def test_progress_is_saved_through_a_run_of_failed_pages(
+    site: FakeWeb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The time-based checkpoint fires even when no page is kept: before, it was only checked after one."""
+    monkeypatch.setattr(connector_module, "CHECKPOINT_EVERY_PAGES", 10**6)
+    monkeypatch.setattr(connector_module, "CHECKPOINT_EVERY_SECONDS", 0)
+    site.html(START_URL, "Home", *(p.removeprefix("http://site.test") for p in PAGES))  # all 404
+    connector = await make_connector()
+    fetched_at_save: list[int] = []
+    save = checkpoints.update_sync_point
+
+    async def spy(key: str, data: dict) -> None:
+        if data.get("resume"):
+            fetched_at_save.append(len(site.fetched_urls()))
+        await save(key, data)
+
+    checkpoints.update_sync_point = spy
+    await connector.run_sync()
+
+    assert max(fetched_at_save) == 1 + len(PAGES)
+
+
+async def test_a_page_that_failed_before_a_stop_is_recorded_as_failed_on_resume(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before, the checkpoint left out pages already given up on, so the resumed crawl never wrote their record."""
+    monkeypatch.setattr(connector_module, "CHECKPOINT_EVERY_SECONDS", 0)
+    broken = "http://site.test/broken"
+    _site(site)
+    site.html(START_URL, "Home", "/slow", "/broken", *(p.removeprefix("http://site.test") for p in PAGES))
+    site.add(SLOW, Page(status=429))
+    site.add(broken, Page(status=401))
+    connector = await make_connector()
+    task = asyncio.ensure_future(connector.run_sync())
+    while not (
+        (given_up := connector.retry_urls.get(broken)) and given_up.retries >= MAX_RETRIES and site.gets(SLOW) >= 2
+    ):  # noqa: ASYNC110 - the fake site has no event to wait on
+        await asyncio.sleep(0)
+    for _ in range(20):  # let the round end and its checkpoint be saved
+        await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0.05)
+    assert broken not in db.pages()
+
+    site.html(SLOW, "Slow")
+    await connector.run_sync()
+
+    assert json.loads(_saved(checkpoints)["lastRun"])["resumed"] is True
+    assert db.pages()[broken].indexing_status == ProgressStatus.FAILED.value

@@ -246,6 +246,9 @@ const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
  */
 const SNAPSHOT_TIMEOUT = Symbol('SNAPSHOT_TIMEOUT');
 
+/** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
+const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
+
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
   req: AuthenticatedUserRequest,
@@ -257,28 +260,34 @@ const fireConnectorScheduleReconcile = (
   if (!orgId || !actorUserId) return;
   setImmediate(async () => {
     try {
-      // Race the snapshot fetch against a hard timeout so a hung Python
-      // backend cannot block this background task indefinitely.
-      const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>((resolve) =>
-        setTimeout(() => resolve(SNAPSHOT_TIMEOUT), RECONCILE_SNAPSHOT_TIMEOUT_MS),
-      );
-      const result = await Promise.race([
-        fetchConnectorSnapshot(req, connectorId, appConfig),
-        timeoutPromise,
-      ]);
-
-      if (result === SNAPSHOT_TIMEOUT) {
-        logger.warn('Connector snapshot fetch timed out; skipping schedule reconcile', {
+      // A busy connector service answers late or not at all; a schedule left unwritten because of
+      // that would silently never run, so the read is tried again before giving up.
+      let snapshot: ConnectorSnapshot | null = null;
+      for (const wait of RECONCILE_RETRY_WAITS_MS) {
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        // Race the snapshot fetch against a hard timeout so a hung Python
+        // backend cannot block this background task indefinitely.
+        const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>((resolve) =>
+          setTimeout(() => resolve(SNAPSHOT_TIMEOUT), RECONCILE_SNAPSHOT_TIMEOUT_MS),
+        );
+        const result = await Promise.race([
+          fetchConnectorSnapshot(req, connectorId, appConfig),
+          timeoutPromise,
+        ]);
+        if (result !== SNAPSHOT_TIMEOUT && result) {
+          snapshot = result;
+          break;
+        }
+        logger.warn('Connector snapshot unavailable for schedule reconcile; will retry', {
           connectorId,
+          timedOut: result === SNAPSHOT_TIMEOUT,
           timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
         });
-        return;
       }
-
-      // result is ConnectorSnapshot | null here (fetch completed, may have failed)
-      const snapshot = result;
       if (!snapshot) {
-        // fetchConnectorSnapshot already logged the reason (4xx, network error, etc.)
+        logger.error('Could not read connector settings to update its schedule; the hourly repair will retry', {
+          connectorId,
+        });
         return;
       }
 

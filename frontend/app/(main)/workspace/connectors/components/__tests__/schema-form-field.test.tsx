@@ -341,3 +341,63 @@ describe('SchemaFormField: file upload', () => {
     expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
   });
 });
+
+describe('SchemaFormField: labels, ranges and options', () => {
+  it('ties the label, help and error to the input', () => {
+    renderField(
+      { name: 'pages', displayName: 'Maximum pages', description: 'At most this many.', fieldType: 'NUMBER', required: true },
+      { value: 0, error: 'Enter a whole number from 1 to 10,000.' }
+    );
+    const input = screen.getByLabelText(/Maximum pages/);
+    expect(input).toBe(inputByLabel('Maximum pages'));
+    const describedBy = (input.getAttribute('aria-describedby') ?? '').split(' ');
+    const texts = describedBy.map((id) => document.getElementById(id)?.textContent);
+    expect(texts).toEqual(['At most this many.', 'Enter a whole number from 1 to 10,000.']);
+    expect(screen.getByRole('alert').textContent).toBe('Enter a whole number from 1 to 10,000.');
+  });
+
+  it('uses validation.min/max as the input range and shows the unit', () => {
+    renderField(
+      {
+        name: 'max_pages',
+        displayName: 'Maximum pages',
+        fieldType: 'NUMBER',
+        required: true,
+        validation: { min: 1, max: 10000, minLength: 3 },
+        unit: 'pages',
+      } as AuthSchemaField,
+      { value: 100 }
+    );
+    const input = inputByLabel('Maximum pages');
+    expect(input.min).toBe('1');
+    expect(input.max).toBe('10000');
+    const unitId = (input.getAttribute('aria-describedby') ?? '').split(' ').pop()!;
+    expect(document.getElementById(unitId)?.textContent).toBe('pages');
+  });
+
+  it('names a switch after its label and description', () => {
+    renderField(
+      { name: 'robots', displayName: 'Respect robots.txt', description: 'Skip blocked pages.', fieldType: 'BOOLEAN' as AuthSchemaField['fieldType'], required: false },
+      { value: 'true' }
+    );
+    const toggle = screen.getByRole('switch', { name: 'Respect robots.txt' });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(document.getElementById(toggle.getAttribute('aria-describedby')!)?.textContent).toBe('Skip blocked pages.');
+  });
+
+  it('shows option labels in place of raw option values', () => {
+    renderField(
+      {
+        name: 'type',
+        displayName: 'Crawl',
+        fieldType: 'SELECT',
+        required: true,
+        options: ['single', 'recursive'],
+        optionLabels: { single: 'Only this page' },
+      } as AuthSchemaField,
+      { value: 'single' }
+    );
+    const trigger = screen.getByLabelText(/Crawl/);
+    expect(trigger.textContent).toBe('Only this page');
+  });
+});

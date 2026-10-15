@@ -132,16 +132,13 @@ async def test_fetch_many_returns_one_result_per_url_and_isolates_failures(
     assert "<title>C</title>" in (results[2].html or "")
 
 
-async def test_fetch_many_reports_every_url_as_failed_when_the_batch_blows_up(
+async def test_fetch_many_reports_every_url_as_failed_when_every_page_blows_up(
     browser: FakeWeb, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    base = browser_crawler_class(browser)
+    async def arun(url: str) -> SimpleNamespace:
+        raise RuntimeError("browser context lost")
 
-    class Broken(base):  # type: ignore[misc,valid-type]
-        async def arun_many(self, *_: object, **__: object) -> list[object]:
-            raise RuntimeError("browser context lost")
-
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", Broken)
+    _with_crawler(monkeypatch, arun, browser)
 
     async with Crawl4AIFetcher() as fetcher:
         results = await fetcher.fetch_many(["http://site.test/a", "http://site.test/b"])

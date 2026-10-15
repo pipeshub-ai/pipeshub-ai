@@ -17,7 +17,7 @@ Focuses on:
 """
 
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -4949,6 +4949,30 @@ class TestOnRecordsDetachedFromParent:
         proc = _make_processor()
 
         await proc.on_records_detached_from_parent([])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
+class TestOnRecordsAttachedToParent:
+    @pytest.mark.asyncio
+    async def test_links_each_record_under_the_parent(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.create_record_relation = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_attached_to_parent("folder", ["a", "b"])
+
+        assert tx_store.create_record_relation.await_args_list == [
+            call("folder", "a", RecordRelations.PARENT_CHILD.value),
+            call("folder", "b", RecordRelations.PARENT_CHILD.value),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_attach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_attached_to_parent("folder", [])
 
         proc.data_store_provider.transaction.assert_not_called()
 

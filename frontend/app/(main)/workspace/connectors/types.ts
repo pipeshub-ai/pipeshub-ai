@@ -42,6 +42,12 @@ export interface Connector {
   pendingFullSync?: boolean;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
+  /** When the last sync run started and ended, and how it ended. Absent until a run finishes. */
+  lastSyncStartedAtTimestamp?: number | null;
+  lastSyncFinishedAtTimestamp?: number | null;
+  lastSyncOutcome?: 'succeeded' | 'failed' | 'stopped' | 'skipped' | null;
+  /** What the last run did, in the connector's own terms (see LastSyncSummary for the web connector's). */
+  lastSyncSummary?: LastSyncSummary | null;
   createdBy?: string;
   updatedBy?: string;
   authType?: string;
@@ -136,6 +142,9 @@ export interface ValidationRule {
 export interface FieldValidation {
   minLength?: number;
   maxLength?: number;
+  /** Allowed whole-number range for NUMBER fields (minLength/maxLength are text lengths and ignored there). */
+  min?: number;
+  max?: number;
   pattern?: string;
   format?: string;
   /** Present when `fieldType === 'FILE'` (wire schema from Python). */
@@ -200,6 +209,23 @@ export interface SyncCustomField {
   validation?: FieldValidation;
   isSecret?: boolean;
   nonEditable?: boolean;
+  placeholder?: string;
+  /** Display label per SELECT option value. */
+  optionLabels?: Record<string, string>;
+  /** Unit shown after a NUMBER input, such as "pages". */
+  unit?: string;
+  /** Name of a group in `ConnectorSyncConfig.customFieldGroups`. */
+  group?: string;
+  /** Shown only while, for every key, that field's current value is one of the listed values. */
+  showWhen?: Record<string, unknown[]>;
+}
+
+export interface SyncCustomFieldGroup {
+  name: string;
+  displayName: string;
+  description?: string;
+  /** Starts closed, with a summary of its changed settings. */
+  collapsed?: boolean;
 }
 
 export interface FilterSchemaField {
@@ -314,6 +340,8 @@ export interface ConnectorSyncConfig {
   scheduledConfig?: ScheduledConfig;
   realtimeConfig?: RealtimeConfig;
   customFields: SyncCustomField[];
+  /** Render order of grouped custom fields; fields without a group stay in the shared block. */
+  customFieldGroups?: SyncCustomFieldGroup[];
   customValues: Record<string, unknown>;
   values?: Record<string, unknown>;
 }
@@ -556,4 +584,22 @@ export interface InstanceOverview {
   recordsStatus: RecordsStatus;
   indexedRecords: IndexedRecord[];
   totalSelected: number;
+}
+
+/** Counts a connector reports for its last run. Every field is optional: connectors fill what applies. */
+export interface LastSyncSummary {
+  pagesSaved?: number;
+  /** Pages the connector keeps after the run; what Maximum pages caps. */
+  pagesStored?: number | null;
+  pagesVisited?: number;
+  failed?: number;
+  failedByStatus?: Record<string, number>;
+  robotsSkipped?: number;
+  noindexSkipped?: number;
+  skippedMaxPages?: number;
+  deferred?: number;
+  pruned?: number;
+  sitemapUrls?: number;
+  stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | null;
+  resumed?: boolean;
 }

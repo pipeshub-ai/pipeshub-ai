@@ -144,6 +144,9 @@ const loggerConfig = {
   service: 'Application',
 };
 
+
+const SCHEDULE_REPAIR_INTERVAL_MS = 60 * 60 * 1000;
+
 export class Application {
   private app: Express;
   private server: http.Server;
@@ -159,6 +162,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private scheduleRepairTimer: NodeJS.Timeout | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -923,6 +927,7 @@ export class Application {
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
       // Stop accepting first, and only dispose Mongo/Redis/brokers once the
       // requests already in flight have finished — otherwise they fail
       // mid-request on closed clients. Socket.IO connections are closed by
@@ -1032,10 +1037,16 @@ export class Application {
             CrawlingSchedulerService,
           );
         const appConfig = await loadAppConfig();
-        await this.configurationManagerContainer
-          .get(MigrationService)
-          .runMigration({ scheduler, appConfig });
+        const migrations = this.configurationManagerContainer.get(MigrationService);
+        await migrations.runMigration({ scheduler, appConfig });
         this.logger.info('Migration completed successfully');
+        // A schedule that failed to be written after a save would otherwise stay missing for ever.
+        this.scheduleRepairTimer = setInterval(() => {
+          void runWithRequestContext({ rootId: newSystemRoot() }, () =>
+            migrations.repairConnectorSchedules(scheduler, appConfig),
+          );
+        }, SCHEDULE_REPAIR_INTERVAL_MS);
+        this.scheduleRepairTimer.unref();
       } catch (error) {
         this.logger.error('Failed to run migration', {
           error: error instanceof Error ? error.message : 'Unknown error',

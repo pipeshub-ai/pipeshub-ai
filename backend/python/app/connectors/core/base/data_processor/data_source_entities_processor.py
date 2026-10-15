@@ -3086,6 +3086,18 @@ class DataSourceEntitiesProcessor:
         if updated is False:
             raise RuntimeError(f"Could not detach {len(record_ids)} records from their deleted parent")
 
+    async def on_records_attached_to_parent(self, parent_record_id: str, record_ids: list[str]) -> None:
+        """Link records under a parent written in place of a deleted one with the same external id.
+
+        Their stored parent external id already names it; only the edges went with the deleted
+        record. Rewriting the records instead would re-index content that hasn't changed.
+        """
+        if not record_ids:
+            return
+        async with self.data_store_provider.transaction() as tx_store:
+            for record_id in record_ids:
+                await tx_store.create_record_relation(parent_record_id, record_id, RecordRelations.PARENT_CHILD.value)
+
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
