@@ -276,17 +276,18 @@ def _free_memory_gb(snap: ResourceSnapshot) -> float | None:
     return max(0.0, (snap.mem_limit_bytes - resident) / (1024 ** 3))
 
 
-def _free_memory_share_gb(snap: ResourceSnapshot, worker_count: int) -> float | None:
-    """One worker process's share of the cgroup's free memory.
+def _worker_share(total: int, worker_count: int) -> int:
+    """One worker process's share of a count resolved for all of them.
 
-    Every worker samples the same cgroup and sees the same free memory, so a
-    cap sized from all of it lets ``worker_count`` workers commit that many
-    times what is free.
+    The count is floored once, for the whole cgroup, and only then split, so
+    the shares add up to it rather than to N floors. Each share is floored at
+    1 because a worker's gate admits into an empty pool whatever its limit;
+    with more workers than the count, what holds them together to it is a
+    counter they share (the cluster leases, or ``SharedSlots`` for heavy
+    parses), not this.
     """
-    free_gb = _free_memory_gb(snap)
-    if free_gb is None:
-        return None
-    return free_gb / max(1, worker_count)
+    workers = max(1, worker_count)
+    return total if workers == 1 else max(1, total // workers)
 
 
 def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
@@ -302,10 +303,10 @@ def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | Non
     parsing can always make forward progress (a cap of 0 would stall every
     PDF indefinitely rather than slowly).
     """
-    free_gb = _free_memory_share_gb(snap, worker_count)
+    free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB))
+    return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
 
 
 def index_memory_cap(
@@ -326,7 +327,7 @@ def index_memory_cap(
     index permit is mostly waiting on downstream services, so a cap of 1
     would serialise a whole tier on a transient memory spike.
     """
-    free_gb = _free_memory_share_gb(snap, worker_count)
+    free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
     working_set = (
@@ -334,7 +335,7 @@ def index_memory_cap(
         if pool is Pool.INDEX_HEAVY
         else INDEX_LIGHT_WORKING_SET_GB
     )
-    return max(COUNT_POOL_FLOOR, int(free_gb / working_set))
+    return _worker_share(max(COUNT_POOL_FLOOR, int(free_gb / working_set)), worker_count)
 
 
 # ---------------------------------------------------------------------------
@@ -480,15 +481,14 @@ def split_ceilings(total: Ceilings, worker_count: int) -> Ceilings:
     add up to more than ``total``; the cluster-wide leases, which are sized
     from ``total``, are what hold every worker together to it.
     """
-    workers = max(1, worker_count)
-    if workers == 1:
-        return total
     return Ceilings(
-        heavy=max(1, total.heavy // workers),
-        light=max(1, total.light // workers),
-        index_heavy=max(1, total.index_heavy // workers),
+        heavy=_worker_share(total.heavy, worker_count),
+        light=_worker_share(total.light, worker_count),
+        index_heavy=_worker_share(total.index_heavy, worker_count),
         # A collapsed light tier must stay collapsed, not be resurrected to 1.
-        index_light=max(1, total.index_light // workers) if total.index_light else 0,
+        index_light=(
+            _worker_share(total.index_light, worker_count) if total.index_light else 0
+        ),
     )
 
 
@@ -550,7 +550,7 @@ def _index_pressure_floor(pool: Pool) -> int:
     return max(COUNT_POOL_FLOOR, int(budget_gb / working_set))
 
 
-def pressure_floor(pool: Pool, ceiling: int) -> int:
+def pressure_floor(pool: Pool, ceiling: int, worker_count: int = 1) -> int:
     """Lowest limit a memory or CPU brake may shrink *pool* to.
 
     Distinct from ``floor_for``, which is a *warm-start* width — where the
@@ -569,14 +569,18 @@ def pressure_floor(pool: Pool, ceiling: int) -> int:
     order of magnitude of throughput while saving no memory at all. Both tiers
     now floor at whatever number of *their own* records fits the same budget,
     so a memory-starved node still turns over a useful number of the cheap
-    ones while heavy is held to a couple.
+    ones while heavy is held to a couple. That budget is the cgroup's, so with
+    ``worker_count`` workers each one floors at its share of it.
     """
     if _is_index_pool(pool):
         # Never above the warm-start width: brakes only ever reduce a limit, so
         # a floor above where the pool starts would let one *raise* it. On a
         # ceiling small enough for that to bind, the two coincide and the pool
         # simply has no room to shrink.
-        return min(_index_pressure_floor(pool), floor_for(pool, ceiling))
+        return min(
+            _worker_share(_index_pressure_floor(pool), worker_count),
+            floor_for(pool, ceiling),
+        )
     return floor_for(pool, ceiling)
 
 
@@ -644,7 +648,7 @@ def _target_for(
         ceiling = _ceiling_for(pool, ceilings)
         mem_cap = index_memory_cap(snap, pool, worker_count)
         bound = ceiling if mem_cap is None else min(ceiling, mem_cap)
-        return int(_clamp(bound, pressure_floor(pool, ceiling), ceiling))
+        return int(_clamp(bound, pressure_floor(pool, ceiling, worker_count), ceiling))
 
     raise AssertionError(f"unhandled pool {pool!r}")  # exhaustive over Pool StrEnum
 
@@ -868,7 +872,7 @@ def _next_pool_limit(
     worker_count: int = 1,
 ) -> tuple[int, PoolState]:
     ceiling = _ceiling_for(pool, ceilings)
-    floor = pressure_floor(pool, ceiling)
+    floor = pressure_floor(pool, ceiling, worker_count)
     shrink_step = COUNT_POOL_STEP
     target = _target_for(pool, snap, ceilings, worker_count)
     pressure = snap.mem_pressure

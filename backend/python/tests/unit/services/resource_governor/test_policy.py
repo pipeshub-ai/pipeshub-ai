@@ -455,14 +455,44 @@ class TestMemoryCapsAcrossWorkerProcesses:
         assert limits.get(Pool.INDEX_HEAVY) == 20
         assert limits.get(Pool.INDEX_LIGHT) == 150
 
-    def test_a_workers_share_keeps_the_forward_progress_floors(self) -> None:
+    def test_exhausted_memory_leaves_each_worker_one(self) -> None:
+        """The cgroup's floor is split, not repeated: one index record or heavy
+        parse per worker, the least a worker's gate admits anyway."""
         nearly_full = _snapshot(
             mem_limit_bytes=4 * 1024 ** 3, mem_working_set_raw_bytes=4 * 1024 ** 3,
         )
         assert policy_mod.heavy_memory_cap(nearly_full, worker_count=8) == 1
-        assert policy_mod.index_memory_cap(
-            nearly_full, Pool.INDEX_LIGHT, worker_count=8
-        ) == policy_mod.COUNT_POOL_FLOOR
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT, worker_count=8) == 1
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT) == policy_mod.COUNT_POOL_FLOOR
+
+    def test_braked_workers_together_stay_within_one_processes_floors(self) -> None:
+        """8 GiB free at 80% pressure: the hard brake takes every index pool
+        to its pressure floor. One process floors at 15 light and 2 heavy records;
+        eight workers must not floor at eight times that."""
+        ceilings_one = Ceilings(heavy=32, light=256, index_heavy=64, index_light=512)
+        snap = _snapshot(
+            cpu_quota=32.0,
+            mem_limit_bytes=40 * 1024 ** 3,
+            mem_working_set_bytes=32 * 1024 ** 3,
+        )
+
+        def settle(ceilings: Ceilings, workers: int) -> Limits:
+            limits = warm_start_limits(ceilings)
+            state = ControllerState.initial()
+            for sample in range(40):
+                limits, state = next_limits(
+                    limits, snap, ceilings, state, _no_demand(),
+                    now=float(sample) * 100.0, interval=INTERVAL, worker_count=workers,
+                )
+            return limits
+
+        one = settle(ceilings_one, 1)
+        each = settle(policy_mod.split_ceilings(ceilings_one, 8), 8)
+        assert one.get(Pool.INDEX_LIGHT) == 15
+        assert one.get(Pool.INDEX_HEAVY) == 2
+        assert 8 * each.get(Pool.INDEX_LIGHT) <= one.get(Pool.INDEX_LIGHT)
+        # One record per worker is the least a worker's gate admits.
+        assert each.get(Pool.INDEX_HEAVY) == 1
 
 
 class TestFloorFor:
