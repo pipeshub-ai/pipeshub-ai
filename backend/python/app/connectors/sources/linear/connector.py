@@ -374,7 +374,7 @@ class LinearConnector(BaseConnector):
             self.data_source = LinearDataSource(client)
 
             # Validate connection by fetching organization info
-            org_response = await self.data_source.organization()
+            org_response = await self._with_transient_retry("organization", self.data_source.organization)
             if not org_response.success:
                 raise Exception(f"Failed to connect to Linear: {org_response.message}")
 
@@ -5096,7 +5096,7 @@ class LinearConnector(BaseConnector):
 
             # Test by fetching organization info (simple API call)
             datasource = await self._get_fresh_datasource()
-            response = await datasource.organization()
+            response = await self._with_transient_retry("organization", datasource.organization)
 
             if response.success and response.data is not None:
                 self.logger.info("✅ Linear connection test successful")
