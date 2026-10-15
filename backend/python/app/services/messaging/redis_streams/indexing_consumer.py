@@ -1070,8 +1070,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 topic,
                 message_id,
             )
-            await self.__dispatch_or_enqueue(topic, message_id, fields, parsed_message)
-            return True
+            # Acknowledges an unparseable envelope, as a fresh read does;
+            # left pending it would sit at the head of this lane's recovery
+            # for good, since reclaiming never counts a delivery.
+            await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
+            if parsed_message is None:
+                return True
+            return self._is_in_flight(message_id) or self.__already_held(message_id)
         except Exception as e:
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
@@ -1093,6 +1098,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             count=count,
         )
         next_id, claimed, _deleted = result
+        if claimed:
+            self.logger.debug(
+                "XAUTOCLAIM on %s took %d idle entry(ies)", topic, len(claimed)
+            )
         if isinstance(next_id, bytes):
             next_id = next_id.decode()
         return str(next_id), list(claimed or [])
@@ -1252,21 +1261,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 others += int(count)
         return own, others
 
-    def __release_for_room(self, protect: str) -> bool:
+    def __release_for_room(self, protect: str) -> Callable[[], None] | None:
         """Give up one held entry so a lane holding nothing can be served.
 
         Taken from the lane this consumer holds most entries from: its
         newest parked entry, else its newest buffered one. The entry stays in
         the pending list, unheld, and comes back through recovery once there
-        is room. Returns False when there is nothing to give up.
+        is room. Returns a callable that takes it back, for when the entry
+        it made room for did not need the room after all, or None when there
+        was nothing to give up.
         """
         scheduler = self._scheduler
         if scheduler is None:
-            return False
+            return None
         counts = self.__held_count_by_stream()
         counts.pop(protect, None)
         if not counts:
-            return False
+            return None
         donor = max(counts, key=lambda stream: counts[stream])
 
         for index in range(len(self._deferred_entries) - 1, -1, -1):
@@ -1274,7 +1285,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if entry[0] == donor:
                 del self._deferred_entries[index]
                 self._held_entries.pop(entry[1], None)
-                return True
+
+                def restore_parked(
+                    entry: tuple[str, str, dict[str, str], StreamMessage, FairnessKey, float] = entry,
+                    index: int = index,
+                ) -> None:
+                    self._deferred_entries.insert(
+                        min(index, len(self._deferred_entries)), entry
+                    )
+                    self._held_entries[entry[1]] = entry[0]
+
+                return restore_parked
 
         def stream_order(message_id: str) -> tuple[int, ...]:
             try:
@@ -1288,12 +1309,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if stream == donor
         ]
         if not candidates:
-            return False
+            return None
         victim = max(candidates, key=stream_order)
-        if not scheduler.purge(lambda item: item[1] == victim):
-            return False
+        removed = scheduler.purge(lambda item: item[1] == victim)
+        if not removed:
+            return None
         self._held_entries.pop(victim, None)
-        return True
+        stream_name, message_id, fields, parsed, _buffered_at = removed[0]
+
+        def restore_buffered() -> None:
+            self.__try_enqueue(stream_name, message_id, fields, parsed)
+
+        return restore_buffered
 
     async def __recover_while_reading(self) -> None:
         """Take back pending entries this consumer is not holding, a few at
@@ -1391,10 +1418,19 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 self.logger.debug("Could not recover pending entries on %s: %s", topic, e)
                 continue
             for message_id, fields, owned in found:
-                if not self.__buffer_has_room() and not self.__release_for_room(topic):
-                    break
-                if await self.__recover_entry(topic, message_id, fields, owned=owned):
+                undo = None
+                if not self.__buffer_has_room():
+                    undo = self.__release_for_room(topic)
+                    if undo is None:
+                        break
+                recovered = await self.__recover_entry(topic, message_id, fields, owned=owned)
+                if recovered:
                     taken += 1
+                held = self.__already_held(message_id) or self._is_in_flight(message_id)
+                if undo is not None and not held:
+                    # The room went unused (the entry was acknowledged, or
+                    # could not be taken): give the donor its place back.
+                    undo()
         if taken:
             self.logger.info(
                 "Recovered %d pending entry(ies) not held by this consumer while reading",
@@ -1560,7 +1596,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         without incrementing the delivery counter, and re-claiming an entry
         we already own is a no-op otherwise.
         """
-        if self.redis is None or not self._held_entries:
+        with self._in_flight_lock:
+            in_flight = dict(self._in_flight_streams)
+        if self.redis is None or not (self._held_entries or in_flight):
             return
         interval = self.__ownership_refresh_interval()
         now = time.monotonic()
@@ -1568,8 +1606,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
         self._last_ownership_refresh = now
 
+        # In-flight entries too: a record can take longer than the claim
+        # window to index, and it stays un-ACKed until it is done. Without a
+        # refresh a peer's recovery would claim it mid-flight, and the two
+        # replicas would pass it back and forth until the delivery backstop
+        # dead-lettered it while it was still being indexed.
         by_stream: dict[str, list[str]] = {}
-        for message_id, stream in self._held_entries.items():
+        for message_id, stream in (*self._held_entries.items(), *in_flight.items()):
             by_stream.setdefault(stream, []).append(message_id)
         for stream, message_ids in by_stream.items():
             try:

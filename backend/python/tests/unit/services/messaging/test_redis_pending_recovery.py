@@ -236,3 +236,87 @@ class TestLivePeersKeepTheirEntries:
         await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
         assert consumer.redis.xpending.await_count == len(LANES)
 
+
+
+class TestInFlightEntriesStayOwned:
+    async def test_ownership_refresh_covers_records_being_indexed(self) -> None:
+        """A record can take longer than the claim window to index. Its
+        entry is refreshed like a buffered one, so a peer's recovery cannot
+        claim it mid-flight."""
+        consumer = _consumer()
+        consumer._mark_in_flight("1-7", LANES[1])
+
+        await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
+
+        refreshed = {
+            message_id
+            for call in consumer.redis.xclaim.await_args_list
+            for message_id in call.kwargs["message_ids"]
+        }
+        assert "1-7" in refreshed
+
+
+class TestUnparseableEntriesDoNotPinALane:
+    @staticmethod
+    def _stranded(consumer, by_lane: dict[str, dict[str, dict[str, str]]]) -> None:
+        async def summary(stream: str, _group: str) -> dict:
+            own = len(by_lane.get(stream, {}))
+            return {
+                "pending": own,
+                "consumers": [{"name": consumer.consumer_name, "pending": own}] if own else [],
+            }
+
+        async def pending_range(stream: str, *_args: object, **_kwargs: object) -> list:
+            return [{"message_id": m} for m in by_lane.get(stream, {})]
+
+        async def xrange(stream: str, min: str, max: str, count: int) -> list:  # noqa: A002
+            entry = by_lane.get(stream, {}).get(min)
+            return [(min, entry)] if entry is not None else []
+
+        async def ack(stream: str, message_id: str) -> None:
+            by_lane.get(stream, {}).pop(message_id, None)
+
+        consumer.redis.xpending = AsyncMock(side_effect=summary)
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(side_effect=xrange)
+        consumer.redis.xautoclaim = AsyncMock(return_value=("0-0", [], []))
+        consumer._ack_message = AsyncMock(side_effect=ack)
+
+    async def test_a_bad_entry_is_acknowledged_and_the_one_behind_it_recovered(
+        self,
+    ) -> None:
+        consumer = _consumer(max_buffered_messages=4)
+        by_lane = {
+            LANES[0]: {"0-0": _fields("c0", "c0-0")},
+            LANES[1]: {"1-0": {"value": "{not json"}, "1-1": _fields("a", "a-1")},
+            LANES[2]: {"2-0": _fields("c2", "c2-0")},
+            LANES[3]: {"3-0": _fields("c3", "c3-0")},
+        }
+        self._stranded(consumer, by_lane)
+
+        for _ in range(3):
+            consumer._last_recovery = 0.0
+            await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        consumer._ack_message.assert_any_await(LANES[1], "1-0")
+        assert consumer._IndexingRedisStreamsConsumer__already_held("1-1")
+
+    async def test_room_made_for_an_entry_that_did_not_need_it_is_given_back(
+        self,
+    ) -> None:
+        """The buffer is full of connector B; the starved lane's entry turns
+        out to be unparseable and is acknowledged. B keeps its place."""
+        consumer = _consumer(max_buffered_messages=2)
+        for i in range(2):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                LANES[0], f"2-{i}", _fields("b", f"b-{i}")
+            )
+        self._stranded(consumer, {LANES[1]: {"1-0": {"value": "{not json"}}})
+
+        await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        consumer._ack_message.assert_any_await(LANES[1], "1-0")
+        assert consumer._scheduler.pending_count == 2
+        assert all(
+            consumer._IndexingRedisStreamsConsumer__already_held(m) for m in ("2-0", "2-1")
+        )
