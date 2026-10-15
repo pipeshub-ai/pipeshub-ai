@@ -68,33 +68,25 @@ def test_a_link_reaches_the_graph_without_its_credentials():
 
 
 
-def _raw(kind: EntityKind, surface: str, hint: str = "") -> RawMention:
-    return RawMention(kind, surface, 0, "b0", 0, len(surface), "agent", normalized_hint=hint)
+def _raw(kind: EntityKind, surface: str) -> RawMention:
+    return RawMention(kind, surface, 0, "b0", 0, len(surface), "agent")
 
 
-def test_the_value_comes_from_the_text_never_from_the_hint():
+def test_the_value_comes_from_the_text():
     ctx = NormalizationContext(reference_time_ms=1773100800000, tz="UTC")
     cases = [
-        (EntityKind.CURRENCY, "$5", "USD 999", "money:USD:5"),
-        (EntityKind.PERCENTAGE, "5%", "95%", "pct:0.05"),
-        (EntityKind.DATE, "3 June 2026", "2027-01-01", None),
+        (EntityKind.CURRENCY, "$5", "money:USD:5"),
+        (EntityKind.PERCENTAGE, "5%", "pct:0.05"),
     ]
-    for kind, surface, hint, expected in cases:
-        (entity,) = mentions_to_entities([_raw(kind, surface, hint)], ctx)
-        if expected:
-            assert entity.norm_key == expected
-        assert "2027" not in entity.norm_key and "999" not in entity.norm_key
+    for kind, surface, expected in cases:
+        (entity,) = mentions_to_entities([_raw(kind, surface)], ctx)
+        assert entity.norm_key == expected
 
 
 def test_a_value_kind_whose_text_states_no_value_is_not_stored():
     ctx = NormalizationContext(tz="UTC")
     mentions = [_raw(EntityKind.CURRENCY, "Acme"), _raw(EntityKind.DATE, "the kickoff"), _raw(EntityKind.DATE, "3 days")]
     assert mentions_to_entities(mentions, ctx) == []
-
-
-def test_a_secret_in_a_hint_is_not_kept():
-    (entity,) = mentions_to_entities([_raw(EntityKind.ORGANIZATION, "Acme", "4111111111111111")], NormalizationContext(tz="UTC"))
-    assert entity.normalized_raw == ""
 
 
 def test_a_long_link_keeps_the_offsets_true_and_a_bounded_key():

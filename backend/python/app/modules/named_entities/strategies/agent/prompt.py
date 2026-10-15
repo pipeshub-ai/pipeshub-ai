@@ -14,13 +14,13 @@ Rules:
 
 Examples:
 Document: [B0] Acme Corp signed on 2024-03-01 for $1,200.
-submit: {"text":"Acme Corp","block":0,"kind":"organization","normalized":""}
-submit: {"text":"2024-03-01","block":0,"kind":"date","normalized":""}
-submit: {"text":"$1,200","block":0,"kind":"currency","normalized":""}
+submit: {"text":"Acme Corp","block":0,"kind":"organization"}
+submit: {"text":"2024-03-01","block":0,"kind":"date"}
+submit: {"text":"$1,200","block":0,"kind":"currency"}
 
 Document: [B2] Meet Priya Shah, the account lead.
-submit: {"text":"Priya Shah","block":2,"kind":"person","normalized":""}
-submit: {"text":"account lead","block":2,"kind":"person_type","normalized":""}
+submit: {"text":"Priya Shah","block":2,"kind":"person"}
+submit: {"text":"account lead","block":2,"kind":"person_type"}
 """
 
 

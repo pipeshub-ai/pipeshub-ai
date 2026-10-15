@@ -17,6 +17,5 @@ class RawMention:
     char_start: int
     char_end: int
     extractor: ExtractorName
-    normalized_hint: str = ""
     evidence_score: float = 1.0
     grounding: Grounding = "exact"

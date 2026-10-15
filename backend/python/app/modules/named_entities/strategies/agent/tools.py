@@ -311,7 +311,6 @@ def stage_wire_entity(session: ExtractionSession, index: int, item, *, extractor
             char_start=start,
             char_end=end,
             extractor=extractor,  # type: ignore[arg-type]
-            normalized_hint=item.normalized,
             evidence_score=1.0 if grounding == "exact" else 0.7,
             grounding=grounding,  # type: ignore[arg-type]
         )

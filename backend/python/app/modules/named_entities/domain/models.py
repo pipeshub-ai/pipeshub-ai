@@ -65,6 +65,7 @@ class NamedEntity(BaseModel):
     display_name: str
     norm_key: str
     value: TypedValue | None = None
+    # No longer filled; kept so extractions stored with it still validate.
     normalized_raw: str = ""
     mentions: list[Mention] = Field(default_factory=list)
 

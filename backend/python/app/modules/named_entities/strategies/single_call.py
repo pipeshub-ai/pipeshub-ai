@@ -186,7 +186,7 @@ class SingleCallExtractionStrategy:
         for window in windows:
             prompt = (
                 f"Enabled kinds: {kinds}.\n"
-                "Return JSON {\"entities\": [{\"text\", \"block\", \"kind\", \"normalized\"}]}.\n"
+                "Return JSON {\"entities\": [{\"text\", \"block\", \"kind\"}]}.\n"
                 + session.spotlight_text(_render(window))
             )
             try:

@@ -61,7 +61,7 @@ def test_wire_schema_has_no_unions_or_optional_fields():
     assert "anyOf" not in blob
     assert "oneOf" not in blob
     entity = schema["$defs"]["WireEntity"]
-    assert set(entity["required"]) == {"text", "block", "kind", "normalized"}
+    assert set(entity["required"]) == {"text", "block", "kind"}
     WireEntity.model_validate({"text": "Acme", "block": 0, "kind": "organization", "normalized": ""})
     from anthropic import transform_schema
     from openai.lib._pydantic import to_strict_json_schema

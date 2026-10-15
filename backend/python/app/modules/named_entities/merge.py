@@ -106,7 +106,6 @@ def mentions_to_entities(
                 display_name=display[:256] or raw.surface[:256],
                 norm_key=key,
                 value=value,
-                normalized_raw="" if is_suppressed_secret(raw.normalized_hint) else raw.normalized_hint[:256],
                 mentions=[mention],
             )
         else:
