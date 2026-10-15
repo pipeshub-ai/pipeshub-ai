@@ -1648,6 +1648,71 @@ class TestNotionSyncObjectsByType:
         await connector._sync_objects_by_type("page")
         assert connector.data_entities_processor.on_new_records.await_count == 2
 
+    _INVALID_CURSOR_ERROR = (
+        'HTTP 400: {"object":"error","status":400,"code":"validation_error",'
+        '"message":"The start_cursor provided is invalid: c2"}'
+    )
+
+    def _connector_with_search(self, responses: list[MagicMock]) -> tuple[NotionConnector, MagicMock]:
+        connector = _make_connector()
+        connector.indexing_filters = MagicMock()
+        connector.indexing_filters.is_enabled.return_value = True
+        connector.pages_sync_point = MagicMock()
+        connector.pages_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.pages_sync_point.update_sync_point = AsyncMock()
+        ds_mock = MagicMock()
+        ds_mock.search = AsyncMock(side_effect=responses)
+        connector._get_fresh_datasource = AsyncMock(return_value=ds_mock)
+        connector._transform_to_webpage_record = AsyncMock(return_value=MagicMock())
+        connector._fetch_page_attachments_and_comments = AsyncMock(return_value=([], {}))
+        return connector, ds_mock
+
+    @pytest.mark.asyncio
+    async def test_invalid_cursor_restarts_search_and_skips_processed(self) -> None:
+        p1 = {"id": "p1", "last_edited_time": "2024-06-01T10:00:00Z"}
+        p2 = {"id": "p2", "last_edited_time": "2024-06-01T09:00:00Z"}
+        connector, ds_mock = self._connector_with_search([
+            _make_api_response(data={"results": [p1], "has_more": True, "next_cursor": "c2"}),
+            _make_api_response(success=False, error=self._INVALID_CURSOR_ERROR, status=400),
+            _make_api_response(data={"results": [p1, p2], "has_more": False}),
+        ])
+
+        await connector._sync_objects_by_type("page")
+
+        assert "start_cursor" not in ds_mock.search.await_args_list[2].kwargs["request_body"]
+        synced = [c.args[0]["id"] for c in connector._transform_to_webpage_record.await_args_list]
+        assert synced == ["p1", "p2"]
+        connector.logger.warning.assert_called()
+        connector.pages_sync_point.update_sync_point.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_invalid_cursor_restarts_are_capped(self) -> None:
+        page = _make_api_response(
+            data={"results": [{"id": "p1", "last_edited_time": "t"}], "has_more": True, "next_cursor": "c2"}
+        )
+        bad = _make_api_response(success=False, error=self._INVALID_CURSOR_ERROR, status=400)
+        connector, ds_mock = self._connector_with_search([page, bad] * 4)
+
+        with pytest.raises(Exception, match="start_cursor provided is invalid"):
+            await connector._sync_objects_by_type("page")
+        assert ds_mock.search.await_count == 8
+        connector.pages_sync_point.update_sync_point.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_other_400_does_not_restart_search(self) -> None:
+        connector, ds_mock = self._connector_with_search([
+            _make_api_response(
+                data={"results": [{"id": "p1", "last_edited_time": "t"}], "has_more": True, "next_cursor": "c2"}
+            ),
+            _make_api_response(
+                success=False, error='HTTP 400: {"code":"validation_error","message":"bad filter"}', status=400
+            ),
+        ])
+
+        with pytest.raises(Exception, match="bad filter"):
+            await connector._sync_objects_by_type("page")
+        assert ds_mock.search.await_count == 2
+
     @pytest.mark.asyncio
     async def test_sync_data_sources(self):
         connector = _make_connector()
@@ -3645,6 +3710,27 @@ class TestProcessBlocksRecursive:
         groups = []
         await conn._process_blocks_recursive("page-1", parser, blocks, groups, None)
         assert conn._fetch_block_children_recursive.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_child_page_and_database_render_reference_without_recursing(self) -> None:
+        conn = _make_connector_fullcov()
+        conn._fetch_block_children_recursive = AsyncMock(return_value=[
+            {"id": "cp1", "type": "child_page", "has_children": True, "child_page": {"title": "Sub"}},
+            {"id": "cd1", "type": "child_database", "has_children": True, "child_database": {"title": "DB"}},
+        ])
+
+        blocks, groups = [], []
+        result = await conn._process_blocks_recursive(
+            "page-1", NotionBlockParser(conn.logger), blocks, groups, None, parent_page_id="page-1"
+        )
+
+        conn._fetch_block_children_recursive.assert_awaited_once_with("page-1")
+        assert groups == []
+        assert [(b.source_type, b.sub_type, b.parent_index) for b in blocks] == [
+            ("child_page", BlockSubType.CHILD_RECORD, None),
+            ("child_database", BlockSubType.CHILD_RECORD, None),
+        ]
+        assert [r.block_index for r in result] == [0, 1]
 
 
 # ===================================================================

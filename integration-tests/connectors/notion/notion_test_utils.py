@@ -9,9 +9,11 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable, Optional
 
+from app.config.constants.arangodb import CollectionNames  # type: ignore[import-not-found]
 from app.connectors.core.base.sync_point.sync_point import (  # type: ignore[import-not-found]
     generate_record_sync_point_key,
 )
+from app.connectors.core.constants import ConnectorStateKeys  # type: ignore[import-not-found]
 from app.models.entities import RecordType  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
@@ -86,10 +88,26 @@ async def full_sync(
     from scratch and rebuilds ``BELONGS_TO`` only for entities the source still returns. That
     is the only way a trashed Notion page leaves ``scoped=True`` counts — the connector itself
     never deletes records.
+
+    A failed full sync also ends IDLE with steady counts, so the wait alone cannot tell it from
+    a finished one; only the ``pendingFullSync`` it leaves on the app node does. Retried once,
+    then fails here instead of as a confusing count mismatch later.
     """
-    pipeshub_client.resync_connector(connector_id, full_sync=True)
-    return await wait_for_sync_completion(
-        pipeshub_client, graph_provider, connector_id, timeout=timeout
+    for attempt in (1, 2):
+        pipeshub_client.resync_connector(connector_id, full_sync=True)
+        count = await wait_for_sync_completion(
+            pipeshub_client, graph_provider, connector_id, timeout=timeout
+        )
+        app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+        if not (app or {}).get(ConnectorStateKeys.PENDING_FULL_SYNC):
+            return count
+        logger.warning(
+            "Full sync of %s did not finish (pendingFullSync set), attempt %d/2",
+            connector_id, attempt,
+        )
+    raise AssertionError(
+        f"full sync of connector {connector_id} failed twice (pendingFullSync still set); "
+        "see the connector service log for the error"
     )
 
 

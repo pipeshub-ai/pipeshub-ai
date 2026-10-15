@@ -275,6 +275,8 @@ class NotionConnector(BaseConnector):
     MIN_PARTS_NEW_FORMAT = 2  # Minimum parts for ID format: {id}_{hash}
     # Notion API page size for users/search pagination (API max is 100).
     _SYNC_PAGE_SIZE = 20
+    # Times a sync may restart a search whose cursor Notion invalidated mid-walk.
+    _SEARCH_CURSOR_RESTART_LIMIT = 3
     # Above the connector's own rate_limit=3 the limiter just serializes them anyway.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 3
     # Runaway backstop only — `visited` already guarantees termination.
@@ -1640,6 +1642,9 @@ class NotionConnector(BaseConnector):
             total_files = 0
             latest_edit_time = None
             should_stop = False
+            cursor_restarts = 0
+            # id -> last_edited_time, so a restarted search skips work it already did.
+            processed_edit_times: dict[str, str | None] = {}
 
             while True:
                 if should_stop:
@@ -1662,6 +1667,25 @@ class NotionConnector(BaseConnector):
 
                 if not response or not response.success:
                     error_msg = response.error if response else 'No response'
+                    # Trashing an object mid-walk can invalidate the cursor; start over rather
+                    # than fail the whole sync.
+                    if (
+                        cursor
+                        and response
+                        and response.status_code == 400
+                        and "start_cursor provided is invalid" in (error_msg or "")
+                        and cursor_restarts < self._SEARCH_CURSOR_RESTART_LIMIT
+                    ):
+                        cursor_restarts += 1
+                        self.logger.warning(
+                            "Notion %s search cursor became invalid; restarting search (%d/%d): %s",
+                            object_type,
+                            cursor_restarts,
+                            self._SEARCH_CURSOR_RESTART_LIMIT,
+                            error_msg,
+                        )
+                        cursor = None
+                        continue
                     self.logger.error(f"Failed to search {object_type}s: {error_msg}")
                     raise Exception(f"Notion API error while searching {object_type}s: {error_msg}")
 
@@ -1679,6 +1703,10 @@ class NotionConnector(BaseConnector):
                 for obj_data in objects:
                     obj_id = obj_data.get("id")
                     last_edited_time = obj_data.get("last_edited_time")
+
+                    if obj_id in processed_edit_times and processed_edit_times[obj_id] == last_edited_time:
+                        continue
+                    processed_edit_times[obj_id] = last_edited_time
 
                     # Skip archived/trashed
                     if obj_data.get("archived") or obj_data.get("in_trash"):
@@ -2458,7 +2486,11 @@ class NotionConnector(BaseConnector):
                 parent_page_id  # Pass parent page ID for file references
             )
 
-            has_children = notion_block.get("has_children", False)
+            # A child page / database is its own record: render only the reference, or streaming
+            # this page would pull in that record's whole subtree.
+            has_children = notion_block.get("has_children", False) and block_type not in (
+                "child_page", "child_database"
+            )
             block_id = notion_block.get("id", "")
             # Get type_data for synced_block handling
             type_data = notion_block.get(block_type, {}) if block_type else {}
