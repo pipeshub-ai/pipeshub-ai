@@ -1,13 +1,17 @@
-"""One-time backfill of the Web connector's Browser-like Identity setting.
+"""One-time backfill that stores, for every Web connector, the settings it actually crawls with.
 
-Web connectors set up before the setting existed have no stored value. They kept crawling
-as a browser, while the settings form showed the setting's default, off, so the first save
-of any other setting turned the browser identity off without anyone asking. This writes the
-value those connectors crawl with into their stored settings, so the form, the crawler and
-the API agree, and a missing value can mean the default everywhere.
+The settings form shows a field's default when nothing is stored, and the server now checks
+numeric ranges on save. Three older states would otherwise surprise an existing connector:
 
-Writes are idempotent (only a missing value is filled, from the stored settings alone), so
-two replicas running this at once save the same result.
+- Browser-like Identity missing: it crawled as a browser, but the form showed off, so the first
+  save of any other setting turned the identity off.
+- Maximum pages missing: the crawler used 1,000, but the form showed 100, so the first save cut
+  the crawl to a tenth.
+- Depth, Maximum pages or size out of range: the crawler clamped them, but the form shows the
+  stored value and the save is refused, so no other setting could be saved.
+
+Writes are idempotent (computed from the stored settings alone), so two replicas running this
+at once save the same result.
 """
 
 from typing import Any
@@ -15,24 +19,66 @@ from typing import Any
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.api.connector_resolvers import resolve_config_service
 from app.connectors.core.constants import ConfigPaths
+from app.connectors.sources.web.connector import (
+    MAX_DEPTH_LIMIT,
+    MAX_PAGES_LIMIT,
+    MAX_SIZE_MB_LIMIT,
+)
 
-MIGRATION_FLAG_KEY = "/migrations/web_browser_like_identity_v1"
+# v2: also fills Maximum pages and clamps the numeric settings; v1 did the identity alone.
+MIGRATION_FLAG_KEY = "/migrations/web_sync_settings_backfill_v2"
 SETTING = "browser_like_identity"
 # What connectors without the setting crawled with.
 LEGACY_VALUE = True
+# What the crawler uses when Maximum pages is not stored (the form's default is 100).
+LEGACY_MAX_PAGES = 1000
+# The ranges the crawler has always clamped these to.
+CLAMPED_RANGES = {"depth": (1, MAX_DEPTH_LIMIT), "max_pages": (1, MAX_PAGES_LIMIT), "max_size_mb": (1, MAX_SIZE_MB_LIMIT)}
+
+
+def _as_crawled(values: dict[str, Any]) -> bool:
+    """Store Maximum pages and the clamped numbers the crawler uses for ``values``; True when changed."""
+    changed = False
+    if values.get("max_pages") in (None, ""):
+        values["max_pages"] = LEGACY_MAX_PAGES
+        changed = True
+    for name, (low, high) in CLAMPED_RANGES.items():
+        raw = values.get(name)
+        if isinstance(raw, bool):
+            continue
+        try:
+            number = int(raw)  # as the crawler reads it: "12" and 12.7 are both 12
+        except (TypeError, ValueError):
+            continue
+        crawled = min(max(number, low), high)
+        if crawled != number or (isinstance(raw, float) and not raw.is_integer()):
+            values[name] = crawled
+            changed = True
+    return changed
 
 
 def backfill_sync_settings(sync: dict[str, Any]) -> bool:
-    """Fill the setting where the crawler (``sync``) or the form (``sync.customValues``) lacks it; True when changed."""
+    """Store what the crawler uses in ``sync`` and in the form's copy, ``sync.customValues``; True when changed.
+
+    The form reads ``customValues`` only when it holds something, and the flat values otherwise.
+    An empty one is left empty: a single value written into it would hide every other setting.
+    """
     custom = sync.get("customValues")
-    value = sync.get(SETTING, custom.get(SETTING, LEGACY_VALUE) if isinstance(custom, dict) else LEGACY_VALUE)
+    form = custom if isinstance(custom, dict) and custom else None
+    value = sync.get(SETTING, form.get(SETTING, LEGACY_VALUE) if form else LEGACY_VALUE)
     changed = False
     if SETTING not in sync:
         sync[SETTING] = value
         changed = True
-    if isinstance(custom, dict) and SETTING not in custom:
-        custom[SETTING] = value
+    if form is not None and SETTING not in form:
+        form[SETTING] = value
         changed = True
+    if form is not None and form.get("max_pages") in (None, "") and sync.get("max_pages") not in (None, ""):
+        form["max_pages"] = sync["max_pages"]  # the form keeps what the crawler already has
+        changed = True
+    changed |= _as_crawled(sync)
+    if form is not None:
+        changed |= _as_crawled(form)
     return changed
 
 
@@ -48,7 +94,7 @@ class WebBrowserIdentityBackfill:
             flag = await self.config_service.get_config(MIGRATION_FLAG_KEY, use_cache=False)
             return isinstance(flag, dict) and flag.get("done") is True
         except Exception as e:
-            self.logger.debug(f"Unable to read the Web identity backfill flag (assuming not done): {e}")
+            self.logger.debug(f"Unable to read the Web settings backfill flag (assuming not done): {e}")
             return False
 
     async def _backfill(self, connector_id: str, org_id: str | None) -> bool:
@@ -79,14 +125,14 @@ class WebBrowserIdentityBackfill:
                 updated += await self._backfill(connector_id, app.get("orgId"))
             except Exception as e:
                 failures += 1
-                self.logger.error(f"Web identity backfill: could not update connector {connector_id}: {e}")
+                self.logger.error(f"Web settings backfill: could not update connector {connector_id}: {e}")
 
         # Leave the flag unset after a failure so the next start retries; updated connectors are skipped then.
         if failures == 0:
             try:
                 await self.config_service.set_config(MIGRATION_FLAG_KEY, {"done": True, "connectors_updated": updated})
             except Exception as e:
-                self.logger.warning(f"Web identity backfill finished but its flag was not saved; it runs again: {e}")
+                self.logger.warning(f"Web settings backfill finished but its flag was not saved; it runs again: {e}")
         return {"success": failures == 0, "skipped": False, "connectors_updated": updated, "failures": failures}
 
 

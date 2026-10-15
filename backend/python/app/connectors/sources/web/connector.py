@@ -2109,9 +2109,11 @@ class WebConnector(BaseConnector):
         return self._gone_this_sync | (self._gone_last_sync - self._reached_record_ids)
 
     def _stopped_short(self) -> bool:
-        """The crawl stopped with pages left to visit before keeping Max Pages pages (the fetch cap, or
-        new pages the store had no room for): stored pages it didn't reach may still be linked."""
-        return self._page_limit_reached and len(self._kept_urls) < self.max_pages
+        """The crawl stopped with pages left to visit: Max Pages, the fetch cap, or new pages the store
+        had no room for. Stored pages it didn't reach may still be on the site, so none is pruned. This
+        covers a store already over Max Pages (older versions capped visits, not stored pages, and a
+        lowered Max Pages does the same): the pages over the cap are kept, not deleted."""
+        return self._page_limit_reached
 
     def _pages_left(self) -> bool:
         # Fetches that failed count too: a site of broken links must not be crawled without end.

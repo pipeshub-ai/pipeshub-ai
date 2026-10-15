@@ -414,3 +414,25 @@ async def test_a_single_page_max_pages_has_no_room_for_is_not_written_on_a_full_
 
     assert START_URL not in db.pages()
     assert not db.permission_updates, "a refused page was written through the permissions update"
+
+
+async def test_pages_stored_beyond_max_pages_are_kept_while_the_site_still_has_them(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    """An upgrade: older versions capped each sync's visits, not stored pages, so a store can already
+    hold more than Max Pages. The same happens when Max Pages is lowered. Nothing still on the site
+    may be removed for that."""
+    links = [f"/p{i}" for i in range(6)]
+    site.html(START_URL, "Home", *links)
+    for link in links:
+        site.html(f"http://site.test{link}", link)
+    await (await make_connector(max_pages=10)).run_sync()
+    stored = set(db.pages())
+    assert len(stored) == 7
+
+    connector = await make_connector(max_pages=5)
+    for _ in range(3):  # pruning needs two complete crawls in a row; give it three
+        await connector.run_sync()
+
+    assert set(db.pages()) == stored
+    assert not db.deleted

@@ -1,5 +1,5 @@
-"""Web connectors set up before Browser-like Identity existed crawl as a browser; the startup
-backfill stores that value, so the settings form shows it and the next save keeps it."""
+"""The startup backfill stores the settings each Web connector actually crawls with, so the form
+shows them and the next save, of any setting, keeps them and is accepted."""
 
 import copy
 import logging
@@ -52,7 +52,9 @@ def _container(config: _MemoryConfigService) -> SimpleNamespace:
 
 
 def _web_config(**sync: object) -> dict:
-    return {"sync": {"url": "https://docs.example.org/", "customValues": {"url": "https://docs.example.org/"}, **sync}}
+    """Saved through the form: Maximum pages stored, in both copies."""
+    form = {"url": "https://docs.example.org/", "max_pages": 100}
+    return {"sync": {**form, "customValues": dict(form), **sync}}
 
 
 async def test_a_connector_from_before_the_setting_is_stored_as_browser_like() -> None:
@@ -69,7 +71,10 @@ async def test_a_connector_from_before_the_setting_is_stored_as_browser_like() -
 
 async def test_a_stored_choice_is_kept_and_copied_to_the_form_values() -> None:
     config = _MemoryConfigService({
-        _path("new"): _web_config(browser_like_identity=False, customValues={"browser_like_identity": False}),
+        _path("new"): _web_config(
+            browser_like_identity=False,
+            customValues={"url": "https://docs.example.org/", "max_pages": 100, "browser_like_identity": False},
+        ),
         _path("half"): _web_config(browser_like_identity=False),
     })
 
@@ -101,3 +106,48 @@ async def test_it_runs_once() -> None:
 
     assert result["skipped"] is True
     assert config.writes == []
+
+
+async def test_a_connector_without_maximum_pages_keeps_the_1000_it_crawls_with() -> None:
+    """The form showed its default, 100, so the first save of any setting cut the crawl to a tenth."""
+    stored = {"sync": {"url": "https://docs.example.org/", "customValues": {"url": "https://docs.example.org/"}}}
+    config = _MemoryConfigService({_path("api"): stored})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["api"]), LOGGER)
+
+    sync = config.store[_path("api")]["sync"]
+    assert sync["max_pages"] == 1000 and sync["customValues"]["max_pages"] == 1000
+
+
+async def test_out_of_range_numbers_are_stored_as_the_crawler_clamps_them() -> None:
+    """Saving any setting would otherwise be refused for a value the user never touched."""
+    over = {"depth": 25, "max_pages": "50000", "max_size_mb": 0}
+    config = _MemoryConfigService({_path("big"): _web_config(**over, customValues={"url": "x", **over})})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["big"]), LOGGER)
+
+    sync = config.store[_path("big")]["sync"]
+    for values in (sync, sync["customValues"]):
+        assert (values["depth"], values["max_pages"], values["max_size_mb"]) == (10, 10_000, 1)
+
+
+async def test_an_empty_form_copy_stays_empty_so_the_form_keeps_reading_every_setting() -> None:
+    """The form reads customValues only when it holds something; one value there would hide the rest."""
+    stored = {"sync": {"url": "https://docs.example.org/", "depth": 4, "customValues": {}}}
+    config = _MemoryConfigService({_path("flat"): stored})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["flat"]), LOGGER)
+
+    sync = config.store[_path("flat")]["sync"]
+    assert sync["customValues"] == {}
+    assert (sync["browser_like_identity"], sync["max_pages"], sync["depth"]) == (True, 1000, 4)
+
+
+async def test_settings_already_as_crawled_are_not_written() -> None:
+    config = _MemoryConfigService({_path("ok"): _web_config(browser_like_identity=True, customValues={
+        "url": "https://docs.example.org/", "max_pages": "250", "depth": "3", "browser_like_identity": True,
+    }, max_pages="250", depth="3")})
+
+    await run_web_browser_identity_backfill(_container(config), _Graph(["ok"]), LOGGER)
+
+    assert config.writes == [MIGRATION_FLAG_KEY]
