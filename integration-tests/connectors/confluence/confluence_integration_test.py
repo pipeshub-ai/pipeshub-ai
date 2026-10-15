@@ -48,6 +48,7 @@ from helper.assertions import (  # noqa: E402
     RecordAssertion,
     assert_permission_model,
 )
+from connectors.confluence.constants import connector_site_origin  # noqa: E402
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     FOLDER_MIME_TYPE,
     assert_api_content_matches_graph,
@@ -127,7 +128,7 @@ class TestConfluenceValidation:
         )
         
         # Additional checks
-        assert record.weburl is not None and record.weburl.startswith("https://"), "Page should have webUrl"
+        assert record.weburl is not None and record.weburl.startswith(connector_site_origin()), "Page should have webUrl"
         assert record.source_created_at is not None, "Page should have sourceCreatedAtTimestamp"
         assert record.connector_id == connector_id, "Page should have correct connectorId"
         
@@ -444,7 +445,7 @@ class TestConfluenceKnowledgeHubAccess:
                 connector_id, folder_item.id, expected
             )
             assert record.size_in_bytes == 0, "Folder sizeInBytes should be 0"
-            assert record.weburl is not None and record.weburl.startswith("https://"), (
+            assert record.weburl is not None and record.weburl.startswith(connector_site_origin()), (
                 "Folder should have webUrl"
             )
 
