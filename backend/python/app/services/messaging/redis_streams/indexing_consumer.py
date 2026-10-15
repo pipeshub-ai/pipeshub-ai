@@ -101,6 +101,15 @@ _MAIN_LOOP_OP_TIMEOUT = 5.0
 _DELAY_POLL_INTERVAL_SECONDS = 1.0
 # XREADGROUP block used while the scheduler still has buffered work.
 _BUSY_BLOCK_MS = 50
+# Pending entries this consumer is not holding are looked for this often
+# while it reads (see __recover_while_reading), and at most this many are
+# taken back per look. The batch matches __recovery_claim_budget's cap.
+_RECOVERY_INTERVAL_SECONDS = 1.0
+_RECOVERY_BATCH = 10
+# A held entry whose ownership was last confirmed this fraction of the
+# idle-claim window ago has missed a refresh (they run every third of it),
+# so a peer may be about to claim it (see __release_entries_at_risk).
+_AT_RISK_FRACTION = 2 / 3
 
 
 def _loads_possibly_double_encoded(value: str) -> object:
@@ -199,6 +208,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
         self._in_flight_message_ids: set[str] = set()
+        # Which stream each in-flight entry came from, so recovery can tell
+        # how much of a lane's pending list this consumer is working on.
+        self._in_flight_streams: dict[str, str] = {}
         # Keyed by recordId, not by entry id. Two entries can carry the same
         # record -- the original and one the stranded sweep re-published -- and
         # the message-id set above cannot see that they are the same work.
@@ -247,6 +259,14 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # producing; an idle lane is not an alternative source of work.
         self._lanes_with_data: set[str] = set()
         self._last_ownership_refresh = 0.0
+        # When each stream's held entries last had their ownership confirmed
+        # (monotonic). An entry is only released when this goes stale.
+        self._ownership_confirmed_at: dict[str, float] = {}
+        # Read-phase recovery: when it last looked, which lane it starts
+        # from next, and its XAUTOCLAIM cursor per lane.
+        self._last_recovery = 0.0
+        self._recovery_lane_offset = 0
+        self._recovery_claim_cursors: dict[str, str] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
@@ -632,6 +652,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.gate_waiters.reset()
         with self._in_flight_lock:
             self._in_flight_message_ids.clear()
+            self._in_flight_streams.clear()
             self._in_flight_record_ids.clear()
 
     def _wait_for_active_futures(self) -> None:
@@ -716,13 +737,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         with self._in_flight_lock:
             return message_id in self._in_flight_message_ids
 
-    def _mark_in_flight(self, message_id: str) -> None:
+    def _mark_in_flight(self, message_id: str, stream_name: str | None = None) -> None:
         with self._in_flight_lock:
             self._in_flight_message_ids.add(message_id)
+            if stream_name is not None:
+                self._in_flight_streams[message_id] = stream_name
 
     def _unmark_in_flight(self, message_id: str) -> None:
         with self._in_flight_lock:
             self._in_flight_message_ids.discard(message_id)
+            self._in_flight_streams.pop(message_id, None)
+
+    def _in_flight_count_by_stream(self) -> dict[str, int]:
+        with self._in_flight_lock:
+            counts: dict[str, int] = {}
+            for stream in self._in_flight_streams.values():
+                counts[stream] = counts.get(stream, 0) + 1
+            return counts
 
     def _claim_record(self, record_id: str) -> bool:
         """Take this process's claim on a record, or report it already taken.
@@ -1007,146 +1038,368 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._downstream_backpressure_active = False
             self.logger.info("Downstream backpressure cleared; resuming stream reads")
 
+    async def __recover_entry(
+        self, topic: str, message_id: str, fields: dict[str, str], *, owned: bool
+    ) -> bool:
+        """Take responsibility for one pending entry recovery found.
+
+        ``owned`` entries were found in this consumer's own pending list by
+        read-only XPENDING + XRANGE, so their idle timer kept climbing and a
+        peer's XAUTOCLAIM could take one before it is dispatched: ownership
+        is reasserted first with ``XCLAIM JUSTID``, which resets idle time
+        without counting a delivery (same as ``__refresh_held_ownership``).
+        Entries from XAUTOCLAIM are already freshly claimed.
+
+        Returns whether the entry was handed on (buffered or dispatched).
+        """
+        prefix = "own " if owned else ""
+        if self._is_in_flight(message_id) or self.__already_held(message_id):
+            return False
+        try:
+            parsed_message = await self._parse_message(message_id, fields)
+            stable_message_id = self._get_stable_message_id(message_id, parsed_message)
+            if await self._should_dead_letter(
+                topic, message_id, stable_message_id, parsed_message
+            ):
+                return False
+            if owned:
+                await self.__reclaim_for_dispatch(topic, message_id)
+            self.logger.info(
+                "Recovering %spending message: stream=%s, id=%s",
+                prefix,
+                topic,
+                message_id,
+            )
+            await self.__dispatch_or_enqueue(topic, message_id, fields, parsed_message)
+            return True
+        except Exception as e:
+            self.logger.error(
+                "Error recovering %spending message %s: %s", prefix, message_id, e
+            )
+            return False
+
+    async def __autoclaim(
+        self, topic: str, start_id: str, count: int
+    ) -> tuple[str, list[tuple[str, dict[str, str]]]]:
+        """One XAUTOCLAIM page: entries idle past ``claim_min_idle_ms`` in any
+        consumer's pending list -- a crashed replica's, or this one's own --
+        become this consumer's. Returns the next cursor and what it claimed."""
+        result = await self.redis.xautoclaim(  # type: ignore
+            topic,
+            self.config.group_id,
+            self.consumer_name,
+            min_idle_time=self.config.claim_min_idle_ms,
+            start_id=start_id,
+            count=count,
+        )
+        next_id, claimed, _deleted = result
+        if isinstance(next_id, bytes):
+            next_id = next_id.decode()
+        return str(next_id), list(claimed or [])
+
     async def _drain_pending(self) -> bool:
         """Re-process messages left in the Pending Entries List (PEL).
 
-        Called when no new messages arrive (idle-based retry). Returns True
-        if any pending messages were processed.
+        Called at startup and whenever the streams go idle. Returns True if
+        any pending messages were processed.
 
-        Phase 1: XAUTOCLAIM to steal idle messages from other (crashed) consumers.
-        Phase 2: XREADGROUP with id "0" to recover messages already owned by THIS
-        consumer.
+        Phase 1: XAUTOCLAIM to steal idle messages from other (crashed)
+        consumers. Phase 2: recover entries already in THIS consumer's
+        pending list that it is not holding.
+
+        Both phases take the lanes in turn, a share of the budget each per
+        round, instead of draining one lane until the buffer is full. A
+        restart after a first sync can leave thousands of entries pending in
+        one lane; taken lane by lane, the buffer filled with that lane alone
+        and every other connector waited behind it.
         """
         processed_any = False
+        topics = list(self.config.topics)
 
-        for topic in self.config.topics:
-            # Phase 1: claim idle messages from other (possibly crashed) consumers
-            start_id = "0-0"
-            while self.running:
-                budget = self._dispatch_budget()
-                if budget.blocked:
-                    await asyncio.sleep(0.5)
-                    continue
-                claim_budget = self.__recovery_claim_budget(budget.remaining)
-                if claim_budget <= 0:
-                    break
-                try:
-                    result = await self.redis.xautoclaim(  # type: ignore
-                        topic,
-                        self.config.group_id,
-                        self.consumer_name,
-                        min_idle_time=self.config.claim_min_idle_ms,
-                        start_id=start_id,
-                        count=claim_budget,
-                    )
-                    next_id, claimed, _deleted = result
-                    if not claimed:
-                        break
-                    for message_id, fields in claimed:
-                        if not self.running:
-                            return processed_any
-                        if self._is_in_flight(message_id):
-                            continue
-                        if self._dispatch_budget().blocked:
-                            break
-                        try:
-                            parsed_message = await self._parse_message(message_id, fields)
-                            stable_message_id = self._get_stable_message_id(
-                                message_id, parsed_message
-                            )
-                            if self.__already_held(message_id):
-                                continue
-                            if await self._should_dead_letter(
-                                topic, message_id, stable_message_id, parsed_message
-                            ):
-                                continue
-                            processed_any = True
-                            self.logger.info(
-                                "Recovering pending message: stream=%s, id=%s",
-                                topic,
-                                message_id,
-                            )
-                            await self.__dispatch_or_enqueue(
-                                topic, message_id, fields, parsed_message
-                            )
-                        except Exception as e:
-                            self.logger.error(
-                                "Error recovering pending message %s: %s",
-                                message_id,
-                                e,
-                            )
-                    start_id = next_id
-                    if next_id == b"0-0" or next_id == "0-0":
-                        break
-                except Exception as e:
-                    self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
-                    break
-
-            # Phase 2: recover messages already in THIS consumer's PEL.
-            #
-            # Skipped unless something in it is genuinely unaccounted for.
-            # Must not use XREADGROUP id="0": Redis increments times_delivered
-            # on every own-PEL re-read, and the dead-letter backstop treats
-            # that counter as a crash loop. A healthy entry left untracked
-            # (buffer full) or sitting behind a sibling delivery was being
-            # failed after ~10 idle cycles (~1 min). XPENDING is read-only;
-            # XRANGE fetches the payload without counting a delivery.
-            if not await self.__has_unheld_pending(topic):
-                await self._cleanup_empty_consumers(topic)
+        # Phase 1: claim idle messages from other (possibly crashed) consumers.
+        cursors: dict[str, str] = dict.fromkeys(topics, "0-0")
+        active = list(topics)
+        while active and self.running:
+            budget = self._dispatch_budget()
+            if budget.blocked:
+                await asyncio.sleep(0.5)
                 continue
-            try:
-                pending = await self.__own_unheld_pending_payloads(topic)
-            except Exception as e:
-                self.logger.error(
-                    "Error inspecting own PEL on %s: %s",
-                    topic,
-                    e,
-                )
-                pending = []
-            for message_id, fields in pending:
+            claim_budget = self.__recovery_claim_budget(budget.remaining)
+            if claim_budget <= 0:
+                break
+            per_lane = max(1, claim_budget // len(active))
+            for topic in list(active):
                 if not self.running:
                     return processed_any
-                if self._is_in_flight(message_id) or self.__already_held(message_id):
-                    continue
-                if self._dispatch_budget().blocked:
+                claim = min(
+                    per_lane,
+                    self.__recovery_claim_budget(self._dispatch_budget().remaining),
+                )
+                if claim <= 0:
                     break
                 try:
-                    parsed_message = await self._parse_message(message_id, fields)
-                    stable_message_id = self._get_stable_message_id(
-                        message_id, parsed_message
-                    )
-                    if await self._should_dead_letter(
-                        topic, message_id, stable_message_id, parsed_message
-                    ):
-                        continue
-                    # XPENDING + XRANGE are read-only: the entry's idle timer
-                    # kept climbing, so a peer's XAUTOCLAIM (min_idle_time=30 s)
-                    # can steal it between the scan and this dispatch. Reassert
-                    # ownership and reset idle time — same pattern as
-                    # __refresh_held_ownership for buffered entries. JUSTID
-                    # avoids inflating times_delivered.
-                    await self.__reclaim_for_dispatch(topic, message_id)
-                    processed_any = True
-                    self.logger.info(
-                        "Recovering own pending message: stream=%s, id=%s",
-                        topic,
-                        message_id,
-                    )
-                    await self.__dispatch_or_enqueue(
-                        topic, message_id, fields, parsed_message
-                    )
+                    next_id, claimed = await self.__autoclaim(topic, cursors[topic], claim)
+                except Exception as e:
+                    self.logger.error("Error during XAUTOCLAIM on %s: %s", topic, e)
+                    active.remove(topic)
+                    continue
+                cursors[topic] = next_id
+                if not claimed or next_id == "0-0":
+                    active.remove(topic)
+                for message_id, fields in claimed:
+                    if not self.running:
+                        return processed_any
+                    if self._dispatch_budget().blocked:
+                        break
+                    if await self.__recover_entry(topic, message_id, fields, owned=False):
+                        processed_any = True
+
+        # Phase 2: recover messages already in THIS consumer's PEL.
+        #
+        # Skipped unless something in it is genuinely unaccounted for.
+        # Must not use XREADGROUP id="0": Redis increments times_delivered
+        # on every own-PEL re-read, and the dead-letter backstop treats
+        # that counter as a crash loop. A healthy entry left untracked
+        # (buffer full) or sitting behind a sibling delivery was being
+        # failed after ~10 idle cycles (~1 min). XPENDING is read-only;
+        # XRANGE fetches the payload without counting a delivery.
+        lanes = [topic for topic in topics if await self.__has_unheld_pending(topic)]
+        # Ids this pass has already tried, so an entry that is still pending
+        # when the next round looks again is not taken twice.
+        tried: set[str] = set()
+        while lanes and self.running:
+            budget = self._dispatch_budget()
+            if budget.blocked:
+                break
+            share = max(1, budget.remaining)
+            room = self.__buffer_room()
+            if room is not None:
+                if room <= 0:
+                    break
+                share = min(share, room)
+            per_lane = max(1, share // len(lanes))
+            progressed = False
+            for topic in list(lanes):
+                if not self.running:
+                    return processed_any
+                try:
+                    pending = await self.__own_unheld_pending_payloads(topic, limit=per_lane)
                 except Exception as e:
                     self.logger.error(
-                        "Error recovering own pending message %s: %s",
-                        message_id,
+                        "Error inspecting own PEL on %s: %s",
+                        topic,
                         e,
                     )
+                    pending = []
+                pending = [(m, f) for m, f in pending if m not in tried]
+                if not pending:
+                    lanes.remove(topic)
+                    continue
+                for message_id, fields in pending:
+                    if not self.running:
+                        return processed_any
+                    if self._dispatch_budget().blocked:
+                        break
+                    tried.add(message_id)
+                    if await self.__recover_entry(topic, message_id, fields, owned=True):
+                        processed_any = True
+                        progressed = True
+            if not progressed:
+                break
 
+        for topic in topics:
             await self._cleanup_empty_consumers(topic)
 
         if processed_any:
             self.logger.info("Processed pending messages from PEL")
         return processed_any
+
+    def __buffer_room(self) -> int | None:
+        """Free places in the buffer, or None when there is no scheduler."""
+        scheduler = self._scheduler
+        if scheduler is None:
+            return None
+        return (
+            self.fair_scheduler_config.max_buffered_messages
+            - scheduler.pending_count
+            - len(self._deferred_entries)
+        )
+
+    def __held_count_by_stream(self) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for stream in self._held_entries.values():
+            counts[stream] = counts.get(stream, 0) + 1
+        return counts
+
+    def __pending_by_owner(self, summary: object) -> tuple[int, int]:
+        """(this consumer's, everyone else's) pending count from an XPENDING
+        summary reply."""
+        if not isinstance(summary, dict):
+            return 0, 0
+        own = 0
+        others = 0
+        for consumer in summary.get("consumers") or []:
+            if isinstance(consumer, dict):
+                name = consumer.get("name", consumer.get(b"name"))
+                count = consumer.get("pending", consumer.get(b"pending", 0))
+            else:
+                name, count = consumer[0], consumer[1]
+            if isinstance(name, bytes):
+                name = name.decode()
+            if str(name) == self.consumer_name:
+                own += int(count)
+            else:
+                others += int(count)
+        return own, others
+
+    def __release_for_room(self, protect: str) -> bool:
+        """Give up one held entry so a lane holding nothing can be served.
+
+        Taken from the lane this consumer holds most entries from: its
+        newest parked entry, else its newest buffered one. The entry stays in
+        the pending list, unheld, and comes back through recovery once there
+        is room. Returns False when there is nothing to give up.
+        """
+        scheduler = self._scheduler
+        if scheduler is None:
+            return False
+        counts = self.__held_count_by_stream()
+        counts.pop(protect, None)
+        if not counts:
+            return False
+        donor = max(counts, key=lambda stream: counts[stream])
+
+        for index in range(len(self._deferred_entries) - 1, -1, -1):
+            entry = self._deferred_entries[index]
+            if entry[0] == donor:
+                del self._deferred_entries[index]
+                self._held_entries.pop(entry[1], None)
+                return True
+
+        def stream_order(message_id: str) -> tuple[int, ...]:
+            try:
+                return tuple(int(part) for part in message_id.split("-"))
+            except ValueError:
+                return (0,)
+
+        candidates = [
+            message_id
+            for message_id, stream in self._held_entries.items()
+            if stream == donor
+        ]
+        if not candidates:
+            return False
+        victim = max(candidates, key=stream_order)
+        if not scheduler.purge(lambda item: item[1] == victim):
+            return False
+        self._held_entries.pop(victim, None)
+        return True
+
+    async def __recover_while_reading(self) -> None:
+        """Take back pending entries this consumer is not holding, a few at
+        a time, on every read pass.
+
+        Entries end up pending but unheld after a restart (the old process's
+        entries are idle in its pending list), after an at-risk release, or
+        when a read found no room. ``_drain_pending`` only runs once the
+        streams go idle, and during a long first sync they never do -- and
+        while the buffer is full the read pass does not even poll. So this
+        runs before the full-buffer check, at most once per
+        ``_RECOVERY_INTERVAL_SECONDS`` and ``_RECOVERY_BATCH`` entries:
+
+        - With room in the buffer, lanes that have unheld pending entries are
+          served in turn, a share each.
+        - With the buffer full, only lanes this consumer holds nothing from
+          are served, and each entry taken back first gives up one held
+          entry from the lane it holds most from (``__release_for_room``).
+          A full buffer of one connector can no longer lock the others out.
+
+        An XPENDING summary per lane decides where to look; it is cheap and
+        changes nothing. Entries a live peer is holding are not taken: the
+        peer keeps their idle time below ``claim_min_idle_ms``, so
+        XAUTOCLAIM passes them over.
+        """
+        scheduler = self._scheduler
+        if scheduler is None or self.redis is None:
+            return
+        now = time.monotonic()
+        if now - self._last_recovery < _RECOVERY_INTERVAL_SECONDS:
+            return
+        self._last_recovery = now
+
+        topics = list(self.config.topics)
+        if not topics:
+            return
+        start = self._recovery_lane_offset % len(topics)
+        self._recovery_lane_offset += 1
+        topics = topics[start:] + topics[:start]
+
+        held = self.__held_count_by_stream()
+        in_flight = self._in_flight_count_by_stream()
+        unheld: dict[str, tuple[int, int]] = {}
+        for topic in topics:
+            try:
+                summary = await self.redis.xpending(topic, self.config.group_id)  # type: ignore
+            except Exception as e:
+                self.logger.debug("Could not summarise pending list of %s: %s", topic, e)
+                continue
+            own, others = self.__pending_by_owner(summary)
+            own_unheld = own - held.get(topic, 0) - in_flight.get(topic, 0)
+            if own_unheld > 0 or others > 0:
+                unheld[topic] = (own_unheld, others)
+        if not unheld:
+            return
+
+        room = self.__buffer_room() or 0
+        if room > 0:
+            lanes = [t for t in topics if t in unheld]
+            limit = min(_RECOVERY_BATCH, room)
+        else:
+            lanes = [
+                t
+                for t in topics
+                if t in unheld and held.get(t, 0) + in_flight.get(t, 0) == 0
+            ]
+            limit = _RECOVERY_BATCH
+        if not lanes:
+            return
+
+        per_lane = max(1, limit // len(lanes))
+        taken = 0
+        for topic in lanes:
+            if taken >= limit or not self.running:
+                break
+            want = min(per_lane, limit - taken)
+            own_unheld, others = unheld[topic]
+            found: list[tuple[str, dict[str, str], bool]] = []
+            try:
+                if own_unheld > 0:
+                    found.extend(
+                        (message_id, fields, True)
+                        for message_id, fields in await self.__own_unheld_pending_payloads(
+                            topic, limit=want, ignore_budget=True
+                        )
+                    )
+                if len(found) < want and others > 0:
+                    cursor = self._recovery_claim_cursors.get(topic, "0-0")
+                    next_id, claimed = await self.__autoclaim(
+                        topic, cursor, want - len(found)
+                    )
+                    self._recovery_claim_cursors[topic] = next_id
+                    found.extend((message_id, fields, False) for message_id, fields in claimed)
+            except Exception as e:
+                self.logger.debug("Could not recover pending entries on %s: %s", topic, e)
+                continue
+            for message_id, fields, owned in found:
+                if not self.__buffer_has_room() and not self.__release_for_room(topic):
+                    break
+                if await self.__recover_entry(topic, message_id, fields, owned=owned):
+                    taken += 1
+        if taken:
+            self.logger.info(
+                "Recovered %d pending entry(ies) not held by this consumer while reading",
+                taken,
+            )
 
     def __retry_not_before(self, parsed: StreamMessage) -> float | None:
         not_before = parsed.payload.get("_retry_not_before")
@@ -1207,7 +1460,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         return False
 
     async def __own_unheld_pending_payloads(
-        self, topic: str
+        self, topic: str, limit: int | None = None, *, ignore_budget: bool = False
     ) -> list[tuple[str, dict[str, str]]]:
         """Payloads for this consumer's pending entries that are not already
         held or in flight.
@@ -1219,10 +1472,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if self.redis is None:
             return []
 
-        budget = self._dispatch_budget()
-        if budget.blocked:
-            return []
-        remaining = max(1, budget.remaining)
+        if ignore_budget:
+            # Buffering, not dispatching: the dispatch budget does not apply.
+            remaining = max(1, limit or 1)
+        else:
+            budget = self._dispatch_budget()
+            if budget.blocked:
+                return []
+            remaining = max(1, budget.remaining)
+            if limit is not None:
+                remaining = min(remaining, max(1, limit))
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         found: list[tuple[str, dict[str, str]]] = []
         cursor = "-"
@@ -1303,7 +1562,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         """
         if self.redis is None or not self._held_entries:
             return
-        interval = max(1.0, (self.config.claim_min_idle_ms / 1000.0) / 3.0)
+        interval = self.__ownership_refresh_interval()
         now = time.monotonic()
         if now - self._last_ownership_refresh < interval:
             return
@@ -1322,6 +1581,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     message_ids=message_ids,
                     justid=True,
                 )
+                self._ownership_confirmed_at[stream] = now
             except Exception as e:
                 self.logger.warning(
                     "Could not refresh ownership of %d held entry(ies) on %s: %s",
@@ -1431,31 +1691,57 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             kept.append(entry)
         self._deferred_entries = kept
 
-    def __sweep_stale_buffered(self) -> None:
-        """Drop entries buffered past the dwell budget.
+    def __ownership_refresh_interval(self) -> float:
+        return max(1.0, (self.config.claim_min_idle_ms / 1000.0) / 3.0)
 
-        A buffered entry is un-ACKed, so Redis counts it as idle and a peer
-        replica's XAUTOCLAIM will steal it once it passes claim_min_idle_ms.
-        Releasing it here keeps our in-memory view honest -- the PEL entry is
-        untouched, so the idle drain or the new owner picks it up.
+    def __ownership_risk_after(self) -> float:
+        """Seconds without a confirmed ownership refresh after which a held
+        entry is at risk: two refreshes missed, and at least
+        ``_AT_RISK_FRACTION`` of the idle-claim window gone."""
+        return max(
+            (self.config.claim_min_idle_ms / 1000.0) * _AT_RISK_FRACTION,
+            2 * self.__ownership_refresh_interval(),
+        )
+
+    def __sweep_stale_buffered(self) -> None:
+        """Release held entries whose ownership is at risk, and only those.
+
+        A buffered or parked entry is un-ACKed, so Redis counts it as idle,
+        and a peer replica's XAUTOCLAIM may take it once it passes
+        ``claim_min_idle_ms``. ``__refresh_held_ownership`` resets that idle
+        time every third of the window, so while the refresh works no peer
+        can take an entry, however long it waits for its turn; age alone is
+        no reason to let it go. Releasing an entry used to happen at a fixed
+        dwell budget, and a released entry only came back when the stream
+        went idle -- which, during a long sync, it never does -- so whole
+        connectors stopped indexing.
+
+        An entry is at risk when its stream's ownership has not been
+        confirmed for ``__ownership_risk_after`` seconds: refreshes have
+        failed, and a peer may be about to claim it. It is released (the
+        pending entry is left as it is), so this consumer does not dispatch
+        work another replica now owns; read-phase recovery takes it back if
+        no one else does. A single consumer whose refresh keeps working
+        never releases anything.
         """
         scheduler = self._scheduler
         if scheduler is None:
             return
-        budget = self.fair_scheduler_config.max_dwell_seconds
-        cutoff = time.monotonic() - budget
-        dropped = scheduler.purge(lambda item: item[4] < cutoff)
+        risk_after = self.__ownership_risk_after()
+        now = time.monotonic()
+
+        def at_risk(stream: str, held_since: float) -> bool:
+            confirmed = max(held_since, self._ownership_confirmed_at.get(stream, 0.0))
+            return now - confirmed >= risk_after
+
+        dropped = scheduler.purge(lambda item: at_risk(item[0], item[4]))
         for _stream, message_id, *_rest in dropped:
             self._held_entries.pop(message_id, None)
 
-        # Parked entries age out on the same budget. A key that stays at its
-        # cap would otherwise hold them forever: ownership refresh keeps
-        # resetting their idle time, so no peer would claim them either, and
-        # they would never reach the dwell metric.
-        stale_parked = [e for e in self._deferred_entries if e[5] < cutoff]
+        stale_parked = [e for e in self._deferred_entries if at_risk(e[0], e[5])]
         if stale_parked:
             self._deferred_entries = deque(
-                e for e in self._deferred_entries if e[5] >= cutoff
+                e for e in self._deferred_entries if not at_risk(e[0], e[5])
             )
             for _stream, message_id, *_rest in stale_parked:
                 self._held_entries.pop(message_id, None)
@@ -1464,11 +1750,13 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if released:
             metrics.record_dwell_exceeded("redis", released)
             self.logger.warning(
-                "Released %d entry(ies) held longer than %.0fs back to the "
-                "pending list; they will be re-read rather than held past "
-                "Redis's idle-claim window",
+                "Released %d held entry(ies) whose ownership could not be "
+                "confirmed for %.0fs, before another replica's idle claim "
+                "(after %.0fs) can take them; recovery picks them up again "
+                "if no one else does",
                 released,
-                budget,
+                risk_after,
+                self.config.claim_min_idle_ms / 1000.0,
             )
 
     async def __enqueue_message(
@@ -1694,6 +1982,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
         self.__sweep_stale_buffered()
         await self.__drain_deferred()
+        await self.__recover_while_reading()
         # Parked entries are held in memory too, so they count against the
         # buffer budget -- that budget is what bounds this consumer's memory.
         scheduler_full = (
@@ -2093,7 +2382,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if not self.running:
             return
 
-        self._mark_in_flight(message_id)
+        self._mark_in_flight(message_id, stream_name)
         slot_share = self._slot_share
         if slot_share is not None and slot_key is not None:
             # Counted against the connector's share from dispatch until the
