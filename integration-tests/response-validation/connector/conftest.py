@@ -18,11 +18,13 @@ import logging
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator, Sequence, TypedDict
+from typing import Any, AsyncIterator, Awaitable, Callable, Iterator, Sequence, TypedDict
 from uuid import uuid4
 
 import pytest
+import pytest_asyncio
 import requests
+from app.config.constants.arangodb import CollectionNames
 
 from connector_lifecycle import source_unavailable
 from helper.clients.connectors_client import ConnectorOAuthConfigsClient, ConnectorsClient
@@ -276,6 +278,32 @@ def _wait_until_idle(connectors: ConnectorsClient, connector_id: str) -> None:
 @pytest.fixture
 def wait_until_idle(connectors_api: ConnectorsClient) -> Callable[[str], None]:
     return lambda connector_id: _wait_until_idle(connectors_api, connector_id)
+
+
+@pytest_asyncio.fixture(loop_scope="session")
+async def lock_connector(graph_provider: Any) -> AsyncIterator[Callable[[str], Awaitable[None]]]:
+    """Lock a connector the way a full sync's prep phase does, and unlock it after the test.
+
+    A real sync can finish before the next request reads the status, so a 409
+    test that relies on one is a race. Writing the lock to the app node is not.
+    """
+    locked: list[str] = []
+
+    async def lock(connector_id: str) -> None:
+        await graph_provider.update_node(
+            connector_id,
+            CollectionNames.APPS.value,
+            {"status": "FULL_SYNCING", "isLocked": True},
+        )
+        locked.append(connector_id)
+
+    try:
+        yield lock
+    finally:
+        for connector_id in locked:
+            await graph_provider.update_node(
+                connector_id, CollectionNames.APPS.value, {"status": "IDLE", "isLocked": False}
+            )
 
 
 @pytest.fixture(scope="module")

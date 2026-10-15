@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Awaitable, Callable, Iterator, Sequence
 from uuid import uuid4
 
 import pytest
@@ -207,6 +207,18 @@ class TestSaveFilters:
         assert resp.status_code == 400, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _SAVE_FILTERS, 400)
         assert request_body_violations({}, _SAVE_FILTERS), "the spec accepts a body without filters"
+
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_locked_connector_is_409(
+        self,
+        connectors_api: ConnectorsClient,
+        rss_connector: Any,
+        lock_connector: Callable[[str], Awaitable[None]],
+    ) -> None:
+        await lock_connector(rss_connector.connector_id)
+        resp = connectors_api.save_filters(rss_connector.connector_id, {"filters": {"a": 1}})
+        assert resp.status_code == 409, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _SAVE_FILTERS, 409)
 
     def test_unknown_connector_is_404(self, connectors_api: ConnectorsClient) -> None:
         resp = connectors_api.save_filters(str(uuid4()), {"filters": {"a": 1}})

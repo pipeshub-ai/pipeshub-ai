@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 from uuid import uuid4
 
 import pytest
@@ -180,24 +180,18 @@ class TestResync:
         finally:
             wait_until_idle(active_rss_connector.connector_id)
 
-    def test_resync_while_a_sync_runs_is_409(
+    @pytest.mark.asyncio(loop_scope="session")
+    async def test_resync_while_a_sync_runs_is_409(
         self,
         connectors_api: ConnectorsClient,
         active_rss_connector: Any,
-        wait_until_idle: Callable[[str], None],
+        lock_connector: Callable[[str], Awaitable[None]],
     ) -> None:
-        """The first resync starts a sync; one sent right behind it is refused."""
-        statuses: list[int] = []
-        try:
-            for _ in range(10):
-                resp = connectors_api.resync(active_rss_connector.connector_id, "RSS")
-                statuses.append(resp.status_code)
-                if resp.status_code == 409:
-                    break
-            assert resp.status_code == 409, f"no resync was refused: {statuses}"
-            assert_error_response_matches_openapi_operation(resp.json(), _RESYNC, 409)
-        finally:
-            wait_until_idle(active_rss_connector.connector_id)
+        """A resync sent while a sync holds the connector is refused."""
+        await lock_connector(active_rss_connector.connector_id)
+        resp = connectors_api.resync(active_rss_connector.connector_id, "RSS")
+        assert resp.status_code == 409, resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), _RESYNC, 409)
 
     def test_resync_of_inactive_connector_is_400(
         self, connectors_api: ConnectorsClient, rss_connector: Any
