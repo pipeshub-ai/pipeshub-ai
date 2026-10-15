@@ -38116,9 +38116,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
-            An OAuth app with the name the new app would take already exists in the
-            organization. Send a different <code>auth.oauthInstanceName</code>, or name the
-            app to update in <code>auth.oauthConfigId</code>.
+            The connector is locked by a sync or deletion in progress, or an OAuth app
+            with the name the new app would take already exists in the organization. For
+            a name collision, send a different <code>auth.oauthInstanceName</code>, or name
+            the app to update in <code>auth.oauthConfigId</code>.
           content:
             application/json:
               schema:
@@ -42662,7 +42663,7 @@ paths:
       description: |
         Update an OAuth configuration.<br><br>
         <b>Admin Only:</b><br>
-        Only the creator or another admin can update.
+        Only an admin can update, including apps another admin created.
       operationId: updateOAuthConfig
       security:
         - bearerAuth: []
