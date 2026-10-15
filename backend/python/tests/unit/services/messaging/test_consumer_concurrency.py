@@ -76,7 +76,11 @@ def _one_worker_governor(**ceilings) -> SimpleNamespace:
     """A governor stand-in for one worker process, whose share of the budget
     is the whole budget."""
     resolved = SimpleNamespace(**ceilings)
-    return SimpleNamespace(ceilings=resolved, fleet_ceilings=resolved)
+    return SimpleNamespace(
+        ceilings=resolved,
+        fleet_ceilings=resolved,
+        heavy_parse_lease_limit=getattr(resolved, "heavy", None),
+    )
 
 
 def _waiters(count: int, tier: ParseTier = ParseTier.HEAVY) -> GateWaiters:

@@ -525,7 +525,7 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     if governor is not None:
         if tier is ParseTier.LIGHT:
             return governor.fleet_ceilings.light
-        return governor.fleet_ceilings.heavy
+        return governor.heavy_parse_lease_limit
     return messaging_env.max_concurrent_parsing
 
 

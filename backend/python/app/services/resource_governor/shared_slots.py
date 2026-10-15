@@ -132,8 +132,8 @@ def open_shared_slots(directory: Path, capacity: int) -> SharedSlots | None:
         return SharedSlots(directory, capacity)
     except OSError as exc:
         logger.warning(
-            "Shared heavy-parse slots unavailable in %s (%s); each worker process "
-            "is held only to its own share of free memory",
+            "Shared heavy-parse slots unavailable in %s (%s); the cluster-wide "
+            "heavy parsing lease falls back to one worker's share",
             directory,
             exc,
         )

@@ -426,6 +426,33 @@ class TestHeavyParseSlotsAcrossWorkers:
         assert other_worker.try_acquire(4) is None
         concurrency.release_admission(admission)
 
+    def test_the_heavy_lease_covers_every_worker_while_the_slots_hold_memory(
+        self, tmp_path: Path
+    ) -> None:
+        governor = make_test_governor(
+            worker_count=8, cpu_quota=32.0, env_index=768, heavy_parse_slots_dir=tmp_path
+        )
+        assert concurrency.parse_ceiling(_host(governor=governor), ParseTier.HEAVY) == 32
+
+    def test_without_the_slots_the_heavy_lease_falls_back_to_one_workers_share(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing else would hold eight workers' heavy parses to free memory,
+        so the lease goes back to how it was sized before this change. The
+        other leases are not memory-bound per parse and keep the full budget."""
+        not_a_directory = tmp_path / "file"
+        not_a_directory.write_text("")
+        governor = make_test_governor(
+            worker_count=8,
+            cpu_quota=32.0,
+            env_index=768,
+            heavy_parse_slots_dir=not_a_directory / "slots",
+        )
+        host = _host(governor=governor)
+        assert concurrency.parse_ceiling(host, ParseTier.HEAVY) == governor.ceilings.heavy == 4
+        assert concurrency.parse_ceiling(host, ParseTier.LIGHT) == 256
+        assert concurrency.index_ceiling(host) == governor.fleet_ceilings.index == 576
+
     @pytest.mark.asyncio
     async def test_light_parses_do_not_use_the_slots(self, tmp_path: Path) -> None:
         host = self._host(tmp_path)
