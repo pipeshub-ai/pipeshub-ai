@@ -49,6 +49,7 @@ export const configPaths = {
     '/migrations/connector_sync_scheduled_jobs_v2',
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
+  communityAdminLimitMigration: '/migrations/community_admin_limit_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',
   // Value: JSON.stringify({ conversationsMigrated, agentConversationsMigrated, ... }).
   // See chat_sessions.migration.ts.

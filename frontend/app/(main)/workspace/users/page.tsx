@@ -4,7 +4,7 @@ import React, { useEffect, useMemo, useCallback, useRef, useState, Suspense } fr
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { useAuthStore, UsersPageHeaderActions } from '@/config';
+import { logoutAndRedirect, useAuthStore, UsersPageHeaderActions } from '@/config';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { formatDate } from '@/lib/utils/formatters';
@@ -34,7 +34,8 @@ import { UsersApi } from './api';
 import { ProfileApi } from '../profile/api';
 import { SmtpApi } from '../mail/api';
 import type { User } from './types';
-import { InviteUsersSidebar, UserProfileSidebar } from './components';
+import { AdminLimitNoticeBanner, InviteUsersSidebar, UserProfileSidebar } from './components';
+import { useAdminLimitStatus, isAdminLimitReached } from './use-admin-limit-status';
 
 // ========================================
 // Constants
@@ -128,6 +129,9 @@ function UsersPageContent() {
     newRole: string;
   } | null>(null);
   const [isChangingRole, setIsChangingRole] = useState(false);
+  const [transferTarget, setTransferTarget] = useState<User | null>(null);
+  const [isTransferring, setIsTransferring] = useState(false);
+  const adminLimitReached = isAdminLimitReached(useAdminLimitStatus());
 
   // SMTP is required to send invite emails — the invite APIs 500 without it.
   // `null` = not yet checked; block new invite sends until status is known.
@@ -847,7 +851,7 @@ function UsersPageContent() {
             ),
             description: t(
               'workspace.users.actions.maxAdminsReached',
-              'An organization can have at most 5 admins.'
+              'An organization can have at most 1 admin.'
             ),
             duration: 5000,
           });
@@ -865,11 +869,40 @@ function UsersPageContent() {
     [addToast, t, fetchUsers]
   );
 
-  const requestChangeRole = useCallback((user: User, newRole: string) => {
-    const currentRole = user.role || 'Member';
-    if (newRole === currentRole) return;
-    setRoleChangeTarget({ user, newRole });
-  }, []);
+  const requestChangeRole = useCallback(
+    (user: User, newRole: string) => {
+      const currentRole = user.role || 'Member';
+      if (newRole === currentRole) return;
+      // At the admin limit a promotion would be refused; hand the role over instead.
+      if (newRole === USER_ROLES.ADMIN && adminLimitReached && user.hasLoggedIn) {
+        setTransferTarget(user);
+        return;
+      }
+      setRoleChangeTarget({ user, newRole });
+    },
+    [adminLimitReached]
+  );
+
+  const handleConfirmTransfer = useCallback(async () => {
+    if (!transferTarget) return;
+    setIsTransferring(true);
+    try {
+      await UsersApi.transferAdmin(transferTarget.userId);
+      // The server has already ended this session (its token still says admin);
+      // sign out now rather than wait for the force_logout push.
+      logoutAndRedirect();
+    } catch (err: unknown) {
+      const apiMessage = isProcessedError(err) ? err.message : undefined;
+      addToast({
+        variant: 'error',
+        title: t('workspace.users.actions.transferAdminError', 'Could not hand over the admin role'),
+        ...(apiMessage ? { description: apiMessage } : {}),
+        duration: 5000,
+      });
+    } finally {
+      setIsTransferring(false);
+    }
+  }, [transferTarget, addToast, t]);
 
   const handleConfirmChangeRole = useCallback(async () => {
     if (!roleChangeTarget) return;
@@ -1078,6 +1111,11 @@ function UsersPageContent() {
               options: ROLE_SUB_MENU_OPTIONS,
             },
           },
+          isAdmin && adminLimitReached && {
+            icon: 'swap_horiz',
+            label: t('workspace.users.actions.transferAdmin', 'Hand over admin role'),
+            onClick: () => setTransferTarget(user),
+          },
           isAdmin && {
             icon: 'person_off',
             label: t('workspace.users.actions.deactivate'),
@@ -1104,6 +1142,7 @@ function UsersPageContent() {
       navigateToProfilePanel,
       showComingSoon,
       requestChangeRole,
+      adminLimitReached,
       handleResendInvite,
       handleEditInvite,
       requestCancelInvite,
@@ -1148,6 +1187,8 @@ function UsersPageContent() {
         }
         additionalActions={<UsersPageHeaderActions onMemberChanged={fetchUsers} />}
       />
+
+      <AdminLimitNoticeBanner style={{ marginBottom: 'var(--space-4)' }} />
 
       {/* Content: filter bar + table + pagination */}
       <Flex
@@ -1246,6 +1287,24 @@ function UsersPageContent() {
         confirmVariant="primary"
         isLoading={isChangingRole}
         onConfirm={() => void handleConfirmChangeRole()}
+      />
+
+      <ConfirmationDialog
+        open={!!transferTarget}
+        onOpenChange={(open) => {
+          if (!open && !isTransferring) setTransferTarget(null);
+        }}
+        title={t('workspace.users.actions.transferAdminConfirmTitle', 'Hand over admin role?')}
+        message={t('workspace.users.actions.transferAdminConfirmMessage', {
+          name: transferTarget?.name || transferTarget?.email || '',
+          defaultValue:
+            '{{name}} becomes the admin and you become a member. You will both be signed out so the change takes effect.',
+        })}
+        confirmLabel={t('workspace.users.actions.transferAdminConfirmButton', 'Hand Over')}
+        cancelLabel={t('workspace.users.actions.cancelButton')}
+        confirmVariant="primary"
+        isLoading={isTransferring}
+        onConfirm={() => void handleConfirmTransfer()}
       />
 
       {/* Remove User Confirmation Dialog */}

@@ -1013,6 +1013,50 @@ describe('UserController', () => {
       }
     });
 
+    it('refuses to create an admin when the org is already at its admin limit, before writing anything', async () => {
+      req.body = { fullName: 'New Admin', email: 'admin2@test.com', role: 'admin' };
+      sinon.stub(Users, 'countDocuments').resolves(1 as any);
+      const findOne = sinon.stub(Users, 'findOne').resolves(null);
+      const save = sinon.stub(Users.prototype, 'save').resolves();
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('An organization can have at most 1 admin.');
+      expect(save.called).to.be.false;
+      expect(findOne.called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('removes a just-created admin when a concurrent write took the org past the limit', async () => {
+      req.body = { fullName: 'New Admin', email: 'admin2@test.com', role: 'admin' };
+      const count = sinon.stub(Users, 'countDocuments');
+      count.onFirstCall().resolves(0 as any);
+      count.onSecondCall().resolves(2 as any);
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      const deleteOne = sinon.stub(Users, 'deleteOne').resolves({} as any);
+
+      await controller.createUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('An organization can have at most 1 admin.');
+      expect(deleteOne.calledOnce).to.be.true;
+      expect(mockEventService.publishEvent.called).to.be.false;
+    });
+
+    it('creates an admin when the org has none', async () => {
+      req.body = { fullName: 'New Admin', email: 'admin1@test.com', role: 'admin' };
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+      sinon.stub(Users, 'findOne').resolves(null);
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+
+      await controller.createUser(req, res, next);
+
+      expect(res.status.calledWith(201)).to.be.true;
+    });
+
     // The live-account check passes, but the unique index covers every row:
     // a concurrent create, or an address held by a soft-deleted account,
     // still collides at save(). That is a refused duplicate, not a 500.
@@ -1191,7 +1235,9 @@ describe('UserController', () => {
         .stub(UserActivities, 'insertMany')
         .resolves([] as any);
       sinon.stub(NotificationContainer, 'getNotificationService').returns(null);
-      sinon.stub(Users, 'countDocuments').resolves(4);
+      const countStub = sinon.stub(Users, 'countDocuments');
+      countStub.onFirstCall().resolves(0);
+      countStub.onSecondCall().resolves(1);
 
       await controller.updateUser(req, res, next);
 
@@ -1287,7 +1333,7 @@ describe('UserController', () => {
       expect(res.json.called).to.be.false;
     });
 
-    it('should reject promoting to admin when the org already has 5 admins', async () => {
+    it('should reject promoting to admin when the org already has an admin', async () => {
       const targetId = '507f1f77bcf86cd799439013';
       req.params.id = targetId;
       req.body = { role: 'admin' };
@@ -1308,13 +1354,13 @@ describe('UserController', () => {
         lean: sinon.stub().resolves({ role: 'admin' }),
       } as any);
       findOneStub.onSecondCall().resolves(mockUser as any);
-      sinon.stub(Users, 'countDocuments').resolves(5);
+      sinon.stub(Users, 'countDocuments').resolves(1);
 
       await controller.updateUser(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
-        'An organization can have at most 5 admins.',
+        'An organization can have at most 1 admin.',
       );
       expect(mockUser.save.called).to.be.false;
       expect(res.json.called).to.be.false;
@@ -3155,14 +3201,13 @@ describe('UserController', () => {
   });
 
   describe('addManyUsers - promote restored/pending to admin', () => {
-    it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+    it('should set role admin on a restored user when inviteRole is admin', async () => {
       // A re-invite records the restore before bringing the account back.
       sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
-      const pendingId = new mongoose.Types.ObjectId();
 
       req.body = {
-        emails: ['deleted@test.com', 'pending@test.com'],
+        emails: ['deleted@test.com'],
         role: 'admin',
       };
 
@@ -3178,15 +3223,9 @@ describe('UserController', () => {
         isDeleted: true,
         hasLoggedIn: false,
       };
-      const pendingUser = {
-        _id: pendingId,
-        email: 'pending@test.com',
-        isDeleted: false,
-        hasLoggedIn: false,
-      };
 
       sinon.stub(Users, 'find')
-        .onFirstCall().resolves([deletedUser, pendingUser] as any)
+        .onFirstCall().resolves([deletedUser] as any)
         .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
 
       const updateManyStub = sinon.stub(Users, 'updateMany').resolves({} as any);
@@ -3200,7 +3239,7 @@ describe('UserController', () => {
           }),
         }),
       } as any);
-      sinon.stub(Users, 'countDocuments').resolves(2);
+      sinon.stub(Users, 'countDocuments').resolves(0);
 
       mockAuthService.passwordMethodEnabled.resolves({
         statusCode: 200,
@@ -3218,7 +3257,7 @@ describe('UserController', () => {
       const promotedIds = promoteCall!.args[0]._id.$in.map((id: mongoose.Types.ObjectId) =>
         id.toString(),
       );
-      expect(promotedIds).to.include.members([deletedId.toString(), pendingId.toString()]);
+      expect(promotedIds).to.deep.equal([deletedId.toString()]);
       expect(promoteCall!.args[0].orgId).to.equal(req.user.orgId);
     });
 
@@ -3285,7 +3324,7 @@ describe('UserController', () => {
       expect(error.message).to.equal('Members can only invite users as member');
     });
 
-    it('should reject inviting as admin when the org already has 5 admins', async () => {
+    it('should reject inviting as admin when the org already has an admin', async () => {
       req.body = {
         emails: ['new@test.com'],
         role: 'admin',
@@ -3295,18 +3334,39 @@ describe('UserController', () => {
       sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
       sinon.stub(Users, 'find').resolves([] as any);
       const createStub = sinon.stub(Users, 'create').resolves([] as any);
-      sinon.stub(Users, 'countDocuments').resolves(5);
+      sinon.stub(Users, 'countDocuments').resolves(1);
 
       await controller.addManyUsers(req, res, next);
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal(
-        'An organization can have at most 5 admins.',
+        'An organization can have at most 1 admin.',
       );
       expect(createStub.called).to.be.false;
     });
 
-    it('should allow inviting an existing pending admin when already at 5 admins', async () => {
+    it('should reject inviting two admins at once when the org has none', async () => {
+      req.body = {
+        emails: ['first@test.com', 'second@test.com'],
+        role: 'admin',
+      };
+
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([] as any);
+      const createStub = sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(Users, 'countDocuments').resolves(0);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'An organization can have at most 1 admin.',
+      );
+      expect(createStub.called).to.be.false;
+    });
+
+    it('should allow re-inviting the existing pending admin when the org is at the cap', async () => {
       const pendingId = new mongoose.Types.ObjectId();
       req.body = {
         emails: ['pending-admin@test.com'],
@@ -3335,7 +3395,7 @@ describe('UserController', () => {
           }),
         }),
       } as any);
-      sinon.stub(Users, 'countDocuments').resolves(5);
+      sinon.stub(Users, 'countDocuments').resolves(1);
       mockAuthService.passwordMethodEnabled.resolves({
         statusCode: 200,
         data: { isPasswordAuthEnabled: true },

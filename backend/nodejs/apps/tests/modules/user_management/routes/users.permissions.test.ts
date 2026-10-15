@@ -24,7 +24,6 @@ import { Org } from '../../../../src/modules/user_management/schema/org.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
-import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
 
 // Serves the real user router over HTTP with its real middleware chain
@@ -207,6 +206,14 @@ describe('User routes: who may do what', () => {
         if (row) Object.assign(row, u.$set ?? {});
         return { modifiedCount: row ? 1 : 0 };
       })) as unknown as typeof Users.updateOne);
+    sinon.stub(Users, 'findOneAndUpdate').callsFake(((f: Row, u: { $set?: Row }) =>
+      users.query(() => {
+        const row = users.rows.find((r) => matches(r, f));
+        if (row) Object.assign(row, u.$set ?? {});
+        return row ? { _id: row._id, email: row.email } : null;
+      })) as unknown as typeof Users.findOneAndUpdate);
+    sinon.stub(UserCredentials, 'exists').callsFake(((f: Row) =>
+      Promise.resolve(credentials.rows.find((r) => matches(r, f)) ?? null)) as unknown as typeof UserCredentials.exists);
     sinon.stub(Org, 'findOne').callsFake(((f: Row) =>
       users.query(() =>
         [orgA, orgB].includes(String(f._id)) ? { _id: f._id, accountType: 'business', isDeleted: false } : null,
@@ -379,16 +386,13 @@ describe('User routes: who may do what', () => {
       expect(users.get(ids.otherMemberA)!.fullName).to.equal('mia');
     });
 
-    it('lets an admin promote a member, and signs the member out everywhere', async () => {
+    it('refuses to let an admin promote a member, since an org has at most one admin', async () => {
       const res = await call('PUT', `/${ids.memberA}`, sessionFor(ids.adminA), { role: 'admin' });
 
-      expect(res.status).to.equal(200);
-      expect(users.get(ids.memberA)!.role).to.equal('admin');
-      const activities = (UserActivities.insertMany as unknown as sinon.SinonStub).firstCall
-        .args[0] as Row[];
-      expect(activities).to.have.length(1);
-      expect(activities[0]).to.include({ activityType: userActivitiesType.ROLE_CHANGED });
-      expect(String(activities[0]?.userId)).to.equal(ids.memberA);
+      expect(res.status).to.equal(400);
+      expect(errorMessage(res)).to.equal('An organization can have at most 1 admin.');
+      expect(users.get(ids.memberA)!.role).to.equal('member');
+      expect((UserActivities.insertMany as unknown as sinon.SinonStub).called).to.be.false;
     });
 
     it('refuses a role that is neither admin nor member', async () => {
@@ -416,7 +420,92 @@ describe('User routes: who may do what', () => {
     });
   });
 
+  describe('handing over the admin role', () => {
+    beforeEach(() => {
+      users.get(ids.secondAdminA)!.role = 'member';
+      users.get(ids.memberA)!.hasLoggedIn = true;
+    });
+
+    it('lets the only admin hand the role to a signed-in member and ends both sessions', async () => {
+      const res = await call('POST', `/${ids.memberA}/transfer-admin`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(200);
+      expect(res.body).to.deep.equal({ previousAdminUserId: ids.adminA, newAdminUserId: ids.memberA });
+      expect(users.get(ids.memberA)!.role).to.equal('admin');
+      expect(users.get(ids.adminA)!.role).to.equal('member');
+      const written = (UserActivities.insertMany as unknown as sinon.SinonStub).getCalls()
+        .flatMap((c) => c.args[0] as Row[])
+        .map((a) => String(a.userId));
+      expect(written).to.have.members([ids.memberA, ids.adminA]);
+    });
+
+    it('stops a member from taking the admin role', async () => {
+      const res = await call('POST', `/${ids.otherMemberA}/transfer-admin`, sessionFor(ids.memberA));
+
+      expect(res.status).to.equal(403);
+      expect(users.get(ids.adminA)!.role).to.equal('admin');
+      expect(users.get(ids.otherMemberA)!.role).to.equal('member');
+    });
+
+    it('refuses a member who has never signed in, and changes nothing', async () => {
+      const res = await call('POST', `/${ids.otherMemberA}/transfer-admin`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(400);
+      expect(errorMessage(res)).to.equal(
+        'The admin role can only be handed to an active member who has signed in.',
+      );
+      expect(users.get(ids.adminA)!.role).to.equal('admin');
+      expect(users.get(ids.otherMemberA)!.role).to.equal('member');
+    });
+
+    it('refuses a member whose sign-in is blocked', async () => {
+      credentials.insert({ userId: ids.memberA, orgId: orgA, isBlocked: true, isDeleted: false });
+
+      const res = await call('POST', `/${ids.memberA}/transfer-admin`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(400);
+      expect(users.get(ids.adminA)!.role).to.equal('admin');
+      expect(users.get(ids.memberA)!.role).to.equal('member');
+    });
+
+    it('refuses a disabled member or one in another org', async () => {
+      users.get(ids.disabledA)!.hasLoggedIn = true;
+      users.get(ids.memberB)!.hasLoggedIn = true;
+
+      for (const target of [ids.disabledA, ids.memberB]) {
+        const res = await call('POST', `/${target}/transfer-admin`, sessionFor(ids.adminA));
+        expect(res.status).to.equal(400);
+        expect(users.get(target)!.role).to.equal('member');
+      }
+      expect(users.get(ids.adminA)!.role).to.equal('admin');
+    });
+
+    it('refuses to hand the role to yourself', async () => {
+      const res = await call('POST', `/${ids.adminA}/transfer-admin`, sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(400);
+      expect(errorMessage(res)).to.equal('You are already an admin.');
+    });
+  });
+
   describe('reading users', () => {
+    it('tells an admin of an org with two admins that it is over the limit', async () => {
+      const res = await call('GET', '/admin-limit', sessionFor(ids.adminA));
+
+      expect(res.status).to.equal(200);
+      const body = res.body as { adminCount: number; maxAdmins: number; overLimit: boolean; retainedAdminEmail: string };
+      expect(body).to.include({ adminCount: 2, maxAdmins: 1, overLimit: true });
+      expect([users.get(ids.adminA)!.email, users.get(ids.secondAdminA)!.email]).to.include(
+        body.retainedAdminEmail,
+      );
+    });
+
+    it('does not show the admin limit to a member', async () => {
+      const res = await call('GET', '/admin-limit', sessionFor(ids.memberA));
+
+      expect(res.status).to.equal(403);
+    });
+
     it("stops a member from reading another user's email", async () => {
       const res = await call('GET', `/${ids.otherMemberA}/email`, sessionFor(ids.memberA));
 
