@@ -926,6 +926,11 @@ class EventProcessor:
             f"🚀 Duplicate record {_record_key(match.record)} is being processed "
             "into the same collection, changing status to QUEUED."
         )
+        # Before QUEUED: the twin's completion promotes this record straight
+        # to COMPLETED, which nothing on that path follows with blocks (R-5).
+        if before_reusing_status is not None:
+            await before_reusing_status()
+            before_reusing_status = None
         self._require_persisted(
             await self.update_record_fields(
                 doc,

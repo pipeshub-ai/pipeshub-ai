@@ -27,6 +27,8 @@ class FakeGraphProvider:
         self.code_files: dict[str, str] = {}
         # recordId -> referenced names. Also on codeFiles in production.
         self.referenced_names: dict[str, tuple[str, ...]] = {}
+        # recordId -> {"changedNames", "changedNamesAt"}, also on codeFiles.
+        self.changed_names: dict[str, dict] = {}
         # recordId -> the parsed record as the indexing pipeline uploads it.
         # Doubles as the `CodeFactsSource` (see `load`), so a test's blob is
         # the same parse that projected the blocks, as in production.
@@ -46,6 +48,7 @@ class FakeGraphProvider:
             record_id: CodeFileInfo(
                 file_path=path,
                 referenced_names=self.referenced_names.get(record_id, ()),
+                changed_names=tuple(self.changed_names.get(record_id, {}).get("changedNames", ())),
             )
             for record_id, path in self.code_files.items()
             if record_id in wanted
@@ -53,13 +56,18 @@ class FakeGraphProvider:
 
     async def get_document(self, key, collection, transaction=None, *, raise_on_error=False):
         if collection == CollectionNames.CODE_FILES.value and key in self.code_files:
-            return {"_key": key, "filePath": self.code_files[key]}
+            return {"_key": key, "filePath": self.code_files[key], **self.changed_names.get(key, {})}
         return None
 
     async def update_node(self, key, collection, updates, transaction=None):
         if collection == CollectionNames.CODE_FILES.value:
             if "referencedNames" in updates:
                 self.referenced_names[key] = tuple(updates["referencedNames"] or ())
+            if "changedNames" in updates:
+                self.changed_names[key] = {
+                    "changedNames": list(updates["changedNames"]),
+                    "changedNamesAt": updates.get("changedNamesAt"),
+                }
         return True
 
     async def get_documents_paginated(self, collection, skip=0, limit=50, filters=None,
@@ -131,9 +139,19 @@ class FakeGraphProvider:
             # The repo's code files, empty ones included, as the builder lists them.
             return [{"_key": record_id} for record_id in self.code_files]
         return [
-            {"_key": key} for key, doc in self.blocks.items()
+            {"_key": key, "name": doc.get("name"), "kind": doc.get("kind")}
+            for key, doc in self.blocks.items()
             if all(doc.get(field) == value for field, value in filters.items())
         ]
+
+    async def delete_blocks_for_records(self, record_ids, transaction=None) -> None:
+        doomed = [k for k, b in self.blocks.items() if b.get("recordId") in set(record_ids)]
+        await self.delete_edges_touching_nodes(doomed, CollectionNames.BLOCKS.value,
+                                               CollectionNames.RECORD_RELATIONS.value)
+        records = {f"{CollectionNames.RECORDS.value}/{r}" for r in record_ids}
+        self.edges = [e for e in self.edges if e["_from"] not in records and e["_to"] not in records]
+        for key in doomed:
+            self.blocks.pop(key)
 
     async def batch_upsert_nodes(self, nodes, collection, transaction=None):
         for node in nodes:

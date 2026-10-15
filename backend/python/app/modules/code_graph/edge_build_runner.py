@@ -143,7 +143,8 @@ class CodeEdgeBuildRunner:
         started_at_ms = int(time.time() * 1000)
 
         touched_record_ids = None
-        if last_build is not None:
+        full_requested = start_state.full_request_id is not None
+        if last_build is not None and not full_requested:
             touched_record_ids = await edge_build_trigger.records_updated_since(
                 self._graph_provider,
                 org_id,
@@ -195,6 +196,10 @@ class CodeEdgeBuildRunner:
             started_at_ms=started_at_ms,
             started_request_id=start_state.request_id,
             last_build_at=None if result.facts_missing else started_at_ms,
+            served_full_request_id=(
+                start_state.full_request_id
+                if touched_record_ids is None and not result.facts_missing else None
+            ),
         )
         self._log.info(
             "Automatic code edge build complete: %s",
@@ -210,6 +215,7 @@ class CodeEdgeBuildRunner:
         started_at_ms: int,
         started_request_id: str | None = None,
         last_build_at: int | None = None,
+        served_full_request_id: str | None = None,
     ) -> None:
         state = await edge_build_trigger.read_build_state(
             self._graph_provider,
@@ -228,6 +234,10 @@ class CodeEdgeBuildRunner:
         }
         if last_build_at is not None:
             sync_point_data["lastEdgeBuildAt"] = last_build_at
+        if served_full_request_id is not None and not edge_build_trigger.full_build_still_owed(
+            state, served_full_request_id,
+        ):
+            sync_point_data["edgeBuildFullRequestId"] = None
         await self._graph_provider.upsert_sync_point(
             sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
             sync_point_data=sync_point_data,

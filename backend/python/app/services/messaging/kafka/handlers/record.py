@@ -393,6 +393,7 @@ class RecordEventHandler(BaseEventService):
                     updated,
                     record_id,
                 )
+                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
             else:
                 self.logger.info(
                     "No queued duplicates to update after primary failure for record %s",
@@ -633,6 +634,8 @@ class RecordEventHandler(BaseEventService):
             # failed or was cut short: a redelivery finds nothing QUEUED.
             if promoted > 0 or had_pending:
                 await self._reconcile_pending_duplicates(record_id, virtual_record_id)
+            if promoted > 0:
+                await self._request_code_edge_builds_for_copies(record_id, virtual_record_id)
             if indexing_status == ProgressStatus.COMPLETED.value:
                 # Duplicates just became searchable too. They can live in
                 # a different KB than this record, which only the TTL
@@ -698,6 +701,35 @@ class RecordEventHandler(BaseEventService):
             if self._is_redis_connection_error(exc):
                 await self._discard_redis()
 
+    async def _request_code_edge_builds_for_copies(
+        self, record_id: str, virtual_record_id: str | None
+    ) -> None:
+        """A promoted copy can be the last file of its own repo (a fork, a
+        mirror), and its promotion is the only status change it gets (R-5).
+
+        Never raises, like ``_request_code_edge_build_if_repo_drained``.
+        """
+        if not virtual_record_id or self.producer is None:
+            return
+        graph_provider = self.event_processor.graph_provider
+        try:
+            keys = await graph_provider.get_records_by_virtual_record_id(virtual_record_id) or []
+            scopes = set()
+            for key in keys:
+                if key and key != record_id:
+                    copy = await graph_provider.get_document(key, CollectionNames.RECORDS.value)
+                    scope = edge_build_trigger.publishable_scope(copy)
+                    if scope is not None:
+                        scopes.add(scope)
+            for scope in scopes:
+                await self._ask_for_code_edge_build(*scope)
+        except Exception as exc:
+            self.logger.exception(
+                "Failed to request code edge builds for the copies of record %s", record_id
+            )
+            if self._is_redis_connection_error(exc):
+                await self._discard_redis()
+
     async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
         """A deleted code file changes the repo's graph too.
 
@@ -711,7 +743,10 @@ class RecordEventHandler(BaseEventService):
         if not all(isinstance(value, str) and value for value in scope):
             return
         try:
-            await self._ask_for_code_edge_build(*scope)
+            # Full: an incremental build starts from records updated since the
+            # last one, and a deleted record is not among them, so the files
+            # that called into it would keep their old bindings.
+            await self._ask_for_code_edge_build(*scope, full=True)
         except Exception as exc:
             self.logger.exception(
                 "Failed to request a code edge build after deleting record %s",
@@ -721,9 +756,24 @@ class RecordEventHandler(BaseEventService):
                 await self._discard_redis()
 
     async def _ask_for_code_edge_build(
-        self, org_id: str, connector_id: str, record_group_id: str
+        self, org_id: str, connector_id: str, record_group_id: str, *, full: bool = False
     ) -> None:
         graph_provider = self.event_processor.graph_provider
+        sync_point_key = edge_build_trigger.sync_point_key_for(record_group_id)
+        if full:
+            # Before the drain check: the build this owes is the one that runs
+            # when the repo's other records finish, which asks only for an
+            # incremental one.
+            await graph_provider.upsert_sync_point(
+                sync_point_key=sync_point_key,
+                sync_point_data={
+                    "orgId": org_id,
+                    "connectorId": connector_id,
+                    "syncDataPointType": "codeEdgeBuild",
+                    "edgeBuildFullRequestId": edge_build_trigger.new_request_id(),
+                },
+                collection=CollectionNames.SYNC_POINTS.value,
+            )
         if await edge_build_trigger.group_has_unfinished_records(
             graph_provider, org_id, record_group_id
         ):
@@ -738,16 +788,17 @@ class RecordEventHandler(BaseEventService):
         # Redis is down, used to leave nothing behind, and the reconciler only
         # sweeps repos carrying this mark. The fresh request id is what tells a
         # build that is already running that it was asked again.
+        mark = {
+            "orgId": org_id,
+            "connectorId": connector_id,
+            "syncDataPointType": "codeEdgeBuild",
+            "edgeBuildPending": True,
+            "edgeBuildRequestedAt": now_ms,
+            "edgeBuildRequestId": edge_build_trigger.new_request_id(),
+        }
         await graph_provider.upsert_sync_point(
-            sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
-            sync_point_data={
-                "orgId": org_id,
-                "connectorId": connector_id,
-                "syncDataPointType": "codeEdgeBuild",
-                "edgeBuildPending": True,
-                "edgeBuildRequestedAt": now_ms,
-                "edgeBuildRequestId": edge_build_trigger.new_request_id(),
-            },
+            sync_point_key=sync_point_key,
+            sync_point_data=mark,
             collection=CollectionNames.SYNC_POINTS.value,
         )
         redis = await self._redis_client()

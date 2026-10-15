@@ -354,9 +354,15 @@ class CodeFileInfo:
 
     file_path: repo-relative path (from codeFiles.filePath or records.recordName)
     referenced_names: symbol names the file references (calls, imports, type refs)
+    changed_names: names whose definitions the file added, removed or changed
+        in recent projections, so a build re-resolves the files referencing them
+    has_code_file: False for a source file with no codeFiles node (a .py
+        uploaded to a KB), which records neither list
     """
     file_path: str
     referenced_names: tuple[str, ...] = ()
+    changed_names: tuple[str, ...] = ()
+    has_code_file: bool = True
 
 
 class IGraphDBProvider(ABC):

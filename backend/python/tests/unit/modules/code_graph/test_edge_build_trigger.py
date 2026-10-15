@@ -108,7 +108,7 @@ class TestReadBuildState:
 
         assert await edge_build_trigger.read_build_state(
             graph_provider, "org-1", "repo-1"
-        ) == (None, False, None, None)
+        ) == (None, False, None, None, None)
 
     @pytest.mark.asyncio
     async def test_reads_every_field_off_the_sync_point(self) -> None:
@@ -119,7 +119,7 @@ class TestReadBuildState:
         }])
 
         state = await edge_build_trigger.read_build_state(graph_provider, "org-1", "repo-1")
-        assert state == (1700, True, 1800, None)
+        assert state == (1700, True, 1800, None, None)
         assert state.requested_at == 1800
 
         kwargs = graph_provider.get_nodes_by_filters.await_args.kwargs
@@ -134,7 +134,31 @@ class TestReadBuildState:
 
         assert await edge_build_trigger.read_build_state(
             graph_provider, "org-1", "repo-1"
-        ) == (None, False, None, None)
+        ) == (None, False, None, None, None)
+
+
+class TestFullBuildRequest:
+    @pytest.mark.asyncio
+    async def test_reads_the_full_build_request(self) -> None:
+        graph_provider = MagicMock()
+        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{
+            "lastEdgeBuildAt": 1700, "edgeBuildFullRequestId": "full-1",
+        }])
+        state = await edge_build_trigger.read_build_state(graph_provider, "org-1", "repo-1")
+        assert state.full_request_id == "full-1"
+
+    def test_a_full_build_serves_the_request_it_started_under(self) -> None:
+        state = edge_build_trigger.BuildState(1, False, None, None, "full-1")
+        assert not edge_build_trigger.full_build_still_owed(state, "full-1")
+
+    def test_a_request_made_during_the_build_is_still_owed(self) -> None:
+        state = edge_build_trigger.BuildState(1, True, None, None, "full-2")
+        assert edge_build_trigger.full_build_still_owed(state, "full-1")
+        assert edge_build_trigger.full_build_still_owed(state, None)
+
+    def test_no_request_is_owed_when_none_was_made(self) -> None:
+        state = edge_build_trigger.BuildState(1, False, None, None, None)
+        assert not edge_build_trigger.full_build_still_owed(state, None)
 
 
 class TestClaimPublish:

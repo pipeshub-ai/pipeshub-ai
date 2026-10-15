@@ -35,6 +35,7 @@ from app.models.blocks import (
 from app.models.entities import Record, RecordType
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
+    drop_code_file_blocks,
     write_code_file_blocks_to_graph,
 )
 from app.modules.parsers import parse_pool
@@ -1817,7 +1818,7 @@ class Processor:
         longer exists. Raises, like the projection: the status written next
         would otherwise claim a state the graph does not have.
         """
-        await self.graph_provider.delete_blocks_for_records([record_id])
+        await drop_code_file_blocks(self.graph_provider, record_id, self.logger)
 
     async def project_code_blocks_to_graph(
         self,

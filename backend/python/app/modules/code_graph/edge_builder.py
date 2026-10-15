@@ -20,6 +20,7 @@ from app.modules.code_graph.guards import (
     prefer_non_test,
 )
 from app.modules.code_graph.import_resolution import ImportResolution
+from app.modules.code_graph.module_refs import module_refs_of_path
 from app.modules.code_graph.symbol_index import SymbolIndex, build_symbol_index
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
@@ -953,7 +954,10 @@ async def build_code_graph_edges(
     builder.result.blocks = len(docs)
     builder.result.files_total = len(index.blocks_by_record)
 
-    reresolve = await asyncio.to_thread(_select_reresolve_set, index, touched_record_ids)
+    changed_names = await _names_changed_by(graph_provider, index, org_id, touched_record_ids)
+    reresolve = await asyncio.to_thread(
+        _select_reresolve_set, index, touched_record_ids, changed_names,
+    )
     if touched_record_ids:
         reresolve |= await _records_pointing_into(
             graph_provider, index, org_id, record_group_id, touched_record_ids
@@ -1037,12 +1041,44 @@ async def _load_facts(
     return unknown
 
 
-def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None) -> set[str]:
+async def _names_changed_by(graph_provider: IGraphDBProvider, index: SymbolIndex,
+                            org_id: str, touched: set[str] | None) -> set[str]:
+    """Names whose meaning the touched files may have changed.
+
+    The definitions they added, removed, moved or re-kinded
+    (``codeFiles.changedNames``; a removed one is no longer in their blocks),
+    and the ``module:`` references that mean them, which is how an importer
+    refers to a module that was just added or edited. Not every name they
+    define: one edit to a file defining ``get`` re-resolved every file calling
+    any ``get`` (R-7); callers already bound into the file are found by their
+    edges instead (``_records_pointing_into``).
+    Read for the touched records themselves rather than off the block scan: a
+    file that lost every definition has no blocks left to be found by.
+    """
+    if not touched:
+        return set()
+    names: set[str] = set()
+    for chunk in _chunks(sorted(touched), 2000):
+        info = await graph_provider.get_file_paths_for_records(
+            org_id=org_id, record_ids=chunk, raise_on_error=True
+        )
+        for record_id, file_info in info.items():
+            names.update(file_info.changed_names)
+            names.update(module_refs_of_path(file_info.file_path))
+            if not file_info.has_code_file:
+                # Nowhere to record its changes, so every name it defines.
+                names.update(index.names_by_record.get(record_id, ()))
+    return names
+
+
+def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None,
+                          changed_names: set[str] = frozenset()) -> set[str]:
     """Touched files plus the unchanged files whose edges they invalidate.
 
     A change in B can break an edge belonging to A: B deleting a symbol leaves
-    A's edge dangling, B adding one means A's unresolved reference should now
-    resolve. Neither shows up in A's own timestamp.
+    A's edge dangling or binds it elsewhere, B adding one means A's unresolved
+    reference should now resolve. Neither shows up in A's own timestamp, and a
+    deleted name is no longer in B's blocks -- ``changed_names`` carries it.
     """
     if not touched:
         return set(index.blocks_by_record)
@@ -1050,13 +1086,9 @@ def _select_reresolve_set(index: SymbolIndex, touched: set[str] | None) -> set[s
     selected = set(touched)
 
     # B added or removed a name -> re-resolve anything that references that name.
-    touched_names: set[str] = set()
-    for record_id in touched:
-        touched_names |= index.names_by_record.get(record_id, set())
-
-    if touched_names:
+    if changed_names:
         for record_id, names in index.referenced_names_by_record.items():
-            if record_id not in selected and names & touched_names:
+            if record_id not in selected and names & changed_names:
                 selected.add(record_id)
     return selected
 

@@ -105,6 +105,10 @@ class BuildState(NamedTuple):
     # Unique per request; a build compares it with the one it started under,
     # so no clock has to agree with another service's.
     request_id: str | None = None
+    # Set when a change only a full rebuild sees -- a deleted code file leaves
+    # no record for an incremental build to start from. Cleared, by the same
+    # id comparison, by the full build that served it.
+    full_request_id: str | None = None
 
 
 class PendingBuild(NamedTuple):
@@ -199,6 +203,7 @@ async def read_build_state(
         },
         return_fields=[
             "lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt", "edgeBuildRequestId",
+            "edgeBuildFullRequestId",
         ],
         # Unreadable must not read as "never built, nothing owed": a finishing
         # build would clear a request it never saw.
@@ -212,6 +217,7 @@ async def read_build_state(
         bool(row.get("edgeBuildPending")),
         _ms_or_none(row.get("edgeBuildRequestedAt")),
         _str_or_none(row.get("edgeBuildRequestId")),
+        _str_or_none(row.get("edgeBuildFullRequestId")),
     )
 
 
@@ -245,6 +251,7 @@ async def pending_builds(graph_provider: "IGraphDBProvider") -> list[PendingBuil
             "edgeBuildPending",
             "edgeBuildRequestedAt",
             "edgeBuildRequestId",
+            "edgeBuildFullRequestId",
         ],
         raise_on_error=True,
     )
@@ -265,6 +272,7 @@ async def pending_builds(graph_provider: "IGraphDBProvider") -> list[PendingBuil
                     bool(row.get("edgeBuildPending")),
                     _ms_or_none(row.get("edgeBuildRequestedAt")),
                     _str_or_none(row.get("edgeBuildRequestId")),
+                    _str_or_none(row.get("edgeBuildFullRequestId")),
                 ),
             )
         )
@@ -289,6 +297,15 @@ def still_owed(state: BuildState, started_at_ms: int,
     if state.request_id is not None or started_request_id is not None:
         return state.pending and state.request_id != started_request_id
     return state.requested_at is not None and state.requested_at > started_at_ms
+
+
+def full_build_still_owed(state: BuildState, started_full_request_id: str | None) -> bool:
+    """Whether a full rebuild is still owed after a build that started under *started_full_request_id*.
+
+    Only a full build serves the request it saw; one asked for while it ran
+    carries a new id and stays.
+    """
+    return state.full_request_id is not None and state.full_request_id != started_full_request_id
 
 
 def request_is_stale(state: BuildState, now_ms: int) -> bool:

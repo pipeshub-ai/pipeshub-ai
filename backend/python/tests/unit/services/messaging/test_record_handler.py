@@ -706,6 +706,31 @@ class TestRequestCodeEdges:
         handler.producer.send_event.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_deleting_a_code_file_asks_for_a_full_build(self) -> None:
+        """An incremental build starts from records updated since the last one,
+        and a deleted record is not among them (R-3)."""
+        handler = _make_handler()
+        graph_provider = handler.event_processor.graph_provider
+        graph_provider.has_nodes_by_filters = AsyncMock(return_value=True)
+        graph_provider.upsert_sync_point = AsyncMock()
+        await handler._request_code_edge_build_for_deleted({
+            "recordId": "record-1", "orgId": "org-1", "connectorId": "connector-1",
+            "recordGroupId": "repo-1-code-repository", "connectorName": "GitLab",
+        })
+        # Written even though other files are still indexing: the build that
+        # runs when they finish asks only for an incremental one.
+        mark = graph_provider.upsert_sync_point.await_args.kwargs["sync_point_data"]
+        assert mark["edgeBuildFullRequestId"]
+        handler.producer.send_event.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_edited_file_does_not_ask_for_a_full_build(self) -> None:
+        handler = _make_handler()
+        graph_provider, _ = await self._request(handler, self._record())
+        for call in graph_provider.upsert_sync_point.await_args_list:
+            assert "edgeBuildFullRequestId" not in call.kwargs["sync_point_data"]
+
+    @pytest.mark.asyncio
     async def test_deleting_anything_else_asks_for_nothing(self) -> None:
         handler = _make_handler()
         await handler._request_code_edge_build_for_deleted({
@@ -1688,6 +1713,56 @@ class TestAlreadyIndexed:
         assert rows["r1"]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
         assert rows["copy"]["indexingStatus"] == ProgressStatus.COMPLETED.value
         assert rows["copy"]["virtualRecordId"] == "vr1"
+
+
+class TestPromotedCodeCopiesAskForTheirRepoBuild:
+    """A promoted copy can be its own repo's last file (a fork, a mirror), and
+    its promotion is the only status change it gets (R-5)."""
+
+    @staticmethod
+    def _handler(rows: dict[str, dict]) -> MagicMock:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=list(rows))
+        gp.get_document = AsyncMock(side_effect=lambda key, *_a, **_k: rows.get(key))
+        handler._ask_for_code_edge_build = AsyncMock()
+        return handler
+
+    @staticmethod
+    def _code(key: str, group: str) -> dict:
+        return {"_key": key, "orgId": "org-1", "connectorId": "conn-1", "recordGroupId": group,
+                "connectorName": "GitHub", "indexingStatus": ProgressStatus.COMPLETED.value}
+
+    @pytest.mark.asyncio
+    async def test_each_copys_repo_is_asked_once(self) -> None:
+        handler = self._handler({
+            "twin": self._code("twin", "repo-a"),
+            "fork-1": self._code("fork-1", "repo-b"),
+            "fork-2": self._code("fork-2", "repo-b"),
+            "doc": {"_key": "doc", "connectorName": "Drive", "indexingStatus": "COMPLETED"},
+        })
+        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        handler._ask_for_code_edge_build.assert_awaited_once_with("org-1", "conn-1", "repo-b")
+
+    @pytest.mark.asyncio
+    async def test_a_release_that_promoted_copies_asks_for_their_builds(self) -> None:
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={
+            "_key": "twin", "indexingStatus": ProgressStatus.COMPLETED.value, "virtualRecordId": "vr1"})
+        gp.update_queued_duplicates_status = AsyncMock(return_value=1)
+        handler._reconcile_pending_duplicates = AsyncMock()
+        handler._request_code_edge_builds_for_copies = AsyncMock()
+        await handler._release_queued_copies("twin")
+        handler._request_code_edge_builds_for_copies.assert_awaited_once_with("twin", "vr1")
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_does_not_raise(self) -> None:
+        handler = self._handler({})
+        handler.event_processor.graph_provider.get_records_by_virtual_record_id = AsyncMock(
+            side_effect=ConnectionError("graph down"))
+        await handler._request_code_edge_builds_for_copies("twin", "vr1")
+        handler._ask_for_code_edge_build.assert_not_awaited()
 
 
 class TestReleasingQueuedCopies:

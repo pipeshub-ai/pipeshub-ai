@@ -3037,17 +3037,43 @@ class TestDedupHookBeforeReusedStatus:
         gp.copy_document_relationships.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_not_run_for_an_in_flight_duplicate(self) -> None:
-        """A QUEUED record still blocks the edge build; it is projected when the
-        primary finishes and it is reprocessed as a finished duplicate."""
+    async def test_runs_before_an_in_flight_duplicate_is_queued(self) -> None:
+        """The twin's completion promotes a QUEUED copy straight to COMPLETED
+        without processing it again, so its blocks must exist first (R-5)."""
         ep, _, _, gp = _make_event_processor()
         twin = {"_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
         gp.find_duplicate_records.return_value = [twin]
         doc = self._doc()
         gp.get_document = _rereads_as_still_in_flight(twin, doc)
+        calls: list[str] = []
+        real_update = ep.update_record_fields
+
+        async def _update(doc: dict, fields: dict) -> bool:
+            calls.append(fields.get("indexingStatus", "other"))
+            return await real_update(doc, fields)
+
+        async def _hook() -> None:
+            calls.append("hook")
+
+        with patch.object(ep, "update_record_fields", side_effect=_update):
+            result = await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=_hook)
+
+        assert result.skip_indexing is True
+        assert calls.index("hook") < calls.index(ProgressStatus.QUEUED.value)
+
+    @pytest.mark.asyncio
+    async def test_runs_once_when_the_twin_finishes_while_queueing(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        twin = {"_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records.return_value = [twin]
+        doc = self._doc()
+        finished = {**twin, "virtualRecordId": "vr-1",
+                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                    "extractionStatus": ProgressStatus.COMPLETED.value}
+        gp.get_document = _rereads_as_still_in_flight(finished, doc)
         hook = AsyncMock()
 
         result = await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=hook)
 
         assert result.skip_indexing is True
-        hook.assert_not_awaited()
+        hook.assert_awaited_once()

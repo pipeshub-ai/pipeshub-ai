@@ -21,6 +21,7 @@ from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.models.blocks import Block, BlockGroup, BlocksContainer
+from app.modules.code_graph.module_refs import module_ref
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "FILE_SUMMARY_QUALIFIED_NAME",
     "RESIDENT_RELATIONS",
     "block_key_for",
+    "drop_code_file_blocks",
     "serialize_block_for_graph",
     "write_code_file_blocks_to_graph",
 ]
@@ -47,7 +49,8 @@ RESIDENT_RELATIONS = frozenset({
     RecordRelations.RE_EXPORTS.value,
 })
 # A module specifier (`.base`, `shopkit.pricing`) never matches a defined symbol
-# name, so it would only add bytes to the per-file name list.
+# name, so the per-file name list keeps only its last segment: the module's own
+# name, which is what a build compares when that module is added or changed.
 _MODULE_SPECIFIER_RELATIONS = frozenset({
     RecordRelations.IMPORTS_FROM.value,
     RecordRelations.RE_EXPORTS.value,
@@ -164,23 +167,61 @@ def _resident_facts(facts: list[dict] | None) -> list[dict]:
     return [fact for fact in facts or () if fact.get("relation") in RESIDENT_RELATIONS]
 
 
-def _referenced_names(container: BlocksContainer) -> list[str] | None:
-    """Every symbol name the file references, deduplicated.
+def _referenced_names(container: BlocksContainer, file_path: str | None = None) -> list[str] | None:
+    """Every symbol name the file references, deduplicated, plus the modules it imports.
 
     The edge builder's only question about a file it is not re-resolving is
     "does it mention a name the changed files define?" -- this answers it
-    without the facts themselves.
+    without the facts themselves. Modules go in as ``module:<path>``
+    (``module_refs``), resolved against *file_path* where relative.
     """
     names: set[str] = set()
     for item in (*container.block_groups, *container.blocks):
         meta = item.code_metadata
         for fact in (meta.pending_edges if meta else None) or ():
-            if fact.get("relation") in _MODULE_SPECIFIER_RELATIONS:
-                continue
             name = fact.get("toName")
-            if isinstance(name, str) and name:
-                names.add(name)
+            if not isinstance(name, str) or not name:
+                continue
+            if fact.get("relation") in _MODULE_SPECIFIER_RELATIONS:
+                ref = module_ref(name, file_path)
+                if ref:
+                    names.add(ref)
+                continue
+            names.add(name)
+            # `from pkg import sub` may import a module, not a name in pkg.
+            prefix = fact.get("qualifiedPrefix")
+            if isinstance(prefix, str) and prefix and "/" not in prefix:
+                ref = module_ref(prefix + ("" if prefix.endswith(".") else ".") + name, file_path)
+                if ref:
+                    names.add(ref)
     return sorted(names) or None
+
+
+# How long a file keeps reporting names whose definitions it changed. Builds
+# normally run minutes after a projection; this only has to outlast a build
+# that keeps failing.
+# shortcut: names are not cleared once a build has used them, so a file edited
+# again within the TTL re-selects their referencers; clear them conditionally
+# (on changedNamesAt) after a successful build if that shows up in build sizes.
+_CHANGED_NAMES_TTL_MS = 7 * 24 * 3600 * 1000
+
+
+def _merge_changed_names(code_file: dict[str, Any], changed: set[str]) -> dict[str, Any]:
+    """``changedNames`` for the codeFiles node: these names plus recent earlier ones.
+
+    The next incremental build re-resolves every file that references one of
+    them. Without it, a file that dropped a definition left its callers bound
+    to nothing, or never bound them to another definition of the same name,
+    until a full rebuild (R-3); and selecting by every name the file defines
+    re-resolved most of the repo on any edit (R-7). Earlier names are kept,
+    not replaced: a second projection can land before the build that was meant
+    to see the first.
+    """
+    now = _now_ms()
+    earlier = code_file.get("changedNames") or []
+    if now - (code_file.get("changedNamesAt") or 0) > _CHANGED_NAMES_TTL_MS:
+        earlier = []
+    return {"changedNames": sorted(changed | set(earlier)), "changedNamesAt": now}
 
 
 def _assert_projection_size(doc: dict[str, Any], log: logging.Logger) -> None:
@@ -289,43 +330,54 @@ async def write_code_file_blocks_to_graph(
         )
         edges.append(_structural_edge(parent_key, bid, relation, context))
 
-    # referencedNames is written to the codeFiles node, not a block. The edge
-    # builder queries it alongside filePath, avoiding a block-scan join.
-    referenced = _referenced_names(block_containers)
-    if referenced is not None:
-        code_file = await _with_retry(
-            lambda: graph_provider.get_document(
-                context.record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
-            ),
-            what="load codeFiles node", log=log,
-        )
-        if code_file:
-            await _with_retry(
-                lambda: graph_provider.update_node(
-                    context.record_id,
-                    CollectionNames.CODE_FILES.value,
-                    {"referencedNames": referenced},
-                ),
-                what="update codeFiles referencedNames", log=log,
-            )
-        elif docs:
-            # No codeFiles node (an uploaded .py): updating one would 404 and
-            # fail the record. The symbol index falls back to the names on the
-            # file's blocks, so they go on the first one.
-            docs[0]["referencedNames"] = referenced
-
     fresh_ids = {doc["id"] for doc in docs}
 
     existing = await _with_retry(
         lambda: graph_provider.get_nodes_by_filters(
             collection=CollectionNames.BLOCKS.value,
             filters={"recordId": context.record_id},
-            return_fields=["_key"],
+            return_fields=["_key", "name", "kind"],
         ),
         what="load existing blocks", log=log,
     ) or []
     existing_ids = {row.get("_key") or row.get("id") for row in existing}
     stale_ids = [bid for bid in existing_ids - fresh_ids if bid]
+    # By identity (qualified name, and kind), not bare name: a definition that
+    # moved between classes, or became a class, can rebind callers elsewhere.
+    before = {(row.get("_key") or row.get("id"), row.get("kind")): row.get("name") for row in existing}
+    after = {(doc["id"], doc.get("kind")): doc.get("name") for doc in docs}
+    changed = {
+        name for key, name in (*before.items(), *after.items())
+        if name and key[1] != "file_summary" and (key not in before or key not in after)
+    }
+
+    # referencedNames is written to the codeFiles node, not a block. The edge
+    # builder queries it alongside filePath, avoiding a block-scan join.
+    code_file = await _with_retry(
+        lambda: graph_provider.get_document(
+            context.record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
+        ),
+        what="load codeFiles node", log=log,
+    )
+    referenced = _referenced_names(block_containers, (code_file or {}).get("filePath"))
+    if referenced is not None or changed:
+        if code_file:
+            updates: dict[str, Any] = {}
+            if referenced is not None:
+                updates["referencedNames"] = referenced
+            if changed:
+                updates.update(_merge_changed_names(code_file, changed))
+            await _with_retry(
+                lambda: graph_provider.update_node(
+                    context.record_id, CollectionNames.CODE_FILES.value, updates,
+                ),
+                what="update codeFiles names", log=log,
+            )
+        elif docs and referenced is not None:
+            # No codeFiles node (an uploaded .py): updating one would 404 and
+            # fail the record. The symbol index falls back to the names on the
+            # file's blocks, so they go on the first one.
+            docs[0]["referencedNames"] = referenced
 
     # Edges first, then nodes. Deleting nodes alone leaves orphaned CONTAINS
     # edges behind on every rename, which accumulate silently.
@@ -355,6 +407,46 @@ async def write_code_file_blocks_to_graph(
         "edges_written": len(edges),
         "blocks_removed": len(stale_ids),
     }
+
+
+async def drop_code_file_blocks(
+    graph_provider: IGraphDBProvider, record_id: str, log: logging.Logger | None = None,
+) -> None:
+    """Delete a code file's blocks, remembering the names they defined.
+
+    For a file emptied, made unparseable or skipped: it still exists, so it is
+    in the next build's touched set, and its lost names send that build to the
+    files that called into it.
+    """
+    log = log or logger
+    existing = await _with_retry(
+        lambda: graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.BLOCKS.value,
+            filters={"recordId": record_id},
+            return_fields=["name", "kind"],
+        ),
+        what="load existing blocks", log=log,
+    ) or []
+    removed = {
+        row.get("name") for row in existing
+        if row.get("name") and row.get("kind") != "file_summary"
+    }
+    if removed:
+        code_file = await _with_retry(
+            lambda: graph_provider.get_document(
+                record_id, CollectionNames.CODE_FILES.value, raise_on_error=True
+            ),
+            what="load codeFiles node", log=log,
+        )
+        if code_file:
+            await _with_retry(
+                lambda: graph_provider.update_node(
+                    record_id, CollectionNames.CODE_FILES.value,
+                    _merge_changed_names(code_file, removed),
+                ),
+                what="update codeFiles changedNames", log=log,
+            )
+    await graph_provider.delete_blocks_for_records([record_id])
 
 
 def _local_relation_for(kind: str | None, has_parent: bool, *, nested: bool = False) -> str:

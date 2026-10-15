@@ -3800,7 +3800,9 @@ class ArangoHTTPProvider(IGraphDBProvider):
             RETURN {{
                 recordId: record._key,
                 filePath: path,
-                referencedNames: codeFile.referencedNames
+                referencedNames: codeFile.referencedNames,
+                changedNames: codeFile.changedNames,
+                hasCodeFile: codeFile != null
             }}
         """
         try:
@@ -3813,6 +3815,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 row["recordId"]: CodeFileInfo(
                     file_path=row["filePath"],
                     referenced_names=tuple(row.get("referencedNames") or ()),
+                    changed_names=tuple(row.get("changedNames") or ()),
+                    has_code_file=bool(row.get("hasCodeFile")),
                 )
                 for row in rows
                 if row.get("recordId") and row.get("filePath")

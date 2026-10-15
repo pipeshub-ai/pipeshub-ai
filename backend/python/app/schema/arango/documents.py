@@ -702,6 +702,10 @@ code_file_record_schema={
             # Used by the edge builder to find files that need re-resolution
             # when a touched file adds or removes a symbol definition.
             "referencedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # Names the file stopped defining in recent projections, and when the
+            # last was added; the next build re-resolves the files that use them.
+            "changedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            "changedNamesAt": {"type": ["number", "null"]},
         },
     },
 }

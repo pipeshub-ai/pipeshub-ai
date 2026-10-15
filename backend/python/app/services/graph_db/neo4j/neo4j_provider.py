@@ -2992,9 +2992,11 @@ class Neo4jProvider(IGraphDBProvider):
             OPTIONAL MATCH (codeFile:{code_file_label} {{id: record.id}})
             WITH record,
                  coalesce(codeFile.filePath, record.recordName) AS path,
-                 codeFile.referencedNames AS referencedNames
+                 codeFile.referencedNames AS referencedNames,
+                 codeFile.changedNames AS changedNames,
+                 codeFile IS NOT NULL AS hasCodeFile
             WHERE path IS NOT NULL
-            RETURN record.id AS recordId, path AS filePath, referencedNames
+            RETURN record.id AS recordId, path AS filePath, referencedNames, changedNames, hasCodeFile
             """
             rows = await self.client.execute_query(
                 query,
@@ -3005,6 +3007,8 @@ class Neo4jProvider(IGraphDBProvider):
                 row["recordId"]: CodeFileInfo(
                     file_path=row["filePath"],
                     referenced_names=tuple(row.get("referencedNames") or ()),
+                    changed_names=tuple(row.get("changedNames") or ()),
+                    has_code_file=bool(row.get("hasCodeFile")),
                 )
                 for row in rows or []
                 if row.get("recordId") and row.get("filePath")

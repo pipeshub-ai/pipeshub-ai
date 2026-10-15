@@ -26,7 +26,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
-from app.utils.jinja_templates import compiled_template
+from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Type variable for enum classes (must be after Enum import)
@@ -2690,7 +2690,7 @@ class CodeFileRecord(Record):
         )
         if not self.file_path:
             return base
-        return f"{base}\nPath: {self.file_path}"
+        return f"{base}\nPath: {one_line(self.file_path)}"
 
     def to_kafka_record(self) -> dict:
         return {
