@@ -26205,7 +26205,7 @@ paths:
         Conversation titles are a display join and are omitted when the chat
         is gone or the caller cannot see it.
       operationId: listArtifacts
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -26291,7 +26291,7 @@ paths:
       summary: Get artifact metadata
       description: Metadata and versions for one artifact. Returns 404 if the artifact is missing, inaccessible, or not user-visible.
       operationId: getArtifact
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -26330,7 +26330,7 @@ paths:
       summary: List artifact versions
       description: Immutable registry versions for one artifact.
       operationId: listArtifactVersions
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -26374,7 +26374,7 @@ paths:
       summary: List who an artifact is shared with
       description: The owner and the users the owner shared the artifact with directly. Users who can read it through a shared conversation are managed from that conversation. Only the owner may call this.
       operationId: listArtifactMembers
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -26424,7 +26424,7 @@ paths:
       summary: Share an artifact
       description: Give users of the caller's organization read access (view and download, including later versions) and notify them. Only the owner may share. Users who already have direct access are skipped.
       operationId: shareArtifact
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -26484,7 +26484,7 @@ paths:
       summary: Stop sharing an artifact
       description: Remove the read access the owner gave users directly. Access through a shared conversation is not affected.
       operationId: unshareArtifact
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -33115,7 +33115,7 @@ paths:
         override it explicitly. Unlinking (`projectId: null`) always clears
         both `projectId` and `projectVisibility`.
       operationId: setConversationProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -33186,7 +33186,7 @@ paths:
         linked to a project via
         `PUT /conversations/{conversationId}/project`.
       operationId: setConversationProjectVisibility
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [conversation:write]
@@ -33247,7 +33247,7 @@ paths:
       description: |
         Create a new project workspace owned by the caller.
       operationId: createProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write]
@@ -33282,7 +33282,7 @@ paths:
         Paginated, non-deleted projects visible to the caller, sorted pinned
         first then by `lastActivityAt` descending.
       operationId: listProjects
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:read]
@@ -33372,7 +33372,7 @@ paths:
         cannot see both return `404` — never `403` — to avoid leaking
         project existence across an org boundary.
       operationId: getProjectById
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:read]
@@ -33418,7 +33418,7 @@ paths:
 
         **OAuth scopes:** `project:write`, plus `kb:write` (`visibility: org`) or `kb:delete` (`visibility: private`) to update access on the project's knowledge base when it has one. The project is saved before that call, so a token without them gets `403` with the change already saved.
       operationId: updateProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write, kb:write, kb:delete]
@@ -33470,7 +33470,7 @@ paths:
 
         **OAuth scopes:** `project:delete`, plus `kb:delete` to delete the project's knowledge base when it has one; without it the delete answers `403` and the project stays.
       operationId: deleteProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:delete, kb:delete]
@@ -33507,7 +33507,7 @@ paths:
         Requires editor access. Archived projects are hidden from the
         default sidebar but their conversations remain reachable directly.
       operationId: archiveProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write]
@@ -33542,7 +33542,7 @@ paths:
         - Projects
       summary: Unarchive a project
       operationId: unarchiveProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write]
@@ -33581,7 +33581,7 @@ paths:
         V1 — pinning affects the project for every viewer, not just the
         caller (per-user pins are deferred).
       operationId: pinProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write]
@@ -33616,7 +33616,7 @@ paths:
         - Projects
       summary: Unpin a project
       operationId: unpinProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write]
@@ -33659,7 +33659,7 @@ paths:
         first, so a private conversation belonging to a *different* project
         member never leaks through this endpoint.
       operationId: getProjectConversations
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:read]
@@ -33734,7 +33734,7 @@ paths:
 
         **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, `kb:read` to check that a linked knowledge base still exists (without it the check is refused, the call still answers `200` with the stored id, and a deleted knowledge base is not recreated), and `kb:delete` to delete the losing request's knowledge base after a race. These knowledge base calls carry the caller's token.
       operationId: ensureProjectKnowledgeBase
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write, kb:write, kb:read, kb:delete]
@@ -33772,7 +33772,7 @@ paths:
       summary: List project members
       description: Requires viewer access.
       operationId: listProjectMembers
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:read]
@@ -33813,7 +33813,7 @@ paths:
 
         **OAuth scopes:** `project:write`, plus `user:read` to look up each user with the caller's token (without it every user answers `400` "User not found"), and `kb:write` to grant the members on the project's knowledge base when it has one.
       operationId: upsertProjectMembers
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write, user:read, kb:write]
@@ -33862,7 +33862,7 @@ paths:
 
         **OAuth scopes:** `project:write`, plus `kb:delete` to revoke the member on the project's knowledge base when it has one. The member is removed from the project before that call, so a token without `kb:delete` gets `403` with the member already removed.
       operationId: removeProjectMember
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [project:write, kb:delete]
@@ -36375,7 +36375,7 @@ paths:
         agent conversation belongs to. Initiator-only; linking requires at
         least viewer access to the target project.
       operationId: setAgentConversationProject
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -36449,7 +36449,7 @@ paths:
         Initiator-only; requires the conversation to already be linked to a
         project.
       operationId: setAgentConversationProjectVisibility
-      x-pipeshub-sdk: true
+      x-pipeshub-sdk: false
       security:
         - bearerAuth: []
         - oauth2: [agent:write]
@@ -36922,6 +36922,7 @@ paths:
         Use <code>scope</code> to filter by team or personal connectors.
         Use <code>search</code> for full-text search across connector names.
       operationId: getConnectorRegistry
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -37027,6 +37028,7 @@ paths:
         <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code></li>
         </ul>
       operationId: getConnectorSchema
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -37098,6 +37100,7 @@ paths:
         ones, as <code>PUT /connectors/{connectorId}/config/auth</code> does. The
         caller must be allowed to update that instance.
       operationId: testConnectorConnection
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write]
@@ -37188,6 +37191,7 @@ paths:
         address cannot be determined, or when the deployment sets
         <code>CONNECTOR_EGRESS_IPS=none</code>.
       operationId: getConnectorEgressIps
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -37250,6 +37254,7 @@ paths:
         <li><b>ownerDeviceId / ownerDeviceName:</b> Desktop device that owns the connector, set on first enable (Local FS only)</li>
         </ul>
       operationId: listConnectorInstances
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -37375,6 +37380,7 @@ paths:
         <li>Turn sync on via <code>POST /{id}/toggle</code></li>
         </ol>
       operationId: createConnectorInstance
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write]
@@ -37674,6 +37680,7 @@ paths:
       summary: Get connector instance
       description: Retrieve a specific connector instance by ID.
       operationId: getConnectorInstance
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -37744,6 +37751,7 @@ paths:
         The connector's creator or an admin, for either scope. An admin can
         delete a member's personal connector.
       operationId: deleteConnectorInstance
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:delete]
@@ -37823,6 +37831,7 @@ paths:
         Retrieve statistics for a specific connector instance including record counts,
         indexing status breakdown, and sync information.
       operationId: getConnectorStats
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:read]
@@ -38435,6 +38444,7 @@ paths:
 
         **Warning:** This can be resource-intensive for large connectors.
       operationId: resyncConnector
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [kb:write]
@@ -38543,6 +38553,7 @@ paths:
         live sync on another worker from a stale one, in which case it changes
         nothing and says so.
       operationId: stopConnectorSync
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:sync]
@@ -38660,6 +38671,7 @@ paths:
         app registration (such as <code>clientSecret</code>), or the <code>private_key</code>
         of an older Google Workspace service account.
       operationId: getConnectorConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -38751,6 +38763,7 @@ paths:
         stored, and not returned, in <code>config.auth</code>. Its client ID and provider
         URLs are the app's. Only an admin's credentials create or change an app.
       operationId: updateConnectorConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write, connector:read]
@@ -38850,6 +38863,7 @@ paths:
         A secret field sent as <code>••••••••</code> keeps the stored value; send a
         new value to replace it. The response masks stored secrets the same way.
       operationId: updateConnectorAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write]
@@ -38933,6 +38947,7 @@ paths:
         Use this to change what data is synced or adjust sync schedule
         without re-authenticating.
       operationId: updateConnectorFiltersSyncConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -39037,6 +39052,7 @@ paths:
         <li>Personal scope: Only creator can toggle</li>
         </ul>
       operationId: toggleConnector
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -39127,6 +39143,7 @@ paths:
         The redirect URI is fixed when the connector is created (its <code>baseUrl</code>) and must be
         registered with the provider.
       operationId: getOAuthAuthorizationUrl
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -39203,6 +39220,7 @@ paths:
         Always JSON. <code>success</code> is true when the connector is signed in; otherwise
         <code>error</code> and <code>errorMessage</code> say why. Provider tokens are never returned.
       operationId: handleOAuthCallback
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -39300,6 +39318,7 @@ paths:
         Their filter fields are in the registry schema; dynamic values come from
         <code>GET /connectors/{connectorId}/filters/{filterKey}/options</code>.
       operationId: getConnectorFilters
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -39368,6 +39387,7 @@ paths:
         Use <code>PUT /connectors/{connectorId}/config/filters-sync</code> to save typed
         sync and indexing filters.
       operationId: saveConnectorFilters
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write]
@@ -39455,6 +39475,7 @@ paths:
         <li>GitLab projects scoped to groups (<code>filterKey=project_ids&amp;contextGroupPath=myorg/team</code>)</li>
         </ul>
       operationId: getFilterFieldOptions
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:read]
@@ -42941,6 +42962,7 @@ paths:
         Admins use this to see which connector types need OAuth credentials
         to be configured before users can authenticate.
       operationId: getOAuthRegistry
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43010,6 +43032,7 @@ paths:
       summary: Get OAuth connector type details
       description: Get details for a specific OAuth-capable connector type.
       operationId: getOAuthConnectorType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43065,6 +43088,7 @@ paths:
         metadata, timestamps). Credentials are never included; an admin reads them per app with
         <code>GET /oauth/{connectorType}/{configId}</code>.
       operationId: listOAuthConfigs
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43133,6 +43157,7 @@ paths:
       summary: List OAuth configs for connector type
       description: Get all OAuth configurations for a specific connector type.
       operationId: listOAuthConfigsByType
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43225,6 +43250,7 @@ paths:
         an admin must create an OAuth configuration with the Google
         OAuth client ID and secret.
       operationId: createOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43300,6 +43326,7 @@ paths:
       summary: Get OAuth configuration
       description: Get a specific OAuth configuration by ID.
       operationId: getOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
@@ -43365,6 +43392,7 @@ paths:
         <b>Admin Only:</b><br>
         Only an admin can update, including apps another admin created.
       operationId: updateOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2: [connector:write]
@@ -43483,6 +43511,7 @@ paths:
         The server does not check whether connectors still use the configuration:
         it is deleted either way, and those connectors lose their OAuth app.
       operationId: deleteOAuthConfig
+      x-pipeshub-sdk: true
       security:
         - bearerAuth: []
         - oauth2:
