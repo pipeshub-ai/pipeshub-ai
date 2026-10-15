@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useRef } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { ShareRole, ShareSelection } from './types';
@@ -19,8 +20,12 @@ interface ShareSearchInputProps {
   onSearchChange: (query: string) => void;
   /** Callback when a selection is removed */
   onRemoveSelection: (id: string) => void;
+  /** Accessible name of a chip's remove button. */
+  removeSelectionLabel?: (name: string) => string;
   /** Callback when role changes */
   onRoleChange: (role: ShareRole) => void;
+  /** Fires when any role dropdown opens or closes */
+  onRoleDropdownOpenChange?: (open: boolean) => void;
   /** Callback to remove the last selection (backspace behaviour) */
   onRemoveLastSelection?: () => void;
   /** Callback when user presses Enter/comma with an email-like value */
@@ -34,10 +39,13 @@ export function ShareSearchInput({
   supportsRoles,
   onSearchChange,
   onRemoveSelection,
+  removeSelectionLabel,
   onRoleChange,
+  onRoleDropdownOpenChange,
   onRemoveLastSelection,
   onEmailSubmit,
 }: ShareSearchInputProps) {
+  const { t } = useTranslation();
   const inputRef = useRef<HTMLInputElement>(null);
   const roleAnchorRef = useRef<HTMLDivElement>(null);
   const hasUserSelection = selections.some((s) => s.type === 'user');
@@ -87,15 +95,24 @@ export function ShareSearchInput({
             <Text size="2" style={{ color: selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)', whiteSpace: 'nowrap' }}>
               {selection.email || selection.name}
             </Text>
-            <Box
-              style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+            <button
+              type="button"
+              aria-label={removeSelectionLabel?.(selection.email || selection.name) ?? t('action.remove')}
+              style={{
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                background: 'none',
+                border: 'none',
+                padding: 0,
+              }}
               onClick={(e) => {
                 e.stopPropagation();
                 onRemoveSelection(selection.id);
               }}
             >
               <MaterialIcon name="close" size={14} color={selection.isInvalid ? 'var(--red-11)' : 'var(--accent-11)'} />
-            </Box>
+            </button>
           </Flex>
         ))}
 
@@ -141,6 +158,7 @@ export function ShareSearchInput({
             role={selectedRole}
             onRoleChange={onRoleChange}
             anchorRef={roleAnchorRef}
+            onOpenChange={onRoleDropdownOpenChange}
           />
         </Box>
       )}

@@ -106,9 +106,9 @@ async def test_near_miss_org_ids_do_not_match(record_org: str) -> None:
     ("claims", "record_org", "expected"),
     [
         ({"orgId": "org-1", "userId": "u1"}, "org-1", 200),
-        ({"orgId": "org-1", "userId": "u1"}, "org-2", 403),
-        ({"orgId": "org-1", "userId": "u1"}, "", 403),
-        ({"orgId": "org-1", "userId": "u1"}, None, 403),
+        ({"orgId": "org-1", "userId": "u1"}, "org-2", 404),
+        ({"orgId": "org-1", "userId": "u1"}, "", 404),
+        ({"orgId": "org-1", "userId": "u1"}, None, 404),
         ({"orgId": "org-1"}, "org-1", 403),
         ({"userId": "u1"}, "org-1", 401),
         ({"orgId": "", "userId": "u1"}, "", 401),

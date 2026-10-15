@@ -20,9 +20,11 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+from app.modules.agents.chat_extension import get_chat_extension
 
 
 def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
@@ -54,6 +56,10 @@ class AgentContext(BaseModel):
     # Every model call of the request, for the opt-in `run_usage` frame.
     _usage_ledger: Any = PrivateAttr(default=None)
     _run_usage_claimed: bool = PrivateAttr(default=False)
+
+    # Who is driving this run. `assistant` is the default chat assistant (and Universal
+    # Agent Mode). Defaults to the most restricted value.
+    invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent"
 
     # Identity
     org_id: str
@@ -163,6 +169,9 @@ class AgentContext(BaseModel):
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
+    # Per-request values an edition's chat hooks read (see `chat_extension`);
+    # empty unless the edition sets some.
+    extensions: dict[str, Any] = Field(default_factory=dict)
 
     # Populated by `PipesHubToolLoader.load()`: toolset registry name ->
     # `"not_authenticated"` (configured, `ToolsetAuthError`/auth-flavored
@@ -238,6 +247,11 @@ class AgentContext(BaseModel):
     # frames it builds directly (STATE_SNAPSHOT, RUN_FINISHED, RUN_ERROR,
     # CUSTOM). `None` until then; irrelevant for `LegacyFormatter`.
     run_id: str | None = None
+
+    # The chat's `aclVersion` from the Node AI payload (None for callers that
+    # send none). Keys the chat-content access cache; preview/download paths
+    # never have one and are never served from a cache.
+    acl_version: int | None = None
 
     # Stop Generation (Phase 3a): the `CancellationToken` this request's
     # `RunCancellationRegistry` entry was registered with — `None` for
@@ -408,6 +422,7 @@ class AgentContext(BaseModel):
         configured_context_window: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
+        invocation: Literal["assistant", "saved_agent", "sub_agent"] = "saved_agent",
     ) -> "AgentContext":
         """Builds an `AgentContext` from an already-built `ChatState` dict
         (Phase 8, `stream_bridge.py`) rather than re-deriving every field a
@@ -475,6 +490,7 @@ class AgentContext(BaseModel):
             chat_streaming=state.get("chat_streaming", True) is not False,
             tool_approval=_tool_approval_answer(state.get("tool_approval")),
             previous_conversations=state.get("previous_conversations") or [],
+            extensions=get_chat_extension().context_extensions(state),
             event_sink=event_sink,
             protocol=protocol,
             llm_provider=llm_provider,
@@ -482,7 +498,9 @@ class AgentContext(BaseModel):
             configured_context_window=configured_context_window,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
+            acl_version=state.get("acl_version"),
             cancellation_token=cancellation_token,
+            invocation=invocation,
             tool_state=state,
         )
 
@@ -560,6 +578,7 @@ class AgentContext(BaseModel):
             "config_service": self.config_service,
             "blob_store": self.blob_store,
             "org_id": self.org_id,
+            "invocation": self.invocation,
             "user_id": self.user_id,
             "user_email": self.user_email,
             "user_info": self.user_info,
@@ -601,6 +620,7 @@ class AgentContext(BaseModel):
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,
+            **get_chat_extension().tool_state_fields(self.extensions),
             "final_results": [],
             "virtual_record_id_to_result": {},
             # Written by the knowledge tools that surface Record IDs without a

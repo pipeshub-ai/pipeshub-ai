@@ -20,6 +20,7 @@ import type { RecordDetailsResponse } from '@/knowledge-base/types';
 import type { PreviewCitation } from '@/app/components/file-preview/types';
 import type { AgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import type { ProjectSummary } from './project-types';
+import { chatExtension } from '@/config';
 
 // ── localStorage helpers for agent capabilities ──────────────────────
 
@@ -267,6 +268,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     rawMessages: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
+    ...chatExtension.slot.defaults(isNew),
   };
 }
 
@@ -940,6 +942,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     const { slots } = get();
     for (const [slotId, slot] of Object.entries(slots)) {
       if (slot.convId !== convId) continue;
+      if (chatExtension.slot.isRetired(slot)) continue;
       if (opts === undefined) {
         return { slotId, slot };
       }
@@ -1271,8 +1274,20 @@ export const useChatStore = create<ChatState>((set, get) => ({
         const conv = state.agentConversations[aidx];
         nextAgent = [conv, ...state.agentConversations.slice(0, aidx), ...state.agentConversations.slice(aidx + 1)];
       }
-      if (next === state.conversations && nextAgent === state.agentConversations) return state;
-      return { conversations: next, agentConversations: nextAgent };
+      let nextShared = state.sharedConversations;
+      const sidx = state.sharedConversations.findIndex((c) => c.id === conversationId);
+      if (sidx > 0) {
+        const conv = state.sharedConversations[sidx];
+        nextShared = [conv, ...state.sharedConversations.slice(0, sidx), ...state.sharedConversations.slice(sidx + 1)];
+      }
+      if (
+        next === state.conversations &&
+        nextAgent === state.agentConversations &&
+        nextShared === state.sharedConversations
+      ) {
+        return state;
+      }
+      return { conversations: next, agentConversations: nextAgent, sharedConversations: nextShared };
     }),
 
   updateConversationModelInfoInLists: (conversationId, modelInfo) => {

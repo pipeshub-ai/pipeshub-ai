@@ -47,9 +47,11 @@ import {
 } from './components/message-area/ask-user-question-card';
 import { appendResumeParts } from './utils/tool-display';
 import { isToolApprovalResumeQuery } from './tool-approval';
+import { chatExtension } from '@/config';
+import type { HistoryLoadOptions, RowCustom } from './chat-extension';
 
 /** Non-empty query required by the chat API when the user sends attachments only (matches Slack bot). */
-const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
+export const ATTACHMENT_ONLY_STREAM_QUERY = 'See below attached file(s).';
 
 /** Prefer the `isFinal` text part from the transcript over `msg.content`.
  * Handles pre-fix conversations where `content` had narration mixed in,
@@ -305,6 +307,10 @@ export function buildStreamChatRequestForSlot(
       ? { apps: [], kb: [] }
       : undefined;
 
+  const sendFields = outgoingMessage
+    ? chatExtension.send.requestFields(currentSlot, outgoingMessage, { isAgent })
+    : {};
+
   const request: StreamChatRequest = {
     query,
     ...effectiveModel,
@@ -322,6 +328,7 @@ export function buildStreamChatRequestForSlot(
     ...(!currentSlot.convId && currentSlot.projectId
       ? { projectId: currentSlot.projectId }
       : {}),
+    ...sendFields,
     ...(effectiveAgentId
       ? {
           agentId: effectiveAgentId,
@@ -354,7 +361,10 @@ export interface LoadHistoricalResult {
   unansweredAskUserQuestion: PendingAskUserQuestion | null;
 }
 
-function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
+/** Extra fields of a question card's pending state. */
+type AskCardRef = Partial<PendingAskUserQuestion>;
+
+export function isAskUserQuestionResumeQuery(text: string | undefined | null): boolean {
   return typeof text === 'string' && text.trimStart().startsWith('User selections:');
 }
 
@@ -486,6 +496,12 @@ function askPayloadFromToolCall(msg: ConversationMessage): AskUserQuestionPayloa
   return askPayloadFromUnknown(askTool?.toolResult);
 }
 
+/** Adds fields to a row's `metadata.custom`. */
+function mergeRowCustom(row: ThreadMessageLike, extra: RowCustom): void {
+  const prev = (row.metadata?.custom ?? {}) as Record<string, unknown>;
+  Object.assign(row, { metadata: { ...row.metadata, custom: { ...prev, ...extra } } });
+}
+
 function askPayloadFromParts(parts: ConversationMessage['parts']): AskUserQuestionPayload | null {
   if (!parts?.length) return null;
   for (const part of parts) {
@@ -529,8 +545,11 @@ function peekFollowingAskPayload(
  *     answer continues in the same turn.
  */
 export function loadHistoricalMessages(
-  messages: ConversationMessage[]
+  rawMessages: ConversationMessage[],
+  options: HistoryLoadOptions = {},
 ): LoadHistoricalResult {
+  const history = chatExtension.history;
+  const messages = history.prepare(rawMessages);
   const result: ThreadMessageLike[] = [];
   let toolPayload: AskUserQuestionPayload | null = null;
   let lastUnansweredAssistantId: string | null = null;
@@ -538,13 +557,25 @@ export function loadHistoricalMessages(
   let lastUnansweredAnswers: Record<string, AskUserQuestionAnswer> = {};
   let mergeNextBotIntoId: string | null = null;
   const closedCardRowIds = new Set<string>();
+  let pendingTurnCustom: RowCustom | null = null;
+  let toolCard: AskCardRef | null = null;
+  let lastUnansweredCard: AskCardRef | null = null;
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
 
     if (msg.messageType === 'tool_call') {
+      const turnCustom = history.turnCustomFromToolRow(msg);
+      if (turnCustom) {
+        // Saved before the answer of its turn; a regenerated turn saves it after.
+        const last = result[result.length - 1];
+        if (last?.role === 'assistant') mergeRowCustom(last, turnCustom);
+        else pendingTurnCustom = turnCustom;
+        continue;
+      }
       const payload = askPayloadFromToolCall(msg);
       if (payload) {
+        const card: AskCardRef = history.askCardFields(msg, { messages, index: i, cardRowId: msg._id });
         const last = result[result.length - 1];
         if (last?.role === 'assistant' && typeof last.id === 'string') {
           const botIndex = messages.findIndex(
@@ -579,6 +610,7 @@ export function loadHistoricalMessages(
               lastUnansweredAssistantId = null;
               lastUnansweredPayload = null;
               lastUnansweredAnswers = {};
+              lastUnansweredCard = null;
             }
             continue;
           }
@@ -594,18 +626,23 @@ export function loadHistoricalMessages(
             lastUnansweredAssistantId = last.id;
             lastUnansweredPayload = stamped;
             lastUnansweredAnswers = { ...lastUnansweredAnswers, ...stampedAnswers };
+            lastUnansweredCard = card;
           }
         } else {
           toolPayload = toolPayload
             ? mergeAskUserQuestionPayloads(toolPayload, payload)
             : payload;
+          toolCard = card;
         }
       }
       continue;
     }
 
+    if (msg.messageType === 'user_query') pendingTurnCustom = null;
+
     if (msg.messageType === 'error') {
       toolPayload = null;
+      pendingTurnCustom = null;
       if (isFailedCardResumeError(messages, i)) {
         // That answer produced no reply to merge; a later one comes after its own answer row.
         mergeNextBotIntoId = null;
@@ -618,6 +655,9 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             citationMaps: buildCitationMapsFromApi([]),
+            failed: true,
+            ...history.rowCustom(msg, options),
+            ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
           },
         },
       });
@@ -625,9 +665,16 @@ export function loadHistoricalMessages(
     }
 
     if (msg.messageType === 'bot_response') {
+      const cardFromToolRow = toolPayload !== null;
       const capturedPayload =
         toolPayload ?? askPayloadFromParts(msg.parts) ?? askPayloadFromToolCall(msg);
       toolPayload = null;
+      const botCard: AskCardRef = history.askCardFields(msg, {
+        messages,
+        index: i,
+        ...(askPayloadFromToolCall(msg) ? { cardRowId: msg._id } : {}),
+      });
+      const askCard: AskCardRef = cardFromToolRow && toolCard ? toolCard : botCard;
 
       const isAnswered = capturedPayload
         ? isAskUserQuestionAnswered(messages, i)
@@ -653,6 +700,7 @@ export function loadHistoricalMessages(
         lastUnansweredAssistantId = cardRowId;
         lastUnansweredPayload = capturedPayload;
         lastUnansweredAnswers = {};
+        lastUnansweredCard = askCard;
       }
 
       const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
@@ -703,7 +751,10 @@ export function loadHistoricalMessages(
                 messageId: msg._id,
                 citationMaps: buildCitationMapsFromApi(msg.citations || []),
                 confidence: msg.confidence,
+                ...(msg.answeredVia ? { answeredVia: msg.answeredVia } : {}),
                 modelInfo: msg.modelInfo,
+                ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
+                ...history.rowCustom(msg, options),
                 ...(feedbackInfo ? { feedbackInfo } : {}),
                 ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
                 ...(nextParts.length ? { persistedParts: nextParts } : {}),
@@ -723,12 +774,16 @@ export function loadHistoricalMessages(
             messageId: msg._id,
             citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
+            ...(msg.answeredVia ? { answeredVia: msg.answeredVia } : {}),
             modelInfo: msg.modelInfo,
+            ...(msg.createdAt ? { createdAt: msg.createdAt } : {}),
+            ...history.rowCustom(msg, options),
             ...(feedbackInfo ? { feedbackInfo } : {}),
             ...(msg.status === 'stopped' ? { status: 'stopped' as const } : {}),
             ...(capturedPayload
               ? { persistedAskUserQuestion: capturedPayload }
               : {}),
+            ...(pendingTurnCustom ?? {}),
             // Agent-activity transcript (`agui` protocol only — see
             // TranscriptCollector/buildAIResponseMessage). Absent for the
             // legacy protocol and every pre-existing conversation; consumers
@@ -737,6 +792,13 @@ export function loadHistoricalMessages(
           },
         },
       });
+      pendingTurnCustom = null;
+      continue;
+    }
+
+    const extraRow = history.mapRow(msg, options);
+    if (extraRow !== undefined) {
+      if (extraRow) result.push(extraRow);
       continue;
     }
 
@@ -803,6 +865,7 @@ export function loadHistoricalMessages(
           createdAt: msg.createdAt,
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
           ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
+          ...history.rowCustom(msg, options),
         },
       },
     });
@@ -818,6 +881,7 @@ export function loadHistoricalMessages(
         ? { sentAnswers: lastUnansweredAnswers }
         : {}),
       status: 'pending',
+      ...lastUnansweredCard,
     };
   }
 
@@ -825,7 +889,7 @@ export function loadHistoricalMessages(
 }
 
 /** Attachment refs attached on send (see chat input metadata). */
-function readAttachmentsFromMessage(
+export function readAttachmentsFromMessage(
   message: ThreadMessageLike
 ): AttachmentRef[] | undefined {
   const raw = message.metadata?.custom?.attachments;
@@ -957,6 +1021,18 @@ export function buildExternalStoreConfig(
 
       const msgAttachments = msgAttachmentsEarly;
 
+      if (
+        chatExtension.send.hold({
+          slotId: targetSlotId,
+          slot: currentSlot,
+          query: displayQuery,
+          attachments: msgAttachments,
+          message,
+        })
+      ) {
+        return;
+      }
+
       const apiQuery =
         displayQuery ||
         (msgAttachments && msgAttachments.length > 0
@@ -979,6 +1055,7 @@ export function buildExternalStoreConfig(
       if (msgAttachments) {
         request.attachments = msgAttachments;
       }
+      Object.assign(request, chatExtension.send.newMessageFields(request, message));
 
       // Fire-and-forget â€” streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.

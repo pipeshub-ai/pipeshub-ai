@@ -5,6 +5,8 @@ import { Theme } from '@radix-ui/themes';
 
 import en from '@/lib/i18n/locales/en-US.json';
 
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+
 vi.mock('next/navigation', () => ({
   usePathname: () => '/workspace/general',
 }));

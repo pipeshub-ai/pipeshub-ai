@@ -29,13 +29,20 @@ ACCEPTED_SERVICE_SCOPES: Final[frozenset[str]] = frozenset(
         TokenScopes.CONNECTOR_SIGNED_URL.value,  # indexing -> connectors record stream
         TokenScopes.RECORD_CONTENT.value,  # query -> connectors ACL-checked record content
         TokenScopes.CONVERSATION_CREATE.value,  # Node Slack service account -> query chat
-        TokenScopes.CONVERSATION_PERMISSIONS.value,  # Node share/unshare/view -> query record permissions
+        TokenScopes.CONVERSATION_PERMISSIONS.value,  # Node -> query attachment validate (S2b)
         TokenScopes.FETCH_CONFIG.value,  # Node scheduled-jobs backfill -> connectors
         TokenScopes.DOCUMENT_PARSE.value,  # indexing -> parsing
         TokenScopes.DOCUMENT_CLASSIFY.value,  # indexing -> extraction
         TokenScopes.ENTITY_USER_WRITE.value,  # Node verified-email change -> connectors graph
     }
 )
+
+
+def accepted_service_scopes() -> frozenset[str]:
+    """``ACCEPTED_SERVICE_SCOPES`` plus the scopes the edition's routes accept."""
+    from app.modules.agents.chat_extension import get_chat_extension
+
+    return ACCEPTED_SERVICE_SCOPES | get_chat_extension().extra_service_scopes()
 
 
 def scope_value(scope: ScopeLike) -> str:

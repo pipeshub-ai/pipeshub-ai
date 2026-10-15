@@ -5,7 +5,11 @@ import {
   IFollowUpQuestion,
   IMessageCitation,
 } from '../types/conversation.interfaces';
-import { CONFIDENCE_LEVELS, REASONING_EFFORT_VALUES } from '../constants/constants';
+import {
+  CONFIDENCE_LEVELS,
+  REASONING_EFFORT_VALUES,
+} from '../constants/constants';
+import { schemaExtensions } from '../../../edition-schemas';
 
 const toolCallItemSchema = new Schema(
   {
@@ -164,6 +168,12 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
 
+    // Authorship. Not required and no defaults: legacy rows lack them and read
+    // as authored by `session.userId`.
+    authorUserId: { type: Schema.Types.ObjectId }, // user_query
+    requestedBy: { type: Schema.Types.ObjectId }, // bot_response | error | tool_call
+    inReplyTo: { type: Schema.Types.ObjectId },
+
     messageType: {
       type: String,
       enum: [
@@ -187,6 +197,8 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     status: { type: String, enum: ['stopped'] },
     citations: [messageCitationSchema],
     confidence: { type: String, enum: CONFIDENCE_LEVELS },
+    answerMatchType: { type: String, enum: ['Capability Card'] },
+    answeredVia: { type: String },
     followUpQuestions: [followUpQuestionSchema],
     feedback: [feedbackSchema],
     metadata: {
@@ -244,6 +256,8 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
 // Serves both the seq-ordered read path and duplicate-seq protection —
 // the real backstop for allocateSeq's optimistic $inc allocation.
 chatSessionMessageSchema.index({ sessionId: 1, seq: 1 }, { unique: true });
+
+schemaExtensions.chatSessionMessage(chatSessionMessageSchema);
 
 export const ChatSessionMessage: Model<IChatSessionMessageDocument> =
   mongoose.model<IChatSessionMessageDocument>(

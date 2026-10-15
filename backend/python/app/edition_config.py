@@ -3,6 +3,9 @@ oauth_apps_router = None
 knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
+# Routes mounted ahead of the shared query routers / beside the entity router.
+query_extension_router = None
+entity_extension_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
 from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search

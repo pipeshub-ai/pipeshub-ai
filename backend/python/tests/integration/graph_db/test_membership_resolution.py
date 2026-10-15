@@ -1,7 +1,6 @@
 """``resolve_virtual_record_state`` against a real Neo4j and a real ArangoDB.
 
-Requires: docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml up -d
-(from the repository root). The backend-matrix workflow runs it in its Neo4j job.
+Requires: your own throwaway Neo4j / ArangoDB and PCC_* env; see README.md in this folder.
 Run: pytest tests/integration/graph_db/ -m integration
 
 A record can belong to more than one record group at once. Drive team and Box
@@ -14,10 +13,11 @@ Collections are the deliberate exception: their ``belongsTo`` points at
 ``apps/<kbId>``, not a record group, so they resolve to an empty list.
 """
 
-import os
 import uuid
 
 import pytest
+
+from ._backends import unavailable
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -28,22 +28,22 @@ def _log():
 
 
 @pytest.fixture(scope="module")
-async def neo4j_provider():
+async def neo4j_provider(neo4j_env):
     pytest.importorskip("neo4j", reason="neo4j driver not installed")
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
-    password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
+    uri = neo4j_env.uri
+    password = neo4j_env.password
     logger = _log()
     client = Neo4jClient(
-        uri=uri, username="neo4j", password=password, database="neo4j", logger=logger
+        uri=uri, username=neo4j_env.user, password=password, database="neo4j", logger=logger
     )
     try:
         if not await client.connect():
-            pytest.skip(f"Neo4j not available at {uri}")
+            unavailable(f"Neo4j not available at {uri}")
     except Exception as exc:
-        pytest.skip(f"Neo4j not available at {uri} — {exc}")
+        unavailable(f"Neo4j not available at {uri} — {exc}")
 
     provider = Neo4jProvider.__new__(Neo4jProvider)
     provider.logger = logger

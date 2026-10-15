@@ -155,6 +155,32 @@ async def test_service_account_denied_by_tier3(graph):
             await authorizer.authorize(actor, record)
 
 
+def _chat_graph() -> AsyncMock:
+    g = AsyncMock()
+    g.get_edge = AsyncMock(return_value=None)
+    g.check_record_access_with_details = AsyncMock(return_value=None)
+    g.get_document = AsyncMock(side_effect=lambda key, coll, *a, **k: {
+        ("rec1", "records"): {"_key": "rec1", "orgId": "org1", "connectorName": "ATTACHMENTS", "recordType": "FILE"},
+        ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
+    }.get((key, coll)))
+    g.get_edges_to_node = AsyncMock(return_value=[
+        {"from_id": "ukey-b", "from_collection": "users", "to_id": "rec1", "type": "USER", "role": "OWNER"},
+    ])
+    return g
+
+
+def _attachment_record() -> object:
+    from types import SimpleNamespace
+
+    return SimpleNamespace(id="rec1", org_id="org1", connector_name="ATTACHMENTS", record_type="FILE")
+
+
+@pytest.mark.asyncio
+async def test_tier4_denies_chat_content_by_default() -> None:
+    with pytest.raises(RecordAccessDeniedError):
+        await TieredRecordAuthorizer(_chat_graph()).authorize(_make_actor(), _attachment_record())
+
+
 # ---------------------------------------------------------------------------
 # Tier 0: a record in the trash
 # ---------------------------------------------------------------------------

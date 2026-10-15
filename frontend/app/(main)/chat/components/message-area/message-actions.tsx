@@ -48,6 +48,8 @@ const DISLIKE_CATEGORIES: FeedbackCategory[] = [
 const OTHER_VALUE = 'other';
 
 interface MessageActionsProps {
+  /** Tighter bottom spacing, for a reply row that has a line under it. */
+  compact?: boolean;
   /** The raw markdown content of the message */
   content: string;
   /** Citation maps for resolving [N] markers in copied markdown */
@@ -68,6 +70,8 @@ interface MessageActionsProps {
   feedbackInfo?: { value?: 'like' | 'dislike' };
   /** False for a reply that ran an action a person approved: regenerating could run it again. */
   canRegenerate?: boolean;
+  /** Offer Regenerate on the last answer. Defaults to true. */
+  allowRegenerate?: boolean;
 }
 
 /**
@@ -121,6 +125,8 @@ export function MessageActions({
   appliedFilters,
   feedbackInfo,
   canRegenerate = true,
+  allowRegenerate = true,
+  compact = false,
 }: MessageActionsProps) {
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
@@ -321,12 +327,13 @@ export function MessageActions({
     <>
       <Flex
         data-testid="message-actions"
+        data-latest={isLastMessage ? 'true' : undefined}
         align="center"
         justify="between"
         style={{
           width: '100%',
           marginTop: 'var(--space-1)',
-          paddingBottom: 'var(--space-4)',
+          paddingBottom: compact ? 'var(--space-1)' : 'var(--space-4)',
           animation: 'msgActionsIn 150ms ease-out both',
           flexWrap: 'wrap',
           rowGap: 'var(--space-1)',
@@ -698,7 +705,7 @@ export function MessageActions({
         </Tooltip>
 
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId && canRegenerate && (
+        {isLastMessage && messageId && canRegenerate && allowRegenerate && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"

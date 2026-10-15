@@ -1996,13 +1996,20 @@ components:
             code:
               type: string
               description: |
-                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`
+                Machine-readable error code. For application errors it takes the form `HTTP_<VARIANT>`.
+                Domain errors carry their own unprefixed code (for example `CONVERSATION_BUSY`).
                 For unhandled runtime errors (e.g. database unavailable) it is `INTERNAL_ERROR`.
               example: HTTP_FORBIDDEN
             message:
               type: string
               description: Human-readable description of the error
               example: You need admin access to do this. Ask an admin in your organisation.
+            details:
+              type: object
+              additionalProperties: true
+              description: |
+                Public, structured context for a domain error (for example the run that holds a
+                conversation). Present in every environment, only for domain errors; absent otherwise.
             metadata:
               type: object
               description: Additional context (only present in development environments)
@@ -8670,6 +8677,15 @@ components:
             and only when the model emitted a trailing confidence block.
 
             This field is now optional and nullable; it was previously always present and non-nullable. Treat a missing or `null` value as "no confidence reported" and guard before using it. Change effective in SDK v1.3.0 (v1.2.0 and earlier always populated it).
+        answerMatchType:
+          type: string
+          enum: [Capability Card]
+          description: |
+            Present only on an answer produced by an extension instead of the model. It is not a search answer, so clients should not show confidence or sources for it.
+        answeredVia:
+          type: string
+          description: |
+            Name of the delegate agent whose output was sent to the user as the answer (for example `coding_agent` or `web_agent`). Present only when that happened; absent when the assistant wrote the answer itself.
         followUpQuestions:
           type: array
           items:
@@ -9828,7 +9844,7 @@ components:
             Permission level for shared users:
 
             - `read` — Can view only
-            - `write` — Can add messages
+            - `write` — Stored as `read`; the response carries an `ACCESS_LEVEL_DOWNGRADED` warning
 
     SemanticSearchRequest:
       type: object
@@ -17140,6 +17156,14 @@ components:
             connectorId: "conn-abc123"
             connectorName: "S3"
             errorCode: "FORBIDDEN"
+        dedupeKey:
+          type: string
+          description: Per-recipient delivery key; an event with the same key is delivered at most once
+        coalesceKey:
+          type: string
+          description: |
+            Set on events that fold into one unread notification per user.
+            Later events raise `payload.count` instead of adding a row.
         isDeleted:
           type: boolean
           default: false
@@ -21077,6 +21101,9 @@ paths:
                           type: boolean
                         isBlocked:
                           type: boolean
+                        isDisabled:
+                          type: boolean
+                          description: Account disabled by an administrator. Such a user cannot sign in.
                         createdAtTimestamp:
                           type: integer
                           description: "Epoch milliseconds of `createdAt` (absent if field is null)"
@@ -26203,7 +26230,8 @@ paths:
         Paginated gallery of VISIBLE, non-temporary artifacts the caller can
         access via record ACL. TOOL_RESULT artifacts are never returned.
         Conversation titles are a display join and are omitted when the chat
-        is gone or the caller cannot see it.
+        is gone or the caller cannot see it, and for an OAuth token without
+        `conversation:read`.
       operationId: listArtifacts
       x-pipeshub-sdk: true
       security:
@@ -31932,9 +31960,8 @@ paths:
 
         **Permissions:**
 
-        The conversation initiator can always delete. Users the conversation has
-        been shared with may delete it only when their `sharedWith.accessLevel`
-        is `write`.
+        Only the conversation owner can delete. Anyone else gets `404`
+        (`CONVERSATION_NOT_FOUND`).
       operationId: deleteConversationById
       x-pipeshub-sdk: true
       security:
@@ -32213,12 +32240,13 @@ paths:
         **Access Levels:**
 
         - `read` - Can view conversation and messages (default)
-        - `write` - Can view and add new messages
+        - `write` - Stored as `read`; the response carries an
+          `ACCESS_LEVEL_DOWNGRADED` warning.
 
         **Permissions:**
 
-        Only the conversation initiator (owner) can share. Users must belong
-        to the same organization.
+        Only the conversation owner can share; anyone else gets `404`. Users
+        must belong to the same organization.
       operationId: shareConversation
       security:
         - bearerAuth: []
@@ -32280,6 +32308,26 @@ paths:
                           type: string
                           format: objectId
                           description: Subdocument identifier auto-assigned by MongoDB.
+                  warnings:
+                    type: array
+                    description: Present only when `write` was requested; access is stored as `read`.
+                    items:
+                      type: object
+                      additionalProperties: false
+                      required:
+                        - code
+                        - requested
+                        - applied
+                      properties:
+                        code:
+                          type: string
+                          enum: [ACCESS_LEVEL_DOWNGRADED]
+                        requested:
+                          type: string
+                          enum: [write]
+                        applied:
+                          type: string
+                          enum: [read]
                   meta:
                     type: object
                     additionalProperties: false
@@ -34317,6 +34365,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34353,6 +34405,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34388,6 +34444,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34428,6 +34488,10 @@ paths:
                     additionalProperties: false
                     description: Error payload.
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34592,6 +34656,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34626,6 +34694,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34660,6 +34732,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34696,6 +34772,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |
@@ -34736,6 +34816,10 @@ paths:
                       - code
                       - message
                     properties:
+                      details:
+                        type: object
+                        additionalProperties: true
+                        description: Public, structured context for domain errors (unprefixed `code`). Present in every environment; absent for other errors.
                       requestId:
                         type: string
                         description: |

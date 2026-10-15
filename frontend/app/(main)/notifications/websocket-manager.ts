@@ -5,7 +5,7 @@ import {
   connectNotificationSocket,
   disconnectNotificationSocket,
 } from '@/lib/socket/notification-socket';
-import { logoutAndRedirect, useAuthStore } from '@/config';
+import { logoutAndRedirect, useAuthStore, notificationExtension } from '@/config';
 import { useNotificationStore } from './store';
 import { NotificationsApi, type NotificationListItem } from './api';
 
@@ -39,6 +39,9 @@ export function useNotificationSocket(): void {
   const setInitialPage = useNotificationStore((s) => s.setInitialPage);
   const setStats = useNotificationStore((s) => s.setStats);
   const addNotification = useNotificationStore((s) => s.addNotification);
+  const upsertNotification = useNotificationStore((s) => s.upsertNotification);
+
+  notificationExtension.useSocketEffects({ isHydrated, isAuthenticated, accessToken });
 
   useEffect(() => {
     if (!isHydrated || !isAuthenticated || !accessToken) {
@@ -50,6 +53,7 @@ export function useNotificationSocket(): void {
     if (!sock) return;
 
     const onConnect = async () => {
+      notificationExtension.onSocketConnect();
       try {
         const stats = await NotificationsApi.getStats();
         setStats(stats);
@@ -68,6 +72,12 @@ export function useNotificationSocket(): void {
       }
     };
 
+    const onUpdated = (payload: NotificationListItem) => {
+      if (payload._id) {
+        upsertNotification(payload);
+      }
+    };
+
     const onForceLogout = () => {
       disconnectNotificationSocket();
       logoutAndRedirect();
@@ -75,6 +85,7 @@ export function useNotificationSocket(): void {
 
     sock.on('connect', onConnect);
     sock.on('newNotification', onNew);
+    sock.on('notificationUpdated', onUpdated);
     sock.on('force_logout', onForceLogout);
 
     if (sock.connected) {
@@ -84,10 +95,11 @@ export function useNotificationSocket(): void {
     return () => {
       sock.off('connect', onConnect);
       sock.off('newNotification', onNew);
+      sock.off('notificationUpdated', onUpdated);
       sock.off('force_logout', onForceLogout);
       disconnectNotificationSocket();
     };
-  }, [accessToken, isAuthenticated, isHydrated, addNotification]);
+  }, [accessToken, isAuthenticated, isHydrated, addNotification, upsertNotification]);
 
   // When the user returns to this tab, refresh counts (and panel list) after actions in another tab.
   useEffect(() => {

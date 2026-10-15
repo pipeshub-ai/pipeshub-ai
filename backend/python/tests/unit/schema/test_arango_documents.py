@@ -7,6 +7,7 @@ import pytest
 from jsonschema import Draft4Validator, ValidationError
 
 from app.config.constants.arangodb import CollectionNames
+from app.connectors.sources.localKB.handlers.project_kb_reconcile import SYNC_VERSION_FIELD
 from app.schema.node_schema_registry import adapt_schema
 
 # Every *_schema defined in documents.py
@@ -358,6 +359,13 @@ class TestAppSchemaSyncQueue:
         # _persist_pending_resync, then the re-issue and /sync/stop clearing it
         validator.validate(_valid_app_doc(pendingResync=True))
         validator.validate(_valid_app_doc(pendingResync=False, pendingFullSync=False))
+
+
+class TestAppSchemaProjectKbSync:
+    def test_accepts_the_sync_version_the_reconcile_records(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.app_schema))
+        validator.validate(_valid_app_doc(type="KB", isHidden=True, **{SYNC_VERSION_FIELD: 1700000000000}))
+        validator.validate(_valid_app_doc(**{SYNC_VERSION_FIELD: None}))
 
 
 # ---------------------------------------------------------------------------

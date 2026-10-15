@@ -23,6 +23,8 @@ export interface NotificationListItem {
   originService?: NotificationOriginService;
   assignedTo?: string;
   payload?: Record<string, unknown>;
+  /** Resolved by the list endpoint after a read check; absent on websocket rows and when unresolved. */
+  context?: { chatTitle?: string; actorName?: string };
   isDeleted?: boolean;
   createdAt?: string;
   updatedAt?: string;
@@ -125,4 +127,5 @@ export const NotificationsApi = {
       archivedCount: data.archivedCount ?? 0,
     };
   },
+
 };

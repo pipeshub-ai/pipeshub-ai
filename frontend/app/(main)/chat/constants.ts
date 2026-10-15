@@ -1,4 +1,5 @@
 import type { QueryModeConfig } from './types';
+import { chatExtension } from '@/config';
 
 // ── LLM Model Metadata Maps ──────────────────────────────────────────
 
@@ -242,7 +243,7 @@ export function chatContentColumnStyle(isMobile: boolean): {
   paddingRight: string;
 } {
   return {
-    maxWidth: CHAT_CONTENT_MAX_WIDTH,
+    maxWidth: chatExtension.contentMaxWidth ?? CHAT_CONTENT_MAX_WIDTH,
     width: '100%',
     minWidth: 0,
     boxSizing: 'border-box',

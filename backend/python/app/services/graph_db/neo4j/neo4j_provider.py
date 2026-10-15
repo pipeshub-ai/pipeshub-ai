@@ -137,6 +137,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_cypher,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -1416,6 +1417,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert nodes failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     def _nodes_for_upsert(self, nodes: list[dict], collection: str) -> list[dict]:
@@ -1575,6 +1578,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(
@@ -4582,6 +4587,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
@@ -4607,7 +4613,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     mongo_to_key[mongo_id] = graph_key
 
         missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
 
         return mongo_to_key
@@ -7097,6 +7103,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (node id property).
@@ -7146,6 +7154,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch records by record IDs: {str(e)}")
             self.logger.error(f"Traceback: {traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     # ==================== Permission Operations ====================
@@ -14452,7 +14462,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def list_kb_permissions(
         self,
         kb_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """List all permissions for a knowledge base with entity details"""
         try:
@@ -14514,6 +14526,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ List KB permissions failed: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def list_all_records(

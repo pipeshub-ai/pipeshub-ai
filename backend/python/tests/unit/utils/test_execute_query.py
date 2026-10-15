@@ -2,6 +2,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import asyncio
+
 import pytest
 from pydantic import ValidationError
 
@@ -817,6 +819,24 @@ class TestCreateExecuteQueryTool:
         assert result["ok"] is True
         assert "raw_columns" not in result
         assert "raw_rows" not in result
+
+    @pytest.mark.asyncio
+    async def test_csv_export_is_stamped_with_the_turn_run_id(self) -> None:
+        from app.utils.execute_query import create_execute_query_tool
+
+        impl = {"ok": True, "markdown_result": "|x|", "row_count": 1, "column_count": 1,
+                "raw_columns": ["x"], "raw_rows": [(1,)]}
+        with patch("app.utils.execute_query._execute_query_impl", new_callable=AsyncMock, return_value=impl), \
+                patch("app.sandbox.artifact_upload.save_query_result_csv", new_callable=AsyncMock) as save, \
+                patch("app.utils.execute_query.register_task"):
+            tool = create_execute_query_tool(
+                config_service=MagicMock(), org_id="org-1", conversation_id="conv-1", blob_store=MagicMock(),
+                user_id="user-1", run_id="run-9", allowed_connector_ids={"conn-1"},
+            )
+            await tool.ainvoke({"query": "SELECT 1", "source_name": "PostgreSQL", "connector_id": "conn-1"})
+            await asyncio.sleep(0)
+
+        assert save.call_args.kwargs["run_id"] == "run-9"
 
     @pytest.mark.asyncio
     async def test_tool_invocation_error(self):

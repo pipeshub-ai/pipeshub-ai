@@ -9,6 +9,8 @@ import http from 'http';
 import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
+import { useRateLimitCache } from './libs/middlewares/shared-rate-limit-store';
+import { ICacheService } from './libs/services/cache/cacheService.interface';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -21,6 +23,10 @@ import {
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
+import {
+  startProjectKbDriftRepair,
+  ProjectKbDriftRepairHandle,
+} from './modules/projects/services/project-kb-drift.service';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
 
@@ -66,6 +72,7 @@ import {
   OAuthAppsContainer,
   createOAuthAppsRouter,
   editionBoot,
+  conversationEdition,
 } from './config';
 import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
@@ -121,6 +128,9 @@ import {
   createMcpClientMetadataHandler,
   MCP_CLIENT_METADATA_PATH,
 } from './modules/mcp_servers/routes/mcp_client_metadata';
+import { CONVERSATION_TYPES } from './modules/enterprise_search/services/conversation/conversation.types';
+import { IConversationGuards } from './modules/enterprise_search/services/conversation/http/conversation-guards';
+import { ConversationEditionContainers } from './modules/enterprise_search/services/conversation/conversation-edition';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
@@ -159,6 +169,7 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private projectKbDriftRepair: ProjectKbDriftRepairHandle | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -226,6 +237,11 @@ export class Application {
       this.tokenManagerContainer = await TokenManagerContainer.initialize(
         configurationManagerConfig,
       );
+      if (this.tokenManagerContainer.isBound('RedisService')) {
+        const cache =
+          this.tokenManagerContainer.get<ICacheService>('RedisService');
+        useRateLimitCache(cache);
+      }
 
       this.configurationManagerContainer =
         await ConfigurationManagerContainer.initialize(
@@ -296,6 +312,24 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+      conversationEdition.bind(
+        this.conversationContainers(),
+        appConfig,
+        this.logger,
+      );
+      // The project conversation list, the artifacts gallery and the notification routes authorize with the same guards as the chat routes.
+      const guards = this.esAgentContainer.get<IConversationGuards>(
+        CONVERSATION_TYPES.ConversationGuards,
+      );
+      for (const container of [
+        this.projectsContainer,
+        this.knowledgeBaseContainer,
+        this.entityManagerContainer,
+      ]) {
+        container
+          .bind<IConversationGuards>(CONVERSATION_TYPES.ConversationGuards)
+          .toConstantValue(guards);
+      }
 
       await this.addOAuthServicesToAuthMiddleware();
 
@@ -338,6 +372,7 @@ export class Application {
         this.logger,
       );
       this.outboxDispatcher.start();
+      this.projectKbDriftRepair = startProjectKbDriftRepair(this.logger);
 
       this.notificationContainer
         .get<NotificationService>(NotificationService)
@@ -435,6 +470,16 @@ export class Application {
     }
   }
 
+  private conversationContainers(): ConversationEditionContainers {
+    return {
+      enterpriseSearch: this.esAgentContainer,
+      projects: this.projectsContainer,
+      knowledgeBase: this.knowledgeBaseContainer,
+      entityManager: this.entityManagerContainer,
+      notification: this.notificationContainer,
+    };
+  }
+
   private configureMiddleware(appConfig: AppConfig): void {
     // Unset means trust no proxy: req.ip is the socket address.
     if (appConfig.trustProxy.warning) {
@@ -503,7 +548,11 @@ export class Application {
       cors({
         origin: process.env.ALLOWED_ORIGINS?.split(',') || ['http://localhost:3001'], // Be more specific than '*'
         credentials: true,
-        exposedHeaders: ['x-session-token', 'content-disposition'],
+        exposedHeaders: [
+          'x-session-token',
+          'content-disposition',
+          ...conversationEdition.exposedHeaders,
+        ],
         methods: [HttpMethod.DELETE, HttpMethod.GET, HttpMethod.OPTIONS, HttpMethod.PATCH, HttpMethod.POST, HttpMethod.PUT],
         allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token', 'x-request-id', 'client-name']
       }),
@@ -735,6 +784,8 @@ export class Application {
       '/api/v1/projects',
       createProjectsRouter(this.projectsContainer),
     );
+
+    conversationEdition.mountRoutes(this.app, this.conversationContainers());
 
     this.app.use(
       '/api/v1/mail',
@@ -982,6 +1033,8 @@ export class Application {
       // producer one of them owns.
       // Awaited: a pass in flight is publishing through a producer the
       // containers below are about to disconnect.
+      this.projectKbDriftRepair?.stop();
+      this.projectKbDriftRepair = null;
       await this.outboxDispatcher?.stop();
       this.outboxDispatcher = null;
 

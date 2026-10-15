@@ -48,6 +48,7 @@ from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
 from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
 from app.modules.agents.context.user_context import _format_user_context
@@ -484,6 +485,37 @@ def _toolset_to_load(tool_names: tuple[str, ...], spec: AgentSpec, runtime: Agen
     if not groups or any(group.name in (spec.pinned_toolsets or []) for group in groups):
         return None
     return groups[0].name
+def _build_delegate_answers_section(runtime: AgentRuntime) -> str:
+    """Only with PIPESHUB_DELEGATE_HANDOFF: the delegates' `final` parameter alone
+    did not move a real model off its default of rewriting the delegate's
+    result, so the choice is stated where the answer-writing rules live."""
+    registry = runtime.tool_registry
+    if registry is None:
+        return ""
+    names = [
+        name for name in ("coding_agent", "web_agent")
+        if registry.has(name) and any(p.name == "final" for p in registry.resolve_by_name(name).parameters)
+    ]
+    if not names:
+        return ""
+    listed = " or ".join(f"`{n}`" for n in names)
+    lines = [
+        "## Delegates That Answer Directly",
+        f"{listed} can write the user's answer themselves. Pass `final=true` when that one call "
+        "is all the request needs, so your answer would only restate its result: its answer goes "
+        "to the user directly and you do not write one. Call it alone in that turn.",
+    ]
+    if "coding_agent" in names:
+        lines.append(
+            "For `coding_agent` this is the normal choice when the request IS the computation, "
+            "data transformation, file or chart: it reports the results and names the files itself."
+        )
+    lines.append(
+        "Leave `final` false when you will combine its result with other tool results, call more "
+        "tools afterwards, or need to check or reshape it. This changes nothing about when to use "
+        "a delegate: answer from your own knowledge when the request needs no tool."
+    )
+    return "\n\n".join(lines)
 
 
 def _build_code_execution_section(*, composed: bool, networked: bool) -> str:
@@ -717,6 +749,8 @@ class PipesHubPromptBuilder:
                 composed=composed_code, networked=sandbox_networked,
             ))
 
+        tpl.set("delegate_answers", _build_delegate_answers_section(runtime) or None)
+
         # ── Available tools (Band B: grows with fetch_tools) ─────────────────
         if spec.tool_disclosure == "lazy" and runtime.tool_registry is not None:
             tpl.set("available_tools", self._build_lazy_tool_reference_section(
@@ -733,7 +767,9 @@ class PipesHubPromptBuilder:
         tpl.set("capability_summary", build_capability_summary(state) or None)
 
         # ── User context + skills (Band B) ────────────────────────────────────
-        tpl.set("user_context", _format_user_context(state) or None)
+        user_context = _format_user_context(state) or None
+        for section, text in get_chat_extension().prompt_sections(self._context, user_context).items():
+            tpl.set(section, text)
         tpl.set("skills_overview", render_skills_overview(runtime) or None)
         tpl.set(
             "answer_confidence",

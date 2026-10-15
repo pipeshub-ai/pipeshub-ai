@@ -56,6 +56,7 @@ import {
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { chatExtension } from '@/config';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -402,7 +403,12 @@ function pendingAfterStreamFailure(
 /** A failed resume keeps the card (with its selections) instead of an error
  *  row, and the pending card hides that row's text — so the only place left
  *  to tell the user the answers never reached the model is a toast. */
-function notifyAskUserQuestionResumeFailed(detail: string): void {
+function notifyAskUserQuestionResumeFailed(detail: string, error?: unknown): void {
+  const message = chatExtension.stream.resumeFailedMessage(error);
+  if (message) {
+    toast.error(message);
+    return;
+  }
   toast.error(i18n.t('chatStream.askQuestionResumeFailed'), {
     ...(detail ? { description: detail } : {}),
   });
@@ -419,18 +425,33 @@ function withStreamingErrorMessage(
   errorText: string,
   streamError?: ChatStreamErrorInfo
 ): ThreadMessageLike[] {
-  const withError = (metadata?: ThreadMessageLike['metadata']) =>
-    streamError ? { metadata: { ...metadata, custom: { ...metadata?.custom, streamError } } } : {};
+  const failedMetadata = (metadata?: ThreadMessageLike['metadata']) => ({
+    ...metadata,
+    custom: {
+      ...metadata?.custom,
+      failed: true,
+      createdAt: new Date().toISOString(),
+      ...(streamError ? { streamError } : {}),
+    },
+  });
   const last = currentMessages[currentMessages.length - 1];
   if (last?.role === 'assistant' && getThreadMessagePlainText(last).trim() === '') {
     return [
       ...currentMessages.slice(0, -1),
-      { ...last, content: [{ type: 'text' as const, text: errorText }], ...withError(last.metadata) },
+      {
+        ...last,
+        content: [{ type: 'text' as const, text: errorText }],
+        metadata: failedMetadata(last.metadata),
+      },
     ];
   }
   return [
     ...currentMessages,
-    { role: 'assistant' as const, content: [{ type: 'text' as const, text: errorText }], ...withError() },
+    {
+      role: 'assistant' as const,
+      content: [{ type: 'text' as const, text: errorText }],
+      metadata: failedMetadata(),
+    },
   ];
 }
 
@@ -678,8 +699,15 @@ export async function streamMessageForSlot(
   // Client-generated run identifier so a later Stop can target this exact
   // run (see `ChatApi.cancelStream` / `cancelStreamForSlot`).
   const runId = generateRunId();
-  const streamRunId = runId ?? null;
+  let streamRunId = runId ?? null;
   if (runId) request.runId = runId;
+  const session = chatExtension.stream.begin(slotId, slot, request);
+  const adoptServerRunId = (serverRunId: string | undefined) => {
+    if (!session?.adoptServerRunId || !serverRunId || serverRunId === streamRunId) return;
+    if (!slotIsOnRun(slotId, streamRunId)) return;
+    streamRunId = serverRunId;
+    useChatStore.getState().updateSlot(slotId, { runId: serverRunId });
+  };
 
   // Ephemeral empty assistant so the in-progress turn has a dedicated "last
   // assistant" message. Pairs with MessageList: only the last assistant whose
@@ -755,6 +783,7 @@ export async function streamMessageForSlot(
     role: 'assistant' as const,
     id: pendingAssistantId,
     content: [{ type: 'text' as const, text: '' }],
+    ...(session?.assistantRowCustom ? { metadata: { custom: session.assistantRowCustom } } : {}),
   };
   const resumeMessages = reuseExistingAssistant
     ? baseMessages
@@ -769,6 +798,7 @@ export async function streamMessageForSlot(
             ? {
                 metadata: {
                   custom: {
+                    ...session?.userRowCustom,
                     filters: request.filters,
                     createdAt: new Date().toISOString(),
                     ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
@@ -779,6 +809,7 @@ export async function streamMessageForSlot(
             : {
                 metadata: {
                   custom: {
+                    ...session?.userRowCustom,
                     createdAt: new Date().toISOString(),
                     ...(request.agentId && request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
                     ...(request.attachments?.length ? { attachments: request.attachments } : {}),
@@ -792,6 +823,7 @@ export async function streamMessageForSlot(
   // Append user message + placeholder assistant + set streaming state atomically
   store.updateSlot(slotId, {
     isStreaming: true,
+    ...chatExtension.stream.startFields(),
     streamingQuestion,
     streamingContent: '',
     currentStatusMessage: null,
@@ -801,6 +833,7 @@ export async function streamMessageForSlot(
     runId: streamRunId,
     stopping: false,
     streamingAssistantId: pendingAssistantId,
+    ...session?.startFields,
     threadAgentId: request.agentId ?? slot.threadAgentId ?? null,
     // `request.agentStreamTools` is `undefined` when every tool is
     // selected (see `buildStreamChatRequestForSlot` in runtime.ts) — must
@@ -925,6 +958,8 @@ export async function streamMessageForSlot(
 
   try {
     await ChatApi.streamMessage(request, {
+      onRunId: adoptServerRunId,
+
       onConnected: (data) => {
         // Before the slot guard: a Stop already settled the slot but still needs this id to cancel.
         if (streamRunId && pendingStopConvIds.has(streamRunId)) {
@@ -933,6 +968,7 @@ export async function streamMessageForSlot(
           if (stopId) pendingStopConvIds.set(streamRunId, stopId);
         }
         if (!slotIsOnRun(slotId, streamRunId)) return;
+        adoptServerRunId(data?.runId);
         if (isNewConversation) {
           const raw = (data as SSEConnectedEvent | undefined)?.conversationId;
           const earlyId = typeof raw === 'string' ? raw.trim() : '';
@@ -951,6 +987,16 @@ export async function streamMessageForSlot(
               useChatStore.getState().updatePendingConversationTitle(slotId, connectedTitle);
             }
           }
+        }
+        // The server answered that no answer follows: no thinking state.
+        if (chatExtension.stream.skipsAnswer(data as SSEConnectedEvent | undefined)) {
+          cancelPendingStatus();
+          stopIdleStatus();
+          useChatStore.getState().updateSlot(slotId, {
+            currentStatusMessage: null,
+            streamingParts: [],
+          });
+          return;
         }
         scheduleStatus(statusMessageFromConnectedEvent(data));
       },
@@ -1074,6 +1120,11 @@ export async function streamMessageForSlot(
         applyAskUserQuestionSse(slotId, data, rowId);
       },
 
+      onCustomEvent: (name, value) => {
+        if (!slotIsOnRun(slotId, streamRunId)) return;
+        chatExtension.stream.onCustomEvent(slotId, name, value);
+      },
+
       onAnswerFinal: () => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         stopIdleStatus();
@@ -1089,6 +1140,7 @@ export async function streamMessageForSlot(
 
         // Build finalized messages from API response
         const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
+        chatExtension.stream.finalizeMessages(finalMessages, request, newConvId || slot.convId || 'new');
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
@@ -1212,7 +1264,8 @@ export async function streamMessageForSlot(
             streamingParts: [],
             pendingCollections: [],
             artifacts: [],
-            messages: finalMessages,
+            messages:
+              session?.completeMessages?.(slotBeforeComplete, finalMessages, { pendingAssistantId }) ?? finalMessages,
             hasLoaded: true,
             abortController: null,
             runId: null,
@@ -1220,7 +1273,7 @@ export async function streamMessageForSlot(
             conversationModelInfo: data.conversation.modelInfo,
             rawMessages: data.conversation.messages,
             ...(newMsgPagination !== null ? { messagePagination: newMsgPagination } : {}),
-            ...(isNewConversation ? { isOwner: true } : {}),
+            ...(isNewConversation ? { isOwner: true, ...chatExtension.slot.ownerFields() } : {}),
             pendingAskUserQuestion: (
               resumeAskUserQuestion && rowHasFollowUp && pendingBefore
                 ? {
@@ -1255,7 +1308,7 @@ export async function streamMessageForSlot(
             slotId,
             {
               id: newConvId,
-              title: data.conversation.title,
+              title: chatExtension.formatConversationTitle(data.conversation.title) ?? data.conversation.title,
               createdAt: data.conversation.createdAt,
               updatedAt: data.conversation.updatedAt,
               isShared: data.conversation.isShared,
@@ -1282,6 +1335,9 @@ export async function streamMessageForSlot(
           }
         }
 
+        const completedConvId = newConvId || slot.convId;
+        if (completedConvId) session?.onCompleted?.(completedConvId);
+        chatExtension.stream.onCompleted(request);
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 
@@ -1295,6 +1351,14 @@ export async function streamMessageForSlot(
         }
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         cancelPendingStatus();
+        if (
+          !resumeAskUserQuestion &&
+          !reuseRowId &&
+          session?.onRejected?.(slotId, error, { baseMessages: messagesWithPreviousCard, query, request })
+        ) {
+          debugLog.flush('stream-rejected', { slotId });
+          return;
+        }
         console.error('[streaming] Stream error for slot', slotId, error);
         const slotNow = useChatStore.getState().slots[slotId];
         const pendingNow = slotNow?.pendingAskUserQuestion;
@@ -1318,7 +1382,8 @@ export async function streamMessageForSlot(
             : withStreamingErrorMessage(currentMessages, err, streamErrorInfo(error)),
         });
         if (resumeAskUserQuestion) {
-          notifyAskUserQuestionResumeFailed(err);
+          session?.onResumeFailed?.(slotId, error);
+          notifyAskUserQuestionResumeFailed(err, error);
         } else if (reuseRowId) {
           notifyToolApprovalFailed(err);
         }
@@ -1392,7 +1457,7 @@ export async function streamMessageForSlot(
         : withStreamingErrorMessage(currentMessages, errorMessage),
     });
     if (resumeAskUserQuestion) {
-      notifyAskUserQuestionResumeFailed(errorMessage);
+      notifyAskUserQuestionResumeFailed(errorMessage, error);
     } else if (reuseRowId) {
       notifyToolApprovalFailed(errorMessage);
     }
@@ -1456,6 +1521,7 @@ export async function streamRegenerateForSlot(
 
   store.updateSlot(slotId, {
     isStreaming: true,
+    ...chatExtension.stream.startFields(),
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
     streamingContent: '',
@@ -1617,6 +1683,11 @@ export async function streamRegenerateForSlot(
         data,
         assistantRowIdForBackendMessage(liveMessages, messageId),
       );
+    },
+
+    onCustomEvent: (name, value) => {
+      if (!slotIsOnRun(slotId, streamRunId)) return;
+      chatExtension.stream.onCustomEvent(slotId, name, value);
     },
 
     onAnswerFinal: () => {

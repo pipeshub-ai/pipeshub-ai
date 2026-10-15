@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMessagePairs } from '../message-pairs';
+import { buildMessagePairs, keepUnchangedPairs, retryTurnMessage } from '../message-pairs';
 import type { CitationMaps } from '../response-tabs/citations';
 
 const EMPTY_CITATION_MAPS = {
@@ -126,5 +126,75 @@ describe('buildMessagePairs', () => {
     );
 
     expect(pairs[0].streamError).toEqual(streamError);
+  });
+});
+
+describe('buildMessagePairs, answeredVia', () => {
+  it('carries the delegate that answered onto the pair, and adds no key otherwise', () => {
+    const [withDelegate] = buildMessagePairs(
+      [user('u1', 'Q'), { ...assistant('a1', 'A'), metadata: { custom: { messageId: 'a1', answeredVia: 'coding_agent' } } }],
+      OPTIONS
+    );
+    const [plain] = buildMessagePairs([user('u1', 'Q'), assistant('a1', 'A')], OPTIONS);
+
+    expect(withDelegate.answeredVia).toBe('coding_agent');
+    expect(plain).not.toHaveProperty('answeredVia');
+  });
+});
+
+describe('keepUnchangedPairs', () => {
+  it('keeps the previous object for a row whose fields did not change', () => {
+    const messages = [user('u1', 'Q1'), assistant('a1', 'A1'), user('u2', 'Q2'), assistant('a2', 'A2')];
+    const first = buildMessagePairs(messages, OPTIONS);
+    const previous = new Map(first.map((p) => [p.key, p]));
+
+    const next = keepUnchangedPairs(
+      previous,
+      buildMessagePairs([...messages.slice(0, 3), assistant('a2', 'A2, edited')], OPTIONS),
+    );
+
+    expect(next[0]).toBe(first[0]);
+    expect(next[1]).not.toBe(first[1]);
+    expect(next[1].answer).toBe('A2, edited');
+  });
+});
+
+describe('retryTurnMessage', () => {
+  const attachment = {
+    recordId: 'r1',
+    recordName: 'plan.pdf',
+    mimeType: 'application/pdf',
+    extension: 'pdf',
+    virtualRecordId: 'v1',
+  };
+
+  it('resends the text with its attachments and collections', () => {
+    const collections = [{ id: 'kb-1', name: 'Policies', kind: 'recordGroup' as const }];
+    expect(retryTurnMessage({ question: 'Summarise', attachments: [attachment], collections })).toEqual({
+      role: 'user',
+      content: [{ type: 'text', text: 'Summarise' }],
+      metadata: { custom: { collections, attachments: [attachment] } },
+      startRun: true,
+    });
+  });
+
+  it('keeps an attachment-only turn sendable', () => {
+    const message = retryTurnMessage({ question: '', attachments: [attachment] });
+    expect(message.metadata.custom.attachments).toEqual([attachment]);
+    expect(message.metadata.custom.collections).toBeUndefined();
+  });
+
+  it('rebuilds collections from the filters a reloaded turn was answered with', () => {
+    const message = retryTurnMessage({
+      question: 'Q',
+      appliedFilters: {
+        apps: [{ id: 'app-1', name: 'Drive', nodeType: 'app', connector: 'DRIVE' }],
+        kb: [{ id: 'kb-1', name: 'Policies', nodeType: 'kb', connector: 'KB' }],
+      },
+    });
+    expect(message.metadata.custom.collections).toEqual([
+      { id: 'app-1', name: 'Drive', kind: 'collectionRoot' },
+      { id: 'kb-1', name: 'Policies', kind: 'recordGroup' },
+    ]);
   });
 });

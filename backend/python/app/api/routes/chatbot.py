@@ -17,9 +17,9 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, field_validator
 
+from app.agents.agent_loop.cancellation.policy import CancelRequester
 from app.agents.agent_loop.cancellation.registry import (
     RunCancellationRegistry,
-    RunOwner,
 )
 from app.agents.agent_loop.cancellation.validation import validate_run_id
 from app.agents.agent_loop.error_classification import classify_exception
@@ -41,6 +41,7 @@ from app.models.blocks import (
     CitationMetadata,
     DataFormat,
 )
+from app.modules.agents.chat_extension import get_chat_extension
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import (
     count_chars_per_page_from_bytes_sync,
@@ -134,6 +135,9 @@ class ChatQuery(BaseModel):
     # that predate this field or don't need cancellation (the agent loop
     # generates one itself — see `stream_bridge.py`/`bridge.py`).
     runId: str | None = None
+    # The chat's ACL version from Node (always present on Node requests).
+    # Keys the chat-content access cache; absent means "do not cache".
+    aclVersion: int | None = None
     # Set by Node for a project-scoped chat (see `applyProjectScope`,
     # project-context.ts). When true and the effective `filters` carry no
     # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
@@ -935,14 +939,14 @@ def _permission_grantor(claims: Mapping[str, Any]) -> tuple[str, str]:
 
 
 async def _resolve_user_keys(
-    graph_provider: IGraphDBProvider, user_ids: list[str]
+    graph_provider: IGraphDBProvider, user_ids: list[str], *, raise_on_error: bool = False
 ) -> list[str]:
     """Resolve auth `userId`s to the User node's internal `_key`/`id` — permission
     edges MATCH the User node, not the auth `userId`. Unresolvable users are logged
     and skipped rather than failing the whole batch."""
     user_keys: list[str] = []
     for user_id in user_ids:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await graph_provider.get_user_by_user_id(user_id, raise_on_error=raise_on_error)
         if not user_doc:
             logger.warning("User not found for permission grant/revoke, skipping: %s", user_id)
             continue
@@ -955,7 +959,7 @@ async def _resolve_user_keys(
 
 
 async def _get_permission_edges(
-    graph_provider: IGraphDBProvider, pairs: list[tuple[str, str]]
+    graph_provider: IGraphDBProvider, pairs: list[tuple[str, str]], *, raise_on_error: bool = False
 ) -> list[dict[str, Any] | None]:
     """`USER -> RECORD` permission edge (or None) for each `(user_key, record_id)`, in order."""
     return await gather_with_concurrency(
@@ -967,6 +971,7 @@ async def _get_permission_edges(
                 to_id=record_id,
                 to_collection=CollectionNames.RECORDS.value,
                 collection=CollectionNames.PERMISSION.value,
+                raise_on_error=raise_on_error,
             )
             for user_key, record_id in pairs
         ),
@@ -974,16 +979,22 @@ async def _get_permission_edges(
 
 
 async def _records_owned_by(
-    graph_provider: IGraphDBProvider, grantor_user_id: str, record_ids: list[str]
+    graph_provider: IGraphDBProvider,
+    grantor_user_id: str,
+    record_ids: list[str],
+    *,
+    raise_on_error: bool = False,
 ) -> set[str]:
     """Only records the grantor OWNS may be shared onward. Attachment recordIds come
     from the client's message body, so without this a sharer could hand out (or
     strip) access to records they cannot see themselves."""
-    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id])
+    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id], raise_on_error=raise_on_error)
     if not grantor_keys or not record_ids:
         return set()
     edges = await _get_permission_edges(
-        graph_provider, [(grantor_keys[0], record_id) for record_id in record_ids]
+        graph_provider,
+        [(grantor_keys[0], record_id) for record_id in record_ids],
+        raise_on_error=raise_on_error,
     )
     return {
         record_id
@@ -1222,6 +1233,59 @@ async def revoke_artifact_permissions(
     return {"revoked": revoked}
 
 
+async def _chat_attachment_ids(
+    graph_provider: IGraphDBProvider, org_id: str, record_ids: list[str]
+) -> list[str]:
+    """Keep only ids whose record is an ATTACHMENTS record in `org_id`. A failed lookup
+    raises instead of returning an empty set."""
+    unique_ids = list(dict.fromkeys(record_ids))
+    if not unique_ids:
+        return []
+    records = await graph_provider.get_records_by_record_ids(unique_ids, org_id, raise_on_error=True)
+    found = {
+        (record.get("_key") or record.get("id"))
+        for record in records
+        if record.get("connectorName") == Connectors.ATTACHMENTS.value
+        and record.get("orgId") == org_id
+    }
+    kept = [record_id for record_id in unique_ids if record_id in found]
+    if len(kept) < len(unique_ids):
+        logger.warning(
+            "Dropped %d non-attachment record id(s) from attachment permission request",
+            len(unique_ids) - len(kept),
+        )
+    return kept
+
+
+class AttachmentValidateRequest(BaseModel):
+    recordIds: list[str] = Field(max_length=50)
+
+
+@router.post("/chat/attachments/validate")
+@inject
+async def validate_attachment_ids(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Return the ids that are chat attachments the token's caller may attach: owned by
+    the user, or for a service account (no graph User node, so no OWNER edge) any
+    ATTACHMENTS record in the token's org. Upload records carry no uploader identity,
+    so there is nothing tighter to match for service accounts."""
+    org_id, user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentValidateRequest)
+    # A failed lookup is a 503, not an empty list: the caller retries instead of dropping the files.
+    try:
+        attachment_ids = await _chat_attachment_ids(graph_provider, org_id, payload.recordIds)
+        if claims.get("isServiceAccount") is True:
+            return {"recordIds": attachment_ids}
+        owned = await _records_owned_by(graph_provider, user_id, attachment_ids, raise_on_error=True)
+    except Exception as e:
+        logger.exception("Attachment lookup failed")
+        raise HTTPException(status_code=503, detail="Could not look up attachments, try again") from e
+    return {"recordIds": [record_id for record_id in attachment_ids if record_id in owned]}
+
+
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
@@ -1392,6 +1456,16 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
+    chat_extension = get_chat_extension()
+    preflight = await chat_extension.preflight(
+        query_info, graph_provider=graph_provider, config_service=config_service,
+        user_id=user_id, org_id=org_id, logger=logger_,
+    )
+    if preflight is not None:
+        async for chunk in preflight:
+            yield chunk
+        return
+
     # LLM init, system prompts, user/org enrichment, and the entity vector
     # store are independent of each other and all sit before the first
     # streamed byte, so they run as one wave instead of serial round trips.
@@ -1479,8 +1553,10 @@ async def _generate_chat_stream_via_agent_loop(
         "includeRetrievalContext": query_info.includeRetrievalContext,
         "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
+        "aclVersion": query_info.aclVersion,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
+    query_dict.update(chat_extension.query_fields(query_info))
     user_info = {
         "userId": user_id,
         "orgId": org_id,
@@ -1563,7 +1639,7 @@ async def _parse_chat_query(
         raise HTTPException(status_code=400, detail="Invalid JSON in request body")
 
     try:
-        query_info = ChatQuery(**body)
+        query_info = get_chat_extension().chat_query_model(ChatQuery)(**body)
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
@@ -1682,7 +1758,7 @@ async def cancel_chat_stream(
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
     user = getattr(request.state, "user", {}) or {}
-    requester = RunOwner(
+    requester = CancelRequester(
         user_id=user.get("userId", ""),
         org_id=user.get("orgId", ""),
         conversation_id=cancel_request.conversationId,

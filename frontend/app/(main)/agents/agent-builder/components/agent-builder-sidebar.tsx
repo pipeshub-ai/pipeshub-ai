@@ -53,6 +53,8 @@ const paletteRowLabelStyle: React.CSSProperties = {
 export function AgentBuilderSidebar(props: {
   open: boolean;
   width: number;
+  /** Float over the canvas (phone width) instead of taking layout space. */
+  overlay?: boolean;
   loading: boolean;
   nodeTemplates: NodeTemplate[];
   availableSkills: SkillForBuilder[];
@@ -85,6 +87,7 @@ export function AgentBuilderSidebar(props: {
   const {
     open,
     width,
+    overlay = false,
     loading,
     nodeTemplates,
     availableSkills,
@@ -155,8 +158,9 @@ export function AgentBuilderSidebar(props: {
   return (
     <Box
       style={{
-        width,
+        width: overlay ? `min(${width}px, 88%)` : width,
         flexShrink: 0,
+        ...(overlay ? { position: 'absolute', top: 0, bottom: 0, left: 0, zIndex: 5, boxShadow: 'var(--shadow-5)' } : null),
         borderRight: '1px solid var(--olive-3)',
         background: 'var(--olive-1)',
         display: 'flex',

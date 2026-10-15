@@ -79,7 +79,6 @@ import {
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
 import { NotificationContainer } from '../../notification/container/notification.container';
-import { INotification } from '../../notification/schema/notification.schema';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
@@ -92,6 +91,7 @@ import {
 } from '../../oauth_provider/schema/oauth.app.schema';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
+import { conversationExtensions } from '../../enterprise_search/services/conversation/conversation-extensions';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
 
 /**
@@ -402,6 +402,7 @@ export class UserController {
         isActive: !blockedUserIds.has(uid) && (u.hasLoggedIn ?? false),
         hasLoggedIn: u.hasLoggedIn ?? false,
         isBlocked: blockedUserIds.has(uid),
+        isDisabled: u.isDisabled === true,
         createdAtTimestamp: timestamps.createdAt
           ? new Date(timestamps.createdAt).getTime()
           : undefined,
@@ -661,10 +662,10 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const { email } = req.body;
+      const { email } = req.body as { email: string };
 
       const users = await Users.find({
-        email: email,
+        email: { $eq: email },
         isDeleted: false,
       });
 
@@ -1666,27 +1667,38 @@ export class UserController {
 
       await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
 
-      // Revoke KB permissions BEFORE pulling memberships so a failed
-      // revocation leaves the membership row intact — a retry of
-      // deleteUser will re-find the same projects and reattempt.
+      // Queued before the membership is pulled so a failure leaves the delete
+      // retryable (the projects are still found); the sync is excluding the
+      // user by id because each `project` still lists them.
       const projectsWithLinkedKb =
         await ProjectService.findProjectsWithLinkedKbForUser(
           orgId.toString(),
           userId.toString(),
         );
       for (const project of projectsWithLinkedKb) {
-        await ProjectKnowledgeBaseService.revokePrincipalPermission(
-          this.config,
-          req.headers as Record<string, string>,
+        await ProjectKnowledgeBaseService.enqueueSync(
           project,
+          undefined,
           userId.toString(),
-          'user',
         );
       }
       await ProjectService.removeUserFromAllProjects(
         orgId.toString(),
         userId.toString(),
       );
+
+      // Runs before the user is marked deleted so a failure leaves the delete
+      // retryable; the cleanup is idempotent.
+      const deletedUserFields =
+        await conversationExtensions().lifecycle.userDeleted(
+          orgId.toString(),
+          userId.toString(),
+          {
+            actorUserId: String(req.user.userId ?? req.user._id),
+            requestId: req.context?.requestId,
+            logger: this.logger,
+          },
+        );
 
       user.isDeleted = true;
       user.hasLoggedIn = false;
@@ -1712,7 +1724,7 @@ export class UserController {
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
 
-      res.json({ message: 'User deleted successfully' });
+      res.json({ message: 'User deleted successfully', ...deletedUserFields });
     } catch (error) {
       next(error);
     }
@@ -2593,7 +2605,7 @@ export class UserController {
           severity,
           status: 'unread',
           payload,
-        } as unknown as INotification,
+        },
       });
     } catch (error) {
       this.logger.error('Failed to publish bulk invite notification', error);

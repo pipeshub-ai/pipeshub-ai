@@ -379,7 +379,9 @@
     "filterTooltip": "필터: {{filter}}",
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
-    "removeFailed": "알림을 제거할 수 없습니다"
+    "removeFailed": "알림을 제거할 수 없습니다",
+    "showMore": "더 보기",
+    "showLess": "간략히 보기"
   },
   "action": {
     "find": "찾기",
@@ -764,6 +766,11 @@
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
+    "answeredVia": {
+      "coding_agent": "코딩 에이전트를 통해",
+      "web_agent": "웹 조사를 통해",
+      "other": "{{name}}을(를) 통해"
+    },
     "thankYouForFeedback": "피드백을 보내 주셔서 감사합니다",
     "feedbackHelpsImprove": "보내 주신 피드백은 개선에 큰 도움이 됩니다",
     "feedbackError": "피드백을 제출하지 못했습니다",
@@ -1297,7 +1304,10 @@
         "expired": "{{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다",
         "allowedNotRun": "{{tool}}을(를) 허용했지만 실행되지 않았습니다"
       }
-    }
+    },
+    "answerViews": "답변 보기",
+    "answerFailedTitle": "이 답변을 생성하지 못했습니다",
+    "answerFailedRetry": "다시 시도"
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -4583,7 +4593,9 @@
     "back": "뒤로",
     "skip": "건너뛰기",
     "next": "다음",
-    "submit": "제출"
+    "submit": "제출",
+    "unknownPerson": "이전 멤버",
+    "waitingFor": "{{name}}님의 답변을 기다리는 중"
   },
   "oauthDevice": {
     "title": "기기 연결",
@@ -4657,7 +4669,10 @@
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",
-    "invite": "Pipeshub에 초대"
+    "invite": "Pipeshub에 초대",
+    "andMore": "외 {{count}}명",
+    "removeSelection": "{{name}} 제거",
+    "peopleCanSee_other": "{{count}}명이 이 채팅을 볼 수 있음"
   },
   "demoData": {
     "badge": {

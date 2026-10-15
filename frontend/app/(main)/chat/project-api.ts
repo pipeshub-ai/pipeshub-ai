@@ -16,7 +16,7 @@ const PROJECTS_BASE_URL = '/api/v1/projects';
 export interface ProjectConversationRow {
   _id: string;
   title?: string;
-  sessionType: 'chat' | 'agent';
+  /** Set on agent chats; `sessionType` is not selected by this endpoint. */
   agentKey?: string;
   userId: string;
   initiator: string;

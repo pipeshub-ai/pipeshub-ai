@@ -11,6 +11,7 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { debugLog } from '@/chat/debug-logger';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ChatSection } from './chat-section';
+import { chatSlots } from '@/config';
 import { groupConversationsByTime, getNonEmptyGroups } from './time-group';
 
 /**
@@ -39,8 +40,8 @@ export const ChatSections = React.memo(function ChatSections({
   const currentConversationId = searchParams?.get('conversationId') ?? null;
   const { t } = useTranslation();
 
-  const conversations = useChatStore((s) => s.conversations);
-  const sharedConversations = useChatStore((s) => s.sharedConversations);
+  const conversations = chatSlots.useVisibleConversations(useChatStore((s) => s.conversations));
+  const sharedConversations = chatSlots.useVisibleConversations(useChatStore((s) => s.sharedConversations));
   const isConversationsLoading = useChatStore((s) => s.isConversationsLoading);
   const conversationsError = useChatStore((s) => s.conversationsError);
   const pendingConversations = useChatStore((s) => s.pendingConversations);

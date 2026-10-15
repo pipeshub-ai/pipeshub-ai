@@ -2595,6 +2595,7 @@ class IGraphDBProvider(ABC):
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """
         Look up graph user document keys for Mongo user IDs.
@@ -2603,12 +2604,14 @@ class IGraphDBProvider(ABC):
             user_ids: Mongo user IDs (user.userId)
             org_id: Optional organization ID to scope results
             chunk_size: Max IDs per graph query batch
+            allow_missing: Leave unknown ids out of the mapping instead of raising
 
         Returns:
             Mapping of Mongo userId -> graph _key
 
         Raises:
             ValueError: If any user_id was not found in the graph for org_id
+                and allow_missing is False
         """
         pass
 
@@ -3035,8 +3038,15 @@ class IGraphDBProvider(ABC):
         self,
         kb_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
-        """List all permissions for a KB with entity details."""
+        """List all permissions for a KB with entity details.
+
+        A database failure returns ``[]`` unless ``raise_on_error`` is set; a caller that
+        diffs against the result (the project KB reconcile) must not read a failure as
+        "no edges".
+        """
         pass
 
     @abstractmethod
@@ -4089,6 +4099,8 @@ class IGraphDBProvider(ABC):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their record IDs (_key in Arango / id in Neo4j).
@@ -4102,6 +4114,8 @@ class IGraphDBProvider(ABC):
             org_id: Organization ID for additional filtering
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            raise_on_error: Raise a failed query instead of returning ``[]``,
+                for callers that must tell "no such records" from "could not look".
 
         Returns:
             List[Dict[str, Any]]: List of full record dictionaries

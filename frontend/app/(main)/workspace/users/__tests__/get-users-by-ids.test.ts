@@ -39,3 +39,12 @@ describe.each([
     expect(post.mock.calls[0][1]).toEqual({ userIds: [ID_A] });
   });
 });
+
+describe('UsersApi.getUsersByIds quiet lookups', () => {
+  it('asks the client not to toast a failure only when quiet', async () => {
+    await UsersApi.getUsersByIds([ID_A], { quiet: true });
+    await UsersApi.getUsersByIds([ID_A]);
+    expect(post.mock.calls[0][2]).toEqual({ suppressErrorToast: true });
+    expect(post.mock.calls[1][2]).toBeUndefined();
+  });
+});

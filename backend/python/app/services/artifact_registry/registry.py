@@ -11,9 +11,10 @@ artifact IDs/names are always untrusted input (see `models.Actor`).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.models.entities import ArtifactType, ArtifactVisibility, deserialize_artifact_versions
@@ -30,6 +31,9 @@ from .versioning import (
     resolve_storage_version,
     to_metadata_from_docs,
 )
+
+if TYPE_CHECKING:
+    from app.modules.authz.chat_content_access import ChatContentAccess
 
 logger = logging.getLogger(__name__)
 
@@ -64,12 +68,19 @@ _FUZZY_RESOLVE_EXTENSIONS: tuple[str, ...] = (
 # byte-identical content.
 _MAX_VERSION_CONFLICT_RETRIES = 1
 
+# A non-owner's read of a conversation artifact may need a remote decision per
+# artifact; check them in small concurrent windows rather than one at a time.
+_AUTHORIZE_WINDOW = 8
+
 
 class ArtifactRegistryService:
-    def __init__(self, graph_provider: Any, blob_store: Any, *, max_bytes: int = MAX_ARTIFACT_BYTES) -> None:
+    def __init__(
+        self, graph_provider: Any, blob_store: Any, *, max_bytes: int = MAX_ARTIFACT_BYTES,
+        chat_access: ChatContentAccess | None = None,
+    ) -> None:
         self._graph_provider = graph_provider
         self._blob_store = blob_store
-        self._access = AccessPolicy(graph_provider)
+        self._access = AccessPolicy(graph_provider, chat_access)
         self._versions = VersionManager(graph_provider, blob_store, self._access)
         self._lineage = LineageTracker(graph_provider)
         self._urls = SignedUrlBroker(blob_store, max_bytes)
@@ -499,21 +510,30 @@ class ArtifactRegistryService:
             filters=filters,
         )
         results: list[ArtifactMetadata] = []
-        for artifact_doc in docs:
-            artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
-            try:
-                record = await self._access.authorize_read(actor, artifact_id)
-            except Exception:
-                continue
-            metadata = to_metadata_from_docs(record, artifact_doc)
-            if visibility_filter is not None and metadata.visibility != visibility_filter:
-                continue
-            if include_lineage:
-                metadata = await self._with_lineage(metadata)
-            results.append(metadata)
-            if len(results) >= limit:
-                break
+        for start in range(0, len(docs), _AUTHORIZE_WINDOW):
+            window = docs[start:start + _AUTHORIZE_WINDOW]
+            records = await asyncio.gather(
+                *(self._authorized_record(actor, d) for d in window)
+            )
+            for artifact_doc, record in zip(window, records):
+                if record is None:
+                    continue
+                metadata = to_metadata_from_docs(record, artifact_doc)
+                if visibility_filter is not None and metadata.visibility != visibility_filter:
+                    continue
+                if include_lineage:
+                    metadata = await self._with_lineage(metadata)
+                results.append(metadata)
+                if len(results) >= limit:
+                    return results
         return results
+
+    async def _authorized_record(self, actor: Actor, artifact_doc: dict) -> dict | None:
+        artifact_id = artifact_doc.get("_key") or artifact_doc.get("id")
+        try:
+            return await self._access.authorize_read(actor, artifact_id)
+        except Exception:
+            return None
 
     # ------------------------------------------------------------------
     # Visibility mutation

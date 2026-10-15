@@ -604,6 +604,8 @@ export interface SSEConnectedEvent {
    * If the backend later async-refines titles, `complete` still refreshes list/title state.
    */
   title?: string;
+  /** The run's id as the server knows it (same value as the `X-Run-Id` header), when it sends one. */
+  runId?: string;
 }
 
 /** Backend status phases (planning / tools / generation); keep open-ended for forward compatibility */
@@ -794,6 +796,8 @@ export interface ConversationMessage {
   contentFormat: 'MARKDOWN';
   citations: CitationApiResponse[];
   confidence?: 'Very High' | 'High' | 'Medium' | 'Low';
+  /** Delegate agent whose output was sent as the answer (e.g. `coding_agent`); absent when the assistant wrote it. */
+  answeredVia?: string;
   followUpQuestions: string[];
   referenceData: ReferenceData[];
   modelInfo: ModelInfo;

@@ -1,4 +1,4 @@
-import axios, { AxiosError, InternalAxiosRequestConfig, isAxiosError } from 'axios';
+import axios, { AxiosError, GenericAbortSignal, InternalAxiosRequestConfig, isAxiosError } from 'axios';
 import { useAuthStore, logoutAndRedirect } from '@/config';
 import { ErrorType, extractApiErrorMessage, processError, ProcessedError } from './api-error';
 import { STREAM_ERROR_MESSAGES } from './stream-errors';
@@ -21,6 +21,8 @@ declare module 'axios' {
      * the backend's message through the generic toast.
      */
     suppressErrorToast?: boolean | ((error: ProcessedError) => boolean);
+    /** Set to `false` to opt out of the single automatic retry of an idempotent request after a transport error. */
+    retryOnNetworkError?: false;
   }
 }
 
@@ -33,6 +35,35 @@ const SESSION_TOKEN_STORAGE_KEY = 'workspace_session_token';
 
 /** Backend signals refresh cannot recover; skip refresh and log out immediately. */
 const SESSION_EXPIRED_LOGOUT_MESSAGE = 'Session expired, please login again';
+
+const NETWORK_RETRY_METHODS = new Set(['get', 'head', 'options']);
+const NETWORK_RETRY_MIN_DELAY_MS = 250;
+const NETWORK_RETRY_JITTER_MS = 500;
+
+type NetRetryConfig = InternalAxiosRequestConfig & { _netRetry?: boolean };
+
+function isRetryableTransportError(error: AxiosError, config: NetRetryConfig | undefined): boolean {
+  if (!config || error.response || config._netRetry || config.retryOnNetworkError === false) return false;
+  if (error.code === 'ERR_CANCELED' || error.message === 'canceled') return false;
+  if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT' || error.message?.includes('timeout')) return false;
+  if (!NETWORK_RETRY_METHODS.has((config.method ?? 'get').toLowerCase())) return false;
+  return !config.signal?.aborted;
+}
+
+/** Resolves true after the jittered delay; resolves false early if `signal` aborts first. */
+function waitBeforeNetworkRetry(signal?: GenericAbortSignal | null): Promise<boolean> {
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve(false);
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve(true);
+    }, NETWORK_RETRY_MIN_DELAY_MS + Math.random() * NETWORK_RETRY_JITTER_MS);
+    signal?.addEventListener?.('abort', onAbort);
+  });
+}
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -129,6 +160,7 @@ apiClient.interceptors.response.use(
 
     const originalRequest = error.config as InternalAxiosRequestConfig & {
       _retry?: boolean;
+      _netRetry?: boolean;
     };
 
     if (error.response?.status === 401 && originalRequest && !originalRequest._retry) {
@@ -161,6 +193,16 @@ apiClient.interceptors.response.use(
         logoutAndRedirect();
         return Promise.reject(processError(error));
       }
+    }
+
+    if (isRetryableTransportError(error, originalRequest)) {
+      originalRequest._netRetry = true;
+      if (await waitBeforeNetworkRetry(originalRequest.signal)) {
+        return apiClient(originalRequest);
+      }
+      return Promise.reject(
+        processError(new AxiosError('canceled', AxiosError.ERR_CANCELED, originalRequest)),
+      );
     }
 
     const processedError = processError(error);

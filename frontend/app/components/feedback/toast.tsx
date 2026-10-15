@@ -227,7 +227,7 @@ export function Toast({ toast, onDismiss, style }: ToastProps) {
                     style={{
                       height: '24px',
                       padding: '0 8px',
-                      border: '1px solid rgba(0, 6, 46, 0.2)',
+                      border: '1px solid var(--slate-a7)',
                       borderRadius: '3px',
                       backgroundColor: 'transparent',
                       cursor: 'pointer',

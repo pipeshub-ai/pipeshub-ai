@@ -10,8 +10,9 @@ name: backend-matrix
 # GitHub-hosted runners and no secrets, so pull requests from forks run it too.
 #
 # The graph jobs find their tests rather than listing them. A real-graph test
-# is any file under tests/integration that reads NEO4J_IT_URI or ARANGO_IT_URL
-# (the env below) and gives its backend parameter the id "neo4j" or "arango";
+# is any test file under tests/integration that reads NEO4J_IT_URI or ARANGO_IT_URL
+# (the env below) or imports graph_db/_backends.py, which reads them, and gives
+# its backend parameter the id "neo4j" or "arango";
 # each job runs that backend's cases from every such file. New real-graph tests
 # that follow the convention run here without editing this workflow.
 
@@ -98,13 +99,13 @@ jobs:
             backend: neo4j
             compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
             services: neo4j-graph-it redis-messaging-it qdrant-vector-it
-            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            discover: NEO4J_IT_URI|ARANGO_IT_URL|from \._backends import
             select: neo4j
           - suite: graph
             backend: arangodb
             compose: docker-compose.integration.graph-db.yml docker-compose.integration.messaging.yml docker-compose.integration.vector-db.yml
             services: arango-graph-it redis-messaging-it qdrant-vector-it
-            discover: NEO4J_IT_URI|ARANGO_IT_URL
+            discover: NEO4J_IT_URI|ARANGO_IT_URL|from \._backends import
             select: arango
           - suite: kv
             backend: etcd
@@ -168,7 +169,7 @@ jobs:
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
-            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort | tr '\n' ' ')
+            TESTS=$(grep -rlE --include='test_*.py' "$DISCOVER" tests/integration | sort | tr '\n' ' ')
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086

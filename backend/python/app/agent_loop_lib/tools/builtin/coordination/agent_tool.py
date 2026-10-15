@@ -56,6 +56,24 @@ Two dispatch paths, two recursion guards:
 
 MAX_AGENT_TOOL_DEPTH = 6
 
+_FINAL_PARAMETER = ToolParameter(
+    name="final", type=ParameterType.BOOLEAN,
+    description=(
+        "Set true when this delegate's result will be the complete answer to the user's "
+        "request and you would only restate it. Its answer then goes to the user directly "
+        "and you do not write one. Leave false when you still need to combine it with other "
+        "results, call other tools, or post-process it. Only honoured when you are the "
+        "top-level agent."
+    ),
+    required=False, default=False,
+)
+
+_FINAL_TOOL_DESCRIPTION = (
+    "With `final=true` the delegate's output is sent to the user as the final answer and the "
+    "run ends; any other tool calls issued in the same turn are not followed up. Call it alone "
+    "when `final` is true."
+)
+
 _agent_tool_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_agent_tool_depth", default=0)
 
 
@@ -94,6 +112,16 @@ class AgentTool(Tool):
     context where the same rule in the system prompt gets ignored. Error
     results are returned untouched — the note governs data presentation,
     not error handling.
+
+    `direct_answer_note`, when set, lets the CALLING model hand the user's
+    answer to this delegate: the tool gains an optional boolean `final`
+    parameter, and a call with `final=true` (root agent only) appends the
+    note to the child's goal, ends the caller's run with the child's output
+    verbatim (`DirectAnswerTool`, see `agent/tool_loop.py`) and routes the
+    child's streamed tokens to the caller's stream consumer. Any outcome
+    that is not a clean, non-empty answer (error, `needs_input`, empty
+    output) falls back to ordinary delegation. `None` (default) leaves the
+    tool schema and behaviour untouched.
     """
 
     def __init__(
@@ -106,6 +134,7 @@ class AgentTool(Tool):
         parameters: list[ToolParameter] | None = None,
         share_parent_results: bool = False,
         result_note: str | None = None,
+        direct_answer_note: str | None = None,
     ) -> None:
         self._spec = spec
         self._runtime = runtime
@@ -113,6 +142,9 @@ class AgentTool(Tool):
         self._description = description or spec.description or f"Run the {self._name!r} agent on a goal."
         self._share_parent_results = share_parent_results
         self._result_note = result_note
+        self._direct_answer_note = direct_answer_note
+        # Keyed by call id: concurrent calls to the same tool in one wave.
+        self._direct_answers: dict[str, str] = {}
         self._parameters = parameters or [
             ToolParameter(
                 name="goal", type=ParameterType.STRING,
@@ -125,6 +157,9 @@ class AgentTool(Tool):
                 required=False, default=None,
             ),
         ]
+        if direct_answer_note is not None:
+            self._parameters = [*self._parameters, _FINAL_PARAMETER]
+            self._description = f"{self._description}\n\n{_FINAL_TOOL_DESCRIPTION}"
 
     @property
     def name(self) -> str:
@@ -250,6 +285,7 @@ class AgentTool(Tool):
         right (and only) place to implement the handoff."""
         goal = self._goal_from_arguments(call.arguments)
         goal = self._inherit_parent_skills(goal, ctx)
+        direct = self._is_direct_call(call, ctx)
         input_files: dict[str, bytes] | None = None
         if self._share_parent_results:
             dependency_results = extract_dependency_results(ctx.messages)
@@ -269,6 +305,11 @@ class AgentTool(Tool):
                 if payload is not None:
                     input_files = {PARENT_RESULTS_INPUT_PATH: payload}
 
+        if direct:
+            goal = goal.model_copy(update={
+                "description": f"{goal.description}\n\n{self._direct_answer_note}",
+            })
+
         try:
             with stage_input_files(input_files):
                 result = await ctx.runtime.run_child(
@@ -276,6 +317,7 @@ class AgentTool(Tool):
                     goal,
                     ctx.run_ctx,
                     session_id=ctx.session_id,
+                    event_emitter=ctx.agent.event_emitter if direct else None,
                 )
         except Exception as e:
             return CoreToolResult(tool_call_id=call.id, name=call.name, content=str(e), is_error=True)
@@ -284,10 +326,27 @@ class AgentTool(Tool):
                 tool_call_id=call.id, name=call.name,
                 content=result.error or f"{self._name} agent failed", is_error=True,
             )
+        if direct and not result.needs_input and isinstance(result.output, str) and result.output.strip():
+            self._direct_answers[call.id] = result.output
+            return CoreToolResult(tool_call_id=call.id, name=call.name, content=result.output)
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
             content=self._finalize_output(result),
         )
+
+    def _is_direct_call(self, call: ToolCall, ctx: "RouteContext") -> bool:
+        """`final=true` on a root-agent call. Nested callers (e.g. `coding_agent`
+        calling `web_agent`) share this tool's schema but are not talking to
+        the user, so their `final` is ignored."""
+        if self._direct_answer_note is None or ctx.run_ctx.parent_run_id is not None:
+            return False
+        return call.arguments.get("final") in (True, "true")
+
+    def direct_answer(self, call: ToolCall, tr: CoreToolResult) -> str | None:
+        """`DirectAnswerTool` hook: the text stashed by `handle()` for this
+        call, if its result is still a success."""
+        answer = self._direct_answers.pop(call.id, None)
+        return None if tr.is_error else answer
 
     async def execute(self, **kwargs) -> ToolOutput:
         depth = _agent_tool_depth.get()

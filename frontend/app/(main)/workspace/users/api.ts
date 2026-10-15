@@ -132,12 +132,15 @@ export const UsersApi = {
    * Use this to enrich known user IDs with name/email without scanning
    * the whole user list.
    */
-  async getUsersByIds(ids: ReadonlyArray<string | null | undefined>): Promise<User[]> {
+  async getUsersByIds(
+    ids: ReadonlyArray<string | null | undefined>,
+    options: { quiet?: boolean } = {},
+  ): Promise<User[]> {
     const userIds = toLookupUserIds(ids);
     if (userIds.length === 0) return [];
     const { data } = await apiClient.post<
       UserByIdsDoc[] | { users: UserByIdsDoc[] }
-    >(`${BASE_URL}/by-ids`, { userIds });
+    >(`${BASE_URL}/by-ids`, { userIds }, options.quiet ? { suppressErrorToast: true } : undefined);
     const raw = Array.isArray(data) ? data : data.users ?? [];
     return raw.map(userFromByIdsDoc);
   },

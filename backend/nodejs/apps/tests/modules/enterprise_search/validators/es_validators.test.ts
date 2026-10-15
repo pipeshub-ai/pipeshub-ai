@@ -8,6 +8,7 @@ import {
   conversationIdParamsSchema,
   conversationTitleParamsSchema,
   conversationShareParamsSchema,
+  conversationUnshareParamsSchema,
   messageIdParamsSchema,
   enterpriseSearchSearchSchema,
   searchIdParamsSchema,
@@ -22,6 +23,8 @@ import {
   AGENT_CHAT_MODES,
   agentStreamCreateSchema,
   agentAddMessageParamsSchema,
+  agentInternalStreamCreateSchema,
+  agentInternalAddMessageParamsSchema,
   updateFeedbackParamsSchema,
   updateAgentFeedbackParamsSchema,
   getAllConversationsQuerySchema,
@@ -434,6 +437,24 @@ describe('enterprise_search/validators/es_validators', () => {
       const result = conversationShareParamsSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+
+    it('keeps accessLevel write and rejects an unknown level', () => {
+      const params = { conversationId: '507f1f77bcf86cd799439011' }
+      const userIds = ['507f1f77bcf86cd799439012']
+      const ok = conversationShareParamsSchema.parse({ params, body: { userIds, accessLevel: 'write' } })
+      expect(ok.body.accessLevel).to.equal('write')
+      expect(conversationShareParamsSchema.safeParse({ params, body: { userIds, accessLevel: 'admin' } }).success).to.be.false
+    })
+  })
+
+  describe('conversationUnshareParamsSchema', () => {
+    it('accepts userIds and strips accessLevel', () => {
+      const parsed = conversationUnshareParamsSchema.parse({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { userIds: ['507f1f77bcf86cd799439012'], accessLevel: 'write' },
+      })
+      expect(parsed.body).to.deep.equal({ userIds: ['507f1f77bcf86cd799439012'] })
+    })
   })
 
   describe('listAgentsQuerySchema', () => {
@@ -723,6 +744,7 @@ describe('enterprise_search/validators/es_validators', () => {
     })
   })
 
+
   describe('follow-up query length', () => {
     const params = { conversationId: '507f1f77bcf86cd799439011' }
     const tooLong = 'a'.repeat(100001)
@@ -925,6 +947,26 @@ describe('enterprise_search/validators/es_validators', () => {
       }
       const result = agentAddMessageParamsSchema.safeParse(data)
       expect(result.success).to.be.true
+    })
+  })
+
+  describe('turn attachments limit', () => {
+    const refs = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ recordId: `rec-${i}` }))
+
+    it('accepts 50 attachments and rejects 51 on a new conversation', () => {
+      const body = (n: number) => ({ body: { query: 'q', attachments: refs(n) } })
+      expect(enterpriseSearchCreateSchema.safeParse(body(50)).success).to.be.true
+      expect(enterpriseSearchCreateSchema.safeParse(body(51)).success).to.be.false
+    })
+
+    it('accepts 50 attachments and rejects 51 on a follow-up', () => {
+      const data = (n: number) => ({
+        params: { conversationId: '507f1f77bcf86cd799439011' },
+        body: { query: 'q', attachments: refs(n) },
+      })
+      expect(addMessageParamsSchema.safeParse(data(50)).success).to.be.true
+      expect(addMessageParamsSchema.safeParse(data(51)).success).to.be.false
     })
   })
 
@@ -1762,6 +1804,21 @@ describe('enterprise_search/validators/es_validators', () => {
       isReasoning: true,
     }
 
+
+
+    it('should accept a leading @ and omit the handle when absent', () => {
+      const withAt = createAgentSchema.safeParse({
+        body: { name: 'My Agent', handle: '@my-agent' },
+      })
+      const without = createAgentSchema.safeParse({ body: { name: 'My Agent' } })
+      expect(withAt.success).to.be.true
+      expect(without.success).to.be.true
+      if (without.success) expect(without.data.body).to.not.have.property('handle')
+    })
+
+    for (const handle of ['Bad Handle', 'a', 'UPPER', 'a_b', 'x'.repeat(41), '']) {
+    }
+
     it('should accept minimal valid body', () => {
       const result = createAgentSchema.safeParse({
         body: { name: 'My Agent', models: [validModel] },
@@ -2263,6 +2320,7 @@ describe('enterprise_search/validators/es_validators', () => {
       isReasoning: true,
     }
 
+
     it('should accept empty body (no fields required for partial update)', () => {
       const result = updateAgentSchema.safeParse({
         params: { agentKey: 'my-agent' },
@@ -2519,4 +2577,5 @@ describe('enterprise_search/validators/es_validators', () => {
       expect(result.success).to.be.false
     })
   })
+
 })

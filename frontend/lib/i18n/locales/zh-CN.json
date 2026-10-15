@@ -379,7 +379,9 @@
     "filterTooltip": "筛选：{{filter}}",
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知"
+    "removeFailed": "无法移除通知",
+    "showMore": "显示更多",
+    "showLess": "收起"
   },
   "action": {
     "find": "查找",
@@ -764,6 +766,11 @@
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "通过编程智能体",
+      "web_agent": "通过网络调研",
+      "other": "通过 {{name}}"
+    },
     "thankYouForFeedback": "感谢您的反馈",
     "feedbackHelpsImprove": "您的反馈有助于我们改进",
     "feedbackError": "提交反馈失败",
@@ -1297,7 +1304,10 @@
         "expired": "{{tool}} 未运行：请求已过期",
         "allowedNotRun": "你允许了 {{tool}}，但它没有运行"
       }
-    }
+    },
+    "answerViews": "回答视图",
+    "answerFailedTitle": "此回答失败",
+    "answerFailedRetry": "重试"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -4583,7 +4593,9 @@
     "back": "返回",
     "skip": "跳过",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "unknownPerson": "前成员",
+    "waitingFor": "正在等待 {{name}} 回答"
   },
   "oauthDevice": {
     "title": "连接设备",
@@ -4657,7 +4669,10 @@
     },
     "team": "团队",
     "teamsNoRoles": "团队没有角色",
-    "invite": "邀请加入 Pipeshub"
+    "invite": "邀请加入 Pipeshub",
+    "andMore": "还有 {{count}} 位",
+    "removeSelection": "移除 {{name}}",
+    "peopleCanSee_other": "{{count}} 人可以查看此聊天"
   },
   "demoData": {
     "badge": {

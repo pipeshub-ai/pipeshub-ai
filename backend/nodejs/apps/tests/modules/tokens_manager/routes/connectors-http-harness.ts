@@ -6,6 +6,8 @@ import express, { Router } from 'express'
 import jwt from 'jsonwebtoken'
 import sinon from 'sinon'
 import { Container } from 'inversify'
+import { CONVERSATION_TYPES } from '../../../../src/modules/enterprise_search/services/conversation/conversation.types'
+import { markingGuards } from '../../enterprise_search/helpers/guarded-chat'
 import { createConnectorRouter } from '../../../../src/modules/tokens_manager/routes/connectors.routes'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service'
@@ -239,6 +241,8 @@ export const startHarness = async ({
   const container = new Container()
   container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(authMiddleware)
   container.bind<AppConfig>('AppConfig').toConstantValue(config)
+  container.bind(CONVERSATION_TYPES.ConversationGuards).toConstantValue(markingGuards())
+  container.bind(CONVERSATION_TYPES.ConversationTurnDeps).toConstantValue({})
   container.bind('EntitiesEventProducer').toConstantValue(entityEvents)
   container.bind('SyncEventProducer').toConstantValue(syncEvents)
   const crawlingContainer = new Container()

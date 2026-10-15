@@ -27,6 +27,9 @@ from tests.support.agent_routes import (
     make_client,
     user_key,
 )
+from tests.support.edition import (
+    org_wide_service_account_agents,  # noqa: F401 - fixture
+)
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
@@ -158,6 +161,7 @@ class TestReadAgent:
         assert agent["models"][1]["provider"] == "unknown"
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestUpdateAgent:
     def test_owner_can_rename(self, client, graph) -> None:
         response = client.put(
@@ -919,6 +923,7 @@ class TestServiceAccountInternalRoute:
         assert other_org.json() == missing.json()
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestCreateAgent:
     def test_creator_and_org_come_from_the_caller(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={

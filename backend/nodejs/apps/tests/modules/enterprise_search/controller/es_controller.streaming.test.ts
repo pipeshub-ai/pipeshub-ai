@@ -9,6 +9,8 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, settle } from './chat-test-harness'
 import { AGENT_KEY, Flow, ORG, OWNER, RUN, appConfig, delta, finalAnswer, flows, seedConversation, sendAgain, startStream } from './streaming-flows'
 import { DETACHED_RUN_MAX_MS } from '../../../../src/modules/enterprise_search/utils/stream-lifecycle'
+import { turnDeps } from '../helpers/turn-deps'
+import { withOwnerGrant } from '../helpers/conversation-grant'
 
 describe('es_controller streaming answers', () => {
   afterEach(() => {
@@ -423,7 +425,7 @@ describe('es_controller streaming answers', () => {
     const res = new FakeSSEResponse()
     let error: unknown
     try {
-      await controllerModule.streamChat(appConfig)({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
+      await controllerModule.streamChat(appConfig, turnDeps())({ body: {}, query: {}, user: { userId: OWNER, orgId: ORG } } as never, res as never)
     } catch (e) {
       error = e
     }
@@ -472,11 +474,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id) }, body: {}, query: {},
         user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -500,11 +502,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -530,11 +532,11 @@ describe('es_controller streaming answers', () => {
     } as never)
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAgentAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAgentAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {}, params: { conversationId: String(session._id), messageId: String(bot._id), agentKey: AGENT_KEY },
         body: {}, query: {}, user: { userId: OWNER, orgId: ORG }, context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()
@@ -566,15 +568,15 @@ describe('es_controller streaming answers', () => {
     const firstQuestion = store.messagesOf(session._id)[0] as { _id: Types.ObjectId }
     const res = new FakeSSEResponse()
 
-    await controllerModule.regenerateAnswers(appConfig)(
-      {
+    await controllerModule.regenerateAnswers(appConfig, turnDeps())(
+      withOwnerGrant({
         headers: {},
         params: { conversationId: String(session._id), messageId: String(firstQuestion._id) },
         body: {},
         query: {},
         user: { userId: OWNER, orgId: ORG },
         context: {},
-      } as never,
+      }) as never,
       res as never,
     )
     await settle()

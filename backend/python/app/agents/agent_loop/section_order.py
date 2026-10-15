@@ -60,12 +60,14 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # only on the grant and disclosure, so it is fixed for the request.
     ("exact_numbers",              Volatility.STATIC),
     ("code_execution",             Volatility.STATIC),
+    ("delegate_answers",           Volatility.STATIC),
     # ── Band B — conversation-stable ─────────────────────────────────────────
     # `available_tools` grows when fetch_tools loads new toolsets; everything
     # before it in Band A still caches even if this block invalidates.
     ("available_tools",            Volatility.CONV),
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
+    ("conversation_rules",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
@@ -88,6 +90,7 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
+    ("sender_context",             Volatility.TURN),
     ("attachments",                Volatility.TURN),
     # Citation rules for an agent that cites only what a question brought
     # (retrieved results, attachments); see `citation_rules` above otherwise.

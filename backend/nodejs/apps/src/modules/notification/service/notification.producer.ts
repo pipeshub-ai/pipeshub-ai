@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify';
 import { IMessageProducer, StreamMessage } from '../../../libs/types/messaging.types';
 import { Logger } from '../../../libs/services/logger.service';
-import { INotification } from '../schema/notification.schema';
+import { NotificationBrokerMessage } from '../utils/notification-payload.resolver';
 
 export enum EventType {
     NewNotificationEvent = 'newNotification',
@@ -10,7 +10,7 @@ export enum EventType {
   export interface Event {
     eventType: EventType;
     timestamp: number;
-    payload: INotification;
+    payload: NotificationBrokerMessage;
   }
 
 
@@ -40,8 +40,8 @@ export class NotificationProducer {
   }
 
   async publishEvent(event: Event): Promise<void> {
-    const message: StreamMessage<INotification> = {
-      key: event.payload.id,
+    const message: StreamMessage<NotificationBrokerMessage> = {
+      key: event.payload.messageKey,
       value: event.payload,
       headers: {
         eventType: event.eventType,

@@ -8,6 +8,11 @@ import { NotificationConsumer } from '../service/notification.consumer';
 import { Logger } from '../../../libs/services/logger.service';
 import { IMessageConsumer } from '../../../libs/types/messaging.types';
 import { createNotificationMessageConsumer } from '../../../libs/services/message-broker.factory';
+import {
+  INotificationEmailDispatcher,
+  NOTIFICATION_EMAIL_DISPATCHER,
+  noNotificationEmails,
+} from '../service/notification-email.port';
 
 const loggerConfig = {
   service: 'NotificationContainer',
@@ -16,6 +21,8 @@ const loggerConfig = {
 export class NotificationContainer {
   private static container: Container | null = null;
   private static logger: Logger = Logger.getInstance(loggerConfig);
+  /** Run on dispose, for services bound into the container after `initialize`. */
+  private static disposers: Array<() => Promise<void>> = [];
 
   static async initialize(appConfig: AppConfig): Promise<Container> {
     const container = new Container();
@@ -41,8 +48,17 @@ export class NotificationContainer {
     container.bind(NotificationProducer).toSelf().inSingletonScope();
     container.bind(NotificationConsumer).toSelf().inSingletonScope();
 
+    container
+      .bind<INotificationEmailDispatcher>(NOTIFICATION_EMAIL_DISPATCHER)
+      .toConstantValue(noNotificationEmails);
+
     this.container = container;
     return container;
+  }
+
+  /** Registers a shutdown step; it runs once, on the next `dispose`. */
+  static onDispose(disposer: () => Promise<void>): void {
+    this.disposers.push(disposer);
   }
 
   /** Cross-container access for session force-logout emits (e.g. role change). */
@@ -71,6 +87,15 @@ export class NotificationContainer {
       }
     } catch {
       // ignore disconnect errors during shutdown
+    }
+    const disposers = this.disposers;
+    this.disposers = [];
+    for (const dispose of disposers) {
+      try {
+        await dispose();
+      } catch {
+        // ignore disconnect errors during shutdown
+      }
     }
     c.unbindAll();
     this.container = null;

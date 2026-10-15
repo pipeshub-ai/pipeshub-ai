@@ -40,7 +40,8 @@ def _deadlock() -> Neo4jError:
 class _Server:
     """What reached Neo4j: statements auto-committed on a session, and transactions.
 
-    Statement number *fail_at* raises *error*, counted across every statement sent.
+    Write statement number *fail_at* raises *error*; reads (such as the agent create's
+    knowledge access check) are not counted, so a create path's count is its writes.
     """
 
     def __init__(self, *, fail_at: int | None = None, error: Exception | None = None) -> None:
@@ -52,12 +53,12 @@ class _Server:
         self.transactions: list[_Tx] = []
 
     def run(self, query: str, tx: _Tx | None) -> MagicMock:
-        self.sent += 1
-        if self.sent == self.fail_at:
-            raise self.error
         if not re.search(r"\b(MERGE|CREATE|DELETE|SET)\b", query):
             self.reads.append(query)
         else:
+            self.sent += 1
+            if self.sent == self.fail_at:
+                raise self.error
             (tx.ran if tx is not None else self.autocommitted).append(query)
         result = MagicMock()
         result.data = AsyncMock(return_value=[])

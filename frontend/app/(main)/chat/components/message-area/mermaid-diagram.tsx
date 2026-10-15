@@ -72,18 +72,20 @@ function useDarkMode(): boolean {
  * and text colours render correctly. Arrow/line visibility in dark mode is
  * handled by giving the diagram container a fixed white background (below).
  */
+export const MERMAID_CONFIG = {
+  startOnLoad: false,
+  theme: 'default',
+  securityLevel: 'strict',
+  fontFamily: 'inherit',
+} as const;
+
 let mermaidInitPromise: Promise<void> | null = null;
 
 function ensureInit(): Promise<void> {
   if (mermaidInitPromise) return mermaidInitPromise;
 
   mermaidInitPromise = import('mermaid').then(({ default: mermaid }) => {
-    mermaid.initialize({
-      startOnLoad: false,
-      theme: 'default',
-      securityLevel: 'antiscript',
-      fontFamily: 'inherit',
-    });
+    mermaid.initialize({ ...MERMAID_CONFIG });
   });
 
   return mermaidInitPromise;

@@ -306,7 +306,9 @@
     "filterTooltip": "Filtro: {{filter}}",
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
-    "removeFailed": "No se pudo eliminar la notificación"
+    "removeFailed": "No se pudo eliminar la notificación",
+    "showMore": "Ver más",
+    "showLess": "Ver menos"
   },
   "action": {
     "find": "Buscar",
@@ -686,6 +688,11 @@
     "answer": "Respuesta",
     "sources": "Fuentes",
     "citation": "Cita",
+    "answeredVia": {
+      "coding_agent": "mediante el agente de programación",
+      "web_agent": "mediante investigación web",
+      "other": "mediante {{name}}"
+    },
     "thankYouForFeedback": "Gracias por sus comentarios",
     "feedbackHelpsImprove": "Sus comentarios nos ayudan a mejorar",
     "feedbackError": "Error al enviar comentarios",
@@ -1230,7 +1237,10 @@
         "expired": "{{tool}} no se ejecutó: la solicitud caducó",
         "allowedNotRun": "Permitiste {{tool}}, pero no se ejecutó"
       }
-    }
+    },
+    "answerViews": "Vistas de la respuesta",
+    "answerFailedTitle": "Esta respuesta ha fallado",
+    "answerFailedRetry": "Reintentar"
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -4536,8 +4546,8 @@
     "somethingElse": "Otra cosa",
     "questionAskedSingular": "Pregunta realizada:",
     "questionAskedPlural": "Preguntas realizadas:",
-    "quickQuestionSingular": "Pregunta rápida :",
-    "quickQuestionPlural": "Preguntas rápidas :",
+    "quickQuestionSingular": "Pregunta rápida:",
+    "quickQuestionPlural": "Preguntas rápidas:",
     "stepOf": "Paso {{step}} de {{total}}",
     "selectedCount": "{{count}} seleccionados",
     "describeYourAnswer": "Describe tu respuesta…",
@@ -4545,7 +4555,9 @@
     "back": "Atrás",
     "skip": "Omitir",
     "next": "Siguiente",
-    "submit": "Enviar"
+    "submit": "Enviar",
+    "unknownPerson": "Antiguo miembro",
+    "waitingFor": "Esperando la respuesta de {{name}}"
   },
   "collections": {
     "stats": {
@@ -4717,7 +4729,12 @@
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",
     "invite": "Invitar a Pipeshub",
-    "memberCount_many": "{{count}} de miembros"
+    "memberCount_many": "{{count}} de miembros",
+    "andMore": "y {{count}} más",
+    "removeSelection": "Quitar a {{name}}",
+    "peopleCanSee_one": "{{count}} persona puede ver este chat",
+    "peopleCanSee_many": "{{count}} de personas pueden ver este chat",
+    "peopleCanSee_other": "{{count}} personas pueden ver este chat"
   },
   "demoData": {
     "badge": {

@@ -3528,6 +3528,8 @@ class TestVirtualAccessAndRecordLookup:
 
         neo4j_provider.client.execute_query = AsyncMock(side_effect=RuntimeError("records fail"))
         assert await neo4j_provider.get_records_by_record_ids(["r1"], "org-1") == []
+        with pytest.raises(RuntimeError, match="records fail"):
+            await neo4j_provider.get_records_by_record_ids(["r1"], "org-1", raise_on_error=True)
 
 
 class TestRecordRelationOperations:
@@ -6256,3 +6258,19 @@ class TestPrincipalLookupsCanRaise:
         neo4j_provider.client.execute_query.return_value = []
 
         assert await self._call(neo4j_provider, method, raise_on_error=True) is None
+
+
+class TestGetGraphUserKeysByMongoUserIds:
+    @pytest.mark.asyncio
+    async def test_missing_user_raises_value_error(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"userId": "known", "_key": "u1"}]
+        with pytest.raises(ValueError, match="Users not found in graph"):
+            await neo4j_provider.get_graph_user_keys_by_mongo_user_ids(["known", "unknown"], chunk_size=500)
+
+    @pytest.mark.asyncio
+    async def test_allow_missing_leaves_unknown_users_out(self, neo4j_provider: Neo4jProvider) -> None:
+        neo4j_provider.client.execute_query.return_value = [{"userId": "known", "_key": "u1"}]
+        result = await neo4j_provider.get_graph_user_keys_by_mongo_user_ids(
+            ["known", "unknown"], chunk_size=500, allow_missing=True
+        )
+        assert result == {"known": "u1"}

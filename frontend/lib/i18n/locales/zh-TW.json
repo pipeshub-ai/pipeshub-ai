@@ -379,7 +379,9 @@
     "filterTooltip": "篩選：{{filter}}",
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
-    "removeFailed": "無法移除通知"
+    "removeFailed": "無法移除通知",
+    "showMore": "顯示更多",
+    "showLess": "顯示較少"
   },
   "action": {
     "find": "尋找",
@@ -764,6 +766,11 @@
     "answer": "回答",
     "sources": "來源",
     "citation": "引用",
+    "answeredVia": {
+      "coding_agent": "透過程式設計代理",
+      "web_agent": "透過網路研究",
+      "other": "透過 {{name}}"
+    },
     "thankYouForFeedback": "感謝您的意見回饋",
     "feedbackHelpsImprove": "您的意見回饋有助於我們改進",
     "feedbackError": "無法送出意見回饋",
@@ -1297,7 +1304,10 @@
         "expired": "{{tool}} 未執行：請求已過期",
         "allowedNotRun": "你允許了 {{tool}}，但它沒有執行"
       }
-    }
+    },
+    "answerViews": "回答檢視",
+    "answerFailedTitle": "此回答失敗",
+    "answerFailedRetry": "重試"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -4583,7 +4593,9 @@
     "back": "上一步",
     "skip": "略過",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "unknownPerson": "前成員",
+    "waitingFor": "正在等待 {{name}} 回答"
   },
   "oauthDevice": {
     "title": "連接裝置",
@@ -4657,7 +4669,10 @@
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",
-    "invite": "邀請加入 Pipeshub"
+    "invite": "邀請加入 Pipeshub",
+    "andMore": "另有 {{count}} 位",
+    "removeSelection": "移除 {{name}}",
+    "peopleCanSee_other": "{{count}} 人可以查看此對話"
   },
   "demoData": {
     "badge": {

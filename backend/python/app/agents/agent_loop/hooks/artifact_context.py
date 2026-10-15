@@ -72,7 +72,7 @@ def artifact_context_reminder(context: "AgentContext") -> "Middleware[TurnContex
         try:
             from app.services.artifact_registry import Actor
 
-            actor = Actor(org_id=context.org_id, user_id=context.user_id)
+            actor = Actor.from_context(context)
             # VISIBLE only: STAGING artifacts here are almost entirely
             # captured `run_code` source (`code_<sandbox_id>.py` —
             # `sandbox_bridge.py::_capture_code_artifact`), one new one per

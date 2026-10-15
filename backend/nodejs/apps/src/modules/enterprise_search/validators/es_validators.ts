@@ -1,8 +1,12 @@
-import { z } from 'zod';
+import { AnyZodObject, z, ZodRawShape } from 'zod';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import {
+  OBJECT_ID_REGEX,
+  objectId,
+} from '../../../libs/validators/zod-primitives';
 import { PIPESHUB_CHAT_MODE, REASONING_EFFORT_VALUES } from '../constants/constants';
 
 export { REASONING_EFFORT_VALUES };
@@ -11,12 +15,17 @@ export { REASONING_EFFORT_VALUES };
 // Primitive validators
 // ---------------------------------------------------------------------------
 
-/** Regular expression for MongoDB ObjectId validation. */
-const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
-
-/** Reusable MongoDB ObjectId string validator with a configurable error label. */
-const objectId = (label: string) =>
-  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label} format` });
+/** The same request schema with more `body` fields; the schema itself when there are none. */
+export function withBodyFields(
+  schema: AnyZodObject,
+  fields: ZodRawShape,
+): AnyZodObject {
+  if (Object.keys(fields).length === 0) {
+    return schema;
+  }
+  const body = (schema.shape as ZodRawShape).body as AnyZodObject;
+  return schema.extend({ body: body.extend(fields) });
+}
 
 const appOrKbIdSchema = z.string().uuid({ message: 'Must be a valid UUID' });
 
@@ -372,6 +381,9 @@ const attachmentRefSchema = z.object({
   source: z.enum(['upload', 'paste-text']).optional(),
 });
 
+// The AI service checks at most this many attachment ids per turn; above it every attachment would be dropped.
+const MAX_TURN_ATTACHMENTS = 50;
+
 /** A chat message's text, the same limit on a new chat and on every follow-up. */
 const chatQuerySchema = z
   .string({ required_error: 'Query is required' })
@@ -385,7 +397,7 @@ const enterpriseSearchCreateBodySchema = z.object({
     recordIds: z.array(objectId('record ID')).optional(),
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
+    attachments: z.array(attachmentRefSchema).max(MAX_TURN_ATTACHMENTS).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     // Only honored when creating a *new* conversation — see resolveProjectLink
     // (enterprise_search/utils/project-context.ts). Ignored on follow-up turns.
@@ -431,8 +443,16 @@ export const conversationTitleParamsSchema = conversationIdParamsSchema.extend({
 });
 
 export const conversationShareParamsSchema = conversationIdParamsSchema.extend({
-  body: z.object({ userIds: userIdsSchema }),
+  body: z.object({
+    userIds: userIdsSchema,
+    accessLevel: z.enum(['read', 'write']).optional(),
+  }),
 });
+
+export const conversationUnshareParamsSchema =
+  conversationIdParamsSchema.extend({
+    body: z.object({ userIds: userIdsSchema }),
+  });
 
 /** Schema for POST /:conversationId/cancel — cooperatively stop an in-flight assistant run. */
 export const cancelConversationStreamParamsSchema = conversationIdParamsSchema.extend({
@@ -545,7 +565,7 @@ const addMessageBodySchema = z.object({
     query: chatQuerySchema,
     filters: filtersSchema,
     appliedFilters: appliedFiltersSchema,
-    attachments: z.array(attachmentRefSchema).optional(),
+    attachments: z.array(attachmentRefSchema).max(MAX_TURN_ATTACHMENTS).optional(),
     chatMode: z.nativeEnum(PIPESHUB_CHAT_MODE).optional(),
     ...modelFieldsSchema,
     ...contextFieldsSchema,
@@ -596,6 +616,25 @@ export const agentAddMessageParamsSchema = z.object({
   }),
   body: agentAddMessageBodySchema,
 });
+
+/**
+ * Internal (scoped-token) agent stream routes. Slack forwards the caller's
+ * identity to the AI backend (ai-chat-payload.ts::assignCallerContextToAiPayload);
+ * the public schemas strip those keys on purpose, so only these variants keep them.
+ */
+const internalCallerContextSchema = {
+  callerDisplayName: z.string().optional(),
+  callerEmail: z.string().optional(),
+};
+
+export const agentInternalStreamCreateSchema = agentStreamCreateSchema.extend({
+  body: agentStreamCreateBodySchema.extend(internalCallerContextSchema),
+});
+
+export const agentInternalAddMessageParamsSchema =
+  agentAddMessageParamsSchema.extend({
+    body: agentAddMessageBodySchema.extend(internalCallerContextSchema),
+  });
 
 // ---------------------------------------------------------------------------
 // Agent non-streaming: create + add message (`chatMode` defaults to `quick`)
@@ -1333,7 +1372,7 @@ const attachmentUploadBodySchema = z.object({
       (v) => (typeof v === 'string' ? v.trim() : v),
       z.union([
         z.literal(''),
-        z.string().regex(OBJECT_ID_REGEX, { message: 'Invalid conversation ID format' }),
+        objectId('conversation ID'),
       ]),
     )
     .nullable()

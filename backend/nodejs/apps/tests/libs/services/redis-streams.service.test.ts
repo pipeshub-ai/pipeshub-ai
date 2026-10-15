@@ -238,6 +238,21 @@ describe('Redis Streams Service', () => {
         expect(args).to.include('msg-key');
       });
 
+      it('writes key, value and headers fields in order (characterization)', async () => {
+        await producer.publish('t', { key: 'k1', value: 'v', headers: { h: 'x' } });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args.slice(5)).to.deep.equal([
+          'key', 'k1', 'value', JSON.stringify('v'), 'headers', JSON.stringify({ h: 'x' }),
+        ]);
+      });
+
+      it('omits the key field when the message has no key', async () => {
+        await producer.publish('t', { value: 'v' });
+        const fields = mockRedis.xadd.firstCall.args.slice(5);
+        expect(fields).to.deep.equal(['value', JSON.stringify('v')]);
+        expect(fields).to.not.include('undefined');
+      });
+
       it('should JSON-stringify the message value', async () => {
         const msg: StreamMessage<{ data: number }> = {
           key: 'k',
@@ -313,6 +328,12 @@ describe('Redis Streams Service', () => {
         await producer.publishBatch('batch-topic', msgs);
         expect(mockPipeline.xadd.callCount).to.equal(3);
         expect(mockPipeline.exec.calledOnce).to.be.true;
+      });
+
+      it('writes key then value per entry, omitting key when absent', async () => {
+        await producer.publishBatch('t', [{ key: 'k1', value: 'v1' }, { value: 'v2' }]);
+        expect(mockPipeline.xadd.firstCall.args.slice(5)).to.deep.equal(['key', 'k1', 'value', JSON.stringify('v1')]);
+        expect(mockPipeline.xadd.secondCall.args.slice(5)).to.deep.equal(['value', JSON.stringify('v2')]);
       });
 
       it('should include headers in batch messages', async () => {
@@ -917,6 +938,24 @@ describe('Redis Streams Service', () => {
           data: 'hello',
         });
         expect(mockRedis.xack.called).to.be.true;
+      });
+
+      it('tolerates a stream entry with no key field', async () => {
+        let callCount = 0;
+        mockRedis.xreadgroup.callsFake(async () => {
+          callCount++;
+          if (callCount === 1) {
+            return [['test-stream', [['1-0', ['value', JSON.stringify('v')]]]]];
+          }
+          consumer.running = false;
+          return null;
+        });
+        const handler = sinon.stub().resolves();
+        await consumer.consume(handler);
+        await consumer.consumeLoopPromise;
+        expect(handler.calledOnce).to.be.true;
+        expect(handler.firstCall.args[0].key).to.equal('');
+        expect(handler.firstCall.args[0].value).to.equal('v');
       });
 
       it('should include headers when present in stream entry', async () => {

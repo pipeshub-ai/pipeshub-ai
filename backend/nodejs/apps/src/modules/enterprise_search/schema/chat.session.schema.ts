@@ -1,6 +1,7 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import { IChatSessionDocument } from '../types/conversation.interfaces';
 import { REASONING_EFFORT_VALUES } from '../constants/constants';
+import { schemaExtensions } from '../../../edition-schemas';
 
 /**
  * Single collection backing both plain chat and agent chat threads
@@ -106,6 +107,8 @@ const chatSessionSchema = new Schema<IChatSessionDocument>(
      * getProjectConversations for the read-side of this rule.
      */
     projectVisibility: { type: String, enum: ['private', 'project'] },
+    // Bumped on every visible change, so a reader can tell its copy is stale.
+    rev: { type: Number, default: 0 },
   },
   { timestamps: true, collection: 'chatSessions' },
 );
@@ -123,6 +126,8 @@ chatSessionSchema.index({ userId: 1, agentKey: 1 });
 chatSessionSchema.index({ isShared: 1 });
 chatSessionSchema.index({ projectId: 1, orgId: 1, isDeleted: 1, lastActivityAt: -1 });
 chatSessionSchema.index({ lastActivityAt: -1 });
+
+schemaExtensions.chatSession(chatSessionSchema);
 
 export const ChatSession: Model<IChatSessionDocument> =
   mongoose.model<IChatSessionDocument>('ChatSession', chatSessionSchema);
