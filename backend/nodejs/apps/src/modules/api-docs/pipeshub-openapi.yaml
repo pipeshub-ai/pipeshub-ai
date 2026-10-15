@@ -37834,7 +37834,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:read]
+        - oauth2: [connector:read]
       parameters:
         - name: connectorId
           in: path
@@ -38447,7 +38447,7 @@ paths:
       x-pipeshub-sdk: true
       security:
         - bearerAuth: []
-        - oauth2: [kb:write]
+        - oauth2: [connector:write, connector:read]
       parameters:
         - name: connectorId
           in: path
