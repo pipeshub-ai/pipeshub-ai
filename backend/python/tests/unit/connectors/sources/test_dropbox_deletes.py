@@ -124,6 +124,7 @@ def team_connector() -> DropboxConnector:
     processor = connector.data_entities_processor
     processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
     processor.get_app_user_by_email = AsyncMock(return_value=None)
+    processor.get_groups_with_access_to_record = AsyncMock(return_value=[])
     processor.get_record_by_external_id = AsyncMock(return_value=None)
     return connector
 
@@ -153,12 +154,8 @@ class TestTeamConnector:
         """The record was last written from the leaving member's own view, so its writer is that member."""
         holder = "dbmid:folder-owner"
         processor = team_connector.data_entities_processor
-        folder = MagicMock(id="rec-folder", parent_external_record_id=None)
-        processor.get_record_by_external_id = AsyncMock(return_value=folder)
-        processor.get_users_with_permission_to_node = AsyncMock(
-            side_effect=lambda node_id, _c: [MagicMock(email="owner@x.com")] if node_id == "rec-folder" else []
-        )
-        processor.get_app_user_by_email = AsyncMock(return_value=MagicMock(source_user_id=holder))
+        processor.get_users_with_permission_to_node = AsyncMock(return_value=[MagicMock(email="owner@x.com")])
+        processor.get_app_user_by_email = AsyncMock(return_value=MagicMock(source_user_id=holder, is_active=True))
 
         async def lookup(path: str, team_member_id: str) -> DropboxResponse:
             return _found() if team_member_id == holder else NOT_FOUND
@@ -168,6 +165,8 @@ class TestTeamConnector:
                            parent_external_record_id="id:folder")
 
         assert await team_connector._team_item_still_exists(record, MEMBER) is True
+        processor.get_users_with_permission_to_node.assert_awaited_once_with("rec-1", "records")
+        processor.get_app_user_by_email.assert_awaited_once_with("owner@x.com", CONNECTOR_ID)
 
     @pytest.mark.asyncio
     async def test_gone_for_both_the_member_and_the_owner(self, team_connector) -> None:

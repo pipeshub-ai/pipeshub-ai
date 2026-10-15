@@ -4972,7 +4972,47 @@ class DataSourceEntitiesProcessor:
             return await tx_store.get_groups_with_permission_to_node(
                 node_id, node_collection, raise_on_error=raise_on_error
             )
-            
+
+    # Same reach as the user lookups (get_users_with_permission_to_node walks 8 inherit hops).
+    GROUP_ACCESS_MAX_HOPS = 8
+
+    async def get_groups_with_access_to_record(self, record: Record) -> list[AppUserGroup]:
+        """Groups granted on a record, the records above it and its record groups, nearest first.
+
+        For a connector that has to act as some user to fetch a record's bytes and
+        finds no user grant: a group grant only names the group, whose members the
+        connector expands from its source. ``get_groups_with_permission_to_node``
+        reads one node, so this climbs the hierarchy the grants are inherited along.
+        """
+        groups: list[AppUserGroup] = []
+        seen: set[str] = set()
+
+        async def collect(node_id: str, collection: str) -> None:
+            for group in await self.get_groups_with_permission_to_node(node_id, collection):
+                if group.id not in seen:
+                    seen.add(group.id)
+                    groups.append(group)
+
+        node: Record | None = record
+        for _ in range(self.GROUP_ACCESS_MAX_HOPS + 1):
+            await collect(node.id, CollectionNames.RECORDS.value)
+            parent = node.parent_external_record_id
+            next_node = await self.get_record_by_external_id(record.connector_id, parent) if parent else None
+            if next_node is None:
+                break
+            node = next_node
+
+        external_group_id = node.external_record_group_id
+        for _ in range(self.GROUP_ACCESS_MAX_HOPS + 1):
+            if not external_group_id:
+                break
+            record_group = await self.get_record_group_by_external_id(record.connector_id, external_group_id)
+            if record_group is None:
+                break
+            await collect(record_group.id, CollectionNames.RECORD_GROUPS.value)
+            external_group_id = record_group.parent_external_group_id
+        return groups
+
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None:
