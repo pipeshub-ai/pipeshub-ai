@@ -19,6 +19,8 @@ import {
   isSearchNoAccessibleDocumentsNotFound,
 } from '@/lib/api';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { chatSlots } from '@/config';
+import type { ComposerSendExtra } from '../../chat-extension';
 
 // Module-level abort controller for cancelling in-flight searches
 let currentSearchAbort: AbortController | null = null;
@@ -34,6 +36,7 @@ export function ChatInputWrapper() {
   const threadRuntime = useThreadRuntime();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
+  const composerSend = chatSlots.useComposerSend({ isAgentChat, agentId: effectiveAgentId ?? null });
 
   useEffect(() => {
     if (effectiveAgentId) {
@@ -148,7 +151,7 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[]) => {
+  const handleSend = async (message: string, attachments?: AttachmentRef[], extra?: ComposerSendExtra) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
@@ -159,6 +162,9 @@ export function ChatInputWrapper() {
       if (message.trim()) handleSearchSubmit(message.trim());
       return;
     }
+
+    const intercepted = composerSend.intercept(message, attachments, extra);
+    if (intercepted && (await intercepted)) return;
 
     // ── Chat mode ──
     // Block a second send while a run is in flight, but allow Enter after
@@ -225,6 +231,7 @@ export function ChatInputWrapper() {
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
+    composerSend.beforeAppend(extra);
     threadRuntime.append({
       role: 'user',
       content: [{ type: 'text', text: message }],
@@ -232,19 +239,25 @@ export function ChatInputWrapper() {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
           attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          ...composerSend.messageCustom(extra),
         },
       },
       startRun: true,
     });
+    composerSend.afterAppend();
   };
 
   return (
-    <ChatInput
-      onSend={handleSend}
-      onUploadFile={handleUploadFile}
-      onDeleteFile={handleDeleteFile}
-      isAgentChat={isAgentChat}
-      agentId={effectiveAgentId}
-    />
+    <>
+      {composerSend.accessories}
+      <ChatInput
+        onSend={handleSend}
+        placeholder={composerSend.placeholder}
+        onUploadFile={handleUploadFile}
+        onDeleteFile={handleDeleteFile}
+        isAgentChat={isAgentChat}
+        agentId={effectiveAgentId}
+      />
+    </>
   );
 }

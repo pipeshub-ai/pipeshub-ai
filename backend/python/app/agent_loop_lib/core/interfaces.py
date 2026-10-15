@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.messages import Message
     from app.agent_loop_lib.core.types import AgentResult, Goal
-    from app.agent_loop_lib.events.base import AgentEvent, EventType
+    from app.agent_loop_lib.events.base import AgentEvent, EventEmitter, EventType
 
 __all__ = ["AgentRunner", "AgentHandle"]
 
@@ -71,6 +71,9 @@ class AgentHandle(Protocol):
     it without reaching into `tools/`. Still re-exported from
     `tools/special_route.py` for that module's own public surface.
     """
+
+    @property
+    def event_emitter(self) -> "EventEmitter | None": ...
 
     def extract_text(self, msg: "Message") -> str: ...
 

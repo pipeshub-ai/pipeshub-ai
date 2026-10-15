@@ -146,7 +146,7 @@ export abstract class BaseKafkaProducerConnection
   }
 
   protected formatMessage<T>(message: StreamMessage<T>): {
-    key: string;
+    key?: string;
     value: string;
     headers?: Record<string, string>;
   } {

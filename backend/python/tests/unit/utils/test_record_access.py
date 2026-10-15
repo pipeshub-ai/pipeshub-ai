@@ -90,6 +90,25 @@ class TestCallerCanReadVirtualRecord:
         graph.get_edge.assert_not_called()
 
 
+def _attachment_graph(*, connector: str = "ATTACHMENTS") -> AsyncMock:
+    graph = _graph(allowed=False)
+    graph.get_document.side_effect = lambda key, coll, *a, **k: {
+        ("rec-1", "records"): {"_key": "rec-1", "orgId": "org-1", "connectorName": connector, "recordType": "FILE"},
+        ("ukey-b", "users"): {"_key": "ukey-b", "userId": "user-b"},
+    }.get((key, coll))
+    graph.get_edges_to_node.return_value = [
+        {"from_id": "ukey-b", "from_collection": "users", "to_id": "rec-1", "type": "USER", "role": "OWNER"},
+    ]
+    return graph
+
+
+class TestChatAttachmentWithoutAnAclPath:
+    async def test_is_denied_by_default(self) -> None:
+        assert not await caller_can_read_virtual_record(
+            _attachment_graph(), user_id="user-c", org_id="org-1", virtual_record_id="vrid-1", logger=LOGGER,
+        )
+
+
 class TestServiceAccountUploadEdges:
     def test_the_edges_grant_the_org_read_access_with_the_type_the_check_accepts(self) -> None:
         edges = service_account_upload_permission_edges("org-1", ["rec-1", "rec-2"], 1700)

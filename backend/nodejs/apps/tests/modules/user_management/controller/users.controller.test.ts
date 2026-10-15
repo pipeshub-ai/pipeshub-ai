@@ -22,6 +22,8 @@ import {
 import * as oauthTokenServiceProvider from '../../../../src/libs/services/oauth-token-service.provider';
 import * as XLSX from 'xlsx';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
+import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
+import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 
 /** Query chain stub for OAuthApp.find(...).select().lean().exec() used in softDeleteOAuthAppsForUser */
 function stubOAuthAppsForDeletedUser(appsLeResult: unknown[] = []) {
@@ -614,6 +616,7 @@ describe('UserController', () => {
                     fullName: 'John Admin',
                     email: 'john@acme.com',
                     hasLoggedIn: true,
+                    isDisabled: true,
                     role: 'admin',
                     createdAt: new Date('2025-01-01T00:00:00.000Z'),
                     updatedAt: new Date('2025-01-02T00:00:00.000Z'),
@@ -675,6 +678,7 @@ describe('UserController', () => {
       expect(payload.users[0].profilePicture).to.equal('data:image/png;base64,abc123');
       expect(payload.users[0].isBlocked).to.equal(true);
       expect(payload.users[0].isActive).to.equal(false);
+      expect(payload.users[0].isDisabled).to.equal(true);
       expect(payload.users[0].role).to.equal('Admin');
       expect(payload.users[0].groupCount).to.equal(1);
       expect(payload.users[0].userGroups).to.have.length(2);

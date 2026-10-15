@@ -27,6 +27,7 @@ export function createPatRouter(container: Container): Router {
   const patRateLimiter = createOAuthClientRateLimiter(
     logger,
     appConfig.maxOAuthClientRequestsPerMinute,
+    'pat',
   )
 
   // All routes require authentication — non-admins mint their own tokens.

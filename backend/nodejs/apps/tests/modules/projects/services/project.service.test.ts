@@ -5,6 +5,8 @@ import mongoose from 'mongoose';
 import { ProjectService } from '../../../../src/modules/projects/services/project.service';
 import { Project } from '../../../../src/modules/projects/schema/project.schema';
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema';
+import { useConversationExtensions } from '../../../../src/modules/enterprise_search/services/conversation/conversation-extensions';
+import { testAcl } from '../../enterprise_search/helpers/test-extensions';
 import {
   BadRequestError,
   ForbiddenError,
@@ -63,6 +65,9 @@ function makeProjectDoc(overrides: Record<string, any> = {}): any {
 }
 
 describe('ProjectService', () => {
+  beforeEach(() => useConversationExtensions({ acl: testAcl }));
+  afterEach(() => useConversationExtensions(undefined));
+
   afterEach(() => {
     sinon.restore();
   });
@@ -323,8 +328,8 @@ describe('ProjectService', () => {
 
       const filter = findStub.firstCall.args[0];
       expect(filter.$or).to.have.lengthOf(4);
-      const teamBranch = filter.$or.find((clause: any) => clause['members.principalType'] === 'team');
-      expect(teamBranch['members.principalId'].$in.map((id: any) => id.toString())).to.deep.equal([teamId]);
+      const teamBranch = filter.$or.find((clause: any) => clause.members?.$elemMatch?.principalType === 'team');
+      expect(teamBranch.members.$elemMatch.principalId.$in.map((id: any) => id.toString())).to.deep.equal([teamId]);
     });
 
     it('applies a case-insensitive name regex when search is provided', async () => {
@@ -423,6 +428,17 @@ describe('ProjectService', () => {
   });
 
   describe('update', () => {
+    it('bumps aclVersion only when visibility actually changes', async () => {
+      const project = makeProjectDoc({ aclVersion: 2 });
+      sinon.stub(Project, 'findOne').resolves(project);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'private' });
+      expect(project.aclVersion).to.equal(2);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { visibility: 'org' });
+      expect(project.aclVersion).to.equal(3);
+      await ProjectService.update(ORG_ID, OWNER_ID, project._id.toString(), { name: 'x' });
+      expect(project.aclVersion).to.equal(3);
+    });
+
     it('throws BadRequestError when clearing the name to blank', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -694,7 +710,9 @@ describe('ProjectService', () => {
       expect(updateManyStub.firstCall.args[0]).to.deep.equal({ projectId: project._id });
       expect(updateManyStub.firstCall.args[1]).to.deep.equal({
         $unset: { projectId: '', projectVisibility: '' },
+        $inc: { aclVersion: 1 },
       });
+      expect(project.aclVersion).to.equal(1);
       expect(project.isDeleted).to.equal(true);
       expect(project.deletedBy?.toString()).to.equal(OWNER_ID);
     });
@@ -830,6 +848,15 @@ describe('ProjectService', () => {
       );
     });
 
+    it('bumps aclVersion from an unset value in the same save', async () => {
+      const project = makeProjectDoc();
+      sinon.stub(Project, 'findOne').resolves(project);
+      const updated = await ProjectService.upsertMembers(ORG_ID, OWNER_ID, project._id.toString(), [
+        { principalId: MEMBER_ID, role: 'viewer' },
+      ]);
+      expect(updated.aclVersion).to.equal(1);
+    });
+
     it('never adds the owner as a member row', async () => {
       const project = makeProjectDoc();
       sinon.stub(Project, 'findOne').resolves(project);
@@ -921,6 +948,7 @@ describe('ProjectService', () => {
         MEMBER_ID,
       );
       expect(updated.members).to.have.lengthOf(0);
+      expect(updated.aclVersion).to.equal(1);
     });
 
     it('only removes the team row when principalType="team" is given, leaving a same-id user row intact', async () => {
@@ -980,6 +1008,8 @@ describe('ProjectService', () => {
       const [filter, update] = updateManyStub.firstCall.args;
       expect((filter as any).orgId.toString()).to.equal(ORG_ID);
       expect((update as any).$pull.members.principalId.toString()).to.equal(MEMBER_ID);
+      expect((update as any).$inc).to.deep.equal({ aclVersion: 1 });
+      expect((filter as any).members.$elemMatch.principalId.toString()).to.equal(MEMBER_ID);
     });
 
     it('propagates DB failures so the caller can abort and retry', async () => {

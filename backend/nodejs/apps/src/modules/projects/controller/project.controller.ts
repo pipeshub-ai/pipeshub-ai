@@ -16,6 +16,14 @@ import {
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
 import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
+import {
+  conversationContextOf,
+  listFilterOf,
+} from '../../enterprise_search/services/conversation/http/conversation-context';
+import {
+  conversationExtensions,
+  ProjectSettingsExtension,
+} from '../../enterprise_search/services/conversation/conversation-extensions';
 
 /** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
 function projectWithRole(
@@ -110,7 +118,10 @@ export const getProjectById =
   };
 
 export const updateProject =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (
+    appConfig: AppConfig,
+    settings?: ProjectSettingsExtension,
+  ): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -124,6 +135,7 @@ export const updateProject =
         projectId,
         patch,
         callerTeamIds,
+        await settings?.forUpdate(req),
       );
       const role = ProjectService.computeRole(
         project,
@@ -131,25 +143,8 @@ export const updateProject =
         orgId,
         callerTeamIds,
       );
-      // Idempotent either way, so a plain resync (rather than diffing
-      // against the pre-update value) is enough: grant is a no-op if the
-      // `all_{orgId}` team already has the edge, revoke is a no-op
-      // (upstream 404) if it never did.
-      if (patch.visibility !== undefined && project.linkedKnowledgeBaseId) {
-        const headers = req.headers as Record<string, string>;
-        if (project.visibility === 'org') {
-          await ProjectKnowledgeBaseService.syncMemberPermissions(
-            appConfig,
-            headers,
-            project,
-          );
-        } else {
-          await ProjectKnowledgeBaseService.revokeOrgVisibility(
-            appConfig,
-            headers,
-            project,
-          );
-        }
+      if (patch.visibility !== undefined) {
+        await ProjectKnowledgeBaseService.enqueueSync(project);
       }
       res.status(200).json({ project: projectWithRole(project, role) });
     } catch (error) {
@@ -278,7 +273,8 @@ export const unpinProject =
 /**
  * GET /:projectId/conversations — chat + agent sessions in this project that
  * the caller may see: rows they own, plus rows with `projectVisibility:
- * 'project'` if they have at least viewer access to the project itself.
+ * 'project'` if they have at least viewer access to the project itself, plus
+ * any other rows the conversation guard's list filter lets them see.
  * Access to the project has already been asserted, so a private chat that
  * belongs to a *different* project member never leaks here.
  */
@@ -289,6 +285,7 @@ export const getProjectConversations =
       const userId = req.user?.userId as string;
       const orgId = req.user?.orgId as string;
       const { projectId } = req.params as { projectId: string };
+      const lists = conversationExtensions().lists;
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       await ProjectService.assertAccess(
         orgId,
@@ -305,12 +302,9 @@ export const getProjectConversations =
       const skip = (page - 1) * limit;
 
       const filter = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        isDeleted: false,
-        $or: [
-          { userId: new mongoose.Types.ObjectId(userId) },
-          { projectVisibility: 'project' },
+        $and: [
+          listFilterOf(req),
+          { projectId: new mongoose.Types.ObjectId(projectId) },
         ],
       };
 
@@ -319,14 +313,18 @@ export const getProjectConversations =
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
-          .select('-__v')
+          .select(lists.select(conversationContextOf(req)))
           .lean()
           .exec(),
         ChatSession.countDocuments(filter),
       ]);
 
+      const ctx = conversationContextOf(req);
+      const decorate = await lists.rowDecorator(ctx, conversations);
       res.status(200).json({
-        conversations,
+        conversations: conversations.map((row) =>
+          decorate(lists.redactRecipients(ctx, row)),
+        ),
         pagination: {
           page,
           limit,
@@ -437,13 +435,7 @@ export const upsertProjectMembers =
         projectId,
         members,
       );
-      if (project.linkedKnowledgeBaseId) {
-        await ProjectKnowledgeBaseService.syncMemberPermissions(
-          appConfig,
-          req.headers as Record<string, string>,
-          project,
-        );
-      }
+      await ProjectKnowledgeBaseService.enqueueSync(project);
 
       res.status(200).json({ members: project.members });
     } catch (error) {
@@ -452,7 +444,7 @@ export const upsertProjectMembers =
   };
 
 export const removeProjectMember =
-  (appConfig: AppConfig): ProjectRouteHandler =>
+  (_appConfig: AppConfig): ProjectRouteHandler =>
   async (req, res, next): Promise<void> => {
     try {
       const userId = req.user?.userId as string;
@@ -472,15 +464,7 @@ export const removeProjectMember =
         memberUserId,
         effectivePrincipalType,
       );
-      if (project.linkedKnowledgeBaseId) {
-        await ProjectKnowledgeBaseService.revokePrincipalPermission(
-          appConfig,
-          req.headers as Record<string, string>,
-          project,
-          memberUserId,
-          effectivePrincipalType,
-        );
-      }
+      await ProjectKnowledgeBaseService.enqueueSync(project);
 
       res.status(200).json({ members: project.members });
     } catch (error) {

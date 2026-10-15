@@ -76,6 +76,8 @@ async def resolve_attachments(
     user_id: str | None = None,
     graph_provider: Any = None,
     is_service_account: bool = False,
+    conversation_id: str | None = None,
+    acl_version: int | None = None,
 ) -> ResolvedAttachments:
     """Resolves the current turn's `query_info["attachments"]` into text
     context + retrieval-scope record IDs. `ref_mapper` is the SAME mapper
@@ -105,6 +107,8 @@ async def resolve_attachments(
             virtual_record_id=vrid,
             logger=logger,
             is_service_account=is_service_account,
+            conversation_id=conversation_id,
+            acl_version=acl_version,
         )
 
     for att in doc_attachments:

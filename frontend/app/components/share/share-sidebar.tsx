@@ -1,5 +1,6 @@
 'use client';
 
+import { DRAWER_TOAST_INSET_PX, useToastDrawerInset } from '@/lib/toast-safe-area';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -31,6 +32,7 @@ import {
 } from './types';
 import { LottieLoader } from '../ui/lottie-loader';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 interface ShareSidebarProps {
   open: boolean;
@@ -40,6 +42,8 @@ interface ShareSidebarProps {
   onShareSuccess?: () => void;
   /** Optional content rendered above the members list (e.g. org-wide toggle). */
   headerContent?: React.ReactNode;
+  /** Typed into the people search each time the sidebar opens. */
+  initialSearch?: string;
 }
 
 export function ShareSidebar({
@@ -48,8 +52,11 @@ export function ShareSidebar({
   adapter,
   onShareSuccess,
   headerContent,
+  initialSearch,
 }: ShareSidebarProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
+  useToastDrawerInset(open, DRAWER_TOAST_INSET_PX);
   const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
 
@@ -115,6 +122,11 @@ export function ShareSidebar({
     // paginated.reset is stable; omit from deps to avoid reset loops on every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
+
+  useEffect(() => {
+    if (open && initialSearch) updateSearchQuery(initialSearch);
+    // Only the moment of opening matters; later typing in the field must not be overwritten.
+  }, [open, initialSearch]);
 
   // Fetch non-user data when sidebar opens (paginated users are handled by the hook)
   useEffect(() => {
@@ -277,14 +289,14 @@ export function ShareSidebar({
   const handleRoleChange = useCallback(
     async (memberId: string, memberType: 'user' | 'team', newRole: ShareRole) => {
       if (!adapter.updateRole) return;
-      const member = existingMembers.find((m) => m.id === memberId);
+      const member = existingMembers.find((m) => m.id === memberId && m.type === memberType);
       // Users cannot change their own permission
       if (member?.isCurrentUser) return;
       try {
         await adapter.updateRole(memberId, memberType, newRole);
         setExistingMembers((prev) =>
           prev.map((m) =>
-            m.id === memberId ? { ...m, role: newRole, isOwner: newRole === 'OWNER' } : m
+            m.id === memberId && m.type === memberType ? { ...m, role: newRole, isOwner: newRole === 'OWNER' } : m
           )
         );
         toast.success(t('shareSidebar.roleUpdated'), {
@@ -357,19 +369,27 @@ export function ShareSidebar({
             e.preventDefault();
           }
         }}
+        onEscapeKeyDown={(e) => {
+          // Escape closes the open role menu only.
+          if (isRoleDropdownOpen) e.preventDefault();
+        }}
         style={{
           position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...(isMobile
+            ? { top: 0, right: 0, bottom: 0, left: 0, width: '100%', maxWidth: '100%', maxHeight: '100dvh', borderRadius: 0 }
+            : {
+                top: 10,
+                right: 10,
+                bottom: 10,
+                width: '37.5rem',
+                maxWidth: '100vw',
+                maxHeight: 'calc(100vh - 20px)',
+                borderRadius: 'var(--radius-2)',
+              }),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           overflow: 'hidden',
           display: 'flex',
@@ -498,6 +518,7 @@ export function ShareSidebar({
                 color="gray"
                 size="2"
                 onClick={() => onOpenChange(false)}
+                aria-label={t('common.close')}
               >
                 <MaterialIcon name="close" size={16} color="var(--slate-11)" />
               </IconButton>
@@ -512,7 +533,9 @@ export function ShareSidebar({
                 supportsRoles={adapter.supportsRoles}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
+                removeSelectionLabel={(name) => t('shareSidebar.removeSelection', { name })}
                 onRoleChange={setSelectedRole}
+                onRoleDropdownOpenChange={setIsRoleDropdownOpen}
                 onRemoveLastSelection={() =>
                   setSelectedItems((prev) => prev.slice(0, -1))
                 }
@@ -722,7 +745,8 @@ export function ShareSidebar({
 
               {adapter.supportsTeams && (
                 <Button
-                  variant="outline"
+                  variant="soft"
+                  color="gray"
                   size="2"
                   onClick={() => setCurrentView('create-team')}
                 >

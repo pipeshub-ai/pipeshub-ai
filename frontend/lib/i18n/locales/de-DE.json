@@ -299,7 +299,9 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
+    "showMore": "Mehr anzeigen",
+    "showLess": "Weniger anzeigen"
   },
   "action": {
     "find": "Finden",
@@ -678,6 +680,11 @@
     "answer": "Antwort",
     "sources": "Quellen",
     "citation": "Zitat",
+    "answeredVia": {
+      "coding_agent": "über den Coding-Agenten",
+      "web_agent": "über Web-Recherche",
+      "other": "über {{name}}"
+    },
     "thankYouForFeedback": "Vielen Dank für Ihr Feedback",
     "feedbackHelpsImprove": "Ihr Feedback hilft uns, uns zu verbessern",
     "feedbackError": "Feedback konnte nicht gesendet werden",
@@ -1214,7 +1221,10 @@
         "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen",
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
       }
-    }
+    },
+    "answerViews": "Ansichten der Antwort",
+    "answerFailedTitle": "Diese Antwort ist fehlgeschlagen",
+    "answerFailedRetry": "Erneut versuchen"
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -4502,8 +4512,8 @@
     "somethingElse": "Etwas anderes",
     "questionAskedSingular": "Gestellte Frage:",
     "questionAskedPlural": "Gestellte Fragen:",
-    "quickQuestionSingular": "Kurze Frage :",
-    "quickQuestionPlural": "Kurze Fragen :",
+    "quickQuestionSingular": "Kurze Frage:",
+    "quickQuestionPlural": "Kurze Fragen:",
     "stepOf": "Schritt {{step}} von {{total}}",
     "selectedCount": "{{count}} ausgewählt",
     "describeYourAnswer": "Beschreiben Sie Ihre Antwort…",
@@ -4511,7 +4521,9 @@
     "back": "Zurück",
     "skip": "Überspringen",
     "next": "Weiter",
-    "submit": "Absenden"
+    "submit": "Absenden",
+    "unknownPerson": "Ehemaliges Mitglied",
+    "waitingFor": "Warten auf die Antwort von {{name}}"
   },
   "oauthDevice": {
     "title": "Gerät verbinden",
@@ -4671,7 +4683,11 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",
-    "invite": "Zu PipesHub einladen"
+    "invite": "Zu PipesHub einladen",
+    "andMore": "und {{count}} weitere",
+    "removeSelection": "{{name}} entfernen",
+    "peopleCanSee_one": "{{count}} Person kann diesen Chat sehen",
+    "peopleCanSee_other": "{{count}} Personen können diesen Chat sehen"
   },
   "demoData": {
     "badge": {

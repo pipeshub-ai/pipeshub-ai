@@ -1,10 +1,13 @@
 /** Drives each streaming chat handler against the in-memory store and fake AI service. */
+import { withOwnerGrant } from '../helpers/conversation-grant'
 import * as controllerModule from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
+import { behindGuard, realGuards } from '../helpers/guarded-chat'
+import { turnDeps } from '../helpers/turn-deps'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
 
 export type Controller = typeof controllerModule
-export type StreamHandler = (req: never, res: never) => Promise<unknown>
+export type StreamHandler = (req: never, res: never, next?: never) => Promise<unknown>
 type SessionDoc = InstanceType<typeof ChatSession>
 
 export const appConfig = { aiBackend: 'http://ai.test', jwtSecret: 'test-jwt-secret', scopedJwtSecret: 'test-scoped-secret' } as never
@@ -47,7 +50,7 @@ export const seedConversation = (store: InMemoryChatStore, agent: boolean): { se
 export const flows: Flow[] = [
   {
     name: 'streamChat',
-    handler: (c) => c.streamChat(appConfig) as StreamHandler,
+    handler: (c) => c.streamChat(appConfig, turnDeps()) as StreamHandler,
     prepare: () => ({ params: {}, body: { query: 'What changed in the release?' } }),
     aiPath: '/api/v1/chat/stream',
     agent: false,
@@ -55,7 +58,7 @@ export const flows: Flow[] = [
   },
   {
     name: 'addMessageStream',
-    handler: (c) => c.addMessageStream(appConfig) as StreamHandler,
+    handler: (c) => behindGuard(realGuards(), 'send', c.addMessageStream(appConfig, turnDeps()) as StreamHandler) as StreamHandler,
     prepare: (store) => {
       const { session } = seedConversation(store, false)
       return { params: { conversationId: String(session._id) }, body: { query: 'And the one before?' }, existing: session }
@@ -66,7 +69,7 @@ export const flows: Flow[] = [
   },
   {
     name: 'regenerateAnswers',
-    handler: (c) => c.regenerateAnswers(appConfig) as StreamHandler,
+    handler: (c) => behindGuard(realGuards(), 'regenerate', c.regenerateAnswers(appConfig, turnDeps()) as StreamHandler) as StreamHandler,
     prepare: (store) => {
       const { session, botId } = seedConversation(store, false)
       return { params: { conversationId: String(session._id), messageId: botId }, body: {}, existing: session, replacedMessageId: botId }
@@ -77,7 +80,7 @@ export const flows: Flow[] = [
   },
   {
     name: 'streamAgentConversation',
-    handler: (c) => c.streamAgentConversation(appConfig) as StreamHandler,
+    handler: (c) => c.streamAgentConversation(appConfig, turnDeps()) as StreamHandler,
     prepare: () => ({ params: { agentKey: AGENT_KEY }, body: { query: 'Summarise the roadmap' } }),
     aiPath: `/api/v1/agent/${AGENT_KEY}/chat/stream`,
     agent: true,
@@ -85,7 +88,7 @@ export const flows: Flow[] = [
   },
   {
     name: 'addMessageStreamToAgentConversation',
-    handler: (c) => c.addMessageStreamToAgentConversation(appConfig) as StreamHandler,
+    handler: (c) => c.addMessageStreamToAgentConversation(appConfig, turnDeps()) as StreamHandler,
     prepare: (store) => {
       const { session } = seedConversation(store, true)
       return { params: { conversationId: String(session._id), agentKey: AGENT_KEY }, body: { query: 'More detail please' }, existing: session }
@@ -96,7 +99,7 @@ export const flows: Flow[] = [
   },
   {
     name: 'regenerateAgentAnswers',
-    handler: (c) => c.regenerateAgentAnswers(appConfig) as StreamHandler,
+    handler: (c) => c.regenerateAgentAnswers(appConfig, turnDeps()) as StreamHandler,
     prepare: (store) => {
       const { session, botId } = seedConversation(store, true)
       return {
@@ -124,14 +127,18 @@ export interface Run {
   answer: () => Record<string, unknown> | undefined
 }
 
-const requestFor = (prepared: Prepared): Record<string, unknown> => ({
-  headers: { authorization: 'Bearer token' },
-  params: prepared.params,
-  body: prepared.body,
-  query: {},
-  user: { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
-  context: { requestId: 'req-stream' },
-})
+const requestFor = (
+  prepared: Prepared,
+  user: Record<string, unknown> = { userId: OWNER, orgId: ORG, email: 'owner@example.com' },
+): Record<string, unknown> =>
+  withOwnerGrant({
+    headers: { authorization: 'Bearer token' },
+    params: prepared.params,
+    body: prepared.body,
+    query: {},
+    user,
+    context: { requestId: 'req-stream' },
+  })
 
 /**
  * Sends the same request again to the same conversation and fake AI service, the way a
@@ -148,7 +155,7 @@ export async function startStream(
   flow: Flow,
   c: Controller = controllerModule,
   before?: (ai: FakeAIBackend) => void,
-  options: { wait?: boolean } = {},
+  options: { wait?: boolean; user?: Record<string, unknown> } = {},
 ): Promise<Run> {
   const store = new InMemoryChatStore()
   const ai = new FakeAIBackend()
@@ -157,7 +164,7 @@ export async function startStream(
   before?.(ai)
   const prepared = flow.prepare(store)
   const res = new FakeSSEResponse()
-  const done = flow.handler(c)(requestFor(prepared) as never, res as never)
+  const done = flow.handler(c)(requestFor(prepared, options.user) as never, res as never)
   if (options.wait !== false) await done
   await settle()
   const conversation = (): SessionDoc => {

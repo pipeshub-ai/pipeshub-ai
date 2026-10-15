@@ -6,7 +6,7 @@ import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } f
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
-import { AgentChatHeader } from '@/config';
+import { AgentChatHeader, chatSlots, chatExtension } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
 import { ConversationHeaderOverlay } from '@/config';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -40,7 +40,6 @@ import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
-import { createChatShareAdapter } from './share-adapter';
 import { ChatSearch } from './components/search';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -48,6 +47,7 @@ import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { useToastElementInset } from '@/lib/toast-safe-area';
 import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
@@ -228,9 +228,8 @@ function ChatContent() {
   const activeSlotThreadAgentId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.threadAgentId ?? null : null
   );
-  const activeSlotIsOwner = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
-  );
+  const conversationAccess = chatSlots.useChatAccess(activeSlotId);
+  chatSlots.usePageEffects(activeSlotId);
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
   );
@@ -702,9 +701,10 @@ function ChatContent() {
     const loadHistory = async (attempt = 0): Promise<void> => {
       const generation = generationOf();
       try {
+        const { quietWhenGone } = chatExtension.history.loadOptions();
         const detail = historyAndShareAgentId
-          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
-          : await ChatApi.fetchConversation(convId);
+          ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId, { quietWhenGone })
+          : await ChatApi.fetchConversation(convId, undefined, undefined, { quietWhenGone });
         if (cancelled) return;
         if (generationOf() !== generation) {
           return retryStale(attempt);
@@ -772,6 +772,7 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
+          ...chatExtension.history.detailFields(detail.conversation),
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -784,13 +785,15 @@ function ChatContent() {
         if (!cancelled && generationOf() !== generation) {
           return retryStale(attempt);
         }
-        console.error('Failed to load conversation history:', error);
+        const failureFields = chatExtension.history.loadFailureFields(error);
+        if (!failureFields) console.error('Failed to load conversation history:', error);
         if (!cancelled) {
           // Mark as initialized to avoid infinite retries, but leave isOwner
           // untouched: a transient fetch failure shouldn't flip the share
           // button off for an actual owner.
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
+            ...failureFields,
           });
           // The API client already explains HTTP failures in its own toast.
           if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
@@ -1005,7 +1008,8 @@ function ChatContent() {
       return;
     }
     let cancelled = false;
-    UsersApi.getUsersByIds([mongoUserId])
+    // A display-only name: a failed lookup leaves it out instead of raising an error toast over the thread.
+    UsersApi.getUsersByIds([mongoUserId], { quiet: true })
       .then((users) => {
         if (cancelled) return;
         const user = users[0];
@@ -1048,22 +1052,16 @@ function ChatContent() {
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
 
-  const chatShareAdapter = useMemo(() => {
-    if (!conversationId) return null;
-    return createChatShareAdapter(
-      conversationId,
-      historyAndShareAgentId ? { agentId: historyAndShareAgentId } : undefined
-    );
-  }, [conversationId, historyAndShareAgentId]);
+  const chatShareAdapter = chatSlots.useConversationShareAdapter(conversationId, historyAndShareAgentId);
 
-  // Agent threads are not shareable by anyone (including the owner), so gate on
-  // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
+  // Agent threads are not shareable by anyone (including the owner) unless the access says so;
+  // gate on historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
   const showConversationShare =
     Boolean(
       conversationId &&
         chatShareAdapter &&
-        activeSlotIsOwner === true &&
-        !historyAndShareAgentId
+        conversationAccess.canShare &&
+        (conversationAccess.shareAgentChats || !historyAndShareAgentId)
     );
 
   useEffect(() => {
@@ -1071,6 +1069,23 @@ function ChatContent() {
       setIsShareSidebarOpen(false);
     }
   }, [showConversationShare, isShareSidebarOpen]);
+
+  const chatHeader = chatSlots.useChatHeader({
+    slotId: activeSlotId,
+    conversationId,
+    threadAgentId: historyAndShareAgentId,
+    pageAgentId: agentId,
+    showConversationShare,
+    openShare: () => setIsShareSidebarOpen(true),
+  });
+  const onHeaderShareOpenChange = chatHeader.onShareOpenChange;
+  const handleShareOpenChange = useCallback(
+    (open: boolean) => {
+      setIsShareSidebarOpen(open);
+      onHeaderShareOpenChange?.(open);
+    },
+    [onHeaderShareOpenChange],
+  );
 
   const handleShareClick = useCallback(() => {
     if (!chatShareAdapter) return;
@@ -1110,10 +1125,13 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
-  // Hide chat input when viewing a shared conversation the user does not own.
-  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
-  const showChatInput = activeSlotIsOwner !== false;
-
+  // Hide chat input when the server says the user cannot send. Before the detail response
+  // arrives access is unknown — keep input visible to avoid a flash.
+  const showChatInput = conversationAccess.showComposer;
+  const emptyState = chatSlots.useEmptyState({
+    slotId: activeSlotId,
+    onPick: (text) => handleSuggestionClick({ id: 'empty-state', text, icons: [] }),
+  });
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -1125,6 +1143,9 @@ function ChatContent() {
   /** New-chat landing (main or `?agentId=`): input sits in the centered hero with the greeting;
    * after the first message it renders in the fixed bottom slot (`showNewChatView` false). */
   const isInputCentered = showNewChatView;
+  // The banners and prompts stacked above the docked composer sit outside its own measured box.
+  const [composerColumn, setComposerColumn] = useState<HTMLDivElement | null>(null);
+  useToastElementInset(isInputCentered ? null : composerColumn);
 
   // Show loading state when slot exists but hasn't loaded history yet
   const showLoading = hasActiveSlot && !activeSlotIsInitialized;
@@ -1299,11 +1320,11 @@ function ChatContent() {
             </Tooltip>
           ) : null
         }
-        shareGroup={
+        shareGroup={chatHeader.render(
           showConversationShare ? (
-            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
-          ) : null
-        }
+            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} peopleCount={chatHeader.peopleCount} />
+          ) : null,
+        )}
       />
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
@@ -1427,7 +1448,7 @@ function ChatContent() {
           </Flex>
         ) : (
           <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
-            <MessageList />
+            {emptyState ?? <MessageList />}
           </Box>
         )}
 
@@ -1442,12 +1463,14 @@ function ChatContent() {
           }}
         >
           <Box
+            ref={setComposerColumn}
             style={{
               ...chatContentColumnStyle(isMobile),
               paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
               paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
             }}
           >
+            <chatSlots.ComposerBanners slotId={activeSlotId} hasMessages={activeSlotMsgCount > 0} />
             {!isInputCentered && showChatInput && <ChatInputWrapper />}
             <ChatFooterLinks />
           </Box>
@@ -1607,10 +1630,12 @@ function ChatContent() {
       {showConversationShare && chatShareAdapter && (
         <ShareSidebar
           open={isShareSidebarOpen}
-          onOpenChange={setIsShareSidebarOpen}
+          onOpenChange={handleShareOpenChange}
+          initialSearch={chatHeader.shareInitialSearch}
           adapter={chatShareAdapter}
           onShareSuccess={() => {
             chatShareAdapter.getSharedMembers().then((members) => {
+              chatHeader.onShareMembers?.(members);
               setSharedMembers(
                 members
                   .filter((m) => !m.isOwner)
@@ -1625,6 +1650,8 @@ function ChatContent() {
           }}
         />
       )}
+
+      {chatHeader.sidebars}
 
       {/* Command palette overlay (⌘+K) */}
       <ChatSearch

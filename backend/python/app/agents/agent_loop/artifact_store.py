@@ -128,7 +128,7 @@ def build_artifact_store(context: "AgentContext") -> Any:
     if context.artifact_registry and context.conversation_id:
         return RegistryBackedStore(
             registry=context.artifact_registry,
-            actor=Actor(org_id=context.org_id, user_id=context.user_id),
+            actor=Actor.from_context(context),
             conversation_id=context.conversation_id,
         )
     return InMemoryArtifactStore()

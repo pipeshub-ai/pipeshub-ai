@@ -14,6 +14,9 @@ Four tiers, each a real check:
 3. `check_record_access_with_details` as the completeness backstop, covering
    KB membership, team, group, record-group, org, and anyone-link paths.
 
+4. Chat content (a non-uploader's chat attachment or artifact): the installed
+   `ChatContentAccess` decides. Only reached when tiers 2 and 3 fail.
+
 Tiers are additive, not alternative — tier 3 only runs when tiers 1 and 2
 both fail to confirm access. No bypass path exists; service-account callers
 follow the same gate (see plan §Authorization — Open decision).
@@ -25,6 +28,10 @@ import logging
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.authz.chat_content_access import (
+    ChatContentAccess,
+    get_chat_content_access,
+)
 from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.graph_db.common.record_visibility import is_live_record
 
@@ -42,10 +49,13 @@ class TieredRecordAuthorizer:
     beyond the injected graph_provider.
     """
 
-    def __init__(self, graph_provider: Any) -> None:
+    def __init__(self, graph_provider: Any, chat_access: ChatContentAccess | None = None) -> None:
         self._graph = graph_provider
+        self._chat_access = chat_access
 
-    async def authorize(self, actor: Any, record: Any) -> None:
+    async def authorize(
+        self, actor: Any, record: Any, *, conversation_id: str | None = None,
+    ) -> None:
         """Authorize `actor` to read `record`. Raises `RecordAccessDeniedError`
         on denial; returns `None` on success.
 
@@ -82,6 +92,17 @@ class TieredRecordAuthorizer:
             actor.user_id, actor.org_id, record_id
         )
         if tier3_result is not None:
+            return
+
+        # Tier 4 — chat content of another user
+        if await (self._chat_access or get_chat_content_access()).can_read_chat_content(
+            self._graph,
+            user_id=actor.user_id,
+            org_id=actor.org_id,
+            record=record,
+            conversation_id=conversation_id,
+            acl_version=getattr(actor, "acl_version", None),
+        ):
             return
 
         logger.warning(

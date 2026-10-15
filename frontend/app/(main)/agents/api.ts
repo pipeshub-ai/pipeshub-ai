@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
-import { mapApiConversationToConversation } from '@/chat/api';
+import { isGoneError } from '@/lib/api/api-error';
+import { mapApiConversationToConversation, mapArchivedConversation } from '@/chat/api';
 import type { ConversationApiResponse, ConversationsListResponse, Conversation } from '@/chat/types';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from '@/chat/constants';
 
@@ -410,11 +411,14 @@ export const AgentsApi = {
   async fetchAgentConversation(
     agentId: string,
     conversationId: string,
-    options?: { page?: number; limit?: number }
+    options?: { page?: number; limit?: number; quietWhenGone?: boolean }
   ): Promise<FetchAgentConversationResult> {
     const { data } = await apiClient.get<AgentConversationDetailApiResponse>(
       `${AGENTS_BASE_URL}/${agentId}/conversations/${conversationId}`,
-      { params: { page: options?.page, limit: options?.limit } },
+      {
+        params: { page: options?.page, limit: options?.limit },
+        ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
+      },
     );
 
     const conv = data?.conversation;
@@ -542,7 +546,7 @@ export const AgentsApi = {
     return {
       groups: (data?.groups ?? []).map((g) => ({
         agentKey: g.agentKey,
-        conversations: g.conversations.map((c: any) => mapApiConversationToConversation(c)),
+        conversations: g.conversations.map((c: any) => mapArchivedConversation(c)),
         pagination: g.pagination,
       })),
       agentPagination: data?.agentPagination ?? {
@@ -574,7 +578,7 @@ export const AgentsApi = {
     }>(`${AGENTS_BASE_URL}/${agentId}/conversations/show/archives`, { params: query });
 
     return {
-      conversations: (data?.conversations ?? []).map(mapApiConversationToConversation),
+      conversations: (data?.conversations ?? []).map((c) => mapArchivedConversation(c)),
       sharedConversations: [],
       pagination: data?.pagination ?? {
         page: 1, limit: 20, totalCount: 0, totalPages: 0, hasNextPage: false, hasPrevPage: false,
@@ -597,8 +601,11 @@ export const AgentsApi = {
   },
 
   /** POST /api/v1/agents/create */
-  async createAgent(payload: AgentFormPayload): Promise<AgentDetail> {
-    const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload);
+  async createAgent(
+    payload: AgentFormPayload,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentDetail> {
+    const { data } = await apiClient.post<CreateAgentApiResponse>(`${AGENTS_BASE_URL}/create`, payload, options);
     if (!data?.agent) throw new Error('Create agent failed');
     return data.agent;
   },
@@ -607,8 +614,12 @@ export const AgentsApi = {
    * PUT /api/v1/agents/:agentKey
    * Some deployments return only `{ status, message }` on success; we then GET the agent.
    */
-  async updateAgent(agentKey: string, payload: Partial<AgentFormPayload>): Promise<AgentDetail> {
-    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload);
+  async updateAgent(
+    agentKey: string,
+    payload: Partial<AgentFormPayload>,
+    options?: { suppressErrorToast?: boolean },
+  ): Promise<AgentDetail> {
+    const { data } = await apiClient.put<UpdateAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`, payload, options);
 
     if (data?.agent && typeof data.agent === 'object') {
       return data.agent;
@@ -629,11 +640,12 @@ export const AgentsApi = {
   },
 
   /** GET /api/v1/knowledgeBase/ — collections for agent builder (limit 1–100 per request). */
-  async getKnowledgeBasesForBuilder(params?: { page?: number; limit?: number }): Promise<KnowledgeBasesForBuilderResult> {
+  async getKnowledgeBasesForBuilder(params?: { page?: number; limit?: number; quiet?: boolean }): Promise<KnowledgeBasesForBuilderResult> {
     const limit = Math.min(Math.max(params?.limit ?? KB_PAGE_MAX, 1), KB_PAGE_MAX);
     const page = Math.max(params?.page ?? 1, 1);
     const { data } = await apiClient.get<KnowledgeBaseListApiResponse>('/api/v1/knowledgeBase/', {
       params: { page, limit },
+      suppressErrorToast: params?.quiet,
     });
     return { knowledgeBases: data?.knowledgeBases ?? [] };
   },
@@ -663,6 +675,7 @@ export const AgentsApi = {
     sortBy?: string;
     sortOrder?: 'asc' | 'desc';
     flattened?: boolean;
+    quiet?: boolean;
   }): Promise<{ nodes: KnowledgeHubAppNode[]; hasNext: boolean }> {
     const query: Record<string, string | number | boolean> = {};
     query.page = params?.page ?? 1;
@@ -678,7 +691,7 @@ export const AgentsApi = {
 
     const { data } = await apiClient.get<KnowledgeHubNodesApiResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
-      { params: query }
+      { params: query, suppressErrorToast: params?.quiet }
     );
 
     const items = (data?.items ?? []).filter((node) => node?.id);

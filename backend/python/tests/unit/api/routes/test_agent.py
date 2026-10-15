@@ -10,6 +10,9 @@ from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
 from app.utils.user_messages import DATABASE_UNREACHABLE
+from tests.support.edition import (
+    org_wide_service_account_agents,  # noqa: F401 - fixture
+)
 
 
 async def _drain(response) -> str:
@@ -362,6 +365,31 @@ class TestBuildPriorRoutingMessages:
                 history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
             )
             assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_access_check_is_scoped_to_this_chat(self) -> None:
+        """A history attachment is checked for this chat and its aclVersion."""
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock(return_value=None)
+        check = AsyncMock(return_value=False)
+        with patch("app.utils.record_access.caller_can_read_virtual_record", check):
+            await _build_prior_routing_messages(
+                {
+                    "conversationId": "conv-7",
+                    "aclVersion": 4,
+                    "previous_conversations": [{
+                        "role": "user_query",
+                        "content": "read this",
+                        "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-b"}],
+                    }],
+                },
+                blob_store=blob, org_id="org-x", user_id="u1", graph_provider=_readable_graph(),
+                is_multimodal_llm=False,
+            )
+        assert check.await_args.kwargs["conversation_id"] == "conv-7"
+        assert check.await_args.kwargs["acl_version"] == 4
         blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
@@ -4200,6 +4228,7 @@ class TestCreateKnowledgeEdgesFullCoverage:
             await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
+@pytest.mark.usefixtures("org_wide_service_account_agents")
 class TestServiceAccountAgentRoutes:
     @pytest.mark.asyncio
     async def test_create_agent_service_account_forces_org_permission(self) -> None:

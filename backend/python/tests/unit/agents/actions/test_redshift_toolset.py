@@ -291,19 +291,19 @@ class TestExecuteQuery:
 
     async def test_full_result_is_exported_as_csv(self, make_tool) -> None:
         blob = create_autospec(BlobStorage, instance=True)
-        blob.save_conversation_file_to_storage.return_value = {"signedUrl": "https://files/r.csv"}
-        state = {"conversation_id": "conv-rs", "org_id": "org-1", "blob_storage": blob}
+        blob.save_versioned_artifact_to_storage.return_value = {"documentId": "doc-1", "fileName": "q.csv"}
+        state = {"conversation_id": "conv-rs", "org_id": "org-1", "user_id": "user-1", "blob_storage": blob, "graph_provider": MagicMock()}
         tool, _ = make_tool(_Catalog(WAREHOUSE, on_query=lambda q, p: _rows(150)), state=state)
 
-        await tool.execute_query(query="SELECT * FROM public.customers")
-        tasks = pop_tasks("conv-rs")
-        assert len(tasks) == 1
-        result = await tasks[0]
+        with patch("app.sandbox.artifact_upload.create_artifact_record", AsyncMock(return_value="rec-1")):
+            await tool.execute_query(query="SELECT * FROM public.customers")
+            tasks = pop_tasks("conv-rs")
+            assert len(tasks) == 1
+            result = await tasks[0]
         assert result["type"] == "artifacts"
         (entry,) = result["artifacts"]
-        assert (entry["signedUrl"], entry["mimeType"]) == ("https://files/r.csv", "text/csv")
-        assert "recordId" not in entry
-        lines = blob.save_conversation_file_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
+        assert (entry["recordId"], entry["mimeType"]) == ("rec-1", "text/csv")
+        lines = blob.save_versioned_artifact_to_storage.await_args.kwargs["file_bytes"].decode().splitlines()
         assert (lines[0], len(lines)) == ("id,email", 151)
 
     async def test_export_is_an_artifact_owned_by_the_user(self, make_tool) -> None:

@@ -1,0 +1,26 @@
+{
+  "request": {
+    "valid": [
+      { "recordIds": [] },
+      { "recordIds": ["rec-1", "rec-2"] }
+    ],
+    "invalid": [
+      { "recordIds": "rec-1" },
+      { "recordIds": [1, 2] },
+      { "ids": ["rec-1"] },
+      {}
+    ]
+  },
+  "response": {
+    "valid": [
+      { "recordIds": [] },
+      { "recordIds": ["rec-1"] }
+    ],
+    "invalid": [
+      { "recordIds": null },
+      { "recordIds": [null] },
+      { "recordIds": "rec-1" },
+      []
+    ]
+  }
+}

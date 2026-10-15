@@ -114,7 +114,8 @@ export function UserAvatar({
     <Badge
       style={{
         backgroundColor: 'var(--accent-a3)',
-        color: 'var(--accent-a11)',
+        // accent-a11 on accent-a3 is 4.2:1 at this size, under WCAG AA's 4.5:1.
+        color: 'var(--accent-12)',
         padding: 'var(--space-1)',
         borderRadius: 'var(--radius-2)',
         flexShrink: 0,

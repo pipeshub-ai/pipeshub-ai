@@ -14,6 +14,8 @@ from app.connectors.core.registry.oauth_config_registry import (
     get_oauth_config_registry,
 )
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+# Chat and agent-loop hooks (see app.modules.agents.chat_extension).
+from app.modules.agents.chat_extension import default_chat_extension
 # Which indexing lane a connector is given on Redis Streams, and whether an
 # administrator may move it. An edition can replace either: pin a connector to
 # a lane of its own, weight lanes, or allow admin moves.
@@ -23,6 +25,8 @@ from app.services.messaging.lanes.assignment_policy import (
 from app.services.messaging.lanes.assignment_policy import (
     choose_connector_lane as choose_connector_lane,
 )
+
+chat_extension = default_chat_extension
 
 
 def __getattr__(name: str) -> Any:
@@ -40,6 +44,11 @@ def __getattr__(name: str) -> Any:
 
         return RecordEventHandler
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def sa_forces_org_sharing() -> bool:
+    """Service-account agents are always shared with the whole org."""
+    return True
 
 
 def get_connector_registry_cls():

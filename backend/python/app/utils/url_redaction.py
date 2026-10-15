@@ -46,6 +46,22 @@ CREDENTIAL_WORDS = frozenset({
 REDACTED = "[REDACTED]"
 _URL_IN_TEXT = re.compile(r"https?://[^\s'\")]+")
 
+# Azure SAS (sig), S3 SigV4 / GCS SigV2 (x-amz-signature / signature), GCS V4.
+# Kept in step with SIGNED_URL_QUERY_PARAMS in the Node enterprise_search signed-url util.
+SIGNATURE_QUERY_PARAMS = frozenset({"sig", "signature", "x-amz-signature", "x-goog-signature"})
+
+
+def has_signature_query(url: str) -> bool:
+    """True when the URL's query or fragment carries a storage-provider signature."""
+    if not url:
+        return False
+    parts = re.split(r"[?#]", url)[1:]
+    return any(
+        key.lower() in SIGNATURE_QUERY_PARAMS
+        for part in parts
+        for key, _ in parse_qsl(part, keep_blank_values=True)
+    )
+
 
 # How many layers of URL-inside-a-parameter (or percent-encoding) are opened.
 _MAX_NESTING = 3

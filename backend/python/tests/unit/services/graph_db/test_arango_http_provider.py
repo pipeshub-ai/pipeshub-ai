@@ -788,6 +788,14 @@ class TestGetGraphUserKeysByMongoUserIds:
                 ["507f1f77bcf86cd799439011"], chunk_size=500
             )
 
+    @pytest.mark.asyncio
+    async def test_allow_missing_leaves_unknown_users_out(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [{"userId": "known", "_key": "u1"}]
+        result = await connected_provider.get_graph_user_keys_by_mongo_user_ids(
+            ["known", "unknown"], chunk_size=500, allow_missing=True
+        )
+        assert result == {"known": "u1"}
+
 
 # ---------------------------------------------------------------------------
 # createdByUser enrichment helpers
@@ -1285,6 +1293,12 @@ class TestGetRecordsByRecordIds:
         connected_provider.http_client.execute_aql.side_effect = Exception("fail")
         result = await connected_provider.get_records_by_record_ids(["r1"], "org1")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.http_client.execute_aql.side_effect = Exception("fail")
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.get_records_by_record_ids(["r1"], "org1", raise_on_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -12714,6 +12728,12 @@ class TestListKbPermissionsExtended:
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
         result = await connected_provider.list_kb_permissions("kb1")
         assert result == []
+
+    @pytest.mark.asyncio
+    async def test_exception_raised_when_asked(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.list_kb_permissions("kb1", raise_on_error=True)
 
 
 # ---------------------------------------------------------------------------

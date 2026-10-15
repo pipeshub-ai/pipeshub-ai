@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { renderHook } from '@testing-library/react';
+import { act, renderHook } from '@testing-library/react';
+import { useNotificationStore } from '../store';
 import { useNotificationSocket } from '../websocket-manager';
 
 const authState = {
@@ -8,14 +9,19 @@ const authState = {
   isHydrated: true,
 };
 
-vi.mock('@/config', () => ({
+vi.mock('@/config', async () => ({
   useAuthStore: (fn: (s: typeof authState) => unknown) => fn(authState),
   logoutAndRedirect: vi.fn(),
+  notificationExtension: (await vi.importActual<typeof import('../notification-extension')>('../notification-extension'))
+    .defaultNotificationExtension,
 }));
 
+const socketHandlers: Record<string, (payload: unknown) => void> = {};
 const connectMock = vi.fn(() => ({
   connected: false,
-  on: vi.fn(),
+  on: vi.fn((event: string, fn: (payload: unknown) => void) => {
+    socketHandlers[event] = fn;
+  }),
   off: vi.fn(),
 }));
 
@@ -107,4 +113,19 @@ describe('useNotificationSocket', () => {
     expect(connectMock).toHaveBeenCalledWith('jwt-rotated');
     expect(disconnectMock).toHaveBeenCalled();
   });
+
+  it('applies a notificationUpdated event as an upsert, not a second row', () => {
+    useNotificationStore.setState({ notifications: [], unreadCount: 0 });
+    renderHook(() => {
+      useNotificationSocket();
+    });
+    const row = { _id: 'n1', type: 'chat.activity', status: 'unread', payload: { sessionId: 's1', count: 1 } };
+    act(() => socketHandlers.newNotification(row));
+    act(() => socketHandlers.notificationUpdated({ ...row, payload: { sessionId: 's1', count: 5 } }));
+    const { notifications, unreadCount } = useNotificationStore.getState();
+    expect(notifications).toHaveLength(1);
+    expect(notifications[0].payload?.count).toBe(5);
+    expect(unreadCount).toBe(1);
+  });
+
 });

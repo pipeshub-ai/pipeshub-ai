@@ -272,7 +272,7 @@ describe('error toasts', () => {
 
   it('says to check the connection when the request never reached the server', async () => {
     fakeServer(new Error('Network Error'));
-    await expect(apiClient.get('/x')).rejects.toMatchObject({ type: ErrorType.NETWORK_ERROR });
+    await expect(apiClient.get('/x', { retryOnNetworkError: false })).rejects.toMatchObject({ type: ErrorType.NETWORK_ERROR });
     expect(errorToasts()[0].title).toBe('Connection Error');
   });
 

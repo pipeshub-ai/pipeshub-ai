@@ -5,6 +5,8 @@ import { requireScopes } from '../../../libs/middlewares/require-scopes.middlewa
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { CONVERSATION_TYPES } from '../../enterprise_search/services/conversation/conversation.types';
+import { IConversationGuards } from '../../enterprise_search/services/conversation/http/conversation-guards';
 import {
   artifactIdParamsSchema,
   artifactShareSchema,
@@ -24,12 +26,17 @@ export function createArtifactsRouter(container: Container): Router {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const authenticate = authMiddleware.authenticate.bind(authMiddleware);
   const appConfig = container.get<AppConfig>('AppConfig');
+  // Conversation titles are joined with the same read filter as the conversation lists.
+  const guards = container.get<IConversationGuards>(
+    CONVERSATION_TYPES.ConversationGuards,
+  );
 
   router.get(
     '/',
     authenticate,
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(listArtifactsSchema),
+    guards.listScope('any'),
     listArtifacts(appConfig),
   );
 
@@ -70,6 +77,7 @@ export function createArtifactsRouter(container: Container): Router {
     authenticate,
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(artifactIdParamsSchema),
+    guards.listScope('any'),
     getArtifact(appConfig),
   );
 

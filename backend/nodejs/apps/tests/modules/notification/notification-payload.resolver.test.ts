@@ -96,4 +96,42 @@ describe('notification/notification-payload.resolver', () => {
       expect(ids.map((id) => id.toString())).to.have.members([user1, user2]);
     });
   });
+  describe('outbox events', () => {
+    const user = new mongoose.Types.ObjectId();
+    const outboxEvent = {
+      orgId,
+      type: 'chat.activity',
+      recipientUserIds: [user.toString()],
+      dedupeKey: 'chat.activity:s1:u1',
+      coalesceKey: 'chat.activity:s1',
+      emailIntent: { template: 'chatShared', actorName: 'Ada', orgName: 'Acme', accessLevel: 'read' },
+      payload: { sessionId: 's1' },
+    };
+
+    it('parses a JSON string value into the same message as the object', () => {
+      expect(toBrokerMessage(JSON.stringify(outboxEvent))).to.deep.equal(outboxEvent);
+    });
+
+    it('rejects a string that is not a JSON object', () => {
+      expect(toBrokerMessage('{broken')).to.be.null;
+      expect(toBrokerMessage('"text"')).to.be.null;
+      expect(toBrokerMessage('[1,2]')).to.be.null;
+      expect(toBrokerMessage('null')).to.be.null;
+    });
+
+    it('rejects a JSON string with an invalid org or type', () => {
+      expect(toBrokerMessage(JSON.stringify({ orgId: 'bad', type: 'x' }))).to.be.null;
+      expect(toBrokerMessage(JSON.stringify({ orgId }))).to.be.null;
+    });
+
+    it('keeps dedupeKey and coalesceKey on the stored doc but drops emailIntent', () => {
+      const event = toBrokerMessage(JSON.stringify(outboxEvent));
+      const doc = buildNotificationDocForUser(event!, user);
+      expect(doc).to.include({
+        dedupeKey: 'chat.activity:s1:u1',
+        coalesceKey: 'chat.activity:s1',
+      });
+      expect(doc).to.not.have.any.keys('emailIntent', 'recipientUserIds', 'recipientRoles');
+    });
+  });
 });

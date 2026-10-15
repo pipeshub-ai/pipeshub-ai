@@ -3,24 +3,15 @@ import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
+import { objectId, teamId } from '../../../libs/validators/zod-primitives';
 
 // ---------------------------------------------------------------------------
 // Primitive validators
 // ---------------------------------------------------------------------------
 
-const OBJECT_ID_REGEX = /^[a-fA-F0-9]{24}$/;
+const mongoUserId = objectId('user ID');
 
-/** UUID team key or system org "All" team `all_{mongoOrgId}`. */
-const TEAM_GRAPH_KEY_REGEX =
-  /^(all_[a-fA-F0-9]{24}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$/;
-
-const mongoUserId = z
-  .string()
-  .regex(OBJECT_ID_REGEX, { message: 'Invalid user ID format' });
-
-const teamGraphKey = z
-  .string()
-  .regex(TEAM_GRAPH_KEY_REGEX, { message: 'Invalid team ID format' });
+const teamGraphKey = teamId('Invalid team ID format');
 
 const teamRole = z.enum(['OWNER', 'READER', 'WRITER']);
 

@@ -17,6 +17,8 @@ export interface ProcessedError {
   type: ErrorType;
   message: string;
   statusCode?: number;
+  /** Machine-readable code from a nested `error.code`; undefined for string `error` bodies. */
+  code?: string;
   details?: Record<string, unknown>;
   /** Reference the server logged this failure under, shown so it can be quoted. */
   requestId?: string;
@@ -26,6 +28,7 @@ export interface ProcessedError {
 interface NestedApiError {
   code?: string;
   message?: string;
+  details?: Record<string, unknown>;
 }
 
 interface ApiErrorResponse {
@@ -41,6 +44,25 @@ interface ApiErrorResponse {
   reason?: string;
   /** Node error middleware: the reference to quote when asking for help. */
   requestId?: string;
+}
+
+function nestedError(body: unknown): NestedApiError | undefined {
+  const error = (body as ApiErrorResponse | null | undefined)?.error;
+  return error && typeof error === 'object' ? error : undefined;
+}
+
+export function extractApiErrorCode(body: unknown): string | undefined {
+  const code = nestedError(body)?.code;
+  return typeof code === 'string' && code ? code : undefined;
+}
+
+/** Top-level `details` wins; the nested one is only a fallback. */
+export function extractApiErrorDetails(body: unknown): Record<string, unknown> | undefined {
+  if (body == null || typeof body !== 'object') return undefined;
+  const top = (body as ApiErrorResponse).details;
+  if (top !== undefined) return top;
+  const nested = nestedError(body)?.details;
+  return nested && typeof nested === 'object' ? nested : undefined;
 }
 
 /**
@@ -155,6 +177,8 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
   }
 
   const { status, data } = error.response;
+  const code = extractApiErrorCode(data);
+  const bodyDetails = extractApiErrorDetails(data);
   // The Node error middleware sends this beside the message; a nested
   // `error.requestId` is the same value one level down.
   const nestedRequestId =
@@ -184,7 +208,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.AUTHENTICATION_ERROR,
           message: message || 'Session expired. Please sign in again.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -193,19 +217,19 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.AUTHORIZATION_ERROR,
           message: message || 'You do not have permission to perform this action.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
       case 404: {
         const bodyStatus = typeof data?.status === 'string' ? data.status : undefined;
         const baseDetails =
-          data?.details && typeof data.details === 'object' ? { ...data.details } : {};
+          bodyDetails && typeof bodyDetails === 'object' ? { ...bodyDetails } : {};
         return {
           type: ErrorType.NOT_FOUND,
           message: message || 'The requested resource was not found.',
           statusCode: status,
-          details: bodyStatus ? { ...baseDetails, apiStatus: bodyStatus } : data?.details,
+          details: bodyStatus ? { ...baseDetails, apiStatus: bodyStatus } : bodyDetails,
           originalError: error,
         };
       }
@@ -219,7 +243,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
             (typeof message === 'string' ? message.trim() : '') ||
             'Invalid request. Please check your input.',
           statusCode: status,
-          details: data?.errors ? { errors: data.errors } : data?.details,
+          details: data?.errors ? { errors: data.errors } : bodyDetails,
           originalError: error,
         };
 
@@ -228,7 +252,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.CONFLICT,
           message: message || 'A conflict occurred. Please try again.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -242,7 +266,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.SERVER_ERROR,
           message: serverMessage || busyMessage(retryAfterSeconds(error)),
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
       }
@@ -253,7 +277,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.SERVER_ERROR,
           message: message || 'Server error. Please try again later.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
 
@@ -262,7 +286,7 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
           type: ErrorType.UNKNOWN_ERROR,
           message: message || 'An unexpected error occurred.',
           statusCode: status,
-          details: data?.details,
+          details: bodyDetails,
           originalError: error,
         };
     }
@@ -271,7 +295,8 @@ export function processError(error: AxiosError<ApiErrorResponse>): ProcessedErro
 
   // The reference rides beside the message, never inside it: a client that
   // filters technical-looking text would otherwise drop the whole sentence.
-  return requestId ? { ...processed, requestId } : processed;
+  const withCode = code ? { ...processed, code } : processed;
+  return requestId ? { ...withCode, requestId } : withCode;
 }
 
 /**
@@ -350,4 +375,9 @@ export function isSearchNoAccessibleDocumentsNotFound(error: unknown): boolean {
   const apiStatus = error.details?.apiStatus;
   if (apiStatus === SEARCH_ACCESSIBLE_RECORDS_NOT_FOUND_STATUS) return true;
   return (error.message || '').includes(SEARCH_NO_ACCESSIBLE_DOCUMENTS_FRAGMENT);
+}
+
+/** A 404 or 403: the resource is gone or no longer the caller's to see. */
+export function isGoneError(error: ProcessedError): boolean {
+  return error.statusCode === 404 || error.statusCode === 403;
 }

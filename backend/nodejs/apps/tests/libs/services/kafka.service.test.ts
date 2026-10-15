@@ -265,6 +265,23 @@ describe('Kafka Service', () => {
         expect(JSON.parse(sendArg.messages[0].value)).to.deep.equal({ type: 'TEST' });
       });
 
+      it('sends the exact keyed payload to producer.send (characterization)', async () => {
+        await producer.publish('t', { key: 'k1', value: { a: 1 } as any, headers: { h: 'v' } });
+        const sendArg = mockProd.send.firstCall.args[0];
+        expect(sendArg.topic).to.equal('t');
+        expect(sendArg.messages).to.have.length(1);
+        expect(sendArg.messages[0].key).to.equal('k1');
+        expect(sendArg.messages[0].headers).to.deep.equal({ h: 'v' });
+        expect(JSON.parse(sendArg.messages[0].value)).to.include({ a: 1 });
+      });
+
+      it('sends key undefined (default partitioning) when the message has no key', async () => {
+        await producer.publish('t', { value: { a: 1 } as any });
+        const sent = mockProd.send.firstCall.args[0].messages[0];
+        expect(sent.key).to.equal(undefined);
+        expect(JSON.parse(sent.value)).to.include({ a: 1 });
+      });
+
       it('should include headers in the formatted message', async () => {
         const msg: KafkaMessage<string> = {
           key: 'hdr-key',

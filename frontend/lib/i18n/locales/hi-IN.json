@@ -299,7 +299,9 @@
     "filterTooltip": "फ़िल्टर: {{filter}}",
     "loadFailed": "सूचनाएँ लोड करने में विफल",
     "updateFailed": "सूचना अपडेट नहीं हो सकी",
-    "removeFailed": "सूचना हटाने में विफल"
+    "removeFailed": "सूचना हटाने में विफल",
+    "showMore": "अधिक दिखाएं",
+    "showLess": "कम दिखाएं"
   },
   "action": {
     "find": "खोजें",
@@ -679,6 +681,11 @@
     "answer": "उत्तर",
     "sources": "स्रोत",
     "citation": "उद्धरण",
+    "answeredVia": {
+      "coding_agent": "कोडिंग एजेंट के माध्यम से",
+      "web_agent": "वेब रिसर्च के माध्यम से",
+      "other": "{{name}} के माध्यम से"
+    },
     "thankYouForFeedback": "आपकी प्रतिक्रिया के लिए धन्यवाद",
     "feedbackHelpsImprove": "आपकी प्रतिक्रिया हमें सुधार करने में मदद करती है",
     "feedbackError": "प्रतिक्रिया सबमिट करने में विफल",
@@ -1214,7 +1221,10 @@
         "expired": "{{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई",
         "allowedNotRun": "आपने {{tool}} की अनुमति दी, लेकिन यह नहीं चला"
       }
-    }
+    },
+    "answerViews": "उत्तर के दृश्य",
+    "answerFailedTitle": "यह उत्तर विफल रहा",
+    "answerFailedRetry": "फिर से कोशिश करें"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -4502,8 +4512,8 @@
     "somethingElse": "कुछ और",
     "questionAskedSingular": "पूछा गया प्रश्न:",
     "questionAskedPlural": "पूछे गए प्रश्न:",
-    "quickQuestionSingular": "त्वरित प्रश्न :",
-    "quickQuestionPlural": "त्वरित प्रश्न :",
+    "quickQuestionSingular": "त्वरित प्रश्न:",
+    "quickQuestionPlural": "त्वरित प्रश्न:",
     "stepOf": "चरण {{step}} में से {{total}}",
     "selectedCount": "{{count}} चयनित",
     "describeYourAnswer": "अपना उत्तर वर्णन करें…",
@@ -4511,7 +4521,9 @@
     "back": "वापस",
     "skip": "छोड़ें",
     "next": "अगला",
-    "submit": "जमा करें"
+    "submit": "जमा करें",
+    "unknownPerson": "पूर्व सदस्य",
+    "waitingFor": "{{name}} के उत्तर की प्रतीक्षा है"
   },
   "collections": {
     "stats": {
@@ -4671,7 +4683,11 @@
     },
     "team": "टीम",
     "teamsNoRoles": "टीमों की कोई भूमिकाएँ नहीं होतीं",
-    "invite": "Pipeshub में आमंत्रित करें"
+    "invite": "Pipeshub में आमंत्रित करें",
+    "andMore": "और {{count}} अन्य",
+    "removeSelection": "{{name}} को हटाएँ",
+    "peopleCanSee_one": "{{count}} व्यक्ति इस चैट को देख सकता है",
+    "peopleCanSee_other": "{{count}} लोग इस चैट को देख सकते हैं"
   },
   "demoData": {
     "badge": {

@@ -4,6 +4,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Box, Flex, Heading, Text, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { chatExtension, chatSlots } from '@/config';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -49,7 +50,7 @@ function ActionIconButton({
   );
 }
 
-function ToggleButton({
+export function ToggleButton({
   expanded,
   onToggle,
 }: {
@@ -82,7 +83,7 @@ function ToggleButton({
   );
 }
 
-function QueryActions({
+export function QueryActions({
   question,
   showEdit,
   onEdit,
@@ -102,7 +103,7 @@ function QueryActions({
   }, [copied]);
 
   const handleCopy = useCallback(() => {
-    void navigator.clipboard.writeText(question).then(() => {
+    void navigator.clipboard.writeText(chatExtension.question.toPlainText(question)).then(() => {
       setCopied(true);
     }).catch(() => {});
   }, [question]);
@@ -151,7 +152,7 @@ export function ExpandableUserQuery({
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…'
+        ? chatExtension.question.truncate(question, QUESTION_CHAR_LIMIT).trimEnd() + '…'
         : question;
 
     return (
@@ -171,7 +172,7 @@ export function ExpandableUserQuery({
             wordBreak: 'break-word',
           }}
         >
-          {displayed}
+          <chatSlots.QueryText text={displayed} />
           <span
             data-testid="user-query-inline-actions"
             style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}
@@ -218,7 +219,7 @@ export function ExpandableUserQuery({
             overflowY: 'auto',
           }}
         >
-          {question}
+          <chatSlots.QueryText text={question} />
         </Text>
         <Flex
           data-testid="user-query-actions"

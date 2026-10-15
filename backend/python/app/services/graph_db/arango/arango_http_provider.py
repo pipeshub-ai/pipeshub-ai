@@ -195,6 +195,7 @@ from app.services.graph_db.entity_index_queries import (
     build_entity_index_source_page_aql,
     entity_index_source,
 )
+from app.services.graph_db.errors import UniqueConstraintViolation, violates_unique_constraint
 from app.services.graph_db.interface.graph_db_provider import (
     CONTAINER_SCOPE_FILTER_KEYS,
     DUPLICATE_RECONCILE_ATTEMPTS_FIELD,
@@ -2596,6 +2597,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"❌ Batch upsert failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def _upsert_record_nodes_releasing_trash(
@@ -2689,6 +2692,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return result is not None
         except Exception as e:
             self.logger.error(f"❌ Update node failed: {str(e)}")
+            if violates_unique_constraint(str(e)):
+                raise UniqueConstraintViolation(str(e)) from e
             raise
 
     async def update_node_if_match(
@@ -6019,6 +6024,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         org_id: str | None = None,
         *,
         chunk_size: int,
+        allow_missing: bool = False,
     ) -> dict[str, str]:
         """Return graph user _key for each Mongo userId (batched lookup)."""
         if not user_ids:
@@ -6044,7 +6050,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     mongo_to_key[mongo_id] = graph_key
 
         missing = [user_id for user_id in user_ids if user_id not in mongo_to_key]
-        if missing:
+        if missing and not allow_missing:
             raise ValueError(f"Users not found in graph: {missing}")
 
         return mongo_to_key
@@ -15728,6 +15734,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self,
         kb_id: str,
         transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """List all permissions for a KB with entity details."""
         try:
@@ -15783,6 +15791,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return results or []
         except Exception as e:
             self.logger.error(f"❌ Failed to list KB permissions: {str(e)}")
+            if raise_on_error:
+                raise
             return []
 
     async def list_all_records(
@@ -24622,6 +24632,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         record_ids: list[str],
         org_id: str,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict[str, Any]]:
         """
         Batch fetch full record documents by their _key (record IDs).
@@ -24662,6 +24674,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         except Exception as e:
             self.logger.error(f"Failed to fetch records by record IDs: {e}\n{traceback.format_exc()}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_virtual_record_holders(

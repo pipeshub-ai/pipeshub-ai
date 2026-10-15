@@ -20,6 +20,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { PermissionLockIcon } from '@/config';
 import { useTranslation } from 'react-i18next';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export function AgentBuilderHeader(props: {
   agentName: string;
@@ -57,9 +58,12 @@ export function AgentBuilderHeader(props: {
   createdBy?: string | null;
   onShare?: () => void;
   hideShareControls?: boolean;
+  /** Extra settings rendered under the agent name. */
+  nameFieldExtra?: React.ReactNode;
 }) {
   const router = useRouter();
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const {
     agentName,
     onAgentNameChange,
@@ -86,6 +90,7 @@ export function AgentBuilderHeader(props: {
     onShare,
     hideShareControls = false,
     sharePermissionDenied = false,
+    nameFieldExtra,
   } = props;
 
   const [agentMenuTriggerHovered, setAgentMenuTriggerHovered] = useState(false);
@@ -124,7 +129,8 @@ export function AgentBuilderHeader(props: {
     <Flex
       align="center"
       justify="between"
-      gap="4"
+      wrap="wrap"
+      gap={isMobile ? '2' : '3'}
       px="4"
       py="3"
       style={{
@@ -134,7 +140,7 @@ export function AgentBuilderHeader(props: {
         boxShadow: 'var(--shadow-1)',
       }}
     >
-      <Flex align="center" gap="3" style={{ minWidth: 0, flex: 1 }}>
+      <Flex align="center" gap="3" style={{ minWidth: 0, flex: isMobile ? '1 1 100%' : '1 1 280px' }}>
         <IconButton
           type="button"
           variant="ghost"
@@ -146,7 +152,7 @@ export function AgentBuilderHeader(props: {
           <MaterialIcon name="chevron_left" size={22} color="var(--olive-11)" />
         </IconButton>
         <Separator orientation="vertical" size="2" style={{ height: 28 }} />
-        <Box style={{ minWidth: 0 }}>
+        <Box style={{ minWidth: 0, flex: isMobile ? 1 : undefined }}>
           <Text
             size="1"
             weight="medium"
@@ -155,8 +161,8 @@ export function AgentBuilderHeader(props: {
           >
             {t('agentBuilder.agentName')}
           </Text>
-          <Flex align="center" gap="3">
-            <Box style={{ minWidth: 0 }}>
+          <Flex align="center" gap="3" wrap="wrap">
+            <Box style={{ minWidth: 0, maxWidth: '100%', flex: isMobile ? '1 1 200px' : undefined }}>
               <TextField.Root
                 ref={agentNameInputRef}
                 value={agentName}
@@ -166,7 +172,7 @@ export function AgentBuilderHeader(props: {
                 size="2"
                 aria-invalid={agentNameError ? true : undefined}
                 color={agentNameError ? 'red' : undefined}
-                style={{ width: 200 }}
+                style={{ width: isMobile ? '100%' : 200 }}
               >
                 <TextField.Slot side="left">
                   <MaterialIcon name="smart_toy" size={18} color="var(--olive-11)" />
@@ -177,6 +183,7 @@ export function AgentBuilderHeader(props: {
                   {agentNameError}
                 </Text>
               ) : null}
+              {nameFieldExtra}
               {creatorName ? (
                 <Flex align="center" gap="1" mt="1">
                   <Text size="1" style={{ color: 'var(--olive-10)' }}>
@@ -256,7 +263,13 @@ export function AgentBuilderHeader(props: {
           </Flex>
         </Box>
       </Flex>
-      <Flex align="center" gap="4" style={{ flexShrink: 0 }}>
+      <Flex
+        align="center"
+        justify="end"
+        gap={isMobile ? '2' : '4'}
+        wrap="wrap"
+        style={{ flexShrink: 0, maxWidth: '100%', ...(isMobile ? { flexBasis: '100%', minWidth: 0 } : null) }}
+      >
         {showDeleteOption ? (
           <DropdownMenu.Root modal={false}>
             <DropdownMenu.Trigger>
@@ -340,10 +353,13 @@ export function AgentBuilderHeader(props: {
               }}
             >
               <MaterialIcon name="groups" size={18} color="var(--olive-11)" />
-              <Text size="2" style={{ color: 'var(--olive-12)' }}>
-                {t('agentBuilder.shareWithOrg')}
-              </Text>
+              {!isMobile && (
+                <Text size="2" style={{ color: 'var(--olive-12)' }}>
+                  {t('agentBuilder.shareWithOrg')}
+                </Text>
+              )}
               <Switch
+                aria-label={t('agentBuilder.shareWithOrg')}
                 checked={shareWithOrg || isServiceAccount}
                 onCheckedChange={onShareWithOrgChange}
                 disabled={isFlowStructureLocked || isServiceAccount || sharePermissionDenied}
@@ -359,7 +375,7 @@ export function AgentBuilderHeader(props: {
               size="2"
               onClick={onSave}
               disabled={isSaveDisabled}
-              style={{ minWidth: 132 }}
+              style={{ minWidth: isMobile ? undefined : 132 }}
             >
               <Flex align="center" gap="2">
                 {saving ? (

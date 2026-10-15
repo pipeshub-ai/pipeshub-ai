@@ -299,7 +299,9 @@
     "filterTooltip": "Filter: {{filter}}",
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification"
+    "removeFailed": "Could not remove notification",
+    "showMore": "show more",
+    "showLess": "show less"
   },
   "action": {
     "find": "Find",
@@ -679,6 +681,11 @@
     "answer": "Answer",
     "sources": "Sources",
     "citation": "Citation",
+    "answeredVia": {
+      "coding_agent": "via coding agent",
+      "web_agent": "via web research",
+      "other": "via {{name}}"
+    },
     "thankYouForFeedback": "Thank you for your feedback",
     "feedbackHelpsImprove": "Your feedback helps us improve",
     "feedbackError": "Failed to submit feedback",
@@ -1214,7 +1221,10 @@
         "expired": "{{tool}} didn't run: the request expired",
         "allowedNotRun": "You allowed {{tool}}, but it didn't run"
       }
-    }
+    },
+    "answerViews": "Answer views",
+    "answerFailedTitle": "This answer failed",
+    "answerFailedRetry": "Try again"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -4502,8 +4512,8 @@
     "somethingElse": "Something else",
     "questionAskedSingular": "Question asked:",
     "questionAskedPlural": "Questions asked:",
-    "quickQuestionSingular": "Quick question :",
-    "quickQuestionPlural": "Quick questions :",
+    "quickQuestionSingular": "Quick question:",
+    "quickQuestionPlural": "Quick questions:",
     "stepOf": "Step {{step}} of {{total}}",
     "selectedCount": "{{count}} selected",
     "describeYourAnswer": "Describe your answer…",
@@ -4511,7 +4521,9 @@
     "back": "Back",
     "skip": "Skip",
     "next": "Next",
-    "submit": "Submit"
+    "submit": "Submit",
+    "unknownPerson": "Former member",
+    "waitingFor": "Waiting for {{name}} to answer"
   },
   "demoData": {
     "badge": {
@@ -4711,6 +4723,10 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",
-    "invite": "Invite to Pipeshub"
+    "invite": "Invite to Pipeshub",
+    "andMore": "and {{count}} more",
+    "removeSelection": "Remove {{name}}",
+    "peopleCanSee_one": "{{count}} person can see this chat",
+    "peopleCanSee_other": "{{count}} people can see this chat"
   }
 }

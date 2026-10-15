@@ -11,6 +11,8 @@ import {
   executeConnectorCommand,
   handleBackendError,
 } from '../../tokens_manager/utils/connector.utils';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { listFilterOf } from '../../enterprise_search/services/conversation/http/conversation-context';
 import { ConversationTitleService } from '../services/conversation-title.service';
 
 const logger = Logger.getInstance({
@@ -78,21 +80,31 @@ function buildQueryString(query: Record<string, unknown>): string {
   return params.toString();
 }
 
+/** Titles are conversation data: an OAuth token sees them only with `conversation:read`. */
+function mayReadConversationTitles(req: AuthenticatedUserRequest): boolean {
+  const user = req.user;
+  if (!user?.isOAuth) {
+    return true;
+  }
+  const scopes: unknown = user.oauthScopes;
+  return (
+    Array.isArray(scopes) && scopes.includes(OAuthScopeNames.CONVERSATION_READ)
+  );
+}
+
 async function enrichConversationTitles(
   items: ArtifactListItem[],
-  orgId: string,
-  userId: string,
+  req: AuthenticatedUserRequest,
 ): Promise<ArtifactListItem[]> {
   const conversationIds = items
     .map((item) => item.conversationId)
     .filter((id): id is string => Boolean(id));
-  if (!conversationIds.length) {
+  if (!conversationIds.length || !mayReadConversationTitles(req)) {
     return items;
   }
   const titles = await ConversationTitleService.batchTitles(
     conversationIds,
-    orgId,
-    userId,
+    listFilterOf(req),
   );
   return items.map((item) => {
     if (!item.conversationId) {
@@ -122,7 +134,7 @@ export const listArtifacts =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { userId, orgId } = requireIdentity(req);
+      requireIdentity(req);
       const qs = buildQueryString(req.query as Record<string, unknown>);
       const uri = `${appConfig.connectorBackend}/api/v1/artifacts${qs ? `?${qs}` : ''}`;
       const connectorResponse =
@@ -142,7 +154,7 @@ export const listArtifacts =
       const items = Array.isArray(data.items)
         ? (data.items as ArtifactListItem[])
         : [];
-      data.items = await enrichConversationTitles(items, orgId, userId);
+      data.items = await enrichConversationTitles(items, req);
       res.status(statusCode).json(data);
     } catch (error: unknown) {
       logger.error('Error listing artifacts', { error });
@@ -158,7 +170,7 @@ export const getArtifact =
     next: NextFunction,
   ): Promise<void> => {
     try {
-      const { userId, orgId } = requireIdentity(req);
+      requireIdentity(req);
       const { artifactId } = req.params as { artifactId: string };
       const connectorResponse = await executeConnectorCommand<ArtifactListItem>(
         artifactUri(appConfig.connectorBackend, artifactId),
@@ -173,7 +185,7 @@ export const getArtifact =
         connectorResponse.data,
         'Failed to get artifact',
       ) as ArtifactListItem;
-      const [enriched] = await enrichConversationTitles([data], orgId, userId);
+      const [enriched] = await enrichConversationTitles([data], req);
       res.status(statusCode).json(enriched);
     } catch (error: unknown) {
       logger.error('Error getting artifact', { error });

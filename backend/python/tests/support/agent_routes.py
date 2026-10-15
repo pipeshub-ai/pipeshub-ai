@@ -166,6 +166,17 @@ class InMemoryGraph:
                 out.append({f: view.get(f) for f in return_fields} if return_fields else view)
         return out
 
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any],
+        return_fields: list[str] | None = None, transaction: str | None = None,
+    ) -> list[dict]:
+        self._enter("get_nodes_by_filters", collection, filters)
+        out = [
+            copy.deepcopy(doc) for doc in self.nodes.get(collection, {}).values()
+            if all(doc.get(k) == v for k, v in filters.items())
+        ]
+        return [{f: d.get(f) for f in return_fields} for d in out] if return_fields else out
+
     async def check_agent_permission(self, agent_id: str, user_id: str, org_id: str) -> dict | None:
         self._enter("check_agent_permission", agent_id, user_id, org_id)
         agent = self.nodes.get(AGENTS, {}).get(agent_id)
@@ -357,6 +368,14 @@ class InMemoryGraph:
         self._enter("batch_upsert_nodes", nodes, collection)
         for node in nodes:
             self.add_node(collection, node)
+        return True
+
+    async def update_node(self, key: str, collection: str, updates: dict, transaction: str | None = None) -> bool:
+        self._enter("update_node", key, collection, updates)
+        current = self.nodes.get(collection, {}).get(key)
+        if current is None:
+            return False
+        current.update(copy.deepcopy(updates))
         return True
 
     async def batch_create_edges(self, edges: list[dict], collection: str, transaction: str | None = None) -> bool:

@@ -1,5 +1,6 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
+import { isGoneError } from '@/lib/api/api-error';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
   Conversation,
@@ -29,6 +30,7 @@ import {
 } from './types';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
+import { chatExtension } from '@/config';
 
 export interface FeedbackPayload {
   isHelpful: boolean;
@@ -48,6 +50,8 @@ export interface StreamMessageCallbacks {
   /** Backend is discarding partial output (citation verify / re-parse) — clear UI buffer */
   onRestreaming?: () => void;
   onAskUserQuestion?: (data: SSEAskUserQuestionEvent) => void;
+  /** An AG-UI `CUSTOM` event the handler has no callback of its own for. */
+  onCustomEvent?: (name: string, value: unknown) => void;
   /**
    * The answer is settled and only persistence remains (AG-UI protocol only —
    * `AnswerFinalizer`'s `snapshot.final` STATE_SNAPSHOT, which reaches us
@@ -69,6 +73,8 @@ export interface StreamMessageCallbacks {
    */
   onParts?: (parts: MessagePart[]) => void;
   onError?: (error: Error) => void;
+  /** The `X-Run-Id` response header, when the server sends one. */
+  onRunId?: (runId: string) => void;
   signal?: AbortSignal;
 }
 
@@ -87,6 +93,10 @@ async function runChatStream(
   let transportFailed = false;
   await streamSSERequest(endpoint, body, {
     onEvent: createAGUIEventHandler(callbacks, tracking),
+    onResponse: (response) => {
+      const runId = response.headers.get('X-Run-Id');
+      if (runId) callbacks.onRunId?.(runId);
+    },
     onError: (error) => {
       transportFailed = true;
       callbacks.onError?.(error);
@@ -104,7 +114,7 @@ async function runChatStream(
 export function mapApiConversationToConversation(conv: ConversationApiResponse): Conversation {
   return {
     id: conv._id,
-    title: conv.title,
+    title: chatExtension.formatConversationTitle(conv.title) ?? conv.title,
     createdAt: conv.createdAt,
     updatedAt: conv.updatedAt,
     isShared: conv.isShared,
@@ -114,10 +124,16 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
     sharedBy: conv.sharedBy,
+    ...chatExtension.conversationFields(conv),
   };
 }
 
 const transformConversation = mapApiConversationToConversation;
+
+/** A row of an archive list: membership means the caller archived it. */
+export function mapArchivedConversation(conv: ConversationApiResponse): Conversation {
+  return { ...mapApiConversationToConversation(conv), ...chatExtension.conversationFields(conv, { archived: true }) };
+}
 
 export interface FetchConversationsOptions {
   /** 'owned' fetches the user's own chats; 'shared' fetches chats shared with them. */
@@ -216,6 +232,7 @@ export const ChatApi = {
     conversationId: string,
     page: number = 1,
     limit: number = CONVERSATION_MESSAGES_PAGE_SIZE,
+    options?: { quietWhenGone?: boolean },
   ): Promise<{
     conversation: {
       id: string;
@@ -256,6 +273,7 @@ export const ChatApi = {
       meta: Record<string, unknown>;
     }>(`/api/v1/conversations/${conversationId}/`, {
       params: { page, limit },
+      ...(options?.quietWhenGone ? { suppressErrorToast: isGoneError } : {}),
     });
 
     const pagination = data.conversation.pagination ?? {
@@ -313,6 +331,7 @@ export const ChatApi = {
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
         ...(request.projectId ? { projectId: request.projectId } : {}),
         ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
+        ...chatExtension.agentStreamBodyFields(request),
       };
     } else {
       endpoint = request.conversationId
@@ -570,7 +589,7 @@ export const ChatApi = {
     });
 
     return {
-      conversations: raw.map(transformConversation),
+      conversations: raw.map(mapArchivedConversation),
       messagesMap,
       pagination: data.pagination,
     };
@@ -618,7 +637,7 @@ export const ChatApi = {
 
     return {
       conversations: (data.conversations ?? []).map((c) => ({
-        ...transformConversation(c),
+        ...mapArchivedConversation(c),
         source: c.source,
         agentKey: c.agentKey,
       })),

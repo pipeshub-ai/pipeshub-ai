@@ -15,9 +15,9 @@ from app.api.middlewares.caller_role import (
     normalize_auth_role,
 )
 from app.api.middlewares.token_policy import (
-    ACCEPTED_SERVICE_SCOPES,
     AuthTokenType,
     ScopeLike,
+    accepted_service_scopes,
     has_service_scope,
     is_service_token,
     scope_value,
@@ -151,7 +151,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
     Regular tokens (``jwtSecret``) are user sessions and OAuth/PAT access tokens.
     Service tokens (``scopedJwtSecret``) are accepted only when they carry one of
-    ``ACCEPTED_SERVICE_SCOPES``; see ``token_policy`` for why the signature alone
+    ``accepted_service_scopes()``; see ``token_policy`` for why the signature alone
     is not enough.
 
     Args:
@@ -219,7 +219,7 @@ async def isJwtTokenValid(request: Request) -> dict:
             raise credentials_exception
 
         scopes = token_scopes(payload)
-        if not scopes & ACCEPTED_SERVICE_SCOPES:
+        if not scopes & accepted_service_scopes():
             logger.warning(
                 "Rejected service token: scopes %s are not accepted by this service",
                 sorted(scopes),

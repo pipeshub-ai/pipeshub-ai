@@ -7,6 +7,7 @@ import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Logger } from '../../libs/services/logger.service';
+import { withSpecFragments } from './spec-fragments';
 
 /**
  * Module metadata for documentation
@@ -169,7 +170,6 @@ export class ApiDocsService {
 
     try {
       const spec = yaml.load(fs.readFileSync(specPath, 'utf8')) as SpecNode;
-      this.mergedSpec = spec;
       for (const overlayPath of specOverlays) {
         try {
           mergeSpec(
@@ -183,6 +183,7 @@ export class ApiDocsService {
           });
         }
       }
+      this.mergedSpec = withSpecFragments(spec) as SpecNode;
       this.logger.info('Merged OpenAPI spec loaded successfully');
     } catch (error) {
       this.logger.warn('Failed to load merged OpenAPI spec', {

@@ -71,6 +71,20 @@ export function ShareableRow({
         cursor: showRadio ? 'pointer' : 'default',
       }}
       onClick={showRadio ? onToggle : undefined}
+      {...(showRadio
+        ? {
+            role: 'checkbox',
+            'aria-checked': isSelected,
+            'aria-label': name,
+            tabIndex: 0,
+            onKeyDown: (e: React.KeyboardEvent) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                onToggle?.();
+              }
+            },
+          }
+        : {})}
     >
       {/* Avatar / Team icon + Name + subtitle */}
       {type === 'team' ? (

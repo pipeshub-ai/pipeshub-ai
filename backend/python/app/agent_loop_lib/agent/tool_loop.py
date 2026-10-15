@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -76,6 +77,21 @@ class TerminalTool(Protocol):
     def extract_outcome(
         self, tr: ToolResult, call: ToolCall, fallback_text: str
     ) -> "TaskCompletionOutcome": ...
+
+@runtime_checkable
+class DirectAnswerTool(Protocol):
+    """Structural type for a tool whose successful result can BE the run's
+    final answer (a delegate writing straight to the user). Unlike
+    `TerminalTool` this is decided per call, not by a static tag: the same
+    tool is an ordinary delegation on one call and the answer on the next,
+    so the forced final-answer turn (which keeps only tagged terminal
+    calls) still drops it.
+
+    Returns the answer text, or `None` to leave the run going. Must also
+    release any per-call state it kept, whether or not it returns text."""
+
+    def direct_answer(self, call: ToolCall, tr: ToolResult) -> str | None: ...
+
 
 """Per-tool-call dispatch, extracted from `Agent.step()`.
 
@@ -218,6 +234,7 @@ class ToolCallOutcome:
     confidence: Confidence | None = None
     record_ids: list[str] = None  # type: ignore[assignment]
     needs_input: str | None = None
+    answered_by: str | None = None
 
     def __post_init__(self) -> None:
         if self.artifacts is None:
@@ -448,10 +465,12 @@ async def execute_tool_call(
             {"tool": asked_call.name, "args": asked_call.arguments},
         )
 
+    call_started = time.monotonic()
     tr = await agent._executor.call_tool(
         call, session_id=agent.session_id, override_execute=override_execute,
         on_denied=_on_denied, on_ask=_on_ask, on_pending=_on_pending, scope=tool_scope,
     )
+    call_seconds = time.monotonic() - call_started
 
     # --- Record budget tool call ---
     if runtime.budget is not None:
@@ -499,4 +518,19 @@ async def execute_tool_call(
                 needs_input=getattr(outcome, "needs_input", None),
             )
 
-    return ToolCallOutcome(result=tr)
+    return await _direct_answer_outcome(agent, call, tr, call_seconds)
+
+
+async def _direct_answer_outcome(agent, call: ToolCall, tr: ToolResult, call_seconds: float) -> ToolCallOutcome:
+    tool = _resolve_quietly(agent, call.name)
+    answer = tool.direct_answer(call, tr) if isinstance(tool, DirectAnswerTool) else None
+    if tr.is_error or not answer:
+        return ToolCallOutcome(result=tr)
+    logger.info(
+        "delegate_answered_directly: %s (%.1fs, %d chars)", call.name, call_seconds, len(answer),
+    )
+    await obs.append_timeline(
+        agent, "delegate_answered_directly", f"{call.name} answered the user directly", "running_tool",
+        {"delegate": call.name, "duration_s": round(call_seconds, 3), "output_chars": len(answer)},
+    )
+    return ToolCallOutcome(result=tr, task_done=True, final_output=answer, answered_by=call.name)

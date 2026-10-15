@@ -29,6 +29,12 @@ import { AgentActivityTimeline, CollapsibleActivitySection, getVisibleRootParts,
 import { ExpandableUserQuery } from './expandable-user-query';
 import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
+import { AnswerFailed } from './answer-failed';
+import { formatMessageTime } from './format-message-time';
+import { AnsweredViaLabel } from './answered-via-label';
+import { chatSlots } from '@/config';
+import type { ChatResponseLayout, ChatResponseParts } from '../../chat-extension';
+import type { MessagePair, RetryTurn } from './message-pairs';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
@@ -60,24 +66,6 @@ import { useInlineCitationPopoverStore } from './response-tabs/citations/citatio
 // Stable empty reference — avoids creating new objects in default params
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-function formatMessageTime(isoString: string): string {
-  const date = new Date(isoString);
-  if (isNaN(date.getTime())) return '';
-  const now = new Date();
-  const isToday = date.toDateString() === now.toDateString();
-  const timeStr = date.toLocaleTimeString(undefined, {
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-  if (isToday) return timeStr;
-  return date.toLocaleDateString(undefined, {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
-}
-
 function buildQuestionCardReadAloudText(payload: AskUserQuestionPayload): string {
   const parts: string[] = [];
   if (payload.userIntent) parts.push(payload.userIntent);
@@ -98,6 +86,8 @@ interface ChatResponseProps {
   citationMaps?: CitationMaps;
   citationCallbacks?: CitationCallbacks;
   confidence?: ConfidenceLevel;
+  /** Delegate agent (tool name) whose output was the answer; the header says so. */
+  answeredVia?: string;
   isStreaming?: boolean;
   modelInfo?: ModelInfo;
   /** Collections attached to this message (e.g. KB filters the user selected) */
@@ -141,12 +131,22 @@ interface ChatResponseProps {
   status?: 'stopped';
   /** The server's error code and details when this reply is a failed run. */
   streamError?: ChatStreamErrorInfo;
+  /** The run failed: `answer` is the error text. */
+  failed?: boolean;
+  /** Resend the turn; offered on a failed last answer to someone who can send in this chat. */
+  onRetry?: (turn: RetryTurn) => void;
+  /** The viewer can send in this chat; regenerate is offered only then. */
+  canSend?: boolean;
   /**
    * No assistant row exists for this question (see `buildMessagePairs`). The
    * question is drawn on its own: an answer area, tabs and message actions
    * would all be empty controls over a reply that was never produced.
    */
   unanswered?: boolean;
+  /** The pair this row draws, for row extensions. */
+  pair?: MessagePair;
+  /** Row layout from the list body. */
+  layout?: ChatResponseLayout;
 }
 
 export const ChatResponse = React.memo(function ChatResponse({
@@ -155,6 +155,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   citationMaps = EMPTY_CITATION_MAPS,
   citationCallbacks,
   confidence,
+  answeredVia,
   isStreaming = false,
   modelInfo,
   collections,
@@ -177,12 +178,18 @@ export const ChatResponse = React.memo(function ChatResponse({
   feedbackInfo,
   status,
   streamError,
+  failed = false,
+  onRetry,
+  canSend = true,
   unanswered = false,
+  pair,
+  layout,
 }: ChatResponseProps) {
   debugLog.tick('[chat] [ChatResponse]');
   const { t } = useTranslation();
   const mcpConnectDetails = isStreaming ? null : mcpConfigMissingDetails(streamError);
   const isMobile = useIsMobile();
+  const ext = chatSlots.useResponseExtension({ pair, layout, question, isStreaming, isLastMessage, unanswered });
 
   /** Shown only if the stream is active but no SSE status has arrived yet */
   const streamingFallbackStatus = useMemo(
@@ -584,13 +591,26 @@ export const ChatResponse = React.memo(function ChatResponse({
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
-  const renderTabContent = () => {
+  const canRetry = isLastMessage && onRetry !== undefined && ext.allowRegenerate && !ranApprovedCall;
+
+  const renderTabContent = (opts?: { padding?: string }) => {
+    const padding = opts?.padding ?? 'var(--space-4) 0';
     switch (activeTab) {
       case 'answer':
+        if (failed && !isStreaming && !mcpConnectDetails) {
+          return (
+            <Box style={{ padding }}>
+              <AnswerFailed
+                message={answer}
+                onRetry={canRetry ? () => onRetry?.({ question, attachments, collections, appliedFilters }) : undefined}
+              />
+            </Box>
+          );
+        }
         return (
-          <Box style={{ padding: 'var(--space-4) 0' }}>
+          <Box style={{ padding }}>
             {/* Show confidence only when not streaming and has answer */}
-            {!isStreaming && confidence && <ConfidenceIndicator confidence={confidence} />}
+            {!isStreaming && confidence && !ext.hideConfidence && <ConfidenceIndicator confidence={confidence} />}
 
             {/* Agent activity timeline — thinking / tool calls / sub-agents,
                 streamed live or rendered from the persisted transcript.
@@ -657,6 +677,8 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
+            {ext.answerExtras}
+
             {/* Active (streaming/pending) ask_user_question card */}
             {askQuestionMatchesRow && pendingAskUserQuestion ? (
               <AskUserQuestionCard
@@ -664,6 +686,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 initialAnswers={pendingAskUserQuestion.answers}
                 status={pendingAskUserQuestion.status}
                 sentAnswers={pendingAskUserQuestion.sentAnswers}
+                readOnlyFor={ext.askCardReadOnlyFor}
                 onAnswersChange={(nextAnswers) => {
                   const sid = useChatStore.getState().activeSlotId;
                   const p = sid ? useChatStore.getState().slots[sid]?.pendingAskUserQuestion : null;
@@ -680,6 +703,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                     pendingAskUserQuestion: { ...p, answers: nextAnswers, status: 'submitted' },
                   });
                   const request = buildStreamChatRequestForSlot(sid, message);
+                  if (request) ext.decorateResumeRequest?.(request, p);
                   if (request) {
                     void streamMessageForSlot(sid, message, request, {
                       resumeAskUserQuestion: true,
@@ -840,39 +864,8 @@ export const ChatResponse = React.memo(function ChatResponse({
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
     : visibleAnswer;
 
-  const shell = (
-    <Box style={{ width: '100%' }}>
-      <Box
-        style={{
-          marginBottom:
-            (collections && collections.length > 0) ||
-            (appliedFilters &&
-              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
-              ? 'var(--space-3)'
-              : 'var(--space-4)',
-        }}
-      >
-        <ExpandableUserQuery
-          question={question}
-          isMobile={isMobile}
-          messageId={messageId}
-          isStreaming={isStreaming}
-          onEdit={handleEditQuery}
-        />
-        {createdAt && (
-          <Text
-            size="1"
-            style={{
-              color: 'var(--slate-9)',
-              marginTop: 'var(--space-1)',
-              display: 'block',
-            }}
-          >
-            {formatMessageTime(createdAt)}
-          </Text>
-        )}
-      </Box>
-
+  const filtersAndAttachments = (
+    <>
       {/* Applied filter chips — shown when connector/KB filters were scoped on this query */}
       {appliedFilters && (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0) && (
         <Box style={{ marginBottom: 'var(--space-3)' }}>
@@ -962,11 +955,107 @@ export const ChatResponse = React.memo(function ChatResponse({
         </Flex>
       )}
 
+    </>
+  );
+
+  const previewDialog = textPreviewAttachment ? (
+    <TextPreviewDialog
+      key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
+      open
+      onOpenChange={(open) => {
+        if (!open) setTextPreviewAttachment(null);
+      }}
+      title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
+      loadText={async () => {
+        const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
+        return blob.text();
+      }}
+    />
+  ) : null;
+
+  const renderActions = (opts?: { compact?: boolean }) => (
+    <MessageActions
+      compact={opts?.compact}
+      allowRegenerate={ext.allowRegenerate && canSend}
+      content={speakContent}
+      citationMaps={effectiveCitationMaps}
+      modelInfo={modelInfo}
+      isStreaming={isStreaming}
+      messageId={messageId}
+      question={question}
+      isLastMessage={isLastMessage && !questionPending}
+      appliedFilters={appliedFilters}
+      feedbackInfo={feedbackInfo}
+      canRegenerate={!ranApprovedCall}
+    />
+  );
+
+  const withRowKey = (node: React.ReactNode) =>
+    citationMessageRowKey ? (
+      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>{node}</CitationMessageRowKeyContext.Provider>
+    ) : (
+      node
+    );
+
+  const parts: ChatResponseParts = {
+    activeTab,
+    setActiveTab,
+    sourcesCount,
+    citationCount,
+    askCardOwnsRow: askQuestionMatchesRow || Boolean(persistedAskUserQuestion),
+    renderTabContent,
+    renderActions,
+    filtersAndAttachments,
+    previewDialog,
+    withRowKey,
+    onEditQuery: handleEditQuery,
+  };
+  const customRow = ext.renderRow?.(parts);
+  if (customRow) return <>{customRow}</>;
+
+  const shell = (
+    <Box style={{ width: '100%' }}>
+      <Box
+        style={{
+          marginBottom:
+            (collections && collections.length > 0) ||
+            (appliedFilters &&
+              (appliedFilters.apps.length > 0 || appliedFilters.kb.length > 0))
+              ? 'var(--space-3)'
+              : 'var(--space-4)',
+        }}
+      >
+        <ExpandableUserQuery
+          question={question}
+          isMobile={isMobile}
+          messageId={messageId}
+          isStreaming={isStreaming}
+          onEdit={handleEditQuery}
+        />
+        {ext.questionMeta ?? (createdAt && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-9)',
+              marginTop: 'var(--space-1)',
+              display: 'block',
+            }}
+          >
+            {formatMessageTime(createdAt)}
+          </Text>
+        ))}
+      </Box>
+
+      {filtersAndAttachments}
+
+      {!unanswered && ext.beforeTabs}
+      {!unanswered && !isStreaming && answeredVia && <AnsweredViaLabel delegate={answeredVia} />}
+
       {/* Tabs */}
       {/* Tabs — hide Sources/Citations counts when the ask_user_question card
           (streaming or persisted) owns this row; those tabs reflect answer
           chunks that are suppressed. */}
-      {!unanswered && (
+      {!unanswered && !ext.hideTabs && (
         <ResponseTabs
           activeTab={activeTab}
           onTabChange={setActiveTab}
@@ -978,46 +1067,14 @@ export const ChatResponse = React.memo(function ChatResponse({
       {/* Tab Content */}
       {!unanswered && renderTabContent()}
 
-      {/* Message Actions (feedback, copy, regenerate, model info) */}
-      {!unanswered && activeTab === 'answer' && (
-        <MessageActions
-          content={speakContent}
-          citationMaps={effectiveCitationMaps}
-          modelInfo={modelInfo}
-          isStreaming={isStreaming}
-          messageId={messageId}
-          question={question}
-          isLastMessage={isLastMessage && !questionPending}
-          appliedFilters={appliedFilters}
-          feedbackInfo={feedbackInfo}
-          canRegenerate={!ranApprovedCall}
-        />
-      )}
+      {!unanswered && ext.afterContent?.(activeTab)}
 
-      {/* Pasted-text attachment preview — read-only (this message already sent) */}
-      {textPreviewAttachment && (
-        <TextPreviewDialog
-          key={textPreviewAttachment.virtualRecordId || textPreviewAttachment.recordId}
-          open
-          onOpenChange={(open) => {
-            if (!open) setTextPreviewAttachment(null);
-          }}
-          title={t('chat.attachments.pastedText', { defaultValue: 'Pasted text' })}
-          loadText={async () => {
-            const blob = await KnowledgeBaseApi.streamRecord(textPreviewAttachment.recordId);
-            return blob.text();
-          }}
-        />
-      )}
+      {/* Message Actions (feedback, copy, regenerate, model info) */}
+      {!unanswered && activeTab === 'answer' && renderActions()}
+
+      {previewDialog}
     </Box>
   );
 
-  if (citationMessageRowKey) {
-    return (
-      <CitationMessageRowKeyContext.Provider value={citationMessageRowKey}>
-        {shell}
-      </CitationMessageRowKeyContext.Provider>
-    );
-  }
-  return shell;
+  return <>{withRowKey(shell)}</>;
 });

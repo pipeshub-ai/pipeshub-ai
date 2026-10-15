@@ -9,6 +9,7 @@ import type { UploadedFile } from '../../types';
 // `defaultValue` so assertions don't depend on locale resource files, applying
 // the same plural selection and {{var}} interpolation i18next would.
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => {} },
   useTranslation: () => ({
     t: (key: string, opts?: Record<string, unknown>) => {
       if (!opts) return key;

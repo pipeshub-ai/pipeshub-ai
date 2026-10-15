@@ -79,7 +79,8 @@ export interface RedisBrokerConfig extends MessageBrokerConfig {
 }
 
 export interface StreamMessage<T> {
-  key: string;
+  // Absent means unkeyed: Kafka partitions by default, Redis Streams omits the field.
+  key?: string;
   value: T;
   headers?: Record<string, string>;
 }

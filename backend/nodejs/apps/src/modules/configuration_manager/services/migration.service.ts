@@ -20,6 +20,34 @@ import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
+/**
+ * A migration of conversation data that runs right after the chat sessions migration. It logs its
+ * own outcome and never throws, so the boot continues.
+ */
+export type ConversationMigration = (
+  logger: Logger,
+  keyValueStoreService: KeyValueStoreService,
+) => Promise<void>;
+
+const conversationMigrations: ConversationMigration[] = [];
+
+/** Adds migrations to run after the chat sessions migration, once each. Returns a function that removes them again. */
+export function useConversationMigrations(
+  ...migrations: ConversationMigration[]
+): () => void {
+  for (const migration of migrations) {
+    if (!conversationMigrations.includes(migration)) {
+      conversationMigrations.push(migration);
+    }
+  }
+  return () => {
+    for (const migration of migrations) {
+      const at = conversationMigrations.indexOf(migration);
+      if (at >= 0) conversationMigrations.splice(at, 1);
+    }
+  };
+}
+
 export interface MigrationDependencies {
   scheduler: CrawlingSchedulerService;
   appConfig: AppConfig;
@@ -46,6 +74,9 @@ export class MigrationService {
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
+    for (const migrate of conversationMigrations) {
+      await migrate(this.logger, this.keyValueStoreService);
+    }
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
     await this.documentOrgIdMigration();

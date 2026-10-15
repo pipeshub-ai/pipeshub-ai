@@ -1,9 +1,8 @@
 import { z } from 'zod';
+import { objectId as objectIdFormat } from '../../../libs/validators/zod-primitives';
 
-const OBJECT_ID_REGEX = /^[0-9a-fA-F]{24}$/;
-
-const objectId = (label: string) =>
-  z.string().regex(OBJECT_ID_REGEX, { message: `Invalid ${label}` });
+const objectId = (label: string): z.ZodString =>
+  objectIdFormat(label, `Invalid ${label}`);
 
 /** Coerce a query-string value to an integer page-size (1–100, default 20). */
 const pageSizeSchema = z.preprocess(

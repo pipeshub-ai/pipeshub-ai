@@ -511,7 +511,7 @@ class Confluence:
 
     def _actor(self) -> Actor:
         state = self.chat_state or {}
-        return Actor(org_id=state.get("org_id", ""), user_id=state.get("user_id", ""))
+        return Actor.from_state(state)
 
     def _handle_response(
         self,

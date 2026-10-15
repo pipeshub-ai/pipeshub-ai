@@ -18,6 +18,7 @@ from app.edition_services import bootstrap_guard
 from app.health.health import Health
 from app.migrations.all_team_migration import run_all_team_migration
 from app.migrations.kb_apps_migration import run_kb_apps_migration
+from app.modules.agents.chat_extension import get_chat_extension
 from app.services.graph_db.graph_db_provider_factory import GraphDBProviderFactory
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.logger import create_logger
@@ -146,6 +147,7 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
 
     logger.info("🚀 Initializing application resources")
     try:
+        get_chat_extension().install(container)
         await Health.system_health_check(container)
 
         if not bootstrap:
@@ -220,6 +222,13 @@ async def initialize_container(container, *, bootstrap: bool = True) -> bool:
                     logger.error(f"❌ All team migration failed: {error_msg}")
             except Exception as e:
                 logger.error(f"❌ All team migration error: {e}")
+
+            try:
+                await get_chat_extension().run_startup_migrations(
+                    data_store.graph_provider, config_service, logger,
+                )
+            except Exception as e:
+                logger.error(f"❌ Edition startup migrations error: {e}")
 
             # Run KB apps migration (legacy recordGroup-based KBs -> per-KB app
             # instances). Must run after the graph provider/schema are ready;

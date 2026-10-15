@@ -3,7 +3,10 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { render, cleanup, fireEvent, screen } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
-vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }) }));
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
+  useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }),
+}));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('@/lib/navigation', () => ({
   Link: ({ href, children, onClick, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
@@ -87,6 +90,52 @@ describe('NotificationRow link', () => {
       expect(link?.getAttribute('rel')).toBe('noopener noreferrer');
     },
   );
+});
+
+describe('NotificationRow message', () => {
+  function renderMessage(message: string, renderedHeight: number) {
+    vi.spyOn(Element.prototype, 'scrollHeight', 'get').mockReturnValue(renderedHeight);
+    render(
+      <Theme>
+        <NotificationRow
+          notification={{ _id: 'n1', type: 'info', title: 'Title', message, status: 'unread' }}
+          onMarkRead={vi.fn()}
+          onMarkUnread={vi.fn()}
+          onArchive={vi.fn()}
+          onUnarchive={vi.fn()}
+          onDismiss={vi.fn()}
+          markReadLabel="read"
+          markUnreadLabel="unread"
+          archiveLabel="archive"
+          unarchiveLabel="unarchive"
+          dismissLabel="dismiss"
+        />
+      </Theme>,
+    );
+  }
+
+  afterEach(() => vi.restoreAllMocks());
+
+  it('offers a keyboard-reachable toggle for a message longer than two lines', () => {
+    renderMessage('A long message '.repeat(20), 64);
+    const more = screen.getByRole('button', { name: 'notifications.showMore' });
+    expect(more.getAttribute('tabindex')).toBe('0');
+    expect(more.getAttribute('aria-expanded')).toBe('false');
+
+    fireEvent.click(more);
+    const less = screen.getByRole('button', { name: 'notifications.showLess' });
+    expect(less.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.queryByRole('button', { name: 'notifications.showMore' })).toBeNull();
+
+    fireEvent.keyDown(less, { key: 'Enter' });
+    expect(screen.getByRole('button', { name: 'notifications.showMore' })).toBeTruthy();
+  });
+
+  it('shows no toggle for a message that fits in two lines', () => {
+    renderMessage('Short message', 16);
+    expect(screen.getByText('Short message', { selector: 'div:not([aria-hidden])' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'notifications.showMore' })).toBeNull();
+  });
 });
 
 describe('isExternalNotificationHref', () => {

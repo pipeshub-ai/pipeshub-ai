@@ -3,6 +3,7 @@ import {
   IAIModel,
   IAppliedFilterNode,
   IChatAttachmentRef,
+  IChatSession,
   IChatSessionDocument,
   IChatSessionMessageDocument,
   IMessage,
@@ -26,7 +27,19 @@ import { Logger } from '../../../libs/services/logger.service';
 import { Response } from 'express';
 import { ChatSession } from '../schema/chat.session.schema';
 import { ChatSessionMessage } from '../schema/chat.session.message.schema';
-import { Users } from '../../user_management/schema/users.schema';
+import { AccessView } from '../services/conversation/domain/types';
+import {
+  conversationExtensions,
+  PreviousToolResult,
+  viewMessages,
+} from '../services/conversation/conversation-extensions';
+import { LeaseLostError } from '../services/conversation/turn/run-lease';
+import {
+  stampTurnRow,
+  TurnRun,
+  turnWrite,
+} from '../services/conversation/turn/turn-run';
+import { MongoUserDirectory } from '../../user_management/services/user-directory.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import {
   sanitizeForResponse,
@@ -46,6 +59,7 @@ import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
 } from './chat-error-messages';
+import { stripSignedUrlLinks } from './signed-url';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -88,11 +102,15 @@ export const extractModelInfo = (
   };
 };
 
+/** Who wrote a `user_query` row, and any other fields it is stored with. */
+export type UserQueryAuthorship = Partial<IMessage>;
+
 export const buildUserQueryMessage = (
   query: string,
   appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
   chatMode?: string,
   attachments?: IChatAttachmentRef[],
+  authorship?: UserQueryAuthorship,
 ): IMessage => ({
   messageType: 'user_query',
   content: query,
@@ -100,9 +118,15 @@ export const buildUserQueryMessage = (
   ...(appliedFilters ? { appliedFilters } : {}),
   modelInfo: chatMode ? ({ chatMode } as IAIModel) : undefined,
   ...(attachments && attachments.length > 0 ? { attachments } : {}),
+  ...definedFields(authorship),
   createdAt: new Date(),
   updatedAt: new Date(),
 });
+
+const definedFields = <T extends object>(fields: T | undefined): Partial<T> =>
+  Object.fromEntries(
+    Object.entries(fields ?? {}).filter(([, value]) => value !== undefined),
+  ) as Partial<T>;
 
 /**
  * Safely extracts and validates a search parameter from query string
@@ -128,9 +152,9 @@ function extractSearchParameter(searchParam: unknown): string {
 
 /**
  * Shared XSS-validation + regex-escaping for the title/content search param,
- * used by both `buildFilter` and `buildAgentConversationFilter` (and by their
- * callers' async content-match lookup — see `findSessionIdsMatchingContent`)
- * so the two computations of "the escaped search term" can never drift.
+ * used by `buildFilter` and by the callers' async content-match lookup (see
+ * `findSessionIdsMatchingContent`) so the two computations of "the escaped
+ * search term" can never drift.
  */
 export const validateAndEscapeSearch = (
   searchParam: unknown,
@@ -156,22 +180,41 @@ export const validateAndEscapeSearch = (
 /**
  * Case-insensitive substring match against message content, scoped to one
  * org. An unanchored `$regex` can't use an index, so this is a collection
- * scan either way; `limit` bounds the result set (and therefore memory) at
- * the cost of silently truncating pathological searches — see the Phase 1
- * plan's "Search" section. Replacing this with a real text index is a
- * Phase 2 follow-up.
+ * scan either way. With `sessionFilter` the scan is limited to the sessions
+ * that filter accepts (newest `limit` of them), so other users' matches can
+ * never crowd accessible ones out of the capped result.
  */
 export const findSessionIdsMatchingContent = async (
   orgId: string,
   escapedSearch: string,
-  limit = 10000,
+  {
+    sessionFilter,
+    limit = 10000,
+  }: {
+    sessionFilter?: FilterQuery<IChatSessionDocument>;
+    limit?: number;
+  } = {},
 ): Promise<mongoose.Types.ObjectId[]> => {
+  const accessible = sessionFilter
+    ? (
+        await ChatSession.find(sessionFilter)
+          .sort({ lastActivityAt: -1, _id: -1 })
+          .limit(limit)
+          .select('_id')
+          .lean()
+          .exec()
+      ).map((row) => row._id)
+    : undefined;
+  if (accessible?.length === 0) {
+    return [];
+  }
   const rows = await ChatSessionMessage.aggregate<{
     _id: mongoose.Types.ObjectId;
   }>([
     {
       $match: {
         orgId: new mongoose.Types.ObjectId(orgId),
+        ...(accessible && { sessionId: { $in: accessible } }),
         content: { $regex: escapedSearch, $options: 'i' },
       },
     },
@@ -209,7 +252,7 @@ export const allocateSeq = async (
 ): Promise<number> => {
   const updated = await ChatSession.findOneAndUpdate(
     { _id: sessionId },
-    { $inc: { nextSeq: n } },
+    { $inc: { nextSeq: n, rev: 1 } },
     {
       new: true,
       projection: { nextSeq: 1 }, // overrides the schema's `select: false` for this one read
@@ -223,6 +266,51 @@ export const allocateSeq = async (
   }
   return updated.nextSeq as number;
 };
+
+const SANITIZE_MAX_DEPTH = 32;
+const SANITIZE_MAX_NODES = 50_000;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> => {
+  if (value === null || typeof value !== 'object') return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+};
+
+/** Strips signed URLs from every string reachable through plain objects and
+ * arrays; ObjectIds, Dates, numbers etc. pass through. A subtree past the
+ * depth or node bound is dropped (null) rather than persisted unscanned. */
+const stripSignedUrlsDeep = (
+  value: unknown,
+  depth: number,
+  budget: { nodes: number },
+): unknown => {
+  if (typeof value === 'string') return stripSignedUrlLinks(value);
+  const walkable = Array.isArray(value) || isPlainObject(value);
+  if (!walkable) return value;
+  if (depth >= SANITIZE_MAX_DEPTH || ++budget.nodes > SANITIZE_MAX_NODES) {
+    return null;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => stripSignedUrlsDeep(item, depth + 1, budget));
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    out[key] = stripSignedUrlsDeep(item, depth + 1, budget);
+  }
+  return out;
+};
+
+/**
+ * The single choke point for persisted assistant data: `appendMessages` and
+ * `updateMessageById` are the only writers of message rows, and both pass
+ * through here, so no signed URL is stored in any field (content, reasoning,
+ * tool results, parts, reference data, citations, ...) whichever path
+ * produced it. User queries are stored as typed.
+ */
+export const sanitizeMessageForPersistence = (message: IMessage): IMessage =>
+  message.messageType === 'user_query' || message.messageType === 'note'
+    ? message
+    : (stripSignedUrlsDeep(message, 0, { nodes: 0 }) as IMessage);
 
 /**
  * Append one or more messages to a session's message collection. Allocates
@@ -244,7 +332,7 @@ export const appendMessages = async (
   const endSeq = await allocateSeq(sessionId, messages.length, mongoSession);
   const startSeq = endSeq - messages.length + 1;
   const toInsert = messages.map((message, i) => ({
-    ...message,
+    ...sanitizeMessageForPersistence(message),
     sessionId,
     orgId,
     seq: startSeq + i,
@@ -277,7 +365,7 @@ export const updateMessageById = async (
   return ChatSessionMessage.findOneAndReplace(
     { _id: messageId },
     {
-      ...newContent,
+      ...sanitizeMessageForPersistence(newContent),
       sessionId: existing.sessionId,
       orgId: existing.orgId,
       seq: existing.seq,
@@ -328,12 +416,13 @@ export const staleAskUserQuestionToolCallIds = (
 export const deleteMessagesById = async (
   messageIds: mongoose.Types.ObjectId[],
   mongoSession?: ClientSession | null,
+  scope?: { sessionId: mongoose.Types.ObjectId; orgId: mongoose.Types.ObjectId },
 ): Promise<number> => {
   if (messageIds.length === 0) {
     return 0;
   }
   const result = await ChatSessionMessage.deleteMany(
-    { _id: { $in: messageIds } },
+    { _id: { $in: messageIds }, ...scope },
     mongoSession ? { session: mongoSession } : undefined,
   );
   return result.deletedCount ?? 0;
@@ -426,16 +515,28 @@ export const withoutErrorStacks = <T extends object>(conversation: T): T => {
   };
 };
 
-export const attachMessages = (session: any, messages: any[]): any => {
+/** `viewerId` is who the response goes to; each message passes through the message view extension for that viewer. */
+export const attachMessages = (
+  session: any,
+  messages: any[],
+  viewerId?: string,
+): any => {
   const { nextSeq, sessionType, ...cleanSession } = session ?? {};
   return {
     ...withoutErrorStacks(cleanSession as object),
     messages: (messages || []).map((message: any) => {
       const { sessionId, orgId, seq, ...rest } = message;
-      return rest;
+      return conversationExtensions().views.viewMessage(rest, viewerId);
     }),
   };
 };
+
+/** Who a turn's response frames are for: the run's requester, else the owner of a single-user chat. */
+export const turnViewerId = (
+  run: TurnRun | undefined,
+  conversation: { userId?: { toString(): string } | null } | null | undefined,
+): string | undefined =>
+  run?.requestedBy?.toString() ?? conversation?.userId?.toString();
 
 /**
  * Attach populated citation documents across ALL messages of a session.
@@ -469,6 +570,7 @@ export const attachPopulatedCitations = async (
   fallbackMessages: any[],
   fallbackCitations: ICitation[],
   mongoSession?: ClientSession | null,
+  viewerId?: string,
 ): Promise<any> => {
   const sessionId = session?._id;
   let messages = fallbackMessages;
@@ -495,7 +597,7 @@ export const attachPopulatedCitations = async (
     }
   }
 
-  const attached = attachMessages(session, messages);
+  const attached = attachMessages(session, messages, viewerId);
   return {
     ...attached,
     messages: attached.messages.map((message: IMessage) => ({
@@ -605,6 +707,8 @@ export const buildAIResponseMessage = (
       citationId: citation._id as mongoose.Types.ObjectId,
     })),
     confidence: data.confidence,
+    ...(data.answerMatchType === 'Capability Card' ? { answerMatchType: 'Capability Card' as const } : {}),
+    ...(typeof data.answeredVia === 'string' && data.answeredVia ? { answeredVia: data.answeredVia } : {}),
     followUpQuestions:
       data.followUpQuestions?.map((q) => ({
         question: q.question,
@@ -696,23 +800,17 @@ export const attachAskUserQuestionToMessage = (
 // full-payload tool-results field: resending untruncated external tool
 // output over the wire is exactly what `_tool_names_from_state` (Python,
 // agent_loop/respond.py) deliberately stopped doing.
-const toolResultsFromParts = (
-  parts?: IMessagePart[],
-): Array<{
-  tool_id?: string;
-  tool_name?: string;
-  args?: Record<string, unknown>;
-  result: string;
-  result_summary?: string;
-  status: 'success' | 'error';
-  artifact_id?: string;
-}> => {
+const toolResultsFromParts = (parts?: IMessagePart[]): PreviousToolResult[] => {
   if (!parts || parts.length === 0) {
     return [];
   }
   return parts
     .filter((part) => part.type === 'tool_call' && part.toolName)
     .map((part) => {
+      const replaced = conversationExtensions().history.toolResult(part);
+      if (replaced !== undefined) {
+        return replaced;
+      }
       let args: Record<string, unknown> | undefined;
       if (part.args) {
         try {
@@ -745,8 +843,6 @@ const toolResultsFromParts = (
       };
     });
 };
-
-type PreviousToolResult = ReturnType<typeof toolResultsFromParts>[number];
 
 const askToolResults = (
   msg: IMessage | undefined,
@@ -808,11 +904,30 @@ const withTurnAskToolResults = (
   return extra.length ? [...existing, ...extra] : existing;
 };
 
-export const formatPreviousConversations = (messages: IMessage[]) => {
+/**
+ * Fields added to one history row, or `null` to leave the row out. Lets a caller attribute rows
+ * (who asked, which agent answered) without changing the shape of the rest.
+ */
+export type PreviousTurnAnnotator = (
+  message: IMessage,
+) => Record<string, unknown> | null;
+
+export const formatPreviousConversations = (
+  messages: IMessage[],
+  annotate?: PreviousTurnAnnotator,
+) => {
   const result: Array<Record<string, unknown>> = [];
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (!msg || msg.messageType === 'error' || msg.messageType === 'tool_call') {
+    if (
+      !msg ||
+      msg.messageType === 'error' ||
+      msg.messageType === 'tool_call'
+    ) {
+      continue;
+    }
+    const annotations = annotate ? annotate(msg) : {};
+    if (annotations === null) {
       continue;
     }
     let toolResults: PreviousToolResult[] =
@@ -825,6 +940,7 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
     result.push({
       content: msg.content,
       role: msg.messageType,
+      ...annotations,
       ...(msg.attachments &&
         msg.attachments.length > 0 && {
           attachments: msg.attachments,
@@ -879,45 +995,81 @@ export const buildSortOptions = (req: AuthenticatedUserRequest) => {
   };
 };
 
+type SharedWithRow = { userId?: { toString(): string } | null; accessLevel?: string };
+
+export const sharedWithUserId = (
+  row: SharedWithRow | null | undefined,
+): string | undefined => row?.userId?.toString();
+
+/** Rows to persist: only null/non-object entries are dropped; rows without a userId (e.g. team rows) are kept untouched. */
+export const persistableSharedWith = <T extends SharedWithRow>(
+  rows: Array<T | null | undefined> | null | undefined,
+): T[] =>
+  (rows ?? []).filter(
+    (row): row is T => row !== null && typeof row === 'object',
+  );
+
+/** Rows a user-level check can reason about; never use the result as the saved array. */
+export const userSharedWithRows = <T extends SharedWithRow>(
+  rows: Array<T | null | undefined> | null | undefined,
+): T[] =>
+  (rows ?? []).filter((row): row is T => sharedWithUserId(row) !== undefined);
+
+export const sharedWithUserIdEquals = (
+  row: SharedWithRow | null | undefined,
+  userId: string,
+): boolean => sharedWithUserId(row) === userId;
+
+const recipientAccessLevel = (
+  sharedWith: SharedWithRow[] | undefined,
+  userId: string,
+): string =>
+  userSharedWithRows(sharedWith).find((row) =>
+    sharedWithUserIdEquals(row, userId),
+  )?.accessLevel || 'read';
+
+/** With `access` the role comes from the guard's policy, so a write recipient or team member is not reported as `read`. */
 export const addComputedFields = <
   T extends {
     initiator: { toString(): string };
-    sharedWith?: Array<{ userId: { toString(): string }; accessLevel: string }>;
+    sharedWith?: SharedWithRow[];
   },
 >(
   conversation: T,
   userId: string,
+  access?: AccessView,
 ) => {
+  const cleaned = withoutErrorStacks(conversation);
   return {
-    ...withoutErrorStacks(conversation),
+    ...cleaned,
+    ...('title' in cleaned && {
+      title: conversationExtensions().views.displayTitle(
+        cleaned.title as string | undefined,
+      ),
+    }),
     isOwner: conversation.initiator.toString() === userId,
     accessLevel:
-      conversation.sharedWith?.find(
-        (share) => share.userId.toString() === userId,
-      )?.accessLevel || 'read',
+      access?.accessLevel ??
+      recipientAccessLevel(conversation.sharedWith, userId),
+    ...(access && { access }),
   };
 };
+
+/** Other recipients' identities are not part of a list row for someone the chat was shared with. */
+export const withoutSharedWith = <T extends { sharedWith?: unknown }>(
+  row: T,
+): Omit<T, 'sharedWith'> => {
+  const copy = { ...row };
+  delete copy.sharedWith;
+  return copy;
+};
+
+const userDirectory = new MongoUserDirectory();
 
 export type SharedByInfo = {
   userId: string;
   name: string;
 };
-
-function sharedByDisplayName(user: {
-  fullName?: string;
-  firstName?: string;
-  lastName?: string;
-  email?: string;
-}): string {
-  const fullName = user.fullName?.trim();
-  if (fullName) return fullName;
-  const parts = [user.firstName, user.lastName]
-    .filter((part): part is string => Boolean(part?.trim()))
-    .join(' ')
-    .trim();
-  if (parts) return parts;
-  return user.email?.trim() || '';
-}
 
 function conversationIsOwnedByCaller(conversation: {
   isOwner?: boolean;
@@ -960,18 +1112,7 @@ export const attachSharedBy = async <
     return conversations;
   }
 
-  const users = await Users.find({
-    orgId: new mongoose.Types.ObjectId(orgId),
-    isDeleted: false,
-    _id: { $in: initiatorIds.map((id) => new mongoose.Types.ObjectId(id)) },
-  })
-    .select('fullName firstName lastName email')
-    .lean()
-    .exec();
-
-  const userById = new Map(
-    users.map((user) => [user._id.toString(), user] as const),
-  );
+  const namesById = await userDirectory.displayNames(orgId, initiatorIds);
 
   return conversations.map((conversation) => {
     const initiatorId = conversation.initiator?.toString();
@@ -981,8 +1122,7 @@ export const attachSharedBy = async <
     if (conversationIsOwnedByCaller(conversation)) {
       return conversation;
     }
-    const user = userById.get(initiatorId);
-    const name = user ? sharedByDisplayName(user) : '';
+    const name = namesById.get(initiatorId);
     const sharedBy: SharedByInfo = {
       userId: initiatorId,
       name: name || initiatorId,
@@ -1028,8 +1168,7 @@ export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
 /**
  * AND-composes an optional `?projectId=<id>|unassigned` query filter onto an
  * existing chatSessions filter object, mutating it in place. Shared by
- * `buildFilter` and `buildAgentConversationFilter` so both the plain-chat
- * and agent conversation list/detail endpoints support the same query
+ * `buildFilter` so the list/detail endpoints support the same query
  * contract. A malformed (non-ObjectId, non-'unassigned') value is ignored
  * rather than thrown, since it only narrows a list — never called on a
  * `require`d id param.
@@ -1049,6 +1188,133 @@ export const applyProjectIdQueryFilter = (
   if (mongoose.Types.ObjectId.isValid(projectIdRaw)) {
     filter.projectId = new mongoose.Types.ObjectId(projectIdRaw);
   }
+};
+
+const dateRangeConstraint = (
+  req: AuthenticatedUserRequest,
+): FilterQuery<IChatSessionDocument> => {
+  if (!req.query.startDate && !req.query.endDate) {
+    return {};
+  }
+  const createdAt: { $gte?: Date; $lte?: Date } = {};
+  if (req.query.startDate) {
+    const startDate = new Date(req.query.startDate as string);
+    if (isNaN(startDate.getTime())) {
+      throw new BadRequestError('Invalid start date format');
+    }
+    createdAt.$gte = startDate;
+  }
+  if (req.query.endDate) {
+    const endDate = new Date(req.query.endDate as string);
+    if (isNaN(endDate.getTime())) {
+      throw new BadRequestError('Invalid end date format');
+    }
+    createdAt.$lte = endDate;
+  }
+  return { createdAt };
+};
+
+const sharedFlagConstraint = (
+  req: AuthenticatedUserRequest,
+): FilterQuery<IChatSessionDocument> => {
+  if (req.query.shared === undefined) {
+    return {};
+  }
+  const sharedValue = validateBooleanParam(
+    req.query.shared as string,
+    'shared parameter',
+  );
+  return sharedValue === undefined ? {} : { isShared: sharedValue };
+};
+
+export interface ListSearch {
+  escaped: string;
+  contentMatchIds?: mongoose.Types.ObjectId[];
+}
+
+export const listSearchClause = ({
+  escaped,
+  contentMatchIds,
+}: ListSearch): FilterQuery<IChatSessionDocument> => ({
+  $or: [
+    { title: { $regex: escaped, $options: 'i' } },
+    ...(contentMatchIds && contentMatchIds.length > 0
+      ? [{ _id: { $in: contentMatchIds } }]
+      : []),
+  ],
+});
+
+/** The request's `projectId`, date range and `shared` query params as one clause, apart from access, state and search. */
+export const listQueryConstraints = (
+  req: AuthenticatedUserRequest,
+): FilterQuery<IChatSessionDocument> => {
+  const constraints: FilterQuery<IChatSessionDocument> = {};
+  applyProjectIdQueryFilter(constraints, req);
+  return {
+    ...constraints,
+    ...dateRangeConstraint(req),
+    ...sharedFlagConstraint(req),
+  };
+};
+
+/** Access, state and search stay separate `$and` members so none can overwrite another's `$or` (F-17). */
+export const composeListFilter = (
+  listFilter: FilterQuery<IChatSessionDocument>,
+  ...parts: Array<FilterQuery<IChatSessionDocument> | undefined>
+): FilterQuery<IChatSessionDocument> => ({
+  $and: [
+    listFilter,
+    ...parts.filter(
+      (part): part is FilterQuery<IChatSessionDocument> =>
+        part !== undefined && Object.keys(part).length > 0,
+    ),
+  ],
+});
+
+/**
+ * The access, state, query-param and search filters of one list request as a
+ * single `$and`. A search resolves content matches within the sessions the
+ * access and state filters accept, so the content cap never drops accessible
+ * results.
+ */
+export const buildListQuery = async (
+  req: AuthenticatedUserRequest,
+  o: {
+    orgId: string;
+    listFilter: FilterQuery<IChatSessionDocument>;
+    stateFilter: FilterQuery<IChatSessionDocument>;
+    formatSpecifiers?: boolean;
+  },
+): Promise<{
+  filter: FilterQuery<IChatSessionDocument>;
+  queryConstraints: FilterQuery<IChatSessionDocument>;
+}> => {
+  const queryConstraints = listQueryConstraints(req);
+  let search: ListSearch | undefined;
+  if (req.query.search) {
+    const escaped = validateAndEscapeSearch(req.query.search, {
+      formatSpecifiers: o.formatSpecifiers,
+    });
+    search = {
+      escaped,
+      contentMatchIds: await findSessionIdsMatchingContent(o.orgId, escaped, {
+        sessionFilter: composeListFilter(
+          o.listFilter,
+          o.stateFilter,
+          queryConstraints,
+        ),
+      }),
+    };
+  }
+  return {
+    filter: composeListFilter(
+      o.listFilter,
+      o.stateFilter,
+      queryConstraints,
+      search && listSearchClause(search),
+    ),
+    queryConstraints,
+  };
 };
 
 export const buildFilter = (
@@ -1102,51 +1368,16 @@ export const buildFilter = (
 
   applyProjectIdQueryFilter(filter, req);
 
-  // Handle search with XSS validation
   if (req.query.search) {
-    const escapedSearch = validateAndEscapeSearch(req.query.search);
-
     filter.$and = [
-      {
-        $or: [
-          { title: { $regex: escapedSearch, $options: 'i' } },
-          ...(contentMatchIds && contentMatchIds.length > 0
-            ? [{ _id: { $in: contentMatchIds } }]
-            : []),
-        ],
-      },
+      listSearchClause({
+        escaped: validateAndEscapeSearch(req.query.search),
+        contentMatchIds,
+      }),
     ];
   }
 
-  // Handle date range
-  if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
-    if (req.query.startDate) {
-      const startDate = new Date(req.query.startDate as string);
-      if (isNaN(startDate.getTime())) {
-        throw new BadRequestError('Invalid start date format');
-      }
-      filter.createdAt.$gte = startDate;
-    }
-    if (req.query.endDate) {
-      const endDate = new Date(req.query.endDate as string);
-      if (isNaN(endDate.getTime())) {
-        throw new BadRequestError('Invalid end date format');
-      }
-      filter.createdAt.$lte = endDate;
-    }
-  }
-
-  // Handle shared/private filter with XSS validation
-  if (req.query.shared !== undefined) {
-    const sharedValue = validateBooleanParam(
-      req.query.shared as string,
-      'shared parameter',
-    );
-    if (sharedValue !== undefined) {
-      filter.isShared = sharedValue;
-    }
-  }
+  Object.assign(filter, dateRangeConstraint(req), sharedFlagConstraint(req));
 
   return filter;
 };
@@ -1459,6 +1690,7 @@ export const buildConversationResponse = (
     hasPrevPage: boolean;
   },
   messages: IMessage[],
+  accessView?: AccessView,
 ) => {
   const { page, limit, skip, totalMessages } = pagination;
 
@@ -1470,16 +1702,18 @@ export const buildConversationResponse = (
 
   return {
     id: conversation._id,
-    title: conversation.title,
+    title: conversationExtensions().views.displayTitle(conversation.title),
     initiator: conversation.initiator,
     createdAt: conversation.createdAt,
     isShared: conversation.isShared,
-    sharedWith: conversation.sharedWith,
+    // With an access view only the owner sees who else has access (I-9).
+    sharedWith:
+      accessView && !accessView.isOwner ? undefined : conversation.sharedWith,
     status: conversation.status,
     failReason: conversation.failReason,
     projectId: conversation.projectId,
     projectVisibility: conversation.projectVisibility,
-    messages: messages.map((message) => ({
+    messages: viewMessages(messages, userId).map((message) => ({
       ...message,
       citations:
         message.citations?.map((citation) => ({
@@ -1500,29 +1734,134 @@ export const buildConversationResponse = (
         end: totalMessages - skip,
       },
     },
-    access: {
+    access: accessView ?? {
       isOwner: conversation.initiator.toString() === userId,
-      accessLevel:
-        conversation.sharedWith?.find(
-          (share) => share.userId.toString() === userId,
-        )?.accessLevel || 'read',
+      accessLevel: recipientAccessLevel(conversation.sharedWith, userId),
     },
   };
 };
 
-// Helper function to save complete conversation
-export const saveCompleteConversation = async (
+type ConversationError = NonNullable<
+  IChatSession['conversationErrors']
+>[number];
+
+const MODEL_INFO_FIELDS: Array<keyof IAIModel> = [
+  'modelKey',
+  'modelName',
+  'modelProvider',
+  'chatMode',
+  'modelFriendlyName',
+  'reasoningEffort',
+];
+
+/** A request body can carry `null` where the type says `string`. */
+const isPresent = (value: unknown): boolean =>
+  value !== undefined && value !== null;
+
+/** Copies the defined fields of `modelInfo` onto the in-memory conversation. */
+export const mirrorModelInfo = (
+  conversation: IChatSessionDocument,
+  modelInfo: IAIModel,
+): void => {
+  for (const field of MODEL_INFO_FIELDS) {
+    const value = modelInfo[field];
+    if (isPresent(value)) {
+      assignAiModelField(
+        conversation.modelInfo as IAIModel,
+        field,
+        value as never,
+      );
+    }
+  }
+};
+
+export interface SessionPatch {
+  status?: string;
+  failReason?: string;
+  /** Clears a failure left by an earlier turn. */
+  clearFailReason?: boolean;
+  lastActivityAt: number;
+  modelInfo?: IAIModel;
+  /** Appended to `conversationErrors`; the array is never rewritten from memory. */
+  error?: ConversationError;
+  /** For a write that changes a row in place: appending a row already bumps `rev`. */
+  bumpRev?: boolean;
+}
+
+/**
+ * The terminal write of a turn: only the fields the turn changed, conditional on the session still
+ * being live and, with a lease, on this run still holding it. A stale in-memory document never
+ * overwrites a newer one. False when nothing matched.
+ */
+export const patchTurnSession = async (
+  conversation: IChatSessionDocument,
+  patch: SessionPatch,
+  run?: TurnRun,
+  dbSession?: ClientSession | null,
+): Promise<boolean> => {
+  const $set: Record<string, unknown> = {
+    lastActivityAt: patch.lastActivityAt,
+  };
+  if (patch.status !== undefined) $set.status = patch.status;
+  if (patch.failReason !== undefined) $set.failReason = patch.failReason;
+  for (const field of MODEL_INFO_FIELDS) {
+    const value = patch.modelInfo?.[field];
+    if (isPresent(value)) {
+      $set[`modelInfo.${field}`] = value;
+    }
+  }
+  const result = await ChatSession.updateOne(
+    {
+      ...run?.lease?.ownershipFilter(),
+      _id: conversation._id,
+      isDeleted: false,
+    },
+    {
+      $set,
+      ...(patch.clearFailReason && { $unset: { failReason: 1 } }),
+      ...(patch.error && { $push: { conversationErrors: patch.error } }),
+      ...(patch.bumpRev && { $inc: { rev: 1 } }),
+    },
+    dbSession ? { session: dbSession } : undefined,
+  );
+  return result.matchedCount > 0;
+};
+
+export interface CompletedTurnOptions {
+  session?: ClientSession | null;
+  /** Stored on the answer row. */
+  modelInfo?: IAIModel;
+  /** Also copy `modelInfo` onto the session (the non-streaming routes do; streams set it when the turn starts). */
+  assignModelInfo?: boolean;
+  run?: TurnRun;
+  agent?: boolean;
+}
+
+/** Inserts a turn's citations on the write's session; a no-op for none. */
+const insertCitations = async (
+  citations: ICitation[],
+  dbSession: ClientSession | null,
+): Promise<void> => {
+  if (citations.length === 0) return;
+  await Citation.insertMany(citations, dbSession ? { session: dbSession } : {});
+};
+
+/** Saves the answer a turn produced and closes the session write; the lease is released by the caller afterwards. */
+export const saveCompletedTurn = async (
   conversation: IChatSessionDocument,
   completeData: IAIResponse,
   orgId: string,
-  session?: ClientSession | null,
-  modelInfo?: IAIModel,
-): Promise<any> => {
+  options: CompletedTurnOptions = {},
+): Promise<Record<string, unknown>> => {
+  const { session, modelInfo, run } = options;
+  const noun = options.agent ? 'agent conversation' : 'conversation';
   try {
-    // Save citations first
-    const citations = await Promise.all(
-      completeData.citations?.map(async (citation: any) => {
-        const newCitation = new Citation({
+    // Built here, inserted inside the fenced write so a fenced-out run leaves none behind.
+    const citations = (
+      Array.isArray(completeData.citations) ? completeData.citations : []
+    ).map(
+      (citation: ICitation) =>
+        new Citation({
           content: citation.content,
           chunkIndex: citation.chunkIndex,
           citationType: citation.citationType,
@@ -1530,70 +1869,87 @@ export const saveCompleteConversation = async (
             ...citation.metadata,
             orgId,
           },
-        });
-        return session ? newCitation.save({ session }) : newCitation.save();
-      }) || [],
+        }),
     );
 
     // Create AI response message
-    const aiResponseMessage = buildAIResponseMessage(
-      { data: completeData, statusCode: 200 },
-      citations,
-      modelInfo,
+    const aiResponseMessage = stampTurnRow(
+      buildAIResponseMessage(
+        { data: completeData, statusCode: 200 },
+        citations,
+        modelInfo,
+      ),
+      run,
     );
 
-    // Insert it before flipping the session to Complete — see "Ordering" in
-    // the Phase 1 plan: a crash between the two leaves a persisted message
-    // under a stale (Inprogress) status, which is recoverable.
-    const [insertedMessage] = await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [aiResponseMessage],
-      session,
-    );
-
-    if (modelInfo) {
-      const fieldsToUpdate: Array<keyof IAIModel> = [
-        'modelKey',
-        'modelName',
-        'modelProvider',
-        'chatMode',
-        'modelFriendlyName',
-        'reasoningEffort',
-      ];
-      for (const field of fieldsToUpdate) {
-        const value = modelInfo[field];
-        if (value !== undefined && value !== null) {
-          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
-        }
-      }
+    if (options.assignModelInfo && modelInfo) {
+      mirrorModelInfo(conversation, modelInfo);
     }
-    conversation.lastActivityAt = Date.now();
+    const errorsBefore = conversation.conversationErrors?.length ?? 0;
+    const now = Date.now();
+    conversation.lastActivityAt = now;
     recordClassifiedFailureOnSession(conversation, completeData);
+    const patch: SessionPatch = {
+      status: conversation.status as string | undefined,
+      failReason: conversation.failReason as string | undefined,
+      lastActivityAt: now,
+      modelInfo: options.assignModelInfo ? modelInfo : undefined,
+      error: conversation.conversationErrors?.[errorsBefore],
+    };
 
-    // Save updated conversation
-    const updatedConversation = session
-      ? await conversation.save({ session })
-      : await conversation.save();
+    // Insert the answer before the session write — see "Ordering" in the Phase 1 plan: a crash
+    // between the two leaves a persisted message under a stale (Inprogress) status, which is recoverable.
+    const insertedMessage = await turnWrite(run, session, async (dbSession) => {
+      await insertCitations(citations, dbSession);
+      const [inserted] = await appendMessages(
+        conversation._id,
+        conversation.orgId,
+        [aiResponseMessage],
+        dbSession,
+      );
+      if (!inserted) {
+        throw new InternalServerError(
+          `Failed to save the answer of the ${noun}`,
+        );
+      }
+      if (!(await patchTurnSession(conversation, patch, run, dbSession))) {
+        throw new InternalServerError(`Failed to update ${noun}`);
+      }
+      return inserted;
+    });
 
-    if (!updatedConversation) {
-      throw new InternalServerError('Failed to update conversation');
-    }
-
-    return attachPopulatedCitations(
-      updatedConversation.toObject(),
-      [insertedMessage!.toObject()],
+    return (await attachPopulatedCitations(
+      conversation.toObject(),
+      [insertedMessage.toObject()],
       citations,
       session,
-    );
-  } catch (error: any) {
-    logger.error('Error saving complete conversation', {
+      turnViewerId(run, conversation),
+    )) as Record<string, unknown>;
+  } catch (error: unknown) {
+    logger.error(`Error saving complete ${noun}`, {
       conversationId: conversation._id,
-      error: error.message,
+      ...(options.agent && { agentKey: conversation.agentKey }),
+      error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
 };
+
+// Helper function to save complete conversation
+export const saveCompleteConversation = (
+  conversation: IChatSessionDocument,
+  completeData: IAIResponse,
+  orgId: string,
+  session?: ClientSession | null,
+  modelInfo?: IAIModel,
+  run?: TurnRun,
+): Promise<Record<string, unknown>> =>
+  saveCompletedTurn(conversation, completeData, orgId, {
+    session,
+    modelInfo,
+    assignModelInfo: true,
+    run,
+  });
 
 // Helper function to add error to conversation errors array
 export const addErrorToConversation = (
@@ -1779,62 +2135,94 @@ export const keepRunAlive = (
   });
 };
 
-export const markConversationFailed = async (
+interface FailedTurnOptions {
+  session?: ClientSession | null;
+  errorType?: string;
+  stack?: string;
+  metadata?: Map<string, unknown>;
+  run?: TurnRun;
+  agent?: boolean;
+}
+
+const persistFailedTurn = async (
   conversation: IChatSessionDocument,
   failReason: string,
-  session?: ClientSession | null,
-  errorType?: string,
-  stack?: string,
-  metadata?: Map<string, any>,
+  options: FailedTurnOptions,
 ): Promise<void> => {
+  const { session, run } = options;
+  const noun = options.agent ? 'agent conversation' : 'conversation';
   try {
-    // Insert the failure message first — see "Ordering" in the Phase 1 plan.
-    const failedMessage = buildAIFailureResponseMessage(failReason);
-    await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [failedMessage],
-      session,
+    const failedMessage = stampTurnRow(
+      buildAIFailureResponseMessage(failReason),
+      run,
     );
-
+    const errorsBefore = conversation.conversationErrors?.length ?? 0;
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = failReason;
-    conversation.lastActivityAt = Date.now();
-
-    // Add error to errors array
+    const now = Date.now();
+    conversation.lastActivityAt = now;
     addErrorToConversation(
       conversation,
       failReason,
-      errorType,
+      options.errorType,
       undefined,
-      stack,
-      metadata,
+      options.stack,
+      options.metadata,
     );
+    const patch: SessionPatch = {
+      status: CONVERSATION_STATUS.FAILED,
+      failReason,
+      lastActivityAt: now,
+      error: conversation.conversationErrors?.[errorsBefore],
+    };
 
-    // Save failed conversation
-    const savedWithError = session
-      ? await conversation.save({ session })
-      : await conversation.save();
+    // Insert the failure message first — see "Ordering" in the Phase 1 plan.
+    const saved = await turnWrite(run, session, async (dbSession) => {
+      await appendMessages(
+        conversation._id,
+        conversation.orgId,
+        [failedMessage],
+        dbSession,
+      );
+      return patchTurnSession(conversation, patch, run, dbSession);
+    });
 
-    if (!savedWithError) {
-      logger.error('Failed to save conversation error state', {
+    if (!saved) {
+      logger.error(`Failed to save ${noun} error state`, {
         conversationId: conversation._id,
         failReason,
       });
     }
 
-    logger.debug('Conversation marked as failed', {
+    logger.debug(`Marked the ${noun} as failed`, {
       conversationId: conversation._id,
       failReason,
     });
-  } catch (error: any) {
-    logger.error('Error marking conversation as failed', {
+  } catch (error: unknown) {
+    logger.error(`Error marking ${noun} as failed`, {
       conversationId: conversation._id,
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
 };
+
+export const markConversationFailed = (
+  conversation: IChatSessionDocument,
+  failReason: string,
+  session?: ClientSession | null,
+  errorType?: string,
+  stack?: string,
+  metadata?: Map<string, unknown>,
+  run?: TurnRun,
+): Promise<void> =>
+  persistFailedTurn(conversation, failReason, {
+    session,
+    errorType,
+    stack,
+    metadata,
+    run,
+  });
 
 /**
  * Persists the partial answer of a run Node gave up on: its browser went away
@@ -1851,55 +2239,65 @@ export const savePartialConversation = async (
   options?: {
     replaceMessageId?: mongoose.Types.ObjectId | string;
     parts?: IMessagePart[];
+    run?: TurnRun;
   },
 ): Promise<void> => {
+  const run = options?.run;
   try {
-    const partialMessage: IMessage = {
-      messageType: 'bot_response',
-      content: partialText,
-      contentFormat: 'MARKDOWN',
-      status: 'stopped',
-      ...(options?.parts?.length ? { parts: options.parts } : {}),
-      createdAt: new Date(),
-      updatedAt: new Date(),
+    const partialMessage = stampTurnRow(
+      {
+        messageType: 'bot_response',
+        content: partialText,
+        contentFormat: 'MARKDOWN',
+        status: 'stopped',
+        ...(options?.parts?.length ? { parts: options.parts } : {}),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      run,
+    );
+    const now = Date.now();
+    conversation.status = CONVERSATION_STATUS.STOPPED;
+    conversation.lastActivityAt = now;
+    const patch: SessionPatch = {
+      status: CONVERSATION_STATUS.STOPPED,
+      lastActivityAt: now,
+      bumpRev: Boolean(options?.replaceMessageId),
     };
 
-    if (options?.replaceMessageId) {
-      const updated = await updateMessageById(
-        options.replaceMessageId,
-        partialMessage,
-        session,
-      );
-      if (!updated) {
-        logger.error('Failed to persist partial answer: message not found', {
-          conversationId: conversation._id,
-          messageId: options.replaceMessageId,
-        });
+    const saved = await turnWrite(run, session, async (dbSession) => {
+      if (options?.replaceMessageId) {
+        const updated = await updateMessageById(
+          options.replaceMessageId,
+          partialMessage,
+          dbSession,
+        );
+        if (!updated) {
+          logger.error('Failed to persist partial answer: message not found', {
+            conversationId: conversation._id,
+            messageId: options.replaceMessageId,
+          });
+        }
+      } else {
+        await appendMessages(
+          conversation._id,
+          conversation.orgId,
+          [partialMessage],
+          dbSession,
+        );
       }
-    } else {
-      await appendMessages(
-        conversation._id as mongoose.Types.ObjectId,
-        conversation.orgId,
-        [partialMessage],
-        session,
-      );
-    }
-
-    conversation.status = CONVERSATION_STATUS.STOPPED;
-    conversation.lastActivityAt = Date.now();
-    const saved = session
-      ? await conversation.save({ session })
-      : await conversation.save();
+      return patchTurnSession(conversation, patch, run, dbSession);
+    });
 
     if (!saved) {
       logger.error('Failed to save conversation after partial stop', {
         conversationId: conversation._id,
       });
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     logger.error('Error saving partial conversation', {
       conversationId: conversation._id,
-      error: error.message,
+      error: error instanceof Error ? error.message : String(error),
     });
     throw error;
   }
@@ -1918,11 +2316,14 @@ export const replaceMessageWithError = async (
   errorType?: string,
   stack?: string,
   metadata?: Map<string, any>,
+  run?: TurnRun,
 ): Promise<void> => {
   try {
+    const errorsBefore = conversation.conversationErrors?.length ?? 0;
+    const now = Date.now();
     conversation.status = CONVERSATION_STATUS.FAILED;
     conversation.failReason = errorMessage;
-    conversation.lastActivityAt = Date.now();
+    conversation.lastActivityAt = now;
 
     const messageObjectId =
       typeof messageId === 'string'
@@ -1939,26 +2340,34 @@ export const replaceMessageWithError = async (
       metadata,
     );
 
+    const patch: SessionPatch = {
+      status: CONVERSATION_STATUS.FAILED,
+      failReason: errorMessage,
+      lastActivityAt: now,
+      error: conversation.conversationErrors?.[errorsBefore],
+      bumpRev: true,
+    };
     // Replace the message with an error message, preserving its _id/seq
-    const failedMessage = buildAIFailureResponseMessage(errorMessage);
-    const updatedMessage = await updateMessageById(
-      messageId,
-      failedMessage,
-      session,
+    const failedMessage = stampTurnRow(
+      buildAIFailureResponseMessage(errorMessage),
+      run,
     );
-    if (!updatedMessage) {
-      logger.error('Failed to replace message with error: message not found', {
-        conversationId: conversation._id,
+    const saved = await turnWrite(run, session, async (dbSession) => {
+      const updatedMessage = await updateMessageById(
         messageId,
-      });
-    }
+        failedMessage,
+        dbSession,
+      );
+      if (!updatedMessage) {
+        logger.error(
+          'Failed to replace message with error: message not found',
+          { conversationId: conversation._id, messageId },
+        );
+      }
+      return patchTurnSession(conversation, patch, run, dbSession);
+    });
 
-    // Save updated conversation
-    const savedWithError = session
-      ? await conversation.save({ session })
-      : await conversation.save();
-
-    if (!savedWithError) {
+    if (!saved) {
       logger.error('Failed to replace message with error', {
         conversationId: conversation._id,
         messageId,
@@ -1984,267 +2393,42 @@ export const replaceMessageWithError = async (
 /**
  * Save complete agent conversation data to database
  */
-export const saveCompleteAgentConversation = async (
+export const saveCompleteAgentConversation = (
   conversation: IChatSessionDocument,
   completeData: IAIResponse,
   orgId: string,
   session?: ClientSession | null,
   modelInfo?: IAIModel,
-): Promise<any> => {
-  try {
-    // Save citations first
-    const citations = await Promise.all(
-      completeData.citations?.map(async (citation: any) => {
-        const newCitation = new Citation({
-          content: citation.content,
-          chunkIndex: citation.chunkIndex,
-          citationType: citation.citationType,
-          metadata: {
-            ...citation.metadata,
-            orgId,
-          },
-        });
-        return session ? newCitation.save({ session }) : newCitation.save();
-      }) || [],
-    );
-
-    // Create AI response message
-    const aiResponseMessage = buildAIResponseMessage(
-      { data: completeData, statusCode: 200 },
-      citations,
-      modelInfo,
-    );
-
-    const [insertedMessage] = await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [aiResponseMessage],
-      session,
-    );
-
-    if (modelInfo) {
-      const fieldsToUpdate: Array<keyof IAIModel> = [
-        'modelKey',
-        'modelName',
-        'modelProvider',
-        'chatMode',
-        'modelFriendlyName',
-        'reasoningEffort',
-      ];
-      for (const field of fieldsToUpdate) {
-        const value = modelInfo[field];
-        if (value !== undefined && value !== null) {
-          assignAiModelField(conversation.modelInfo as IAIModel, field, value);
-        }
-      }
-    }
-    conversation.lastActivityAt = Date.now();
-    recordClassifiedFailureOnSession(conversation, completeData);
-
-    // Save updated conversation
-    const updatedConversation = session
-      ? await conversation.save({ session })
-      : await conversation.save();
-
-    if (!updatedConversation) {
-      throw new InternalServerError('Failed to update agent conversation');
-    }
-
-    return attachPopulatedCitations(
-      updatedConversation.toObject(),
-      [insertedMessage!.toObject()],
-      citations,
-      session,
-    );
-  } catch (error: any) {
-    logger.error('Error saving complete agent conversation', {
-      conversationId: conversation._id,
-      agentKey: conversation.agentKey,
-      error: error.message,
-    });
-    throw error;
-  }
-};
+  run?: TurnRun,
+): Promise<Record<string, unknown>> =>
+  saveCompletedTurn(conversation, completeData, orgId, {
+    session,
+    modelInfo,
+    assignModelInfo: true,
+    run,
+    agent: true,
+  });
 
 /**
  * Mark agent conversation as failed
  */
-export const markAgentConversationFailed = async (
+export const markAgentConversationFailed = (
   conversation: IChatSessionDocument,
   failReason: string,
   session?: ClientSession | null,
   errorType?: string,
   stack?: string,
-  metadata?: Map<string, any>,
-): Promise<void> => {
-  try {
-    const failedMessage = buildAIFailureResponseMessage(failReason);
-    await appendMessages(
-      conversation._id as mongoose.Types.ObjectId,
-      conversation.orgId,
-      [failedMessage],
-      session,
-    );
-
-    conversation.status = CONVERSATION_STATUS.FAILED;
-    conversation.failReason = failReason;
-    conversation.lastActivityAt = Date.now();
-
-    addErrorToConversation(
-      conversation,
-      failReason,
-      errorType,
-      undefined,
-      stack,
-      metadata,
-    );
-
-    // Save failed conversation
-    const savedWithError = session
-      ? await conversation.save({ session })
-      : await conversation.save();
-
-    if (!savedWithError) {
-      logger.error('Failed to save agent conversation error state', {
-        conversationId: conversation._id,
-        agentKey: conversation.agentKey,
-        failReason,
-      });
-    }
-
-    logger.debug('Agent conversation marked as failed', {
-      conversationId: conversation._id,
-      agentKey: conversation.agentKey,
-      failReason,
-    });
-  } catch (error: any) {
-    logger.error('Failed to mark agent conversation as failed', {
-      conversationId: conversation._id,
-      agentKey: conversation.agentKey,
-      error: error.message,
-    });
-    throw error;
-  }
-};
-
-/**
- * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
- * addition to always requiring a concrete `agentKey`) as defense-in-depth
- * now that agent and plain-chat sessions share one collection.
- */
-export const buildAgentConversationFilter = (
-  req: any,
-  orgId: string,
-  userId: string,
-  agentKey: string,
-  conversationId?: string,
-  contentMatchIds?: mongoose.Types.ObjectId[],
-  accessibleProjectIds?: mongoose.Types.ObjectId[],
-) => {
-  const filter: any = {
-    ...ONLY_AGENT,
-    agentKey,
-    orgId: new mongoose.Types.ObjectId(orgId),
-    $or: [
-      { userId: new mongoose.Types.ObjectId(userId) },
-      ...(accessibleProjectIds && accessibleProjectIds.length > 0
-        ? [
-            {
-              projectId: { $in: accessibleProjectIds },
-              projectVisibility: 'project',
-            },
-          ]
-        : []),
-    ],
-    isDeleted: false,
-  };
-
-  if (conversationId) {
-    filter._id = new mongoose.Types.ObjectId(conversationId);
-  }
-
-  applyProjectIdQueryFilter(filter, req);
-
-  // Handle search with XSS and format string validation
-  if (req.query.search) {
-    const escapedSearch = validateAndEscapeSearch(req.query.search, {
-      formatSpecifiers: true,
-    });
-
-    filter.$and = [
-      {
-        $or: [
-          { title: { $regex: escapedSearch, $options: 'i' } },
-          ...(contentMatchIds && contentMatchIds.length > 0
-            ? [{ _id: { $in: contentMatchIds } }]
-            : []),
-        ],
-      },
-    ];
-  }
-
-  // Handle date range
-  if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
-    if (req.query.startDate) {
-      const startDate = new Date(req.query.startDate as string);
-      if (isNaN(startDate.getTime())) {
-        throw new BadRequestError('Invalid start date format');
-      }
-      filter.createdAt.$gte = startDate;
-    }
-    if (req.query.endDate) {
-      const endDate = new Date(req.query.endDate as string);
-      if (isNaN(endDate.getTime())) {
-        throw new BadRequestError('Invalid end date format');
-      }
-      filter.createdAt.$lte = endDate;
-    }
-  }
-
-  // Handle shared/private filter with XSS validation
-  if (req.query.shared !== undefined) {
-    const sharedValue = validateBooleanParam(
-      req.query.shared as string,
-      'shared parameter',
-    );
-    if (sharedValue !== undefined) {
-      filter.isShared = sharedValue;
-    }
-  }
-
-  return filter;
-};
-
-/**
- * Build shared with me filter for agent conversations
- */
-export const buildAgentSharedWithMeFilter = (
-  req: any,
-  orgId: string,
-  userId: string,
-  agentKey: string,
-) => {
-  const filter: any = {
-    ...ONLY_AGENT,
-    agentKey,
-    orgId: new mongoose.Types.ObjectId(orgId),
-    isDeleted: false,
-    isShared: true,
-    'sharedWith.userId': userId,
-  };
-
-  // Add additional filters
-  if (req.query.status) {
-    filter.status = req.query.status;
-  }
-
-  if (req.query.isArchived) {
-    filter.isArchived = req.query.isArchived === 'true';
-  }
-
-  return filter;
-};
+  metadata?: Map<string, unknown>,
+  run?: TurnRun,
+): Promise<void> =>
+  persistFailedTurn(conversation, failReason, {
+    session,
+    errorType,
+    stack,
+    metadata,
+    run,
+    agent: true,
+  });
 
 /**
  * Build sort options for agent conversations
@@ -2259,15 +2443,17 @@ export const buildAgentConversationSortOptions = (req: any) => {
 };
 
 /**
- * Validate agent conversation access
+ * Delete agent conversation (soft delete)
  */
-export const validateAgentConversationAccess = async (
-  conversationId: string,
+export const deleteAgentConversation = async (
+  conversationId: mongoose.Types.ObjectId,
   agentKey: string,
   userId: string,
   orgId: string,
-  accessLevel: 'read' | 'write' = 'read',
 ): Promise<IChatSessionDocument | null> => {
+  if (!userId) {
+    return null;
+  }
   try {
     const conversation = await ChatSession.findOne({
       ...ONLY_AGENT,
@@ -2275,50 +2461,7 @@ export const validateAgentConversationAccess = async (
       agentKey,
       orgId,
       isDeleted: false,
-      $or: [
-        { userId }, // Owner
-        {
-          isShared: true,
-          'sharedWith.userId': userId,
-          ...(accessLevel === 'write' && { 'sharedWith.accessLevel': 'write' }),
-        },
-      ],
     });
-
-    return conversation;
-  } catch (error: any) {
-    logger.error('Error validating agent conversation access', {
-      conversationId,
-      agentKey,
-      userId,
-      accessLevel,
-      error: error.message,
-    });
-    // A malformed id can match nothing; any other failure is not "not found".
-    if (error instanceof mongoose.Error.CastError) {
-      return null;
-    }
-    throw error;
-  }
-};
-
-/**
- * Delete agent conversation (soft delete)
- */
-export const deleteAgentConversation = async (
-  conversationId: string,
-  agentKey: string,
-  userId: string,
-  orgId: string,
-): Promise<IChatSessionDocument | null> => {
-  try {
-    const conversation = await validateAgentConversationAccess(
-      conversationId,
-      agentKey,
-      userId,
-      orgId,
-      'write',
-    );
 
     if (!conversation) {
       return null;
@@ -2344,6 +2487,10 @@ export const deleteAgentConversation = async (
       userId,
       error: error.message,
     });
+    // A malformed id can match nothing; any other failure is not "not found".
+    if (error instanceof mongoose.Error.CastError) {
+      return null;
+    }
     throw error;
   }
 };
@@ -2354,6 +2501,7 @@ export const deleteAgentConversation = async (
 export const initializeSSEResponse = (
   res: Response,
   protocol?: SSEProtocol,
+  runId?: string,
 ): void => {
   res.writeHead(200, {
     'Content-Type': 'text/event-stream',
@@ -2361,13 +2509,17 @@ export const initializeSSEResponse = (
     Connection: 'keep-alive',
     'Access-Control-Allow-Origin': '*',
     'X-Accel-Buffering': 'no',
+    ...(runId !== undefined && { 'X-Run-Id': runId }),
   });
 
   res.write(
     isAGUI(protocol)
       ? frameAGUI(AGUIEventType.CUSTOM, {
           name: 'conversation_created',
-          value: { message: 'SSE connection established' },
+          value: {
+            message: 'SSE connection established',
+            ...(runId !== undefined && { runId }),
+          },
         })
       : `event: connected\ndata: ${JSON.stringify({ message: 'SSE connection established' })}\n\n`,
   );
@@ -2442,6 +2594,20 @@ export const sendSSECompleteEvent = (
   );
 };
 
+const errorMessageOf = (error: unknown): string =>
+  error instanceof Error ? error.message : String(error);
+
+/** The first of `values` that is a non-empty string. */
+const firstNonEmpty = (...values: unknown[]): string | undefined =>
+  values.find((v): v is string => typeof v === 'string' && v !== '');
+
+interface UpstreamErrorFrame {
+  message?: string;
+  error?: string;
+  stack?: string;
+  metadata?: Record<string, unknown>;
+}
+
 /**
  * Handle regeneration stream data events
  */
@@ -2458,6 +2624,8 @@ export const handleRegenerationStreamData = (
   accumulator?: StreamedContentAccumulator,
   onUpstreamError?: () => void,
   onAskUserQuestion?: (payload: unknown) => void,
+  run?: TurnRun,
+  trackWrite?: (write: Promise<void>) => void,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -2467,6 +2635,61 @@ export const handleRegenerationStreamData = (
 
   let filteredChunk = '';
   const agui = isAGUI(protocol);
+  const toolCardFor = (eventName: string): string | undefined =>
+    conversationExtensions().turns.toolCardFor(eventName);
+
+  const replaceWithError = (
+    errorMessage: string,
+    errorType: string,
+    stack?: string,
+    metadata?: Map<string, unknown>,
+  ): void => {
+    if (!existingConversation || messageId === null || messageId === '') return;
+    const write = replaceMessageWithError(
+      existingConversation,
+      messageId,
+      errorMessage,
+      session,
+      errorType,
+      stack,
+      metadata,
+      run,
+    ).catch((err: unknown) => {
+      logger.error('Failed to replace message with error', {
+        requestId,
+        error: errorMessageOf(err),
+      });
+    });
+    trackWrite?.(write);
+  };
+
+  const persistCard = (toolName: string, value: unknown): void => {
+    if (!existingConversation || !value || typeof value !== 'object') return;
+    const card = stampTurnRow(
+      {
+        messageType: 'tool_call',
+        content: '',
+        tools: [{ toolName, toolResult: value }],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      run,
+    );
+    const write = turnWrite(run, session, async (dbSession) => {
+      await appendMessages(
+        existingConversation._id,
+        existingConversation.orgId,
+        [card],
+        dbSession,
+      );
+    }).catch((err: unknown) => {
+      logger.error(`Failed to persist ${toolName} tool_call message`, {
+        requestId,
+        error: errorMessageOf(err),
+      });
+    });
+    trackWrite?.(write);
+  };
 
   for (const event of events) {
     if (event.trim()) {
@@ -2509,24 +2732,13 @@ export const handleRegenerationStreamData = (
         filteredChunk += event + '\n\n';
       } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
         try {
-          const errorData = JSON.parse(dataLine);
+          const errorData = JSON.parse(dataLine) as UpstreamErrorFrame;
           onUpstreamError?.();
-          if (existingConversation && messageId) {
-            const errorMessage = errorData.message || CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
+          replaceWithError(
+            firstNonEmpty(errorData.message) ?? CHAT_ERROR_MESSAGES.failed,
+            'streaming_error',
+            errorData.stack,
+          );
           filteredChunk += event + '\n\n';
         } catch (parseError: any) {
           logger.error('Failed to parse RUN_ERROR event data', {
@@ -2547,6 +2759,13 @@ export const handleRegenerationStreamData = (
           if (eventData?.name === 'ask_user_question' && eventData.value) {
             const payload = eventData.value.toolData ?? eventData.value;
             onAskUserQuestion?.(payload);
+          }
+          const cardTool =
+            typeof eventData?.name === 'string'
+              ? toolCardFor(eventData.name as string)
+              : undefined;
+          if (cardTool && eventData.value) {
+            persistCard(cardTool, eventData.value);
           }
         } catch (parseErr: any) {
           logger.warn('Failed to parse CUSTOM event data during regenerate', {
@@ -2582,52 +2801,49 @@ export const handleRegenerationStreamData = (
       } else if (!agui && eventType === 'error' && dataLine) {
         onUpstreamError?.();
         try {
-          const errorData = JSON.parse(dataLine);
-          if (existingConversation && messageId) {
-            const errorMessage =
-              errorData.error || errorData.message || CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'streaming_error',
-              errorData.stack,
-              errorData.metadata
-                ? new Map(Object.entries(errorData.metadata))
-                : undefined,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
+          const errorData = JSON.parse(dataLine) as UpstreamErrorFrame;
+          replaceWithError(
+            firstNonEmpty(errorData.error, errorData.message) ??
+              CHAT_ERROR_MESSAGES.failed,
+            'streaming_error',
+            errorData.stack,
+            errorData.metadata
+              ? new Map(Object.entries(errorData.metadata))
+              : undefined,
+          );
           filteredChunk += event + '\n\n';
-        } catch (parseError: any) {
+        } catch (parseError: unknown) {
           logger.error('Failed to parse error event data', {
             requestId,
-            parseError: parseError.message,
+            parseError: errorMessageOf(parseError),
             dataLine,
           });
-          if (existingConversation && messageId) {
-            const errorMessage = CHAT_ERROR_MESSAGES.failed;
-            replaceMessageWithError(
-              existingConversation,
-              messageId,
-              errorMessage,
-              session,
-              'parse_error',
-              parseError.stack,
-            ).catch((err) => {
-              logger.error('Failed to replace message with error', {
-                requestId,
-                error: err.message,
-              });
-            });
-          }
+          replaceWithError(
+            CHAT_ERROR_MESSAGES.failed,
+            'parse_error',
+            parseError instanceof Error ? parseError.stack : undefined,
+          );
           filteredChunk += event + '\n\n';
         }
+      } else if (
+        !agui &&
+        eventType !== undefined &&
+        toolCardFor(eventType) !== undefined &&
+        dataLine &&
+        existingConversation
+      ) {
+        try {
+          persistCard(toolCardFor(eventType) as string, JSON.parse(dataLine));
+        } catch (parseErr: any) {
+          logger.warn(
+            `Failed to parse ${eventType} event data during regenerate`,
+            {
+              requestId,
+              error: parseErr?.message,
+            },
+          );
+        }
+        filteredChunk += event + '\n\n';
       } else if (
         eventType === 'ask_user_question' &&
         dataLine &&
@@ -2679,61 +2895,38 @@ export const handleRegenerationSuccess = async (
   modelInfo?: IAIModel,
   askUserQuestionPayload?: unknown,
   staleAskToolCallIds?: mongoose.Types.ObjectId[],
+  run?: TurnRun,
 ): Promise<{
   conversation: any;
   savedCitations: ICitation[];
 }> => {
-  // Create and save citations
-  const savedCitations: ICitation[] = await Promise.all(
-    completeData.citations?.map(async (citation: ICitation) => {
-      const newCitation = new Citation({
-        content: citation.content,
-        chunkIndex: citation.chunkIndex ?? 0,
-        citationType: citation.citationType,
-        metadata: {
-          ...citation.metadata,
-          orgId,
-        },
-      });
-      return session ? newCitation.save({ session }) : newCitation.save();
-    }) || [],
-  );
+  // Built here, inserted inside the fenced write so a fenced-out run leaves none behind.
+  const savedCitations: ICitation[] =
+    completeData.citations?.map(
+      (citation: ICitation) =>
+        new Citation({
+          content: citation.content,
+          chunkIndex: citation.chunkIndex ?? 0,
+          citationType: citation.citationType,
+          metadata: {
+            ...citation.metadata,
+            orgId,
+          },
+        }),
+    ) || [];
 
   // Build AI response message and replace the original message with it,
   // preserving the original's _id/seq (see updateMessageById).
-  const aiResponseMessage = buildAIResponseMessage(
-    { statusCode: 200, data: completeData },
-    savedCitations,
-    modelInfo,
+  const aiResponseMessage = stampTurnRow(
+    buildAIResponseMessage(
+      { statusCode: 200, data: completeData },
+      savedCitations,
+      modelInfo,
+    ),
+    run,
   );
   if (askUserQuestionPayload) {
     attachAskUserQuestionToMessage(aiResponseMessage, askUserQuestionPayload);
-  }
-
-  const updatedMessage = await updateMessageById(
-    messageId,
-    aiResponseMessage,
-    session,
-  );
-  if (!updatedMessage) {
-    throw new InternalServerError(
-      'Failed to update conversation with regenerated response: message not found',
-    );
-  }
-
-  // The replacement answer carries its own questions payload, so the rows the
-  // discarded run left beside it are stale. Non-fatal: an answer the user can
-  // already see must not fail on transcript housekeeping.
-  if (staleAskToolCallIds?.length) {
-    try {
-      await deleteMessagesById(staleAskToolCallIds, session);
-    } catch (cleanupErr: any) {
-      logger.warn('Failed to drop stale ask_user_question rows after regenerate', {
-        conversationId: existingConversation._id,
-        messageId,
-        error: cleanupErr?.message,
-      });
-    }
   }
 
   if (modelInfo) {
@@ -2753,28 +2946,70 @@ export const handleRegenerationSuccess = async (
     }
   }
 
-  existingConversation.lastActivityAt = Date.now();
+  const errorsBefore = existingConversation.conversationErrors?.length ?? 0;
+  const now = Date.now();
+  existingConversation.lastActivityAt = now;
   recordClassifiedFailureOnSession(existingConversation, completeData);
+  const patch: SessionPatch = {
+    status: existingConversation.status as string | undefined,
+    failReason: existingConversation.failReason as string | undefined,
+    lastActivityAt: now,
+    modelInfo,
+    error: existingConversation.conversationErrors?.[errorsBefore],
+    bumpRev: true,
+  };
 
-  // Save the updated conversation
-  const updatedConversation = session
-    ? await existingConversation.save({ session })
-    : await existingConversation.save();
-
-  if (!updatedConversation) {
-    throw new InternalServerError(
-      'Failed to update conversation with regenerated response',
+  // The replacement answer carries its own questions payload, so the rows the
+  // discarded run left beside it are stale. Non-fatal without a transaction; inside
+  // one (fenced, replica set) a failed delete aborts it and the write fails as a whole.
+  const updatedMessage = await turnWrite(run, session, async (dbSession) => {
+    await insertCitations(savedCitations, dbSession);
+    const replaced = await updateMessageById(
+      messageId,
+      aiResponseMessage,
+      dbSession,
     );
-  }
+    if (!replaced) {
+      throw new InternalServerError(
+        'Failed to update conversation with regenerated response: message not found',
+      );
+    }
+    if (
+      !(await patchTurnSession(existingConversation, patch, run, dbSession))
+    ) {
+      throw new InternalServerError(
+        'Failed to update conversation with regenerated response',
+      );
+    }
+    if (staleAskToolCallIds !== undefined && staleAskToolCallIds.length > 0) {
+      try {
+        await deleteMessagesById(staleAskToolCallIds, dbSession, {
+          sessionId: existingConversation._id,
+          orgId: existingConversation.orgId,
+        });
+      } catch (cleanupErr: unknown) {
+        logger.warn(
+          'Failed to drop stale ask_user_question rows after regenerate',
+          {
+            conversationId: existingConversation._id,
+            messageId,
+            error: errorMessageOf(cleanupErr),
+          },
+        );
+      }
+    }
+    return replaced;
+  });
 
   // Populate citationData across ALL messages so the frontend can rebuild its
   // citationMaps for the entire conversation. Otherwise previous messages lose
   // inline citation chips (see attachPopulatedCitations docstring).
   const responseConversation = await attachPopulatedCitations(
-    updatedConversation.toObject(),
+    existingConversation.toObject(),
     [updatedMessage.toObject()],
     savedCitations,
     session,
+    turnViewerId(run, existingConversation),
   );
 
   return {
@@ -2796,8 +3031,16 @@ export const handleRegenerationError = async (
   requestId: string,
   errorType: string = 'regeneration_error',
   protocol?: SSEProtocol,
+  run?: TurnRun,
+  beforeFrame?: () => Promise<void>,
 ): Promise<void> => {
   const errorMessage = userFacingChatError(error);
+  const { message: details, stack } = error as {
+    message?: string;
+    stack?: string;
+  };
+  let conversationForFrame: unknown;
+  let replaced = false;
 
   if (existingConversation && messageId) {
     try {
@@ -2807,9 +3050,26 @@ export const handleRegenerationError = async (
         errorMessage,
         session,
         errorType,
-        error.stack,
+        stack,
+        undefined,
+        run,
       );
-
+      replaced = true;
+    } catch (replaceError: unknown) {
+      // The caller ends a stopped run differently from a failed one.
+      if (replaceError instanceof LeaseLostError) {
+        throw replaceError;
+      }
+      logger.error('Failed to replace message with error', {
+        requestId,
+        error: errorMessageOf(replaceError),
+      });
+    }
+  }
+  // The lease is released before the last frame, so a client that retries on seeing it finds the conversation free.
+  await beforeFrame?.();
+  if (replaced && existingConversation) {
+    try {
       // Reload conversation to get updated state
       const updatedConversation = await ChatSession.findById(conversationId);
       if (updatedConversation) {
@@ -2818,48 +3078,26 @@ export const handleRegenerationError = async (
           {},
           session,
         );
-        const plainConversation = attachMessages(
+        conversationForFrame = attachMessages(
           updatedConversation.toObject(),
           messages,
-        );
-        await sendSSEErrorEvent(
-          res,
-          errorMessage,
-          error.message,
-          plainConversation,
-          protocol,
-        );
-      } else {
-        await sendSSEErrorEvent(
-          res,
-          errorMessage,
-          error.message,
-          undefined,
-          protocol,
+          turnViewerId(run, updatedConversation),
         );
       }
-    } catch (replaceError: any) {
-      logger.error('Failed to replace message with error', {
+    } catch (reloadError: unknown) {
+      logger.error('Failed to reload conversation for error event', {
         requestId,
-        error: replaceError.message,
+        error: errorMessageOf(reloadError),
       });
-      await sendSSEErrorEvent(
-        res,
-        errorMessage,
-        error.message,
-        undefined,
-        protocol,
-      );
     }
-  } else {
-    await sendSSEErrorEvent(
-      res,
-      errorMessage,
-      error.message,
-      undefined,
-      protocol,
-    );
   }
+  await sendSSEErrorEvent(
+    res,
+    errorMessage,
+    details,
+    conversationForFrame,
+    protocol,
+  );
 };
 
 /**

@@ -39,6 +39,7 @@ OWNER = "user-owner"
 COLLEAGUE = "user-colleague"
 STRANGER = "user-stranger"
 CONVERSATION = "conv-1"
+RUN = "run-1"
 
 COLUMNS = ["id", "salary"]
 ROWS = [(1, 100), (2, 200)]
@@ -77,11 +78,13 @@ def _setup(*, signs_urls: bool = False) -> tuple[_Graph, FakeBlobStore, Artifact
     return graph, blob, ArtifactRegistryService(graph, blob)
 
 
-async def _export(graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER) -> dict[str, Any]:
+async def _export(
+    graph: _Graph, blob: FakeBlobStore, *, user_id: str | None = OWNER, run_id: str | None = RUN,
+) -> dict[str, Any]:
     result = await save_query_result_csv(
         blob_store=blob, graph_provider=graph, org_id=ORG, user_id=user_id,
         conversation_id=CONVERSATION, columns=COLUMNS, rows=ROWS,
-        file_name="query_result_1.csv", source_tool="sql.execute_sql_query",
+        file_name="query_result_1.csv", source_tool="sql.execute_sql_query", run_id=run_id,
     )
     assert result is not None and result["type"] == "artifacts"
     (entry,) = result["artifacts"]
@@ -112,6 +115,7 @@ class TestTheRecord:
         artifact = graph.nodes[CollectionNames.ARTIFACTS.value][record_id]
         assert (artifact["orgId"], artifact["conversationId"]) == (ORG, CONVERSATION)
         assert artifact["sourceTool"] == "sql.execute_sql_query"
+        assert artifact["runId"] == RUN
         assert artifact["contentHash"] == compute_content_hash(CSV)
 
         assert _permission_edges(graph, record_id) == {"ukey-owner": "OWNER"}

@@ -63,7 +63,9 @@ vi.mock('@/app/(main)/workspace/connectors/demo-data/components', () => ({
   DemoDataRemovalNotice: () => <div>Demo removal notice</div>,
 }));
 
-vi.mock('@/config', () => ({
+vi.mock('@/config', async (importOriginal) => ({
+  chatExtension: (await importOriginal<typeof import('@/config')>()).chatExtension,
+  chatSlots: (await importOriginal<typeof import('@/config')>()).chatSlots,
   AgentChatHeader: ({ displayName }: { displayName: string | null }) => (
     <header aria-label="Agent header">{displayName ?? 'Agent'}</header>
   ),
@@ -110,11 +112,18 @@ vi.mock('@/app/components/file-preview', () => ({
 }));
 
 const getSharedMembers = vi.fn();
+const createChatShareAdapter = vi.fn();
 vi.mock('../share-adapter', () => ({
-  createChatShareAdapter: () => ({ getSharedMembers: () => getSharedMembers() }),
+  createChatShareAdapter: (...args: unknown[]) => {
+    createChatShareAdapter(...args);
+    return { getSharedMembers: () => getSharedMembers() };
+  },
 }));
 vi.mock('@/app/components/share', () => ({
-  ShareSidebar: ({ open }: { open: boolean }) => (open ? <div role="dialog" aria-label="Share conversation" /> : null),
+  ShareSidebar: ({ open, initialSearch }: { open: boolean; initialSearch?: string }) =>
+    open ? (
+      <div role="dialog" aria-label="Share conversation" data-initial-search={initialSearch ?? ''} />
+    ) : null,
   ShareHeaderGroup: ({ members, onShareClick }: { members: { name: string }[]; onShareClick: () => void }) => (
     <div>
       {members.map((m) => <span key={m.name}>{m.name}</span>)}
@@ -191,7 +200,25 @@ function apiMessage(overrides: Partial<ConversationMessage>): ConversationMessag
   } as ConversationMessage;
 }
 
-function conversationDetail({ isOwner = true, messages }: { isOwner?: boolean; messages?: ConversationMessage[] } = {}) {
+/** A full server `access` view for the given role. */
+function accessView(role: 'owner' | 'write' | 'read', overrides: Record<string, unknown> = {}) {
+  return {
+    role,
+    isOwner: role === 'owner',
+    accessLevel: role,
+    canSend: role !== 'read',
+    canManage: role === 'owner',
+    canInvite: role === 'owner',
+    ...overrides,
+  };
+}
+
+/** `isOwner` gives the short `access` pair; pass `access` for a full view. */
+function conversationDetail({
+  isOwner = true,
+  messages,
+  access,
+}: { isOwner?: boolean; messages?: ConversationMessage[]; access?: Record<string, unknown> } = {}) {
   const msgs = messages ?? [
     apiMessage({ _id: 'u1', messageType: 'user_query', content: 'How many vacation days do I get?' }),
     apiMessage({ _id: 'b1', messageType: 'bot_response', content: 'You get 25 days a year.' }),
@@ -206,7 +233,7 @@ function conversationDetail({ isOwner = true, messages }: { isOwner?: boolean; m
       modelInfo: undefined,
       isShared: false,
       sharedWith: [],
-      access: { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
+      access: access ?? { isOwner, accessLevel: isOwner ? 'owner' : 'read' },
     },
     messages: msgs,
     pagination: PAGINATION,
@@ -344,7 +371,7 @@ describe('Chat page — opening a conversation', () => {
     renderPage('conversationId=conv-1');
 
     expect(screen.getByRole('status').textContent).toBe('Loading');
-    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1'));
+    await waitFor(() => expect(fetchConversation).toHaveBeenCalledWith('conv-1', undefined, undefined, expect.anything()));
 
     await act(async () => resolve(conversationDetail()));
 
@@ -487,6 +514,63 @@ describe('Chat page — opening a conversation', () => {
     await screen.findByText('You get 25 days a year.');
     expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+  });
+
+
+  describe('access views from the server', () => {
+    it('a write-role access view still gets no composer when the user is not the owner', async () => {
+      fetchConversation.mockResolvedValue(
+        conversationDetail({ access: accessView('write', { isOwner: false }) }),
+      );
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.queryByRole('textbox', { name: 'Message composer' })).toBeNull();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('the owner gets Share and no other access control', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(screen.queryByRole('button', { name: 'Who can access this chat' })).toBeNull();
+    });
+
+    it('the owner keeps the composer and Share', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(await screen.findByRole('button', { name: 'Share' })).toBeTruthy();
+      expect(createChatShareAdapter).toHaveBeenCalledWith('conv-1', undefined);
+    });
+
+    it('an agent chat is still not shareable, even by its owner', async () => {
+      getAgent.mockResolvedValue({ agent: { name: 'Support Bot', toolsets: [] }, toolFullNames: [] });
+      fetchAgentConversation.mockResolvedValue(conversationDetail({ access: accessView('owner') }));
+      renderPage('agentId=agent-7&conversationId=conv-1');
+
+      await screen.findByText('You get 25 days a year.');
+      expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
+    });
+
+    it('slot state the default access check ignores does not hide the composer', async () => {
+      fetchConversation.mockResolvedValue(conversationDetail({ isOwner: true }));
+      renderPage('conversationId=conv-1');
+      await screen.findByText('You get 25 days a year.');
+
+      act(() => {
+        const { activeSlotId } = useChatStore.getState();
+        useChatStore.getState().updateSlot(activeSlotId as string, { accessLost: true });
+      });
+
+      expect(screen.getByRole('textbox', { name: 'Message composer' })).toBeTruthy();
+      expect(screen.queryByTestId('read-only-banner')).toBeNull();
+    });
   });
 
   it('lets the owner see who it is shared with and open sharing', async () => {
@@ -645,7 +729,7 @@ describe('Chat page — agent chats', () => {
 
     expect(await screen.findByText('Support Bot')).toBeTruthy();
     expect(await screen.findByText('Priya Shah')).toBeTruthy();
-    expect(getUsersByIds).toHaveBeenCalledWith(['creator-1']);
+    expect(getUsersByIds).toHaveBeenCalledWith(['creator-1'], { quiet: true });
     expect(toastError).toHaveBeenCalledWith(
       'This agent has tools that are no longer available. Open the Agent Builder to remove them.',
       expect.objectContaining({ action: expect.objectContaining({ label: 'Open Agent Builder' }) }),
@@ -663,7 +747,7 @@ describe('Chat page — agent chats', () => {
     renderPage('agentId=agent-7&conversationId=conv-1');
 
     expect(await screen.findByText('You get 25 days a year.')).toBeTruthy();
-    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1');
+    expect(fetchAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', expect.anything());
     expect(fetchConversation).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Share' })).toBeNull();
   });

@@ -23,6 +23,7 @@ import {
   useNotificationFilterLabels,
 } from './notification-filter-menu';
 import { useTranslation } from 'react-i18next';
+import { notificationExtension } from '@/config';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -231,6 +232,13 @@ export function NotificationsPanel() {
     [syncPendingActions],
   );
 
+  const rowExtension = notificationExtension.usePanelRows({
+    isPanelOpen,
+    beginRowAction: (id) => beginRowAction(id, 'extra'),
+    endRowAction,
+    setError,
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -426,23 +434,19 @@ export function NotificationsPanel() {
         [data-ph-notifications-header-actions] > *:hover {
           z-index: 1;
         }
-        [data-ph-notification-row][data-read="true"] {
-          background-color: var(--gray-a2);
-        }
-        html.dark [data-ph-notification-row][data-read="true"] {
-          background-color: transparent;
-        }
-        html.dark [data-ph-notification-row][data-read="false"] {
-          background-color: var(--gray-a2);
+        [data-ph-notification-row][data-read="false"] {
+          background-color: var(--accent-a2);
         }
         [data-ph-notification-row]:hover {
           background-color: var(--olive-3);
         }
-        html.dark [data-ph-notification-row][data-read="true"]:hover {
-          background-color: var(--gray-a3);
+        html.dark [data-ph-notification-row]:hover {
+          background-color: var(--gray-a4);
         }
-        html.dark [data-ph-notification-row][data-read="false"]:hover {
-          background-color: var(--gray-a6);
+        @media (max-width: 640px) {
+          [data-ph-notification-row] {
+            min-height: 64px;
+          }
         }
         [data-ph-notification-row-meta] {
           position: relative;
@@ -511,6 +515,7 @@ export function NotificationsPanel() {
           left: `${leftOffset}px`,
           bottom: 0,
           width: `${panelWidth}px`,
+          maxWidth: `calc(100vw - ${leftOffset}px)`,
           zIndex: 9100,
           display: 'flex',
           flexDirection: 'column',
@@ -573,10 +578,7 @@ export function NotificationsPanel() {
               <Text
                 size="1"
                 truncate
-                style={{
-                  color: 'var(--gray-11)',
-                  opacity: 0.5,
-                }}
+                style={{ color: 'var(--slate-11)' }}
               >
                 {filterLabels[listFilter]}
               </Text>
@@ -637,13 +639,15 @@ export function NotificationsPanel() {
           )}
 
           {loading && displayNotifications.length === 0 ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+            <Flex align="center" justify="center" gap="2" style={{ paddingTop: 'var(--space-8)' }} role="status">
+              <Spinner size={16} />
               <Text size="2" color="gray">
                 {t('notifications.loading')}
               </Text>
             </Flex>
           ) : displayNotifications.length === 0 && (hasMore || isLoadingMore) ? (
-            <Flex align="center" justify="center" style={{ paddingTop: 'var(--space-8)' }}>
+            <Flex align="center" justify="center" gap="2" style={{ paddingTop: 'var(--space-8)' }} role="status">
+              <Spinner size={16} />
               <Text size="2" color="gray">
                 {t('notifications.loading')}
               </Text>
@@ -684,6 +688,8 @@ export function NotificationsPanel() {
                   archiveLabel={t('notifications.archive')}
                   unarchiveLabel={t('notifications.unarchive')}
                   dismissLabel={t('notifications.dismiss')}
+                  decoration={rowExtension.decorate(n)}
+                  extraAction={rowExtension.extraAction(n)}
                 />
               ))}
               {hasMore && (

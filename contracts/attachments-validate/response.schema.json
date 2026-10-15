@@ -1,0 +1,15 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://pipeshub.ai/contracts/attachments-validate/response.schema.json",
+  "title": "POST /api/v1/chat/attachments/validate 200 response",
+  "description": "The subset of the request recordIds the caller may attach. Consumed by filterOwnedAttachments in backend/nodejs/apps/src/modules/enterprise_search/utils/attachment-validation.ts.",
+  "type": "object",
+  "required": ["recordIds"],
+  "properties": {
+    "recordIds": {
+      "type": "array",
+      "maxItems": 50,
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}
