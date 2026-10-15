@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -21,6 +20,7 @@ from app.connectors.core.registry.tool_builder import (
 from app.connectors.core.registry.types import DocumentationLink
 from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.serialized_execute import SerializedExecute
 
 logger = logging.getLogger(__name__)
 
@@ -53,8 +53,8 @@ def _document_url(document_id: str) -> str:
     return f"https://docs.google.com/document/d/{document_id}/edit"
 
 
-def _plain_text(document: dict[str, Any]) -> str:
-    """The body's text, paragraph by paragraph and table cell by cell, in reading order."""
+def _body_text(body: dict[str, Any]) -> str:
+    """A body's text, paragraph by paragraph and table cell by cell, in reading order."""
     parts: list[str] = []
 
     def walk(content: list[dict[str, Any]]) -> None:
@@ -67,8 +67,46 @@ def _plain_text(document: dict[str, Any]) -> str:
                 for cell in row.get("tableCells", []):
                     walk(cell.get("content", []))
 
-    walk((document.get("body") or {}).get("content", []))
+    walk(body.get("content", []))
     return "".join(parts)
+
+
+def _tabs(document: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every tab, child tabs included, in the order the document shows them.
+
+    Read with includeTabsContent, which leaves ``body`` empty and puts each tab's text
+    under ``tabs[].documentTab.body``.
+    """
+    found: list[dict[str, Any]] = []
+
+    def walk(tabs: list[dict[str, Any]]) -> None:
+        for tab in tabs:
+            props = tab.get("tabProperties") or {}
+            found.append({
+                "tab_id": props.get("tabId", ""),
+                "title": props.get("title", ""),
+                "parent_tab_id": props.get("parentTabId"),
+                "text": _body_text((tab.get("documentTab") or {}).get("body") or {}),
+            })
+            walk(tab.get("childTabs", []))
+
+    walk(document.get("tabs", []))
+    return found
+
+
+def _capped_tabs(tabs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+    """Tabs whose text fits in the reply, the last one cut if needed, and whether any was cut."""
+    kept: list[dict[str, Any]] = []
+    room = _MAX_DOCUMENT_TEXT_CHARS
+    for tab in tabs:
+        if room <= 0:
+            return kept, True
+        text = tab["text"]
+        kept.append({**tab, "text": text[:room]})
+        if len(text) > room:
+            return kept, True
+        room -= len(text)
+    return kept, False
 
 
 @ToolsetBuilder("Docs")\
@@ -118,10 +156,10 @@ class GoogleDocs:
 
     def __init__(self, client: GoogleClient) -> None:
         self.client = client
+        self._serial = SerializedExecute()
 
     async def _execute(self, request: Any) -> dict[str, Any]:  # noqa: ANN401
-        # googleapiclient requests block, so they run off the event loop.
-        return await asyncio.to_thread(request.execute)
+        return await self._serial.run(request.execute)
 
     async def _batch_update(self, document_id: str, requests: list[dict[str, Any]]) -> dict[str, Any]:
         return await self._execute(
@@ -132,8 +170,10 @@ class GoogleDocs:
         path="/tools/docs/get_document",
         short_description="Read a Google Doc",
         description=(
-            "Read a Google Doc: its title, plain text and a link. Use the document id from its link "
-            "(the part after /document/d/). For a file you only know by name, find it with Drive first."
+            "Read a Google Doc: its title, a link, and the text of every tab (child tabs included), each "
+            "labelled with its title and tab_id. Pass a tab_id to insert_text or replace_text to change one "
+            "tab. Use the document id from its link (the part after /document/d/). For a file you only know "
+            "by name, find it with Drive first."
         ),
         parameters=[
             ToolParameter(name="document_id", type=ParameterType.STRING, description="The document id", required=True),
@@ -144,15 +184,17 @@ class GoogleDocs:
     )
     async def get_document(self, document_id: str) -> tuple[bool, str]:
         try:
-            document = await self._execute(self.client.documents().get(documentId=document_id))
-            text = _plain_text(document)
+            document = await self._execute(
+                self.client.documents().get(documentId=document_id, includeTabsContent=True)
+            )
+            tabs, truncated = _capped_tabs(_tabs(document))
             return True, json.dumps({
                 "document_id": document.get("documentId", document_id),
                 "title": document.get("title", ""),
                 "url": _document_url(document.get("documentId", document_id)),
                 "revision_id": document.get("revisionId", ""),
-                "text": text[:_MAX_DOCUMENT_TEXT_CHARS],
-                "truncated": len(text) > _MAX_DOCUMENT_TEXT_CHARS,
+                "tabs": tabs,
+                "truncated": truncated,
             })
         except Exception as e:
             return _failure(e, "read the document")
@@ -174,40 +216,54 @@ class GoogleDocs:
             if not (title or "").strip():
                 raise _DocsInputError("Give the new document a title.")
             document = await self._execute(self.client.documents().create(body={"title": title}))
-            document_id = document["documentId"]
-            if text:
-                await self._batch_update(document_id, [{"insertText": {"location": {"index": 1}, "text": text}}])
-            return True, json.dumps({
-                "document_id": document_id,
-                "title": document.get("title", title),
-                "url": _document_url(document_id),
-            })
         except Exception as e:
             return _failure(e, "create the document")
+        document_id = document["documentId"]
+        created = {"document_id": document_id, "title": document.get("title", title), "url": _document_url(document_id)}
+        if text:
+            try:
+                await self._batch_update(document_id, [{"insertText": {"location": {"index": 1}, "text": text}}])
+            except Exception as e:
+                logger.error("Created document %s but could not add its text: %s", document_id, e)
+                reason = google_error_message(e, "add the starting text", _DOCS_WORDING)
+                return False, json.dumps({
+                    **created,
+                    "error": (
+                        f"The document \"{created['title']}\" was created ({created['url']}), but its text "
+                        f"was not added. {reason} Add the text with insert_text on document_id "
+                        f"{document_id}; don't create another document."
+                    ),
+                })
+        return True, json.dumps(created)
 
     @tool(
         path="/tools/docs/insert_text",
         short_description="Add text to a Google Doc",
         description=(
-            "Insert text into a Google Doc. Without an index the text goes at the end of the document; "
-            "index 1 is the very start."
+            "Insert text into a Google Doc. Without an index the text goes at the end of the tab; index 1 is "
+            "its very start. Without a tab_id it goes into the document's first tab; pass a tab_id from "
+            "get_document to write into another tab."
         ),
         parameters=[
             ToolParameter(name="document_id", type=ParameterType.STRING, description="The document id", required=True),
             ToolParameter(name="text", type=ParameterType.STRING, description="The text to insert", required=True),
             ToolParameter(name="index", type=ParameterType.INTEGER, description="Where to insert (1 is the start); leave out to add at the end", required=False),
+            ToolParameter(name="tab_id", type=ParameterType.STRING, description="The tab to write into, from get_document; leave out for the first tab", required=False),
         ],
         tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
         args_summary=args_template("Adding text to Google Doc {document_id}", "document_id"),
         result_summary=confirmation("Text added to Google Doc {document_id}", "document_id"),
     )
-    async def insert_text(self, document_id: str, text: str, index: Optional[int] = None) -> tuple[bool, str]:
+    async def insert_text(
+        self, document_id: str, text: str, index: Optional[int] = None, tab_id: Optional[str] = None,
+    ) -> tuple[bool, str]:
         try:
             if not text:
                 raise _DocsInputError("There is no text to insert.")
             if index is not None and index < 1:
                 raise _DocsInputError("The index must be 1 or more; 1 is the start of the document.")
-            location = {"location": {"index": index}} if index is not None else {"endOfSegmentLocation": {}}
+            tab = {"tabId": tab_id} if tab_id else {}
+            location = {"location": {"index": index, **tab}} if index is not None else {"endOfSegmentLocation": tab}
             await self._batch_update(document_id, [{"insertText": {**location, "text": text}}])
             return True, json.dumps({"document_id": document_id, "url": _document_url(document_id), "inserted_characters": len(text)})
         except Exception as e:
@@ -216,27 +272,35 @@ class GoogleDocs:
     @tool(
         path="/tools/docs/replace_text",
         short_description="Replace text in a Google Doc",
-        description="Replace every occurrence of some text in a Google Doc, and report how many were changed.",
+        description=(
+            "Replace every occurrence of some text in a Google Doc, and report how many were changed. "
+            "Without a tab_id it replaces in every tab, child tabs included; pass a tab_id from get_document "
+            "to change only that tab."
+        ),
         parameters=[
             ToolParameter(name="document_id", type=ParameterType.STRING, description="The document id", required=True),
             ToolParameter(name="old_text", type=ParameterType.STRING, description="The text to find", required=True),
             ToolParameter(name="new_text", type=ParameterType.STRING, description="The text to put in its place (may be empty)", required=True),
             ToolParameter(name="match_case", type=ParameterType.BOOLEAN, description="Whether letter case must match", required=False, default=True),
+            ToolParameter(name="tab_id", type=ParameterType.STRING, description="Only replace in this tab, from get_document; leave out for every tab", required=False),
         ],
         tags=[Tag(key="category", value="documents"), Tag(key="type", value="write")],
         args_summary=args_template("Replacing \"{old_text}\" in Google Doc {document_id}", "old_text", "document_id"),
         result_summary=entity_summary(lambda d: f"Replaced {d.get('occurrences_changed', 0)} occurrence(s)", path=()),
     )
-    async def replace_text(self, document_id: str, old_text: str, new_text: str, *, match_case: bool = True) -> tuple[bool, str]:
+    async def replace_text(
+        self, document_id: str, old_text: str, new_text: str, *, match_case: bool = True, tab_id: Optional[str] = None,
+    ) -> tuple[bool, str]:
         try:
             if not old_text:
                 raise _DocsInputError("Say which text to replace.")
-            response = await self._batch_update(document_id, [{
-                "replaceAllText": {
-                    "containsText": {"text": old_text, "matchCase": bool(match_case)},
-                    "replaceText": new_text or "",
-                },
-            }])
+            replace: dict[str, Any] = {
+                "containsText": {"text": old_text, "matchCase": bool(match_case)},
+                "replaceText": new_text or "",
+            }
+            if tab_id:
+                replace["tabsCriteria"] = {"tabIds": [tab_id]}
+            response = await self._batch_update(document_id, [{"replaceAllText": replace}])
             replies = response.get("replies") or [{}]
             changed = (replies[0].get("replaceAllText") or {}).get("occurrencesChanged", 0)
             return True, json.dumps({"document_id": document_id, "url": _document_url(document_id), "occurrences_changed": changed})

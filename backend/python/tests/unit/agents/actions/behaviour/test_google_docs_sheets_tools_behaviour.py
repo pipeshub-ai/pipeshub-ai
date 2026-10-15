@@ -8,6 +8,9 @@ details, not the older ``errors`` list.
 
 from __future__ import annotations
 
+import asyncio
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -62,27 +65,66 @@ def sheets(http: FakeGoogleHttp) -> GoogleSheets:
     return GoogleSheets(_service(http, "sheets", "v4"))
 
 
-def _document(text_runs: list[str], table_cells: list[str] | None = None) -> dict[str, Any]:
+def _body(text_runs: list[str], table_cells: list[str] | None = None) -> dict[str, Any]:
     content: list[dict[str, Any]] = [{"paragraph": {"elements": [{"textRun": {"content": t}} for t in text_runs]}}]
     if table_cells:
         content.append({"table": {"tableRows": [{"tableCells": [
             {"content": [{"paragraph": {"elements": [{"textRun": {"content": c}}]}}]} for c in table_cells
         ]}]}})
-    return {"documentId": "doc-1", "title": "Q3 plan", "revisionId": "rev-9", "body": {"content": content}}
+    return {"content": content}
+
+
+def _tab(tab_id: str, title: str, body: dict[str, Any], children: list[dict[str, Any]] | None = None,
+         parent: str | None = None) -> dict[str, Any]:
+    props: dict[str, Any] = {"tabId": tab_id, "title": title, "index": 0}
+    if parent:
+        props["parentTabId"] = parent
+    return {"tabProperties": props, "documentTab": {"body": body}, "childTabs": children or []}
+
+
+def _document(tabs: list[dict[str, Any]]) -> dict[str, Any]:
+    # With includeTabsContent=true Google leaves body empty and puts the text in each tab.
+    return {"documentId": "doc-1", "title": "Q3 plan", "revisionId": "rev-9", "tabs": tabs}
 
 
 class TestDocs:
     async def test_reads_title_and_text_including_tables(self, docs, http) -> None:
-        http.on("GET", f"{DOCS}/doc-1", _document(["Goals\n", "Ship it.\n"], ["North", "South"]), base="")
+        http.on("GET", f"{DOCS}/doc-1", _document([_tab("t.0", "Plan", _body(["Goals\n", "Ship it.\n"], ["North", "South"]))]), base="")
 
         ok, data = result(await docs.get_document("doc-1"))
 
         assert ok is True
         assert data["title"] == "Q3 plan"
-        assert data["text"] == "Goals\nShip it.\nNorthSouth"
+        assert data["tabs"] == [{"tab_id": "t.0", "title": "Plan", "parent_tab_id": None, "text": "Goals\nShip it.\nNorthSouth"}]
         assert data["url"] == "https://docs.google.com/document/d/doc-1/edit"
         assert data["truncated"] is False
+        assert http.requests[0].query["includeTabsContent"] == "true"
         assert http.requests[0].headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
+
+    async def test_reads_every_tab_including_child_tabs(self, docs, http) -> None:
+        child = _tab("t.child", "Risks", _body(["Late vendor.\n"]), parent="t.1")
+        http.on("GET", f"{DOCS}/doc-1", _document([
+            _tab("t.0", "Plan", _body(["Goals\n"])),
+            _tab("t.1", "Notes", _body(["Kickoff Monday.\n"]), children=[child]),
+        ]), base="")
+
+        ok, data = result(await docs.get_document("doc-1"))
+
+        assert ok is True and data["truncated"] is False
+        assert [(t["tab_id"], t["title"], t["parent_tab_id"], t["text"]) for t in data["tabs"]] == [
+            ("t.0", "Plan", None, "Goals\n"),
+            ("t.1", "Notes", None, "Kickoff Monday.\n"),
+            ("t.child", "Risks", "t.1", "Late vendor.\n"),
+        ]
+
+    async def test_text_past_the_cap_is_cut_across_tabs_and_flagged(self, docs, http, monkeypatch) -> None:
+        monkeypatch.setattr("app.agents.actions.google.docs.docs._MAX_DOCUMENT_TEXT_CHARS", 8)
+        http.on("GET", f"{DOCS}/doc-1", _document([_tab("t.0", "A", _body(["12345"])), _tab("t.1", "B", _body(["67890"]))]), base="")
+
+        ok, data = result(await docs.get_document("doc-1"))
+
+        assert ok is True and data["truncated"] is True
+        assert [t["text"] for t in data["tabs"]] == ["12345", "678"]
 
     async def test_create_with_text_creates_then_inserts_at_the_start(self, docs, http) -> None:
         http.on("POST", DOCS, {"documentId": "new-1", "title": "Notes"}, base="")
@@ -95,6 +137,20 @@ class TestDocs:
         assert http.calls("POST", f"{DOCS}/new-1:batchUpdate", base="")[0].body == {
             "requests": [{"insertText": {"location": {"index": 1}, "text": "Hello"}}],
         }
+
+    async def test_text_failing_after_the_create_says_the_document_exists(self, docs, http) -> None:
+        http.on("POST", DOCS, {"documentId": "new-1", "title": "Notes"}, base="")
+        http.on("POST", f"{DOCS}/new-1:batchUpdate", RATE_LIMITED, base="")
+
+        ok, data = result(await docs.create_document("Notes", text="Hello"))
+
+        message = assert_safe_error(data)
+        assert ok is False
+        assert data["document_id"] == "new-1"
+        assert data["url"] == "https://docs.google.com/document/d/new-1/edit"
+        assert "was created" in message and "insert_text" in message and "don't create another" in message
+        assert "Wait 9 seconds" in message
+        assert len(http.calls("POST", DOCS, base="")) == 1
 
     async def test_create_without_a_title_is_refused_before_calling_google(self, docs, http) -> None:
         ok, data = result(await docs.create_document("  "))
@@ -109,6 +165,17 @@ class TestDocs:
 
         assert ok is True
         assert http.requests[0].body == {"requests": [{"insertText": {"endOfSegmentLocation": {}, "text": "More."}}]}
+
+    async def test_insert_into_a_named_tab(self, docs, http) -> None:
+        http.on("POST", f"{DOCS}/doc-1:batchUpdate", {"replies": [{}]}, base="")
+
+        await docs.insert_text("doc-1", "Appendix.", tab_id="t.1")
+        await docs.insert_text("doc-1", "Top.", index=1, tab_id="t.1")
+
+        assert [r.body for r in http.requests] == [
+            {"requests": [{"insertText": {"endOfSegmentLocation": {"tabId": "t.1"}, "text": "Appendix."}}]},
+            {"requests": [{"insertText": {"location": {"index": 1, "tabId": "t.1"}, "text": "Top."}}]},
+        ]
 
     async def test_insert_at_an_index_below_one_is_refused(self, docs, http) -> None:
         ok, data = result(await docs.insert_text("doc-1", "x", index=0))
@@ -125,6 +192,20 @@ class TestDocs:
         assert http.requests[0].body == {"requests": [{"replaceAllText": {
             "containsText": {"text": "Q3", "matchCase": False}, "replaceText": "Q4",
         }}]}
+
+    async def test_replace_in_one_tab_only(self, docs, http) -> None:
+        http.on("POST", f"{DOCS}/doc-1:batchUpdate", {"replies": [{"replaceAllText": {"occurrencesChanged": 1}}]}, base="")
+
+        await docs.replace_text("doc-1", "Q3", "Q4", tab_id="t.child")
+
+        assert http.requests[0].body["requests"][0]["replaceAllText"]["tabsCriteria"] == {"tabIds": ["t.child"]}
+
+    async def test_replace_without_a_tab_covers_every_tab(self, docs, http) -> None:
+        http.on("POST", f"{DOCS}/doc-1:batchUpdate", {"replies": [{"replaceAllText": {"occurrencesChanged": 2}}]}, base="")
+
+        await docs.replace_text("doc-1", "Q3", "Q4")
+
+        assert "tabsCriteria" not in http.requests[0].body["requests"][0]["replaceAllText"]
 
     async def test_replace_with_no_match_reports_zero(self, docs, http) -> None:
         http.on("POST", f"{DOCS}/doc-1:batchUpdate", {"replies": [{"replaceAllText": {}}]}, base="")
@@ -288,3 +369,29 @@ class TestSheets:
         ok, data = result(await sheets.get_values("s-1", "A:B"))
 
         assert ok is True and data["values"] == [["1", "2"], ["3", "4"]] and data["truncated"] is True
+
+
+class _Request:
+    """A googleapiclient request whose execute() records overlap, like a shared httplib2.Http would suffer."""
+
+    def __init__(self, gauge: dict[str, int], lock: threading.Lock) -> None:
+        self.gauge, self.lock = gauge, lock
+
+    def execute(self) -> dict[str, Any]:
+        with self.lock:
+            self.gauge["now"] += 1
+            self.gauge["peak"] = max(self.gauge["peak"], self.gauge["now"])
+        time.sleep(0.05)
+        with self.lock:
+            self.gauge["now"] -= 1
+        return {}
+
+
+@pytest.mark.parametrize("make_tool", [lambda: GoogleDocs(object()), lambda: GoogleSheets(object())])
+async def test_overlapping_calls_never_run_at_the_same_time(make_tool) -> None:
+    tool = make_tool()
+    gauge, lock = {"now": 0, "peak": 0}, threading.Lock()
+
+    await asyncio.gather(*(tool._execute(_Request(gauge, lock)) for _ in range(4)))
+
+    assert gauge["peak"] == 1

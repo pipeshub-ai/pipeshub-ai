@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from typing import Any, Optional
@@ -28,6 +27,7 @@ from app.connectors.core.registry.tool_builder import (
 from app.connectors.core.registry.types import DocumentationLink
 from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
+from app.sources.client.google.serialized_execute import SerializedExecute
 
 logger = logging.getLogger(__name__)
 
@@ -134,10 +134,10 @@ class GoogleSheets:
 
     def __init__(self, client: GoogleClient) -> None:
         self.client = client
+        self._serial = SerializedExecute()
 
     async def _execute(self, request: Any) -> dict[str, Any]:  # noqa: ANN401
-        # googleapiclient requests block, so they run off the event loop.
-        return await asyncio.to_thread(request.execute)
+        return await self._serial.run(request.execute)
 
     def _values(self) -> Any:  # noqa: ANN401
         return self.client.spreadsheets().values()
