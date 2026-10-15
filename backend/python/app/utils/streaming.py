@@ -1154,9 +1154,10 @@ async def invoke_with_structured_output_and_reflection(
         call_timeout: Optional bound, in seconds, on each provider call (the
             first and every reflection retry), excluding the wait for an
             indexing slot. A timed-out call counts as a failed attempt.
-        raise_call_errors: Raise the first call's error (a timeout, an outage)
-            instead of returning None, so a caller can tell it from a reply
-            that did not fit the schema.
+        raise_call_errors: Raise the first call's error (a timeout, an outage),
+            and a reflection call's timeout, instead of returning None, so a
+            caller can tell a starved call from a reply that did not fit the
+            schema.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1291,6 +1292,8 @@ Respond only with valid JSON that matches the schema."""
                     f"Reflection attempt {attempt + 1} failed: "
                     f"{type(reflection_error).__name__}: {reflection_error}"
                 )
+                if raise_call_errors and isinstance(reflection_error, TimeoutError):
+                    raise
                 # A call that failed outright left no reply to correct, and
                 # the pending request already asks for valid JSON.
                 if attempt < max_retries - 1 and reflection_content is not None:
