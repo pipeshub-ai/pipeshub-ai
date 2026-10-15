@@ -1,8 +1,9 @@
 """Every knowledge-base delete path names, in each record's ``deleteRecord``
 payload, the taxonomy entities the record linked to (``taxonomyRefs``), read
 before its edges are removed: folder, file and bulk deletes
-(``delete_records_recursive``) and the trash purge (``purge_trashed_records``,
-and the page listing whose payloads the purge outbox keeps), on both stores.
+(``delete_records_recursive``), its one-record form (``delete_single_record``)
+and the trash purge (``purge_trashed_records``, and the page listing whose
+payloads the purge outbox keeps), on both stores.
 The single-record route is covered in ``test_delete_record_through_providers``.
 
 Connector records carry none: their deletes do not clean taxonomy points yet.
@@ -179,6 +180,36 @@ class TestArangoRecursiveDelete:
         assert "taxonomyRefs" not in _payloads(result)["r1"]
 
 
+class TestArangoSingleRecordDelete:
+    """``delete_single_record`` promises the cleanup ``delete_records_recursive`` does."""
+
+    @pytest.mark.asyncio
+    async def test_a_kb_record_names_its_entities_read_before_the_edge_sweep(self) -> None:
+        provider, calls = _arango(), []
+        links = AsyncMock(side_effect=_arango_links(calls))
+
+        result = await _run_with(
+            _arango_recursive(provider, [_kb("r1")], calls, links=links),
+            lambda: provider.delete_single_record("r1"),
+        )
+
+        assert calls == ["links", "edges"]
+        links.assert_awaited_once_with(["r1"], include_departments=True)
+        assert _payloads(result)["r1"]["taxonomyRefs"] == R1_REFS
+
+    @pytest.mark.asyncio
+    async def test_a_connector_record_names_none_and_is_not_read(self) -> None:
+        provider, calls = _arango(), []
+
+        result = await _run_with(
+            _arango_recursive(provider, [_drive("drive-1")], calls),
+            lambda: provider.delete_single_record("drive-1"),
+        )
+
+        assert calls == ["edges"]
+        assert "taxonomyRefs" not in _payloads(result)["drive-1"]
+
+
 class TestArangoPurge:
     @staticmethod
     def _provider(due_rows: list[dict], calls: list[str]) -> ArangoHTTPProvider:
@@ -266,7 +297,10 @@ def _neo4j(calls: list[str], *, deleted_rows: list[dict] | None = None, inventor
             return [{"inventory": inventory}]
         if "DETACH DELETE" in query:
             calls.append("delete")
-            gone.update(parameters.get("deleted_ids") or parameters.get("root_ids") or parameters.get("keys") or [])
+            gone.update(
+                parameters.get("deleted_ids") or parameters.get("root_ids") or parameters.get("record_ids")
+                or parameters.get("keys") or []
+            )
             if purge_rows is not None:
                 return purge_rows
             return [{"root_ids": parameters.get("root_ids"), "deleted": deleted_rows}] if deleted_rows else []
@@ -338,6 +372,31 @@ class TestNeo4jRecursiveDelete:
         assert result["success"] is True
         assert calls == ["delete"]
         assert "taxonomyRefs" not in _payloads(result)["r1"]
+
+
+class TestNeo4jSingleRecordDelete:
+    """``delete_single_record`` promises the cleanup ``delete_records_recursive`` does."""
+
+    @pytest.mark.asyncio
+    async def test_a_kb_record_names_its_entities_read_before_the_detach_delete(self) -> None:
+        calls: list[str] = []
+        provider = _neo4j(calls, inventory=_neo4j_inventory([_kb("r1", key_field="id")]))
+
+        result = await provider.delete_single_record("r1")
+
+        assert calls[0] == "links"
+        assert "delete" in calls[1:]
+        assert _payloads(result)["r1"]["taxonomyRefs"] == R1_REFS
+
+    @pytest.mark.asyncio
+    async def test_a_connector_record_names_none_and_is_not_read(self) -> None:
+        calls: list[str] = []
+        provider = _neo4j(calls, inventory=_neo4j_inventory([_drive("drive-1", key_field="id")]))
+
+        result = await provider.delete_single_record("drive-1")
+
+        assert "links" not in calls
+        assert "taxonomyRefs" not in _payloads(result)["drive-1"]
 
 
 class TestNeo4jPurge:

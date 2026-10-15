@@ -15250,6 +15250,10 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
                 type_targets = [rt["type_target"] for rt in records_with_type if rt.get("type_target")]
+                # Read before the edge sweep below removes them.
+                taxonomy_refs = await deleted_record_taxonomy_refs(
+                    self, [rt["record"] for rt in records_with_type], self.logger
+                )
 
                 node_ids = [f"records/{k}" for k in record_keys]
                 if node_ids:
@@ -15272,6 +15276,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
                             delete_payload["origin"] = rec.get("origin")
+                            if refs := taxonomy_refs.get(rec["_key"]):
+                                delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
                     self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")

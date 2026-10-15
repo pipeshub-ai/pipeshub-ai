@@ -13374,6 +13374,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["id"] for rt in records_with_type if rt.get("record")]
+                # Read before the DETACH DELETE below removes them.
+                taxonomy_refs = await deleted_record_taxonomy_refs(
+                    self, [rt["record"] for rt in records_with_type if rt.get("record")], self.logger
+                )
 
                 if record_keys:
                     await self.client.execute_query(
@@ -13398,6 +13402,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         if delete_payload:
                             delete_payload["connectorName"] = rec.get("connectorName")
                             delete_payload["origin"] = rec.get("origin")
+                            if refs := taxonomy_refs.get(rec.get("id")):
+                                delete_payload["taxonomyRefs"] = refs
                             event_payloads.append(delete_payload)
                 except Exception as e:
                     self.logger.error(f"❌ Failed to prepare deletion event payloads: {str(e)}")
