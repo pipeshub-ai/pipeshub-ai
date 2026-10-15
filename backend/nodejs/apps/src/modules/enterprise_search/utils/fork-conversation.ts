@@ -1,5 +1,8 @@
 import mongoose, { ClientSession } from 'mongoose';
-import { ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
+import {
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
 import { ProjectService } from '../../projects/services/project.service';
 import { CONVERSATION_STATUS } from '../constants/constants';
 import { ChatSession } from '../schema/chat.session.schema';
@@ -215,7 +218,9 @@ export async function copySessionUpToMessage(
         forkId,
         conversation.orgId,
         batch.map((row) =>
-          withExpiredApprovals(stripMessageForCopy(row as Record<string, unknown>)),
+          withExpiredApprovals(
+            stripMessageForCopy(row as Record<string, unknown>),
+          ),
         ),
         mongoSession,
       );

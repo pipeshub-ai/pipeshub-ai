@@ -422,13 +422,15 @@ export function createConversationalRouter(container: Container): Router {
     regenerateAnswers(appConfig),
   );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
   /**
    * @route POST /api/v1/conversations/:conversationId/message/:messageId/fork
    * @desc Copy this conversation into a new chat, including every message up to messageId
    */
   router.post(
     '/:conversationId/message/:messageId/fork',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(forkConversationParamsSchema),
     forkConversation,
@@ -753,13 +755,15 @@ export function createAgentConversationalRouter(container: Container): Router {
       regenerateAgentAnswers(appConfig),
     );
 
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
+
   /**
    * @route POST /api/v1/agents/:agentKey/conversations/:conversationId/message/:messageId/fork
    * @desc Copy this agent conversation into a new chat, including every message up to messageId
    */
   router.post(
     '/:agentKey/conversations/:conversationId/message/:messageId/fork',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(forkAgentConversationParamsSchema),
     forkAgentConversation,
