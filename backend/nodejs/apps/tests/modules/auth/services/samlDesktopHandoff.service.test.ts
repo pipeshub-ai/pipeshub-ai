@@ -65,4 +65,18 @@ describe('SamlDesktopHandoffService', () => {
   it('rejects an unknown or expired code', async () => {
     await expectRejected(service.redeem('0'.repeat(64), VERIFIER));
   });
+
+  it('redeems an IdP-initiated code without a verifier', async () => {
+    const code = await service.issue({ accessToken: 'at', refreshToken: 'rt' });
+
+    expect(await service.redeem(code)).to.deep.equal({ accessToken: 'at', refreshToken: 'rt' });
+    await expectRejected(service.redeem(code));
+  });
+
+  it('still requires the verifier when the sign-in started with PKCE', async () => {
+    const code = await service.issue({ accessToken: 'at', refreshToken: 'rt' }, CHALLENGE);
+
+    await expectRejected(service.redeem(code));
+    await expectRejected(service.redeem(code, VERIFIER));
+  });
 });
