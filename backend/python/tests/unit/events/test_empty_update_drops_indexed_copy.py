@@ -7,17 +7,19 @@ nothing else deleted, are dropped unless another record still holds the VRID.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from app.config.constants.arangodb import EventTypes
-from app.events.events import EventProcessor
 from tests.unit.events.test_orchestrator_flow import (
     _make_event_data,
     _make_event_processor,
 )
+
+if TYPE_CHECKING:
+    from app.events.events import EventProcessor
 
 
 def _empty_update(event_type: str = EventTypes.UPDATE_RECORD.value) -> dict[str, Any]:
