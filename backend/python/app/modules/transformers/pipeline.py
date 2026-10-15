@@ -3,7 +3,10 @@ from typing import Optional
 
 from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.modules.reconciliation.service import ReconciliationMetadata, ReconciliationService
+from app.modules.reconciliation.service import (
+    ReconciliationMetadata,
+    ReconciliationService,
+)
 from app.modules.transformers.block_container_validator import BlockContainerValidator
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
