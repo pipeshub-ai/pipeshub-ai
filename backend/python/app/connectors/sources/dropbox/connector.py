@@ -215,6 +215,12 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
 #     new_permissions: Optional[List[Permission]] = None
 #     external_record_id: Optional[str] = None
 
+def _next_cursor(page: object) -> str | None:
+    """The cursor of a sharing list page; Dropbox leaves it unset on the last page."""
+    cursor = getattr(page, "cursor", None)
+    return cursor if isinstance(cursor, str) and cursor else None
+
+
 @ConnectorBuilder("Dropbox")\
     .in_group("Cloud Storage")\
     .with_description("Sync files and folders from Dropbox")\
@@ -288,12 +294,6 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
         .with_agent_support(True)
     )\
     .build_decorator()
-def _next_cursor(page: object) -> str | None:
-    """The cursor of a sharing list page; Dropbox leaves it unset on the last page."""
-    cursor = getattr(page, "cursor", None)
-    return cursor if isinstance(cursor, str) and cursor else None
-
-
 class DropboxConnector(BaseConnector):
     """
     Connector for synchronizing data from a Dropbox account.
