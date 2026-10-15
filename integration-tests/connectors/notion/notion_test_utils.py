@@ -99,7 +99,8 @@ async def full_sync(
             pipeshub_client, graph_provider, connector_id, timeout=timeout
         )
         app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
-        if not (app or {}).get(ConnectorStateKeys.PENDING_FULL_SYNC):
+        assert app is not None, f"app node of connector {connector_id} missing after full sync"
+        if not app.get(ConnectorStateKeys.PENDING_FULL_SYNC):
             return count
         logger.warning(
             "Full sync of %s did not finish (pendingFullSync set), attempt %d/2",

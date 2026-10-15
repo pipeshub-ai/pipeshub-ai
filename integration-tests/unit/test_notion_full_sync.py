@@ -25,11 +25,12 @@ class _Client:
 
 
 class _Graph:
-    def __init__(self, pending_after_each_sync: list[bool]) -> None:
+    def __init__(self, pending_after_each_sync: list[bool | None]) -> None:
         self.pending = list(pending_after_each_sync)
 
-    async def get_document(self, key: str, collection: str) -> dict[str, Any]:
-        return {"pendingFullSync": self.pending.pop(0)}
+    async def get_document(self, key: str, collection: str) -> dict[str, Any] | None:
+        pending = self.pending.pop(0)
+        return None if pending is None else {"pendingFullSync": pending}
 
 
 @pytest.fixture(autouse=True)
@@ -54,3 +55,9 @@ async def test_fails_when_the_retry_fails_too() -> None:
     with pytest.raises(AssertionError, match="pendingFullSync"):
         await notion_test_utils.full_sync(client, _Graph([True, True]), "conn-1")
     assert client.resyncs == 2
+
+
+@pytest.mark.asyncio
+async def test_fails_when_the_app_node_is_missing() -> None:
+    with pytest.raises(AssertionError, match="app node"):
+        await notion_test_utils.full_sync(_Client(), _Graph([None]), "conn-1")
