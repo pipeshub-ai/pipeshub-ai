@@ -226,6 +226,10 @@ class SingleCallExtractionStrategy:
                 result = await runners[mode](llm, prompt)
             except Exception as exc:
                 error, result = exc, None
+                # A call that ran out of time says nothing about the schema: the
+                # next mode is only a retry, and must not become the start mode.
+                if isinstance(exc, TimeoutError):
+                    continue
             if result is None:
                 failed.append(mode)
                 continue
@@ -258,7 +262,7 @@ async def _strict(llm, prompt: str) -> EntitySubmission | None:
     from app.utils.streaming import invoke_with_structured_output_and_reflection
 
     return await invoke_with_structured_output_and_reflection(
-        llm, _messages(prompt), EntitySubmission, call_timeout=_CALL_TIMEOUT,
+        llm, _messages(prompt), EntitySubmission, call_timeout=_CALL_TIMEOUT, raise_call_errors=True,
     )
 
 

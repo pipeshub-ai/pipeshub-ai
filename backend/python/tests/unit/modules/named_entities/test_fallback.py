@@ -171,6 +171,45 @@ async def test_an_error_every_mode_shares_does_not_step_down(monkeypatch):
     assert calls[0] == "strict"
 
 
+async def test_a_timed_out_call_does_not_step_down(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A starved worker times strict out; the tool call that then answers is a
+    retry, not proof that strict output is broken for the model."""
+    calls: list[str] = []
+
+    async def strict(llm: object, prompt: str) -> single_call.EntitySubmission:
+        calls.append("strict")
+        if calls.count("strict") == 1:
+            raise TimeoutError
+        return single_call.EntitySubmission(entities=[])
+
+    async def function_call(llm: object, prompt: str) -> single_call.EntitySubmission:
+        calls.append("tool")
+        return single_call.EntitySubmission(entities=[])
+
+    monkeypatch.setattr(single_call, "_strict", strict)
+    monkeypatch.setattr(single_call, "_function_call", function_call)
+    strategy = SingleCallExtractionStrategy()
+    doc = ExtractionDocument(units=[TextUnit(0, "b", "Acme")])
+    first = await strategy.extract(doc, [], _ctx(llm=object()))
+    await strategy.extract(doc, [], _ctx(llm=object()))
+
+    assert first.termination_reason == "single_call"
+    assert calls == ["strict", "tool", "strict"]
+    assert single_call._STEP_DOWN == {}
+
+
+async def test_strict_reports_a_timed_out_call(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.utils import streaming
+
+    async def hang(*args: object, **kwargs: object) -> None:
+        raise TimeoutError
+
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", hang)
+    monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
+    with pytest.raises(TimeoutError):
+        await single_call._strict(object(), "prompt")
+
+
 async def test_a_remembered_step_down_expires(monkeypatch):
     single_call._STEP_DOWN[("p", "m")] = ("prompt", 0.0)
     calls: list[str] = []

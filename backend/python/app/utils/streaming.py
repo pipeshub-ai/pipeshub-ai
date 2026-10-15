@@ -1150,6 +1150,7 @@ async def invoke_with_structured_output_and_reflection(
     *,
     enable_opik_tracing: bool = True,
     call_timeout: float | None = None,
+    raise_call_errors: bool = False,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1164,6 +1165,9 @@ async def invoke_with_structured_output_and_reflection(
         call_timeout: Optional bound, in seconds, on each provider call (the
             first and every reflection retry), excluding the wait for an
             indexing slot. A timed-out call counts as a failed attempt.
+        raise_call_errors: Raise the first call's error (a timeout, an outage)
+            instead of returning None, so a caller can tell it from a reply
+            that did not fit the schema.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
@@ -1185,6 +1189,8 @@ async def invoke_with_structured_output_and_reflection(
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
         logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
+        if raise_call_errors:
+            raise
         return None
 
     # Try to parse the response
