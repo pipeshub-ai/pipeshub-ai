@@ -13,7 +13,11 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import EventTypes
-from tests.unit.events.test_orchestrator_flow import _make_event_data, _make_event_processor
+from app.events.events import EventProcessor
+from tests.unit.events.test_orchestrator_flow import (
+    _make_event_data,
+    _make_event_processor,
+)
 
 
 def _empty_update(event_type: str = EventTypes.UPDATE_RECORD.value) -> dict[str, Any]:
@@ -29,14 +33,14 @@ def _processor() -> MagicMock:
     return processor
 
 
-def _status_writes(ep: Any) -> list[dict]:
+def _status_writes(ep: EventProcessor) -> list[dict]:
     return [
         call.args[2] for call in ep.graph_provider.update_node.await_args_list
         if len(call.args) > 2 and isinstance(call.args[2], dict) and "indexingStatus" in call.args[2]
     ]
 
 
-async def _drain(ep: Any, event: dict[str, Any]) -> None:
+async def _drain(ep: EventProcessor, event: dict[str, Any]) -> None:
     async for _ in ep.on_event(event):
         pass
 
