@@ -848,6 +848,7 @@ function NumberInput({
           disabled={disabled}
           min={min}
           max={max}
+          // Bounded numbers are whole numbers: the connector service refuses a fraction for them.
           step={min != null || max != null ? 1 : undefined}
           onChange={(e) => {
             const num = e.target.value === '' ? '' : Number(e.target.value);
@@ -1296,6 +1297,7 @@ function FileInput({
   const ids = useId();
   const labelId = `${ids}-label`;
   const errorId = displayError ? `${ids}-error` : undefined;
+  const helpId = field.description ? `${ids}-help` : undefined;
   // The hidden file input can't take focus, so the zone is the control keyboard and screen-reader users reach.
   // Once a file is loaded, a key press replaces it, as the Replace link does: picking the same file again
   // needs the input reset first.
@@ -1303,7 +1305,7 @@ function FileInput({
     role: 'button',
     tabIndex: disabled ? -1 : 0,
     'aria-labelledby': labelId,
-    'aria-describedby': errorId,
+    'aria-describedby': [helpId, errorId].filter(Boolean).join(' ') || undefined,
     'aria-disabled': disabled || undefined,
     onKeyDown: (e: React.KeyboardEvent) => {
       if (disabled || (e.key !== 'Enter' && e.key !== ' ')) return;
@@ -1457,7 +1459,7 @@ function FileInput({
       )}
 
       {field.description && (
-        <Text size="1" style={{ color: 'var(--gray-10)' }}>
+        <Text id={helpId} size="1" style={{ color: 'var(--gray-10)' }}>
           {field.description}
         </Text>
       )}

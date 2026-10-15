@@ -1022,6 +1022,9 @@ class WebConnector(BaseConnector):
         self._browser_context_key = f"{self.connector_id}:{report.started_at}"
         sync_point_key: str | None = None
         sync_point: dict | None = None
+        # Before anything can fail: a cached connector still holds the last run's frontier, which a
+        # failure here would otherwise save as this run's checkpoint.
+        self._frontier = None
         try:
             await self.reload_config()
 
@@ -2036,7 +2039,11 @@ class WebConnector(BaseConnector):
         if self.discovery != DISCOVERY_SITEMAP or lastmod is None:
             return False
         stored = await self._stored_record(url)
-        if stored is None or stored.indexing_status == ProgressStatus.FAILED.value or (stored.updated_at or 0) < lastmod:
+        # A folder placeholder is rewritten every sync, so its time says nothing about the page.
+        if (
+            stored is None or stored.is_internal or stored.indexing_status == ProgressStatus.FAILED.value
+            or (stored.updated_at or 0) < lastmod
+        ):
             return False
         self.visited_urls.add(normalized)
         self._kept_urls.add(normalized)
@@ -3141,8 +3148,10 @@ class WebConnector(BaseConnector):
             # Calculate MD5 hash once (on text content for HTML, raw bytes otherwise)
             content_md5_hash = hashlib.md5(content_bytes).hexdigest()
 
+            # Never for a record rewritten whole: it is uploaded again, and an unchanged page builds
+            # no HTML, so its plain text would replace the stored page.
             unchanged = bool(
-                existing_record and existing_record.storage_document_id
+                existing_record and existing_record.storage_document_id and not write_as_new
                 and existing_record.external_revision_id == content_md5_hash
             )
             if mime_type == MimeTypes.HTML and not unchanged:

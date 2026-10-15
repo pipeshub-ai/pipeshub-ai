@@ -265,7 +265,8 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 # The run this process was doing when it died never finished.
                 ConnectorStateKeys.LAST_SYNC_FINISHED_AT: now,
                 ConnectorStateKeys.LAST_SYNC_OUTCOME: SyncRunOutcome.FAILED.value,
-                # The summary there is the run before it; paired with this outcome it reads as one run.
+                # The summary there is the run before it; left next to this
+                # outcome, the two read as one run.
                 ConnectorStateKeys.LAST_SYNC_SUMMARY: None,
                 **(
                     {

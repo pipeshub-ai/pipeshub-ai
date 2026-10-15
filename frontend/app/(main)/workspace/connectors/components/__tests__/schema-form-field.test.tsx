@@ -367,6 +367,19 @@ describe('SchemaFormField: file upload', () => {
     expect(alert.textContent).toBe('The key file must be valid JSON.');
     expect(zone.getAttribute('aria-describedby')).toBe(alert.id);
   });
+
+  it('reads the help text to a screen reader on the upload zone, beside any error', async () => {
+    const { container } = renderField({ ...keyFileField, description: 'The JSON key from your cloud console' });
+    const zone = screen.getByRole('button', { name: 'Service account key' });
+    const describedBy = () =>
+      (zone.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent);
+
+    expect(describedBy()).toEqual(['The JSON key from your cloud console']);
+
+    fireEvent.change(fileInput(container), { target: { files: [jsonFile('not json')] } });
+    await screen.findByRole('alert');
+    expect(describedBy()).toEqual(['The JSON key from your cloud console', 'The key file must be valid JSON.']);
+  });
 });
 
 describe('SchemaFormField: labels, ranges and options', () => {

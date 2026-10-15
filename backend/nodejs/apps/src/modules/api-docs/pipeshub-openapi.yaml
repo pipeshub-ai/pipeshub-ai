@@ -47502,6 +47502,18 @@ paths:
             maximum: 200
             default: 50
           example: 50
+        - name: connectorIds
+          in: query
+          required: false
+          description: |
+            Comma-separated connector ids (at most 200). The response then holds exactly these
+            connectors, active or not and whatever their strategy, in one page with
+            <code>hasMore: false</code>. A connector that does not exist comes back as
+            <code>missing: true</code>, and one whose settings could not be read as
+            <code>unreadable: true</code>.
+          schema:
+            type: string
+          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a,1c0b3a52-2f7e-4f3e-9d65-4c1e8f0b7a11"
       responses:
         '200':
           description: Page of scheduled connector instances
@@ -47537,6 +47549,12 @@ paths:
                         isActive:
                           type: boolean
                           example: true
+                        missing:
+                          type: boolean
+                          description: Only with connectorIds. No connector has this id.
+                        unreadable:
+                          type: boolean
+                          description: Only with connectorIds. Its settings could not be read; sync is null.
                         sync:
                           type: object
                           description: Full sync block from etcd config

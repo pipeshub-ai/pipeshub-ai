@@ -13,10 +13,7 @@ import {
   buildCrawlingScheduleFromSync,
   isScheduledSyncStrategy,
 } from '../../../crawling_manager/utils/schedule_config_mapper';
-import {
-  pendingScheduleReconciles,
-  reconcileConnectorSchedule,
-} from '../../../crawling_manager/services/connector_schedule_orchestrator';
+import { reconcileConnectorSchedule } from '../../../crawling_manager/services/connector_schedule_orchestrator';
 
 interface ScheduledConnectorRecord {
   connectorId: string;
@@ -25,6 +22,9 @@ interface ScheduledConnectorRecord {
   ownerUserId?: string | null;
   isActive: boolean;
   sync: ConnectorSyncBlock;
+  /** Only when asked for by id: no such connector, or its settings could not be read. */
+  missing?: boolean;
+  unreadable?: boolean;
 }
 
 const MIGRATION_FLAG_DONE = 'true';
@@ -126,10 +126,7 @@ export class ScheduledJobsBackfillMigration {
 
     let scheduled = 0;
     let skipped = 0;
-    let errored = 0;
-    // Taken now: one added during this pass may sit on a page already read, and must not look unlisted.
-    const pending = new Map(pendingScheduleReconciles);
-    let listComplete = false;
+    let errored = await this.reconcilePending();
 
     let { items, hasMore } = firstBatch;
     let page = 1;
@@ -145,27 +142,6 @@ export class ScheduledJobsBackfillMigration {
           orgId: item.orgId,
         };
         try {
-          if (pending.delete(item.connectorId)) {
-            // Its job may follow settings that have since changed, so it is rewritten, not skipped.
-            const outcome = await reconcileConnectorSchedule(
-              this.scheduler,
-              this.logger,
-              {
-                connector: item.type,
-                connectorId: item.connectorId,
-                orgId: item.orgId,
-                userId:
-                  (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
-                  'system',
-                isActive: item.isActive,
-                sync: item.sync,
-              },
-            );
-            pendingScheduleReconciles.delete(item.connectorId);
-            if (outcome === 'scheduled') scheduled++;
-            else skipped++;
-            continue;
-          }
           if (!item.isActive || !isScheduledSyncStrategy(item.sync)) {
             skipped++;
             continue;
@@ -218,10 +194,7 @@ export class ScheduledJobsBackfillMigration {
         }
       }
 
-      if (!hasMore) {
-        listComplete = true;
-        break;
-      }
+      if (!hasMore) break;
 
       page++;
       if (page > BACKFILL_MAX_PAGES) {
@@ -259,24 +232,19 @@ export class ScheduledJobsBackfillMigration {
       }
     }
 
-    // The list holds every active, scheduled connector: one it left out has nothing to run on a schedule.
-    if (listComplete) {
-      for (const [connectorId, orgId] of pending) {
-        try {
-          await this.scheduler.removeJobsForConnector(connectorId, orgId);
-          pendingScheduleReconciles.delete(connectorId);
-        } catch (err) {
-          errored++;
-          this.logger.error(
-            'Could not remove the schedule of a connector no longer scheduled',
-            {
-              connectorId,
-              orgId,
-              error: err instanceof Error ? err.message : String(err),
-            },
-          );
-        }
+    if (ignoreDoneFlag) {
+      // A repair pass owns no flag; whatever failed is tried again by the next pass.
+      if (errored > 0) {
+        this.logger.warn(
+          'Connector schedule repair pass finished with errors',
+          {
+            scheduled,
+            skipped,
+            errored,
+          },
+        );
       }
+      return { scheduled, skipped, errored };
     }
 
     if (errored > 0) {
@@ -384,8 +352,86 @@ export class ScheduledJobsBackfillMigration {
    * `page` is 1-based. Throws on any HTTP or service error so callers can
    * decide how to handle it.
    */
+  /**
+   * Applies the saves whose settings read failed, from each connector's own settings: the walk
+   * below leaves out a connector that is off, manual or unreadable alike, so its absence proves
+   * nothing. Returns how many failed; those stay pending for the next pass.
+   */
+  private async reconcilePending(): Promise<number> {
+    // Marks a save sets after this are its own change, still owed after this pass.
+    const startedAt = Date.now();
+    let errored = 0;
+    let pending: { connectorId: string; orgId: string }[];
+    try {
+      pending = await this.scheduler.listReconcilesPending();
+    } catch (error) {
+      this.logger.error(
+        'Could not read the schedule changes owed by failed saves',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return 1;
+    }
+    const orgOf = new Map(pending.map((p) => [p.connectorId, p.orgId]));
+    for (let i = 0; i < pending.length; i += BACKFILL_BATCH_SIZE) {
+      const ids = pending
+        .slice(i, i + BACKFILL_BATCH_SIZE)
+        .map((p) => p.connectorId);
+      let items: ScheduledConnectorRecord[];
+      try {
+        ({ items } = await this.fetchBatch(1, ids));
+      } catch (error) {
+        this.logger.error(
+          'Could not read the settings of connectors owed a schedule change',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        return errored + 1;
+      }
+      for (const item of items) {
+        if (item.unreadable) continue; // still owed; never read as "sync is off"
+        try {
+          if (item.missing) {
+            await this.scheduler.removeJobsForConnector(
+              item.connectorId,
+              orgOf.get(item.connectorId) ?? item.orgId,
+            );
+          } else {
+            await reconcileConnectorSchedule(this.scheduler, this.logger, {
+              connector: item.type,
+              connectorId: item.connectorId,
+              orgId: item.orgId,
+              userId:
+                (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
+                'system',
+              isActive: item.isActive,
+              sync: item.sync,
+            });
+          }
+          await this.scheduler.clearReconcilePending(
+            item.connectorId,
+            startedAt,
+          );
+        } catch (error) {
+          errored++;
+          this.logger.error(
+            'Could not apply a schedule change owed by a failed save',
+            {
+              connectorId: item.connectorId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
+    }
+    return errored;
+  }
+
   private async fetchBatch(
     page: number,
+    connectorIds?: string[],
   ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean }> {
     const { connectorBackend, scopedJwtSecret } = this.appConfig;
     if (!connectorBackend) {
@@ -410,7 +456,10 @@ export class ScheduledJobsBackfillMigration {
 
     const url =
       `${connectorBackend}/api/v1/connectors/internal/all-scheduled` +
-      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}`;
+      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}` +
+      (connectorIds
+        ? `&connectorIds=${encodeURIComponent(connectorIds.join(','))}`
+        : '');
 
     const resp = await executeConnectorCommand(url, HttpMethod.GET, headers);
     const status = resp?.statusCode;

@@ -38,7 +38,6 @@ import {
   getActiveAgentInstances,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
-import { pendingScheduleReconciles } from '../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -1672,12 +1671,16 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // Branch coverage: toggleConnectorInstance - fullSync boolean branch
   // =========================================================================
   describe('toggleConnectorInstance - schedule reconcile', () => {
-    afterEach(() => pendingScheduleReconciles.clear())
-
     it('leaves the connector to the hourly repair when its settings cannot be read', async () => {
       const clock = sinon.useFakeTimers({ toFake: ['setTimeout'] })
       try {
-        const scheduler = { scheduleJob: sinon.stub(), removeJob: sinon.stub(), getJobStatus: sinon.stub() }
+        const scheduler = {
+          scheduleJob: sinon.stub(),
+          removeJob: sinon.stub(),
+          getJobStatus: sinon.stub(),
+          markReconcilePending: sinon.stub().resolves(),
+          clearReconcilePending: sinon.stub().resolves(),
+        }
         const handler = toggleConnectorInstance(mockAppConfig, scheduler as any)
         req.params = { connectorId: 'conn-1' }
         req.body = { type: 'sync' }
@@ -1696,7 +1699,9 @@ describe('tokens_manager/controllers/connector.controllers', () => {
         expect(reads).to.have.length(3)
         // Each read is aborted on its own timeout, not left running behind a race.
         for (const read of reads) expect(read.args[4]).to.deep.equal({ timeoutMs: 10_000 })
-        expect(pendingScheduleReconciles.get('conn-1')).to.equal('bbbbbbbbbbbbbbbbbbbbbbbb')
+        // Persisted, so a restart before the hourly repair still owes the change.
+        expect(scheduler.markReconcilePending.calledOnceWithExactly('conn-1', 'bbbbbbbbbbbbbbbbbbbbbbbb')).to.be.true
+        expect(scheduler.clearReconcilePending.called).to.be.false
         expect(scheduler.scheduleJob.called || scheduler.removeJob.called).to.be.false
       } finally {
         clock.restore()

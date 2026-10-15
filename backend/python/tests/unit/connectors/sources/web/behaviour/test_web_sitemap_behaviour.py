@@ -214,3 +214,19 @@ async def test_a_sitemap_does_not_crowd_out_the_section_the_start_url_points_at(
     await (await make_connector(start, max_pages=3)).run_sync()
 
     assert {start, "http://site.test/learning/a.html", "http://site.test/learning/b.html"} == set(db.pages())
+
+
+async def test_sitemap_only_fetches_a_page_stored_so_far_only_as_the_folder_of_its_children(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    folder = "http://site.test/kb/"
+    _site(site)
+    site.html(folder, "Knowledge base")
+    _xml(site, "http://site.test/sm.xml", _urlset((ORPHAN, "2026-10-01"), (folder, "2020-01-01")))
+    # Room for the start page and the orphan only: /kb/ is then just the folder holding the orphan.
+    await (await make_connector(discovery="sitemap", max_pages=2)).run_sync()
+    assert db.records[folder].is_internal
+
+    await (await make_connector(discovery="sitemap", max_pages=10)).run_sync()
+
+    assert folder in db.pages(), "the folder's own write time is not the page's"

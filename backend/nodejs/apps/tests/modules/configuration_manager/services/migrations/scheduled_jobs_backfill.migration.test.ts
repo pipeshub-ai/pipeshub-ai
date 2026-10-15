@@ -9,7 +9,6 @@ import { Logger } from '../../../../../src/libs/services/logger.service';
 import { KeyValueStoreService } from '../../../../../src/libs/services/keyValueStore.service';
 import { CrawlingSchedulerService } from '../../../../../src/modules/crawling_manager/services/crawling_service';
 import { createFakeRedisProvider, stubGetRedisProvider } from '../../../../helpers/fake-redis-provider';
-import { pendingScheduleReconciles } from '../../../../../src/modules/crawling_manager/services/connector_schedule_orchestrator';
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -27,6 +26,9 @@ const makeScheduler = (overrides: Partial<any> = {}) => ({
   scheduleJob: sinon.stub().resolves({ id: 'job-1' }),
   removeJob: sinon.stub().resolves(),
   getJobStatus: sinon.stub().resolves(null),
+  listReconcilesPending: sinon.stub().resolves([]),
+  clearReconcilePending: sinon.stub().resolves(),
+  removeJobsForConnector: sinon.stub().resolves(),
   ...overrides,
 });
 
@@ -195,53 +197,61 @@ describe('ScheduledJobsBackfillMigration', () => {
     });
 
     describe('a connector whose settings could not be read after a save', () => {
-      afterEach(() => pendingScheduleReconciles.clear());
+      const owed = (connectorId: string) =>
+        makeScheduler({
+          listReconcilesPending: sinon.stub().resolves([{ connectorId, orgId: 'org-1', at: 1 }]),
+          getJobStatus: sinon.stub().resolves({ id: 'old-job' }),
+        });
+      const byId = (item: object) => ({ statusCode: 200, data: { success: true, items: [item], hasMore: false } });
+      const run = (scheduler: any) =>
+        new ScheduledJobsBackfillMigration(
+          makeLogger() as any, makeKvStore('true') as any, scheduler, makeAppConfig(), noBackoff,
+        ).run({ ignoreDoneFlag: true });
 
-      it('has its existing job rewritten with the listed settings', async () => {
-        pendingScheduleReconciles.set('conn-1', 'org-1');
-        const scheduler = makeScheduler({ getJobStatus: sinon.stub().resolves({ id: 'old-interval' }) });
-        executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
-        const m = new ScheduledJobsBackfillMigration(
-          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
-        );
+      it('has its existing job rewritten from its own settings, asked for by id', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId(sampleScheduledItem));
 
-        await m.run({ ignoreDoneFlag: true });
+        await run(scheduler);
 
+        expect(executeStub.secondCall.args[0]).to.contain('connectorIds=conn-1');
         expect(scheduler.scheduleJob.calledOnce).to.equal(true);
         expect(scheduler.scheduleJob.firstCall.args[2].scheduleConfig.intervalMinutes).to.equal(30);
-        expect(pendingScheduleReconciles.size).to.equal(0);
+        expect(scheduler.clearReconcilePending.calledOnceWith('conn-1')).to.equal(true);
       });
 
-      it('loses its job once the full list leaves it out (sync off or not scheduled)', async () => {
-        pendingScheduleReconciles.set('conn-off', 'org-1');
-        const scheduler = makeScheduler({ removeJobsForConnector: sinon.stub().resolves() });
-        executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
-        const m = new ScheduledJobsBackfillMigration(
-          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
-        );
+      it('loses its job when its settings say sync is off', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ ...sampleScheduledItem, isActive: false }));
 
-        await m.run({ ignoreDoneFlag: true });
+        await run(scheduler);
 
-        expect(scheduler.removeJobsForConnector.calledOnceWith('conn-off', 'org-1')).to.equal(true);
-        expect(pendingScheduleReconciles.size).to.equal(0);
+        expect(scheduler.removeJob.calledOnceWith('Confluence', 'conn-1', 'org-1')).to.equal(true);
+        expect(scheduler.clearReconcilePending.calledOnce).to.equal(true);
       });
 
-      it('keeps its job, and stays pending, when the list could not be read in full', async () => {
-        pendingScheduleReconciles.set('conn-off', 'org-1');
-        const scheduler = makeScheduler({ removeJobsForConnector: sinon.stub().resolves() });
-        executeStub.onFirstCall().resolves({
-          statusCode: 200,
-          data: { success: true, items: [sampleScheduledItem], hasMore: true },
-        });
-        executeStub.onSecondCall().rejects(new Error('connector service down'));
-        const m = new ScheduledJobsBackfillMigration(
-          makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
-        );
+      it('keeps its job and stays owed when its settings cannot be read', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ connectorId: 'conn-1', unreadable: true }));
 
-        await m.run({ ignoreDoneFlag: true });
+        await run(scheduler);
 
-        expect(scheduler.removeJobsForConnector.called).to.equal(false);
-        expect(pendingScheduleReconciles.get('conn-off')).to.equal('org-1');
+        expect(scheduler.removeJob.called || scheduler.removeJobsForConnector.called).to.equal(false);
+        expect(scheduler.scheduleJob.called).to.equal(false);
+        expect(scheduler.clearReconcilePending.called).to.equal(false);
+      });
+
+      it('loses its job when the connector no longer exists', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ connectorId: 'conn-1', missing: true }));
+
+        await run(scheduler);
+
+        expect(scheduler.removeJobsForConnector.calledOnceWith('conn-1', 'org-1')).to.equal(true);
       });
     });
   });

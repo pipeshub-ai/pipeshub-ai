@@ -30,7 +30,6 @@ import {
 } from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
-  pendingScheduleReconciles,
   reconcileConnectorSchedule,
   ScheduleReconcileInput,
 } from '../../crawling_manager/services/connector_schedule_orchestrator';
@@ -256,6 +255,20 @@ const fireConnectorScheduleReconcile = (
   const actorUserId = req.user?.userId;
   if (!orgId || !actorUserId) return;
   setImmediate(async () => {
+    // A later save may mark the connector pending while this one runs; only older marks are cleared.
+    const startedAt = Date.now();
+    const markPending = (): Promise<void> =>
+      scheduler
+        .markReconcilePending(connectorId, String(orgId))
+        .catch((err: unknown) => {
+          logger.error(
+            'Could not record a schedule change for the hourly repair',
+            {
+              connectorId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
+        });
     try {
       // A busy connector service answers late or not at all; a schedule left unwritten because of
       // that would silently never run, so the read is tried again before giving up.
@@ -272,14 +285,13 @@ const fireConnectorScheduleReconcile = (
         );
       }
       if (!snapshot) {
-        pendingScheduleReconciles.set(connectorId, String(orgId));
+        await markPending();
         logger.error(
           'Could not read connector settings to update its schedule; the hourly repair will apply them',
           { connectorId },
         );
         return;
       }
-      pendingScheduleReconciles.delete(connectorId);
 
       logger.debug('Connector snapshot fetched for schedule reconcile', {
         connectorId,
@@ -297,8 +309,9 @@ const fireConnectorScheduleReconcile = (
         sync: snapshot.sync,
       };
       await reconcileConnectorSchedule(scheduler, logger, input);
+      await scheduler.clearReconcilePending(connectorId, startedAt);
     } catch (error) {
-      pendingScheduleReconciles.set(connectorId, String(orgId));
+      await markPending();
       logger.error(
         'Background schedule reconcile failed; the hourly repair will apply it',
         {

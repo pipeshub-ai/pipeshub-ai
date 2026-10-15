@@ -233,3 +233,25 @@ async def test_a_sync_that_fails_before_it_starts_crawling_keeps_the_last_checkp
     await connector.run_sync()
     assert site.gets(START_URL) == start_fetches, "the crawl carried on from the checkpoint"
     assert {*PAGES, SLOW} <= set(db.pages())
+
+
+async def test_a_sync_that_fails_before_crawling_after_a_finished_one_leaves_nothing_to_resume(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _site(site)
+    connector = await make_connector()
+    await connector.run_sync()
+    assert _saved(checkpoints)["resume"] == ""
+
+    async def unavailable(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    # The same connector object is reused: its last frontier must not become this run's checkpoint.
+    monkeypatch.setattr(db, "on_new_app_users", unavailable)
+    monkeypatch.setattr(db, "ensure_team_app_edge", unavailable)
+    with pytest.raises(RuntimeError):
+        await connector.run_sync()
+
+    assert json.loads(_saved(checkpoints)["lastRun"])["outcome"] == "failed"
+    assert _saved(checkpoints)["resume"] == ""
