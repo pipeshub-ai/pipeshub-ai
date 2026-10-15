@@ -1,9 +1,16 @@
-from unittest.mock import MagicMock
+from collections.abc import Iterator
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.sources.client.google.google import GOOGLE_HTTP_NUM_RETRIES
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
+
+
+@pytest.fixture(autouse=True)
+def backoff_sleep() -> Iterator[AsyncMock]:
+    with patch("app.sources.external.google.drive.drive.asyncio.sleep", new_callable=AsyncMock) as sleep:
+        yield sleep
 
 
 def _data_source_with_request(request: MagicMock) -> GoogleDriveDataSource:
@@ -38,13 +45,16 @@ async def test_media_upload_resumes_same_request_after_transport_error(error) ->
 
 
 @pytest.mark.asyncio
-async def test_media_upload_gives_up_after_retry_cap() -> None:
+async def test_media_upload_gives_up_after_retry_cap(backoff_sleep) -> None:
     request = MagicMock()
     request.execute.side_effect = TimeoutError("The read operation timed out")
 
     with pytest.raises(TimeoutError):
         await _upload(_data_source_with_request(request))
     assert request.execute.call_count == GOOGLE_HTTP_NUM_RETRIES + 1
+    assert [c.args[0] for c in backoff_sleep.await_args_list] == [
+        2 ** attempt for attempt in range(1, GOOGLE_HTTP_NUM_RETRIES + 1)
+    ]
 
 
 @pytest.mark.asyncio

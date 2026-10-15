@@ -899,10 +899,12 @@ class GoogleDriveDataSource:
             try:
                 return await self._execute(request)
             except (TimeoutError, ConnectionError) as e:
+                delay = 2 ** attempt
                 logger.warning(
-                    "Drive media upload of %r failed (%s), resuming (retry %d of %d)",
-                    file_metadata.get("name"), e, attempt, GOOGLE_HTTP_NUM_RETRIES,
+                    "Drive media upload of %r failed (%s), resuming in %ds (retry %d of %d)",
+                    file_metadata.get("name"), e, delay, attempt, GOOGLE_HTTP_NUM_RETRIES,
                 )
+                await asyncio.sleep(delay)
         return await self._execute(request)
 
     async def files_delete(
