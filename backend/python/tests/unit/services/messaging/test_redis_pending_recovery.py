@@ -247,18 +247,21 @@ class TestWithLivePeersNothingChanges:
         consumer.redis.xautoclaim.assert_not_awaited()
         assert consumer._scheduler.pending_count == 2
 
-    async def test_a_consumer_quiet_past_the_claim_window_does_not_count(self) -> None:
-        """A crashed process stays listed in the group with its pending
-        entries; quiet for longer than the claim window, it is not a peer."""
+    async def test_a_replaced_process_still_listed_keeps_it_off(self) -> None:
+        """A crashed or replaced process stays listed with its pending
+        entries. Recovery while reading stays off; those entries come back
+        through the startup and idle drains, as before."""
         consumer = _consumer()
         consumer.redis.xinfo_consumers = AsyncMock(
-            return_value=[{"name": "crashed", "pending": 5, "idle": 600_000}]
+            return_value=[{"name": "replaced", "pending": 5, "idle": 600_000}]
         )
-        consumer.redis.xpending = AsyncMock(return_value={"pending": 0, "consumers": []})
+        consumer.redis.xpending = AsyncMock()
+        consumer.redis.xautoclaim = AsyncMock()
 
         await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
 
-        consumer.redis.xpending.assert_awaited()
+        consumer.redis.xpending.assert_not_awaited()
+        consumer.redis.xautoclaim.assert_not_awaited()
 
     async def test_recovery_runs_at_most_once_a_second(self) -> None:
         consumer = _consumer()
@@ -408,3 +411,41 @@ class TestHeldEntriesAreKeyedByStream:
         assert len(dispatched.connectors) == 1
         other = LANES[1] if dispatched.connectors == ["a"] else LANES[0]
         assert consumer._held_entries == {(other, "5-0")}
+
+
+class TestOwnPendingScanReachesPastAFullBuffer:
+    async def test_an_entry_behind_a_full_buffer_of_held_ones_is_found(self) -> None:
+        """One in-flight entry, then 1,999 held ones (a full default buffer
+        less the one given up to make room), then the entry that was given
+        up. The scan pages past all of them and buffers it again."""
+        consumer = _consumer(max_buffered_messages=2000, max_per_entity_messages=2000)
+        lane = LANES[1]
+        consumer._mark_in_flight("1-0", lane)
+        held = [f"{n}-0" for n in range(2, 2001)]
+        consumer._held_entries.update((lane, m) for m in held)
+        ordered = ["1-0", *held, "3000-0"]
+        position = {m: i for i, m in enumerate(ordered)}
+
+        async def summary(stream: str, _group: str) -> dict:
+            own = len(ordered) if stream == lane else 0
+            return {
+                "pending": own,
+                "consumers": [{"name": consumer.consumer_name, "pending": own}] if own else [],
+            }
+
+        async def pending_range(stream: str, group: str, min: str, max: str, count: int, consumername: str | None = None) -> list:  # noqa: A002
+            if stream != lane:
+                return []
+            start = 0 if min == "-" else position[min.lstrip("(")] + 1
+            return [{"message_id": m} for m in ordered[start:start + count]]
+
+        async def xrange(stream: str, min: str, max: str, count: int) -> list:  # noqa: A002
+            return [(min, _fields("a", f"a-{min}"))] if stream == lane else []
+
+        consumer.redis.xpending = AsyncMock(side_effect=summary)
+        consumer.redis.xpending_range = AsyncMock(side_effect=pending_range)
+        consumer.redis.xrange = AsyncMock(side_effect=xrange)
+
+        await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        assert (lane, "3000-0") in consumer._held_entries

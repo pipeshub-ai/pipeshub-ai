@@ -1,5 +1,6 @@
 import asyncio
 import json
+import math
 import re
 import threading
 import time
@@ -264,11 +265,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # When each stream's held entries last had their ownership confirmed
         # (monotonic). An entry is only released when this goes stale.
         self._ownership_confirmed_at: dict[str, float] = {}
-        # Read-phase recovery: when it last looked, which lane it starts
-        # from next, and its XAUTOCLAIM cursor per lane.
+        # Read-phase recovery: when it last looked, and which lane it
+        # starts from next.
         self._last_recovery = 0.0
         self._recovery_lane_offset = 0
-        self._recovery_claim_cursors: dict[str, str] = {}
         # Each connector's records in flight per index slot pool, so that
         # while another connector is waiting no one connector can hold more
         # than its share of the slots (see scheduling.slot_share).
@@ -1334,16 +1334,17 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         return restore_buffered
 
-    async def __no_live_peers(self, topics: list[str]) -> bool:
-        """Whether this consumer is the only live consumer of its group.
+    async def __only_consumer(self, topics: list[str]) -> bool:
+        """Whether no other consumer is listed in this consumer's group on
+        any of its lanes (``XINFO CONSUMERS``).
 
-        A consumer counts as live while ``XINFO CONSUMERS`` shows it active
-        within ``claim_min_idle_ms`` -- a replica reading the stream touches
-        it every poll. One quiet for longer is a crashed or replaced process,
-        whose entries ``XAUTOCLAIM`` already treats as abandoned. With a live
-        peer, read-phase recovery does not run and the group behaves as it
-        always has: taking entries back and making room safely between live
-        replicas needs an atomic ownership check, which is a separate design.
+        Read-phase recovery runs only then. With other consumers -- live
+        replicas, or a crashed or replaced process still listed with pending
+        entries -- the group behaves as before this existed: taking entries
+        back and making room safely next to another consumer needs an atomic
+        ownership check, which is a separate design. A replaced process's
+        entries come back as they always have, through the startup and idle
+        drains, after which it is removed from the group.
         """
         for topic in topics:
             try:
@@ -1356,36 +1357,32 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for consumer in consumers or []:
                 raw_name = consumer.get("name", consumer.get(b"name"))
                 name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
-                if name == self.consumer_name:
-                    continue
-                idle_ms = int(consumer.get("idle", consumer.get(b"idle", 0)) or 0)
-                if idle_ms < self.config.claim_min_idle_ms:
+                if name != self.consumer_name:
                     return False
         return True
 
     async def __recover_while_reading(self) -> None:
-        """Take back pending entries this consumer is not holding, a few at
-        a time, on every read pass.
+        """Re-offer entries pending under this consumer's own name that it
+        is not holding, a few at a time, on every read pass.
 
-        Entries end up pending but unheld after a restart (the old process's
-        entries are idle in its pending list), after an at-risk release, or
-        when a read found no room. ``_drain_pending`` only runs once the
-        streams go idle, and during a long first sync they never do -- and
-        while the buffer is full the read pass does not even poll. So this
-        runs before the full-buffer check, at most once per
-        ``_RECOVERY_INTERVAL_SECONDS`` and ``_RECOVERY_BATCH`` entries:
+        They end up there after an at-risk release, or when a read found no
+        room. ``_drain_pending`` only runs once the streams go idle, and
+        during a long first sync they never do -- and while the buffer is
+        full the read pass does not even poll. So this runs before the
+        full-buffer check, at most once per ``_RECOVERY_INTERVAL_SECONDS``
+        and ``_RECOVERY_BATCH`` entries:
 
-        - With room in the buffer, lanes that have unheld pending entries are
-          served in turn, a share each.
+        - With room in the buffer, lanes that have unheld entries are served
+          in turn, a share each.
         - With the buffer full, only lanes this consumer holds nothing from
           are served, and each entry taken back first gives up one held
           entry from the lane it holds most from (``__release_for_room``).
           A full buffer of one connector can no longer lock the others out.
 
+        It never claims another consumer's entries, and it runs only while
+        this consumer is the only one in its group (``__only_consumer``).
         An XPENDING summary per lane decides where to look; it is cheap and
-        changes nothing. It runs only while this consumer is the only live
-        consumer of its group (``__no_live_peers``); with live replicas the
-        group behaves as before this existed.
+        changes nothing.
         """
         scheduler = self._scheduler
         if scheduler is None or self.redis is None:
@@ -1398,25 +1395,24 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         topics = list(self.config.topics)
         if not topics:
             return
-        if not await self.__no_live_peers(topics):
+        if not await self.__only_consumer(topics):
             return
         start = self._recovery_lane_offset % len(topics)
         self._recovery_lane_offset += 1
         topics = topics[start:] + topics[:start]
 
-        held = self.__held_count_by_stream()
+        held_by_stream = self.__held_count_by_stream()
         in_flight = self._in_flight_count_by_stream()
-        unheld: dict[str, tuple[int, int]] = {}
+        unheld: set[str] = set()
         for topic in topics:
             try:
                 summary = await self.redis.xpending(topic, self.config.group_id)  # type: ignore
             except Exception as e:
                 self.logger.debug("Could not summarise pending list of %s: %s", topic, e)
                 continue
-            own, others = self.__pending_by_owner(summary)
-            own_unheld = own - held.get(topic, 0) - in_flight.get(topic, 0)
-            if own_unheld > 0 or others > 0:
-                unheld[topic] = (own_unheld, others)
+            own, _others = self.__pending_by_owner(summary)
+            if own - held_by_stream.get(topic, 0) - in_flight.get(topic, 0) > 0:
+                unheld.add(topic)
         if not unheld:
             return
 
@@ -1428,7 +1424,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             lanes = [
                 t
                 for t in topics
-                if t in unheld and held.get(t, 0) + in_flight.get(t, 0) == 0
+                if t in unheld and held_by_stream.get(t, 0) + in_flight.get(t, 0) == 0
             ]
             limit = _RECOVERY_BATCH
         if not lanes:
@@ -1440,43 +1436,28 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if taken >= limit or not self.running:
                 break
             want = min(per_lane, limit - taken)
-            own_unheld, others = unheld[topic]
-            found: list[tuple[str, dict[str, str], bool]] = []
             try:
-                if own_unheld > 0:
-                    found.extend(
-                        (message_id, fields, True)
-                        for message_id, fields in await self.__own_unheld_pending_payloads(
-                            topic, limit=want, ignore_budget=True
-                        )
-                    )
-                if len(found) < want and others > 0:
-                    cursor = self._recovery_claim_cursors.get(topic, "0-0")
-                    next_id, claimed = await self.__autoclaim(
-                        topic, cursor, want - len(found)
-                    )
-                    self._recovery_claim_cursors[topic] = next_id
-                    found.extend((message_id, fields, False) for message_id, fields in claimed)
+                found = await self.__own_unheld_pending_payloads(
+                    topic, limit=want, ignore_budget=True
+                )
             except Exception as e:
                 self.logger.debug("Could not recover pending entries on %s: %s", topic, e)
                 continue
-            for message_id, fields, owned in found:
+            for message_id, fields in found:
                 undo = None
                 if not self.__buffer_has_room():
                     undo = self.__release_for_room(topic)
                     if undo is None:
                         break
-                recovered = await self.__recover_entry(topic, message_id, fields, owned=owned)
-                if recovered:
+                if await self.__recover_entry(topic, message_id, fields, owned=True):
                     taken += 1
-                held = self.__already_held(message_id, topic)
-                if undo is not None and not held:
+                if undo is not None and not self.__already_held(message_id, topic):
                     # The room went unused (the entry was acknowledged, or
                     # could not be taken): give the donor its place back.
                     undo()
         if taken:
             self.logger.info(
-                "Recovered %d pending entry(ies) not held by this consumer while reading",
+                "Recovered %d of this consumer's own pending entry(ies) while reading",
                 taken,
             )
 
@@ -1488,6 +1469,21 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return float(not_before)
         except (TypeError, ValueError):
             return None
+
+    def __pending_scan_pages(self, topic: str) -> int:
+        """Pages an own-pending-list scan may read on ``topic``.
+
+        The entries this consumer holds and works on sit in that list too,
+        so the scan has to be able to page past all of them: one full buffer
+        plus the stream's in-flight entries, and a page to spare. Never
+        fewer than ``_PENDING_SCAN_MAX_PAGES``.
+        """
+        page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
+        tracked = (
+            self.fair_scheduler_config.max_buffered_messages
+            + self._in_flight_count_by_stream().get(topic, 0)
+        )
+        return max(_PENDING_SCAN_MAX_PAGES, math.ceil(tracked / page_size) + 1)
 
     async def __has_unheld_pending(self, topic: str) -> bool:
         """Whether this consumer's pending list holds anything it is not
@@ -1507,7 +1503,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # buffer stays populated.
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         cursor = "-"
-        for _ in range(_PENDING_SCAN_MAX_PAGES):
+        for _ in range(self.__pending_scan_pages(topic)):
             try:
                 details = await self.redis.xpending_range(  # type: ignore
                     topic,
@@ -1536,7 +1532,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if len(details) < page_size:
                 return False
             cursor = f"({last_id}"
-        return False
+        # Out of pages while they were still full: something may lie beyond.
+        return True
 
     async def __own_unheld_pending_payloads(
         self, topic: str, limit: int | None = None, *, ignore_budget: bool = False
@@ -1564,7 +1561,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
         found: list[tuple[str, dict[str, str]]] = []
         cursor = "-"
-        for _ in range(_PENDING_SCAN_MAX_PAGES):
+        for _ in range(self.__pending_scan_pages(topic)):
             details = await self.redis.xpending_range(  # type: ignore
                 topic,
                 self.config.group_id,
