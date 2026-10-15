@@ -10093,6 +10093,61 @@ components:
             updated, new ids are added. The project owner is silently
             skipped if included (ownership is implicit).
 
+    ForkConversationResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - id
+        - title
+        - forkedFrom
+        - messageCount
+        - meta
+      properties:
+        id:
+          type: string
+          format: objectId
+          description: New conversation identifier
+        title:
+          type: string
+          description: Title of the forked conversation
+        projectId:
+          type: string
+          format: objectId
+          description: Copied project link, when the source conversation belonged to a project
+        forkedFrom:
+          type: object
+          additionalProperties: false
+          required:
+            - conversationId
+            - messageId
+          properties:
+            conversationId:
+              type: string
+              format: objectId
+            messageId:
+              type: string
+              format: objectId
+        messageCount:
+          type: integer
+          minimum: 0
+          description: Number of messages copied into the new conversation
+        meta:
+          type: object
+          additionalProperties: false
+          required:
+            - requestId
+            - timestamp
+            - duration
+          properties:
+            requestId:
+              type: string
+            timestamp:
+              type: string
+              format: date-time
+            duration:
+              type: integer
+              description: Server-side processing time in milliseconds
+
     ShareRequest:
       type: object
       description: Request to share a conversation or search with other users
@@ -33679,6 +33734,55 @@ paths:
         '404':
           description: Conversation or message not found
 
+  /conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Conversations
+      summary: Fork conversation from a message
+      description: |
+        Copy this conversation into a new private chat owned by the caller,
+        including every message up to and including `messageId`. The original
+        conversation is left unchanged.
+
+        Only the owner of the conversation can fork it. A shared recipient or a
+        project member gets 404, because their access to the original's
+        attachments and artifacts is revoked on unshare. The fork does not
+        inherit share settings. If the source is linked to a project the caller
+        can still see, the fork stays in that project but is private to the
+        caller; otherwise it is created outside the project.
+      operationId: forkConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:chat]
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
+
   /conversations/{conversationId}/cancel:
     post:
       tags:
@@ -36795,6 +36899,56 @@ paths:
             with offset information.
         '401':
           description: Unauthorized
+
+  /agents/{agentKey}/conversations/{conversationId}/message/{messageId}/fork:
+    post:
+      tags:
+        - Agents
+      summary: Fork agent conversation from a message
+      description: |
+        Copy this agent conversation into a new private chat owned by the
+        caller, including every message up to and including `messageId`. The
+        original conversation is left unchanged.
+
+        Only the owner of the conversation can fork it; anyone else gets 404.
+      operationId: forkAgentConversation
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+        - oauth2: [agent:execute]
+      parameters:
+        - name: agentKey
+          in: path
+          required: true
+          schema:
+            type: string
+            minLength: 1
+        - name: conversationId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: objectId
+        - name: messageId
+          in: path
+          required: true
+          description: Inclusive last message to copy into the new chat
+          schema:
+            type: string
+            format: objectId
+      responses:
+        '201':
+          description: Forked conversation created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ForkConversationResponse'
+        '400':
+          description: Invalid conversation, message or agent id
+        '401':
+          description: Unauthorized
+        '404':
+          description: Conversation or message not found
 
   /agents/{agentKey}/conversations/{conversationId}/cancel:
     post:

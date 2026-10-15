@@ -1047,6 +1047,23 @@ export const regenerateAnswersParamsSchema = z.object({
   body: regenerateBodySchema,
 });
 
+/** Schema for POST /:conversationId/message/:messageId/fork */
+export const forkConversationParamsSchema = z.object({
+  params: z.object({
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+});
+
+/** Schema for POST /:agentKey/conversations/:conversationId/message/:messageId/fork */
+export const forkAgentConversationParamsSchema = z.object({
+  params: z.object({
+    ...agentKeyParam,
+    ...conversationIdParam,
+    ...messageIdParam,
+  }),
+});
+
 export const regenerateAgentAnswersParamsSchema = z.object({
   params: z.object({
     ...agentKeyParam,
