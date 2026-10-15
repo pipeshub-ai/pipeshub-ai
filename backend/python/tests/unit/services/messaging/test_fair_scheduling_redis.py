@@ -336,7 +336,7 @@ class TestHeldEntriesAreNotReclaimed:
         )
         await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
 
-        assert "0-0" not in consumer._held_entries
+        assert ("record-events", "0-0") not in consumer._held_entries
 
     async def test_dwell_release_stops_reporting_the_entry_as_held(
         self, logger, config
@@ -360,13 +360,15 @@ class TestHeldEntriesAreNotReclaimed:
             "record-events", "0-0", _fields()
         )
         consumer._last_ownership_refresh = 0.0
+        consumer.redis.xpending_range = AsyncMock(return_value=[{"message_id": "0-0"}])
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
         _args, kwargs = consumer.redis.xclaim.call_args
         assert kwargs["justid"] is True
         assert kwargs["message_ids"] == ["0-0"]
-        assert kwargs["min_idle_time"] == 0
+        # A floor, so an entry a peer has just claimed is passed over.
+        assert 0 < kwargs["min_idle_time"] <= 500
 
     async def test_refresh_is_rate_limited(self, logger, config):
         consumer = self._consumer(logger, config)
@@ -506,7 +508,7 @@ class TestPendingScanPagesPastHeldEntries:
         consumer.main_loop = asyncio.get_running_loop()
         # 150 held entries, then one that is not held.
         for index in range(150):
-            consumer._held_entries[f"{index}-0"] = "record-events"
+            consumer._held_entries.add(("record-events", f"{index}-0"))
         pages = [
             [{"message_id": f"{i}-0"} for i in range(100)],
             [{"message_id": f"{i}-0"} for i in range(100, 150)]
@@ -528,7 +530,7 @@ class TestPendingScanPagesPastHeldEntries:
         consumer.redis = AsyncMock()
         consumer.main_loop = asyncio.get_running_loop()
         for index in range(5):
-            consumer._held_entries[f"{index}-0"] = "record-events"
+            consumer._held_entries.add(("record-events", f"{index}-0"))
         consumer.redis.xpending_range = AsyncMock(
             return_value=[{"message_id": f"{i}-0"} for i in range(5)]
         )

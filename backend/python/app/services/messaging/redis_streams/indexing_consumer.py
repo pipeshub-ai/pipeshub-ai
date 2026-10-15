@@ -254,7 +254,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # design, so the recovery path would otherwise re-claim them -- and
         # every claim bumps Redis's times_delivered, which the dead-letter
         # backstop reads as a failed attempt.
-        self._held_entries: dict[str, str] = {}
+        # (stream, entry id), for the same reason as the in-flight set.
+        self._held_entries: set[tuple[str, str]] = set()
         # Lanes that returned entries on the most recent read. Skipping a
         # blocked lane is only sound while some *other* lane is actually
         # producing; an idle lane is not an alternative source of work.
@@ -1187,7 +1188,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         lanes = [topic for topic in topics if await self.__has_unheld_pending(topic)]
         # Ids this pass has already tried, so an entry that is still pending
         # when the next round looks again is not taken twice.
-        tried: set[str] = set()
+        tried: set[tuple[str, str]] = set()
         while lanes and self.running:
             await self.__refresh_held_ownership()
             budget = self._dispatch_budget()
@@ -1213,7 +1214,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         e,
                     )
                     pending = []
-                pending = [(m, f) for m, f in pending if m not in tried]
+                pending = [(m, f) for m, f in pending if (topic, m) not in tried]
                 if not pending:
                     lanes.remove(topic)
                     continue
@@ -1222,7 +1223,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         return processed_any
                     if self._dispatch_budget().blocked:
                         break
-                    tried.add(message_id)
+                    tried.add((topic, message_id))
                     if await self.__recover_entry(topic, message_id, fields, owned=True):
                         processed_any = True
                         progressed = True
@@ -1249,7 +1250,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def __held_count_by_stream(self) -> dict[str, int]:
         counts: dict[str, int] = {}
-        for stream in self._held_entries.values():
+        for stream, _message_id in self._held_entries:
             counts[stream] = counts.get(stream, 0) + 1
         return counts
 
@@ -1297,7 +1298,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             entry = self._deferred_entries[index]
             if entry[0] == donor:
                 del self._deferred_entries[index]
-                self._held_entries.pop(entry[1], None)
+                self._held_entries.discard((entry[0], entry[1]))
 
                 def restore_parked(
                     entry: tuple[str, str, dict[str, str], StreamMessage, FairnessKey, float] = entry,
@@ -1306,7 +1307,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     self._deferred_entries.insert(
                         min(index, len(self._deferred_entries)), entry
                     )
-                    self._held_entries[entry[1]] = entry[0]
+                    self._held_entries.add((entry[0], entry[1]))
 
                 return restore_parked
 
@@ -1317,17 +1318,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 return (0,)
 
         candidates = [
-            message_id
-            for message_id, stream in self._held_entries.items()
-            if stream == donor
+            message_id for stream, message_id in self._held_entries if stream == donor
         ]
         if not candidates:
             return None
         victim = max(candidates, key=stream_order)
-        removed = scheduler.purge(lambda item: item[1] == victim)
+        removed = scheduler.purge(lambda item: item[0] == donor and item[1] == victim)
         if not removed:
             return None
-        self._held_entries.pop(victim, None)
+        self._held_entries.discard((donor, victim))
         stream_name, message_id, fields, parsed, _buffered_at = removed[0]
 
         def restore_buffered() -> None:
@@ -1624,20 +1623,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # replicas would pass it back and forth until the delivery backstop
         # dead-lettered it while it was still being indexed.
         by_stream: dict[str, list[str]] = {}
-        for message_id, stream in self._held_entries.items():
+        for stream, message_id in self._held_entries:
             by_stream.setdefault(stream, []).append(message_id)
         for stream, message_ids in in_flight.items():
             by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
             try:
-                await self.redis.xclaim(  # type: ignore
-                    stream,
-                    self.config.group_id,
-                    self.consumer_name,
-                    min_idle_time=0,
-                    message_ids=message_ids,
-                    justid=True,
-                )
+                owned = await self.__owned_pending_ids(stream, message_ids)
+                lost = [m for m in message_ids if m not in owned]
+                if lost:
+                    self.__forget_lost_entries(stream, lost)
+                if owned:
+                    await self.redis.xclaim(  # type: ignore
+                        stream,
+                        self.config.group_id,
+                        self.consumer_name,
+                        min_idle_time=self.__refresh_min_idle_ms(),
+                        message_ids=sorted(owned),
+                        justid=True,
+                    )
                 self._ownership_confirmed_at[stream] = now
             except Exception as e:
                 self.logger.warning(
@@ -1646,6 +1650,76 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     stream,
                     e,
                 )
+
+    def __refresh_min_idle_ms(self) -> int:
+        """XCLAIM's ``min_idle_time`` for a refresh.
+
+        Only entries this consumer owned a moment ago are refreshed (see
+        ``__owned_pending_ids``), but a peer can claim one between that look
+        and the XCLAIM. Its claim leaves the entry idle for about zero, so a
+        floor here lets XCLAIM pass it over instead of taking it back. This
+        consumer's own entries have been idle for about a refresh interval
+        by then; one it has only just read or claimed is skipped this time
+        and refreshed on the next pass, long before the claim window.
+        """
+        return int(min(500.0, self.__ownership_refresh_interval() * 1000.0 / 2))
+
+    async def __owned_pending_ids(self, stream: str, message_ids: list[str]) -> set[str]:
+        """Which of ``message_ids`` are pending under this consumer right now.
+
+        XPENDING with this consumer's name, over the range the ids span, is
+        read-only. An id missing from it was acknowledged, or another
+        consumer claimed it while this one could not refresh it.
+        """
+        def order(message_id: str) -> tuple[int, ...]:
+            try:
+                return tuple(int(part) for part in message_id.split("-"))
+            except ValueError:
+                return (0,)
+
+        wanted = set(message_ids)
+        ordered = sorted(wanted, key=order)
+        details = await self.redis.xpending_range(  # type: ignore
+            stream,
+            self.config.group_id,
+            min=ordered[0],
+            max=ordered[-1],
+            count=len(ordered) + _PENDING_SCAN_PAGE,
+            consumername=self.consumer_name,
+        )
+        owned: set[str] = set()
+        for detail in details or []:
+            message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
+            if message_id in wanted:
+                owned.add(message_id)
+        return owned
+
+    def __forget_lost_entries(self, stream: str, message_ids: list[str]) -> None:
+        """Drop buffered and parked entries this consumer no longer owns.
+
+        Acknowledged elsewhere, or claimed by a peer during a stall: either
+        way they are no longer this consumer's to dispatch. In-flight ones
+        are left to finish; the wrapper's ownership check already ran.
+        """
+        lost = {(stream, message_id) for message_id in message_ids}
+        held_lost = lost & self._held_entries
+        if not held_lost:
+            return
+        scheduler = self._scheduler
+        if scheduler is not None:
+            scheduler.purge(lambda item: (item[0], item[1]) in held_lost)
+        if self._deferred_entries:
+            self._deferred_entries = deque(
+                entry for entry in self._deferred_entries
+                if (entry[0], entry[1]) not in held_lost
+            )
+        self._held_entries -= held_lost
+        self.logger.info(
+            "Dropped %d held entry(ies) on %s that are no longer pending under "
+            "this consumer",
+            len(held_lost),
+            stream,
+        )
 
     def __buffer_has_room(self) -> bool:
         """Whether anything more can be held in memory.
@@ -1692,9 +1766,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         records, and duplicates the work besides.
         """
         if stream_name is None:
-            return message_id in self._held_entries or self._is_in_flight(message_id)
+            return any(
+                held_id == message_id for _stream, held_id in self._held_entries
+            ) or self._is_in_flight(message_id)
         return (
-            self._held_entries.get(message_id) == stream_name
+            (stream_name, message_id) in self._held_entries
             or self._is_in_flight(message_id, stream_name)
         )
 
@@ -1797,16 +1873,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return now - confirmed >= risk_after
 
         dropped = scheduler.purge(lambda item: at_risk(item[0], item[4]))
-        for _stream, message_id, *_rest in dropped:
-            self._held_entries.pop(message_id, None)
+        for stream, message_id, *_rest in dropped:
+            self._held_entries.discard((stream, message_id))
 
         stale_parked = [e for e in self._deferred_entries if at_risk(e[0], e[5])]
         if stale_parked:
             self._deferred_entries = deque(
                 e for e in self._deferred_entries if not at_risk(e[0], e[5])
             )
-            for _stream, message_id, *_rest in stale_parked:
-                self._held_entries.pop(message_id, None)
+            for stream, message_id, *_rest in stale_parked:
+                self._held_entries.discard((stream, message_id))
 
         released = len(dropped) + len(stale_parked)
         if released:
@@ -1916,7 +1992,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # of the stream: XACK does not delete a stream entry, so bouncing
             # messages grows the stream toward its MAXLEN trim point, which
             # discards entries nobody has consumed.
-            self._held_entries[message_id] = stream_name
+            self._held_entries.add((stream_name, message_id))
             self._deferred_entries.append(
                 (
                     stream_name,
@@ -1947,7 +2023,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             not_before=not_before,
         )
         if result == EnqueueResult.ACCEPTED:
-            self._held_entries[message_id] = stream_name
+            self._held_entries.add((stream_name, message_id))
             return True
         return False
 
@@ -2277,7 +2353,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
             key, (stream_name, message_id, fields, parsed, _buffered_at) = dispatched
             # Ownership passes to the in-flight set from here.
-            self._held_entries.pop(message_id, None)
+            self._held_entries.discard((stream_name, message_id))
             metrics.record_dispatch("redis", key[0] if key else "unknown")
             try:
                 await self._start_processing_task(
@@ -2451,7 +2527,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # task ends, including any wait at the gate: a record queued for
             # a slot is as good as holding one, because the gate admits in
             # arrival order.
-            slot_share.started(message_id, slot_key, self._slot_pool_of(slot_key))
+            slot_share.started(
+                (stream_name, message_id), slot_key, self._slot_pool_of(slot_key)
+            )
         # Everything from the mark to the hand-off is guarded, not just the
         # scheduling call. `__already_held` reads an id in the in-flight set as
         # this consumer's live work, so a stranded id makes the read and
@@ -2484,7 +2562,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 processing_coro.close()
             self._unmark_in_flight(message_id, stream_name)
             if slot_share is not None:
-                slot_share.finished(message_id)
+                slot_share.finished((stream_name, message_id))
             if waiter_token is not None:
                 waiter_token.release()
             raise
@@ -2494,7 +2572,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         def on_future_done(f: Future[bool]) -> None:
             self._unmark_in_flight(message_id, stream_name)
             if slot_share is not None:
-                slot_share.finished(message_id)
+                slot_share.finished((stream_name, message_id))
             waiter_token.release()
             with self._futures_lock:
                 self._active_futures.discard(f)
