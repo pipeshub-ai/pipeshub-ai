@@ -14,7 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 
 MAX_AGE_MS = 7 * 24 * 3600 * 1000
-# Bounds the sync point's size: a crawl this large resumes the rest from its start page.
+# Bounds the sync point's size: a crawl larger than this starts again from its start page.
 MAX_URLS = 50_000
 
 
@@ -34,12 +34,16 @@ class CrawlCheckpoint:
     queue: list[tuple[str, int]] = field(default_factory=list)
 
     def encode(self) -> str:
+        """Empty over ``MAX_URLS``: a cut-down queue would let a resumed crawl finish as complete
+        without the dropped pages, and prune what only they still linked to."""
+        if max(len(self.visited), len(self.kept), len(self.queue)) > MAX_URLS:
+            return ""
         data = {
             "fingerprint": self.fingerprint,
             "saved_at_ms": self.saved_at_ms,
-            "visited": self.visited[:MAX_URLS],
-            "kept": self.kept[:MAX_URLS],
-            "queue": [[url, depth] for url, depth in self.queue[:MAX_URLS]],
+            "visited": self.visited,
+            "kept": self.kept,
+            "queue": [[url, depth] for url, depth in self.queue],
         }
         return base64.b64encode(zlib.compress(json.dumps(data).encode(), 6)).decode("ascii")
 

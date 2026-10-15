@@ -2443,7 +2443,7 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "syncIntervalHelper": "तय करें कि {{name}} का डेटा कितनी बार रीफ़्रेश हो",
         "lastRunLimit": {
           "saved": "पिछला सिंक: {{count, number}} पेज संग्रहीत",
           "stoppedAtLimit": "इस सीमा पर रुका",
@@ -2524,7 +2524,7 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "आप <bold>{{manageConfig}}</bold> पर जाकर सिंक रणनीति बदल सकते हैं।",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "syncIntervalHelper": "तय करें कि {{name}} का डेटा कितनी बार रीफ़्रेश हो",
         "removeInstance": "कनेक्टर इंस्टेंस हटाएँ",
         "removeInstanceDescription": "इस कनेक्टर इंस्टेंस को स्थायी रूप से हटाएँ और इसके डेटा का सिंक रोकें। यह पूर्ववत नहीं किया जा सकता।"
       },

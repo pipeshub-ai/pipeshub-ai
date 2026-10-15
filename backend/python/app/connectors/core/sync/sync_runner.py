@@ -669,6 +669,9 @@ async def run_sync_task(
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
+        # A cached connector still holds the last run's summary until run_sync starts;
+        # a stop before then must not file it under this run.
+        connector.last_sync_summary = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
         await write_app_status(graph_provider, logger, connector_id, start_status, run_started=True)

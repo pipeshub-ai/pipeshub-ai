@@ -184,9 +184,9 @@ async def test_a_page_that_failed_before_a_stop_is_recorded_as_failed_on_resume(
     site.add(broken, Page(status=401))
     connector = await make_connector()
     task = asyncio.ensure_future(connector.run_sync())
-    while not (
+    while not (  # noqa: ASYNC110 - the fake site has no event to wait on
         (given_up := connector.retry_urls.get(broken)) and given_up.retries >= MAX_RETRIES and site.gets(SLOW) >= 2
-    ):  # noqa: ASYNC110 - the fake site has no event to wait on
+    ):
         await asyncio.sleep(0)
     for _ in range(20):  # let the round end and its checkpoint be saved
         await asyncio.sleep(0)
@@ -201,3 +201,35 @@ async def test_a_page_that_failed_before_a_stop_is_recorded_as_failed_on_resume(
 
     assert json.loads(_saved(checkpoints)["lastRun"])["resumed"] is True
     assert db.pages()[broken].indexing_status == ProgressStatus.FAILED.value
+
+
+async def test_a_sync_that_fails_before_it_starts_crawling_keeps_the_last_checkpoint(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _site(site)
+    site.add(SLOW, Page(status=429))
+    monkeypatch.setenv(MAX_RUN_HOURS_ENV, "0.005")
+    connector = await make_connector()
+    await connector.run_sync()
+    resume = _saved(checkpoints)["resume"]
+    assert resume
+    start_fetches = site.gets(START_URL)
+
+    monkeypatch.delenv(MAX_RUN_HOURS_ENV)
+    site.html(SLOW, "Slow")
+
+    async def unreadable(*_: object, **__: object) -> list:
+        raise RuntimeError("records database unavailable")
+
+    readable = db.get_records_in_record_group
+    monkeypatch.setattr(db, "get_records_in_record_group", unreadable)
+    with pytest.raises(RuntimeError):
+        await connector.run_sync()
+    assert json.loads(_saved(checkpoints)["lastRun"])["outcome"] == "failed"
+    assert _saved(checkpoints)["resume"] == resume
+
+    monkeypatch.setattr(db, "get_records_in_record_group", readable)
+    await connector.run_sync()
+    assert site.gets(START_URL) == start_fetches, "the crawl carried on from the checkpoint"
+    assert {*PAGES, SLOW} <= set(db.pages())

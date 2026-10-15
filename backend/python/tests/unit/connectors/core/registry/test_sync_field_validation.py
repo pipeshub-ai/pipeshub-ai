@@ -78,6 +78,8 @@ def test_web_filters_offer_only_what_a_crawl_can_store() -> None:
     ({"max_pages": "0"}, "Maximum pages: Enter a whole number from 1 to 10,000."),
     ({"max_pages": "12.5"}, "Maximum pages: Enter a whole number from 1 to 10,000."),
     ({"max_pages": True}, "Maximum pages: Enter a whole number from 1 to 10,000."),
+    ({"max_pages": "--5"}, "Maximum pages: Enter a whole number from 1 to 10,000."),
+    ({"max_pages": "²"}, "Maximum pages: Enter a whole number from 1 to 10,000."),
     ({"discovery": "everything"}, "Find pages using: Choose one of the listed options."),
     ({"url": "  "}, "Start URL: This field is required."),
 ])

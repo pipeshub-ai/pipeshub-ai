@@ -1293,6 +1293,24 @@ function FileInput({
     if (!disabled) fileInputRef.current?.click();
   };
 
+  const ids = useId();
+  const labelId = `${ids}-label`;
+  const errorId = displayError ? `${ids}-error` : undefined;
+  // The hidden file input can't take focus, so the zone is the control keyboard and screen-reader users reach.
+  const zoneProps = {
+    role: 'button',
+    tabIndex: disabled ? -1 : 0,
+    'aria-labelledby': labelId,
+    'aria-describedby': errorId,
+    'aria-disabled': disabled || undefined,
+    onKeyDown: (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        handleClick();
+      }
+    },
+  } as const;
+
   const handleChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -1338,7 +1356,7 @@ function FileInput({
     <Flex direction="column" gap="2">
       {/* Label row */}
       <Flex align="center" gap="1">
-        <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+        <Text id={labelId} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
           {field.displayName}
         </Text>
         {isOptional && (
@@ -1351,6 +1369,8 @@ function FileInput({
       <input
         ref={fileInputRef}
         type="file"
+        tabIndex={-1}
+        aria-labelledby={labelId}
         accept={acceptAttr}
         onChange={handleChange}
         disabled={disabled}
@@ -1371,6 +1391,7 @@ function FileInput({
             minHeight: 40,
           }}
           onClick={disabled ? undefined : handleClick}
+          {...zoneProps}
         >
           <Flex align="center" gap="2">
             <MaterialIcon name="check_circle" size={16} color="var(--green-a11)" />
@@ -1406,6 +1427,7 @@ function FileInput({
             transition: 'border-color 0.15s, background-color 0.15s',
           }}
           onClick={handleClick}
+          {...zoneProps}
         >
           <MaterialIcon
             name="upload_file"
@@ -1427,7 +1449,7 @@ function FileInput({
       )}
 
       {displayError && (
-        <Text size="1" style={{ color: 'var(--red-a10)' }}>
+        <Text id={errorId} role="alert" size="1" style={{ color: 'var(--red-a10)' }}>
           {displayError}
         </Text>
       )}

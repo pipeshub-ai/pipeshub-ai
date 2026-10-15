@@ -5,10 +5,11 @@ links of a deleted record, as the graph stores do (a delete removes the vertex w
 edges, and a record is linked to its parent only when it is written).
 """
 
-from typing import Any
-
 import pytest
 from web_behaviour_fakes import START_URL, FakeRecordsDb, FakeWeb, MakeConnector, Page
+
+from app.connectors.sources.web.connector import WebConnector
+from app.models.entities import Record
 
 DOCS = "http://site.test/docs/"
 CHILD = "http://site.test/docs/a.html"
@@ -21,7 +22,7 @@ class LinkingRecordsDb(FakeRecordsDb):
         super().__init__()
         self.parent_of: dict[str, str] = {}
 
-    def _store(self, record: Any) -> None:
+    def _store(self, record: Record) -> None:
         super()._store(record)
         parent = self.records.get(record.parent_external_record_id or "")
         if parent is not None:
@@ -80,4 +81,52 @@ async def test_children_of_a_removed_folder_page_are_linked_again_when_it_comes_
     await connector.run_sync()
 
     assert DOCS in db.records
+    assert db.parent_of.get(db.records[CHILD].id) == db.records[DOCS].id
+
+
+async def _remove_the_folder_page(site: FakeWeb, db: LinkingRecordsDb, make_connector: MakeConnector) -> WebConnector:
+    _site(site)
+    connector = await make_connector()
+    await connector.run_sync()
+    db.mark_indexed()
+    site.add(DOCS, Page(status=404))
+    await connector.run_sync()
+    return connector
+
+
+async def test_a_folder_page_whose_children_cannot_be_read_is_kept_until_they_can(
+    site: FakeWeb, db: LinkingRecordsDb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connector = await _remove_the_folder_page(site, db, make_connector)
+
+    async def unreadable(*_: object, **__: object) -> list:
+        raise RuntimeError("records database unavailable")
+
+    readable = db.get_records_by_parent
+    monkeypatch.setattr(db, "get_records_by_parent", unreadable)
+    await connector.run_sync()  # the second 404 in a row, but the children can't be read
+    assert DOCS in db.pages(), "removing it would drop its children out of the tree"
+
+    monkeypatch.setattr(db, "get_records_by_parent", readable)
+    await connector.run_sync()
+    assert DOCS not in db.pages() and db.records[DOCS].is_internal
+    assert db.parent_of.get(db.records[CHILD].id) == db.records[DOCS].id
+
+
+async def test_children_a_removal_could_not_link_again_are_linked_on_the_next_sync(
+    site: FakeWeb, db: LinkingRecordsDb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connector = await _remove_the_folder_page(site, db, make_connector)
+    attach = db.on_records_attached_to_parent
+
+    async def failing(*_: object, **__: object) -> None:
+        raise RuntimeError("records database unavailable")
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", failing)
+    await connector.run_sync()  # removes the folder page, but the re-link fails
+    assert DOCS not in db.pages()
+    assert db.records[CHILD].id not in db.parent_of
+
+    monkeypatch.setattr(db, "on_records_attached_to_parent", attach)
+    await connector.run_sync()  # the child is unchanged, so nothing else would write its link
     assert db.parent_of.get(db.records[CHILD].id) == db.records[DOCS].id

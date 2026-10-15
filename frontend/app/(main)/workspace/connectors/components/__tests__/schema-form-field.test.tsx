@@ -340,6 +340,21 @@ describe('SchemaFormField: file upload', () => {
     fireEvent.click(screen.getByText('Replace'));
     expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
   });
+
+  it('opens the file picker from the keyboard and announces a refused file', async () => {
+    const { container } = renderField(keyFileField);
+    const zone = screen.getByRole('button', { name: 'Service account key' });
+    const pick = vi.spyOn(fileInput(container), 'click');
+
+    zone.focus();
+    fireEvent.keyDown(zone, { key: 'Enter' });
+    expect(pick).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(fileInput(container), { target: { files: [jsonFile('not json')] } });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('The key file must be valid JSON.');
+    expect(zone.getAttribute('aria-describedby')).toBe(alert.id);
+  });
 });
 
 describe('SchemaFormField: labels, ranges and options', () => {

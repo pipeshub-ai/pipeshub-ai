@@ -5,6 +5,7 @@ Skipped when no Chromium is installed (``python -m playwright install chromium``
 """
 
 import asyncio
+import html
 import os
 import signal
 import time
@@ -54,7 +55,7 @@ class Site:
     def app(self) -> web.Application:
         async def page(request: web.Request) -> web.Response:
             self.user_agents.append(request.headers.get("User-Agent", ""))
-            return web.Response(text=_page(request.path), content_type="text/html")
+            return web.Response(text=_page(html.escape(request.path)), content_type="text/html")
 
         async def ua(request: web.Request) -> web.Response:
             self.user_agents.append(request.headers.get("User-Agent", ""))

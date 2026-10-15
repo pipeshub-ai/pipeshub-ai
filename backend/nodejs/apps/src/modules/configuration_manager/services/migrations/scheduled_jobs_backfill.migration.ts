@@ -74,9 +74,13 @@ export class ScheduledJobsBackfillMigration {
    * scheduled connector that lost it (a schedule write that failed after a save, a Redis flush),
    * and leaves every connector that has one alone.
    */
-  async run(
-    { ignoreDoneFlag = false }: { ignoreDoneFlag?: boolean } = {},
-  ): Promise<{ scheduled: number; skipped: number; errored: number }> {
+  async run({
+    ignoreDoneFlag = false,
+  }: { ignoreDoneFlag?: boolean } = {}): Promise<{
+    scheduled: number;
+    skipped: number;
+    errored: number;
+  }> {
     // Guard: skip if a previous successful run already set the flag.
     if (!ignoreDoneFlag) {
       try {

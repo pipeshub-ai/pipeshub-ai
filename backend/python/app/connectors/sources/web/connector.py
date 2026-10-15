@@ -636,6 +636,8 @@ class WebConnector(BaseConnector):
         # Stored pages that answered 404/410: deleted when the next sync gets the same answer.
         self._gone_last_sync: set[str] = set()
         self._gone_this_sync: set[str] = set()
+        # Removed pages whose children could not be linked to the folder left in their place.
+        self._relink_pending: set[str] = set()
         self._domain_next_retry_at: dict[str, float] = {}  # domain -> monotonic time when retry is allowed
         self.processed_urls: int = 0
         self.base_domain: Optional[str] = None
@@ -1038,6 +1040,7 @@ class WebConnector(BaseConnector):
                 self.full_sync = True
             self._gone_last_sync = set((sync_point or {}).get("goneOnce") or [])
             self._gone_this_sync = set()
+            self._relink_pending = set((sync_point or {}).get("relinkPending") or [])
             self._sync_point_key, self._sync_point_base = sync_point_key, dict(sync_point or {})
             self._sync_point_base.update(self._render_verdict_fields())
             self._resume = CrawlCheckpoint.decode(
@@ -1102,6 +1105,7 @@ class WebConnector(BaseConnector):
             self._section_passes.clear()
             self._fetches_started = self._fetches_done = 0
             self._stored_page_ids = {record.id async for record in self._stored_pages()}
+            await self._relink_children_left_out()
             self._skipped_for_max_pages = 0
             self._budget = CrawlBudget(
                 now=self._monotonic, deadline_seconds=self.max_run_seconds, stall_seconds=self.stall_seconds,
@@ -1146,6 +1150,7 @@ class WebConnector(BaseConnector):
                     "timestamp": get_epoch_timestamp_in_ms(),
                     "goneOnce": sorted(self._gone_marks(report.outcome)),
                     "unreachedOnce": unreached,
+                    "relinkPending": sorted(self._relink_pending),
                     **self._render_verdict_fields(),
                     "lastRun": report.to_json(),
                     # A partial crawl carries on from here next time; a finished one starts over.
@@ -1327,7 +1332,10 @@ class WebConnector(BaseConnector):
                 sync_point_key,
                 {
                     **self._sync_point_base, **self._render_verdict_fields(),
-                    "lastRun": report.to_json(), "resume": self._checkpoint_text(),
+                    "lastRun": report.to_json(),
+                    # Before this run has a frontier, the last run's checkpoint is still the one to resume.
+                    "resume": self._checkpoint_text() if self._frontier is not None
+                    else self._sync_point_base.get("resume", ""),
                 },
             )
         except Exception as e:
@@ -3583,7 +3591,12 @@ class WebConnector(BaseConnector):
             await self._remove_record(old, requested_url)
 
     async def _remove_record(self, record: Record, url: str) -> None:
-        children = await self._children_of(record)
+        # A folder placeholder is only removed once it holds nothing.
+        children = [] if record.is_internal else await self._children_of(record.external_record_id)
+        if children is None:
+            # Removing it now would drop its children out of the tree; the gone mark lets the next sync try again.
+            self._gone_this_sync.add(record.external_record_id)
+            return
         in_trash = await self.data_entities_processor.on_record_deleted(record.id)
         # A page in the trash keeps its stored copy and its links; the purge removes both.
         if in_trash:
@@ -3591,20 +3604,29 @@ class WebConnector(BaseConnector):
         if record.storage_document_id and not await self._delete_storage_document(record.storage_document_id):
             self.logger.warning("Removed %s but could not delete its stored copy %s", url, record.storage_document_id)
         if children:
-            await self._keep_children_in_the_tree(record, children)
+            await self._keep_children_in_the_tree(record.external_record_id, children)
 
-    async def _children_of(self, record: Record) -> list[Record]:
-        if record.is_internal:
-            return []  # a folder placeholder is only removed once it holds nothing
+    async def _children_of(self, external_id: str) -> list[Record] | None:
+        """The records stored under ``external_id``; None when they could not be read."""
         try:
             return await self.data_entities_processor.get_records_by_parent(
-                connector_id=self.connector_id, parent_external_record_id=record.external_record_id,
+                connector_id=self.connector_id, parent_external_record_id=external_id,
             )
         except Exception as e:
-            self.logger.warning("Could not read the pages under %s: %s", record.external_record_id, e)
-            return []
+            self.logger.warning("Could not read the pages under %s: %s", external_id, e)
+            return None
 
-    async def _keep_children_in_the_tree(self, removed: Record, children: list[Record]) -> None:
+    async def _relink_children_left_out(self) -> None:
+        """Link again the children an earlier removal could not: an unchanged child is never rewritten."""
+        for external_id in sorted(self._relink_pending):
+            children = await self._children_of(external_id)
+            if children:
+                await self._keep_children_in_the_tree(external_id, children)
+            elif children is not None:
+                self._relink_pending.discard(external_id)
+        self._sync_point_base["relinkPending"] = sorted(self._relink_pending)
+
+    async def _keep_children_in_the_tree(self, removed_external_id: str, children: list[Record]) -> None:
         """A removed page that had pages under it leaves a folder in its place, holding them.
 
         The delete took the parent links with it; the children are unchanged, so nothing would
@@ -3612,18 +3634,22 @@ class WebConnector(BaseConnector):
         becomes the page again (``write_as_new``), children and all.
         """
         try:
-            await self._ensure_parent_records_exist(removed.external_record_id)
+            await self._ensure_parent_records_exist(removed_external_id)
             folder = await self.data_entities_processor.get_record_by_external_id(
-                connector_id=self.connector_id, external_record_id=removed.external_record_id,
+                connector_id=self.connector_id, external_record_id=removed_external_id,
             )
             if folder is None:
                 raise RuntimeError("no folder was written")
             await self.data_entities_processor.on_records_attached_to_parent(folder.id, [c.id for c in children])
+            self._relink_pending.discard(removed_external_id)
         except Exception as e:
             self.logger.error(
-                "Removed %s, but the %d page(s) under it could not be linked to a folder in its place: %s",
-                removed.external_record_id, len(children), e,
+                "Removed %s, but the %d page(s) under it could not be linked to a folder in its place; "
+                "the next sync tries again: %s",
+                removed_external_id, len(children), e,
             )
+            self._relink_pending.add(removed_external_id)
+        self._sync_point_base["relinkPending"] = sorted(self._relink_pending)
 
     async def process_retry_urls(self, max_retries: int = 2, *, answered_only: bool = False) -> None:
         """Process retry URLs in batches.

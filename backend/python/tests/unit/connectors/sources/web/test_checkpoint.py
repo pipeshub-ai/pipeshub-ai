@@ -7,6 +7,7 @@ import pytest
 
 from app.connectors.sources.web.checkpoint import (
     MAX_AGE_MS,
+    MAX_URLS,
     CrawlCheckpoint,
     settings_fingerprint,
 )
@@ -52,3 +53,13 @@ def test_a_large_crawl_compresses_well() -> None:
     urls = [f"https://docs.example.test/section/{i // 100}/page-{i}.html" for i in range(20_000)]
     encoded = CrawlCheckpoint(fingerprint=FP, saved_at_ms=1, visited=urls, kept=urls, queue=[(u, 2) for u in urls]).encode()
     assert len(encoded) < 1_000_000
+
+
+@pytest.mark.parametrize("field", ["visited", "kept", "queue"])
+def test_a_crawl_over_the_cap_saves_nothing_to_resume(field: str) -> None:
+    # A cut-down checkpoint would let the resumed crawl finish as complete without the dropped pages.
+    over = [f"https://a.test/{i}" for i in range(MAX_URLS + 1)]
+    checkpoint = _checkpoint()
+    setattr(checkpoint, field, [(u, 1) for u in over] if field == "queue" else over)
+    assert checkpoint.encode() == ""
+    assert CrawlCheckpoint.decode(checkpoint.encode(), fingerprint=FP, now_ms=2_000) is None

@@ -223,7 +223,10 @@ export class MigrationService {
         { maxAttempts: 1 },
       ).run({ ignoreDoneFlag: true });
       if (result.scheduled > 0 || result.errored > 0) {
-        this.logger.warn('Repaired connector sync schedules that were missing', result);
+        this.logger.warn(
+          'Repaired connector sync schedules that were missing',
+          result,
+        );
       }
     } catch (error) {
       this.logger.error('Connector sync schedule repair failed', {

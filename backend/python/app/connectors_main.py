@@ -881,7 +881,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
-        from app.migrations.web_browser_identity_migration import run_web_browser_identity_backfill
+        from app.migrations.web_browser_identity_migration import (
+            run_web_browser_identity_backfill,
+        )
 
         backfill_result = await run_web_browser_identity_backfill(app_container, graph_provider, logger)
         if not backfill_result.get("skipped"):

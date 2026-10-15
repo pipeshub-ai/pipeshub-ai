@@ -115,8 +115,11 @@ async def test_a_run_whose_lease_was_lost_writes_no_outcome() -> None:
 
 async def test_the_connectors_summary_of_the_run_is_stored_with_its_outcome() -> None:
     gp = _graph_provider()
-    connector = _connector(_ok)
-    connector.last_sync_summary = {"pagesSaved": 12, "stopReason": "max_pages"}
+
+    async def summarised() -> None:
+        connector.last_sync_summary = {"pagesSaved": 12, "stopReason": "max_pages"}
+
+    connector = _connector(summarised)
 
     await run_sync_task(connector, "c1", gp, _LOG)
 
@@ -131,5 +134,25 @@ async def test_a_connector_without_a_summary_clears_the_last_one() -> None:
     connector.last_sync_summary = None
 
     await run_sync_task(connector, "c1", gp, _LOG)
+
+    assert _idle_write(gp)[Keys.LAST_SYNC_SUMMARY] is None
+
+
+async def test_a_run_stopped_before_it_starts_stores_no_summary_of_the_last_run() -> None:
+    gp = _graph_provider()
+    connector = _connector(_ok)
+    connector.last_sync_summary = {"pagesSaved": 12}  # a cached connector's last run
+    writing = asyncio.Event()
+
+    async def slow_start_write(*_: object, **__: object) -> None:
+        writing.set()
+        await asyncio.sleep(3600)
+
+    gp.batch_upsert_nodes = AsyncMock(side_effect=slow_start_write)
+    task = asyncio.create_task(run_sync_task(connector, "c1", gp, _LOG))
+    await writing.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
 
     assert _idle_write(gp)[Keys.LAST_SYNC_SUMMARY] is None

@@ -1,5 +1,6 @@
 """Check saved sync custom field values against the connector's schema (``add_sync_custom_field``)."""
 
+import re
 from typing import Any
 
 
@@ -29,7 +30,8 @@ def _whole_number(value: object) -> int | None:
         return value
     if isinstance(value, float) and value.is_integer():
         return int(value)
-    if isinstance(value, str) and value.strip().lstrip("-").isdigit():
+    # ASCII digits only: str.isdigit() also passes "²", which int() rejects.
+    if isinstance(value, str) and re.fullmatch(r"-?[0-9]+", value.strip()):
         return int(value.strip())
     return None
 
