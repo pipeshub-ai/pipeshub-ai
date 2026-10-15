@@ -82,15 +82,16 @@ class ExtractionSession:
 
     def window(self, start: int, count: int = _WINDOW, offset: int = 0) -> list[TextUnit]:
         """Blocks from index ``start``: at least ``count`` of them (at most
-        ``_WINDOW``), then more while the text shown stays within ``_WINDOW_CHARS``."""
+        ``_WINDOW``), then more while what ``show`` renders stays within ``_WINDOW_CHARS``."""
         count = max(1, min(count, _WINDOW))
         chosen: list[TextUnit] = []
         used = 0
         for unit in self.units:
             if unit.block_index < start:
                 continue
-            skip = min(max(offset, 0), len(unit.text)) if not chosen and unit.block_index == start else 0
-            size = min(len(unit.text) - skip, _MAX_UNIT_CHARS)
+            skip = offset if not chosen and unit.block_index == start else 0
+            # Rendered size, tag and newline included: one-character blocks are mostly tag.
+            size = len(_render_line(unit, skip)[0]) + 1
             if len(chosen) >= count and used + size > _WINDOW_CHARS:
                 break
             chosen.append(unit)
@@ -114,21 +115,28 @@ class ExtractionSession:
         ``_MAX_UNIT_CHARS`` of each, and record what the model has now seen."""
         lines = []
         for position, unit in enumerate(units):
-            text = unit.text
-            start = min(max(offset, 0), len(text)) if position == 0 else 0
-            end = min(len(text), start + _MAX_UNIT_CHARS)
+            start = min(max(offset, 0), len(unit.text)) if position == 0 else 0
+            line, end = _render_line(unit, start)
             if start <= self.shown.get(unit.block_index, 0):
                 self.shown[unit.block_index] = max(self.shown.get(unit.block_index, 0), end)
-            if self.shown.get(unit.block_index, 0) >= len(text):
+            if self.shown.get(unit.block_index, 0) >= len(unit.text):
                 self.read.add(unit.block_index)
-            head = "…" if start else ""
-            tail = f"…[continues: read_blocks(start={unit.block_index}, offset={end})]" if end < len(text) else ""
-            lines.append(f"[B{unit.block_index}] {head}{text[start:end]}{tail}")
+            lines.append(line)
         return self.spotlight_text("\n".join(lines))
 
     def spotlight_text(self, body: str) -> str:
         """``body`` inside this session's boundary, which marks it as document text."""
         return f"<{self.boundary}>\n{body}\n</{self.boundary}>"
+
+
+def _render_line(unit: TextUnit, start: int) -> tuple[str, int]:
+    """One block as ``show`` renders it from character ``start``, and where that part ends."""
+    text = unit.text
+    start = min(max(start, 0), len(text))
+    end = min(len(text), start + _MAX_UNIT_CHARS)
+    head = "…" if start else ""
+    tail = f"…[continues: read_blocks(start={unit.block_index}, offset={end})]" if end < len(text) else ""
+    return f"[B{unit.block_index}] {head}{text[start:end]}{tail}", end
 
 
 class _NerTool(Tool):

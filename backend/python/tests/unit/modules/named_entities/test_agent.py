@@ -369,6 +369,25 @@ async def test_a_window_stops_at_the_character_budget() -> None:
     assert [unit.block_index for unit in long_session.window(5, count=1)] == [5, 6, 7]
 
 
+async def test_a_window_of_tiny_blocks_renders_within_the_budget() -> None:
+    """Each block adds its tag and a newline; a window of one-character blocks
+    is mostly tags, and must still render within the window size."""
+    from app.modules.named_entities.strategies.agent.tools import (
+        _WINDOW_CHARS,
+        ExtractionSession,
+    )
+
+    units = [TextUnit(i, f"b{i}", "x") for i in range(3_000)]
+    session = ExtractionSession(
+        units, enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
+    )
+    first = session.window(0)
+    rendered = session.show(first)
+    body = rendered.split("\n", 1)[1].rsplit("\n", 1)[0]
+    assert len(body) <= _WINDOW_CHARS
+    assert len(first) > 5
+
+
 async def test_a_clean_submit_after_the_last_window_ends_the_run() -> None:
     """Two windows, two turns: the finish turn after the last submit would only say so."""
     both = {"entities": [
