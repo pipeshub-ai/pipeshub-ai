@@ -33,13 +33,13 @@ def _error_reasons(error: HttpError) -> set[str]:
 
 def google_error_message(error: Exception, action: str, wording: GoogleToolWording) -> str:
     """A failure the agent can relay; never the raw exception, which carries request URLs."""
-    reconnect = f"Authenticate {wording.toolset} again under Your actions, then try again."
+    reconnect = f"Reconnect {wording.toolset} under Your actions, then try again."
     if isinstance(error, RefreshError):
         return f"Could not {action}: the Google sign-in has expired or was revoked. {reconnect}"
     if not isinstance(error, HttpError):
         return (
             f"Could not {action} because of an unexpected error. Try again, and if it keeps "
-            f"failing, authenticate {wording.toolset} again under Your actions."
+            f"failing, reconnect {wording.toolset} under Your actions."
         )
     status = error.resp.status
     reasons = _error_reasons(error)
@@ -52,7 +52,7 @@ def google_error_message(error: Exception, action: str, wording: GoogleToolWordi
     if is_missing_scope_error(error):
         return (
             f"Could not {action}: the connected Google account has not given this app permission to do that. "
-            f"Authenticate {wording.toolset} again under Your actions and allow {wording.access}. If Google "
+            f"Reconnect {wording.toolset} under Your actions and allow {wording.access}. If Google "
             f"doesn't ask for it, an admin needs to add that permission to the {wording.toolset} action in "
             "Workspace > Actions."
         )
