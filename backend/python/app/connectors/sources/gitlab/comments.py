@@ -244,15 +244,18 @@ class CommentsHelper:
             # no diff for it (``too_large`` or ``collapsed``, both of which
             # empty the diff, or an empty diff), since it is then the only
             # view of the change. A binary file is not fetched: its diff is
-            # GitLab's "Binary files ... differ" notice. With no diff and no
-            # flag, a rename, a mode change or a new empty file changed no
-            # text, so fetching it would index the same file once more.
+            # GitLab's "Binary files ... differ" notice. With no diff and both
+            # flags false, a rename, a mode change or a new empty file changed
+            # no text, so fetching it would index the same file once more.
+            # GitLab before 18.4 sends neither flag and still empties a diff
+            # over its limit, so without them an empty diff is always fetched.
+            flags_known = "too_large" in file_change and "collapsed" in file_change
             # GitLab reports mode "0" for the missing side of a new or deleted
             # file, so only a file present on both sides can change mode.
             mode_changed = bool(
                 not is_new_file and not is_deleted_file and a_mode and b_mode and a_mode != b_mode
             )
-            pruned = is_truncated_diff or is_collapsed_diff
+            pruned = is_truncated_diff or is_collapsed_diff or not flags_known
             nothing_to_show = not pruned and (is_renamed_file or mode_changed or is_new_file)
             needs_content = not diff_content and not is_deleted_file and not nothing_to_show
 

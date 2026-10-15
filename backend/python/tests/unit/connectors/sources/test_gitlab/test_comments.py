@@ -494,6 +494,7 @@ def _change(path: str = "src/a.py", diff: str = "@@ -1 +1 @@\n-a\n+b", **flags: 
         "renamed_file": False,
         "generated_file": False,
         "too_large": False,
+        "collapsed": False,
         "a_mode": "100644",
         "b_mode": "100644",
         **flags,
@@ -662,6 +663,25 @@ class TestMrFileChangeContent:
 
         assert groups["__init__.py"] == "[New file]"
         assert "file" not in [name for name, _ in calls]
+
+    async def test_empty_diff_without_the_size_flags_is_fetched(self) -> None:
+        # GitLab before 18.4 sends neither ``too_large`` nor ``collapsed`` but
+        # still empties a diff over its limit, so an empty diff cannot be
+        # read as "no text changed", even for a new file or a rename.
+        changes = [_change("src/new.py", diff="", new_file=True, a_mode="0"),
+                   _change("src/b.py", diff="", renamed_file=True, old_path="src/a.py"),
+                   _change("run.sh", diff="", b_mode="100755")]
+        for change in changes:
+            del change["too_large"], change["collapsed"]
+        files = {"src/new.py": _file(b"n = 1"), "src/b.py": _file(b"b = 2"), "run.sh": _file(b"echo hi")}
+        _, helper, calls = self._run(changes, files=files)
+
+        groups = await self._groups(helper)
+
+        assert [kw["file_path"] for name, kw in calls if name == "file"] == ["src/new.py", "src/b.py", "run.sh"]
+        assert "n = 1" in groups["src/new.py"]
+        assert "Renamed from src/a.py." in groups["src/b.py"] and "b = 2" in groups["src/b.py"]
+        assert "echo hi" in groups["run.sh"]
 
     async def test_binary_file_without_a_diff_is_not_inlined(self) -> None:
         changes = [_change("logo.png", diff="", too_large=True), _change("blob.bin", diff="", too_large=True)]
