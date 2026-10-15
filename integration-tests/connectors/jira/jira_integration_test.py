@@ -61,6 +61,7 @@ from helper.assertions import ConnectorAssertions  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
+    async_poll_until,
     count_owned_records,
     wait_for_sync_completion,
 )
@@ -145,9 +146,13 @@ async def _sync_until(
     for attempt in range(1, _SYNC_ATTEMPTS + 1):
         _restart_sync(pipeshub_client, connector_id)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
-        if await condition():
+        # An edit leaves the record counts the wait settles on unchanged, and the next
+        # restart would cancel a sync still writing it, so give the graph time first.
+        try:
+            await async_poll_until(condition, timeout=60, interval=5, description=description)
             return
-        logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
+        except TimeoutError:
+            logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
     raise AssertionError(f"{description} not seen after {_SYNC_ATTEMPTS} incremental syncs")
 
 
