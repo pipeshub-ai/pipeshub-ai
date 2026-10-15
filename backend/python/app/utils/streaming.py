@@ -10,12 +10,11 @@ from typing import (
 )
 
 import aiohttp
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
@@ -24,23 +23,12 @@ from pydantic import BaseModel, ValidationError
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import map_source_status
 from app.exceptions.non_retryable import NonRetryableError
-from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
 from app.utils.aimodels import coerce_message_content_to_text
-from app.utils.chat_helpers import (
-    CitationRefMapper,
-    build_message_content_array,
-    count_tokens,
-    flattened_result_sort_key,
-    get_flattened_results,
-    record_to_message_content,
-)
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
-    normalize_citations_and_chunks_for_agent,
+    normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
 from app.utils.concurrency import indexing_llm_slot, note_indexing_llm_rate_limit
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
@@ -48,7 +36,6 @@ from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
 from app.utils.opik import get_llm_invoke_config, get_opik_tracer
-from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
@@ -113,6 +100,7 @@ async def _ainvoke_throttled(
         )
         # Sleep outside the slot so a backing-off call does not occupy the budget.
         await asyncio.sleep(delay)
+    return None
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -302,14 +290,14 @@ async def stream_with_eager_first_chunk(
 
     Chunks may be `str` as well as `bytes` — Starlette encodes either.
     """
-    aiter = source.__aiter__()
+    source_iter = source.__aiter__()
     try:
-        first = await aiter.__anext__()
+        first = await source_iter.__anext__()
     except StopAsyncIteration:
         await _aclose(source)
         async def _empty() -> AsyncGenerator[bytes | str, None]:
             return
-            yield b""  # noqa: unreachable — marks function as async generator
+            yield b""  # unreachable; makes this an async generator
         return _empty()
     except Exception:
         await _aclose(source)
@@ -321,7 +309,7 @@ async def stream_with_eager_first_chunk(
         # session. Starlette never closes `body_iterator` itself.
         try:
             yield first
-            async for chunk in aiter:
+            async for chunk in source_iter:
                 yield chunk
         finally:
             await _aclose(source)
@@ -427,7 +415,9 @@ def _stringify_content(content: str | list | dict | None) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
+async def aiter_llm_stream(
+    llm: BaseChatModel, messages: list[Any], parts: list[Any] | None = None,
+) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -779,8 +769,7 @@ def _strip_llm_authored_markers(answer: str) -> str:
     stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
     stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
     stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
-    stripped = _flatten_unusable_markdown_links(stripped)
-    return stripped
+    return _flatten_unusable_markdown_links(stripped)
 
 
 def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
@@ -903,10 +892,10 @@ def _initialize_answer_parser_regex() -> tuple[re.Pattern, re.Pattern, re.Patter
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
 async def call_aiter_llm_stream_simple(
-    llm,
-    messages,
-    final_results,
-    records=None,
+    llm: BaseChatModel,
+    messages: list[Any],
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]] | None = None,
     target_words_per_chunk: int = 1,
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
@@ -1302,13 +1291,11 @@ Respond only with valid JSON that matches the schema."""
                     f"Reflection attempt {attempt + 1} failed: "
                     f"{type(reflection_error).__name__}: {reflection_error}"
                 )
-                if attempt < max_retries - 1:
-                    # Update messages for next retry
-                    if reflection_content is not None:
-                        reflection_messages.append(AIMessage(content=reflection_content))
-                        reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
-                    # A call that failed outright left no reply to correct, and
-                    # the pending request already asks for valid JSON.
+                # A call that failed outright left no reply to correct, and
+                # the pending request already asks for valid JSON.
+                if attempt < max_retries - 1 and reflection_content is not None:
+                    reflection_messages.append(AIMessage(content=reflection_content))
+                    reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
 
         logger.error("All reflection attempts failed")
         return None

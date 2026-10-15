@@ -7,7 +7,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from pydantic import TypeAdapter
 
@@ -26,7 +26,13 @@ from app.telemetry.modules.named_entity_metrics import record_step_down
 from app.utils.concurrency import indexing_llm_slot
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+    from langchain_core.language_models.chat_models import BaseChatModel
+
     from app.modules.named_entities.text import TextUnit
+
+    _Reply = EntitySubmission | str | None
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +167,7 @@ def _render(pieces: list[Piece]) -> str:
 class SingleCallExtractionStrategy:
     name = "single_call"
 
-    def __init__(self, complete=None) -> None:
+    def __init__(self, complete: Callable[[str, str], Awaitable[_Reply]] | None = None) -> None:
         self._complete = complete
 
     async def extract(
@@ -210,7 +216,7 @@ class SingleCallExtractionStrategy:
             **coverage,
         )
 
-    async def _invoke(self, ctx: ExtractionContext, prompt: str) -> Any:
+    async def _invoke(self, ctx: ExtractionContext, prompt: str) -> _Reply:
         if self._complete is not None:
             return await self._complete(STATIC_PREFIX, prompt)
         llm = ctx.llm
@@ -258,7 +264,7 @@ def _messages(prompt: str) -> list:
     return [SystemMessage(content=STATIC_PREFIX + _NO_TOOLS), HumanMessage(content=prompt)]
 
 
-async def _strict(llm, prompt: str) -> EntitySubmission | None:
+async def _strict(llm: BaseChatModel, prompt: str) -> EntitySubmission | None:
     from app.utils.streaming import invoke_with_structured_output_and_reflection
 
     return await invoke_with_structured_output_and_reflection(
@@ -266,7 +272,7 @@ async def _strict(llm, prompt: str) -> EntitySubmission | None:
     )
 
 
-async def _function_call(llm, prompt: str) -> EntitySubmission | str:
+async def _function_call(llm: BaseChatModel, prompt: str) -> EntitySubmission | str:
     bound = llm.with_structured_output(EntitySubmission, method="function_calling")
     async with indexing_llm_slot():
         result = await asyncio.wait_for(bound.ainvoke(_messages(prompt)), timeout=_CALL_TIMEOUT)
@@ -277,7 +283,7 @@ async def _function_call(llm, prompt: str) -> EntitySubmission | str:
     raise ValueError("no structured result")
 
 
-async def _prompted_json(llm, prompt: str) -> str:
+async def _prompted_json(llm: BaseChatModel, prompt: str) -> str:
     async with indexing_llm_slot():
         response = await asyncio.wait_for(llm.ainvoke(_messages(prompt)), timeout=_CALL_TIMEOUT)
     content = getattr(response, "content", response)
