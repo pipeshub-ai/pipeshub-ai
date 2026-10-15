@@ -176,7 +176,9 @@ async def extract_entities(
         llm = transport = None
         provider = model = "indexing"
         try:
-            llm, transport, provider, model = await indexing_llm(config_service)
+            llm, transport, provider, model = await indexing_llm(
+                config_service, org_id=org_id, shard_key=body.record_name,
+            )
         except Exception as exc:
             # As in-process extraction does: without a model the deterministic
             # entities still count, and the record is PARTIAL, not failed.

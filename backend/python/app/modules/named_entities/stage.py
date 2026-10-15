@@ -85,7 +85,9 @@ async def extract_named_entities(
     llm = transport = None
     provider = model = "indexing"
     try:
-        llm, transport, provider, model = await indexing_llm(config_service)
+        llm, transport, provider, model = await indexing_llm(
+            config_service, org_id=record.org_id, shard_key=record.record_name or "",
+        )
     except Exception:
         logger.warning("Named-entity model unavailable; keeping deterministic spans")
     request = NamedEntityRequest(

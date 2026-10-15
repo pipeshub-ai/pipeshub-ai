@@ -189,9 +189,14 @@ def _single_outcome(model: StrategyResult) -> tuple[str, TerminationReason]:
     return "single_call", "single_call"
 
 
-async def indexing_llm(config_service):
-    """The indexing-role model, wrapped so each agent turn takes a slot."""
+PROMPT_FAMILY = "named-entities"
+
+
+async def indexing_llm(config_service, *, org_id: str = "", shard_key: str = ""):
+    """The indexing-role model, wrapped so each agent turn takes a slot. Every
+    turn of one record (``shard_key``) goes to the same prompt cache."""
     from app.agents.agent_loop.langchain_transport import LangChainTransport
+    from app.agents.agent_loop.prompt_cache import family_cache_strategy
     from app.modules.named_entities.strategies.agent.transport import SlottedTransport
     from app.utils.llm import get_llm_for_role
 
@@ -199,4 +204,8 @@ async def indexing_llm(config_service):
     provider = str((config or {}).get("provider") or "indexing")
     configuration = (config or {}).get("configuration") or {}
     model = str(configuration.get("model") or (config or {}).get("modelKey") or "indexing")
-    return llm, SlottedTransport(LangChainTransport(llm, model_name=model)), provider, model
+    cache = family_cache_strategy(
+        llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=shard_key, model_name=str(configuration.get("model") or ""),
+    )
+    transport = LangChainTransport(llm, model_name=model, cache_strategy=cache)
+    return llm, SlottedTransport(transport), provider, model
