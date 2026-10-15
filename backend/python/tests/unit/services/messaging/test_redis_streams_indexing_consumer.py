@@ -2517,7 +2517,9 @@ class TestDrainPending:
         call_kwargs = consumer.redis.xclaim.await_args.kwargs
         assert call_kwargs["message_ids"] == ["9-0"]
         assert call_kwargs["justid"] is True
-        assert call_kwargs["min_idle_time"] == 0
+        # Held to the claim window, so an entry a peer has just claimed is
+        # not taken back.
+        assert call_kwargs["min_idle_time"] == consumer.config.claim_min_idle_ms
 
 
 # ===================================================================

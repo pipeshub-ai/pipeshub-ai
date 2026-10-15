@@ -65,7 +65,11 @@ def _consumer(**fair: object) -> IndexingRedisStreamsConsumer:
         fair_scheduler_config=FairSchedulerConfig(**defaults),
     )
     consumer.redis = AsyncMock()
-    consumer.redis.xclaim = AsyncMock(return_value=[])
+
+    async def xclaim(*_args: object, message_ids: list[str], **_kwargs: object) -> list[str]:
+        return list(message_ids)
+
+    consumer.redis.xclaim = AsyncMock(side_effect=xclaim)
     consumer.redis.xinfo_consumers = AsyncMock(return_value=[])
     consumer._pending_message_is_owned = AsyncMock(return_value=True)
     consumer._should_dead_letter = AsyncMock(return_value=False)
@@ -467,3 +471,69 @@ class TestRefreshLeavesPeersEntriesAlone:
         assert claimed == ["1-0"]
         assert (LANES[1], "1-1") not in consumer._held_entries
         assert consumer._scheduler.pending_count == 1
+
+
+def _paged_pending(ids: list[str], owner: str):  # noqa: ANN202
+    """XPENDING ranges over ``ids`` (in stream order), honouring min, max,
+    an exclusive "(" cursor and count, as Redis does."""
+
+    def key(message_id: str) -> tuple[int, ...]:
+        return tuple(int(part) for part in message_id.split("-"))
+
+    async def pending_range(stream: str, group: str, min: str, max: str, count: int, consumername: str | None = None) -> list:  # noqa: A002
+        exclusive = min.startswith("(")
+        low = key(min.lstrip("("))
+        high = key(max)
+        hits = [
+            m for m in ids
+            if (key(m) > low if exclusive else key(m) >= low) and key(m) <= high
+        ]
+        return [{"message_id": m, "consumer": owner} for m in hits[:count]]
+
+    return pending_range
+
+
+class TestOwnershipCheckPagesThePendingList:
+    async def test_entries_far_apart_are_both_refreshed_and_kept(self) -> None:
+        """1-0 and 300-0 are buffered on one lane; 101 of this consumer's
+        other pending entries lie between them. The owner check reads past
+        them instead of taking 300-0 for lost."""
+        consumer = _consumer()
+        for message_id in ("1-0", "300-0"):
+            await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+                LANES[1], message_id, _fields("a", f"a-{message_id}")
+            )
+        between = [f"{n}-0" for n in range(2, 103)]
+        consumer.redis.xpending_range = AsyncMock(
+            side_effect=_paged_pending(["1-0", *between, "300-0"], consumer.consumer_name)
+        )
+
+        await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
+
+        claimed = {
+            message_id
+            for call in consumer.redis.xclaim.await_args_list
+            for message_id in call.kwargs["message_ids"]
+        }
+        assert {"1-0", "300-0"} <= claimed
+        assert {(LANES[1], "1-0"), (LANES[1], "300-0")} <= consumer._held_entries
+
+
+class TestRecoveredEntriesAreTakenOnlyIfStillOurs:
+    async def test_an_entry_a_peer_claimed_after_the_scan_is_not_enqueued(self) -> None:
+        """The scan found 1-0 unheld in this consumer's pending list; a peer
+        claimed it before the XCLAIM. XCLAIM, held to the claim window,
+        returns nothing, and the entry is left with the peer."""
+        consumer = _consumer()
+        TestUnparseableEntriesDoNotPinALane._stranded(
+            consumer, {LANES[1]: {"1-0": _fields("a", "a-1")}}
+        )
+        consumer.redis.xclaim = AsyncMock(return_value=[])
+
+        await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        assert consumer._held_entries == set()
+        assert consumer._scheduler.pending_count == 0
+        kwargs = consumer.redis.xclaim.await_args.kwargs
+        assert kwargs["min_idle_time"] == consumer.config.claim_min_idle_ms
+        assert kwargs["justid"] is True
