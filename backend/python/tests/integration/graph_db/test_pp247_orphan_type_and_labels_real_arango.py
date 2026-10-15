@@ -18,7 +18,10 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames, RECORD_TYPE_COLLECTION_MAPPING
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+)
 from app.models.blocks import SemanticMetadata
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import (
@@ -29,7 +32,10 @@ from app.modules.entity_resolution.models import (
 )
 from app.modules.entity_resolution.normalizer import normalize_name
 from app.modules.transformers.graphdb import GraphDBTransformer
-from app.services.graph_db.taxonomy import TAXONOMY_COLLECTIONS, TAXONOMY_EDGE_COLLECTIONS
+from app.services.graph_db.taxonomy import (
+    TAXONOMY_COLLECTIONS,
+    TAXONOMY_EDGE_COLLECTIONS,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_arango
 
@@ -646,7 +652,7 @@ async def test_a_record_committed_during_delete_is_removed(arango) -> None:
     real_execute = provider.http_client.execute_aql
     armed = True
 
-    async def execute_and_slip_in_a_record(query, bind_vars=None, txn_id=None, **kwargs):
+    async def execute_and_slip_in_a_record(query, bind_vars=None, txn_id=None, **kwargs) -> list:
         nonlocal armed
         if (
             armed and isinstance(query, str) and "FILTER r.connectorId" in query

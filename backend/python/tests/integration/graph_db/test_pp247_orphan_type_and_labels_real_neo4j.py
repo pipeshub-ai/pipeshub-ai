@@ -16,7 +16,10 @@ from typing import TYPE_CHECKING
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
-from app.config.constants.neo4j import collection_to_label, edge_collection_to_relationship
+from app.config.constants.neo4j import (
+    collection_to_label,
+    edge_collection_to_relationship,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import backend_unavailable, connect_neo4j
 
