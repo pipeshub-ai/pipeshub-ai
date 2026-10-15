@@ -1039,9 +1039,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     ", ".join(sorted(self.backpressure_coordinator.paused_services)),
                     self.backpressure_coordinator.pause_remaining(),
                 )
-            # Records still being indexed, and those buffered, stay un-ACKed
-            # through a pause of any length; keep them ours, or a peer's
-            # recovery claims them once the pause passes the claim window.
+            # Buffered entries stay un-ACKed through a pause of any length;
+            # keep their ownership confirmed, or the sweep would read a long
+            # pause as a failed refresh and release them.
             await self.__refresh_held_ownership()
             remaining = self.backpressure_coordinator.pause_remaining()
             await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining) if remaining > 0 else _DELAY_POLL_INTERVAL_SECONDS)
@@ -1073,8 +1073,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 topic, message_id, stable_message_id, parsed_message
             ):
                 return False
-            if owned and not await self.__reclaim_for_dispatch(topic, message_id):
-                return False
+            if owned:
+                await self.__reclaim_for_dispatch(topic, message_id)
             self.logger.info(
                 "Recovering %spending message: stream=%s, id=%s",
                 prefix,
@@ -1140,7 +1140,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         cursors: dict[str, str] = dict.fromkeys(topics, "0-0")
         active = list(topics)
         while active and self.running:
-            # A drain can run long; keep what this consumer holds its own.
+            # A drain can run long; keep held entries confirmed meanwhile.
             await self.__refresh_held_ownership()
             budget = self._dispatch_budget()
             if budget.blocked:
@@ -1334,6 +1334,35 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         return restore_buffered
 
+    async def __no_live_peers(self, topics: list[str]) -> bool:
+        """Whether this consumer is the only live consumer of its group.
+
+        A consumer counts as live while ``XINFO CONSUMERS`` shows it active
+        within ``claim_min_idle_ms`` -- a replica reading the stream touches
+        it every poll. One quiet for longer is a crashed or replaced process,
+        whose entries ``XAUTOCLAIM`` already treats as abandoned. With a live
+        peer, read-phase recovery does not run and the group behaves as it
+        always has: taking entries back and making room safely between live
+        replicas needs an atomic ownership check, which is a separate design.
+        """
+        for topic in topics:
+            try:
+                consumers = await self.redis.xinfo_consumers(  # type: ignore
+                    topic, self.config.group_id
+                )
+            except Exception as e:
+                self.logger.debug("Could not list consumers of %s: %s", topic, e)
+                return False
+            for consumer in consumers or []:
+                raw_name = consumer.get("name", consumer.get(b"name"))
+                name = raw_name.decode() if isinstance(raw_name, bytes) else str(raw_name)
+                if name == self.consumer_name:
+                    continue
+                idle_ms = int(consumer.get("idle", consumer.get(b"idle", 0)) or 0)
+                if idle_ms < self.config.claim_min_idle_ms:
+                    return False
+        return True
+
     async def __recover_while_reading(self) -> None:
         """Take back pending entries this consumer is not holding, a few at
         a time, on every read pass.
@@ -1354,9 +1383,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
           A full buffer of one connector can no longer lock the others out.
 
         An XPENDING summary per lane decides where to look; it is cheap and
-        changes nothing. Entries a live peer is holding are not taken: the
-        peer keeps their idle time below ``claim_min_idle_ms``, so
-        XAUTOCLAIM passes them over.
+        changes nothing. It runs only while this consumer is the only live
+        consumer of its group (``__no_live_peers``); with live replicas the
+        group behaves as before this existed.
         """
         scheduler = self._scheduler
         if scheduler is None or self.redis is None:
@@ -1368,6 +1397,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         topics = list(self.config.topics)
         if not topics:
+            return
+        if not await self.__no_live_peers(topics):
             return
         start = self._recovery_lane_offset % len(topics)
         self._recovery_lane_offset += 1
@@ -1566,30 +1597,25 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             cursor = f"({last_id}"
         return found
 
-    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> bool:
-        """Take back an entry found unheld in this consumer's pending list,
-        and report whether it is still this consumer's.
+    async def __reclaim_for_dispatch(self, topic: str, message_id: str) -> None:
+        """Reassert ownership of a PEL entry before dispatching it.
 
-        Phase 2 discovers entries with read-only XPENDING + XRANGE, so a
-        peer can claim one between the scan and this call. ``XCLAIM JUSTID``
-        resets idle time without counting a delivery, and its
-        ``min_idle_time`` is the same ``claim_min_idle_ms`` XAUTOCLAIM uses:
-        an entry a peer has just claimed is idle for about zero and is left
-        with it, so the two never both dispatch it. An entry this consumer
-        let go of only moments ago is not idle long enough either; it is
-        taken back once it is, like any other idle entry.
-
-        An empty reply, or an error, means the entry is not this consumer's
-        to dispatch.
+        Phase 2 discovers entries with read-only XPENDING + XRANGE, so the
+        entry's idle timer is never reset by the scan itself. A peer's
+        XAUTOCLAIM (min_idle_time = ``claim_min_idle_ms``) can therefore steal
+        the entry between the scan and the dispatch. ``XCLAIM JUSTID`` with
+        ``min_idle_time=0`` resets the idle timer without inflating
+        ``times_delivered``, closing the window for the next
+        ``claim_min_idle_ms`` milliseconds.
         """
         if self.redis is None:
-            return False
+            return
         try:
-            claimed = await self.redis.xclaim(  # type: ignore
+            await self.redis.xclaim(  # type: ignore
                 topic,
                 self.config.group_id,
                 self.consumer_name,
-                min_idle_time=self.config.claim_min_idle_ms,
+                min_idle_time=0,
                 message_ids=[message_id],
                 justid=True,
             )
@@ -1598,8 +1624,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 "Could not reclaim %s on %s before dispatch: %s",
                 message_id, topic, e,
             )
-            return False
-        return bool(claimed)
 
     async def __refresh_held_ownership(self) -> None:
         """Reset the idle timer on entries this consumer is holding.
@@ -1613,10 +1637,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         ``XCLAIM ... JUSTID`` is the documented way out: it resets idle time
         without incrementing the delivery counter, and re-claiming an entry
-        we already own is a no-op otherwise.
+        we already own is a no-op otherwise. A stream whose refresh succeeds
+        is recorded as confirmed, which is what ``__sweep_stale_buffered``
+        judges risk by.
         """
-        in_flight = self._in_flight_by_stream()
-        if self.redis is None or not (self._held_entries or in_flight):
+        if self.redis is None or not self._held_entries:
             return
         interval = self.__ownership_refresh_interval()
         now = time.monotonic()
@@ -1624,33 +1649,20 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             return
         self._last_ownership_refresh = now
 
-        # In-flight entries too: a record can take longer than the claim
-        # window to index, and it stays un-ACKed until it is done. Without a
-        # refresh a peer's recovery would claim it mid-flight, and the two
-        # replicas would pass it back and forth until the delivery backstop
-        # dead-lettered it while it was still being indexed.
         by_stream: dict[str, list[str]] = {}
         for stream, message_id in self._held_entries:
             by_stream.setdefault(stream, []).append(message_id)
-        for stream, message_ids in in_flight.items():
-            by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
             try:
-                owned, complete = await self.__owned_pending_ids(stream, message_ids)
-                lost = [m for m in message_ids if m not in owned]
-                if lost and complete:
-                    self.__forget_lost_entries(stream, lost)
-                if owned:
-                    await self.redis.xclaim(  # type: ignore
-                        stream,
-                        self.config.group_id,
-                        self.consumer_name,
-                        min_idle_time=self.__refresh_min_idle_ms(),
-                        message_ids=sorted(owned),
-                        justid=True,
-                    )
-                if complete:
-                    self._ownership_confirmed_at[stream] = now
+                await self.redis.xclaim(  # type: ignore
+                    stream,
+                    self.config.group_id,
+                    self.consumer_name,
+                    min_idle_time=0,
+                    message_ids=message_ids,
+                    justid=True,
+                )
+                self._ownership_confirmed_at[stream] = now
             except Exception as e:
                 self.logger.warning(
                     "Could not refresh ownership of %d held entry(ies) on %s: %s",
@@ -1658,94 +1670,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     stream,
                     e,
                 )
-
-    def __refresh_min_idle_ms(self) -> int:
-        """XCLAIM's ``min_idle_time`` for a refresh.
-
-        Only entries this consumer owned a moment ago are refreshed (see
-        ``__owned_pending_ids``), but a peer can claim one between that look
-        and the XCLAIM. Its claim leaves the entry idle for about zero, so a
-        floor here lets XCLAIM pass it over instead of taking it back. This
-        consumer's own entries have been idle for about a refresh interval
-        by then; one it has only just read or claimed is skipped this time
-        and refreshed on the next pass, long before the claim window.
-        """
-        return int(min(500.0, self.__ownership_refresh_interval() * 1000.0 / 2))
-
-    async def __owned_pending_ids(
-        self, stream: str, message_ids: list[str]
-    ) -> tuple[set[str], bool]:
-        """Which of ``message_ids`` are pending under this consumer right
-        now, and whether the scan covered all of them.
-
-        XPENDING with this consumer's name is read-only. It is paged over the
-        range the ids span, the way ``__has_unheld_pending`` pages, because
-        other entries of this consumer can sit between them: an id counts as
-        gone (acknowledged, or claimed by a peer) only once the scan has
-        moved past it. If the page limit stops the scan first, the second
-        value is False and nothing may be treated as gone.
-        """
-        def order(message_id: str) -> tuple[int, ...]:
-            try:
-                return tuple(int(part) for part in message_id.split("-"))
-            except ValueError:
-                return (0,)
-
-        wanted = set(message_ids)
-        ordered = sorted(wanted, key=order)
-        page_size = max(self.config.batch_size, _PENDING_SCAN_PAGE)
-        owned: set[str] = set()
-        cursor = ordered[0]
-        for _ in range(_PENDING_SCAN_MAX_PAGES):
-            details = await self.redis.xpending_range(  # type: ignore
-                stream,
-                self.config.group_id,
-                min=cursor,
-                max=ordered[-1],
-                count=page_size,
-                consumername=self.consumer_name,
-            )
-            if not isinstance(details, list) or not details:
-                return owned, True
-            last_id = None
-            for detail in details:
-                message_id = self._pending_detail_id(detail) if isinstance(detail, dict) else None
-                if not message_id:
-                    continue
-                last_id = message_id
-                if message_id in wanted:
-                    owned.add(message_id)
-            if len(details) < page_size or last_id is None:
-                return owned, True
-            cursor = f"({last_id}"
-        return owned, False
-
-    def __forget_lost_entries(self, stream: str, message_ids: list[str]) -> None:
-        """Drop buffered and parked entries this consumer no longer owns.
-
-        Acknowledged elsewhere, or claimed by a peer during a stall: either
-        way they are no longer this consumer's to dispatch. In-flight ones
-        are left to finish; the wrapper's ownership check already ran.
-        """
-        lost = {(stream, message_id) for message_id in message_ids}
-        held_lost = lost & self._held_entries
-        if not held_lost:
-            return
-        scheduler = self._scheduler
-        if scheduler is not None:
-            scheduler.purge(lambda item: (item[0], item[1]) in held_lost)
-        if self._deferred_entries:
-            self._deferred_entries = deque(
-                entry for entry in self._deferred_entries
-                if (entry[0], entry[1]) not in held_lost
-            )
-        self._held_entries -= held_lost
-        self.logger.info(
-            "Dropped %d held entry(ies) on %s that are no longer pending under "
-            "this consumer",
-            len(held_lost),
-            stream,
-        )
 
     def __buffer_has_room(self) -> bool:
         """Whether anything more can be held in memory.

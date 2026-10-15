@@ -360,15 +360,13 @@ class TestHeldEntriesAreNotReclaimed:
             "record-events", "0-0", _fields()
         )
         consumer._last_ownership_refresh = 0.0
-        consumer.redis.xpending_range = AsyncMock(return_value=[{"message_id": "0-0"}])
 
         await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
 
         _args, kwargs = consumer.redis.xclaim.call_args
         assert kwargs["justid"] is True
         assert kwargs["message_ids"] == ["0-0"]
-        # A floor, so an entry a peer has just claimed is passed over.
-        assert 0 < kwargs["min_idle_time"] <= 500
+        assert kwargs["min_idle_time"] == 0
 
     async def test_refresh_is_rate_limited(self, logger, config):
         consumer = self._consumer(logger, config)
