@@ -38589,9 +38589,9 @@ paths:
         a selected group), pass the parent paths via the
         <code>contextGroupPath</code> query parameter on that endpoint.<br><br>
         <b>Which connectors answer:</b><br>
-        Only connectors that sign in with an API token, a username and password, or an
-        admin-consent OAuth app (and have saved those settings), and OAUTH connectors
-        that have completed sign-in. Every other connector is refused with <code>400</code>:
+        Only connectors with auth type <code>API_TOKEN</code>, <code>USERNAME_PASSWORD</code>
+        or <code>OAUTH_ADMIN_CONSENT</code> (and saved settings), and <code>OAUTH</code>
+        connectors that have completed sign-in. Every other connector is refused with <code>400</code>:
         those with auth type <code>NONE</code> (for example RSS), <code>BASIC_AUTH</code>,
         <code>ACCESS_KEY</code>, <code>CONNECTION_STRING</code> or <code>CUSTOM</code>
         (<code>Unsupported authentication type: ...</code>), an OAUTH connector that has not
