@@ -16594,6 +16594,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "webUrl": f"{node_var}.webUrl",
             "sharingStatus": f"{node_var}.sharingStatus",
             "isInternal": f"coalesce({node_var}.isInternal, false)",
+            "isPlaceholder": f"coalesce({node_var}.isPlaceholder, false)",
             "hasChildren": "false",
             "userRole": "permission_role",
         }
@@ -17868,11 +17869,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             filters.get("connector_ids"),
             only_containers=bool(filters.get("only_containers")),
             record_group_ids=filters.get("record_group_ids"),
-            # Both listings below drop placeholders on the node itself, before
+            # Both listings below decide placeholders on the node itself, before
             # the sort map is built; repeating it on the map re-reads the flag.
             placeholders_prefiltered=True,
         )
         state = await self._kh_listing_state_ready()
+        lists_placeholders = self._kh_lists_placeholders(flatten=flatten, filters=filters)
+
+        def placeholder_test(v: str) -> str:
+            return "" if lists_placeholders else f"AND NOT {self._kh_placeholder(v, state=state)}"
         deleted, hides = self._kh_deleted, self._kh_hides
         hop = self._kh_v3_granted_hop("ca", "pa", state=state, grant_once=probe is not None and listing_by_probe)
         # NODE_RELATION also holds untyped edges and links not yet split off it.
@@ -18043,7 +18048,6 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
           // As the check: the walk up and the seed test are
           // org-blind, and opening a node discloses its name.
           AND start.orgId = $org_id
-          AND NOT coalesce(start.isPlaceholder, false)
         // Parents point at their children, so each step follows the edge
         // backwards. Starting at the node and walking up is one parent per
         // step. Starting at the app would search the whole tree for this node,
@@ -18298,7 +18302,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE (node:Record OR node:RecordGroup)
           AND node.id IS NOT NULL
           AND node.orgId = $org_id
-          AND NOT {self._kh_placeholder("node", state=state)}
+          {placeholder_test("node")}
         WITH {slim} AS node
         {tail}
         {enrich}
@@ -18346,7 +18350,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                          AND n <> start
                          AND n.orgId = $org_id
                          AND n.id IS NOT NULL
-                         AND NOT {self._kh_placeholder("n", state=state)}] AS rawNodes
+                         {placeholder_test("n")}] AS rawNodes
             UNWIND rawNodes + [null] AS node
             WITH app, CASE WHEN node IS NULL THEN true ELSE false END AS sentinel,
                  CASE WHEN node IS NULL THEN {{

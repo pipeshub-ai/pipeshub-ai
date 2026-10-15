@@ -6487,6 +6487,21 @@ class IGraphDBProvider(ABC):
         """
         raise NotImplementedError
 
+    # A filter on what a node is or holds: a placeholder stub has no content, so
+    # it never matches one.
+    _KH_CONTENT_FILTERS = (
+        "search_query", "node_types", "record_types", "indexing_status",
+        "created_at", "updated_at", "size", "origins",
+    )
+
+    @classmethod
+    def _kh_lists_placeholders(cls, *, flatten: bool, filters: dict[str, Any] | None) -> bool:
+        """Whether a listing shows placeholder stubs. Browsing does: a stub holds
+        the place of a parent the sync did not read (filtered out, or out of
+        scope), and dropping it would hide every readable node below it. A flatten
+        or a content filter returns results, and a stub is never one."""
+        return not flatten and not any((filters or {}).get(key) for key in cls._KH_CONTENT_FILTERS)
+
     def _kh_v3_empty_page(
         self,
         start_id: str | None,

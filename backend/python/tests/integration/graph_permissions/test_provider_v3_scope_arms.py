@@ -486,16 +486,19 @@ async def test_deleted_nodes_are_excluded_from_every_arm(
         assert node_id not in visible, node_id
 
 
-async def test_placeholders_never_surface(v3_graph, neo4j_provider) -> None:
-    """Each listing drops placeholders on the node, once: the global flatten, the
-    app's direct children, and browsing into a group."""
+async def test_placeholders_are_browsed_but_never_results(v3_graph, neo4j_provider) -> None:
+    """The global flatten and a filtered browse drop placeholders on the node;
+    browsing into a group lists them (``test_provider_v3_placeholders.py``)."""
     assert "v3-dec-placeholder" not in await _visible(neo4j_provider)
-    assert "v3-dec-placeholder" not in await _visible(neo4j_provider, flatten=False)
     browsed = await _visible(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
     )
-    assert "v3-dec-folder" in browsed
-    assert "v3-dec-placeholder" not in browsed
+    assert {"v3-dec-folder", "v3-dec-placeholder"} <= browsed
+    searched = await _visible(
+        neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
+        filters={"search_query": "placeholder"},
+    )
+    assert "v3-dec-placeholder" not in searched
 
 
 async def test_a_node_from_another_org_does_not_leak(
@@ -628,7 +631,7 @@ async def test_browsing_a_declaration_lists_what_the_flatten_lists(
         neo4j_provider, start_id="v3-dec", start_type="recordGroup", flatten=False,
     )
     assert {"v3-dec-nested", "v3-dec-restricted", "v3-dec-folder"} <= browsed
-    assert not browsed & {"v3-dec-placeholder", "v3-nested-deleted"}
+    assert "v3-nested-deleted" not in browsed
     assert await _visible(
         neo4j_provider, start_id="v3-dec-nested", start_type="recordGroup", flatten=False,
     ) == {"v3-dec-nested-granted"}

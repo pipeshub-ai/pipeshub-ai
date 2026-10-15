@@ -16442,6 +16442,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         *,
         only_containers: bool = False,
         record_group_ids: list[str] | None = None,
+        placeholders_prefiltered: bool = False,
     ) -> tuple[list[str], dict[str, Any]]:
         """Filter conditions and their bind parameters, as ``(conditions, params)``,
         matching ``_kh_v2_filters_cypher`` condition for condition.
@@ -16453,7 +16454,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         conditions: list[str] = []
         params: dict[str, Any] = {}
 
-        conditions.append("(node.isPlaceholder != true)")
+        if not placeholders_prefiltered:
+            conditions.append("(node.isPlaceholder != true)")
 
         if search_query:
             params["kh_search"] = search_query.lower()
@@ -16579,6 +16581,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "webUrl": f"{node_var}.webUrl",
             "sharingStatus": f"{node_var}.sharingStatus",
             "isInternal": f"NOT_NULL({node_var}.isInternal, false)",
+            "isPlaceholder": f"{node_var}.isPlaceholder == true",
             "hasChildren": "false",
             "userRole": "permission_role",
         }
@@ -17318,7 +17321,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             visible = _Visible(nodes=list(dict.fromkeys([*walked, *placed])))
         payload.update(await self._kh_v3_page_rows(
             visible, app_id, org_id, limit=limit, sort_field=sort_field, sort_dir=sort_dir,
-            after=after, direction=direction, filters=filters or {}, transaction=transaction,
+            after=after, direction=direction, filters=filters or {},
+            lists_placeholders=self._kh_lists_placeholders(flatten=flatten, filters=filters), transaction=transaction,
         ))
         self.logger.debug(
             "kh v3 page app=%s start=%s flatten=%s: %s visible (granted=%d)",
@@ -17434,6 +17438,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         after: dict[str, Any] | None,
         direction: str,
         filters: dict[str, Any],
+        lists_placeholders: bool,
         transaction: str | None,
     ) -> dict[str, Any]:
         """Filter the visible nodes, order them in the merge comparator's order,
@@ -17453,6 +17458,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             filters.get("connector_ids"),
             only_containers=bool(filters.get("only_containers")),
             record_group_ids=filters.get("record_group_ids"),
+            # Decided on the node in the slim query, as Neo4j's listing does.
+            placeholders_prefiltered=True,
         )
         slim: list[list[Any]] = []
         if visible.nodes or visible.member_groups or visible.collection:
@@ -17461,6 +17468,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     **params, "kh_nodes": visible.nodes, "kh_member_groups": visible.member_groups,
                     "kh_collection": visible.collection, "org_id": org_id, "app_id": app_id,
+                    "kh_placeholders": lists_placeholders,
                 },
                 txn_id=transaction,
                 batch_size=_KH_V3_BATCH,
@@ -17621,7 +17629,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER STARTS_WITH(kh_h, "{collection}/")
                     FOR kh_n IN {collection}
                         FILTER kh_n._id == kh_h AND kh_n.orgId == @org_id
-                            AND kh_n.isDeleted != true AND kh_n.isPlaceholder != true
+                            AND kh_n.isDeleted != true AND (@kh_placeholders OR kh_n.isPlaceholder != true)
                     LET node = {{
                         id: kh_n._key,
                         name: NOT_NULL(kh_n.name, kh_n.recordName, kh_n.groupName),
@@ -17634,7 +17642,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         origin: {_aql_hub_origin("kh_n")},
                         connector: NOT_NULL(kh_n.connector, kh_app.type),
                         connectorId: NOT_NULL(kh_n.connectorId, kh_app._key),
-                        isPlaceholder: false,
+                        isPlaceholder: kh_n.isPlaceholder == true,
                         hasChildren: false
                     }}{where}
                     LET sortKey = {key_expr}
@@ -17879,7 +17887,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FILTER kh_start != null AND kh_start.isDeleted != true AND kh_start.connectorId == @app_id
             // As the check: the walk up and the seed test are
             // org-blind, and opening a node discloses its name.
-            FILTER kh_start.orgId == @org_id AND kh_start.isPlaceholder != true
+            FILTER kh_start.orgId == @org_id
             // Every route that passes, not the first: the trail picks one by
             // via_parent_id or placement, and a route left out
             // here cannot be picked.

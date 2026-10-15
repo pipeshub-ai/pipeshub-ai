@@ -497,12 +497,15 @@ async def browsed(shapes, neo4j_provider, arango_provider) -> dict:
 
 @pytest.mark.parametrize("backend", BACKENDS)
 async def test_browse_opens_and_lists_only_what_the_check_admits(shapes, browsed, backend, request) -> None:
-    """Browse answers as the access check does: another org's node or a
-    placeholder never opens, an inaccessible start does not open, and below a
-    start the walk from the App does not reach, STRICT and RESTRICTED are
-    skipped. BROWSE_ONLY is the one accepted exception."""
+    """Browse answers as the access check does: another org's node never
+    opens, an inaccessible start does not open, and below a start the walk from
+    the App does not reach, STRICT and RESTRICTED are skipped. Two accepted
+    exceptions: BROWSE_ONLY, and placeholders, which browse lists and opens so
+    the records under one stay reachable while the check, which hands out
+    content, refuses them."""
     provider = request.getfixturevalue(f"{backend}_provider")
-    admitted = await _check(provider, _ids_of(shapes, *BROWSED_APPS))
+    placeholders = {n["id"] for n in shapes["nodes"] if n["props"].get("isPlaceholder")}
+    admitted = await _check(provider, _ids_of(shapes, *BROWSED_APPS)) | placeholders
     wrong = []
     for start, page in browsed[backend].items():
         if page.get("error"):
