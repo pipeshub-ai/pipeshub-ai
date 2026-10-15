@@ -111,6 +111,16 @@ describe('fork button on a message', () => {
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?projectId=proj-1&conversationId=fork-5'));
   });
 
+  it('does not bring back a project the server dropped from the fork', async () => {
+    h.forkConversation.mockResolvedValue({ id: 'fork-6', title: 'Fork of A', forkedFrom: {}, messageCount: 2 });
+    h.slot.projectId = 'proj-lost';
+    renderActions('msg-2');
+
+    fireEvent.click(screen.getByLabelText('chat.fork'));
+
+    await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?conversationId=fork-6'));
+  });
+
   it('tells the user and stays on the current chat when the fork fails', async () => {
     h.slot.projectId = 'proj-old';
     h.forkConversation.mockRejectedValue(new Error('nope'));

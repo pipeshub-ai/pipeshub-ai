@@ -64,7 +64,9 @@ export function expirePendingApprovals(
     return parts;
   }
   const settled = parts.map((part) => {
-    if (!part || typeof part !== 'object') {
+    // Persisted parts are Mixed: an element is not guaranteed to be an object.
+    const candidate: unknown = part;
+    if (typeof candidate !== 'object' || candidate === null) {
       return part;
     }
     const nested = expirePendingApprovals(part.parts);
@@ -125,7 +127,7 @@ export async function resolveForkProjectId(
       String(source.projectId),
       'viewer',
     );
-    return source.projectId as mongoose.Types.ObjectId;
+    return source.projectId;
   } catch (error) {
     if (error instanceof NotFoundError || error instanceof ForbiddenError) {
       return undefined;
@@ -149,7 +151,7 @@ export async function copySessionUpToMessage(
   fields: ForkSessionFields,
   mongoSession?: ClientSession | null,
 ): Promise<ForkChatSessionResult> {
-  const sourceId = source._id as mongoose.Types.ObjectId;
+  const sourceId = source._id;
   const sessionOption = mongoSession ? { session: mongoSession } : undefined;
   const forkPoint = await ChatSessionMessage.findOne(
     { _id: messageId, sessionId: sourceId },
@@ -175,7 +177,7 @@ export async function copySessionUpToMessage(
     isArchived: false,
     metadata: new Map<string, unknown>([
       ['forkedFromConversationId', String(sourceId)],
-      ['forkedFromMessageId', String(messageId)],
+      ['forkedFromMessageId', messageId],
     ]),
   };
 
@@ -192,7 +194,7 @@ export async function copySessionUpToMessage(
   const conversation = (await new ChatSession(sessionFields).save(
     sessionOption,
   )) as IChatSessionDocument;
-  const forkId = conversation._id as mongoose.Types.ObjectId;
+  const forkId = conversation._id;
 
   let messageCount = 0;
   try {
