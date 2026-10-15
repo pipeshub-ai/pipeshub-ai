@@ -241,10 +241,10 @@ A record passes through these, in order. Each is a separate limiter with its own
 | 2 | **Dispatch budget** (`dispatch_budget` / `pending_task_ceiling`) | `consumer_concurrency.py` | process | yes | tasks spawned but not yet admitted through an index gate. Total `max(64, min(256, 2 × (index_heavy limit + index_light limit)))` (or `MAX_PENDING_INDEXING_TASKS`); heavy additionally capped at `max(8, 2 × index_heavy limit)`; light bounded by the total only. Without a scheduler (fair scheduling off) every tier gets the total |
 | 3 | `index_gates_saturated` | `consumer_concurrency.py` | process | both-tiers-AND | stops reads/dispatch only when **both** index gates are full |
 | 4 | Index gate (`INDEX_HEAVY` / `INDEX_LIGHT`) | `resource_governor/gate.py` | process | yes | records in flight per tier (permit held download → vector upsert) |
-| 5 | Distributed `indexing` lease | Redis | cluster | only with `INDEXING_SPLIT_LEASE_POOLS` | fleet-wide in-flight cap at the resolved ceiling |
+| 5 | Distributed `indexing` lease | Redis | cluster | only with `INDEXING_SPLIT_LEASE_POOLS` | fleet-wide in-flight cap at the resolved ceiling for all worker processes together |
 | 6 | Per-record `record:<id>` lease + in-process claim | Redis / consumer | cluster | n/a | one delivery of a record at a time |
 | 7 | Parse gate (`HEAVY_PARSE` / `LIGHT_PARSE`) | `gate.py` | process | yes | concurrent parses; heavy also throttled by a `StartRateLimiter` (≥0.5 admits/s) |
-| 8 | Distributed `parsing` / `parsing:light` lease | Redis | cluster | yes | fleet-wide parse cap |
+| 8 | Distributed `parsing` / `parsing:light` lease | Redis | cluster | yes | fleet-wide parse cap, sized like layer 5 |
 | 9 | Parse admission wait | `parse_admission_wait` | record | n/a | how long a record may queue for a parse slot (`RECORD_PROCESSING_TIMEOUT`) with its own clock paused |
 | 10 | `BackpressureCoordinator` | `messaging/backpressure.py` | process | no | pauses all reads/dispatch while any downstream client saw `429 + Retry-After` |
 | 11 | `CircuitBreaker` per HTTP client | `services/base_client.py` | process | no | fails fast for 30s after 5 consecutive failures to parsing/extraction/docling |
@@ -255,6 +255,8 @@ A record passes through these, in order. Each is a separate limiter with its own
 ### 4.3 ResourceGovernor
 
 One instance per process (`indexing_main.py` lifespan). It resolves **ceilings** once at startup (`policy.resolve_ceilings`) and adapts **limits** between a floor and that ceiling every 15s (`policy.next_limits`). Gates admit against the current limit; leases are sized from the ceiling.
+
+**Worker processes.** With `INDEXING_UVICORN_WORKERS=N` there are N processes in one container, each with its own governor and consumer. The governor keeps two sets of ceilings: `fleet_ceilings`, the budget below for all N together, and `ceilings`, one worker's share of it (`policy.split_ceilings`: each figure divided by N, floored at 1, a collapsed light tier kept at 0). Each worker's gates and limits use its share. The Redis leases (layers 5 and 8 in section 4.2) are taken by every worker, so they are sized from `fleet_ceilings`; sized from one worker's share, N workers would queue on one worker's worth of leases. When the share floors push the workers' sum over the budget (more workers than heavy-parse slots), the lease is what holds them to it. The memory caps below give each worker free memory divided by N, because every worker samples the same cgroup; the workers together are held to what one process would be, apart from each worker's own floor (one heavy parse, and the index pressure floor). `GET /health` shows both under `resource_governor` (`fleet_ceilings`, `ceilings`).
 
 Ceiling derivation with defaults (`MAX_CONCURRENT_*` unset), `cpus` = cgroup quota, embedding reservation on when a local CPU embedding model is configured:
 
@@ -280,7 +282,7 @@ Worked examples (what most self-hosted installs run):
 | 8 CPU, local embeddings | 6 | 36 | 12 | 36 | 2 / 18 / 6 / 18 | **64** |
 | 16 CPU, local embeddings | 14 | 68 | 28 | 68 | 2 / 34 / 14 / 34 | 96 |
 
-Note the heavy parse pool always **starts at 2** regardless of host size, and only grows one step per 15s sample while memory pressure is under `GOVERNOR_MEM_SOFT` (70% raw) and the pool shows demand. `heavy_memory_cap = free_GiB / 1.5` can hold it at 1 on a crowded all-in-one container.
+Note the heavy parse pool always **starts at 2** regardless of host size, and only grows one step per 15s sample while memory pressure is under `GOVERNOR_MEM_SOFT` (70% raw) and the pool shows demand. `heavy_memory_cap = free_GiB / (1.5 × workers)` can hold it at 1 on a crowded all-in-one container.
 
 Control law per pool (`policy._next_pool_limit`), every sample:
 
