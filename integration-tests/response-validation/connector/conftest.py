@@ -300,10 +300,14 @@ async def lock_connector(graph_provider: Any) -> AsyncIterator[Callable[[str], A
     try:
         yield lock
     finally:
+        # One failed unlock must not leave the rest locked for the module's later tests.
         for connector_id in locked:
-            await graph_provider.update_node(
-                connector_id, CollectionNames.APPS.value, {"status": "IDLE", "isLocked": False}
-            )
+            try:
+                await graph_provider.update_node(
+                    connector_id, CollectionNames.APPS.value, {"status": "IDLE", "isLocked": False}
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("Unlocking a test connector failed: %s", type(e).__name__)
 
 
 @pytest.fixture(scope="module")

@@ -412,14 +412,17 @@ class TestCreateAndDeleteOAuthApp:
         assert_request_body_strictly_matches_openapi_operation(body, _CREATE_OAUTH_CONFIG)
 
         resp = oauth_configs_api.create_config("Jira", body)
-        config_id = (resp.json().get("oauthConfig") or {}).get("_id")
+        config_id = None
         try:
             assert resp.status_code == 200, resp.text
             created = resp.json()
+            oauth_config = created.get("oauthConfig")
+            assert isinstance(oauth_config, dict), created
+            config_id = oauth_config.get("_id")
             assert created["success"] is True and created["message"], created
-            assert created["oauthConfig"]["oauthInstanceName"] == body["oauthInstanceName"]
-            assert created["oauthConfig"]["connectorType"] == "Jira"
-            assert "config" not in created["oauthConfig"], "the create response echoed credentials"
+            assert oauth_config["oauthInstanceName"] == body["oauthInstanceName"]
+            assert oauth_config["connectorType"] == "Jira"
+            assert "config" not in oauth_config, "the create response echoed credentials"
             assert_response_strictly_matches_openapi_operation(created, _CREATE_OAUTH_CONFIG)
 
             saved = oauth_configs_api.get_config("Jira", config_id)
@@ -606,7 +609,8 @@ class TestOAuthRegistry:
             if not body["pagination"]["hasNext"]:
                 break
             page += 1
-        assert len(seen) == body["pagination"]["totalCount"] > 10, "the registry did not paginate"
+        assert page > 1, "the registry did not paginate"
+        assert len(seen) == body["pagination"]["totalCount"]
         assert len({c["type"] for c in seen}) == len(seen)
         assert {"Jira", "Confluence"} <= {c["type"] for c in seen}
         assert all(c["authType"] == "OAUTH" for c in seen)
@@ -614,13 +618,14 @@ class TestOAuthRegistry:
     def test_registry_search_filters_the_entries(
         self, oauth_configs_api: ConnectorOAuthConfigsClient
     ) -> None:
+        everything = oauth_configs_api.get_registry().json()["pagination"]["totalCount"]
         resp = oauth_configs_api.get_registry(search="jira")
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert_response_strictly_matches_openapi_operation(body, _OAUTH_REGISTRY)
         assert body["pagination"]["search"] == "jira"
         assert "Jira" in {c["type"] for c in body["connectors"]}
-        assert body["pagination"]["totalCount"] < 32
+        assert body["pagination"]["totalCount"] < everything
 
         nothing = oauth_configs_api.get_registry(search="connector-spec-it-no-such-type").json()
         assert nothing["connectors"] == []
