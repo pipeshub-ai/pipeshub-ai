@@ -33492,7 +33492,7 @@ paths:
         (`filters.kb`) and file uploads go through the normal
         `POST /knowledgeBase/{kbId}/upload` SSE pipeline afterward.
 
-        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, `kb:read` to read it back when the project already has one, and `kb:delete` to delete the losing request's knowledge base after a race. These knowledge base calls carry the caller's token.
+        **OAuth scopes:** `project:write`, plus `kb:write` to create the knowledge base and grant the project's members on it, `kb:read` to check that a linked knowledge base still exists (without it the check is refused, the call still answers `200` with the stored id, and a deleted knowledge base is not recreated), and `kb:delete` to delete the losing request's knowledge base after a race. These knowledge base calls carry the caller's token.
       operationId: ensureProjectKnowledgeBase
       x-pipeshub-sdk: true
       security:
@@ -33521,7 +33521,7 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: "Caller can see the project but has only viewer access; this action needs editor. Also when the OAuth token lacks `kb:write` (create the knowledge base, grant members) or `kb:read` (read an existing one)."
+          description: "Caller can see the project but has only viewer access; this action needs editor. Also when the OAuth token lacks `kb:write`, needed to create the knowledge base and grant the members on it."
         '404':
           description: Project not found or not visible to the caller.
 
