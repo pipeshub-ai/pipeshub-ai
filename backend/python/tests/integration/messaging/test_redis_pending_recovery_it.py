@@ -313,3 +313,43 @@ class TestTwoLiveReplicas:
         # both, and the two pass it back and forth toward the backstop.
         assert len(records) == len(set(records)), "a record was indexed twice"
         assert max(deliveries, default=1) < messaging_env.redis_max_deliveries
+
+    async def test_a_pause_longer_than_the_claim_window_keeps_records_owned(
+        self, redis_available, redis_client, base_stream, unique_suffix
+    ) -> None:
+        """A downstream 429 pauses one replica's consume loop for longer than
+        ``claim_min_idle_ms`` while its record is still being indexed. It
+        keeps refreshing through the pause, so the other replica does not
+        claim the record and index it a second time."""
+        from app.services.messaging.backpressure import BackpressureCoordinator
+
+        host, port = redis_available
+        group = f"it-pause-{unique_suffix}"
+        connector = _connector_on_lane(0, "paused")
+        await _add(redis_client, base_stream, connector, f"{connector}-0")
+
+        done: list[tuple[str, str]] = []
+        coordinator = BackpressureCoordinator()
+        paused = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-paused"),
+            _config(host, port, base_stream, group, claim_min_idle_ms=3_000),
+            fair_scheduler_config=_fair(),
+            backpressure_coordinator=coordinator,
+        )
+        peer = IndexingRedisStreamsConsumer(
+            logging.getLogger("it-peer"),
+            _config(host, port, base_stream, group, claim_min_idle_ms=3_000),
+            fair_scheduler_config=_fair(),
+        )
+        await paused.start(_handler(done, seconds=12.0))
+        try:
+            await asyncio.sleep(1.5)  # read and dispatched by the first replica
+            coordinator.signal("embedding", 9.0)
+            await peer.start(_handler(done, seconds=12.0))
+            await _until(lambda: len(done) >= 1, "the record", timeout=40.0)
+            await asyncio.sleep(4.0)
+        finally:
+            await paused.stop()
+            await peer.stop()
+
+        assert [r for _, r in done] == [f"{connector}-0"], "indexed more than once"

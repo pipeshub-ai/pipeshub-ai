@@ -207,10 +207,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self._backpressure_active = False
         self._consecutive_empty_polls = 0
         self._idle_threshold = 3  # Drain pending after N consecutive empty polls
-        self._in_flight_message_ids: set[str] = set()
-        # Which stream each in-flight entry came from, so recovery can tell
-        # how much of a lane's pending list this consumer is working on.
-        self._in_flight_streams: dict[str, str] = {}
+        # (stream, entry id): Redis entry ids are only unique within one
+        # stream, and lane streams are written in the same milliseconds, so
+        # an id alone can name entries of two lanes. The stream is "" when a
+        # caller does not know it.
+        self._in_flight_message_ids: set[tuple[str, str]] = set()
         # Keyed by recordId, not by entry id. Two entries can carry the same
         # record -- the original and one the stranded sweep re-published -- and
         # the message-id set above cannot see that they are the same work.
@@ -652,7 +653,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self.gate_waiters.reset()
         with self._in_flight_lock:
             self._in_flight_message_ids.clear()
-            self._in_flight_streams.clear()
             self._in_flight_record_ids.clear()
 
     def _wait_for_active_futures(self) -> None:
@@ -733,27 +733,33 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             lambda pool: concurrency.slot_pool_limit(self, pool),
         )
 
-    def _is_in_flight(self, message_id: str) -> bool:
+    def _is_in_flight(self, message_id: str, stream_name: str | None = None) -> bool:
+        """Whether this entry is being processed. Without a stream, whether
+        an entry with this id is, on any stream."""
         with self._in_flight_lock:
-            return message_id in self._in_flight_message_ids
+            if stream_name is not None:
+                return (stream_name, message_id) in self._in_flight_message_ids
+            return any(mid == message_id for _s, mid in self._in_flight_message_ids)
 
     def _mark_in_flight(self, message_id: str, stream_name: str | None = None) -> None:
         with self._in_flight_lock:
-            self._in_flight_message_ids.add(message_id)
-            if stream_name is not None:
-                self._in_flight_streams[message_id] = stream_name
+            self._in_flight_message_ids.add((stream_name or "", message_id))
 
-    def _unmark_in_flight(self, message_id: str) -> None:
+    def _unmark_in_flight(self, message_id: str, stream_name: str | None = None) -> None:
         with self._in_flight_lock:
-            self._in_flight_message_ids.discard(message_id)
-            self._in_flight_streams.pop(message_id, None)
+            self._in_flight_message_ids.discard((stream_name or "", message_id))
+
+    def _in_flight_by_stream(self) -> dict[str, list[str]]:
+        """In-flight entry ids per stream (entries with no known stream left out)."""
+        with self._in_flight_lock:
+            by_stream: dict[str, list[str]] = {}
+            for stream, message_id in self._in_flight_message_ids:
+                if stream:
+                    by_stream.setdefault(stream, []).append(message_id)
+            return by_stream
 
     def _in_flight_count_by_stream(self) -> dict[str, int]:
-        with self._in_flight_lock:
-            counts: dict[str, int] = {}
-            for stream in self._in_flight_streams.values():
-                counts[stream] = counts.get(stream, 0) + 1
-            return counts
+        return {stream: len(ids) for stream, ids in self._in_flight_by_stream().items()}
 
     def _claim_record(self, record_id: str) -> bool:
         """Take this process's claim on a record, or report it already taken.
@@ -1032,6 +1038,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     ", ".join(sorted(self.backpressure_coordinator.paused_services)),
                     self.backpressure_coordinator.pause_remaining(),
                 )
+            # Records still being indexed, and those buffered, stay un-ACKed
+            # through a pause of any length; keep them ours, or a peer's
+            # recovery claims them once the pause passes the claim window.
+            await self.__refresh_held_ownership()
             remaining = self.backpressure_coordinator.pause_remaining()
             await asyncio.sleep(min(_DELAY_POLL_INTERVAL_SECONDS, remaining) if remaining > 0 else _DELAY_POLL_INTERVAL_SECONDS)
         if self._downstream_backpressure_active:
@@ -1053,7 +1063,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         Returns whether the entry was handed on (buffered or dispatched).
         """
         prefix = "own " if owned else ""
-        if self._is_in_flight(message_id) or self.__already_held(message_id):
+        if self.__already_held(message_id, topic):
             return False
         try:
             parsed_message = await self._parse_message(message_id, fields)
@@ -1076,7 +1086,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             await self.__enqueue_parsed(topic, message_id, fields, parsed_message)
             if parsed_message is None:
                 return True
-            return self._is_in_flight(message_id) or self.__already_held(message_id)
+            return self.__already_held(message_id, topic)
         except Exception as e:
             self.logger.error(
                 "Error recovering %spending message %s: %s", prefix, message_id, e
@@ -1129,6 +1139,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         cursors: dict[str, str] = dict.fromkeys(topics, "0-0")
         active = list(topics)
         while active and self.running:
+            # A drain can run long; keep what this consumer holds its own.
+            await self.__refresh_held_ownership()
             budget = self._dispatch_budget()
             if budget.blocked:
                 await asyncio.sleep(0.5)
@@ -1177,6 +1189,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # when the next round looks again is not taken twice.
         tried: set[str] = set()
         while lanes and self.running:
+            await self.__refresh_held_ownership()
             budget = self._dispatch_budget()
             if budget.blocked:
                 break
@@ -1426,7 +1439,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 recovered = await self.__recover_entry(topic, message_id, fields, owned=owned)
                 if recovered:
                     taken += 1
-                held = self.__already_held(message_id) or self._is_in_flight(message_id)
+                held = self.__already_held(message_id, topic)
                 if undo is not None and not held:
                     # The room went unused (the entry was acknowledged, or
                     # could not be taken): give the donor its place back.
@@ -1488,7 +1501,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not message_id:
                     continue
                 last_id = message_id
-                if not self.__already_held(message_id):
+                if not self.__already_held(message_id, topic):
                     return True
             if len(details) < page_size:
                 return False
@@ -1538,7 +1551,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 if not message_id:
                     continue
                 last_id = message_id
-                if self.__already_held(message_id):
+                if self.__already_held(message_id, topic):
                     continue
                 entries = await self.redis.xrange(  # type: ignore
                     topic, min=message_id, max=message_id, count=1
@@ -1596,8 +1609,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         without incrementing the delivery counter, and re-claiming an entry
         we already own is a no-op otherwise.
         """
-        with self._in_flight_lock:
-            in_flight = dict(self._in_flight_streams)
+        in_flight = self._in_flight_by_stream()
         if self.redis is None or not (self._held_entries or in_flight):
             return
         interval = self.__ownership_refresh_interval()
@@ -1612,8 +1624,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # replicas would pass it back and forth until the delivery backstop
         # dead-lettered it while it was still being indexed.
         by_stream: dict[str, list[str]] = {}
-        for message_id, stream in (*self._held_entries.items(), *in_flight.items()):
+        for message_id, stream in self._held_entries.items():
             by_stream.setdefault(stream, []).append(message_id)
+        for stream, message_ids in in_flight.items():
+            by_stream.setdefault(stream, []).extend(message_ids)
         for stream, message_ids in by_stream.items():
             try:
                 await self.redis.xclaim(  # type: ignore
@@ -1667,7 +1681,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             budget = min(budget, max(0, buffer_room))
         return min(10, budget)
 
-    def __already_held(self, message_id: str) -> bool:
+    def __already_held(self, message_id: str, stream_name: str | None = None) -> bool:
         """Whether this consumer is already responsible for an entry.
 
         Buffered and parked entries stay un-ACKed in the pending list on
@@ -1677,7 +1691,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         entries that are merely waiting their turn dead-letters healthy
         records, and duplicates the work besides.
         """
-        return message_id in self._held_entries or self._is_in_flight(message_id)
+        if stream_name is None:
+            return message_id in self._held_entries or self._is_in_flight(message_id)
+        return (
+            self._held_entries.get(message_id) == stream_name
+            or self._is_in_flight(message_id, stream_name)
+        )
 
     def __publish_scheduler_metrics(self) -> None:
         """Gauges, refreshed once per consume iteration. Never allowed to
@@ -2224,7 +2243,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # A tier at its ceiling is passed over, not waited on: DRR skips
             # the leaf without charging it and moves to the entity's other
             # tier or the next entity.
-            return not self._is_in_flight(message_id) and budget.allows(
+            return not self._is_in_flight(message_id, _stream_name) and budget.allows(
                 concurrency.dispatch_tier(self, parsed)
             )
 
@@ -2463,7 +2482,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         except BaseException:
             if processing_coro is not None:
                 processing_coro.close()
-            self._unmark_in_flight(message_id)
+            self._unmark_in_flight(message_id, stream_name)
             if slot_share is not None:
                 slot_share.finished(message_id)
             if waiter_token is not None:
@@ -2473,7 +2492,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             self._active_futures.add(future)
 
         def on_future_done(f: Future[bool]) -> None:
-            self._unmark_in_flight(message_id)
+            self._unmark_in_flight(message_id, stream_name)
             if slot_share is not None:
                 slot_share.finished(message_id)
             waiter_token.release()

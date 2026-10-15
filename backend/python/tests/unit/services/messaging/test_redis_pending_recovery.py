@@ -320,3 +320,54 @@ class TestUnparseableEntriesDoNotPinALane:
         assert all(
             consumer._IndexingRedisStreamsConsumer__already_held(m) for m in ("2-0", "2-1")
         )
+
+
+class TestEntryIdsAreOnlyUniqueWithinAStream:
+    async def test_an_entry_in_flight_on_one_lane_does_not_hide_the_same_id_on_another(
+        self,
+    ) -> None:
+        """Lane streams are written in the same milliseconds, so two lanes
+        can each have an entry 5-0. One in flight does not make the other
+        look taken."""
+        consumer = _consumer()
+        consumer._mark_in_flight("5-0", LANES[0])
+        TestUnparseableEntriesDoNotPinALane._stranded(
+            consumer, {LANES[1]: {"5-0": _fields("a", "a-5")}}
+        )
+
+        await consumer._IndexingRedisStreamsConsumer__recover_while_reading()
+
+        assert consumer._held_entries.get("5-0") == LANES[1]
+
+    async def test_both_streams_are_refreshed_for_the_same_id(self) -> None:
+        consumer = _consumer()
+        consumer._mark_in_flight("5-0", LANES[0])
+        consumer._mark_in_flight("5-0", LANES[1])
+
+        await consumer._IndexingRedisStreamsConsumer__refresh_held_ownership()
+
+        refreshed = {
+            (call.args[0], message_id)
+            for call in consumer.redis.xclaim.await_args_list
+            for message_id in call.kwargs["message_ids"]
+        }
+        assert {(LANES[0], "5-0"), (LANES[1], "5-0")} <= refreshed
+
+
+class TestOwnershipIsKeptThroughWaits:
+    async def test_a_downstream_pause_keeps_refreshing(self) -> None:
+        from app.services.messaging.backpressure import BackpressureCoordinator
+
+        consumer = _consumer()
+        consumer.backpressure_coordinator = BackpressureCoordinator()
+        consumer.backpressure_coordinator.signal("embedding", 0.3)
+        consumer._mark_in_flight("1-7", LANES[1])
+
+        await consumer._wait_out_backpressure()
+
+        refreshed = {
+            message_id
+            for call in consumer.redis.xclaim.await_args_list
+            for message_id in call.kwargs["message_ids"]
+        }
+        assert "1-7" in refreshed
