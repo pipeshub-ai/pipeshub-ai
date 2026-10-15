@@ -335,6 +335,7 @@ class ResourceGovernor:
                 now=now,
                 interval=self._sample_interval,
                 feedback=feedback,
+                worker_count=self._worker_count,
             )
             self._state = new_state
 

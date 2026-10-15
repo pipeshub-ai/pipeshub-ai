@@ -105,6 +105,31 @@ class TestExplicitIndexCapReporting:
 
 
 @pytest.mark.asyncio
+class TestWorkerMemoryShare:
+    async def test_each_worker_samples_against_its_share_of_free_memory(self) -> None:
+        """7 GiB free holds four heavy parses. A lone process may keep its
+        warm-start two; each of eight workers gets an eighth of it, which is
+        less than one parse, and drops to the floor of one."""
+        def governor(workers: int) -> ResourceGovernor:
+            return ResourceGovernor(
+                logger=logging.getLogger("test.worker_share"),
+                probe=ScriptedProbe([
+                    _snap(mem_pressure_working_set_gb=13.0, mem_limit_gb=20.0, cpu_quota=32.0)
+                ]),
+                sample_interval=1.0,
+                clock=ManualClock(),
+                worker_count=workers,
+            )
+
+        alone, one_of_eight = governor(1), governor(8)
+        assert alone.limit(Pool.HEAVY_PARSE) == one_of_eight.limit(Pool.HEAVY_PARSE) == 2
+        await alone._sample_once()
+        await one_of_eight._sample_once()
+        assert alone.limit(Pool.HEAVY_PARSE) == 2
+        assert one_of_eight.limit(Pool.HEAVY_PARSE) == 1
+
+
+@pytest.mark.asyncio
 class TestResourceGovernorController:
     async def test_shrink_then_ramp_with_hysteresis(self) -> None:
         """Drives ``_sample_once`` directly (rather than the background
