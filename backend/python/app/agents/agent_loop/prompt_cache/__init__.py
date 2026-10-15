@@ -16,6 +16,7 @@ from app.agents.agent_loop.prompt_cache.strategies import (
     CacheStrategy,
     NoCacheStrategy,
     OpenAICacheStrategy,
+    without_cache_markers,
 )
 
 __all__ = [
@@ -29,4 +30,5 @@ __all__ = [
     "cache_target",
     "family_cache_strategy",
     "forget_cache_params",
+    "without_cache_markers",
 ]

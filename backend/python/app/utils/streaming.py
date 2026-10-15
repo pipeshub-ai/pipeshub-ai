@@ -23,7 +23,11 @@ from pydantic import BaseModel, ValidationError
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_prompt_cache_param_conflict,
 )
-from app.agents.agent_loop.prompt_cache import forget_cache_params
+from app.agents.agent_loop.prompt_cache import (
+    CacheStrategy,
+    forget_cache_params,
+    without_cache_markers,
+)
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import map_source_status
 from app.exceptions.non_retryable import NonRetryableError
@@ -1148,7 +1152,7 @@ async def invoke_with_structured_output_and_reflection(
     enable_opik_tracing: bool = True,
     call_timeout: float | None = None,
     raise_call_errors: bool = False,
-    cache_kwargs: Mapping[str, Any] | None = None,
+    prompt_cache: CacheStrategy | None = None,
     on_cache_rejected: Callable[[], None] | None = None,
 ) -> SchemaT | None:
     """
@@ -1168,11 +1172,12 @@ async def invoke_with_structured_output_and_reflection(
             and the last reflection call's timeout, instead of returning None,
             so a caller can tell a starved call from a reply that did not fit
             the schema.
-        cache_kwargs: A prompt cache's request parameters, the kwargs of
-            ``CacheStrategy.finalize``, sent with every call. If the provider
-            refuses one, that call (the first or a reflection) is resent
-            without any of them, and so is every later call: the cache is off
-            for this model, as ``LangChainTransport`` drops its whole strategy.
+        prompt_cache: The cache strategy ``messages`` were built with (its
+            ``system`` block); its ``finalize`` is applied here. If the provider
+            refuses a cache parameter or marker, that call (the first or a
+            reflection) is resent without any of them, in the kwargs or on the
+            messages, and so is every later call: the cache is off for this
+            model, as ``LangChainTransport`` falls back to no strategy.
         on_cache_rejected: Called once when the provider refuses a cache
             parameter. Pass the callback that records the refusal under the
             identity the cache strategy was chosen with; by default it is
@@ -1185,26 +1190,37 @@ async def invoke_with_structured_output_and_reflection(
     # Use the base llm: structured-output wrappers drop constructor callbacks;
     # get_llm_invoke_config reattaches them with Opik.
     invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
-    kwargs = dict(cache_kwargs or {})
+    kwargs: dict[str, Any] = {}
+    cache_params: frozenset[str] = frozenset()
+    if prompt_cache is not None:
+        messages, kwargs = prompt_cache.finalize(list(messages))
+        cache_params = prompt_cache.sent_params | frozenset(kwargs)
+    refused = False
 
     async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
-        nonlocal kwargs
+        nonlocal refused
+        if refused:
+            return await _ainvoke_throttled(
+                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
+                call_timeout=call_timeout,
+            )
         try:
             return await _ainvoke_throttled(
                 llm_with_structured_output, request, config=invoke_config,
                 call_timeout=call_timeout, call_kwargs=kwargs,
             )
         except Exception as exc:
-            if not kwargs or not is_prompt_cache_param_conflict(exc, kwargs):
+            if not is_prompt_cache_param_conflict(exc, cache_params):
                 raise
             logger.warning("Prompt-cache parameters rejected; resending without them: %s", exc)
             if on_cache_rejected is not None:
                 on_cache_rejected()
             else:
                 forget_cache_params(llm)
-            kwargs = {}
+            refused = True
             return await _ainvoke_throttled(
-                llm_with_structured_output, request, config=invoke_config, call_timeout=call_timeout,
+                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
+                call_timeout=call_timeout,
             )
 
     try:

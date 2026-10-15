@@ -1239,7 +1239,8 @@ class TestCacheablePrefix:
                 [_make_text_block(text)], org_id, departments=["Engineering", "Sales"],
                 record_name=record_name, record_type=record_type,
             )
-        return mock_invoke.call_args[0][1], mock_invoke.call_args.kwargs.get("cache_kwargs")
+        cache = mock_invoke.call_args.kwargs.get("prompt_cache")
+        return cache.finalize(mock_invoke.call_args[0][1]) if cache else (mock_invoke.call_args[0][1], None)
 
     @pytest.mark.asyncio
     async def test_prefix_is_byte_identical_across_records(self) -> None:
@@ -1297,12 +1298,63 @@ class TestCacheablePrefix:
                 return_value=(llm, {"contextLength": 128000, "configuration": {"model": "gpt-5.4"}}),
             ):
                 await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
-                assert mock_invoke.call_args.kwargs["cache_kwargs"]
+                assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1]
                 mock_invoke.call_args.kwargs["on_cache_rejected"]()
                 await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
-            assert mock_invoke.call_args.kwargs["cache_kwargs"] == {}
+            assert mock_invoke.call_args.kwargs["prompt_cache"].finalize([])[1] == {}
         finally:
             REJECTED_CACHE_PARAMS.clear()
+
+    @pytest.mark.asyncio
+    async def test_a_refused_cache_point_is_stripped_and_not_sent_again(self) -> None:
+        """Bedrock's cache points live in the messages, not the kwargs. A refusal
+        resends the request without them, and the next record sends none."""
+        import json
+
+        from langchain_core.messages import AIMessage
+
+        from app.agent_loop_lib.transport.prompt_cache import REJECTED_CACHE_PARAMS
+        from app.modules.transformers.document_extraction import DocumentClassification
+
+        class _Refused(Exception):
+            status_code = 400
+
+        reply = DocumentClassification(
+            departments=["Sales"], category="General",
+            subcategories={"level1": "", "level2": "", "level3": ""},
+            languages=["English"], topics=[], summary="Summary.",
+        ).model_dump_json()
+
+        class ChatBedrockConverse:  # cache_target recognises the provider by class name
+            base_model_id = "anthropic.claude-sonnet-4-20250514-v1:0"
+            endpoint_url = None
+            region_name = "us-east-1"
+            callbacks = None
+
+            def __init__(self) -> None:
+                self.requests: list[str] = []
+
+            async def ainvoke(self, messages: list, **kwargs: object) -> AIMessage:
+                sent = json.dumps([message.content for message in messages])
+                self.requests.append(sent)
+                if "cachePoint" in sent:
+                    raise _Refused("ValidationException: 400 extraneous key [cachePoint] is not permitted")
+                return AIMessage(content=reply)
+
+        llm = ChatBedrockConverse()
+        ext = _build_extractor()
+        config = {"contextLength": 128000, "configuration": {"model": llm.base_model_id}}
+        REJECTED_CACHE_PARAMS.clear()
+        try:
+            with patch(
+                "app.modules.transformers.document_extraction.get_llm_for_role", return_value=(llm, config),
+            ), patch("app.utils.streaming._apply_structured_output", side_effect=lambda model, schema: model):
+                first = await ext.classify([_make_text_block("x")], "org-1", departments=["Sales"], record_name="a", record_type="FILE")
+                second = await ext.classify([_make_text_block("y")], "org-1", departments=["Sales"], record_name="b", record_type="FILE")
+        finally:
+            REJECTED_CACHE_PARAMS.clear()
+        assert first.departments == ["Sales"] and second.departments == ["Sales"]
+        assert ["cachePoint" in sent for sent in llm.requests] == [True, False, False]
 
     @pytest.mark.asyncio
     async def test_unknown_providers_get_no_cache_parameters(self) -> None:
