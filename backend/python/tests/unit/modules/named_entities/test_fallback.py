@@ -211,24 +211,42 @@ async def test_strict_reports_a_timed_out_call(monkeypatch: pytest.MonkeyPatch) 
         await single_call._strict(object(), "prompt")
 
 
-async def test_strict_reports_a_timed_out_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The first reply did not parse; the retry that would correct it timed out.
-    That is a starved call, not proof that strict output fails for the model."""
-    from app.utils import streaming
-
+def _unparseable_then(*later: object) -> tuple[list[str], object]:
     replies: list[str] = []
 
-    async def unparseable_then_hang(*args: object, **kwargs: object) -> object:
+    async def call(*args: object, **kwargs: object) -> object:
         replies.append("call")
         if len(replies) == 1:
             return type("R", (), {"content": "not json"})()
-        raise TimeoutError
+        outcome = later[len(replies) - 2]
+        if isinstance(outcome, type) and issubclass(outcome, BaseException):
+            raise outcome
+        return type("R", (), {"content": outcome})()
 
-    monkeypatch.setattr(streaming, "_ainvoke_throttled", unparseable_then_hang)
+    return replies, call
+
+
+async def test_strict_reports_a_timed_out_last_reflection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The first reply did not parse and the last retry that would correct it timed
+    out: the last word was a starved call, not proof that strict output fails."""
+    from app.utils import streaming
+
+    replies, call = _unparseable_then(TimeoutError, TimeoutError)
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", call)
     monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
     with pytest.raises(TimeoutError):
         await single_call._strict(object(), "prompt")
-    assert len(replies) == 2
+    assert len(replies) == 3
+
+
+async def test_an_earlier_reflection_timeout_still_gets_its_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.utils import streaming
+
+    replies, call = _unparseable_then(TimeoutError, '{"entities": []}')
+    monkeypatch.setattr(streaming, "_ainvoke_throttled", call)
+    monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
+    assert await single_call._strict(object(), "prompt") == single_call.EntitySubmission(entities=[])
+    assert len(replies) == 3
 
 
 async def test_a_remembered_step_down_expires(monkeypatch) -> None:
