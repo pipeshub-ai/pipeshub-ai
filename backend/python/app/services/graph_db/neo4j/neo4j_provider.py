@@ -8084,7 +8084,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_id, user_key=None)
+            team_with_users = await self.get_team_with_users(team_id=team_id, org_id=org_id, user_key=None)
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -15016,12 +15016,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         date_to: int | None,
         sort_by: str,
         sort_order: str,
-    ) -> tuple[list[dict], int]:
+        ownership: str = "all",
+    ) -> tuple[list[dict], dict[str, int]]:
         """Permission-first gallery listing. ``user_id`` is the graph user key."""
         try:
             extra, extra_params = self._artifact_gallery_where(
                 search, artifact_types, conversation_id, date_from, date_to,
             )
+            ownership_filter = {
+                "mine": ' AND perm.role = "OWNER"',
+                "shared": ' AND coalesce(perm.role, "") <> "OWNER"',
+            }.get(ownership, "")
             sort_expr = self._artifact_gallery_sort_expr(sort_by)
             sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
             params = {
@@ -15035,6 +15040,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query = (
                 match
                 + extra
+                + ownership_filter
                 + f"""
             WITH rec, art, perm
             ORDER BY {sort_expr} {sort_dir}, rec.id
@@ -15043,14 +15049,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
                 + self._artifact_gallery_return()
             )
-            count_query = match + extra + "\n            RETURN count(rec) AS total\n            "
+            # Counted without the ownership filter so every tab's count comes from one query.
+            count_query = (
+                match
+                + extra
+                + '\n            RETURN coalesce(perm.role = "OWNER", false) AS owned, count(rec) AS total\n            '
+            )
             results = await self.client.execute_query(query, parameters=params)
             count_results = await self.client.execute_query(count_query, parameters=params)
             records = [row.get("result", row) for row in (results or [])]
-            total = 0
-            if count_results:
-                total = count_results[0].get("total", 0) if isinstance(count_results[0], dict) else count_results[0]
-            return records, int(total or 0)
+            counts = {"mine": 0, "shared": 0}
+            for row in count_results or []:
+                counts["mine" if row.get("owned") else "shared"] += int(row.get("total") or 0)
+            return records, counts
         except Exception as e:
             self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
             raise
@@ -21938,6 +21949,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_team_with_users(
         self,
         team_id: str,
+        org_id: str,
         user_key: str,
         transaction: str | None = None
     ) -> dict | None:
@@ -21950,7 +21962,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
 
             team_query = f"""
-            MATCH (team:{team_label} {{id: $teamId}})
+            MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL AND member_user.isActive = true
@@ -21985,6 +21997,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 team_query,
                 parameters={
                     "teamId": team_id,
+                    "orgId": org_id,
                     "user_key": user_key
                 },
                 txn_id=transaction

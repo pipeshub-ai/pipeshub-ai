@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 from pydantic_core import to_jsonable_python
 
 from app.config.constants.arangodb import DepartmentNames
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, SemanticMetadata
 from app.modules.entity_resolution.languages import canonical_language
 from app.modules.extraction.prompt_template import (
@@ -18,6 +19,7 @@ from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.llm import get_llm_for_role
+from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 DEFAULT_CONTEXT_LENGTH = 128000
@@ -507,7 +509,8 @@ class DocumentExtraction(Transformer):
             )
 
             response = await self.llm.ainvoke(
-                [HumanMessage(content=fallback_prompt)]
+                [HumanMessage(content=fallback_prompt)],
+                config=get_llm_invoke_config(self.llm),
             )
 
             if hasattr(response, "content"):
@@ -531,6 +534,8 @@ class DocumentExtraction(Transformer):
                 topics=[],
                 summary=summary_text,
             )
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Fallback summary call failed: {e}")
             return None

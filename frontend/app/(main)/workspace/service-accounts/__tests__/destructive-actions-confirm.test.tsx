@@ -51,7 +51,10 @@ vi.mock('react-i18next', () => {
       : cur;
   };
   const value = { i18n: { language: 'en-US' }, t };
-  return { useTranslation: () => value };
+  return {
+    initReactI18next: { type: '3rdParty', init: () => undefined },
+    useTranslation: () => value,
+  };
 });
 
 const listAccounts = vi.fn();

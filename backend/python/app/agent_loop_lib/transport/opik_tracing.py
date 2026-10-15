@@ -126,7 +126,7 @@ def build_langchain_opik_callbacks(project_name: str | None = None) -> list[Any]
     own manual span API.
 
     Why both exist: our own `OpikTracingTransport`/`maybe_start_named_span`
-    spans record a hand-built JSON blob good enough for tool-call/usage
+    spans record a hand-built JSON blob good enough for tool-call
     summaries, but Opik's frontend "Pretty" message view is keyed off
     providers it recognizes from raw LangChain callback data — this is how
     the legacy `chatbot.py`/`utils/streaming.py` path (confirmed rendering
@@ -139,7 +139,9 @@ def build_langchain_opik_callbacks(project_name: str | None = None) -> list[Any]
     for agent-loop's LLM calls too, nested under whatever Opik span/trace
     is already active via `opik.context_storage` (contextvar-based, shared
     with our own manual spans) — `OpikTracer`'s own span is additional
-    detail alongside, not a replacement for, our manual spans.
+    detail alongside, not a replacement for, our manual spans. It is also
+    the SOLE reporter of token usage; see `_record_completion` for why our
+    manual spans must not report usage as well.
 
     Built fresh per call site (never a module-level singleton, unlike the
     legacy `utils/streaming.py::opik_tracer`) to avoid one tracer's
@@ -349,18 +351,6 @@ def record_named_span_output(span: Any, output: Any) -> None:
         _logger.debug("Opik span output recording failed", exc_info=True)
 
 
-def _usage_dict(usage: Any) -> dict[str, int]:
-    input_tokens = getattr(usage, "input_tokens", 0) or 0
-    output_tokens = getattr(usage, "output_tokens", 0) or 0
-    return {
-        "prompt_tokens": input_tokens,
-        "completion_tokens": output_tokens,
-        "total_tokens": input_tokens + output_tokens,
-        "cache_read_tokens": getattr(usage, "cache_read_tokens", 0) or 0,
-        "cache_write_tokens": getattr(usage, "cache_write_tokens", 0) or 0,
-    }
-
-
 class OpikTracingTransport(LLMTransport):
     """Decorates any `LLMTransport`, recording one Opik `"llm"` span per
     `complete`/`complete_structured`/`stream` call. Delegates every actual
@@ -393,24 +383,29 @@ class OpikTracingTransport(LLMTransport):
 
         return _guarded_cm(_build, f"span {name!r}")
 
+    # Deliberately no `span.usage` in either recorder below. The nested
+    # `OpikTracer` callback span (`langchain_transport.py::_langchain_config`)
+    # already reports the same call's tokens, and Opik sums usage across every
+    # span in a trace — so setting it here too doubles the trace's token
+    # counts. Cost stayed correct only by accident: `provider` here is
+    # `"langchain"`, which is not one of Opik's priceable providers, so Opik
+    # priced the callback span alone while counting both spans' tokens.
     def _record_completion(self, span: Any, response: "ModelResponse") -> None:
         try:
             span.output = {
                 "content": response.message.model_dump(mode="json"),
                 "stop_reason": response.stop_reason.value,
             }
-            span.usage = _usage_dict(response.usage)
             span.model = response.model or self.model_name
         except Exception:
-            _logger.debug("Opik span output/usage recording failed", exc_info=True)
+            _logger.debug("Opik span output recording failed", exc_info=True)
 
     def _record_structured(self, span: Any, response: "StructuredResponse") -> None:
         try:
             span.output = response.model_dump(mode="json")
-            span.usage = _usage_dict(response.usage)
             span.model = response.model or self.model_name
         except Exception:
-            _logger.debug("Opik span output/usage recording failed", exc_info=True)
+            _logger.debug("Opik span output recording failed", exc_info=True)
 
     async def complete(
         self,

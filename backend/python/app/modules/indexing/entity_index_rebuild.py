@@ -408,6 +408,11 @@ class EntityIndexRebuilder:
         phase, after_key = run.phase, run.after_key
         limit = self.page_size if run.collection == _APPS else self.taxonomy_page_size
         rows = await self.graph.page_entity_index_source(phase, run.key, after_key, limit)
+        # A store that keeps a collection per org cannot recreate them all in
+        # ``embedding_fingerprint``; each is recreated when its org comes up.
+        orgs = {run.key} if run.collection == _ORGS else {_text(row.get("orgId")) for row in rows}
+        for org_id in sorted(orgs - {""}):
+            await self.store.recreate_stale_collection(org_id)
         if run.collection == _APPS:
             failed = await self._project_connector_rows(run, phase, rows)
         else:
@@ -538,6 +543,9 @@ class EntityIndexRebuilder:
         offset = org.get(EntityIndexState.SWEEP_OFFSET)
         offset = offset if isinstance(offset, str) and offset else None
         try:
+            # No pass re-runs for a model the org was already projected under
+            # (switched away and back), so this is where its collection is checked.
+            await self.store.recreate_stale_collection(org_id)
             # Scrolling fails too, not only lookups: Redis refuses offsets
             # past its 10,000-result window on a large org.
             refs, next_offset = await self._scan(org_id, offset)

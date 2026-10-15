@@ -97,7 +97,8 @@ class EntityResolver:
         self.entity_vector_store = entity_vector_store
         self.mode = ResolutionMode(mode)
         self.max_aliases = max_aliases
-        self._llm: BaseChatModel | None = None
+        # Keyed by org: each org can configure its own model for this role.
+        self._llms: dict[str, BaseChatModel] = {}
         self._llm_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -188,7 +189,7 @@ class EntityResolver:
             self._attach(resolution, name, entity)
 
         candidates = await self._tier1(org_id, unresolved, stats)
-        decisions = await self._tier2(metadata, unresolved, candidates, stats)
+        decisions = await self._tier2(org_id, metadata, unresolved, candidates, stats)
         await self._apply_decisions(org_id, resolution, unresolved, candidates, decisions)
         await self._follow_merge_redirects(org_id, resolution, names)
 
@@ -488,6 +489,7 @@ class EntityResolver:
 
     async def _tier2(
         self,
+        org_id: str,
         metadata: SemanticMetadata,
         unresolved: list[ExtractedName],
         candidates: dict[int, tuple[WinnerCandidate, ...]],
@@ -498,7 +500,7 @@ class EntityResolver:
         stats.model_calls += 1
         prompt = build_prompt(metadata.summary, unresolved, candidates)
         try:
-            llm = await self._get_llm()
+            llm = await self._get_llm(org_id)
             response = await invoke_with_structured_output_and_reflection(
                 llm, [HumanMessage(content=prompt)], MergeDecisions,
                 call_timeout=MERGE_CALL_TIMEOUT_SECONDS,
@@ -509,7 +511,7 @@ class EntityResolver:
         if response is None:
             # Rebuilt from current config on the next record, so a replaced or
             # re-keyed indexing model is picked up without a restart.
-            self._llm = None
+            self._llms.pop(org_id, None)
             stats.model_failures += 1
             metrics.record_model_call("failed")
             metrics.record_fallback("model_error", len(unresolved))
@@ -522,7 +524,7 @@ class EntityResolver:
         if not decisions:
             # Parsed, but answered nothing it was asked: every name falls back
             # to new, and the model is rebuilt, exactly as when the call fails.
-            self._llm = None
+            self._llms.pop(org_id, None)
             stats.model_failures += 1
             metrics.record_model_call("empty")
             metrics.record_fallback("model_empty", len(unresolved))
@@ -530,15 +532,22 @@ class EntityResolver:
         metrics.record_model_call("ok")
         return decisions
 
-    async def _get_llm(self) -> BaseChatModel:
-        if self._llm is not None:
-            return self._llm
+    async def _get_llm(self, org_id: str) -> BaseChatModel:
+        llm = self._llms.get(org_id)
+        if llm is not None:
+            return llm
         async with self._llm_lock:
-            if self._llm is None:
-                self._llm, _ = await get_llm_for_role(
-                    self.config_service, LLM_ROLE, reasoning_effort="low",
-                )
-        return self._llm
+            llm = self._llms.get(org_id)
+            if llm is None:
+                llm = await self._load_llm(org_id)
+                self._llms[org_id] = llm
+        return llm
+
+    async def _load_llm(self, org_id: str) -> BaseChatModel:
+        llm, _ = await get_llm_for_role(
+            self.config_service, LLM_ROLE, reasoning_effort="low",
+        )
+        return llm
 
     # ---- decisions ---------------------------------------------------
 

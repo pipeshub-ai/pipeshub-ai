@@ -2011,19 +2011,19 @@ class TestGetTeamWithUsers:
             "canEdit": True, "canDelete": True, "canManageMembers": True
         }])
         connected_provider._enrich_created_by_user = AsyncMock()
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result["id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result is None
 
 

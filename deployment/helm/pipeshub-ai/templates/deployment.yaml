@@ -88,6 +88,12 @@ spec:
               value: {{ .Values.config.nodeEnv | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
+            - name: HIDE_SECRET_CONFIG
+              value: {{ .Values.config.hideSecretConfig | quote }}
+{{- if ne (toString .Values.telemetry.collection.enabled) "" }}
+            - name: TELEMETRY_COLLECTION_FLAG
+              value: {{ .Values.telemetry.collection.enabled | quote }}
+{{- end }}
             - name: MAX_CONCURRENT_PARSING
               value: {{ .Values.config.maxConcurrentParsing | quote }}
             - name: MAX_CONCURRENT_INDEXING
@@ -133,7 +139,7 @@ spec:
               value: {{ . | quote }}
             {{- end }}
             {{- with .Values.extraEnv }}
-            {{- toYaml . | nindent 12 }}
+            {{- tpl (toYaml .) $ | nindent 12 }}
             {{- end }}
             {{- if .Values.s3SignatureV4Preload }}
             - name: NODE_OPTIONS

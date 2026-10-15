@@ -13,6 +13,7 @@ from PIL import Image
 
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
 from app.utils.aimodels import (
@@ -22,6 +23,7 @@ from app.utils.aimodels import (
     is_multimodal_llm,
 )
 from app.utils.llm import get_llm_for_role
+from app.utils.opik import get_llm_invoke_config
 
 
 class VLMOCRStrategy(OCRStrategy):
@@ -298,7 +300,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                         "chat_template_kwargs": {"enable_thinking": False},
                     }
 
-            response = await self.llm.ainvoke([message], **invoke_kwargs)
+            response = await self.llm.ainvoke(
+                [message], config=get_llm_invoke_config(self.llm), **invoke_kwargs
+            )
 
             response_metadata = getattr(response, "response_metadata", {}) or {}
             if response_metadata.get("finish_reason") == "length":
@@ -386,6 +390,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
                         return await self.process_page(page, page_number)
+                    except NonRetryableError:
+                        raise
                     except Exception as e:
                         last_error = e
                         if attempt < self.MAX_RETRY_ATTEMPTS:

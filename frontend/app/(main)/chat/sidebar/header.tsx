@@ -10,7 +10,7 @@ import { useUserStore } from '@/lib/store/user-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { toast } from '@/lib/store/toast-store';
-import { PipesHubIcon } from '@/app/components/ui';
+import { BrandMark } from '@/config';
 
 function SidebarPanelIcon({ size = 18, color = 'currentColor' }: { size?: number; color?: string }) {
   return (
@@ -63,7 +63,7 @@ export function ChatSidebarHeader() {
 
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
-      <PipesHubIcon size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
+      <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
       <Flex align="center" gap="2">
         {isMobile ? (
           <IconButton

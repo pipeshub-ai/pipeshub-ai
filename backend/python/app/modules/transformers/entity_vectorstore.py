@@ -307,6 +307,11 @@ class EntityVectorStore:
         # ``_query_vectors``) and a write embedded under one is not stored
         # (see ``_upsert_batch``).
         self._generation = 0
+        # The collection initialised together with the model. None when
+        # ``_collection_name_for`` gives every org its own; those are checked
+        # against the model on first use (``_ensure_collection``).
+        self._shared_collection: str | None = collection_name
+        self._ready_collections: set[str] = set()
 
         # Per-entity locks guarding the membership read-merge-write below; see
         # ``_entity_lock``. Weakly held so the map does not grow with every
@@ -366,7 +371,10 @@ class EntityVectorStore:
             self._invalidate()
             try:
                 await self._init_embeddings(embedding_configs)
-                await self._init_collection(recreate=recreate and self.recreate_on_dimension_mismatch)
+                if self._shared_collection is not None:
+                    await self._init_collection(
+                        self._shared_collection, recreate=recreate and self.recreate_on_dimension_mismatch,
+                    )
             except Exception:
                 self._init_failed_at = time.monotonic()
                 self._init_failed_hash = config_hash
@@ -387,6 +395,7 @@ class EntityVectorStore:
         self._initialized = False
         self._generation += 1
         self._query_vector_cache.clear()
+        self._ready_collections.clear()
 
     async def _read_embedding_config(self) -> tuple[str, list[dict[str, Any]] | None] | None:
         """The configured embedding models and their ``embedding_config_hash``,
@@ -396,16 +405,21 @@ class EntityVectorStore:
         if fresh:
             self._config_read_at = now
         try:
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value, use_cache=not fresh, raise_on_error=True,
-            )
+            embedding_configs = await self._load_embedding_configs(use_cache=not fresh)
         except Exception as exc:
             self.logger.warning("Could not read the embedding model config: %s", exc)
             return None
-        embedding_configs = _embedding_configs(ai_models)
         return embedding_config_hash(embedding_configs), embedding_configs
 
-    async def _reset_if_collection_changed(self) -> None:
+    async def _load_embedding_configs(self, *, use_cache: bool) -> list[dict[str, Any]] | None:
+        """The configured embedding models; raises when they cannot be read.
+        The model is built from, and its changes are detected on, this one read."""
+        ai_models = await self.config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=use_cache, raise_on_error=True,
+        )
+        return _embedding_configs(ai_models)
+
+    async def _reset_if_collection_changed(self, collection: str | None = None) -> None:
         """After a failed search: when the collection no longer has the
         dimension this store initialised with, drop the initialisation so the
         next call re-reads the model config and the collection.
@@ -415,15 +429,16 @@ class EntityVectorStore:
         initialised before would otherwise send old-model vectors, and fail,
         until it restarts. Checked only on failure, so a healthy search costs
         no extra round trip."""
+        collection = collection or self.collection_name
         try:
-            info = await self.vector_db_service.get_collection_info(self.collection_name)
+            info = await self.vector_db_service.get_collection_info(collection)
         except Exception:
             return
         if not (info.exists and info.dense_dimension) or info.dense_dimension == self._embedding_size:
             return
         self.logger.warning(
             "Entity collection '%s' now has dimension %s, this store %s; re-initialising",
-            self.collection_name, info.dense_dimension, self._embedding_size,
+            collection, info.dense_dimension, self._embedding_size,
         )
         async with self._init_lock:
             # Checked again: a re-initialisation that held the lock meanwhile
@@ -433,10 +448,19 @@ class EntityVectorStore:
             self._invalidate()
             self._init_failed_at = None
 
-    async def collection_exists(self) -> bool:
-        """Needs no embeddings. Delete paths skip when it is False (nothing to
-        delete), and the chat routes hide the entity tools."""
-        return await self.vector_db_service.collection_exists(self.collection_name)
+    async def collection_exists(self, org_id: str | None = None) -> bool:
+        """Whether *org_id*'s entities collection exists. Needs no embeddings.
+        Delete paths skip when it is False (nothing to delete), and the chat
+        routes hide the entity tools."""
+        return await self.vector_db_service.collection_exists(
+            self._collection_name_for(org_id or "")
+        )
+
+    def _collection_name_for(self, org_id: str) -> str:
+        """The collection *org_id*'s entities live in: one shared collection
+        here, filtered by ``metadata.orgId``. A subclass can give each org its
+        own; every operation resolves its collection through this."""
+        return self.collection_name
 
     async def collection_stamp(self) -> str:
         """A token kept in the collection as a point of its own, so that it
@@ -448,7 +472,13 @@ class EntityVectorStore:
         and given a new one. The rebuild puts the stamp in its marker: what
         was projected under another stamp is not in this collection, however
         many points indexing has written to it since. One read by id per call.
-        For the rebuild leader only (see ``ensure_collection``)."""
+        For the rebuild leader only (see ``ensure_collection``).
+
+        A store with a collection per org has no shared collection to stamp
+        and returns "": each org's collection is checked when the rebuild
+        reaches that org (``recreate_stale_collection``)."""
+        if self._shared_collection is None:
+            return ""
         stamp = await self._read_stamp()
         if stamp:
             return stamp
@@ -457,7 +487,7 @@ class EntityVectorStore:
         stamp = f"s{uuid.uuid4().hex[:11]}"
         unit = [1.0] + [0.0] * (self._embedding_size - 1)
         await self.vector_db_service.upsert_points(
-            collection_name=self.collection_name,
+            collection_name=self._shared_collection,
             # No orgId and no entityType: no search, sweep or delete matches it.
             points=[VectorPoint(
                 id=_STAMP_POINT_ID, dense_vector=unit, sparse_vector=None,
@@ -467,17 +497,17 @@ class EntityVectorStore:
         self.logger.info(
             "Entity collection '%s' carried no stamp (it is new, or was dropped, recreated or "
             "emptied from outside); stamped %s, so the rebuild projects the graph into it again",
-            self.collection_name, stamp,
+            self._shared_collection, stamp,
         )
         return stamp
 
     async def _read_stamp(self) -> str | None:
         try:
-            points = await self.vector_db_service.retrieve_points(self.collection_name, [_STAMP_POINT_ID])
+            points = await self.vector_db_service.retrieve_points(self._shared_collection, [_STAMP_POINT_ID])
         except Exception:
             # Some backends refuse a read by id from a collection that does
             # not exist; anything else is a read that failed.
-            if await self.collection_exists():
+            if await self.vector_db_service.collection_exists(self._shared_collection):
                 raise
             return None
         for point in points:
@@ -492,7 +522,10 @@ class EntityVectorStore:
         Initialisation does this once per model, so a collection dropped or
         recreated from outside afterwards would stay as it was left until the
         service restarts. For the rebuild leader only: like initialisation
-        with ``recreate``, it drops a collection of another dimension."""
+        with ``recreate``, it drops a collection of another dimension.
+        Nothing to do for a store with a collection per org."""
+        if self._shared_collection is None:
+            return
         await self._ensure_initialized(recreate=True)
         async with self._init_lock:
             if not self._initialized:
@@ -500,7 +533,62 @@ class EntityVectorStore:
                     "Entity vector store is re-initialising; the collection is set up when it has",
                     details={"collection": self.collection_name},
                 )
-            await self._init_collection(recreate=self.recreate_on_dimension_mismatch)
+            await self._init_collection(
+                self._shared_collection, recreate=self.recreate_on_dimension_mismatch,
+            )
+
+    async def _existing_collection(self, org_id: str) -> str | None:
+        """*org_id*'s collection, or None when it does not exist. For the
+        paths that need no embeddings (deletes, paging): never creates one."""
+        return self._collection_name_for(org_id) if await self.collection_exists(org_id) else None
+
+    async def _read_collection(self, org_id: str) -> str | None:
+        """*org_id*'s collection for a search, or None when it has none.
+        Call after ``_ensure_initialized``."""
+        name = self._collection_name_for(org_id)
+        return name if await self._ensure_collection(name, create=False) else None
+
+    async def _ensure_collection(
+        self, name: str, *, create: bool = True, recreate: bool = False,
+    ) -> bool:
+        """Check ``name`` against the model once per initialisation, creating
+        it when ``create``. False when it is missing and was not created.
+
+        The shared collection is always ready (``_ensure_initialized`` set it
+        up), so only a per-org collection is ever checked here."""
+        if name == self._shared_collection or name in self._ready_collections:
+            return True
+        async with self._init_lock:
+            if name in self._ready_collections:
+                return True
+            if not self._initialized:
+                raise VectorStoreError(
+                    "Embedding model changed while preparing the entity collection",
+                    details={"collection": name},
+                )
+            if create or recreate:
+                # A replica still on a replaced model must neither create the
+                # collection at that model's dimension nor drop one already
+                # recreated for the new model.
+                await self._raise_if_config_moved(self._config_hash)
+            if not await self._init_collection(
+                name, recreate=recreate and self.recreate_on_dimension_mismatch, create=create,
+            ):
+                return False
+            self._ready_collections.add(name)
+            return True
+
+    async def recreate_stale_collection(self, org_id: str) -> None:
+        """Drop and recreate *org_id*'s collection when another model wrote
+        it. Rebuild leader only, for the org it is about to project or sweep
+        (see ``_ensure_initialized``). Raises instead of dropping without
+        ``recreate_on_dimension_mismatch``. Does nothing when the collection
+        is missing, or for the shared collection, which
+        ``embedding_fingerprint`` handles."""
+        if self._collection_name_for(org_id) == self.collection_name:
+            return
+        await self._ensure_initialized(recreate=True)
+        await self._ensure_collection(self._collection_name_for(org_id), create=False, recreate=True)
 
     async def _init_embeddings(self, embedding_configs: list[dict[str, Any]] | None = None) -> None:
         if not embedding_configs:
@@ -510,17 +598,13 @@ class EntityVectorStore:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
             )
-            self._dense_embeddings = get_embedding_model(config["provider"], config)
+            self._dense_embeddings = await self._build_dense_embeddings(config)
             # get_embedding_model uses the first of a comma-separated list.
             models = str((config.get("configuration") or {}).get("model") or "")
             model = next((m.strip() for m in models.split(",") if m.strip()), "")
             self._model_id = f"{config['provider']}:{model}"
 
-        loop = asyncio.get_running_loop()
-        sample = await loop.run_in_executor(
-            None, self._dense_embeddings.embed_query, "test"
-        )
-        self._embedding_size = len(sample)
+        self._embedding_size = await self._embedding_dimension()
 
         if self._capabilities.supports_sparse_vectors:
             if self._sparse_lock is None:
@@ -531,40 +615,55 @@ class EntityVectorStore:
                     await embedder._ensure_initialized()
                     self._sparse_embedder = embedder
 
-    async def _init_collection(self, *, recreate: bool = False) -> None:
-        info = await self.vector_db_service.get_collection_info(self.collection_name)
+    async def _build_dense_embeddings(self, config: dict[str, Any]) -> Any:  # noqa: ANN401
+        return get_embedding_model(config["provider"], config)
+
+    async def _embedding_dimension(self) -> int:
+        sample = await asyncio.to_thread(self._dense_embeddings.embed_query, "test")
+        return len(sample)
+
+    async def _init_collection(
+        self, name: str | None = None, *, recreate: bool = False, create: bool = True,
+    ) -> bool:
+        """False, with nothing done, when ``name`` is missing and ``create``
+        is off. A collection dropped here is always created again."""
+        name = name or self.collection_name
+        info = await self.vector_db_service.get_collection_info(name)
         if info.exists:
             # Ensured on every start, not only at creation: a process that
             # died between the two left the collection without them. Before
             # the mismatch check, which filters on one: a collection recreated
             # from outside this store has none, and Redis cannot filter on a
             # field its index does not have.
-            await self._ensure_payload_indexes()
-        mismatch = await self._collection_mismatch(info)
+            await self._ensure_payload_indexes(name)
+        mismatch = await self._collection_mismatch(name, info)
         if mismatch:
             if not recreate:
                 raise VectorStoreError(
                     f"Entity collection does not match the embedding model: {mismatch}. "
                     "The indexing service recreates it.",
-                    details={"collection": self.collection_name},
+                    details={"collection": name},
                 )
             # The collection is a projection of the graph; the rebuild's
             # marker includes the model, so every pass re-runs and refills it.
-            self.logger.warning("Recreating entity collection '%s': %s", self.collection_name, mismatch)
-            await self.vector_db_service.delete_collection(self.collection_name)
+            self.logger.warning("Recreating entity collection '%s': %s", name, mismatch)
+            await self.vector_db_service.delete_collection(name)
             info = None
         if info is None or not info.exists:
+            if info is not None and not create:
+                return False
             await self.vector_db_service.create_collection(
-                collection_name=self.collection_name,
+                collection_name=name,
                 config=CollectionConfig(
                     embedding_size=self._embedding_size,
                     enable_sparse=self._capabilities.supports_sparse_vectors,
                 ),
             )
-            self.logger.info("Created entity vector collection '%s'", self.collection_name)
-            await self._ensure_payload_indexes()
+            self.logger.info("Created entity vector collection '%s'", name)
+            await self._ensure_payload_indexes(name)
+        return True
 
-    async def _ensure_payload_indexes(self) -> None:
+    async def _ensure_payload_indexes(self, name: str) -> None:
         """create_index is idempotent on every provider. connectorIds and
         recordGroupIds are top-level payload siblings of metadata (not nested
         in it) — see ``upsert_entities_batch``."""
@@ -578,12 +677,12 @@ class EntityVectorStore:
             (RECORD_GROUP_IDS_FIELD, {"type": "keyword"}),
         ]:
             await self.vector_db_service.create_index(
-                collection_name=self.collection_name,
+                collection_name=name,
                 field_name=field,
                 field_schema=schema,
             )
 
-    async def _collection_mismatch(self, info: VectorCollectionInfo) -> str | None:
+    async def _collection_mismatch(self, name: str, info: VectorCollectionInfo) -> str | None:
         """Why the existing collection cannot serve this model, or None.
 
         At the same dimension another model's vectors would answer this
@@ -593,12 +692,12 @@ class EntityVectorStore:
             return None
         if info.dense_dimension and info.dense_dimension != self._embedding_size:
             return f"dimension {info.dense_dimension}, model now produces {self._embedding_size}"
-        stored = await self._model_of_a_stored_point()
+        stored = await self._model_of_a_stored_point(name)
         if stored is not None and stored != self._fingerprint():
             return f"its points were embedded by {stored}, the model is now {self._fingerprint()}"
         return None
 
-    async def _model_of_a_stored_point(self) -> str | None:
+    async def _model_of_a_stored_point(self, collection: str | None = None) -> str | None:
         """The model recorded on one point of the collection; None when it has
         no point or the point predates the field. Raises when the read fails:
         the caller cannot tell whether the collection still holds another
@@ -612,7 +711,7 @@ class EntityVectorStore:
         from app.models.entities import EntityType
 
         page = await self.vector_db_service.scroll(
-            collection_name=self.collection_name,
+            collection_name=collection or self.collection_name,
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.entityType": [t.value for t in EntityType]},
             ),
@@ -661,9 +760,10 @@ class EntityVectorStore:
     # Embedding helpers
     # ------------------------------------------------------------------
 
+    # asyncio.to_thread rather than run_in_executor: it carries contextvars
+    # (tracing) into the worker thread.
     async def _embed(self, texts: list[str]) -> list[list[float]]:
-        loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._dense_embeddings.embed_documents, texts)
+        return await asyncio.to_thread(self._dense_embeddings.embed_documents, texts)
 
     async def _embed_sparse(self, texts: list[str]) -> list[Any]:
         if not self._sparse_embedder:
@@ -716,9 +816,24 @@ class EntityVectorStore:
         if not entities:
             return outcome
         failed_keys: list[str] = []
-        coalesced = self._coalesce_by_key(entities)
-        for start in range(0, len(coalesced), batch_size):
-            batch = coalesced[start : start + batch_size]
+        # A batch may span orgs, and so collections.
+        by_collection: dict[str, list[EntityRecord]] = {}
+        for entity in self._coalesce_by_key(entities):
+            try:
+                by_collection.setdefault(self._collection_name_for(entity.org_id), []).append(entity)
+            except Exception as exc:
+                self.logger.error(
+                    "No entity collection for org '%s'; %s/%s not written: %s",
+                    entity.org_id, entity.entity_type.value, entity.entity_id, exc,
+                )
+                outcome.failed += 1
+                failed_keys.append(f"{entity.entity_type.value}/{entity.entity_id}")
+        batches = [
+            (collection, start, group[start : start + batch_size])
+            for collection, group in by_collection.items()
+            for start in range(0, len(group), batch_size)
+        ]
+        for collection, start, batch in batches:
             named = [e for e in batch if e.name.strip()]
             outcome.skipped += len(batch) - len(named)
             for entity in batch:
@@ -732,12 +847,16 @@ class EntityVectorStore:
             # leaves unaccounted is counted failed, so none is counted twice.
             settled: set[str] = set()
             try:
-                await self._upsert_batch(named, outcome, settled, merge_membership=merge_membership)
+                await self._upsert_batch(collection, named, outcome, settled, merge_membership=merge_membership)
             except _MembershipReadError as exc:
                 self.logger.warning("Skipping entity upsert batch, membership unknown: %s", exc)
             except Exception as exc:
                 self.logger.error("Failed to upsert entity batch starting at %d: %s", start, exc)
             unwritten = [e for e in named if self._key_of(e) not in settled]
+            if unwritten:
+                # Checked again on the next write: it may have been dropped
+                # (org deleted) or recreated for another model.
+                self._ready_collections.discard(collection)
             outcome.failed += len(unwritten)
             failed_keys.extend(f"{e.entity_type.value}/{e.entity_id}" for e in unwritten)
         self._report(outcome, failed_keys)
@@ -748,6 +867,7 @@ class EntityVectorStore:
 
     async def _upsert_batch(
         self,
+        collection: str,
         named: list[EntityRecord],
         outcome: EntityWriteOutcome,
         settled: set[str],
@@ -758,6 +878,7 @@ class EntityVectorStore:
         point id to ``settled`` only once its write has landed (or none was
         needed). Raises on failure; the caller counts the rest as failed."""
         await self._ensure_initialized()
+        await self._ensure_collection(collection)
         generation = self._generation
         config_hash = self._config_hash
         fingerprint = self._fingerprint()
@@ -765,7 +886,7 @@ class EntityVectorStore:
         # the batch: merging against an assumed-empty state would drop every
         # other writer's membership.
         try:
-            early = await self._fetch_existing_states(named)
+            early = await self._fetch_existing_states(collection, named)
         except _MembershipReadError as exc:
             if merge_membership:
                 raise
@@ -779,7 +900,7 @@ class EntityVectorStore:
             for key in sorted({self._entity_key(e.org_id, e.entity_type.value, e.entity_id) for e in named}):
                 await locks.enter_async_context(self._entity_lock(key))
             try:
-                states = await self._fetch_existing_states(named)
+                states = await self._fetch_existing_states(collection, named)
             except _MembershipReadError as exc:
                 if merge_membership:
                     raise
@@ -806,7 +927,7 @@ class EntityVectorStore:
                         # move. Written by id: a search-based update cannot
                         # see a point the index has not refreshed yet.
                         await self.vector_db_service.update_payload_by_ids(
-                            self.collection_name, [point_id],
+                            collection, [point_id],
                             {CONNECTOR_IDS_FIELD: connector_ids, RECORD_GROUP_IDS_FIELD: record_group_ids},
                         )
                         outcome.membership_only += 1
@@ -841,7 +962,7 @@ class EntityVectorStore:
                     },
                 ))
             await self._raise_if_config_moved(config_hash)
-            await self.vector_db_service.upsert_points(collection_name=self.collection_name, points=points)
+            await self.vector_db_service.upsert_points(collection_name=collection, points=points)
             outcome.written += len(points)
             settled.update(point.id for point in points)
 
@@ -889,15 +1010,13 @@ class EntityVectorStore:
         process cannot tell whether the collection now belongs to another
         model. The batch is counted failed and the rebuild writes it again."""
         try:
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value, use_cache=False, raise_on_error=True,
-            )
+            embedding_configs = await self._load_embedding_configs(use_cache=False)
         except Exception as exc:
             raise VectorStoreError(
                 "Cannot confirm the embedding model before an entity write",
                 details={"collection": self.collection_name, "error": str(exc)},
             ) from exc
-        if embedding_config_hash(_embedding_configs(ai_models)) != config_hash:
+        if embedding_config_hash(embedding_configs) != config_hash:
             raise VectorStoreError(
                 "Embedding model config changed since this entity write was embedded",
                 details={"collection": self.collection_name},
@@ -965,7 +1084,7 @@ class EntityVectorStore:
         return lock
 
     async def _fetch_existing_states(
-        self, entities: list[EntityRecord]
+        self, collection: str, entities: list[EntityRecord]
     ) -> dict[str, dict[str, Any]]:
         """Each entity's stored membership and text, keyed by point id.
 
@@ -982,7 +1101,7 @@ class EntityVectorStore:
             self._point_id(e.org_id, e.entity_type.value, e.entity_id) for e in entities
         ]
         try:
-            points = await self.vector_db_service.retrieve_points(self.collection_name, ids)
+            points = await self.vector_db_service.retrieve_points(collection, ids)
         except Exception as exc:
             raise _MembershipReadError(
                 f"membership read failed for {len(ids)} entities"
@@ -1049,7 +1168,8 @@ class EntityVectorStore:
         cannot fail a record delete.
         """
         try:
-            if not await self.collection_exists():
+            collection = await self._existing_collection(org_id)
+            if collection is None:
                 return
             filter_expr = await self.vector_db_service.filter_collection(
                 must={
@@ -1058,7 +1178,7 @@ class EntityVectorStore:
                     "metadata.orgId": org_id,
                 }
             )
-            await self.vector_db_service.delete_points(self.collection_name, filter_expr)
+            await self.vector_db_service.delete_points(collection, filter_expr)
             self.logger.info(
                 "Deleted entity %s/%s from vector store", entity_type, entity_id
             )
@@ -1075,10 +1195,11 @@ class EntityVectorStore:
         # Providers drop empty filter values, which would widen the delete.
         if not org_id or not entity_type or not ids:
             return
-        if not await self.collection_exists():
+        collection = await self._existing_collection(org_id)
+        if collection is None:
             return
         await self.vector_db_service.delete_points(
-            self.collection_name, await self._entities_filter(org_id, entity_type, ids),
+            collection, await self._entities_filter(org_id, entity_type, ids),
         )
 
     async def delete_unreached_entities(
@@ -1134,10 +1255,11 @@ class EntityVectorStore:
         the next (``None`` at the end). Needs no embeddings."""
         if not org_id:
             raise ValueError("page_entity_points needs an org")
-        if not entity_types or not await self.collection_exists():
+        collection = await self._existing_collection(org_id) if entity_types else None
+        if collection is None:
             return [], None
         page = await self.vector_db_service.scroll(
-            collection_name=self.collection_name,
+            collection_name=collection,
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.orgId": org_id, "metadata.entityType": list(entity_types)},
             ),
@@ -1160,12 +1282,13 @@ class EntityVectorStore:
     async def delete_entities_for_org(self, org_id: str) -> None:
         """Remove ALL entity vectors for an organisation (e.g. on org deletion)."""
         try:
-            if not await self.collection_exists():
+            collection = await self._existing_collection(org_id)
+            if collection is None:
                 return
             filter_expr = await self.vector_db_service.filter_collection(
                 must={"metadata.orgId": org_id}
             )
-            await self.vector_db_service.delete_points(self.collection_name, filter_expr)
+            await self.vector_db_service.delete_points(collection, filter_expr)
             self.logger.info("Deleted all entity vectors for org %s", org_id)
         except Exception as exc:
             self.logger.error("Failed to delete entity vectors for org %s: %s", org_id, exc)
@@ -1195,10 +1318,12 @@ class EntityVectorStore:
         Raises on failure so the caller can report it and retry; a retry
         resumes where the previous attempt stopped. Needs no embeddings.
         """
-        if not await self.collection_exists():
+        collection = await self._existing_collection(org_id)
+        if collection is None:
             return
         await self._shrink_connector_membership(
-            org_id, connector_id, record_group_ids, membership_lookup=membership_lookup,
+            org_id, connector_id, record_group_ids,
+            membership_lookup=membership_lookup, collection=collection,
         )
         self.logger.info(
             "Removed connector-scoped entities | org=%s connector=%s", org_id, connector_id,
@@ -1212,6 +1337,7 @@ class EntityVectorStore:
         page_size: int = 100,
         *,
         membership_lookup: MembershipLookup | None = None,
+        collection: str | None = None,
     ) -> None:
         """Strip the connector from shared taxonomy points, then delete the rest.
 
@@ -1242,9 +1368,11 @@ class EntityVectorStore:
         """
         from app.models.entities import EntityType
 
+        collection = collection or self._collection_name_for(org_id)
         scoped_types = [EntityType.RECORD.value, EntityType.RECORD_GROUP.value]
         group_ids = set(record_group_ids or ())
         group_ids |= await self._connector_group_ids(
+            collection,
             org_id,
             connector_id,
             scoped_types if record_group_ids is None else [EntityType.RECORD_GROUP.value],
@@ -1266,7 +1394,7 @@ class EntityVectorStore:
         handled: set[str] = set()
         while True:
             page = await self.vector_db_service.scroll(
-                collection_name=self.collection_name,
+                collection_name=collection,
                 scroll_filter=taxonomy_filter,
                 limit=page_size,
                 offset=offset,
@@ -1278,7 +1406,8 @@ class EntityVectorStore:
             if not page.points:
                 break
             result = await self._strip_or_delete(
-                page.points, org_id, connector_id, group_ids, membership_lookup, handled=handled, writes=writes,
+                collection, page.points, org_id, connector_id, group_ids, membership_lookup,
+                handled=handled, writes=writes,
             )
             if result is _Page.ALREADY_DONE:
                 # Search lags by-id writes (OpenSearch refreshes every 30 s), so
@@ -1311,7 +1440,7 @@ class EntityVectorStore:
             must={"metadata.orgId": org_id, CONNECTOR_IDS_FIELD: connector_id},
             must_not={"metadata.entityType": shared_types},
         )
-        await self.vector_db_service.delete_points(self.collection_name, remaining)
+        await self.vector_db_service.delete_points(collection, remaining)
         shared_filter = await self.vector_db_service.filter_collection(
             must={
                 "metadata.orgId": org_id,
@@ -1320,7 +1449,7 @@ class EntityVectorStore:
             },
         )
         leftover = await self.vector_db_service.scroll(
-            collection_name=self.collection_name,
+            collection_name=collection,
             scroll_filter=shared_filter,
             limit=1,
             with_payload=["metadata.entityId"],
@@ -1333,7 +1462,7 @@ class EntityVectorStore:
             )
 
     async def _connector_group_ids(
-        self, org_id: str, connector_id: str, entity_types: list[str], page_size: int,
+        self, collection: str, org_id: str, connector_id: str, entity_types: list[str], page_size: int,
     ) -> set[str]:
         filter_expr = await self.vector_db_service.filter_collection(
             must={
@@ -1346,7 +1475,7 @@ class EntityVectorStore:
         offset: str | None = None
         while True:
             page = await self.vector_db_service.scroll(
-                collection_name=self.collection_name,
+                collection_name=collection,
                 scroll_filter=filter_expr,
                 limit=page_size,
                 offset=offset,
@@ -1360,6 +1489,7 @@ class EntityVectorStore:
 
     async def _strip_or_delete(
         self,
+        collection: str,
         points: list[VectorPoint],
         org_id: str,
         connector_id: str,
@@ -1395,7 +1525,7 @@ class EntityVectorStore:
             fresh = {
                 point.id: point.payload or {}
                 for point in await self.vector_db_service.retrieve_points(
-                    self.collection_name, [point_id for point_id, _, _ in refs],
+                    collection, [point_id for point_id, _, _ in refs],
                 )
             }
             stripped: dict[tuple[tuple[str, ...], tuple[str, ...]], list[str]] = {}
@@ -1430,21 +1560,22 @@ class EntityVectorStore:
 
             for (connectors, groups), point_ids in stripped.items():
                 await self.vector_db_service.update_payload_by_ids(
-                    self.collection_name, point_ids,
+                    collection, point_ids,
                     {CONNECTOR_IDS_FIELD: list(connectors), RECORD_GROUP_IDS_FIELD: list(groups)},
                 )
             if exclusive and membership_lookup is not None:
                 exclusive = await self._rewrite_still_reached(
-                    org_id, exclusive, membership_lookup, connector_id, group_ids,
+                    collection, org_id, exclusive, membership_lookup, connector_id, group_ids,
                     point_ids={(t, e): point_id for point_id, t, e in refs},
                 )
             for entity_type, entity_ids in exclusive.items():
                 filter_expr = await self._entities_filter(org_id, entity_type, entity_ids)
-                await self.vector_db_service.delete_points(self.collection_name, filter_expr, refresh=True)
+                await self.vector_db_service.delete_points(collection, filter_expr, refresh=True)
         return _Page.CHANGED
 
     async def _rewrite_still_reached(
         self,
+        collection: str,
         org_id: str,
         exclusive: dict[str, list[str]],
         membership_lookup: MembershipLookup,
@@ -1476,7 +1607,7 @@ class EntityVectorStore:
                     org_id, entity_type, entity_id,
                 )
                 await self.vector_db_service.update_payload_by_ids(
-                    self.collection_name, [point_id],
+                    collection, [point_id],
                     {CONNECTOR_IDS_FIELD: connectors, RECORD_GROUP_IDS_FIELD: groups},
                 )
         return to_delete
@@ -1573,6 +1704,9 @@ class EntityVectorStore:
         ]
         if not searchable:
             return results
+        collection = await self._read_collection(org_id)
+        if collection is None:
+            return results
 
         from app.services.vector_db.models import FusionMethod, HybridSearchRequest
 
@@ -1606,14 +1740,14 @@ class EntityVectorStore:
                 ))
         try:
             batch = await self.vector_db_service.query_nearest_points(
-                collection_name=self.collection_name, requests=requests,
+                collection_name=collection, requests=requests,
             )
         except Exception as exc:
             self.logger.error(
                 "Entity search failed org=%s passes=%d query_chars=%d: %s",
                 org_id, len(requests), len(query), exc,
             )
-            await self._reset_if_collection_changed()
+            await self._search_failed(collection)
             raise
         batch = list(batch or [])
         for position, index in enumerate(searchable):
@@ -1623,6 +1757,11 @@ class EntityVectorStore:
             ]
             results[index] = _interleave(per_group)[:top_k]
         return results
+
+    async def _search_failed(self, collection: str) -> None:
+        # Checked again on the next use: it may have been dropped or recreated.
+        self._ready_collections.discard(collection)
+        await self._reset_if_collection_changed(collection)
 
     @staticmethod
     def _search_hit(hit: SearchResult) -> dict[str, Any]:
@@ -1646,8 +1785,7 @@ class EntityVectorStore:
             self._query_vector_cache.move_to_end(query)
             return cached
         generation = self._generation
-        loop = asyncio.get_running_loop()
-        dense_vec = await loop.run_in_executor(None, self._dense_embeddings.embed_query, query)
+        dense_vec = await asyncio.to_thread(self._dense_embeddings.embed_query, query)
         sparse_vec = None
         if self._sparse_embedder:
             sparse_results = await self._sparse_embedder.embed_documents([query])
@@ -1692,6 +1830,9 @@ class EntityVectorStore:
         indices = [i for i, name in enumerate(cleaned) if name]
         if not indices:
             return results
+        collection = await self._read_collection(org_id)
+        if collection is None:
+            return results
 
         texts = [cleaned[i] for i in indices]
         dense_vecs = await self._embed(texts)
@@ -1723,10 +1864,10 @@ class EntityVectorStore:
         ]
         try:
             batch_results = await self.vector_db_service.query_nearest_points(
-                collection_name=self.collection_name, requests=requests,
+                collection_name=collection, requests=requests,
             )
         except Exception:
-            await self._reset_if_collection_changed()
+            await self._search_failed(collection)
             raise
 
         for position, index in enumerate(indices):

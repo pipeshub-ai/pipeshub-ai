@@ -202,8 +202,11 @@ export interface ConsentData {
     email: string
     name?: string
   }
-  redirectUri: string
-  state: string
+  workspace?: {
+    name: string;
+  };
+  redirectUri: string;
+  state: string;
 }
 
 // Auth Code Exchange Result

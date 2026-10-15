@@ -362,6 +362,7 @@ record_schema = {
             # app.modules.indexing.duplicate_reconcile
             "duplicateReconcileAttempts": {"type": ["integer", "null"]},
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
+            "uploadedBy": {"type": ["string", "null"]},  # uploader userId
             "lastIndexTimestamp": {"type": ["number", "null"]},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             # A pattern, not an enum: widening an enum on this strict schema is a

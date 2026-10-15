@@ -6295,6 +6295,39 @@ describe('Enterprise Search Controller', () => {
       expect(writeArgs).to.include('error')
       expect(res.end.called).to.be.true
     })
+
+    it('should send a new regenerationId on each regeneration', async () => {
+      const handler = regenerateAnswers(createMockAppConfig())
+      const messageId = new mongoose.Types.ObjectId()
+      const userQueryId = new mongoose.Types.ObjectId()
+      const mockConversation = createMockConversationDoc({ messages: [] })
+      sinon.stub(ChatSession, 'findOne').returns({ then: (resolve: any) => resolve(mockConversation) } as any)
+      stubGetMessages(ChatSessionMessage, [
+        { _id: messageId, messageType: 'bot_response', content: 'old answer', createdAt: Date.now() },
+        { _id: userQueryId, messageType: 'user_query', content: 'hello', createdAt: Date.now() },
+      ])
+      const bodies: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'executeStream').callsFake(function (this: any) {
+        bodies.push(JSON.parse(this.body))
+        return Promise.resolve(createMockStream()) as any
+      })
+
+      for (let i = 0; i < 2; i++) {
+        const req = createMockRequest({
+          params: { conversationId: VALID_OID, messageId: messageId.toString() },
+          body: {},
+          user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+        })
+        const res = createMockResponse()
+        res.flush = sinon.stub()
+        void handler(req, res)
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+
+      expect(bodies).to.have.length(2)
+      expect(bodies[0].regenerationId).to.match(/^[0-9a-f]{24}$/)
+      expect(bodies[1].regenerationId).to.not.equal(bodies[0].regenerationId)
+    })
   })
 
   // -----------------------------------------------------------------------

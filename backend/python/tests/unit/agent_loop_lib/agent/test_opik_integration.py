@@ -171,7 +171,7 @@ class TestFullTurnOpikTracing:
         assert result.success is True
         assert result.output == "Cats are great."
 
-    async def test_llm_span_records_tool_call_and_usage(self) -> None:
+    async def test_llm_span_records_tool_call_but_not_usage(self) -> None:
         from app.agent_loop_lib.core.responses import TokenUsage
 
         transport = ScriptedTransport()
@@ -199,8 +199,9 @@ class TestFullTurnOpikTracing:
 
         first_llm_span = captured_spans[0]
         assert first_llm_span.output["content"]["tool_calls"][0]["name"] == "search"
-        assert first_llm_span.usage["prompt_tokens"] == 20
-        assert first_llm_span.usage["completion_tokens"] == 8
+        # Only the nested OpikTracer callback span reports usage; Opik sums span
+        # usage per trace, so reporting it here too doubles the trace's tokens.
+        assert not hasattr(first_llm_span, "usage")
 
         search_tool_span = captured_spans[1]
         assert search_tool_span.output["data"] == "found results for cats"

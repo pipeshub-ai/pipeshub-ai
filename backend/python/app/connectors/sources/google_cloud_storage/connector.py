@@ -1874,10 +1874,11 @@ class GCSConnector(BaseConnector):
         **kwargs: object,
     ) -> "GCSConnector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         data_entities_processor = GCSDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         return cls(
             logger,

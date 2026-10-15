@@ -9,6 +9,7 @@ This module provides:
 5. Filter/FilterCollection - Runtime filter parsing from config
 """
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -627,6 +628,20 @@ class Filter(BaseModel):
                                 # Fallback: convert to string
                                 extracted_ids.append(str(item))
                         data['value'] = extracted_ids
+                elif filter_type in (FilterType.NUMBER, FilterType.BOOLEAN) and isinstance(data['value'], str):
+                    # UI inputs are cleared to "" (not omitted) when a field is left
+                    # unset - treat that the same as "no value" instead of failing
+                    # type validation below. Also accept numeric/boolean strings
+                    # since form values commonly arrive as strings.
+                    stripped = data['value'].strip()
+                    if not stripped:
+                        data['value'] = None
+                    elif filter_type == FilterType.NUMBER:
+                        # Left as-is when it is not a number; validation below raises a clear error.
+                        with contextlib.suppress(ValueError):
+                            data['value'] = float(stripped) if '.' in stripped else int(stripped)
+                    elif stripped.lower() in ('true', 'false'):
+                        data['value'] = stripped.lower() == 'true'
 
         return data
 

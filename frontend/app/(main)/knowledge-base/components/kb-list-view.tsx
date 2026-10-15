@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, type ReactNode } from 'react';
 import { Flex, Box, Text, Checkbox, Button, DropdownMenu, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
@@ -36,7 +36,13 @@ import {
 } from '../utils/reindex-label';
 
 // Union type for items that can be displayed
-type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
+export type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
+
+/** Extra columns an edition overlay can add after "Updated" (desktop only). */
+export interface KbListExtraColumns {
+  header: ReactNode;
+  cell: (item: TableItem) => ReactNode;
+}
 
 // Type guard to check if item is KnowledgeHubNode
 function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
@@ -54,11 +60,11 @@ interface TableHeaderCellProps {
   sortable?: boolean;
   width?: string;
   flex?: number;
-  sort: SortConfig | AllRecordsSortConfig;
-  onSort: (config: SortConfig | AllRecordsSortConfig) => void;
+  sort?: SortConfig | AllRecordsSortConfig;
+  onSort?: (config: SortConfig | AllRecordsSortConfig) => void;
 }
 
-function TableHeaderCell({
+export function TableHeaderCell({
   label,
   field,
   sortable,
@@ -67,13 +73,13 @@ function TableHeaderCell({
   sort,
   onSort,
 }: TableHeaderCellProps) {
-  const isActive = sortable && field && sort.field === field;
+  const isActive = sortable && field && sort?.field === field;
 
   const handleClick = () => {
     if (sortable && field) {
       const newOrder: SortOrder =
-        sort.field === field && sort.order === 'asc' ? 'desc' : 'asc';
-      onSort({ field, order: newOrder } as SortConfig | AllRecordsSortConfig);
+        sort?.field === field && sort?.order === 'asc' ? 'desc' : 'asc';
+      onSort?.({ field, order: newOrder } as SortConfig | AllRecordsSortConfig);
     }
   };
 
@@ -134,6 +140,7 @@ interface TableRowProps {
   showSourceColumn?: boolean;
   showCheckbox?: boolean;
   isMobile: boolean;
+  extraColumns?: KbListExtraColumns | null;
   onSelect: () => void;
   onClick: () => void;
   onOpen: () => void;
@@ -151,6 +158,7 @@ function TableRow({
   showSourceColumn,
   showCheckbox = true,
   isMobile,
+  extraColumns,
   onSelect,
   onClick,
   onOpen,
@@ -618,6 +626,8 @@ function TableRow({
         </Flex>
       )}
 
+      {!isMobile && extraColumns ? extraColumns.cell(item) : null}
+
       {/* Actions */}
       <Flex align="center" gap="1" style={{ width: '80px', padding: '0 var(--space-2)' }}>
         <ItemActionMenu
@@ -650,6 +660,7 @@ interface KbListViewProps {
   allSelected: boolean;
   showSourceColumn?: boolean;
   showCheckbox?: boolean;
+  extraColumns?: KbListExtraColumns | null;
   sort: SortConfig | AllRecordsSortConfig;
   pagination?: {
     page: number;
@@ -680,6 +691,7 @@ export function KbListView({
   allSelected,
   showSourceColumn,
   showCheckbox = true,
+  extraColumns,
   sort,
   pagination,
   onSelectAll,
@@ -757,6 +769,8 @@ export function KbListView({
           <TableHeaderCell label="Updated" field="updatedAt" sortable width="146px" sort={sort} onSort={onSort} />
         )}
 
+        {!isMobile && extraColumns ? extraColumns.header : null}
+
         {/* Actions */}
         <Box style={{ width: '80px' }} />
       </Flex>
@@ -774,6 +788,7 @@ export function KbListView({
             showSourceColumn={showSourceColumn}
             showCheckbox={showCheckbox}
             isMobile={isMobile}
+            extraColumns={extraColumns}
             onSelect={() => onSelectItem(item.id)}
             onClick={() => onItemClick(item)}
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}

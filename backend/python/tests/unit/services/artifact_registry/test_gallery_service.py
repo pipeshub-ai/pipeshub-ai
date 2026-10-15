@@ -76,7 +76,7 @@ def graph():
 class TestGalleryList:
     @pytest.mark.asyncio
     async def test_maps_rows_and_pagination(self, graph):
-        graph.list_accessible_artifacts = AsyncMock(return_value=([_row()], 51))
+        graph.list_accessible_artifacts = AsyncMock(return_value=([_row()], {"mine": 51, "shared": 0}))
         page = await _service(graph).list(_actor(), ArtifactListQuery(page=2, limit=50))
         assert page.page == 2
         assert page.limit == 50
@@ -91,7 +91,7 @@ class TestGalleryList:
 
     @pytest.mark.asyncio
     async def test_empty(self, graph):
-        graph.list_accessible_artifacts = AsyncMock(return_value=([], 0))
+        graph.list_accessible_artifacts = AsyncMock(return_value=([], {"mine": 0, "shared": 0}))
         page = await _service(graph).list(_actor(), ArtifactListQuery())
         assert page.items == []
         assert page.total_pages == 0
@@ -104,13 +104,32 @@ class TestGalleryList:
 
     @pytest.mark.asyncio
     async def test_strips_tool_result_from_type_filter(self, graph):
-        graph.list_accessible_artifacts = AsyncMock(return_value=([], 0))
+        graph.list_accessible_artifacts = AsyncMock(return_value=([], {"mine": 0, "shared": 0}))
         await _service(graph).list(
             _actor(),
             ArtifactListQuery(artifact_types=["IMAGE", "TOOL_RESULT"]),
         )
         kwargs = graph.list_accessible_artifacts.await_args.kwargs
         assert kwargs["artifact_types"] == ["IMAGE"]
+
+    @pytest.mark.asyncio
+    async def test_a_tab_pages_by_its_own_count_and_reports_every_tab(self, graph) -> None:
+        graph.list_accessible_artifacts = AsyncMock(
+            return_value=([_row(permission={"role": "READER", "type": "USER"})], {"mine": 3, "shared": 51})
+        )
+        page = await _service(graph).list(_actor(), ArtifactListQuery(ownership="shared", limit=50))
+        assert graph.list_accessible_artifacts.await_args.kwargs["ownership"] == "shared"
+        assert page.total_count == 51
+        assert page.total_pages == 2
+        assert page.counts == {"all": 54, "mine": 3, "shared": 51}
+        assert page.items[0].role == "READER"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_ownership_lists_everything(self, graph) -> None:
+        graph.list_accessible_artifacts = AsyncMock(return_value=([], {"mine": 2, "shared": 1}))
+        page = await _service(graph).list(_actor(), ArtifactListQuery(ownership="theirs"))
+        assert graph.list_accessible_artifacts.await_args.kwargs["ownership"] == "all"
+        assert page.total_count == 3
 
 
 class TestGalleryGet:
@@ -121,6 +140,7 @@ class TestGalleryGet:
         assert detail.artifact_id == "art-1"
         assert len(detail.versions) == 2
         assert detail.source_tool == "coding_sandbox"
+        assert detail.role == "OWNER"
         graph.get_artifact_detail.assert_awaited_once_with(
             "user-key-1", "org-1", "art-1"
         )

@@ -1616,6 +1616,9 @@ class WebConnector(BaseConnector):
         rendered.  Both snapshots respect CSS visibility, avoiding false
         results from CSS-hidden elements.
         """
+        # The browser opens file: and other non-http URLs itself, past the guard proxy.
+        if await is_unsafe_url(url):
+            return False
         try:
             probe = Crawl4AIFetcher(
                 concurrency=1,
@@ -1768,6 +1771,9 @@ class WebConnector(BaseConnector):
         """
         if self.crawl4ai_fetcher is None:
             return None
+        # The browser opens file: and other non-http URLs itself, past the guard proxy.
+        if await is_unsafe_url(url):
+            return unsafe_address_response(url)
         if self._is_document_url(url):
             return await self._fetch_linked_document(url)
         if walk_first and (refused := await self._landing_refused_before_browser(url)) is not None:
@@ -1795,7 +1801,7 @@ class WebConnector(BaseConnector):
         assert self.crawl4ai_fetcher is not None
         page_urls = [url for url in urls if not self._is_document_url(url)]
         refused = dict(zip(page_urls, await asyncio.gather(
-            *(self._landing_refused_before_browser(url) for url in page_urls)
+            *(self._refused_before_browser(url) for url in page_urls)
         )))
         to_render = [url for url in page_urls if refused[url] is None]
         rendered = iter(await self.crawl4ai_fetcher.fetch_many(to_render)) if to_render else iter(())
@@ -1812,6 +1818,13 @@ class WebConnector(BaseConnector):
                     rendered_response, url, no_answer=self._browser_got_no_answer(fetch_result),
                 ))
         return responses
+
+    async def _refused_before_browser(self, url: str) -> FetchResponse | None:
+        # Checked on its own first: the browser opens file: and other non-http
+        # URLs itself, past the guard proxy, and the redirect walk needs a session.
+        if await is_unsafe_url(url):
+            return unsafe_address_response(url)
+        return await self._landing_refused_before_browser(url)
 
     async def _landing_refused_before_browser(self, url: str) -> FetchResponse | None:
         """The browser follows redirects on its own, so walk them first: a hop outside the crawl or

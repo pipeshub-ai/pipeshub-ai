@@ -183,7 +183,7 @@ class TestLevelIndex:
         service.create_index = AsyncMock()
         store = _make_store(service)
         store._embedding_size = 2
-        await store._init_collection()
+        await store._init_collection(store.collection_name)
         fields = [call.kwargs["field_name"] for call in service.create_index.await_args_list]
         assert "metadata.level" in fields
         assert "metadata.entityType" in fields
@@ -455,7 +455,7 @@ class TestInitHousekeeping:
         store = _make_store(service)
         store._embedding_size = 2
 
-        await store._init_collection()
+        await store._init_collection(store.collection_name)
 
         service.create_collection.assert_not_awaited()
         fields = {c.kwargs["field_name"] for c in service.create_index.await_args_list}

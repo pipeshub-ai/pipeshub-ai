@@ -268,6 +268,7 @@ class Record(BaseModel):
     indexing_status: str = Field(default=ProgressStatus.QUEUED.value, description="Indexing status for the record")
     extraction_status: str = Field(default=ProgressStatus.NOT_STARTED.value, description="Extraction status for the record")
     reason: str | None = Field(default=None, description="Reason for the record status")
+    uploaded_by: str | None = Field(default=None, description="External userId of the uploader")
     # Epoch Timestamps
     created_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record creation")
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
@@ -430,6 +431,8 @@ class Record(BaseModel):
             "trashedExternalRecordId": self.trashed_external_record_id,
         }
         base.update({k: v for k, v in delete_state.items() if v is not None})
+        if self.uploaded_by:
+            base["uploadedBy"] = self.uploaded_by
         return base
 
     @staticmethod
@@ -503,6 +506,7 @@ class Record(BaseModel):
             size_in_bytes=arango_base_record.get("sizeInBytes"),
             reason=arango_base_record.get("reason"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            uploaded_by=arango_base_record.get("uploadedBy"),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -743,6 +747,7 @@ class FileRecord(Record):
             sha1_hash=arango_base_file_record.get("sha1Hash"),
             sha256_hash=arango_base_file_record.get("sha256Hash"),
             storage_document_id=arango_base_record.get("storageDocumentId"),
+            uploaded_by=arango_base_record.get("uploadedBy"),
             **Record.delete_state_from_arango(arango_base_record),
         )
 

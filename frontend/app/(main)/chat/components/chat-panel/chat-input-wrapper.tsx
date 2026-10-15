@@ -96,7 +96,8 @@ export function ChatInputWrapper() {
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
-        query
+        query,
+        response,
       );
     } catch (error: unknown) {
       if (isRequestCancelledError(error)) return;

@@ -1183,3 +1183,37 @@ class TestClassifyAiohttpTransportError:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_a_final_error_is_terminal() -> None:
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    class Final(NonRetryableError):
+        pass
+
+    assert MessageErrorClassifier.classify_by_exception(Final("stop")) == MessageErrorType.TERMINAL
+
+
+def test_a_final_error_raised_from_a_connection_error_is_terminal() -> None:
+    import aiohttp
+
+    from app.exceptions.non_retryable import NonRetryableError
+    from app.services.messaging.error_classifier import (
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    class Final(NonRetryableError):
+        pass
+
+    try:
+        try:
+            raise aiohttp.ClientConnectionError("refused")
+        except aiohttp.ClientConnectionError as cause:
+            raise Final("stop") from cause
+    except Final as exc:
+        assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TERMINAL

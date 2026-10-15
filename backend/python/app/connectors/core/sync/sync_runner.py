@@ -14,11 +14,13 @@ import contextlib
 import logging
 import time
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
+from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -628,6 +630,11 @@ async def run_sync_task(
     skipped_code: str | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
+    # One id per run, stamped on every record-event this sync publishes so
+    # downstream processing can be correlated back to the run.
+    run_sync_id = str(uuid4())
+    run_sync_token = set_run_sync_id(run_sync_id)
+    logger.info(f"▶️ Starting sync run {run_sync_id} for connector {connector_id}")
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
@@ -685,6 +692,7 @@ async def run_sync_task(
             except Exception as e:
                 # Logged, not raised: the finalizer below must still run.
                 logger.error(f"Could not end full-sync tracking for {connector_id}: {e}")
+        reset_run_sync_id(run_sync_token)
         # A stop that arrives through the lease ends _run_until_aborted without
         # raising, so it has to be read here or it would log as a clean finish.
         if lease is not None and lease.stop_requested.is_set():

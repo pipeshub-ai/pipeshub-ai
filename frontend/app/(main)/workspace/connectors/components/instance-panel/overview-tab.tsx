@@ -1,9 +1,10 @@
 'use client';
 
-import React, { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { Flex, Text, Box } from '@radix-ui/themes';
+import { ConnectorOverviewExtras } from '@/config';
 import { useConnectorsStore } from '../../store';
 import { ConnectorsApi } from '../../api';
 import { fetchInstanceStats } from '../../utils/fetch-instance-stats';
@@ -76,6 +77,7 @@ export function OverviewTab({
   const [stopConfirmOpen, setStopConfirmOpen] = useState(false);
   const isFullSyncRunning =
     (instance.status ?? '').toUpperCase() === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING;
+  const [panelRefreshKey, bumpPanelRefresh] = useReducer((n: number) => n + 1, 0);
   const configForDerive =
     connectorConfig ?? (instance._key ? instanceConfigs[instance._key] : undefined);
   const syncStatus = deriveSyncStatus(instance, stats ?? undefined, configForDerive);
@@ -108,6 +110,7 @@ export function OverviewTab({
     try {
       setIsRefreshStatsBusy(true);
       await fetchInstanceStats(connectorId, { force: true });
+      bumpPanelRefresh();
       addToast({
         variant: 'success',
         title: t('workspace.connectors.overview.refreshStatsSuccess'),
@@ -337,6 +340,7 @@ export function OverviewTab({
         isLoading={isStopBusy}
         onConfirm={() => void handleConfirmStopSync()}
       />
+      <ConnectorOverviewExtras connectorId={instance._key ?? null} refreshKey={panelRefreshKey} />
     </Flex>
   );
 }

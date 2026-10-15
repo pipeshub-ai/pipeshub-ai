@@ -1,7 +1,6 @@
 import asyncio
 import json
 import logging
-import os
 import random
 import re
 from collections.abc import AsyncGenerator
@@ -24,6 +23,7 @@ from pydantic import BaseModel, ValidationError
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import map_source_status
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.agents.qna.reference_data import normalize_reference_data_items
 from app.modules.parsers.excel.prompt_template import RowDescriptions
 from app.modules.retrieval.retrieval_service import RetrievalService
@@ -47,23 +47,16 @@ from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
 from app.utils.message_chunks import merge_message_chunks_off_loop
+from app.utils.opik import get_llm_invoke_config, get_opik_tracer
 from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
 logger = create_logger("streaming")
 
-opik_tracer = None
-api_key = os.getenv("OPIK_API_KEY")
-workspace = os.getenv("OPIK_WORKSPACE")
-if api_key and workspace:
-    try:
-        from opik.integrations.langchain import OpikTracer
-        opik_tracer = OpikTracer()
-    except Exception as e:
-        logger.warning(f"Error configuring Opik: {e}")
-else:
-    logger.info("OPIK_API_KEY and/or OPIK_WORKSPACE not set. Skipping Opik configuration.")
+# Re-export for tests that patch app.utils.streaming.opik_tracer
+opik_tracer = get_opik_tracer()
+
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
@@ -84,6 +77,7 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 async def _ainvoke_throttled(
     llm: BaseChatModel,
     messages: list[Any],
+    config: dict | None = None,
     *,
     call_timeout: float | None = None,
 ) -> Any:  # noqa: ANN401
@@ -101,7 +95,7 @@ async def _ainvoke_throttled(
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         async with indexing_llm_slot():
             try:
-                call = llm.ainvoke(messages)
+                call = llm.ainvoke(messages, config=config) if config else llm.ainvoke(messages)
                 result = await (
                     asyncio.wait_for(call, timeout=call_timeout) if call_timeout else call
                 )
@@ -442,7 +436,13 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
     """
     if parts is None:
         parts = []
-    config = {"callbacks": [opik_tracer]} if opik_tracer is not None else {}
+    config = get_llm_invoke_config(llm)
+    # Keep streaming.opik_tracer in sync for tests that patch this module attr.
+    if opik_tracer is not None:
+        callbacks = list(config.get("callbacks") or [])
+        if all(cb is not opik_tracer for cb in callbacks):
+            callbacks.append(opik_tracer)
+        config = {"callbacks": callbacks}
     try:
         if hasattr(llm, "astream"):
             # Fix #1710: Manual iteration to catch per-chunk ValidationError
@@ -1148,6 +1148,7 @@ async def invoke_with_structured_output_and_reflection(
     schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
     *,
+    enable_opik_tracing: bool = True,
     call_timeout: float | None = None,
 ) -> SchemaT | None:
     """
@@ -1158,6 +1159,8 @@ async def invoke_with_structured_output_and_reflection(
         messages: List of messages to send to the LLM
         schema: Pydantic model class to validate the response against
         max_retries: Maximum number of reflection retries on parse failure
+        enable_opik_tracing: When False, skip Opik callbacks even if configured
+            (the model's own callbacks still run)
         call_timeout: Optional bound, in seconds, on each provider call (the
             first and every reflection retry), excluding the wait for an
             indexing slot. A timed-out call counts as a failed attempt.
@@ -1166,11 +1169,16 @@ async def invoke_with_structured_output_and_reflection(
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    # Use the base llm: structured-output wrappers drop constructor callbacks;
+    # get_llm_invoke_config reattaches them with Opik.
+    invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
 
     try:
         response = await _ainvoke_throttled(
-            llm_with_structured_output, messages, call_timeout=call_timeout,
+            llm_with_structured_output, messages, config=invoke_config, call_timeout=call_timeout,
         )
+    except NonRetryableError:
+        raise
     except Exception as e:
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
@@ -1244,7 +1252,7 @@ Respond only with valid JSON that matches the schema."""
             reflection_content = None
             try:
                 reflection_response = await _ainvoke_throttled(
-                    llm_with_structured_output, reflection_messages, call_timeout=call_timeout,
+                    llm_with_structured_output, reflection_messages, config=invoke_config, call_timeout=call_timeout,
                 )
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
@@ -1275,6 +1283,8 @@ Respond only with valid JSON that matches the schema."""
                 logger.info(f"Reflection successful on attempt {attempt + 1}")
                 return parsed_response
 
+            except NonRetryableError:
+                raise
             except Exception as reflection_error:
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:

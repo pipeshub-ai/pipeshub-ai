@@ -59,6 +59,20 @@ from app.utils.url_fetcher import (
 _SdkModel = TypeVar("_SdkModel")
 
 
+
+def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, ANN202
+    # Imported here: edition_services pulls in connector and graph code that
+    # every service using this module should not have to load.
+    from app.edition_services import decorate_chat_model
+
+    return decorate_chat_model(model, provider, model_name, config)
+
+
+def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
+    from app.edition_services import decorate_embeddings
+
+    return decorate_embeddings(embeddings, provider, model_name, config)
+
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.
 
@@ -403,7 +417,11 @@ def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> s
 
 
 def get_default_embedding_model() -> Embeddings:
-    return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
+    embeddings = get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
+    return _decorate_embeddings(
+        embeddings, "default", DEFAULT_EMBEDDING_MODEL,
+        {"configuration": {"model": DEFAULT_EMBEDDING_MODEL}},
+    )
 
 logger = create_logger("aimodels")
 
@@ -631,6 +649,11 @@ def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, An
 
 
 def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
+    embeddings = _get_embedding_model_impl(provider, config, model_name)
+    return _decorate_embeddings(embeddings, provider, model_name, config)
+
+
+def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
     require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
@@ -693,7 +716,8 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
 
     elif provider == EmbeddingProvider.DEFAULT.value:
-        return get_default_embedding_model()
+        # Raw client: get_embedding_model() decorates the result once.
+        return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
 
     elif provider == EmbeddingProvider.FIREWORKS.value:
         from langchain_fireworks import FireworksEmbeddings
@@ -1841,6 +1865,16 @@ def resolve_bedrock_provider(configured: str | None, model_name: str | None) -> 
 
 
 def get_generator_model(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
+    model = _get_generator_model_impl(provider, config, model_name, reasoning_effort)
+    return _decorate_chat_model(model, provider, model_name, config)
+
+
+def _get_generator_model_impl(
     provider: str,
     config: dict[str, Any],
     model_name: str | None = None,

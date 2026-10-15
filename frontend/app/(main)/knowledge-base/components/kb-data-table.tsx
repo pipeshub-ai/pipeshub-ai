@@ -7,7 +7,7 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { DeleteConfirmationDialog } from './dialogs'; 
-import { KbGridView, KbListView } from '@/config';
+import { KbGridView, KbListView, useKbListExtraColumns } from '@/config';
 import type {
   KnowledgeBaseItem,
   KnowledgeHubNode,
@@ -47,6 +47,7 @@ interface KbDataTableProps {
   hasActiveFilters?: boolean;
   hasSearchQuery?: boolean;
   hasCollections?: boolean;
+  extrasRefreshKey?: number;
   onRefresh?: () => void;
   onPageChange?: (page: number) => void;
   onLimitChange?: (limit: number) => void;
@@ -78,6 +79,7 @@ export function KbDataTable({
   hasActiveFilters = false,
   hasSearchQuery = false,
   hasCollections = false,
+  extrasRefreshKey = 0,
   onRefresh,
   onPageChange,
   onLimitChange,
@@ -106,6 +108,7 @@ export function KbDataTable({
     isLoadingFlatCollections || (kbApp ? loadingAppIds.has(kbApp.id) : false);
 
   const isAllRecords = pageViewMode === 'all-records';
+  const extraColumns = useKbListExtraColumns(items, extrasRefreshKey);
   const activeSelectedItems = isAllRecords ? selectedRecords : selectedItems;
   const activeToggleSelection = isAllRecords ? toggleRecordSelection : toggleItemSelection;
 
@@ -414,6 +417,7 @@ export function KbDataTable({
           allSelected={allSelected}
           showSourceColumn={showSourceColumn}
           showCheckbox={showCheckbox}
+          extraColumns={extraColumns}
           sort={isAllRecords ? allRecordsSort : sort}
           pagination={pagination}
           onPageChange={onPageChange}

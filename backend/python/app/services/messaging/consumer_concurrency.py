@@ -33,7 +33,7 @@ import random
 import threading
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 
 from app.services.messaging.config import messaging_env
 from app.services.messaging.distributed_concurrency import (
@@ -47,7 +47,7 @@ from app.services.resource_governor.models import ParseTier, Pool
 from app.utils.loop_bridge import run_on_loop
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Coroutine, Mapping
     from logging import Logger
 
     from app.services.messaging.config import StreamMessage
@@ -57,8 +57,11 @@ if TYPE_CHECKING:
     from app.services.messaging.lease import LeaseHandle, LeaseRenewer
     from app.services.messaging.retry_manager import RetryManager
     from app.services.resource_governor import ResourceGovernor
+    from app.services.resource_governor.shared_slots import SlotHold
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 _MAIN_LOOP_OP_TIMEOUT = 5.0
 
@@ -109,8 +112,10 @@ class ConcurrencyHost(Protocol):
 
 
 async def bridge_to_main_loop(
-    host: ConcurrencyHost, coro: Any, timeout: float = _MAIN_LOOP_OP_TIMEOUT
-) -> Any:
+    host: ConcurrencyHost,
+    coro: Coroutine[Any, Any, T],
+    timeout: float = _MAIN_LOOP_OP_TIMEOUT,
+) -> T:
     """Run ``coro`` on ``host.main_loop`` (safe when called from a worker loop)."""
     return await run_on_loop(host.main_loop, coro, timeout)
 
@@ -356,8 +361,9 @@ async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, 
 # ---------------------------------------------------------------------------
 # ResourceGovernor-backed node-local gates (Phase 1 of the adaptive-concurrency
 # plan). The distributed Redis lease stays sized to the *resolved ceiling*
-# (never the adaptive value) — the lease is the cluster-wide cap, the gate
-# below is the node-local cap; see plan section "Phase 1 — Indexing consumers".
+# (never the adaptive value) for every worker process together — the lease is
+# the cluster-wide cap, the gate below is the node-local cap; see plan section
+# "Phase 1 — Indexing consumers".
 # ---------------------------------------------------------------------------
 
 
@@ -425,15 +431,18 @@ def index_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     governor = host.governor
     if governor is not None:
         tier = effective_index_tier(host, tier)
+        # Every worker process takes the same lease, so it is sized from the
+        # budget for all of them, not from this process's share of it.
+        ceilings = governor.fleet_ceilings
         if tier is ParseTier.LIGHT and messaging_env.split_index_lease_pools:
-            return governor.ceilings.index_light
+            return ceilings.index_light
         # On the shared pool this must be the *total* budget, matching what a
         # previous-build replica passes for the same pool — the Lua script
         # enforces whichever limit the caller sends.
         return (
-            governor.ceilings.index_heavy
+            ceilings.index_heavy
             if messaging_env.split_index_lease_pools
-            else governor.ceilings.index
+            else ceilings.index
         )
     return messaging_env.max_concurrent_indexing
 
@@ -515,8 +524,8 @@ def parse_ceiling(host: ConcurrencyHost, tier: ParseTier | None = None) -> int:
     governor = host.governor
     if governor is not None:
         if tier is ParseTier.LIGHT:
-            return governor.ceilings.light
-        return governor.ceilings.heavy
+            return governor.fleet_ceilings.light
+        return governor.heavy_parse_lease_limit
     return messaging_env.max_concurrent_parsing
 
 
@@ -988,6 +997,31 @@ async def parse_admission_wait(
             host.logger.debug("%s waited %.2fs for a parse slot", message_id, waited)
 
 
+# How often a heavy parse rechecks the slots its container's workers share.
+# Checking is a few local file-lock calls, and a heavy parse runs for seconds
+# to minutes, so a quarter second is cheap and adds no visible latency.
+HEAVY_PARSE_SLOT_POLL_SECONDS = 0.25
+
+
+async def _wait_for_heavy_parse_slots(
+    governor: "ResourceGovernor", cost: int, timeout: float | None
+) -> "SlotHold | None":
+    """The heavy-parse slots shared by this container's workers, or ``None``
+    once *timeout* has passed without room."""
+    deadline = None if timeout is None else time.monotonic() + max(0.0, timeout)
+    while True:
+        slots = governor.try_acquire_heavy_parse_slots(cost)
+        if slots is not None:
+            return slots
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
+        else:
+            await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+
+
 async def acquire_parsing_slot(
     host: ConcurrencyHost,
     tier: ParseTier | None,
@@ -998,6 +1032,10 @@ async def acquire_parsing_slot(
     governor when one is configured, else falling back to the single legacy
     ``parsing_semaphore`` (pre-governor behaviour, cost always 1).
 
+    A heavy parse also takes the slots this container's worker processes
+    share (``ResourceGovernor.try_acquire_heavy_parse_slots``), so together
+    they run no more Docling conversions than free memory holds.
+
     With *timeout*, raises ``ParseAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
@@ -1006,9 +1044,29 @@ async def acquire_parsing_slot(
         cost = parse_cost(resolved_tier, size_bytes)
         pool = gate_pool(resolved_tier)
         gate = governor.gate(pool)
+        started = time.monotonic()
         if not await gate.acquire(cost=cost, timeout=timeout):
             raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
-        return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
+        if pool is not Pool.HEAVY_PARSE:
+            return Admission(tier=resolved_tier, cost=cost, _release=lambda: gate.release(cost))
+        try:
+            slots = await _wait_for_heavy_parse_slots(
+                governor,
+                cost,
+                None if timeout is None else timeout - (time.monotonic() - started),
+            )
+        except BaseException:
+            gate.release(cost)
+            raise
+        if slots is None:
+            gate.release(cost)
+            raise ParseAdmissionTimeout(pool.value, timeout or 0.0)
+
+        def _release() -> None:
+            slots.release()
+            gate.release(cost)
+
+        return Admission(tier=resolved_tier, cost=cost, _release=_release)
 
     legacy_semaphore = host.parsing_semaphore
     if legacy_semaphore is None:

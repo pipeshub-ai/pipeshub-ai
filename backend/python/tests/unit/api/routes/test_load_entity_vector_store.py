@@ -20,33 +20,41 @@ class TestLoadEntityVectorStore:
     async def test_awaitable_provider_is_awaited(self) -> None:
         store = _store()
         container = MagicMock(entity_vector_store=AsyncMock(return_value=store))
-        assert await load_entity_vector_store(container, MagicMock()) is store
+        assert await load_entity_vector_store(container, MagicMock(), "org-1") is store
 
     @pytest.mark.asyncio
     async def test_sync_provider_result_is_used_as_is(self) -> None:
         """A non-awaitable provider result used to read as "no store"."""
         store = _store()
         container = MagicMock(entity_vector_store=MagicMock(return_value=store))
-        assert await load_entity_vector_store(container, MagicMock()) is store
+        assert await load_entity_vector_store(container, MagicMock(), "org-1") is store
+
+    @pytest.mark.asyncio
+    async def test_existence_is_checked_for_the_callers_org(self) -> None:
+        """Each org has its own collection; another org's must not grant the tools."""
+        store = _store()
+        container = MagicMock(entity_vector_store=AsyncMock(return_value=store))
+        await load_entity_vector_store(container, MagicMock(), "org-1")
+        store.collection_exists.assert_awaited_once_with("org-1")
 
     @pytest.mark.asyncio
     async def test_no_entities_collection_hides_the_tools(self) -> None:
         """Nothing indexed yet: the tools could only come back empty, and
         their schemas and prompt paragraph cost every request."""
         container = MagicMock(entity_vector_store=AsyncMock(return_value=_store(collection=False)))
-        assert await load_entity_vector_store(container, MagicMock()) is None
+        assert await load_entity_vector_store(container, MagicMock(), "org-1") is None
 
     @pytest.mark.asyncio
     async def test_a_failing_provider_is_none_and_logged(self) -> None:
         logger = MagicMock()
         container = MagicMock(entity_vector_store=AsyncMock(side_effect=RuntimeError("vector db down")))
-        assert await load_entity_vector_store(container, logger) is None
+        assert await load_entity_vector_store(container, logger, "org-1") is None
         logger.warning.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_no_provider_is_none(self) -> None:
         container = MagicMock(spec=[])
-        assert await load_entity_vector_store(container, MagicMock()) is None
+        assert await load_entity_vector_store(container, MagicMock(), "org-1") is None
 
     @pytest.mark.asyncio
     async def test_get_services_does_not_touch_the_vector_db(self, monkeypatch) -> None:

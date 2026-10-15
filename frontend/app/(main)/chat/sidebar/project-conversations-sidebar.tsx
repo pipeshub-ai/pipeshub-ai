@@ -15,7 +15,7 @@ import { ProjectApi, type ProjectConversationRow } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import type { Conversation } from '@/chat/types';
 import { ChatSidebarHeader } from './header';
-import { ChatSidebarFooter } from './footer';
+import { ChatSidebarFooter } from '@/config';
 import { SidebarItem } from './sidebar-item';
 import { ChatSectionElement, ChatItemSkeleton, GeneratingTitleItem } from './chat-section-element';
 import { groupByTime, getNonEmptyGroups, type TimeGroupKey } from '@/lib/utils/group-by-time';

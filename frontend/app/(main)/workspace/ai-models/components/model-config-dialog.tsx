@@ -14,6 +14,7 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { toast } from '@/lib/store/toast-store';
 import { Spinner } from '@/app/components/ui/spinner';
 import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { useBrand } from '@/lib/branding';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import { resolveModelConfigSaveError } from '../resolve-model-config-save-error';
 import type { AIModelProvider, AIModelProviderField, ConfiguredModel, PickedModel } from '../types';
@@ -292,6 +293,9 @@ export function ModelConfigDialog({
   onSaved,
 }: ModelConfigDialogProps) {
   const { t } = useTranslation();
+  const brand = useBrand();
+  const docsOverviewUrl =
+    brand.docsHref('ai-models/overview') ?? `${EXTERNAL_LINKS.documentation}ai-models/overview`;
   const [fields, setFields] = useState<AIModelProviderField[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
@@ -1058,13 +1062,13 @@ export function ModelConfigDialog({
         aria-label={t('workspace.aiModels.configDocsOpenLabel')}
         style={{ cursor: 'pointer', gap: 6 }}
         onClick={() =>
-          window.open(`${EXTERNAL_LINKS.documentation}ai-models/overview`, '_blank', 'noopener,noreferrer')
+          window.open(docsOverviewUrl, '_blank', 'noopener,noreferrer')
         }
       >
         <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
       </Button>
     ),
-    [t]
+    [t, docsOverviewUrl]
   );
 
   return (

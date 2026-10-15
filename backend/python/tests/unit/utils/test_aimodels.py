@@ -720,8 +720,11 @@ class TestGetEmbeddingModel:
         mock_cls.assert_called_once()
         assert result is mock_cls.return_value
 
-    @patch("app.utils.aimodels.get_default_embedding_model")
+    @patch("app.utils.aimodels.get_embedding_server_embeddings")
     def test_default(self, mock_fn):
+        # Builds the raw server client directly rather than reusing
+        # get_default_embedding_model(): get_embedding_model decorates the
+        # result once, so going through it here would decorate twice.
         mock_fn.return_value = MagicMock()
         config = self._base_config()
         result = get_embedding_model(EmbeddingProvider.DEFAULT.value, config)

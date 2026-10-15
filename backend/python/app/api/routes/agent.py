@@ -6,7 +6,6 @@ Handles agent instances, templates, chat, and permissions using graph-based arch
 import asyncio
 import json
 import logging
-import os
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import aclosing
@@ -28,6 +27,7 @@ from app.agents.chat_modes.custom_instructions import resolve_custom_instruction
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
     get_run_cancellation_registry,
@@ -104,16 +104,6 @@ def _resolve_protocol(chat_query: "ChatQuery", request: Request) -> str:
     return resolve_protocol(chat_query.protocol, request)
 
 
-# Opik tracer initialization
-_opik_tracer = None
-_opik_api_key = os.getenv("OPIK_API_KEY")
-_opik_workspace = os.getenv("OPIK_WORKSPACE")
-if _opik_api_key and _opik_workspace:
-    try:
-        from opik.integrations.langchain import OpikTracer
-        _opik_tracer = OpikTracer()
-    except Exception:
-        pass
 # Constants
 SPLIT_PATH_EXPECTED_PARTS = 2  # Expected parts when splitting path with "/" separator
 
@@ -3649,7 +3639,36 @@ async def delete_agent(request: Request, agent_id: str) -> JSONResponse:
 # Agent Chat Endpoints
 # ============================================================================
 
-@router.post("/{agent_id}/chat", dependencies=[Depends(require_scopes(OAuthScopes.AGENT_EXECUTE))])
+UNIVERSAL_AGENT_ID = "agentIdPlaceholder"
+
+
+async def require_agent_execute_for_named_agents(request: Request, agent_id: str) -> None:
+    """Ask an OAuth token for `agent:execute` unless the agent is the universal one.
+
+    Node's conversation routes (agent chat mode, `conversation:chat`) run the
+    universal agent through these routes with the caller's token, so the route
+    admits `conversation:chat` too. A named Agent Builder agent still needs
+    `agent:execute`. Session and service tokens are not scope-restricted here.
+    """
+    if agent_id == UNIVERSAL_AGENT_ID:
+        return
+    user = getattr(request.state, "user", None) or {}
+    if is_service_token(user) or not user.get("isOAuth", False):
+        return
+    if OAuthScopes.AGENT_EXECUTE.value not in user.get("oauthScopes", []):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Insufficient scope. Required: {OAuthScopes.AGENT_EXECUTE.value}",
+        )
+
+
+@router.post(
+    "/{agent_id}/chat",
+    dependencies=[
+        Depends(require_scopes(OAuthScopes.AGENT_EXECUTE, OAuthScopes.CONVERSATION_CHAT)),
+        Depends(require_agent_execute_for_named_agents),
+    ],
+)
 async def chat(request: Request, agent_id: str) -> JSONResponse:
     """Chat with an agent (non-streaming).
 
@@ -3677,9 +3696,11 @@ async def chat(request: Request, agent_id: str) -> JSONResponse:
         Depends(
             require_scopes(
                 OAuthScopes.AGENT_EXECUTE,
+                OAuthScopes.CONVERSATION_CHAT,
                 service_scopes=(TokenScopes.CONVERSATION_CREATE,),
             )
-        )
+        ),
+        Depends(require_agent_execute_for_named_agents),
     ],
 )
 async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
@@ -3696,11 +3717,13 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
         retrieval_service = services["retrieval_service"]
         reranker_service = services["reranker_service"]
         config_service = services["config_service"]
-        # Optional, and resolved here rather than in get_services: it costs a
-        # vector-DB round trip, which the list/read/template routes never need.
-        entity_vector_store = await load_entity_vector_store(request.app.container, logger)
         user_context = _get_user_context(request)
         org_key = user_context["orgId"]
+        # Optional, and resolved here rather than in get_services: it costs a
+        # vector-DB round trip, which the list/read/template routes never need.
+        entity_vector_store = await load_entity_vector_store(
+            request.app.container, logger, org_key,
+        )
 
         timer.mark("services")
         body = _parse_request_body(await request.body())

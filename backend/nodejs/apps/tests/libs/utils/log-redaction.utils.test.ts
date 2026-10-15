@@ -6,6 +6,7 @@ import {
   redactHeadersForLog,
   redactLogMetadata,
   redactQueryForLog,
+  redactSecretsInText,
   redactSensitiveQueryParams,
 } from '../../../src/libs/utils/log-redaction.utils'
 
@@ -866,3 +867,21 @@ describe('log-redaction.utils', () => {
     })
   })
 })
+
+describe('redactSecretsInText', () => {
+  it('redacts a secret in free text and keeps the rest readable', () => {
+    const out = redactSecretsInText('GET https://x.example/cb?code=s3cr3t failed; Authorization: Bearer abc.def at foo (a.ts:1:2)');
+
+    expect(out).not.to.include('s3cr3t');
+    expect(out).not.to.include('abc.def');
+    expect(out).to.include('at foo (a.ts:1:2)');
+  });
+
+  it('stays linear on a long run with no separator', () => {
+    const started = Date.now();
+
+    redactSecretsInText('!'.repeat(200_000));
+
+    expect(Date.now() - started).to.be.below(1000);
+  });
+});

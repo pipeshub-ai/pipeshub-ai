@@ -6,8 +6,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -18,6 +19,10 @@ from app.modules.named_entities.domain.models import (
     NamedEntityExtraction,
 )
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
+from tests.support.fake_redis_connection_provider import FakeRedisConnectionProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 LOG = logging.getLogger("test")
 
@@ -250,3 +255,139 @@ def test_the_pass_runs_on_the_loop_records_are_indexed_on() -> None:
 def test_no_running_consumer_loop_means_the_pass_runs_where_it_is_started() -> None:
     assert completion.record_consumer_loop([]) is None
     assert completion.record_consumer_loop([("record", SimpleNamespace(worker_loop=None), None)]) is None
+
+
+class _Queue:
+    """Re-extraction jobs shared by replicas, recording who drains them and
+    whether two passes ever overlap."""
+
+    def __init__(self, jobs: int, *, fail_first: bool = False) -> None:
+        self.left = jobs
+        self.fail_next = fail_first
+        self.active = 0
+        self.overlapped = False
+        self.drained_by: list[str] = []
+        self.stopped_on_loss = 0
+        self.on_pass: Callable[[], Awaitable[None]] | None = None
+
+    async def drain(self, **kwargs: Any) -> int:  # noqa: ANN401
+        self.active += 1
+        self.overlapped |= self.active > 1
+        try:
+            if self.fail_next:
+                self.fail_next = False
+                raise RuntimeError("graph unavailable")
+            written = 0
+            for _ in range(completion.PAGE_SIZE):
+                await asyncio.sleep(0)
+                if self.on_pass is not None:
+                    await self.on_pass()
+                if not kwargs["still_leader"]():
+                    self.stopped_on_loss += 1
+                    break
+                if not self.left:
+                    break
+                self.left -= 1
+                written += 1
+                self.drained_by.append(asyncio.current_task().get_name())
+            return written
+        finally:
+            self.active -= 1
+
+
+async def _run_replicas(
+    queue: _Queue, provider: FakeRedisConnectionProvider | None = None, *, replicas: int = 2, ticks: int = 12,
+) -> None:
+    """Each replica runs the real loop and lease over one Redis; the loop's
+    waits are reduced to a yield, and each replica stops after ``ticks``."""
+    provider = provider or FakeRedisConnectionProvider()
+    real_sleep = asyncio.sleep
+    ticked: dict[str, int] = {}
+
+    async def sleep(seconds: float) -> None:
+        if seconds == completion.DEFAULT_INTERVAL_SECONDS:
+            name = asyncio.current_task().get_name()
+            ticked[name] = ticked.get(name, 0) + 1
+            if ticked[name] >= ticks:
+                raise asyncio.CancelledError
+        await real_sleep(0)
+
+    container = SimpleNamespace(
+        logger=lambda: LOG,
+        event_processor=lambda: SimpleNamespace(sink_orchestrator=MagicMock()),
+    )
+    # The loop reads its interval from the environment; ticks are counted at that one.
+    interval = {"NAMED_ENTITY_COMPLETION_INTERVAL_SECONDS": str(completion.DEFAULT_INTERVAL_SECONDS)}
+    with patch.dict(os.environ, interval), \
+            patch("app.services.redis.connection_provider_factory.get_redis_provider", return_value=provider), \
+            patch.object(completion.MessagingUtils, "_get_redis_config", AsyncMock(return_value=MagicMock())), \
+            patch.object(completion, "complete_named_entities", queue.drain), \
+            patch.object(completion.asyncio, "sleep", sleep):
+        tasks = [
+            asyncio.create_task(completion.run_named_entity_completion_loop(container, MagicMock()), name=f"r{i}")
+            for i in range(replicas)
+        ]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert all(isinstance(r, asyncio.CancelledError) for r in results)
+
+
+async def test_replicas_drain_every_job_one_at_a_time() -> None:
+    queue = _Queue(jobs=20)
+    await _run_replicas(queue, replicas=3)
+    assert queue.left == 0
+    assert not queue.overlapped
+    assert len(set(queue.drained_by)) == 1
+    assert _holder_changes(queue.drained_by) == 0
+
+
+def _holder_changes(drained_by: list[str]) -> int:
+    return sum(a != b for a, b in zip(drained_by, drained_by[1:]))
+
+
+async def test_after_the_lease_expires_one_replica_takes_it_and_drains() -> None:
+    provider = FakeRedisConnectionProvider()
+    queue = _Queue(jobs=20)
+    expired = False
+
+    async def expire_mid_pass() -> None:
+        nonlocal expired
+        if not expired and len(queue.drained_by) == 2:
+            expired = True
+            await provider.get_client().delete(completion.LEADER_KEY)
+
+    queue.on_pass = expire_mid_pass
+    await _run_replicas(queue, provider, ticks=20)
+    assert expired
+    assert queue.stopped_on_loss >= 1
+    assert queue.left == 0
+    # The replica that lost it stops at its next record and never drains again.
+    assert _holder_changes(queue.drained_by) <= 1
+
+
+async def test_a_replica_that_lost_the_lease_takes_it_again_once_it_is_free() -> None:
+    provider = FakeRedisConnectionProvider()
+    queue = _Queue(jobs=12)
+    other_held = False
+
+    async def taken_then_freed() -> None:
+        nonlocal other_held
+        client = provider.get_client()
+        if not other_held and len(queue.drained_by) == 2:
+            other_held = True
+            await client.set(completion.LEADER_KEY, "another-replica")
+        elif other_held and await client.get(completion.LEADER_KEY) == "another-replica":
+            await client.delete(completion.LEADER_KEY)
+
+    queue.on_pass = taken_then_freed
+    await _run_replicas(queue, provider, replicas=1, ticks=20)
+    assert other_held
+    assert queue.stopped_on_loss == 1
+    assert queue.left == 0
+    assert await provider.get_client().get(completion.LEADER_KEY) is None
+
+
+async def test_the_loop_keeps_draining_after_a_pass_raises() -> None:
+    queue = _Queue(jobs=8, fail_first=True)
+    await _run_replicas(queue)
+    assert queue.left == 0
+    assert not queue.overlapped

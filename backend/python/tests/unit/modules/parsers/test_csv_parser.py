@@ -1184,7 +1184,8 @@ class TestCallLlm:
 
         result = await parser._call_llm(mock_llm, ["prompt"])
         assert result == "response text"
-        mock_llm.ainvoke.assert_awaited_once_with(["prompt"])
+        # config carries the usage/Opik callbacks re-merged by get_llm_invoke_config
+        mock_llm.ainvoke.assert_awaited_once_with(["prompt"], config={})
 
     @pytest.mark.asyncio
     async def test_retry_on_failure(self, parser):

@@ -25,6 +25,7 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
 }));
 
 vi.mock('react-i18next', () => ({
+  initReactI18next: { type: '3rdParty', init: () => undefined },
   useTranslation: () => ({
     t: (key: string) => {
       const parts = key.split('.');

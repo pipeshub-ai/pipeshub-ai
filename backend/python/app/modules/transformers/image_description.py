@@ -251,13 +251,17 @@ class ImageDescriber:
 
         from app.modules.extraction.prompt_template import prompt_for_image_description
         from app.utils.aimodels import coerce_message_content_to_text
+        from app.utils.opik import get_llm_invoke_config
 
-        response = await vlm.ainvoke([
-            HumanMessage(content=[
-                {"type": "text", "text": prompt_for_image_description},
-                {"type": "image_url", "image_url": {"url": uri}},
-            ]),
-        ])
+        response = await vlm.ainvoke(
+            [
+                HumanMessage(content=[
+                    {"type": "text", "text": prompt_for_image_description},
+                    {"type": "image_url", "image_url": {"url": uri}},
+                ]),
+            ],
+            config=get_llm_invoke_config(vlm),
+        )
         return coerce_message_content_to_text(response.content).strip()[:_MAX_DESCRIPTION_CHARS]
 
     @staticmethod

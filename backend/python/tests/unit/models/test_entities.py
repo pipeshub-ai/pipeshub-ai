@@ -323,6 +323,36 @@ class TestRecord:
         rec = Record.from_arango_base_record(arango_doc)
         assert rec.parsing_status == ProgressStatus.NOT_STARTED.value
 
+    def test_uploaded_by_survives_a_graph_round_trip(self) -> None:
+        rec = Record(
+            org_id="org-1",
+            record_name="Upload",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            uploaded_by="user-7",
+        )
+        assert Record.from_arango_base_record(rec.to_arango_base_record()).uploaded_by == "user-7"
+
+    def test_uploaded_by_survives_a_file_record_graph_round_trip(self) -> None:
+        rec = FileRecord(
+            org_id="org-1",
+            record_name="Upload.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            is_file=True,
+            uploaded_by="user-7",
+        )
+        restored = FileRecord.from_arango_record(rec.to_arango_record(), rec.to_arango_base_record())
+        assert restored.uploaded_by == "user-7"
+
     def test_from_arango_base_record_unknown_connector(self):
         """Unknown connector name should fall back to KNOWLEDGE_BASE."""
         arango_doc = {

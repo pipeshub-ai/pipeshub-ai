@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 
 from app.containers.extraction import ExtractionAppContainer, initialize_container
+from app.edition_services import configure_app
 from app.modules.transformers.document_extraction import DocumentExtraction
 from app.api.routes.extraction import router as extraction_router
 from app.utils.env_utils import env_int
@@ -100,6 +101,7 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "extraction")
 
 app.include_router(extraction_router)
 

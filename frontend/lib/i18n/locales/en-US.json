@@ -342,7 +342,23 @@
       "DATA_FILE": "Data file",
       "CODE": "Code",
       "CODE_OUTPUT": "Code output"
-    }
+    },
+    "tabs": {
+      "all": "All artifacts",
+      "mine": "Mine",
+      "shared": "Shared with me"
+    },
+    "tabsShort": {
+      "all": "All",
+      "mine": "Mine",
+      "shared": "Shared"
+    },
+    "share": {
+      "title": "Share artifact"
+    },
+    "emptyShared": "Nothing shared with you yet",
+    "emptySharedHint": "Artifacts your teammates share with you will show up here.",
+    "notAvailable": "This artifact is no longer available"
   },
   "notifications": {
     "title": "Notifications",
@@ -4408,6 +4424,7 @@
     "missingRecordId": "Missing record id"
   },
   "oauthConsent": {
+    "workspace": "Workspace: {{name}}",
     "loading": "Loading authorization request…",
     "missingParams": "Missing required OAuth parameters (client_id, redirect_uri).",
     "noData": "No authorization data available.",

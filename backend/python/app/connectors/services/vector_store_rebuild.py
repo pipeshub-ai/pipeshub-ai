@@ -346,7 +346,7 @@ async def start_vector_store_reindex(
     processor = DataSourceEntitiesProcessor(logger, data_store_provider, config_service)
     renewal = asyncio.create_task(_renew_lock_until_cancelled(lock, logger))
     try:
-        await processor.initialize()
+        await processor.initialize(org_agnostic=True)
         page_size = _page_size()
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
         seen_vrids: set[str] = set()

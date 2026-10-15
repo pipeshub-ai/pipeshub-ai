@@ -536,6 +536,7 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'Neo4j: Skip onboarding'
+        id: neo4j-ready
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           HEADERS=$(mktemp)
@@ -604,7 +605,7 @@ jobs:
 
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: ${{ !cancelled() && env.RUN_PLAYWRIGHT == 'true' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -624,7 +625,7 @@ jobs:
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
       - name: 'Neo4j: Run resilience tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -636,7 +637,7 @@ jobs:
       # These repoint the whole deployment's storage while they run, so they go
       # last, after everything else has finished with this stack.
       - name: 'Neo4j: Run storage-backend tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -663,12 +664,14 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml down -v
 
       - name: 'ArangoDB: Start services'
+        id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
         run: docker compose -f docker-compose.integration.arango.yml up -d
 
       - name: 'ArangoDB: Wait for core services'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-core
+        if: ${{ !cancelled() && steps.arango-start.outcome == 'success' }}
         run: |
           echo "Waiting for core services..."
           timeout 300 bash -c '
@@ -683,7 +686,8 @@ jobs:
           echo "Core services are healthy!"
 
       - name: 'ArangoDB: Wait for Python microservices'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-python
+        if: ${{ !cancelled() && steps.arango-core.outcome == 'success' }}
         run: |
           echo "Waiting for connector and query services..."
           timeout 300 bash -c '
@@ -698,7 +702,8 @@ jobs:
           echo "All services are healthy!"
 
       - name: 'ArangoDB: Create organization and admin user'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-org
+        if: ${{ !cancelled() && steps.arango-python.outcome == 'success' }}
         run: |
           echo "Creating organization..."
           # jq reads the credentials from the environment, so quotes or backslashes
@@ -718,7 +723,8 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'ArangoDB: Skip onboarding'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-ready
+        if: ${{ !cancelled() && steps.arango-org.outcome == 'success' }}
         run: |
           HEADERS=$(mktemp)
           jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
@@ -747,7 +753,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -788,7 +794,7 @@ jobs:
             --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
-        if: ${{ !cancelled() && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'

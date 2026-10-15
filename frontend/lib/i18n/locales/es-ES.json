@@ -269,7 +269,23 @@
       "DATA_FILE": "Archivo de datos",
       "CODE": "Código",
       "CODE_OUTPUT": "Salida de código"
-    }
+    },
+    "tabs": {
+      "all": "Todos los artefactos",
+      "mine": "Míos",
+      "shared": "Compartidos conmigo"
+    },
+    "tabsShort": {
+      "all": "Todos",
+      "mine": "Míos",
+      "shared": "Compartidos"
+    },
+    "share": {
+      "title": "Compartir artefacto"
+    },
+    "emptyShared": "Aún no se ha compartido nada contigo",
+    "emptySharedHint": "Los artefactos que tus compañeros compartan contigo aparecerán aquí.",
+    "notAvailable": "Este artefacto ya no está disponible"
   },
   "notifications": {
     "title": "Notificaciones",
@@ -1549,7 +1565,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Administre aplicaciones OAuth 2.0 que pueden acceder a su organizaci├│n a trav├⌐s de Pipeshub",
+      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted ve sus aplicaciones aquí.",
       "searchPlaceholder": "Buscar aplicaciones por nombre o descripci├│n...",
       "newApplication": "Nueva aplicaci├│n OAuth",
       "emptyTitle": "No hay aplicaciones OAuth 2.0",
@@ -4358,6 +4374,7 @@
     "missingRecordId": "Falta el id del registro"
   },
   "oauthConsent": {
+    "workspace": "Espacio de trabajo: {{name}}",
     "loading": "Cargando solicitud de autorización…",
     "missingParams": "Faltan parámetros OAuth obligatorios (client_id, redirect_uri).",
     "noData": "No hay datos de autorización disponibles.",

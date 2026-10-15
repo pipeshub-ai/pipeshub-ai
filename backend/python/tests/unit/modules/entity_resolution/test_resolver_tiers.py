@@ -336,7 +336,7 @@ class TestTier2:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         assert resolution.stats.model_failures == 1
-        assert resolver._llm is None
+        assert "acme" not in resolver._llms
         assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
 
     async def test_a_hung_model_call_times_out_and_falls_back(

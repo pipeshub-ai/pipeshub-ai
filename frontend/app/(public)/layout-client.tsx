@@ -9,6 +9,7 @@ import { ToastContainer } from '@/app/components/feedback';
 import { ThemeProvider, ThemeScript } from '@/app/components/theme-provider';
 import { AuthHydrator } from '@/lib/store/auth-hydrator';
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup';
+import { BrandProvider } from '@/config';
 
 export default function PublicLayoutClient({
   children,
@@ -41,11 +42,13 @@ export default function PublicLayoutClient({
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>
-          <ThemeProvider>
-            <AuthHydrator />
-            <ServerUrlGuard>{children}</ServerUrlGuard>
-            <ToastContainer />
-          </ThemeProvider>
+          <BrandProvider>
+            <ThemeProvider>
+              <AuthHydrator />
+              <ServerUrlGuard>{children}</ServerUrlGuard>
+              <ToastContainer />
+            </ThemeProvider>
+          </BrandProvider>
         </I18nextProvider>
       </body>
     </html>

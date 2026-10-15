@@ -16,7 +16,7 @@ from app.config.key_value_store import KeyValueStore
 from app.services.messaging.config import RedisConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-_ = dotenv.load_dotenv()
+_ = dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 # Upper bound on how long close() waits for the watch thread to hand over the
 # Pub/Sub state lock before giving up and cancelling anyway.

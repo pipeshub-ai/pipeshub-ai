@@ -506,7 +506,20 @@ check "PIPESHUB_NO_PULL=true skips the refresh" "$(should_pull_image false false
 check "PIPESHUB_NO_PULL=yes skips the refresh" "$(should_pull_image false false yes)" "false"
 # Pinning a tag still refreshes (fetch that exact tag). should_pull_image has no
 # tag argument, so assert the launch path builds _APP_IMAGE from IMAGE_TAG.
-check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"'
+check "refresh target honours the pinned tag" "$inner" '_APP_IMAGE="${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"'
+
+# Downstream builds: image repository and extra compose files.
+check "app image repository defaults to pipeshubai/pipeshub-ai" "$inner" 'APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"'
+check "compose app image follows PIPESHUB_IMAGE" "$(cat "$REPO_ROOT/deployment/docker-compose/docker-compose.yml")" 'image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}'
+check "extra compose files are read from PIPESHUB_COMPOSE_OVERRIDES" "$inner" 'read -r -a _compose_overrides <<< "$PIPESHUB_COMPOSE_OVERRIDES"'
+check "image and overrides are saved in .env" "$inner" 'printf '"'"'PIPESHUB_COMPOSE_OVERRIDES=%s\n'"'"' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"'
+check "later runs read the saved image" "$inner" 'PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"'
+check "an extra env file may not repeat an installer key" "$inner" 'which the installer already writes'
+if grep -Eq -- 'docker compose .*-f "\$COMPOSE_FILE"|^ *-f "\$COMPOSE_FILE" \\$' "$INNER_INSTALLER"; then
+  fail "every compose call passes the override files too"
+else
+  pass "every compose call passes the override files too"
+fi
 # Launch-path guards.
 check "refreshes app image via compose pull" "$inner" 'pull "${_PULL_SERVICES[@]}"'
 check "eval skips sandbox image pull" "$inner" 'DEPLOY_TYPE:-}" != "eval"'

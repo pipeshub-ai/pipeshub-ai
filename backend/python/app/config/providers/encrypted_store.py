@@ -14,7 +14,7 @@ from app.config.key_value_store import KeyValueStore
 from app.config.key_value_store_factory import KeyValueStoreFactory, StoreConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 # Constants
 

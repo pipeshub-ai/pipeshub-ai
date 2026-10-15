@@ -772,6 +772,18 @@ class TestSearchSurvivesQueryTransformationFailure:
         assert any("rewrite" in w and "TimeoutError" in w for w in self._warnings(request))
 
     @pytest.mark.asyncio
+    async def test_the_tracing_config_reaches_both_transformations(self) -> None:
+        request, retrieval = self._build_request(), self._retrieval()
+        rewrite, expansion = self._chain(returns="rewritten"), self._chain(returns="angle one")
+        tracing = {"callbacks": [MagicMock(name="tracer")]}
+
+        with patch("app.api.routes.search.get_llm_invoke_config", return_value=tracing):
+            await self._search(request, retrieval, rewrite, expansion)
+
+        assert rewrite.ainvoke.call_args.kwargs == {"config": tracing}
+        assert expansion.ainvoke.call_args.kwargs == {"config": tracing}
+
+    @pytest.mark.asyncio
     async def test_an_expansion_repeated_by_the_model_is_searched_once(self) -> None:
         request, retrieval = self._build_request(), self._retrieval()
 

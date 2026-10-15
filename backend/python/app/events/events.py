@@ -1254,6 +1254,16 @@ class EventProcessor:
 
             doc: dict[str, Any] = dict(record)
 
+            # A successful attempt never clears `reason` (the status writer only
+            # sets it when non-empty), so drop the previous failure text here or
+            # it outlives a good reindex.
+            if doc.get("reason"):
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"reason": None}),
+                    "Failed to clear the previous failure reason for record",
+                    doc,
+                )
+
             # Extract necessary data
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")

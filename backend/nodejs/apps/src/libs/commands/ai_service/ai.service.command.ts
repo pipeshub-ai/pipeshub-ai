@@ -238,7 +238,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       logger.error('AI service streaming command failed', {
         error: error.message,
         url: url,
-        requestOptions: requestOptions,
+        method: this.method,
       });
       throw error;
     }

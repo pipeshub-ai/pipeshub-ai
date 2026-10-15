@@ -14,6 +14,7 @@ import {
   jwtGeneratorForValidateEmailLink,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   BadRequestError,
   ForbiddenError,
@@ -2752,7 +2753,7 @@ export class UserController {
           orgId: user.orgId?.toString(),
         },
         usersMails: [newEmail],
-        subject: 'PipesHub | Verify your email !',
+        subject: `${getBrandConfig().productName} | Verify your email !`,
         templateData: {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
@@ -2781,7 +2782,7 @@ export class UserController {
             orgId: String(user.orgId ?? ''),
           },
           usersMails: [currentEmail],
-          subject: 'PipesHub | Your email address is being changed',
+          subject: `${getBrandConfig().productName} | Your email address is being changed`,
           templateData: {
             orgName: org?.shortName ?? org?.registeredName,
             name: user.fullName,

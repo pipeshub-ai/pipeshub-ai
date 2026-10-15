@@ -755,6 +755,48 @@ class TestFilter:
         )
         assert f.value == 3.14
 
+    def test_number_empty_string_normalizes_to_none(self) -> None:
+        """UI sends "" (not omitted) when a number field is cleared/unset -
+        this must not raise, it should be treated as "no value"."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value is None
+        assert f.is_empty() is True
+
+    def test_number_numeric_string_coerced(self) -> None:
+        """Numeric strings (common from form inputs) are coerced to real numbers."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "1000",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value == 1000
+        assert isinstance(f.value, int)
+
+    def test_number_invalid_string_raises(self) -> None:
+        """Non-numeric strings still raise a clear validation error."""
+        with pytest.raises(ValueError, match="Invalid value type"):
+            Filter.model_validate({
+                "key": "max_items",
+                "value": "not-a-number",
+                "type": "number",
+                "operator": "less_than_or_equal",
+            })
+
+    def test_boolean_empty_string_normalizes_to_none(self) -> None:
+        f = Filter.model_validate({
+            "key": "flag",
+            "value": "",
+            "type": "boolean",
+            "operator": "is",
+        })
+        assert f.value is None
+
     def test_multiselect_filter(self):
         """Multiselect filter with IN operator."""
         f = Filter(
