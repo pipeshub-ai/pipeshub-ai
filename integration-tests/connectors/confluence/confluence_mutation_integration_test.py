@@ -43,7 +43,10 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
 )
 from connectors.confluence.constants import RUN_PREFIX  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
+from helper.graph_provider_utils import (  # noqa: E402
+    wait_for_record_by_external_id,
+    wait_for_sync_completion,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("confluence-mutation")
@@ -106,7 +109,6 @@ class TestConfluenceIncrementalSync:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         space_key = confluence_connector["space_key"]
-        before_count = await count_run_records(graph_provider, connector_id)
 
         title = f"{RUN_PREFIX}TC-CF-024 Test Page {uuid.uuid4().hex[:8]}"
         content = f"<p>Test content for TC-CF-024 at {uuid.uuid4().hex}</p>"
@@ -136,11 +138,13 @@ class TestConfluenceIncrementalSync:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
+        await wait_for_record_by_external_id(
+            graph_provider, connector_id, page_id, timeout=180, description="TC-CF-024 page"
+        )
         await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
-            min_records=before_count + 1,
             timeout=180,
         )
 
@@ -574,11 +578,14 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
+        # Not min_records: that checks the unfiltered total, which other runs' pages already satisfy.
+        await wait_for_record_by_external_id(
+            graph_provider, connector_id, parent_id_str, description="TC-MOVE-001 parent page"
+        )
         await wait_for_sync_completion(
             pipeshub_client,
             graph_provider,
             connector_id,
-            min_records=before_count + 1,
             timeout=120,
         )
         after_parent_count = await count_run_records(graph_provider, connector_id)

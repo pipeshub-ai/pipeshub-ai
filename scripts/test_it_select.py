@@ -22,19 +22,19 @@ FILTER_NAMES = re.findall(r"^(\w+):\s*$", FILTERS.read_text(encoding="utf-8"), r
 FULL = [*SHARDS, "core", "demo"]
 
 
-def outputs(matches: dict[str, list[str]], renamed: bool = False) -> dict[str, str]:
+def outputs(matches: dict[str, list[str]]) -> dict[str, str]:
     """dorny/paths-filter outputs with `list-files: json` for these per-filter matches."""
     changed = sorted({f for files in matches.values() for f in files})
-    out = {"all": "true", "all_files": json.dumps(changed), "renamed": str(renamed).lower()}
-    for name in set(FILTER_NAMES) - {"all", "renamed"}:
+    out = {"all": "true", "all_files": json.dumps(changed)}
+    for name in set(FILTER_NAMES) - {"all"}:
         files = matches.get(name, [])
         out[name] = str(bool(files)).lower()
         out[f"{name}_files"] = json.dumps(files)
     return out
 
 
-def select(matches: dict[str, list[str]], renamed: bool = False):
-    shards, markers, _ = it_select.select(outputs(matches, renamed), ENV)
+def select(matches: dict[str, list[str]]):
+    shards, markers, _ = it_select.select(outputs(matches), ENV)
     return shards, markers
 
 
@@ -55,12 +55,18 @@ class TestSelect(unittest.TestCase):
         shards, markers = select(matches)
         self.assertEqual((shards, markers), (FULL, []))
 
-    def test_a_rename_runs_everything(self) -> None:
-        shards, markers = select({"notion": ["integration-tests/connectors/notion/x.py"]}, renamed=True)
-        self.assertEqual((shards, markers), (FULL, []))
+    def test_a_rename_out_of_shared_code_runs_everything(self) -> None:
+        """The action lists the old path as deleted, so it reaches the filters too."""
+        matches = {"notion": ["integration-tests/connectors/notion/helpers.py"]}
+        matches["all"] = ["integration-tests/helper/helpers.py"]
+        self.assertEqual(select(matches), (FULL, []))
 
     def test_docs_alone_run_nothing(self) -> None:
         self.assertEqual(select({"no_stack": ["docs/a.md", "README.md"]}), ([], []))
+
+    def test_frontend_docs_alone_run_nothing(self) -> None:
+        readme = "frontend/README.md"
+        self.assertEqual(select({"frontend": [readme], "no_stack": [readme]}), ([], []))
 
     def test_the_frontend_runs_core_for_the_browser_tests(self) -> None:
         self.assertEqual(select({"frontend": ["frontend/app/page.tsx"]}), (["core"], []))

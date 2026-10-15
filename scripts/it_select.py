@@ -8,9 +8,10 @@ the CONN_SHARD_<n> lists from the environment. Writes to GITHUB_OUTPUT:
   markers  space-separated connector markers to keep inside the connector
            shards; empty means keep every marker (a full run).
 
-Run everything when any changed file is outside every filter (shared code), or
-a file was renamed. Otherwise a connector shard runs only the suites whose
-filter matched, and core runs only for frontend changes.
+Run everything when any changed file is outside every filter (shared code).
+Otherwise a connector shard runs only the suites whose filter matched, and core
+runs only for frontend changes. Files no_stack matches select nothing, even when
+another filter matches them too (frontend/README.md).
 
 The connector paths in the filters file were checked with an import graph
 (grimp over backend/python/app, ignoring the connector registry, which imports
@@ -28,7 +29,7 @@ import os
 import re
 from typing import Mapping
 
-NOT_MARKERS = {"frontend", "no_stack", "all", "renamed"}
+NOT_MARKERS = {"frontend", "no_stack", "all"}
 ALWAYS = ["core", "demo"]
 
 
@@ -53,16 +54,17 @@ def select(outputs: Mapping[str, str], env: Mapping[str, str]) -> tuple[list[str
         key[: -len("_files")]
         for key, value in outputs.items()
         if key.endswith("_files") and str(value).startswith("[")
-    } - {"all", "renamed"}
+    } - {"all"}
     matched = {name: _files(outputs, name) for name in names}
     unmatched = sorted(_files(outputs, "all") - set().union(*matched.values()))
 
-    if unmatched or outputs.get("renamed") == "true":
+    if unmatched:
         return [*shards, *ALWAYS], [], unmatched
 
-    markers = sorted(name for name, files in matched.items() if files and name not in NOT_MARKERS)
+    inert = matched.get("no_stack", set())
+    markers = sorted(name for name, files in matched.items() if files - inert and name not in NOT_MARKERS)
     picked = [shard for shard, names in shards.items() if set(names) & set(markers)]
-    if matched.get("frontend"):
+    if matched.get("frontend", set()) - inert:
         picked.append("core")
     return picked, markers, unmatched
 

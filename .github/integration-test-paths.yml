@@ -92,9 +92,12 @@ zammad:
 # Not a marker: the UI only matters to the Playwright tests, which run in core.
 frontend:
   - 'frontend/**'
-# Not a marker: changes that cannot affect a running stack.
+# Not a marker: changes that cannot affect a running stack. Not '**/*.md': some
+# markdown is runtime or test input (agent skill packs, parser fixtures).
 no_stack:
   - '*.md'
+  - '**/README.md'
+  - 'frontend/docs/**'
   - 'docs/**'
   - 'changelog/**'
   - 'loadtest/**'
@@ -102,9 +105,7 @@ no_stack:
   - 'backend/nodejs/apps/tests/**'
   - 'deployment/helm/**'
 
-# Every changed file, to find the ones no filter above names.
+# Every changed file, to find the ones no filter above names. The action lists a
+# rename as a delete of the old path plus an add of the new one, so both count.
 all:
   - '**'
-# A rename lists only its new path, so the old one is invisible: run everything.
-renamed:
-  - renamed: '**'

@@ -101,7 +101,7 @@ async def test_another_runs_pages_are_left_out_on_both_sides() -> None:
     # The arango and neo4j jobs share the space: the other run's page is listed by
     # Confluence but never reached this graph (or was deleted after it did).
     titles = {"0": f"{RUN_PREFIX}ours", "1": f"{ARTIFACT_PREFIX}0therrun-theirs"}
-    graph = _Graph([RecordType.CONFLUENCE_PAGE.value] * 2, names=[f"{RUN_PREFIX}ours", "Home"])
+    graph = _Graph([RecordType.CONFLUENCE_PAGE.value] * 3, names=[f"{RUN_PREFIX}ours", "Home", titles["1"]])
     await assert_confluence_pages_match_graph_records(
         _Datasource(["0", "1", "2"], titles), graph,  # type: ignore[arg-type]
         CONNECTOR, "SPACE", phase="after sync",
