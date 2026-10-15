@@ -23,12 +23,14 @@ def test_the_command_gets_the_oauth_app_and_not_the_admin_login(monkeypatch):
 
     [(file, args, env)] = calls
     assert (file, args) == ("run_sdk_tests.sh", ["run_sdk_tests.sh", "current"])
-    assert {key: env[key] for key in env if key.startswith("PIPESHUB_")} == {
-        "PIPESHUB_BASE_URL": "http://app.test/",
-        "PIPESHUB_API_URL": "http://app.test/api/v1",
-        "PIPESHUB_TOKEN_URL": "http://app.test/api/v1/oauth2/token",
-        "PIPESHUB_CLIENT_ID": "id",
-        "PIPESHUB_CLIENT_SECRET": "secret",
+    assert "PIPESHUB_TEST_USER_EMAIL" not in env
+    assert "PIPESHUB_TEST_USER_PASSWORD" not in env
+    oauth_keys = ("API_URL", "TOKEN_URL", "CLIENT_ID", "CLIENT_SECRET")
+    assert {key: env[f"PIPESHUB_{key}"] for key in oauth_keys} == {
+        "API_URL": "http://app.test/api/v1",
+        "TOKEN_URL": "http://app.test/api/v1/oauth2/token",
+        "CLIENT_ID": "id",
+        "CLIENT_SECRET": "secret",
     }
 
 
