@@ -216,3 +216,8 @@ class TestFileGrants:
 
         assert update.permissions_changed is False
         assert update.record.rewrite_permissions is False
+
+
+def test_the_team_connector_is_registered_as_a_connector() -> None:
+    """A helper placed between the builder decorator and the class took the decorator, and the team connector vanished."""
+    assert DropboxConnector._connector_metadata["name"] == "Dropbox"
