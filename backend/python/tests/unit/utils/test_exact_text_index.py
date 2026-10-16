@@ -105,7 +105,19 @@ class TestRunIndexPatternMatch:
         assert [h["virtual_record_id"] for h in outcome.hits[0]] == ["vr-both"]
         # The rare stage was returned in full, so the result is complete.
         assert outcome.capped is False
-        assert searcher.calls[1]["virtual_record_ids"] == ["vr-both"]
+        # The common word is looked up only within the rare word's records.
+        assert [c["virtual_record_ids"] for c in searcher.calls if "cache" in c["queries"]] == [["vr-both"]]
+
+    @pytest.mark.asyncio
+    async def test_when_no_stage_is_returned_in_full_each_is_looked_up_everywhere(self) -> None:
+        chunks = [(f"vr-a{i}", "cache warm") for i in range(INDEX_CANDIDATE_CHUNKS + 5)]
+        chunks += [(f"vr-b{i}", "proxy cold") for i in range(INDEX_CANDIDATE_CHUNKS + 5)]
+        searcher = InvertedIndexSearcher(chunks)
+
+        outcome = await _match(searcher, 'grep -rliZ "cache" . | xargs -0 grep -Hci "proxy"')
+
+        assert outcome.capped is True
+        assert {q for c in searcher.calls if c["virtual_record_ids"] is None for q in c["queries"]} == {"cache", "proxy"}
 
     @pytest.mark.asyncio
     async def test_every_stage_cut_at_its_limit_is_reported(self) -> None:

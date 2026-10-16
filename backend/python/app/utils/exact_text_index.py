@@ -246,6 +246,22 @@ def _partial_records(
     return sorted(missing.items(), key=lambda item: (-met_count[item[0]], item[0]))
 
 
+def _word_specificity(word: str) -> int:
+    """A guess at how rare *word* is: longer words, and identifiers with
+    digits or underscores, tend to sit in fewer chunks."""
+    return len(word) + (8 if any(c.isdigit() or c == "_" for c in word) else 0)
+
+
+def _lead_stage(plan: IndexPlan) -> IndexStage:
+    """The stage to look up first: the one whose least specific alternative
+    is most specific, since any alternative may bring in many chunks."""
+    def score(stage: IndexStage) -> int:
+        words = stage.query.split()
+        return min((_word_specificity(w) for w in words), default=0)
+
+    return max(plan.stages, key=score)
+
+
 async def run_index_pattern_match(
     plans: list[IndexPlan],
     searcher: LexicalSearcher,
@@ -257,22 +273,60 @@ async def run_index_pattern_match(
 ) -> IndexMatchOutcome:
     """Look every plan's stages up in the lexical index and verify them.
 
-    One batched lookup for every stage of every plan. A record whose words
-    sit in different chunks, one of them past a stage's limit, is then looked
-    up once more within that record, so an AND across stages is decided on
-    the record, not on one chunk.
+    Each plan's most specific stage is looked up first, in one batch. When
+    the index returns it in full, its records are every candidate the plan
+    can have, so the plan's other stages are looked up only within them: a
+    stage of common words then costs its matches in those records, not in
+    the store. Otherwise the other stages are looked up in full. A record
+    that met some stages, the rest cut at a limit, is looked up once more
+    within itself, so an AND across stages is decided on the record, not on
+    one chunk.
     """
-    queries = list(dict.fromkeys(stage.query for plan in plans for stage in plan.stages))
-    result = await searcher.search_lexical(
-        queries, user_id, org_id, filter_groups=filters, limit=INDEX_CANDIDATE_CHUNKS,
+    lead = {id(plan): _lead_stage(plan) for plan in plans}
+    lead_queries = list(dict.fromkeys(stage.query for stage in lead.values()))
+    first = await searcher.search_lexical(
+        lead_queries, user_id, org_id, filter_groups=filters, limit=INDEX_CANDIDATE_CHUNKS,
     )
-    capped_queries = {q for q, cut in zip(queries, result.capped) if cut}
+    capped_queries = {q for q, cut in zip(lead_queries, first.capped) if cut}
+    texts: dict[str, list[str]] = {}
+    _collect(texts, first)
+
+    lead_records = {
+        query: {hit.virtual_record_id for hit in batch} for query, batch in zip(lead_queries, first.hits)
+    }
+    within: set[str] = set()
+    within_records: set[str] = set()
+    everywhere: set[str] = set()
+    for plan in plans:
+        rest = [stage.query for stage in plan.stages if stage.query != lead[id(plan)].query]
+        records = lead_records[lead[id(plan)].query]
+        if lead[id(plan)].query in capped_queries or len(records) > _FOLLOW_UP_RECORDS:
+            everywhere.update(rest)
+        elif records:
+            within.update(rest)
+            within_records |= records
+    within -= everywhere | set(lead_queries)
+    everywhere -= set(lead_queries)
+    rounds = []
+    if everywhere:
+        rounds.append((sorted(everywhere), None))
+    if within:
+        rounds.append((sorted(within), sorted(within_records)))
+    results = await asyncio.gather(*(
+        searcher.search_lexical(
+            queries, user_id, org_id, filter_groups=filters,
+            limit=INDEX_CANDIDATE_CHUNKS, virtual_record_ids=scope,
+        )
+        for queries, scope in rounds
+    ))
+    for (queries, _scope), result in zip(rounds, results):
+        capped_queries.update(q for q, cut in zip(queries, result.capped) if cut)
+        _collect(texts, result)
+
     # A plan's matches all meet each of its stages, so one stage the index
     # returned in full already names every candidate; only when every stage
     # was cut can a match lie outside all of them.
     capped = any(all(stage.query in capped_queries for stage in plan.stages) for plan in plans)
-    texts: dict[str, list[str]] = {}
-    _collect(texts, result)
 
     missing = await asyncio.to_thread(_partial_records, plans, texts, capped_queries)
     if missing:
@@ -287,7 +341,7 @@ async def run_index_pattern_match(
 
     hits = await asyncio.to_thread(lambda: [_rank(plan, texts) for plan in plans])
     logger_instance.info(
-        "pattern_match index: %d command(s), %d lookup(s), %d candidate record(s), hits=%s capped=%s",
-        len(plans), len(queries), len(texts), [len(h) for h in hits], capped,
+        "pattern_match index: %d command(s), %d lookup round(s), %d candidate record(s), hits=%s capped=%s",
+        len(plans), 1 + len(rounds) + bool(missing), len(texts), [len(h) for h in hits], capped,
     )
     return IndexMatchOutcome(hits=hits, capped=capped)
