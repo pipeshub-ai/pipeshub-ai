@@ -61,9 +61,13 @@ export function ArtifactsHeader({
             size="2"
             color="gray"
             onClick={onFind}
-            aria-label={t('action.find')}
+            aria-label={t('artifacts.closeSearch')}
           >
             <MaterialIcon name="close" size={18} />
+          </IconButton>
+        ) : isMobile ? (
+          <IconButton variant="ghost" size="2" color="gray" onClick={onFind} aria-label={t('action.find')}>
+            <MaterialIcon name="search" size={18} />
           </IconButton>
         ) : (
           <Button variant="ghost" size="1" color="gray" onClick={onFind}>
@@ -84,10 +88,10 @@ export function ArtifactsHeader({
           value={viewMode}
           onValueChange={(value) => onViewModeChange(value as ArtifactsViewMode)}
         >
-          <SegmentedControl.Item value="grid">
+          <SegmentedControl.Item value="grid" aria-label={t('artifacts.gridView')} title={t('artifacts.gridView')}>
             <MaterialIcon name="grid_view" size={16} />
           </SegmentedControl.Item>
-          <SegmentedControl.Item value="list">
+          <SegmentedControl.Item value="list" aria-label={t('artifacts.listView')} title={t('artifacts.listView')}>
             <MaterialIcon name="view_list" size={16} />
           </SegmentedControl.Item>
         </SegmentedControl.Root>

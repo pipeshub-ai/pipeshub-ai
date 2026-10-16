@@ -73,9 +73,13 @@ class TestEntityToolsInChat:
         assert any(ner_corpus.record_ids["settlement"] in result for result in returned), returned
         assert not any(ner_corpus.record_ids["contract"] in result for result in returned), returned
 
-    async def test_the_answer_names_the_document_the_tool_found(self, value_turn) -> None:
+    async def test_the_answer_names_the_document_the_tool_found(self, value_turn, ner_corpus) -> None:
         answer = value_turn.answer.casefold()
-        assert "settlement" in answer or "siemens" in answer, value_turn.describe()
+        # Citation renumbering replaces a link's text with [N], so a title the model wrote as
+        # link text survives only as the record id in the link.
+        assert (
+            "settlement" in answer or "siemens" in answer or ner_corpus.record_ids["settlement"] in answer
+        ), value_turn.describe()
 
     async def test_the_entity_tools_resolve_a_name_to_the_documents_that_mention_it(self, entity_turn, ner_corpus) -> None:
         searches = entity_turn.calls_ending_with("search_entities")
@@ -128,7 +132,7 @@ class TestTheRequestEntityFilterScopesTheAnswer:
 
     async def test_every_agent_content_search_is_scoped_by_it(self, conversations_client, ner_corpus) -> None:
         trace = _turn(
-            conversations_client, ner_corpus, "Search the documents for the amounts of money they mention.",
+            conversations_client, ner_corpus, "Use the search tool to search the documents for the amounts of money they mention.",
             mode="agent", entity_filters=REFUND,
         )
         try:

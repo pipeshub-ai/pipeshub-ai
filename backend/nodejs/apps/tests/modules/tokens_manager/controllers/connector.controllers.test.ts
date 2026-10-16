@@ -1670,6 +1670,45 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // =========================================================================
   // Branch coverage: toggleConnectorInstance - fullSync boolean branch
   // =========================================================================
+  describe('toggleConnectorInstance - schedule reconcile', () => {
+    it('leaves the connector to the hourly repair when its settings cannot be read', async () => {
+      const clock = sinon.useFakeTimers({ toFake: ['setTimeout'] })
+      try {
+        const scheduler = {
+          scheduleJob: sinon.stub(),
+          removeJob: sinon.stub(),
+          getJobStatus: sinon.stub(),
+          markReconcilePending: sinon.stub().resolves(),
+          clearReconcilePending: sinon.stub().resolves(),
+        }
+        const handler = toggleConnectorInstance(mockAppConfig, scheduler as any)
+        req.params = { connectorId: 'conn-1' }
+        req.body = { type: 'sync' }
+        sinon.stub(UserGroups, 'find').returns({ select: sinon.stub().resolves([{ type: 'admin' }]) } as any)
+        const command = sinon.stub(connectorUtils, 'executeConnectorCommand')
+        // The instance summary a sync toggle reads first, then the toggle itself.
+        command.onCall(0).resolves({ statusCode: 200, data: { connector: { isActive: true } } })
+        command.onCall(1).resolves({ statusCode: 200, data: { success: true } })
+        command.rejects(new Error('connector service busy'))
+
+        await handler(req, res, next)
+        await new Promise<void>((resolve) => setImmediate(resolve))
+        for (let i = 0; i < 4; i++) await clock.tickAsync(30_000)
+
+        const reads = command.getCalls().slice(2)
+        expect(reads).to.have.length(3)
+        // Each read is aborted on its own timeout, not left running behind a race.
+        for (const read of reads) expect(read.args[4]).to.deep.equal({ timeoutMs: 10_000 })
+        // Persisted, so a restart before the hourly repair still owes the change.
+        expect(scheduler.markReconcilePending.calledOnceWithExactly('conn-1', 'bbbbbbbbbbbbbbbbbbbbbbbb')).to.be.true
+        expect(scheduler.clearReconcilePending.called).to.be.false
+        expect(scheduler.scheduleJob.called || scheduler.removeJob.called).to.be.false
+      } finally {
+        clock.restore()
+      }
+    })
+  })
+
   describe('toggleConnectorInstance - fullSync branch', () => {
     it('should include fullSync when it is a boolean true', async () => {
       const handler = toggleConnectorInstance(mockAppConfig)

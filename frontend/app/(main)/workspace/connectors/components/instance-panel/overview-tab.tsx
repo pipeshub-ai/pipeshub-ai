@@ -25,6 +25,7 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { LastRunSummary } from './last-run-summary';
 
 // ========================================
 // Props
@@ -275,6 +276,8 @@ export function OverviewTab({
           </Text>
         </Flex>
       )}
+
+      <LastRunSummary instance={instance} />
 
       {/* Shared stats panel */}
       <IndexingStatsPanel

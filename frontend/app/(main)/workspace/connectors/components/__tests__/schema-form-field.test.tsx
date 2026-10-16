@@ -340,4 +340,104 @@ describe('SchemaFormField: file upload', () => {
     fireEvent.click(screen.getByText('Replace'));
     expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
   });
+
+  it('replaces a saved file from the keyboard, clearing it before the picker opens', () => {
+    const { container, onChange } = renderField(keyFileField, { value: '{"private_key":"secret"}' });
+    const input = fileInput(container);
+    const pick = vi.spyOn(input, 'click');
+
+    fireEvent.keyDown(screen.getByRole('button', { name: 'Service account key' }), { key: ' ' });
+
+    expect(onChange).toHaveBeenCalledWith('serviceAccountKey', '');
+    expect(input.value).toBe('');
+    expect(pick).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the file picker from the keyboard and announces a refused file', async () => {
+    const { container } = renderField(keyFileField);
+    const zone = screen.getByRole('button', { name: 'Service account key' });
+    const pick = vi.spyOn(fileInput(container), 'click');
+
+    zone.focus();
+    fireEvent.keyDown(zone, { key: 'Enter' });
+    expect(pick).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(fileInput(container), { target: { files: [jsonFile('not json')] } });
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toBe('The key file must be valid JSON.');
+    expect(zone.getAttribute('aria-describedby')).toBe(alert.id);
+  });
+
+  it('reads the help text to a screen reader on the upload zone, beside any error', async () => {
+    const { container } = renderField({ ...keyFileField, description: 'The JSON key from your cloud console' });
+    const zone = screen.getByRole('button', { name: 'Service account key' });
+    const describedBy = () =>
+      (zone.getAttribute('aria-describedby') ?? '').split(' ').map((id) => document.getElementById(id)?.textContent);
+
+    expect(describedBy()).toEqual(['The JSON key from your cloud console']);
+
+    fireEvent.change(fileInput(container), { target: { files: [jsonFile('not json')] } });
+    await screen.findByRole('alert');
+    expect(describedBy()).toEqual(['The JSON key from your cloud console', 'The key file must be valid JSON.']);
+  });
+});
+
+describe('SchemaFormField: labels, ranges and options', () => {
+  it('ties the label, help and error to the input', () => {
+    renderField(
+      { name: 'pages', displayName: 'Maximum pages', description: 'At most this many.', fieldType: 'NUMBER', required: true },
+      { value: 0, error: 'Enter a whole number from 1 to 10,000.' }
+    );
+    const input = screen.getByLabelText(/Maximum pages/);
+    expect(input).toBe(inputByLabel('Maximum pages'));
+    const describedBy = (input.getAttribute('aria-describedby') ?? '').split(' ');
+    const texts = describedBy.map((id) => document.getElementById(id)?.textContent);
+    expect(texts).toEqual(['At most this many.', 'Enter a whole number from 1 to 10,000.']);
+    expect(screen.getByRole('alert').textContent).toBe('Enter a whole number from 1 to 10,000.');
+  });
+
+  it('uses validation.min/max as the input range and shows the unit', () => {
+    renderField(
+      {
+        name: 'max_pages',
+        displayName: 'Maximum pages',
+        fieldType: 'NUMBER',
+        required: true,
+        validation: { min: 1, max: 10000, minLength: 3 },
+        unit: 'pages',
+      } as AuthSchemaField,
+      { value: 100 }
+    );
+    const input = inputByLabel('Maximum pages');
+    expect(input.min).toBe('1');
+    expect(input.max).toBe('10000');
+    const unitId = (input.getAttribute('aria-describedby') ?? '').split(' ').pop()!;
+    expect(document.getElementById(unitId)?.textContent).toBe('pages');
+  });
+
+  it('names a switch after its label and description', () => {
+    renderField(
+      { name: 'robots', displayName: 'Respect robots.txt', description: 'Skip blocked pages.', fieldType: 'BOOLEAN' as AuthSchemaField['fieldType'], required: false },
+      { value: 'true' }
+    );
+    const toggle = screen.getByRole('switch', { name: 'Respect robots.txt' });
+    expect(toggle.getAttribute('aria-checked')).toBe('true');
+    expect(document.getElementById(toggle.getAttribute('aria-describedby')!)?.textContent).toBe('Skip blocked pages.');
+  });
+
+  it('shows option labels in place of raw option values', () => {
+    renderField(
+      {
+        name: 'type',
+        displayName: 'Crawl',
+        fieldType: 'SELECT',
+        required: true,
+        options: ['single', 'recursive'],
+        optionLabels: { single: 'Only this page' },
+      } as AuthSchemaField,
+      { value: 'single' }
+    );
+    const trigger = screen.getByLabelText(/Crawl/);
+    expect(trigger.textContent).toBe('Only this page');
+  });
 });

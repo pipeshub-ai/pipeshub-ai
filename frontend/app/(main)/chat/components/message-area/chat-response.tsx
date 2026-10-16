@@ -11,7 +11,7 @@ import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
 import { SourcesTab } from './response-tabs/citations/sources-tab';
 import { CitationsTab } from './response-tabs/citations/citations-tab';
-import { ArtifactsPanel } from './artifacts-panel';
+import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
 import { AskUserQuestionCard, askUserQuestionOwnsRow } from './ask-user-question-card';
 import { McpConnectRequiredCard } from './mcp-connect-required-card';
 import { McpSignInCard } from './mcp-sign-in-card';
@@ -41,7 +41,7 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
-import { parseDownloadMarkers, parseArtifactMarkers } from '../../utils/parse-download-markers';
+import { parseDownloadMarkers, parseArtifactMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { DownloadTasks } from './download-tasks';
 import {
@@ -323,14 +323,12 @@ export const ChatResponse = React.memo(function ChatResponse({
           const streamAsPdf =
             isPresentationFile(artifact.mimeType, artifact.fileName) ||
             isLegacyWordDocFile(artifact.mimeType, artifact.fileName);
-          const streamOptions = {
+          const blob = await KnowledgeBaseApi.streamRecord(recordId, {
             ...(streamAsPdf ? { convertTo: 'application/pdf' } : {}),
             ...(version !== undefined ? { version } : {}),
-          };
-          const blob = await KnowledgeBaseApi.streamRecord(
-            recordId,
-            Object.keys(streamOptions).length > 0 ? streamOptions : undefined,
-          );
+            // The card shows a deleted artifact itself; a version switch has no card to tell.
+            ...(isSwitch ? {} : { suppressErrorToast: isArtifactGone }),
+          });
           const resolvedType = resolvePreviewMimeAfterStream(
             artifact.mimeType,
             artifact.fileName,
@@ -360,7 +358,7 @@ export const ChatResponse = React.memo(function ChatResponse({
             isSwitchingVersion: false,
           });
           return;
-        } catch {
+        } catch (error) {
           if (isSwitch) {
             // Keep showing the last successfully loaded version rather than
             // falling back to a stale/foreign URL below.
@@ -368,15 +366,19 @@ export const ChatResponse = React.memo(function ChatResponse({
             if (current?.id === recordId) setPreviewFile({ ...current, isSwitchingVersion: false });
             return;
           }
+          if (isArtifactGone(error)) throw error;
           // Initial-open failure — fall through to the URL-classification
           // fallback below (never trusts an arbitrary marker URL, see
           // `ArtifactsPanel`'s `handleDownload` docstring for the same rule).
         }
       }
 
+      const fallbackUrl = artifact.downloadUrl?.trim();
+      const trusted = !!fallbackUrl && (isTrustedApiUrl(fallbackUrl) || isSignedUrl(fallbackUrl));
       setPreviewFile({
         id: artifact.id,
-        url: artifact.downloadUrl,
+        url: trusted ? fallbackUrl : '',
+        ...(trusted ? {} : { error: t('artifacts.previewFailed') }),
         name: artifact.fileName,
         type: artifact.mimeType,
         size: artifact.sizeBytes,
@@ -387,7 +389,7 @@ export const ChatResponse = React.memo(function ChatResponse({
         onVersionChange,
       });
     },
-    [latestArtifactVersions, setPreviewFile],
+    [latestArtifactVersions, setPreviewFile, t],
   );
 
   const pendingAskUserQuestion = useChatStore((s) =>
@@ -785,8 +787,8 @@ export const ChatResponse = React.memo(function ChatResponse({
                   try {
                     const { KnowledgeBaseApi } = await import('@/app/(main)/knowledge-base/api');
                     const [details, blob] = await Promise.all([
-                      KnowledgeBaseApi.getRecordDetails(codeArtifactId),
-                      KnowledgeBaseApi.streamRecord(codeArtifactId),
+                      KnowledgeBaseApi.getRecordDetails(codeArtifactId, { suppressErrorToast: isArtifactGone }),
+                      KnowledgeBaseApi.streamRecord(codeArtifactId, { suppressErrorToast: isArtifactGone }),
                     ]);
                     const objectUrl = URL.createObjectURL(blob);
                     useChatStore.getState().setPreviewFile({
@@ -798,9 +800,9 @@ export const ChatResponse = React.memo(function ChatResponse({
                       hideFileDetails: true,
                       showDownload: true,
                     });
-                  } catch {
-                    // Source artifact may have been deleted/permission-revoked since —
-                    // fail silently, there is nothing actionable for the user here.
+                  } catch (error) {
+                    // The card hides "view source" once the source is gone.
+                    if (isArtifactGone(error)) throw error;
                   }
                 }}
               />

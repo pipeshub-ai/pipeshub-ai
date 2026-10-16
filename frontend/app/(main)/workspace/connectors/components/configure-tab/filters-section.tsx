@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   Flex,
   Text,
@@ -981,6 +981,7 @@ function ManualIndexingSection({
   readOnly?: boolean;
 }) {
   const { t } = useTranslation();
+  const toggleId = useId();
   const { formData, setFilterFormValue } = useConnectorsStore();
   const raw = formData.filters.indexing[field.name];
 
@@ -1023,7 +1024,7 @@ function ManualIndexingSection({
               <MaterialIcon name="tune" size={16} color="var(--green-11)" />
             </Box>
             <Flex align="center" gap="1" wrap="wrap" style={{ minWidth: 0 }}>
-              <Text size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              <Text id={`${toggleId}-label`} size="3" weight="medium" style={{ color: 'var(--gray-12)' }}>
                 {field.displayName}
               </Text>
               <HelpTooltip content={t('workspace.connectors.filters.manualIndexingTooltip')}>
@@ -1041,7 +1042,7 @@ function ManualIndexingSection({
             </Flex>
           </Flex>
           {field.description ? (
-            <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+            <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
               {field.description}
             </Text>
           ) : null}
@@ -1049,6 +1050,8 @@ function ManualIndexingSection({
         <Switch
           color="jade"
           size="2"
+          aria-labelledby={`${toggleId}-label`}
+          aria-describedby={field.description ? `${toggleId}-help` : undefined}
           checked={checked}
           disabled={readOnly}
           onCheckedChange={(next) => {
@@ -1533,6 +1536,7 @@ function FilterFieldRow({
   allSyncValues?: Record<string, unknown>;
 }) {
   const { t } = useTranslation();
+  const toggleId = useId();
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
   const operators = useMemo(() => {
     const fromSchema = field.operators?.filter((o) => o && o.trim()) ?? [];
@@ -1635,14 +1639,16 @@ function FilterFieldRow({
                 value: v === true,
               })
             }
+            aria-labelledby={`${toggleId}-label`}
+            aria-describedby={field.description ? `${toggleId}-help` : undefined}
             style={{ flexShrink: 0, cursor: 'pointer', marginTop: 2 }}
           />
           <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
-            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+            <Text id={`${toggleId}-label`} size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {field.displayName}
             </Text>
             {field.description ? (
-              <Text size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
+              <Text id={`${toggleId}-help`} size="1" style={{ color: 'var(--gray-10)', lineHeight: 1.55 }}>
                 {field.description}
               </Text>
             ) : null}

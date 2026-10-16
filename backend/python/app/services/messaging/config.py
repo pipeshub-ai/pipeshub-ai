@@ -568,7 +568,9 @@ class MessagingEnvConfig:
         """How long a buffered offset may go unresolved before the consumer
         force-commits past it. Bounds the damage from a dispatch path that
         fails to settle its watermark claim: without it, one such offset
-        stalls every later commit on its partition until a restart."""
+        stalls every later commit on its partition until a restart. Kafka
+        only: Redis Streams ignores it and keeps a held entry for as long as
+        its ownership refresh works."""
         return _env_seconds("FAIR_SCHEDULING_MAX_DWELL_SECONDS", 900.0)
 
     @property

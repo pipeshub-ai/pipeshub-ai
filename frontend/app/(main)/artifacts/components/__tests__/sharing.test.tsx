@@ -1,6 +1,6 @@
 import React from 'react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
 import '@/lib/__tests__/test-i18n';
@@ -18,6 +18,7 @@ vi.mock('@/app/components/ui', () => ({
   DateRangePicker: () => null,
 }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+vi.mock('../artifact-thumbnail', () => ({ ArtifactThumbnail: () => null }));
 const viewport = vi.hoisted(() => ({ isMobile: false }));
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
 
@@ -35,8 +36,24 @@ const handlers = {
   onDownload: vi.fn(),
   onOpenChat: vi.fn(),
   onShare: vi.fn(),
+  onDelete: vi.fn(),
   onPageChange: vi.fn(),
 };
+
+beforeAll(() => {
+  // Radix menus measure and observe on open; jsdom has neither.
+  globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as never;
+  Element.prototype.scrollIntoView ??= () => {};
+});
+
+async function menuItems(name: string) {
+  const trigger = screen.getByRole('button', { name: `More options for ${name}` });
+  await act(async () => {
+    trigger.focus();
+    trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+  });
+  return within(screen.getByRole('menu'));
+}
 
 afterEach(() => {
   cleanup();
@@ -44,7 +61,7 @@ afterEach(() => {
 });
 
 describe('Share action', () => {
-  it('is offered in the list only on artifacts the viewer owns', () => {
+  it('is offered in the list only on artifacts the viewer owns', async () => {
     render(
       <Theme>
         <ArtifactsListView
@@ -58,23 +75,42 @@ describe('Share action', () => {
       </Theme>,
     );
 
-    const shareButtons = screen.getAllByRole('button', { name: 'Share' });
-    expect(shareButtons).toHaveLength(1);
-    expect(within(screen.getByRole('button', { name: 'theirs.csv' })).queryByRole('button', { name: 'Share' })).toBeNull();
+    expect((await menuItems('theirs.csv')).queryByRole('menuitem', { name: 'Share' })).toBeNull();
+    cleanup();
+    render(
+      <Theme>
+        <ArtifactsListView
+          items={[mine, sharedWithMe]}
+          sortBy="createdAtTimestamp"
+          sortOrder="desc"
+          onSort={vi.fn()}
+          pagination={PAGINATION}
+          {...handlers}
+        />
+      </Theme>,
+    );
 
-    fireEvent.click(shareButtons[0]);
+    fireEvent.click((await menuItems('mine.csv')).getByRole('menuitem', { name: 'Share' }));
     expect(handlers.onShare).toHaveBeenCalledWith(mine);
     expect(handlers.onPreview).not.toHaveBeenCalled();
   });
 
-  it('is offered in the grid only on artifacts the viewer owns', () => {
+  it('is offered in the grid only on artifacts the viewer owns', async () => {
     render(
       <Theme>
         <ArtifactsGridView items={[mine, sharedWithMe]} pagination={PAGINATION} {...handlers} />
       </Theme>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Share' }));
+    expect((await menuItems('theirs.csv')).queryByRole('menuitem', { name: 'Share' })).toBeNull();
+    cleanup();
+    render(
+      <Theme>
+        <ArtifactsGridView items={[mine, sharedWithMe]} pagination={PAGINATION} {...handlers} />
+      </Theme>,
+    );
+
+    fireEvent.click((await menuItems('mine.csv')).getByRole('menuitem', { name: 'Share' }));
     expect(handlers.onShare).toHaveBeenCalledWith(mine);
     expect(handlers.onPreview).not.toHaveBeenCalled();
   });
@@ -90,6 +126,9 @@ describe('Shared with me tab', () => {
           ownership="shared"
           isLoading={false}
           error={null}
+          hasActiveFilters={false}
+          onRetry={vi.fn()}
+          onClearFilters={vi.fn()}
           sortBy="createdAtTimestamp"
           sortOrder="desc"
           onSort={vi.fn()}

@@ -247,6 +247,8 @@ class TestUpdateArtifact:
         success, payload = await manager.update_artifact(artifact_id="ghost", content="x")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_returns_permission_error(self) -> None:
         registry = MagicMock()
@@ -289,6 +291,8 @@ class TestGetArtifactDownloadUrl:
         success, payload = await manager.get_artifact_download_url(artifact_id="ghost")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied(self) -> None:
         registry = MagicMock()
@@ -541,6 +545,8 @@ class TestGetArtifactContent:
         success, payload = await manager.get_artifact_content(artifact_id="ghost")
         assert success is False
         assert "ghost" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_is_not_swallowed(self) -> None:
         registry = MagicMock()

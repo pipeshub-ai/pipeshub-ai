@@ -169,3 +169,28 @@ class TestCacheTarget:
         assert cache_target(_azure()).base_url == "https://acme.openai.azure.com"
         assert cache_target(_bedrock("amazon.nova-pro-v1:0")).model == "amazon.nova-pro-v1:0"
         assert cache_target(object(), "x") == cache_target(object(), "x")
+
+
+class TestPromptFamily:
+    def test_records_of_one_family_share_its_keys(self) -> None:
+        from app.agents.agent_loop.prompt_cache import family_cache_strategy
+
+        keys = {
+            family_cache_strategy(_azure(), family="document-extraction", org_id="org-1", shard_key=f"r{i}")
+            .finalize([])[1]["prompt_cache_key"]
+            for i in range(50)
+        }
+        assert all(":document-extraction:" in key for key in keys)
+        assert 1 < len(keys) <= PromptCacheSettings().routing_shards
+
+    def test_a_refused_model_is_not_asked_again(self) -> None:
+        from app.agents.agent_loop.prompt_cache import (
+            family_cache_strategy,
+            forget_cache_params,
+        )
+
+        llm = _openai()
+        forget_cache_params(llm)
+        assert isinstance(
+            family_cache_strategy(llm, family="named-entities", org_id="org-1", shard_key="r1"), NoCacheStrategy,
+        )

@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
+import { PurgeConversationParams } from '../../../../src/modules/storage/validators/validators'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import express, { Request, Response } from 'express'
@@ -41,6 +42,7 @@ describe('Storage Routes', () => {
       relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
       listConnectorVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
       findMissingDocuments: sinon.stub().resolves(),
+      purgeConversationDocuments: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
 
@@ -282,6 +284,47 @@ describe('Storage Routes', () => {
     })
   })
 
+  describe('conversation purge route', () => {
+    it('registers DELETE /internal/conversations/:conversationId/purge behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/conversations/:conversationId/purge' &&
+          layer.route.methods.delete,
+      )
+      expect(route).to.not.be.undefined
+      const handles = route.route.stack.map((h: any) => h.handle)
+      const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+        .getCalls()
+        .filter((call: any) => call.args[0] === 'storage:token')
+        .map((call: any) => call.returnValue)
+      expect(storageTokenChecks).to.include(handles[0])
+    })
+
+    it('is documented in the OpenAPI spec as a scoped-token route', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const yaml = require('js-yaml')
+      const spec = yaml.load(
+        require('fs').readFileSync(
+          require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+          'utf8',
+        ),
+      )
+      const op = spec.paths['/document/internal/conversations/{conversationId}/purge']?.delete
+      expect(op?.operationId).to.equal('internalPurgeConversationDocuments')
+      expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+    })
+
+    it('accepts only a conversation id, so no path can reach the purge query', () => {
+      const ok = PurgeConversationParams.safeParse({ params: { conversationId: '507f1f77bcf86cd799439011' } })
+      expect(ok.success).to.be.true
+      for (const bad of ['..', '507f1f77bcf86cd79943901', 'abc/def', '507f1f77bcf86cd799439011/x', '']) {
+        expect(PurgeConversationParams.safeParse({ params: { conversationId: bad } }).success, bad).to.be.false
+      }
+    })
+  })
+
   describe('config update route', () => {
     it('should register POST /updateAppConfig route', () => {
       const router = createStorageRouter(container)
@@ -302,9 +345,9 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 19 service-token /internal routes (incl. move-tree, connector delete, its
-// handover pair, missing and the two purges) + updateAppConfig
-      expect(routes.length).to.equal(20)
+// 20 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair, missing and the three purges) + updateAppConfig
+      expect(routes.length).to.equal(21)
     })
   })
 

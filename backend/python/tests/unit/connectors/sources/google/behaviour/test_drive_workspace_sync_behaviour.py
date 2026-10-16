@@ -277,6 +277,60 @@ async def test_shared_drives_become_record_groups_with_their_members(ws: Workspa
     assert ws.records.records["sd-f1"].external_record_group_id == "sd-1"
 
 
+async def test_a_deleted_shared_drive_takes_its_record_group_and_records_with_it(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    ws.world.add_item("sd-f2", "notes.txt", parent="sd-1")
+    await ws.sync()
+    assert {"spec.txt", "notes.txt"} <= ws.names()
+
+    # Deleting a shared drive emits no change for its items; it just stops being listed.
+    ws.world.drives.pop("sd-1")
+    for file_id in ("sd-f1", "sd-f2"):
+        ws.world.files.pop(file_id)
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.record_groups
+    assert not {"spec.txt", "notes.txt"} & ws.names()
+
+
+async def test_an_empty_drive_listing_does_not_remove_drives_that_still_exist(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+
+    ws.http.route("GET", "/drive/v3/drives", lambda _req: {"kind": "drive#driveList", "drives": []})
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.deleted_groups
+    assert "spec.txt" in ws.names()
+
+
+async def test_a_shared_drive_filtered_out_is_not_treated_as_deleted(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-1"]})
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.deleted_groups, "a drive that still exists belongs to the filter cleanup"
+
+
+async def test_a_filtered_out_shared_drive_deleted_later_is_still_removed(ws: Workspace) -> None:
+    ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
+    ws.world.add_item("sd-f1", "spec.txt", parent="sd-1")
+    await ws.sync()
+    ws.filters(drive_ids={"operator": "not_in", "type": "list", "value": ["sd-1"]})
+    await ws.sync()
+
+    ws.world.drives.pop("sd-1")
+    ws.world.files.pop("sd-f1")
+    await ws.sync()
+
+    assert "sd-1" not in ws.records.record_groups
+
+
 async def test_a_shared_drive_page_quota_error_is_retried(ws: Workspace, backoff_sleeps: list[float]) -> None:
     ws.world.add_drive("sd-1", "Engineering", {ALICE: "organizer"})
     for n in range(3):
@@ -873,7 +927,7 @@ async def test_a_removed_change_whose_refusal_clears_before_the_limit_is_decided
     assert user_sync_point(ws, ALICE)["heldRemovedChanges"] == []
 
 
-async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_access(ws: Workspace) -> None:
+async def test_a_file_owned_outside_the_workspace_goes_once_no_synced_user_can_open_it(ws: Workspace) -> None:
     ws.world.files["ext-root"] = FileState(
         {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
     )
@@ -884,9 +938,36 @@ async def test_a_file_owned_outside_the_workspace_only_loses_the_removed_users_a
     ws.world.delete("c1")
     await ws.sync()
 
+    assert "c1" not in ws.records.records, "the owner can't be asked, and no synced user can open it"
+
+
+async def test_a_file_owned_outside_the_workspace_stays_while_another_synced_user_can_open_it(ws: Workspace) -> None:
+    ws.world.files["ext-root"] = FileState(
+        {"id": "ext-root", "name": "My Drive", "mimeType": FOLDER, "owners": [{"emailAddress": PARTNER}], "parents": []}
+    )
+    ws.world.add_item("c1", "partner.txt", parent="ext-root", owner=PARTNER, perms=[reader(BOB), reader(ALICE)])
+    await ws.sync()
+
+    ws.world.unshare("c1", BOB)
+    await ws.sync()
+
     assert "c1" in ws.records.records
     assert BOB not in ws.records.perm_emails("c1")
-    assert ws.records.deleted == []
+    assert ALICE in ws.records.perm_emails("c1")
+
+
+async def test_a_file_whose_owner_is_not_synced_goes_when_its_last_synced_reader_loses_access(ws: Workspace) -> None:
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("bob-dir", "Shared by Bob", parent="root-bob", owner=BOB, perms=[reader(ALICE)])
+    ws.world.add_item("bob-f1", "brief.txt", parent="bob-dir", owner=BOB)
+    await ws.sync()
+    assert {"bob-dir", "bob-f1"} <= set(ws.records.records)
+
+    ws.world.unshare("bob-dir", ALICE)
+    await ws.sync()
+
+    assert "bob-dir" not in ws.records.records, "Bob still has it, but nobody PipesHub syncs can open it"
+    assert "bob-f1" not in ws.records.records
 
 
 async def test_a_file_deleted_from_a_shared_drive_is_deleted(ws: Workspace) -> None:
@@ -1031,6 +1112,37 @@ async def test_a_folder_only_one_user_can_list_is_expanded_for_everyone(ws: Work
     await ws.sync()
 
     assert {"Picked", "Sub", "deep.txt"} <= ws.names()
+    assert "elsewhere.txt" not in ws.names()
+
+
+async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(ws: Workspace) -> None:
+    ws.world.hide_unreadable_parents = True
+    ws.records.active_users = [u for u in ws.records.active_users if u.email == ALICE]
+    ws.world.folder("bob-parent", "Bob's projects", parent="root-bob", owner=BOB)
+    ws.world.folder("pick", "Picked", parent="bob-parent", owner=BOB, perms=[reader(ALICE)])
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await ws.sync()
+    assert ws.records.records["pick"].parent_external_record_id is None, "Drive hides a parent Alice cannot open"
+
+    ws.world.share("bob-parent", reader(ALICE))
+    await ws.sync()
+
+    parent = ws.records.records.get("bob-parent")
+    assert parent is not None and not parent.is_placeholder and parent.record_name == "Bob's projects"
+    assert ws.records.records["pick"].parent_external_record_id == "bob-parent"
+
+
+async def test_a_selected_shortcut_syncs_the_folder_it_points_to(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.world.add_item("elsewhere", "elsewhere.txt", parent="root-bob", owner=BOB)
+    ws.world.add_shortcut("sc", "Link to Picked", parent="root-bob", owner=BOB, target_id="pick")
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["sc"]})
+
+    await ws.sync()
+
+    assert {"Picked", "deep.txt"} <= ws.names()
     assert "elsewhere.txt" not in ws.names()
 
 

@@ -480,7 +480,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
-                    RETURN g.name
+                    RETURN g.groupName
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "name": record_name})
         return result[0] if result else None
@@ -697,7 +697,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     LET path_parts = (
                         FOR v, e, p IN 0..5 OUTBOUND g {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                            RETURN NOT_NULL(v.name, '')
+                            RETURN NOT_NULL(v.groupName, '')
                     )
                     LET filtered_parts = (FOR part IN path_parts FILTER part != '' RETURN part)
                     RETURN LENGTH(filtered_parts) > 0 ? CONCAT_SEPARATOR('/', filtered_parts) : null
@@ -848,6 +848,135 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return dict(result[0]) if result else None
 
+    async def record_belongs_to_external_group(
+        self,
+        connector_id: str,
+        external_record_id: str,
+        external_group_id: str,
+    ) -> bool:
+        """True if Record has BELONGS_TO → RecordGroup with the given externalGroupId."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
+                    FILTER g.externalGroupId == @gid
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "gid": str(external_group_id),
+            },
+        )
+        return bool(result) and len(result) > 0
+
+    async def user_has_direct_record_permission(
+        self,
+        connector_id: str,
+        user_email: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if User -[:PERMISSION]-> Record for this connector external id."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR u, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', u)
+                    FILTER LOWER(u.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "email": user_email,
+            },
+        )
+        return bool(result) and len(result) > 0
+
+    async def group_has_record_permission(
+        self,
+        connector_id: str,
+        external_group_id: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if the connector's group (by externalGroupId) has PERMISSION on the record."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR g, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.GROUPS.value}', g)
+                    FILTER g.connectorId == @cid AND LOWER(g.externalGroupId) == LOWER(@gid)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": str(external_record_id), "gid": str(external_group_id)}
+        )
+        return bool(result)
+
+    async def principal_record_permission_label(
+        self,
+        connector_id: str,
+        email: str,
+        external_record_id: str,
+    ) -> Optional[str]:
+        """``"User"`` or ``"Person"`` when that email holds a direct PERMISSION on the record, else None."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR p, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', p)
+                        OR IS_SAME_COLLECTION('{CollectionNames.PEOPLE.value}', p)
+                    FILTER LOWER(p.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN IS_SAME_COLLECTION('{CollectionNames.USERS.value}', p) ? "User" : "Person"
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": str(external_record_id), "email": email}
+        )
+        return str(result[0]) if result else None
+
+    async def principal_app_relation(
+        self,
+        connector_id: str,
+        email: str,
+    ) -> Optional[Dict[str, Any]]:
+        """The USER_APP_RELATION from this email's User/Person to the connector's App, or None."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER e._to == CONCAT('{CollectionNames.APPS.value}/', @cid)
+                LET p = DOCUMENT(e._from)
+                FILTER p != null AND LOWER(p.email) == LOWER(@email)
+                LIMIT 1
+                RETURN {{
+                    label: STARTS_WITH(e._from, '{CollectionNames.USERS.value}/') ? "User" : "Person",
+                    isExternalUser: e.isExternalUser == true
+                }}
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id, "email": email})
+        return dict(result[0]) if result else None
+
     async def get_app_metadata_by_connector_id(
         self, connector_id: str
     ) -> Optional[AppMetadata]:
@@ -897,6 +1026,27 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             query, {"cid": connector_id, "gid": external_group_id}
         )
         return len(result) if result else 0
+
+    async def group_has_member(
+        self, connector_id: str, external_group_id: str, user_email: str
+    ) -> bool:
+        """Whether this user has the connector's group-membership PERMISSION edge to the group."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.GROUPS.value}
+                FILTER g.connectorId == @cid AND g.externalGroupId == @gid
+                LIMIT 1
+                FOR v IN INBOUND g {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', v)
+                    FILTER LOWER(v.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "gid": external_group_id, "email": user_email}
+        )
+        return bool(result)
 
     async def fetch_records_by_type(
         self, connector_id: str, record_type: str, *, scoped: bool = False
@@ -1028,11 +1178,13 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             )
         return len(result) if result else 0
 
-    async def count_user_app_relation_edges(self, connector_id: str) -> int:
+    async def count_user_app_relation_edges(
+        self, connector_id: str, *, external: bool | None = None,
+    ) -> int:
         """Count USER_APP_RELATION edges to the App linked to this connector.
 
-        Log-only: this edge is typically created at user/app registration, not by
-        connector sync. Returns 0 if no users are registered against the app.
+        ``external`` narrows to people outside the source directory (``True``) or to
+        directory users only (``False``); ``None`` counts both.
         """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
@@ -1043,9 +1195,12 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
                     LIMIT 1
                     FOR u, ue IN INBOUND v {CollectionNames.USER_APP_RELATION.value}
+                        FILTER @external == null OR (ue.isExternalUser == true) == @external
                         RETURN 1
         """
-        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "external": external}
+        )
         return len(result) if result else 0
 
     async def get_record_outgoing_relations(

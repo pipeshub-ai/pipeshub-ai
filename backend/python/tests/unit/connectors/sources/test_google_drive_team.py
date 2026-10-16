@@ -3551,6 +3551,8 @@ class TestSharedWithMeFromSharedDrive:
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
                        email="u@t.com", full_name="U")
         connector._synced_drive_ids = {"known-drive"}
+        # A drive the run enumerates is always in the admin listing.
+        connector._listed_shared_drive_ids = {"known-drive"}
 
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
@@ -3608,6 +3610,9 @@ class TestSharedWithMeFromSharedDrive:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=_make_record(external_record_group_id=None)
         )
+        # Only this user lost access: the owner still has the file and another synced user can open it.
+        connector._owner_reports_file_gone = AsyncMock(return_value=False)
+        connector._another_synced_user_can_open = AsyncMock(return_value=True)
         connector.drive_delta_sync_point = AsyncMock()
         connector.drive_delta_sync_point.read_sync_point = AsyncMock(
             return_value={"pageToken": "old-tok-123456789012345"}

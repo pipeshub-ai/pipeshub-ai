@@ -257,3 +257,29 @@ export const unshareArtifact = proxyArtifactPermissions(
   HttpMethod.DELETE,
   'unshare artifact',
 );
+
+export const deleteArtifact =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      requireIdentity(req);
+      const { artifactId } = req.params as { artifactId: string };
+      const connectorResponse = await executeConnectorCommand(
+        artifactUri(appConfig.connectorBackend, artifactId),
+        HttpMethod.DELETE,
+        req.headers as Record<string, string>,
+      );
+      const statusCode = connectorResponse.statusCode;
+      if (statusCode < 200 || statusCode >= 300) {
+        throw handleBackendError(connectorResponse, 'delete artifact');
+      }
+      res.status(204).end();
+    } catch (error: unknown) {
+      logger.error('Error deleting artifact', { error });
+      next(handleBackendError(error, 'delete artifact'));
+    }
+  };

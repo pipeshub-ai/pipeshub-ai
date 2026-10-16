@@ -59,6 +59,21 @@ describe('ConnectorServiceCommand', () => {
   })
 
   describe('execute', () => {
+    it('returns no data for a 204 instead of failing to parse the empty body', async () => {
+      const response = makeFetchResponse(204, undefined, 'No Content')
+      ;(response.json as sinon.SinonStub).rejects(new SyntaxError('Unexpected end of JSON input'))
+      fetchStub.resolves(response)
+
+      const result = await new ConnectorServiceCommand({
+        uri: 'http://connector.local/api/v1/artifacts/a-1',
+        method: HttpMethod.DELETE,
+      }).execute()
+
+      expect(result.statusCode).to.equal(204)
+      expect(result.data).to.equal(undefined)
+      expect((response.json as sinon.SinonStub).called).to.equal(false)
+    })
+
     it('should make a fetch call and return structured response on success', async () => {
       const responseData = { result: 'ok' }
       fetchStub.resolves(

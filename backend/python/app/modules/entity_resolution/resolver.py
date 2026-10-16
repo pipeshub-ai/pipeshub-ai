@@ -44,7 +44,7 @@ from app.modules.entity_resolution.normalizer import (
     normalize_name,
     spelling_key,
 )
-from app.modules.entity_resolution.prompt import build_prompt
+from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
 from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.llm import get_llm_for_role
@@ -517,10 +517,13 @@ class EntityResolver:
             metrics.record_fallback("model_error", len(unresolved))
             return {}
         valid_indexes = {n.index for n in unresolved}
+        node_ids = {handle: node_id for node_id, handle in candidate_handles(unresolved, candidates).items()}
         decisions: dict[int, MergeDecision] = {}
-        for decision in response.decisions:
-            if decision.i in valid_indexes and decision.i not in decisions:
-                decisions[decision.i] = decision
+        for answer in response.decisions:
+            if answer.i in valid_indexes and answer.i not in decisions:
+                decisions[answer.i] = answer.model_copy(
+                    update={"target": node_ids.get(answer.target, answer.target)},
+                )
         if not decisions:
             # Parsed, but answered nothing it was asked: every name falls back
             # to new, and the model is rebuilt, exactly as when the call fails.

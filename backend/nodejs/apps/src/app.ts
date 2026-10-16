@@ -144,6 +144,8 @@ const loggerConfig = {
   service: 'Application',
 };
 
+const SCHEDULE_REPAIR_INTERVAL_MS = 60 * 60 * 1000;
+
 export class Application {
   private app: Express;
   private server: http.Server;
@@ -159,6 +161,8 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private scheduleRepairTimer: NodeJS.Timeout | null = null;
+  private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -923,6 +927,18 @@ export class Application {
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
+      // A pass still running calls the scheduler: let it end before its services are disposed, but
+      // never hold the shutdown longer than the request drain does.
+      if (this.scheduleRepairPass) {
+        let waited: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.scheduleRepairPass,
+          new Promise<void>((resolve) => {
+            waited = setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS);
+          }),
+        ]).finally(() => clearTimeout(waited));
+      }
       // Stop accepting first, and only dispose Mongo/Redis/brokers once the
       // requests already in flight have finished — otherwise they fail
       // mid-request on closed clients. Socket.IO connections are closed by
@@ -1022,27 +1038,36 @@ export class Application {
     // are logged but never crash the process — startup must succeed even
     // if a migration cannot run this boot.
     setImmediate(async () => {
-      await runWithRequestContext(
-        { rootId: newSystemRoot() },
-        async () => {
-      try {
-        this.logger.info('Running migration...');
-        const scheduler =
-          this.crawlingManagerContainer.get<CrawlingSchedulerService>(
-            CrawlingSchedulerService,
-          );
-        const appConfig = await loadAppConfig();
-        await this.configurationManagerContainer
-          .get(MigrationService)
-          .runMigration({ scheduler, appConfig });
-        this.logger.info('Migration completed successfully');
-      } catch (error) {
-        this.logger.error('Failed to run migration', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-        },
-      );
+      await runWithRequestContext({ rootId: newSystemRoot() }, async () => {
+        try {
+          this.logger.info('Running migration...');
+          const scheduler =
+            this.crawlingManagerContainer.get<CrawlingSchedulerService>(
+              CrawlingSchedulerService,
+            );
+          const appConfig = await loadAppConfig();
+          const migrations =
+            this.configurationManagerContainer.get(MigrationService);
+          // Before the migration: the repair is the safety net, so a failed migration must not turn it off.
+          // A schedule that failed to be written after a save would otherwise stay missing for ever.
+          this.scheduleRepairTimer = setInterval(() => {
+            if (this.scheduleRepairPass) return; // a slow pass must not overlap the next one
+            this.scheduleRepairPass = runWithRequestContext(
+              { rootId: newSystemRoot() },
+              () => migrations.repairConnectorSchedules(scheduler, appConfig),
+            ).finally(() => {
+              this.scheduleRepairPass = null;
+            });
+          }, SCHEDULE_REPAIR_INTERVAL_MS);
+          this.scheduleRepairTimer.unref();
+          await migrations.runMigration({ scheduler, appConfig });
+          this.logger.info('Migration completed successfully');
+        } catch (error) {
+          this.logger.error('Failed to run migration', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      });
     });
   }
 

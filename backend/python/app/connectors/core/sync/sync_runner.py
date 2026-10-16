@@ -11,6 +11,7 @@ task's status, and startup-resumed syncs become visible.
 
 import asyncio
 import contextlib
+import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any
@@ -18,7 +19,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import AppStatus, CollectionNames
 from app.connectors.core.base.connector.connector_service import ConnectorSyncSkippedError
-from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
@@ -63,6 +64,7 @@ async def write_app_status(
     *,
     is_locked: bool | None = None,
     full_sync_owed: bool = False,
+    run_started: bool = False,
 ) -> bool:
     """Best-effort status write; a DB blip must never fail the sync itself.
 
@@ -71,6 +73,7 @@ async def write_app_status(
 
     ``full_sync_owed`` sets pendingFullSync in the same write, for a caller
     clearing a full sync that never finished (see ``_finalize``).
+    ``run_started`` stamps lastSyncStartedAtTimestamp, for the write that starts a run.
     """
     payload: dict[str, Any] = {
         "id": connector_id,
@@ -81,6 +84,8 @@ async def write_app_status(
         payload["isLocked"] = is_locked
     if full_sync_owed:
         payload[ConnectorStateKeys.PENDING_FULL_SYNC] = True
+    if run_started:
+        payload[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = payload["updatedAtTimestamp"]
     try:
         await graph_provider.batch_upsert_nodes([payload], CollectionNames.APPS.value)
     except Exception as e:
@@ -172,6 +177,8 @@ async def _finalize(
     *,
     full_sync_cut_short: bool = False,
     full_sync_still_requested: bool = False,
+    outcome: SyncRunOutcome | None = None,
+    summary: dict[str, object] | None = None,
 ) -> None:
     """Write IDLE, then release — in that order, in one detached task.
 
@@ -200,12 +207,25 @@ async def _finalize(
     write, and the next boot resumes the full sync even on a MANUAL connector
     (see ``resumes_interrupted_full_sync``). Not written when
     the lease was lost: the new owner runs the connector, not the next boot.
+
+    ``outcome`` goes in the same write too, with the finish time, so "last synced"
+    means the last run that ended rather than the last write to the app doc.
     """
     owed = {ConnectorStateKeys.PENDING_FULL_SYNC: True} if full_sync_cut_short else {}
     still_requested = (
         {ConnectorStateKeys.PENDING_RESYNC: True}
         if full_sync_cut_short and full_sync_still_requested
         else {}
+    )
+    finished_at = get_epoch_timestamp_in_ms()
+    ended = (
+        {
+            ConnectorStateKeys.LAST_SYNC_FINISHED_AT: finished_at,
+            ConnectorStateKeys.LAST_SYNC_OUTCOME: outcome.value,
+            # Text, so every graph store can hold it; None clears an older run's summary.
+            ConnectorStateKeys.LAST_SYNC_SUMMARY: json.dumps(summary, default=str) if summary else None,
+        }
+        if outcome is not None else {}
     )
     if full_sync_cut_short:
         logger.warning(
@@ -226,8 +246,8 @@ async def _finalize(
                     connector_id,
                     CollectionNames.APPS.value,
                     {"status": AppStatus.IDLE.value,
-                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
-                     **owed, **still_requested},
+                     "updatedAtTimestamp": finished_at,
+                     **owed, **still_requested, **ended},
                 )
             except Exception as e:
                 logger.error(f"❌ Failed to write status=IDLE for connector {connector_id}: {e}")
@@ -610,6 +630,17 @@ async def _unlink_what_full_sync_missed(
     return bool(ok)
 
 
+def _run_outcome(*, stopped: bool, failed: bool, skipped: bool, finished: bool) -> SyncRunOutcome:
+    if stopped:
+        return SyncRunOutcome.STOPPED
+    if failed:
+        return SyncRunOutcome.FAILED
+    if skipped:
+        return SyncRunOutcome.SKIPPED
+    # Not finished without an error: the lease was lost and the run cut short.
+    return SyncRunOutcome.SUCCEEDED if finished else SyncRunOutcome.STOPPED
+
+
 async def run_sync_task(
     connector: "BaseConnector",
     connector_id: str,
@@ -638,9 +669,12 @@ async def run_sync_task(
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
+        # A cached connector still holds the last run's summary until run_sync starts;
+        # a stop before then must not file it under this run.
+        connector.last_sync_summary = None
         if full_sync:
             processor, seen = _begin_full_sync_run(connector, connector_id)
-        await write_app_status(graph_provider, logger, connector_id, start_status)
+        await write_app_status(graph_provider, logger, connector_id, start_status, run_started=True)
         # A resync asked for before this run began is served by it. Left set, the
         # flag handed the finalizer a request that was already satisfied, and
         # the connector synced twice back to back. Except a full sync owed to an
@@ -732,6 +766,8 @@ async def run_sync_task(
                 getattr(
                     getattr(connector, "data_entities_processor", None), "org_id", None
                 ),
+                outcome=_run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished),
+                summary=getattr(connector, "last_sync_summary", None),
                 # A stop or a lost lease returns from _run_until_aborted without
                 # raising, so `finished` alone would call that run complete.
                 # A failed unlink owes one too: what the sync did not see is

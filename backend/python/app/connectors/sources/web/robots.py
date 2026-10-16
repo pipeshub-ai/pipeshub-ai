@@ -8,14 +8,24 @@ matching rule, with Allow winning a tie, and supports ``*`` and ``$``.
 from __future__ import annotations
 
 import re
+import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 @dataclass
 class RobotsRules:
     # (allow, pattern) pairs for the group that applies to us; empty means everything is allowed.
     rules: list[tuple[bool, str]] = field(default_factory=list)
+    # Seconds the group asks between requests; not in RFC 9309, but widely sent and honoured.
+    crawl_delay: float | None = None
+    # Sitemap URLs listed anywhere in the file; they belong to no group.
+    sitemaps: list[str] = field(default_factory=list)
 
     @classmethod
     def parse(cls, text: str, product_token: str) -> RobotsRules:
@@ -26,6 +36,8 @@ class RobotsRules:
         named: list[tuple[bool, str]] = []
         named_group = False
         anyone: list[tuple[bool, str]] = []
+        delays: dict[str, float] = {}
+        sitemaps: list[str] = []
         agents: list[str] = []
         in_rules = False
         token = product_token.lower()
@@ -35,7 +47,10 @@ class RobotsRules:
                 continue
             key, value = (part.strip() for part in line.split(":", 1))
             key = key.lower()
-            if key == "user-agent":
+            if key == "sitemap":
+                if value:
+                    sitemaps.append(value)
+            elif key == "user-agent":
                 if in_rules:
                     agents, in_rules = [], False
                 agents.append(value.lower())
@@ -49,7 +64,17 @@ class RobotsRules:
                     named.append(rule)
                 if "*" in agents:
                     anyone.append(rule)
-        return cls(named if named_group else anyone)
+            elif key == "crawl-delay":
+                in_rules = True
+                delay = _seconds(value)
+                for agent in agents:
+                    if delay is not None and agent in (token, "*"):
+                        delays.setdefault(agent, delay)
+        return cls(
+            named if named_group else anyone,
+            crawl_delay=delays.get(token) if named_group else delays.get("*"),
+            sitemaps=sitemaps,
+        )
 
     def allows(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -63,6 +88,54 @@ class RobotsRules:
                 if best is None or candidate > best:  # longer wins; on equal length, Allow (True) wins
                     best = candidate
         return best is None or best[1]
+
+
+def _seconds(value: str) -> float | None:
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds >= 0 else None
+
+
+class RobotsCache:
+    """Each site's robots.txt rules, shared by every crawl in the process.
+
+    RFC 9309 §2.4 lets a crawler keep a robots.txt for up to 24 hours. A site that can't be read
+    keeps its last good rules for up to 30 days (as major search engines do) rather than being
+    left out of a sync for one bad minute. robots.txt is public, so sharing it across connectors
+    shares nothing private.
+    """
+
+    FRESH_SECONDS = 24 * 3600
+    STALE_SECONDS = 30 * 24 * 3600
+
+    def __init__(self, *, now: Callable[[], float] = time.monotonic, max_sites: int = 2000) -> None:
+        self._now = now
+        self._max_sites = max_sites
+        # origin -> (rules, read at)
+        self._good: OrderedDict[str, tuple[RobotsRules, float]] = OrderedDict()
+
+    async def rules(self, origin: str, read: Callable[[], Awaitable[RobotsRules | None]]) -> RobotsRules | None:
+        """Fresh cached rules, else ``read()``'s, else stale cached ones; None when there are none to use."""
+        cached = self._good.get(origin)
+        now = self._now()
+        if cached is not None and now - cached[1] < self.FRESH_SECONDS:
+            self._good.move_to_end(origin)
+            return cached[0]
+        fresh = await read()
+        if fresh is not None:
+            self._good[origin] = (fresh, now)
+            self._good.move_to_end(origin)
+            while len(self._good) > self._max_sites:
+                self._good.popitem(last=False)
+            return fresh
+        if cached is not None and now - cached[1] < self.STALE_SECONDS:
+            return cached[0]
+        return None
+
+    def clear(self) -> None:
+        self._good.clear()
 
 
 _UNRESERVED = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
@@ -104,3 +177,7 @@ def _glob(pattern: str, text: str) -> bool:
     while p < len(pattern) and pattern[p] == "*":
         p += 1
     return p == len(pattern)
+
+
+# One per process: every web connector reads robots.txt through it.
+shared_robots_cache = RobotsCache()

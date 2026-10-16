@@ -33,6 +33,8 @@ from aiohttp import web
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 
+from app.services.resource_governor.models import ResourceSnapshot
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
@@ -84,6 +86,8 @@ class Page:
     hang_up: bool = False
     # Chromium aborts navigating onto this file (net::ERR_ABORTED), and crawl4ai raises.
     browser_aborts: bool = False
+    # Loading it takes the whole browser down, every time (a renderer bug, or out of memory).
+    kills_browser: bool = False
     # What a HEAD gets instead of the page's usual answer, e.g. 405 from a site without HEAD.
     head_status: int | None = None
     # A cookie ("name=value") the request must carry, else 403: set by an earlier redirect.
@@ -117,6 +121,7 @@ class FakeWeb:
         self._pages: dict[str, Page | list[Page]] = {}
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
+        self.user_agents: list[str] = []  # the User-Agent of each request in ``requests``
         self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
         self.challenges_solved: list[str] = []
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
@@ -152,8 +157,11 @@ class FakeWeb:
         return sum(1 for method, u in self.requests if method == "GET" and _key(u) == _key(url))
 
     def fetched_urls(self) -> set[str]:
-        """Pages fetched, leaving out the crawler's robots.txt reads."""
-        return {u for method, u in self.requests if method == "GET" and not u.endswith("/robots.txt")}
+        """Pages fetched, leaving out the crawler's robots.txt and sitemap reads."""
+        return {
+            u for method, u in self.requests
+            if method == "GET" and not u.endswith(("/robots.txt", "/sitemap.xml", "/sitemap_index.xml"))
+        }
 
     def _current(self, url: str, consume: bool) -> Page:
         with self._lock:
@@ -175,6 +183,7 @@ class FakeWeb:
         """
         self.requests.append((method, url))
         self.served.append((via, method, url))
+        self.user_agents.append(next((str(v) for k, v in request_headers.items() if k.lower() == "user-agent"), ""))
         page = self._current(url, consume=method == "GET")
         if method == "HEAD" and page.head_status is not None:
             return None if page.head_status == HEAD_HANGS_UP else (page.head_status, {}, b"", page)
@@ -308,6 +317,10 @@ def browser_crawler_class(site: FakeWeb) -> type:
                                        error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
             final_url, page = site.render(url)
+            if page.kills_browser:
+                site.kill_browser()
+                return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
+                                       error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             if page.browser_aborts:
                 raise RuntimeError(f"Failed on navigating ACS-GOTO:\nPage.goto: net::ERR_ABORTED at {url}")
             if page.hang_up:
@@ -344,6 +357,22 @@ def browser_crawler_class(site: FakeWeb) -> type:
             return [r if isinstance(r, BaseException) else r.result for r in task_results]
 
     return FakeBrowserCrawler
+
+
+class FakeMemoryProbe:
+    """The container's resources as the browser's sizing and memory gate read them: plenty, unless set."""
+
+    def __init__(self, limit_mb: int = 16_384, used_mb: int = 1_024, cpus: float = 8.0) -> None:
+        self.limit_mb, self.used_mb, self.cpus = limit_mb, used_mb, cpus
+        self.reads = 0
+
+    def snapshot(self) -> ResourceSnapshot:
+        self.reads += 1
+        mb = 1024 * 1024
+        return ResourceSnapshot(
+            cpu_quota=self.cpus, cpu_utilisation=None, cpu_throttled_ratio=None, cpu_pressure=None,
+            mem_limit_bytes=self.limit_mb * mb, mem_working_set_bytes=self.used_mb * mb, source="fake",
+        )
 
 
 class VirtualClock:
@@ -388,6 +417,7 @@ class FakeRecordsDb:
         self.metadata_updates: list[Record] = []
         self.permission_updates: list[Record] = []
         self.deleted: list[str] = []
+        self.attached: list[tuple[str, list[str]]] = []
         self.record_groups: list[Any] = []
         self.fail_writes = False
         self.unreadable_file_records: set[str] = set()
@@ -410,6 +440,24 @@ class FakeRecordsDb:
         if stored is None:
             return None
         return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
+
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str | None = None, **_: object,
+    ) -> list[Record]:
+        return [r.model_copy(deep=True) for r in self.records.values() if r.parent_external_record_id == parent_external_record_id]
+
+    async def on_records_attached_to_parent(self, parent_record_id: str, record_ids: list[str]) -> None:
+        self.attached.append((parent_record_id, list(record_ids)))
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None, **_: object,
+    ) -> list[Record]:
+        """One page of the group's records, ordered by id, like the graph stores."""
+        ordered = sorted(
+            (r for r in self.records.values() if r.external_record_group_id == external_group_id),
+            key=lambda r: r.id,
+        )
+        return [r for r in ordered if after_key is None or r.id > after_key][:limit]
 
     async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
         """None only when no file record is stored; a read that fails raises ``GraphQueryError``, as both providers do."""
@@ -496,6 +544,15 @@ class FakeCheckpointStore:
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
+
+
+def assert_crash_left_no_checkpoint(checkpoints: FakeCheckpointStore) -> None:
+    """A crawl that crashed advanced nothing the next sync resumes from; it only left its report."""
+    import json
+
+    for saved in checkpoints.sync_points.values():
+        assert "timestamp" not in saved and "goneOnce" not in saved
+        assert json.loads(saved["lastRun"])["outcome"] == "failed"
 
 
 class FakeConfigService:

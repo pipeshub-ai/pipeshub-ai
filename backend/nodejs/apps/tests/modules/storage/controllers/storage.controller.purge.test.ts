@@ -188,6 +188,56 @@ describe('StorageController purge', () => {
       expect(adapter.deleteObject.called).to.be.false
     })
   })
+
+  describe('purgeConversationDocuments', () => {
+    const conversationId = '507f1f77bcf86cd799439099'
+
+    it("removes every file the assistant stored for the chat, in both of its folders, and nothing else", async () => {
+      row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}` })
+      row({ documentPath: `${orgId}/PipesHub/conversations/${conversationId}`, s3: { url: 'https://bucket/legacy' }, versionHistory: [] })
+      const otherChat = row({ documentPath: `${orgId}/PipesHub/artifacts/507f1f77bcf86cd799439098`, s3: { url: 'https://bucket/o' } })
+      const otherOrgSameChat = row({ orgId: otherOrg, documentPath: `${otherOrg}/PipesHub/artifacts/${conversationId}` })
+      const nested = row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}/x`, s3: { url: 'https://bucket/n' } })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), res, next)
+
+      expect(next.called).to.be.false
+      expect(res.body).to.deep.equal({ purged: 2 })
+      expect(adapter.deleteObject.getCalls().map((c) => c.args[0].s3.url)).to.deep.equal([
+        'https://bucket/current', 'https://bucket/v0', 'https://bucket/legacy',
+      ])
+      expect(rows).to.deep.equal([otherChat, otherOrgSameChat, nested])
+    })
+
+    it('keeps documents when a file cannot be removed, so a retry finishes', async () => {
+      const doc = row({ documentPath: `${orgId}/PipesHub/artifacts/${conversationId}` })
+      adapter.deleteObject.rejects(new Error('disk gone'))
+      const next = sinon.stub()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(ServiceUnavailableError)
+      expect(rows).to.deep.equal([doc])
+    })
+
+    it('answers purged 0 for a chat with no files', async () => {
+      const res = makeRes()
+
+      await controller.purgeConversationDocuments(request({ conversationId }), res, sinon.stub())
+
+      expect(res.body).to.deep.equal({ purged: 0 })
+    })
+
+    it('looks documents up through the documentPath index', async () => {
+      await controller.purgeConversationDocuments(request({ conversationId }), makeRes(), sinon.stub())
+
+      const filter = (DocumentModel.find as unknown as sinon.SinonStub).firstCall.args[0]
+      expect(filter).to.have.property('documentPath')
+      expect(DocumentModel.schema.path('documentPath').options.index).to.equal(true)
+    })
+  })
 })
 
 describe('storedCopies', () => {

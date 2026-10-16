@@ -3087,6 +3087,31 @@ class DataSourceEntitiesProcessor:
             raise RuntimeError(f"Could not detach {len(record_ids)} records from their deleted parent")
 
     @retry_on_deadlock()
+    async def on_records_attached_to_parent(self, parent_record_id: str, record_ids: list[str]) -> None:
+        """Link records under a parent written in place of a deleted one with the same external id.
+
+        Their stored parent external id already names it; only the edges went with the deleted
+        record. Rewriting the records instead would re-index content that hasn't changed. One
+        idempotent batch: Neo4j commits each statement on its own, so a loop could stop half done.
+        """
+        if not record_ids:
+            return
+        ts = get_epoch_timestamp_in_ms()
+        async with self.data_store_provider.transaction() as tx_store:
+            await tx_store.batch_create_edges(
+                [{
+                    "from_id": parent_record_id,
+                    "from_collection": CollectionNames.RECORDS.value,
+                    "to_id": record_id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                    "createdAtTimestamp": ts,
+                    "updatedAtTimestamp": ts,
+                } for record_id in record_ids],
+                collection=CollectionNames.RECORD_RELATIONS.value,
+            )
+
+    @retry_on_deadlock()
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str,
         cascade_children: bool = True,

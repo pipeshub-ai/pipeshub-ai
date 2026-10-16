@@ -170,6 +170,11 @@ app_schema = {
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
+            # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
+            "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncOutcome": {"type": ["string", "null"]},
+            "lastSyncSummary": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},

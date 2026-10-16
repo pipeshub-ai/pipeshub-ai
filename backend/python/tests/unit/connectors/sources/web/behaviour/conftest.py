@@ -20,6 +20,7 @@ from web_behaviour_fakes import (
     START_URL,
     FakeCheckpointStore,
     FakeConfigService,
+    FakeMemoryProbe,
     FakeRecordsDb,
     FakeRequestsClient,
     FakeScraper,
@@ -30,8 +31,8 @@ from web_behaviour_fakes import (
     browser_crawler_class,
 )
 
-from app.connectors.sources.web import connector as connector_module
 from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
+from app.connectors.sources.web import connector as connector_module
 from app.connectors.sources.web.connector import WebConnector
 
 
@@ -110,8 +111,10 @@ async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 async def browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     """crawl4ai's browser renders from the fake websites; the shared fetcher starts fresh."""
     monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
     monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
+    monkeypatch.setattr(crawl4ai_fetcher, "build_probe", FakeMemoryProbe)
+    monkeypatch.setenv("WEB_BROWSER_MAX_PAGES", "5")
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
@@ -176,7 +179,8 @@ async def make_connector(
     ) -> WebConnector:
         config = FakeConfigService(
             CONNECTOR_ID,
-            {"url": url, "type": crawl_type, "depth": depth, "max_pages": max_pages, **sync},
+            # Browser-like unless a test says otherwise: most scenarios predate the setting.
+            {"url": url, "type": crawl_type, "depth": depth, "max_pages": max_pages, "browser_like_identity": True, **sync},
             filters,
         )
         connector = WebConnector(

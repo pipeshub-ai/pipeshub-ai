@@ -186,6 +186,62 @@ class TestCreateVirtualToRecordMapping:
         assert "vr999" not in mapping
 
 
+class TestAttachConnectorInstanceNames:
+    @pytest.mark.asyncio
+    async def test_labels_records_with_their_connector_instance_name(self, retrieval_service, mock_graph_provider) -> None:
+        apps = {
+            "c-mkt": {"_key": "c-mkt", "name": "Marketing Drive", "type": "Drive"},
+            "c-eng": {"_key": "c-eng", "name": "Eng SharePoint", "type": "SharePoint Online"},
+        }
+        mock_graph_provider.get_document = AsyncMock(side_effect=lambda key, _c: apps.get(key))
+        records = [
+            {"_key": "r1", "connectorName": "DRIVE", "connectorId": "c-mkt"},
+            {"_key": "r2", "connectorName": "SHAREPOINT ONLINE", "connectorId": "c-eng"},
+            {"_key": "r3", "connectorName": "DRIVE", "connectorId": "c-mkt"},
+        ]
+
+        await retrieval_service._attach_connector_instance_names(records)
+
+        assert [r["connectorInstanceName"] for r in records] == ["Marketing Drive", "Eng SharePoint", "Marketing Drive"]
+        # One lookup per connector, not per record, and only in the apps collection.
+        assert sorted(c.args for c in mock_graph_provider.get_document.await_args_list) == [
+            ("c-eng", "apps"), ("c-mkt", "apps"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_connector_leaves_record_unlabelled(self, retrieval_service, mock_graph_provider) -> None:
+        async def get_document(key: str, _collection: str) -> None:
+            # c-gone: the instance no longer exists; anything else: the lookup fails.
+            if key != "c-gone":
+                raise RuntimeError("graph down")
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=get_document)
+        records = [
+            {"_key": "r1", "connectorId": "c-gone"},
+            {"_key": "r2", "connectorId": "c-err"},
+            {"_key": "r3"},
+            None,
+        ]
+
+        await retrieval_service._attach_connector_instance_names(records)
+
+        for r in records[:3]:
+            assert "connectorInstanceName" not in r
+
+    @pytest.mark.asyncio
+    async def test_slow_lookup_is_abandoned_not_awaited(self, retrieval_service, mock_graph_provider) -> None:
+        async def never_returns(_key: str, _collection: str) -> None:
+            await asyncio.Event().wait()
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=never_returns)
+        records = [{"_key": "r1", "connectorId": "c-slow"}]
+
+        with patch("app.modules.retrieval.retrieval_service.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
+            await asyncio.wait_for(retrieval_service._attach_connector_instance_names(records), timeout=2)
+
+        assert "connectorInstanceName" not in records[0]
+
+
 # ============================================================================
 # to_qdrant_sparse (static method)
 # ============================================================================

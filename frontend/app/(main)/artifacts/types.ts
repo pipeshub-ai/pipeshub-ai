@@ -7,6 +7,7 @@ export const GALLERY_ARTIFACT_TYPES = [
   'DATA_FILE',
   'CODE',
   'CODE_OUTPUT',
+  'OTHER',
 ] as const;
 
 export type GalleryArtifactType = (typeof GALLERY_ARTIFACT_TYPES)[number];

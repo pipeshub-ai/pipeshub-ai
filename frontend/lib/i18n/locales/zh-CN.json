@@ -341,7 +341,8 @@
       "PRESENTATION": "演示文稿",
       "DATA_FILE": "数据文件",
       "CODE": "代码",
-      "CODE_OUTPUT": "代码输出"
+      "CODE_OUTPUT": "代码输出",
+      "OTHER": "其他"
     },
     "tabs": {
       "all": "所有产物",
@@ -358,7 +359,20 @@
     },
     "emptyShared": "暂无与你共享的内容",
     "emptySharedHint": "队友与你共享的产物会显示在这里。",
-    "notAvailable": "该产物已不可用"
+    "notAvailable": "该产物已不可用",
+    "deleteTitle": "删除产物？",
+    "deleteConfirmMessage": "\"{{name}}\"及其所有版本将被永久删除。显示它的聊天会将其标记为不再可用。",
+    "deleteSuccess": "已删除\"{{name}}\"",
+    "preview": "预览",
+    "moreActionsFor": "{{name}} 的更多选项",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "请检查网络连接后重试。",
+    "noMatches": "没有符合筛选条件的产物",
+    "noMatchesHint": "请尝试其他搜索，或清除筛选条件以查看全部产物。",
+    "clearFilters": "清除筛选",
+    "gridView": "网格视图",
+    "listView": "列表视图",
+    "closeSearch": "关闭搜索"
   },
   "notifications": {
     "title": "通知",
@@ -455,7 +469,8 @@
     "required": "此字段为必填项",
     "invalidEmail": "无效的电子邮件地址",
     "invalidUrl": "无效的 URL",
-    "name": "名称"
+    "name": "名称",
+    "optional": "（可选）"
   },
   "dialog": {
     "newFolder": "新建集合文件夹",
@@ -688,6 +703,8 @@
       "open": "打开 {{source}}",
       "openIn": "在 {{source}} 中打开",
       "openInCollections": "在集合中打开",
+      "syncedJustNow": "刚刚同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相关度：{{percent}}%"
     },
     "results": "结果",
@@ -792,6 +809,8 @@
     "copiedAsMarkdown": "已复制为 Markdown",
     "copiedAsText": "已复制为纯文本",
     "citations": "引用",
+    "showMoreCitations_one": "显示另外 {{count}} 条引用",
+    "showMoreCitations_other": "显示另外 {{count}} 条引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "仅纯文本（不含引用）",
     "differentModesOfQuery": "不同的查询模式",
@@ -1297,7 +1316,20 @@
         "expired": "{{tool}} 未运行：请求已过期",
         "allowedNotRun": "你允许了 {{tool}}，但它没有运行"
       }
-    }
+    },
+    "artifactsPanel": {
+      "generated_other": "已生成 {{count}} 个产物",
+      "newerVersion": "有更新的版本 (v{{version}})",
+      "unavailable": "已不可用",
+      "viewSource": "查看源代码",
+      "loadingSource": "正在加载源代码",
+      "viewSourceTitle": "查看生成此产物的代码",
+      "preview": "预览产物",
+      "loadingPreview": "正在加载预览",
+      "download": "下载产物",
+      "downloading": "正在下载产物"
+    },
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -2198,7 +2230,10 @@
         "maxLength": "{{field}}不能超过 {{maxLength}} 个字符",
         "email": "{{field}}必须是有效的电子邮件地址",
         "url": "{{field}}必须是有效的 URL",
-        "urlProtocol": "{{field}}必须使用 http 或 https"
+        "urlProtocol": "{{field}}必须使用 http 或 https",
+        "numberRange": "请输入 {{min, number}} 到 {{max, number}} 之间的整数。",
+        "numberMin": "请输入不小于 {{min, number}} 的整数。",
+        "numberMax": "请输入不大于 {{max, number}} 的整数。"
       },
       "adminRequiredToast": "只有管理员可以添加新操作。请让管理员先配置此操作。",
       "personalNonAdminHint": "标记为「未配置」的操作需要管理员先完成设置，您才能使用。"
@@ -2581,7 +2616,13 @@
         "syncStrategyHelper": "选择从 {{name}} 同步数据的方式",
         "syncInterval": "同步间隔",
         "syncIntervalPlaceholder": "选择间隔...",
-        "syncIntervalHelper": "设置 {{name}} 数据的刷新频率"
+        "syncIntervalHelper": "设置 {{name}} 数据的刷新频率",
+        "lastRunLimit": {
+          "saved": "上次同步：已存储 {{count, number}} 个页面",
+          "stoppedAtLimit": "已在此上限处停止",
+          "leftOut": "{{count, number}} 个未纳入",
+          "nearLimit": "此连接器存储的页面已达此上限的 90% 以上。如需保留此网站的更多页面，请提高上限。"
+        }
       },
       "instancePanel": {
         "overview": "概览",
@@ -2614,7 +2655,31 @@
         "recordsByType": "按类型划分的记录",
         "noRecordTypes": "没有可用的记录类型",
         "localWatcherLabel": "本地监视器",
-        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败"
+        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
+        "lastRun": {
+          "title": "上次同步",
+          "outcome": {
+            "succeeded": "已完成",
+            "failed": "失败",
+            "stopped": "已停止",
+            "skipped": "已跳过"
+          },
+          "stopReason": {
+            "max_pages": "已达到最大页数限制",
+            "time_limit": "已达到时间限制；下次同步将继续",
+            "stalled": "网站停止响应；下次同步将继续",
+            "rate_limited": "网站一再要求减少请求；下次同步将继续"
+          },
+          "pagesSaved": "已保存 {{count}} 个页面",
+          "failed": "{{count}} 个页面失败",
+          "robotsSkipped": "因 robots.txt 跳过 {{count}} 个",
+          "noindexSkipped": "{{count}} 个页面要求不被索引",
+          "skippedMaxPages": "因最大页数限制排除 {{count}} 个",
+          "pruned": "已移除 {{count}} 个已不在网站上的页面",
+          "sitemapUrls": "在站点地图中找到 {{count}} 个",
+          "resumed": "已继续未完成的同步",
+          "lastSyncedWithOutcome": "{{time}}（{{outcome}}）"
+        }
       },
       "settingsTab": {
         "instanceName": "实例名称",
@@ -2804,6 +2869,108 @@
           "confirm": "开始重新索引"
         },
         "typePrompt": "请输入 {{token}} 以确认。"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "起始 URL",
+            "help": "PipesHub 访问的第一个页面。保存后无法更改；如需抓取其他网站，请再添加一个连接器。"
+          },
+          "type": {
+            "label": "抓取范围",
+            "options": {
+              "single": "仅此页面",
+              "recursive": "此页面及其链接到的页面"
+            }
+          },
+          "discovery": {
+            "label": "查找页面的方式",
+            "help": "站点地图最快；链接可以找到站点地图遗漏的页面。",
+            "options": {
+              "sitemap_and_links": "站点地图和链接（推荐）",
+              "links": "仅链接",
+              "sitemap": "仅站点地图"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "仅限此栏目",
+            "help": "仅包含起始 URL 路径下的页面，例如 /docs/。"
+          },
+          "max_pages": {
+            "label": "最大页面数",
+            "help": "PipesHub 最多保留此网站的这么多页面。PDF 等文件也计为页面。",
+            "unit": "页"
+          },
+          "url_should_contain": {
+            "label": "仅保存 URL 包含以下内容的页面",
+            "help": "留空则保存所有页面。不匹配的页面不会被访问，因此也不会跟踪其中的链接。"
+          },
+          "ignore_query_params": {
+            "label": "同一页面，不同 URL",
+            "help": "不会改变页面内容的 URL 参数，例如 sort 或 ref。使用 * 表示全部。跟踪参数（utm_…）始终会被忽略。"
+          },
+          "depth": {
+            "label": "距起始页的点击次数",
+            "help": "跟踪链接的深度。站点地图中列出的页面计为一次点击。",
+            "unit": "次点击"
+          },
+          "max_size_mb": {
+            "label": "可下载的最大文件",
+            "help": "更大的页面和文件会被跳过，并列在上次同步中。",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "同时跟踪指向其他网站的链接",
+            "help": "通常关闭：抓取可能会远远超出此网站。"
+          },
+          "use_headless_browser": {
+            "label": "始终使用浏览器（较慢）",
+            "help": "关闭时：PipesHub 会检测需要 JavaScript 的页面，仅对这些网站使用浏览器。"
+          },
+          "browser_like_identity": {
+            "label": "以网页浏览器身份访问",
+            "help": "关闭时：请求以 PipesHub 爬虫的身份发出。仅对允许你抓取但会拦截爬虫的网站开启；仍会遵守 robots.txt。"
+          },
+          "respect_robots_txt": {
+            "label": "遵守 robots.txt",
+            "help": "跳过网站要求爬虫不要访问或编入索引的页面。"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "网站"
+          },
+          "crawl": {
+            "title": "抓取内容"
+          },
+          "skip": {
+            "title": "跳过内容"
+          },
+          "advanced": {
+            "title": "高级",
+            "description": "抓取深度、文件大小、浏览器和爬虫身份。"
+          }
+        },
+        "summaryOn": "{{label}}：开",
+        "summaryOff": "{{label}}：关",
+        "summaryValue": "{{label}}：{{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "从模板开始",
+        "custom": "自定义",
+        "suggested": "根据此地址推荐：{{name}}",
+        "replaceTitle": "要替换当前设置吗？",
+        "replaceMessage": "“{{name}}”将替换你当前的抓取设置。",
+        "replaceConfirm": "替换",
+        "web": {
+          "docs": "文档网站",
+          "helpCenter": "帮助中心",
+          "wholeSite": "整个网站",
+          "onePage": "单个页面"
+        }
       }
     },
     "mcpServers": {

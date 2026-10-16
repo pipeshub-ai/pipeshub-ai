@@ -107,6 +107,7 @@ import EnterpriseSemanticSearch, {
   IEnterpriseSemanticSearch,
 } from '../schema/search.schema';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { deleteConversationArtifacts } from '../../artifacts/services/conversation-artifacts.service';
 import Citation, {
   AiSearchResponse,
   ICitation,
@@ -2494,7 +2495,17 @@ export const getConversationById =
   }
 };
 
-export const deleteConversationById = async (
+export const deleteConversationById =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    deleteConversation(appConfig, req, res, next);
+
+const deleteConversation = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -2516,24 +2527,33 @@ export const deleteConversationById = async (
       timestamp: new Date().toISOString(),
     });
 
+    const ownerOrWriter: Record<string, unknown>[] = [
+      { initiator: userId },
+      { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
+    ];
+    const deletable: Record<string, unknown> = {
+      _id: conversationId,
+      userId,
+      orgId,
+      isDeleted: false,
+      $or: ownerOrWriter,
+      ...EXCLUDE_AGENT,
+    };
+
+    // The chat's artifacts go first, outside the transaction (a network call
+    // would hold it open): if they cannot be deleted the chat stays, so a
+    // retry finishes the cleanup instead of orphaning them.
+    if (!(await ChatSession.findOne(deletable))) {
+      throw new NotFoundError('Conversation not found');
+    }
+    await deleteConversationArtifacts(appConfig, String(conversationId), req);
+
     // Common helper that performs the delete operation.
     async function performDeleteConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await ChatSession.findOne(
-        {
-          _id: conversationId,
-          userId,
-          orgId,
-          isDeleted: false,
-          $or: [
-            { initiator: userId },
-            { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
-          ],
-          ...EXCLUDE_AGENT,
-        },
-        undefined,
-        { session },
-      );
+      const conversation = await ChatSession.findOne(deletable, undefined, {
+        session,
+      });
 
       if (!conversation) {
         throw new NotFoundError('Conversation not found');
@@ -7480,7 +7500,17 @@ export const getAgentConversationById = async (
   }
 };
 
-export const deleteAgentConversationById = async (
+export const deleteAgentConversationById =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    deleteAgentConversationOf(appConfig, req, res, next);
+
+const deleteAgentConversationOf = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -7497,6 +7527,7 @@ export const deleteAgentConversationById = async (
       agentKey as string,
       userId as string,
       orgId as string,
+      () => deleteConversationArtifacts(appConfig, String(conversationId), req),
     );
 
     res.status(200).json({

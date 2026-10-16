@@ -1,3 +1,4 @@
+import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from inspect import isawaitable, isclass
@@ -31,6 +32,17 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # lookups keyed directly on doc "type" miss KB instances entirely.
 _KB_REGISTRY_KEY = "Collections"
 
+
+
+def _parsed_summary(raw: object) -> dict[str, Any] | None:
+    """The last run's summary, stored as JSON text on the app doc."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
 
 class Origin(str, Enum):
     """Data origin types."""
@@ -851,6 +863,10 @@ class ConnectorRegistry:
                 'status': instance_data.get('status'),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
+                'lastSyncStartedAtTimestamp': instance_data.get('lastSyncStartedAtTimestamp'),
+                'lastSyncFinishedAtTimestamp': instance_data.get('lastSyncFinishedAtTimestamp'),
+                'lastSyncOutcome': instance_data.get('lastSyncOutcome'),
+                'lastSyncSummary': _parsed_summary(instance_data.get('lastSyncSummary')),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),

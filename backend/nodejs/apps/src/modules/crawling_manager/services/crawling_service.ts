@@ -15,6 +15,7 @@ import {
 import { CrawlingScheduleType } from '../schema/enums';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
+import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
 import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
 import {
   CrawlingJobData,
@@ -58,17 +59,25 @@ interface PausedJobInfo {
   pausedAt: Date;
 }
 
+const CLEAR_IF_UNCHANGED =
+  "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0";
+
 @injectable()
 export class CrawlingSchedulerService {
   private queue: Queue;
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
+  private readonly provider: IRedisConnectionProvider;
+  // One hash, so it lives in one Redis Cluster slot: connector id -> {orgId, at}.
+  private readonly reconcilePendingKey: string;
 
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
     const provider = crawlingRedisProvider(redisConfig);
+    this.provider = provider;
+    this.reconcilePendingKey = `${crawlingQueuePrefix(provider)}:schedule-reconcile-pending`;
 
     const queueOptions: QueueOptions = {
       // A dedicated blocking-capable client (never the provider's shared
@@ -89,6 +98,53 @@ export class CrawlingSchedulerService {
 
     this.queue = new Queue('crawling-scheduler', queueOptions);
     this.logger.info('CrawlingSchedulerService initialized');
+  }
+
+  /**
+   * Records that a connector's saved settings may not have reached its schedule (the read after
+   * the save failed). Kept in Redis, not in memory, so a restart before the hourly repair keeps it.
+   */
+  async markReconcilePending(
+    connectorId: string,
+    orgId: string,
+  ): Promise<void> {
+    await this.provider
+      .getClient()
+      .hset(
+        this.reconcilePendingKey,
+        connectorId,
+        JSON.stringify({ orgId, at: Date.now() }),
+      );
+  }
+
+  /** Clears the mark, unless a save after `since` set it again: that save's change is still owed. */
+  async clearReconcilePending(
+    connectorId: string,
+    since: number,
+  ): Promise<void> {
+    const client = this.provider.getClient();
+    const raw = await client.hget(this.reconcilePendingKey, connectorId);
+    if (raw === null || (JSON.parse(raw) as { at: number }).at > since) return;
+    // Deleted only if still the mark just read: a save may set a newer one in between.
+    await client.eval(
+      CLEAR_IF_UNCHANGED,
+      1,
+      this.reconcilePendingKey,
+      connectorId,
+      raw,
+    );
+  }
+
+  async listReconcilesPending(): Promise<
+    { connectorId: string; orgId: string; at: number }[]
+  > {
+    const all = await this.provider
+      .getClient()
+      .hgetall(this.reconcilePendingKey);
+    return Object.entries(all).map(([connectorId, raw]) => ({
+      connectorId,
+      ...(JSON.parse(raw) as { orgId: string; at: number }),
+    }));
   }
 
   /**

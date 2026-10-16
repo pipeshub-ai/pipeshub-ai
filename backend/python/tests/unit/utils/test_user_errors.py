@@ -423,3 +423,21 @@ class TestRateLimitedSource:
         assert "kept limiting" in reason
         assert "more than 24 hours" in reason
         assert reason.endswith("Reindex it after 10:30 UTC.")
+
+
+
+class TestStorageRefusal:
+    """A record the storage service refuses is reported for what it is, not as a temporary problem."""
+
+    def test_a_record_refused_as_too_large_says_the_file_is_too_large(self) -> None:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+        from app.utils.user_errors import FILE_TOO_LARGE, to_user_reason
+
+        error = StorageRequestRejectedError("refused (HTTP 400): larger than the 30 MB limit", 400, too_large=True)
+        assert to_user_reason(error) == FILE_TOO_LARGE
+
+    def test_another_refusal_is_a_plain_failure_not_a_temporary_one(self) -> None:
+        from app.exceptions.storage_exceptions import StorageRequestRejectedError
+        from app.utils.user_errors import GENERIC_FAILURE, to_user_reason
+
+        assert to_user_reason(StorageRequestRejectedError("refused (HTTP 415)", 415)) == GENERIC_FAILURE

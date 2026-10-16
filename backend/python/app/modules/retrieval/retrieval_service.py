@@ -203,6 +203,9 @@ def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[s
     return [vid for vid in dict.fromkeys(current) if vid in keep]
 
 
+# Connector names only label citations; a slow graph must not hold up the search.
+CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS = 2.0
+
 class RetrievalService:
     # Local models may load or download on first use, so their queries get no deadline.
     # A class default, so an instance built without __init__ (as some tests do) has it too.
@@ -689,6 +692,8 @@ class RetrievalService:
                         r["webUrl"], user_email, r.get("connectorName")
                     )
 
+            await self._attach_connector_instance_names(fetched_records)
+
             record_id_to_record_map = {}
             for r in fetched_records:
                 if r:
@@ -732,6 +737,7 @@ class RetrievalService:
                         result["metadata"]["origin"] = record.get("origin")
                         result["metadata"]["connector"] = record.get("connectorName", None)
                         result["metadata"]["connectorId"] = record.get("connectorId", None)
+                        result["metadata"]["connectorInstanceName"] = record.get("connectorInstanceName")
                         result["metadata"]["kbId"] = record.get("kbId", None)
                         weburl = record.get("webUrl")
                         result["metadata"]["webUrl"] = weburl
@@ -1835,6 +1841,34 @@ class RetrievalService:
             "message": message,
         }
 
+    async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
+        """Set ``connectorInstanceName``: the name the admin gave the record's connector.
+
+        ``connectorName`` is only the type code (WEB), shared by every instance
+        of that type. A missing or unreadable instance leaves the field unset,
+        and the UI falls back to the type.
+        """
+        records = [r for r in records if isinstance(r, dict)]
+        connector_ids = sorted({r["connectorId"] for r in records if r.get("connectorId")})
+        if not connector_ids:
+            return
+        try:
+            apps = await asyncio.wait_for(
+                asyncio.gather(
+                    *(self.graph_provider.get_document(cid, CollectionNames.APPS.value) for cid in connector_ids),
+                    return_exceptions=True,
+                ),
+                timeout=CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS,
+            )
+        except Exception as e:
+            # Labels only: search results stay correct, the UI shows the type code.
+            self.logger.warning("Could not resolve connector names for citations: %s", e)
+            return
+        apps_by_id = {cid: app for cid, app in zip(connector_ids, apps) if isinstance(app, dict)}
+        for r in records:
+            app = apps_by_id.get(r.get("connectorId"))
+            if app and app.get("name"):
+                r["connectorInstanceName"] = app["name"]
 
     def _create_virtual_to_record_mapping(
         self,

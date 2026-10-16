@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
 from app.modules.named_entities.domain.config import NamedEntityBudgets
 from app.modules.named_entities.domain.kinds import EntityKind, default_enabled_kinds
@@ -14,7 +15,6 @@ from app.modules.named_entities.domain.models import (
     TerminationReason,
 )
 from app.modules.named_entities.guardrails import apply_caps
-from app.modules.named_entities.mentions import RawMention
 from app.modules.named_entities.merge import mentions_to_entities
 from app.modules.named_entities.normalizers import normalize_value
 from app.modules.named_entities.normalizers.dates import NormalizationContext
@@ -35,6 +35,13 @@ from app.modules.named_entities.strategies.single_call import (
 )
 from app.modules.named_entities.text import TextUnit, text_units_from_blocks
 from app.telemetry.modules.named_entity_metrics import record_fallback
+
+if TYPE_CHECKING:
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.config.configuration_service import ConfigurationService
+    from app.modules.named_entities.mentions import RawMention
+    from app.modules.named_entities.strategies.agent.transport import SlottedTransport
 
 _MAX_RECORD_CHARS = 1_000_000
 _COMPLETED = {"deterministic", "finish_ok", "single_call", "empty"}
@@ -189,9 +196,16 @@ def _single_outcome(model: StrategyResult) -> tuple[str, TerminationReason]:
     return "single_call", "single_call"
 
 
-async def indexing_llm(config_service):
-    """The indexing-role model, wrapped so each agent turn takes a slot."""
+PROMPT_FAMILY = "named-entities"
+
+
+async def indexing_llm(
+    config_service: ConfigurationService, *, org_id: str = "", shard_key: str = "",
+) -> tuple[BaseChatModel, SlottedTransport, str, str]:
+    """The indexing-role model, wrapped so each agent turn takes a slot. Every
+    turn of one record (``shard_key``) goes to the same prompt cache."""
     from app.agents.agent_loop.langchain_transport import LangChainTransport
+    from app.agents.agent_loop.prompt_cache import family_cache_strategy
     from app.modules.named_entities.strategies.agent.transport import SlottedTransport
     from app.utils.llm import get_llm_for_role
 
@@ -199,4 +213,7 @@ async def indexing_llm(config_service):
     provider = str((config or {}).get("provider") or "indexing")
     configuration = (config or {}).get("configuration") or {}
     model = str(configuration.get("model") or (config or {}).get("modelKey") or "indexing")
-    return llm, SlottedTransport(LangChainTransport(llm, model_name=model)), provider, model
+    # The transport records a refused cache parameter under this same name.
+    cache = family_cache_strategy(llm, family=PROMPT_FAMILY, org_id=org_id, shard_key=shard_key, model_name=model)
+    transport = LangChainTransport(llm, model_name=model, cache_strategy=cache)
+    return llm, SlottedTransport(transport), provider, model

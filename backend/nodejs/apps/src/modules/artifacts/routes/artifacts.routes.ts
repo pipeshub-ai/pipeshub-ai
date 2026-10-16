@@ -11,6 +11,7 @@ import {
   listArtifactsSchema,
 } from '../validators/artifacts.validators';
 import {
+  deleteArtifact,
   getArtifact,
   listArtifactMembers,
   listArtifactVersions,
@@ -71,6 +72,14 @@ export function createArtifactsRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(artifactIdParamsSchema),
     getArtifact(appConfig),
+  );
+
+  router.delete(
+    '/:artifactId',
+    authenticate,
+    requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    ValidationMiddleware.validate(artifactIdParamsSchema),
+    deleteArtifact(appConfig),
   );
 
   return router;

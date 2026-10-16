@@ -9,6 +9,8 @@ import logging
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import fakeredis
+import fakeredis.aioredis
 import pytest
 
 from app.exceptions.indexing_exceptions import VectorStoreError
@@ -22,7 +24,11 @@ from tests.support.embedding_config import (
     switch_embedding_model,
 )
 from tests.support.entity_collections_db import FakeEntityCollections
-from tests.support.entity_vector_db import FakeEmbeddingModel, embedding_models
+from tests.support.entity_vector_db import (
+    FakeEmbeddingModel,
+    embedding_models,
+    recreate_lock_redis,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -39,10 +45,11 @@ ORG_A, ORG_B = "org_a_entities", "org_b_entities"
 
 
 @pytest.fixture(autouse=True)
-def _models() -> Iterator[None]:
+def lock_server() -> Iterator[fakeredis.FakeServer]:
     models = {"text-embedding-3-small": SMALL, "text-embedding-ada-002": ADA}
-    with embedding_models(models), patch.object(module, "get_default_embedding_model", return_value=BGE):
-        yield
+    with embedding_models(models), patch.object(module, "get_default_embedding_model", return_value=BGE), \
+            recreate_lock_redis() as server:
+        yield server
 
 
 class _PerOrgStore(EntityVectorStore):
@@ -239,6 +246,20 @@ class TestAModelSwitchIsHandledPerCollection:
             await store.search_entities("pay", "b", set(), {"c1"})
         assert db.searched == [ORG_A]
 
+    async def test_a_replica_names_the_leader_once_not_on_every_write(
+        self, caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An org's collection is checked on every call until the leader
+        reaches the org; one error per window says why the writes fail."""
+        db, store = await self._switched()
+
+        with caplog.at_level(logging.ERROR, logger="entity-collections-test"):
+            for _ in range(3):
+                await store.upsert_entities_batch([_topic("t3", "Leave", "a")])
+
+        assert sum("only the entity index rebuild leader" in r.getMessage() for r in caplog.records) == 1
+        assert db.dropped == []
+
     async def test_a_store_that_does_not_own_the_rebuild_never_drops(self) -> None:
         db, store = await self._switched(owner=False)
 
@@ -300,3 +321,79 @@ class TestAModelSwitchIsHandledPerCollection:
 
         assert (first.failed, second.written) == (1, 1)
         assert db.names(ORG_A) == {"Payroll"}
+
+
+class TestAnEmptyOrgCollectionFollowsANewDimension:
+    """An org's collection emptied by deletes keeps the replaced model's
+    dimension. Nothing in it can be lost, so an indexing write recreates it
+    without waiting for the leader, under that collection's recreate lock."""
+
+    async def _emptied(self) -> tuple[FakeEntityCollections, ConfigurationService]:
+        db, config = FakeEntityCollections(), config_service()
+        store = _store(db, config)
+        await _two_orgs(store)
+        await store.delete_entities_for_org("a")
+        await switch_embedding_model(config, SMALL_CONFIG)
+        return db, config
+
+    async def test_an_indexing_write_recreates_it_and_lands(self) -> None:
+        db, config = await self._emptied()
+
+        outcome = await _store(db, config).upsert_entities_batch([_topic("t3", "Leave", "a")])
+
+        assert (outcome.written, outcome.failed) == (1, 0)
+        assert db.dropped == [ORG_A]
+        assert db.vectors(ORG_A) == {SMALL.value}
+        assert db.names(ORG_B) == {"Pricing"} and db.vectors(ORG_B) == {BGE.value}
+
+    async def test_a_query_store_never_drops_it(self) -> None:
+        db, config = await self._emptied()
+
+        with pytest.raises(VectorStoreError, match="does not match the embedding model"):
+            await _store(db, config, owner=False).search_entities("pay", "a", set(), {"c1"})
+
+        assert db.dropped == []
+
+    async def test_while_another_replica_recreates_it_nothing_is_dropped(
+        self, lock_server: fakeredis.FakeServer,
+    ) -> None:
+        db, config = await self._emptied()
+        await fakeredis.aioredis.FakeRedis(server=lock_server).set(module._recreate_lock_key(ORG_A), "another")
+
+        outcome = await _store(db, config).upsert_entities_batch([_topic("t3", "Leave", "a")])
+
+        assert outcome.failed == 1
+        assert db.dropped == []
+
+    async def test_another_orgs_recreate_does_not_block_it(self, lock_server: fakeredis.FakeServer) -> None:
+        db, config = await self._emptied()
+        await fakeredis.aioredis.FakeRedis(server=lock_server).set(module._recreate_lock_key(ORG_B), "another")
+
+        outcome = await _store(db, config).upsert_entities_batch([_topic("t3", "Leave", "a")])
+
+        assert outcome.written == 1
+        assert db.dropped == [ORG_A]
+
+    async def test_a_config_change_seen_under_the_lock_drops_nothing(self) -> None:
+        """The store checked the stored config before taking the lock; it
+        moved on before the drop."""
+        db, config = await self._emptied()
+        store = _store(db, config)
+        await store.embedding_fingerprint()
+        stored = store._stored_config_hash
+        reads = 0
+
+        async def moved_after_the_first_read() -> str:
+            nonlocal reads
+            reads += 1
+            return await stored() if reads == 1 else "another-config"
+
+        with patch.object(store, "_stored_config_hash", side_effect=moved_after_the_first_read):
+            refused = await store.upsert_entities_batch([_topic("t3", "Leave", "a")])
+        assert db.dropped == []
+        retried = await store.upsert_entities_batch([_topic("t3", "Leave", "a")])
+
+        assert (refused.failed, reads) == (1, 2)
+        assert retried.written == 1
+        assert db.dropped == [ORG_A]
+

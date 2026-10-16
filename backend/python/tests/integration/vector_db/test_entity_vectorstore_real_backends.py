@@ -52,9 +52,10 @@ from app.modules.transformers.entity_vectorstore import (
 )
 from app.services.vector_db.models import HealthStatus
 from tests.support.embedding_config import config_service as embedding_config_service
+from tests.support.entity_vector_db import recreate_lock_redis
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterator
 
     from app.services.vector_db.interface.vector_db import IVectorDBService
 
@@ -81,6 +82,13 @@ class _StubEmbeddings:
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [self.embed_query(t) for t in texts]
+
+
+class _WideStubEmbeddings(_StubEmbeddings):
+    """The stub's vectors at twice the dimension: another model."""
+
+    def embed_query(self, text: str) -> list[float]:
+        return [x / 2**0.5 for x in super().embed_query(text) for _ in range(2)]
 
 
 async def _connect(service: IVectorDBService, label: str) -> None:
@@ -530,6 +538,11 @@ class TestFinalSweep:
 class TestRebuildSupport:
     """What the entity index rebuild relies on, per backend."""
 
+    @pytest.fixture(autouse=True)
+    def _recreate_lock(self) -> Iterator[None]:
+        with recreate_lock_redis():
+            yield
+
     async def test_points_of_an_org_page_to_the_end(self, store: EntityVectorStore) -> None:
         org, other = f"org-{uuid.uuid4().hex[:6]}", f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch(
@@ -617,6 +630,8 @@ class TestRebuildSupport:
     async def test_dimension_change_recreates_only_when_enabled(self, store: EntityVectorStore) -> None:
         org = f"org-{uuid.uuid4().hex[:6]}"
         await store.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])])
+        # Only entities a search can see hold the collection for the leader.
+        await _publish_writes(store)
 
         def _wider(recreate: bool) -> EntityVectorStore:
             wider = EntityVectorStore(
@@ -655,9 +670,42 @@ class TestRebuildSupport:
                      "connectorIds": ["c1"], "recordGroupIds": []},
         )])
         await _publish_writes(store)
-        with pytest.raises(Exception):
+        with pytest.raises(Exception):  # noqa: B017 - each backend's client raises its own error
             await store.search_entities("pricing", org, set(), {"c1"})
         assert store._initialized is False
+
+    async def test_a_collection_holding_no_entities_follows_a_new_dimension(self, store: EntityVectorStore) -> None:
+        """A fresh install's collection, created with the default model and
+        holding only its stamp, is recreated by the first indexing write under
+        a model of another dimension; a query store never drops it."""
+        org = f"org-{uuid.uuid4().hex[:6]}"
+        await store.collection_stamp()
+
+        def _wider(*, owner: bool) -> EntityVectorStore:
+            wider = EntityVectorStore(
+                logger=logger, config_service=embedding_config_service(), vector_db_service=store.vector_db_service,
+                collection_name=store.collection_name, recreate_on_dimension_mismatch=owner,
+            )
+
+            async def _stub(embedding_configs: list | None = None) -> None:
+                wider._dense_embeddings = _WideStubEmbeddings()
+                wider._embedding_size = DIM * 2
+                wider._model_id = "stub:wide"
+
+            wider._init_embeddings = _stub  # type: ignore[method-assign]
+            return wider
+
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await _wider(owner=False)._ensure_initialized()
+        info = await store.vector_db_service.get_collection_info(store.collection_name)
+        assert info.exists and info.dense_dimension == DIM
+
+        writer = _wider(owner=True)
+        outcome = await writer.upsert_entities_batch([_entity("t1", org=org, connectors=["c1"])], merge_membership=False)
+        assert outcome.written == 1
+        info = await store.vector_db_service.get_collection_info(store.collection_name)
+        assert info.exists and info.dense_dimension == DIM * 2
+        assert await _point(store, org, "topic", "t1") is not None
 
     async def test_a_same_dimension_model_change_waits_for_the_owner_to_recreate(
         self, store: EntityVectorStore,

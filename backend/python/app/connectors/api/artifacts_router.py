@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
 from app.services.artifact_registry.gallery import ArtifactGalleryService, ArtifactListQuery
 from app.services.artifact_registry.models import Actor
+from app.services.artifact_registry.registry import ArtifactRegistryService, ArtifactStorageError
 from app.services.artifact_registry.sharing import (
     MAX_SHARE_TARGETS,
     ArtifactSharingService,
@@ -40,6 +42,13 @@ async def get_sharing_service(
 
 class ArtifactShareRequest(BaseModel):
     userIds: list[str] = Field(min_length=1, max_length=MAX_SHARE_TARGETS)
+
+
+async def get_blob_store(request: Request) -> BlobStorage:
+    return BlobStorage(logger, request.app.container.config_service(), request.app.state.graph_provider)
+
+
+_STORAGE_UNAVAILABLE = "Couldn't delete the artifact's files. Try again."
 
 
 def _parse_comma_separated_str(value: str | None) -> list[str] | None:
@@ -212,3 +221,56 @@ async def unshare_artifact(
     except (ArtifactNotFoundError, AccessDeniedError, InvalidShareTargetError) as e:
         raise _sharing_error(e) from None
     return {"unshared": unshared}
+
+
+@artifacts_router.delete(
+    "/api/v1/artifacts/conversations/{conversation_id}",
+    # agent:write too: agent-chat delete takes it, and calls this first.
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_WRITE, OAuthScopes.AGENT_WRITE))],
+)
+async def delete_conversation_artifacts(
+    request: Request,
+    conversation_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    blob_store: BlobStorage = Depends(get_blob_store),
+) -> dict:
+    """Called by the Node API before it deletes a conversation, with the
+    caller's own token: only artifacts the caller owns are deleted. The
+    conversation's storage folders are purged by the Node API, which knows who
+    owns the conversation; this service does not."""
+    actor = _actor_from_request(request)
+    registry = ArtifactRegistryService(graph_provider, blob_store)
+    try:
+        result = await registry.delete_for_conversation(actor=actor, conversation_id=conversation_id)
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="User not found") from None
+    except ArtifactStorageError as e:
+        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=_STORAGE_UNAVAILABLE) from e
+    return {"deleted": result.deleted, "kept": result.kept}
+
+
+@artifacts_router.delete(
+    "/api/v1/artifacts/{artifact_id}",
+    status_code=HttpStatusCode.NO_CONTENT.value,
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_WRITE))],
+)
+async def delete_artifact(
+    request: Request,
+    artifact_id: str,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    blob_store: BlobStorage = Depends(get_blob_store),
+) -> Response:
+    actor = _actor_from_request(request)
+    try:
+        # Only what the gallery shows can be deleted here; hidden artifacts go with their chat.
+        await ArtifactGalleryService(graph_provider).get(actor, artifact_id)
+        await ArtifactRegistryService(graph_provider, blob_store).delete(actor=actor, artifact_id=artifact_id)
+    except ArtifactNotFoundError:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Artifact not found") from None
+    except AccessDeniedError:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value, detail="Only the artifact's owner can delete it",
+        ) from None
+    except ArtifactStorageError as e:
+        raise HTTPException(status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value, detail=_STORAGE_UNAVAILABLE) from e
+    return Response(status_code=HttpStatusCode.NO_CONTENT.value)

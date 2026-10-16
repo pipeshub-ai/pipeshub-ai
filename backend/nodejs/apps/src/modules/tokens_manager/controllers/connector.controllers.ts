@@ -185,6 +185,9 @@ interface ConnectorSnapshot {
  * (the filters-sync endpoint writes only to etcd), so it would silently return
  * the stale initial strategy (e.g. "MANUAL") even after the user changes it.
  */
+/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
+const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
+
 const fetchConnectorSnapshot = async (
   req: AuthenticatedUserRequest,
   connectorId: string,
@@ -197,6 +200,9 @@ const fetchConnectorSnapshot = async (
       `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
       HttpMethod.GET,
       headers,
+      undefined,
+      // Aborted, not just abandoned: a hung backend must not pile up reads across the retries.
+      { timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS },
     );
     if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) return null;
 
@@ -236,15 +242,8 @@ const fetchConnectorSnapshot = async (
   }
 };
 
-/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
-const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
-
-/**
- * Sentinel returned by the timeout side of the Promise.race so we can
- * distinguish "timed out" from "fetch returned null (error / 404)".
- * Using a Symbol prevents any accidental equality with real return values.
- */
-const SNAPSHOT_TIMEOUT = Symbol('SNAPSHOT_TIMEOUT');
+/** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
+const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
 
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
@@ -256,29 +255,41 @@ const fireConnectorScheduleReconcile = (
   const actorUserId = req.user?.userId;
   if (!orgId || !actorUserId) return;
   setImmediate(async () => {
-    try {
-      // Race the snapshot fetch against a hard timeout so a hung Python
-      // backend cannot block this background task indefinitely.
-      const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>((resolve) =>
-        setTimeout(() => resolve(SNAPSHOT_TIMEOUT), RECONCILE_SNAPSHOT_TIMEOUT_MS),
-      );
-      const result = await Promise.race([
-        fetchConnectorSnapshot(req, connectorId, appConfig),
-        timeoutPromise,
-      ]);
-
-      if (result === SNAPSHOT_TIMEOUT) {
-        logger.warn('Connector snapshot fetch timed out; skipping schedule reconcile', {
-          connectorId,
-          timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
+    // A later save may mark the connector pending while this one runs; only older marks are cleared.
+    const startedAt = Date.now();
+    const markPending = (): Promise<void> =>
+      scheduler
+        .markReconcilePending(connectorId, String(orgId))
+        .catch((err: unknown) => {
+          logger.error(
+            'Could not record a schedule change for the hourly repair',
+            {
+              connectorId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         });
-        return;
+    try {
+      // A busy connector service answers late or not at all; a schedule left unwritten because of
+      // that would silently never run, so the read is tried again before giving up.
+      let snapshot: ConnectorSnapshot | null = null;
+      for (const wait of RECONCILE_RETRY_WAITS_MS) {
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
+        if (snapshot) break;
+        logger.warn(
+          'Connector snapshot unavailable for schedule reconcile; will retry',
+          {
+            connectorId,
+          },
+        );
       }
-
-      // result is ConnectorSnapshot | null here (fetch completed, may have failed)
-      const snapshot = result;
       if (!snapshot) {
-        // fetchConnectorSnapshot already logged the reason (4xx, network error, etc.)
+        await markPending();
+        logger.error(
+          'Could not read connector settings to update its schedule; the hourly repair will apply them',
+          { connectorId },
+        );
         return;
       }
 
@@ -298,11 +309,16 @@ const fireConnectorScheduleReconcile = (
         sync: snapshot.sync,
       };
       await reconcileConnectorSchedule(scheduler, logger, input);
+      await scheduler.clearReconcilePending(connectorId, startedAt);
     } catch (error) {
-      logger.error('Background schedule reconcile failed', {
-        connectorId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      await markPending();
+      logger.error(
+        'Background schedule reconcile failed; the hourly repair will apply it',
+        {
+          connectorId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+        },
+      );
     }
   });
 };

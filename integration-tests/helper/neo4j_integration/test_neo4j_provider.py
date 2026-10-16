@@ -376,7 +376,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r:Record {connectorId: $cid})
             WHERE coalesce(r.recordName, r.name) = $name
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
-            RETURN g.name AS group_name
+            RETURN g.groupName AS group_name
             LIMIT 1
             """,
             {"cid": connector_id, "name": record_name}
@@ -580,7 +580,7 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (r)-[:BELONGS_TO]->(g:RecordGroup)
             OPTIONAL MATCH path = (g)-[:BELONGS_TO*0..5]->(root:RecordGroup)
             WITH r, g, root, nodes(path) AS ns
-            WITH r, [x IN ns | coalesce(x.name, '')] AS parts
+            WITH r, [x IN ns | coalesce(x.groupName, '')] AS parts
             WITH r, reduce(s = '', p IN [p IN parts WHERE p <> ''] | 
                 CASE WHEN s = '' THEN p ELSE s + '/' + p END
             ) AS parent_path
@@ -703,7 +703,125 @@ class TestNeo4jProvider(Neo4jProvider):
             {"cid": connector_id, "eid": external_record_id}
         )
         return bool(result[0]["inherits"]) if result else False
-    
+
+    async def record_belongs_to_external_group(
+        self,
+        connector_id: str,
+        external_record_id: str,
+        external_group_id: str,
+    ) -> bool:
+        """True if Record has BELONGS_TO → RecordGroup with the given externalGroupId."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (r:Record {connectorId: $cid, externalRecordId: $eid})
+                  -[:BELONGS_TO]->
+                  (g:RecordGroup {connectorId: $cid, externalGroupId: $gid})
+            RETURN count(*) AS c
+            """,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "gid": str(external_group_id),
+            },
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
+    async def user_has_direct_record_permission(
+        self,
+        connector_id: str,
+        user_email: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if User -[:PERMISSION]-> Record for this connector external id."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (u:User)-[:PERMISSION]->(r:Record {
+                connectorId: $cid,
+                externalRecordId: $eid
+            })
+            WHERE toLower(u.email) = toLower($email)
+            RETURN count(*) AS c
+            """,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "email": user_email,
+            },
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
+    async def group_has_record_permission(
+        self,
+        connector_id: str,
+        external_group_id: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if the connector's Group (by externalGroupId, e.g. a group email) has PERMISSION on the record."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (g:Group {connectorId: $cid})-[:PERMISSION]->(r:Record {connectorId: $cid, externalRecordId: $eid})
+            WHERE toLower(g.externalGroupId) = toLower($gid)
+            RETURN count(*) AS c
+            """,
+            {"cid": connector_id, "eid": str(external_record_id), "gid": str(external_group_id)},
+        )
+        return int(result[0]["c"]) > 0 if result else False
+
+    async def principal_record_permission_label(
+        self,
+        connector_id: str,
+        email: str,
+        external_record_id: str,
+    ) -> Optional[str]:
+        """``"User"`` or ``"Person"`` when that email holds a direct PERMISSION on the record, else None.
+
+        A share to an address outside the source directory lands on a ``:Person``; the same
+        address becomes a ``:User`` once it signs up, so the label is what the test asserts.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (p)-[:PERMISSION]->(r:Record {connectorId: $cid, externalRecordId: $eid})
+            WHERE (p:User OR p:Person) AND toLower(p.email) = toLower($email)
+            RETURN CASE WHEN p:User THEN 'User' ELSE 'Person' END AS label
+            LIMIT 1
+            """,
+            {"cid": connector_id, "eid": str(external_record_id), "email": email},
+        )
+        return str(result[0]["label"]) if result else None
+
+    async def principal_app_relation(
+        self,
+        connector_id: str,
+        email: str,
+    ) -> Optional[Dict[str, Any]]:
+        """The USER_APP_RELATION from this email's User/Person to the connector's App, or None.
+
+        Returns ``{"label": "User"|"Person", "isExternalUser": bool}``.
+        """
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (p)-[e:USER_APP_RELATION]->(app:App {id: $cid})
+            WHERE (p:User OR p:Person) AND toLower(p.email) = toLower($email)
+            RETURN CASE WHEN p:User THEN 'User' ELSE 'Person' END AS label,
+                   coalesce(e.isExternalUser, false) AS isExternalUser
+            LIMIT 1
+            """,
+            {"cid": connector_id, "email": email},
+        )
+        if not result:
+            return None
+        return {"label": result[0]["label"], "isExternalUser": bool(result[0]["isExternalUser"])}
+
     async def count_group_members(
         self, connector_id: str, external_group_id: str
     ) -> int:
@@ -719,6 +837,22 @@ class TestNeo4jProvider(Neo4jProvider):
             {"cid": connector_id, "gid": external_group_id}
         )
         return int(result[0]["count"]) if result else 0
+
+    async def group_has_member(
+        self, connector_id: str, external_group_id: str, user_email: str
+    ) -> bool:
+        """Whether this user has the connector's group-membership PERMISSION edge to the group."""
+        if not self.client:
+            raise RuntimeError("Provider not connected")
+        result = await self.client.execute_query(
+            """
+            MATCH (u:User)-[:PERMISSION]->(g:Group {connectorId: $cid, externalGroupId: $gid})
+            WHERE toLower(u.email) = toLower($email)
+            RETURN count(*) AS c
+            """,
+            {"cid": connector_id, "gid": external_group_id, "email": user_email},
+        )
+        return int(result[0]["c"]) > 0 if result else False
 
     async def get_sync_point(
         self, connector_id: str, sync_point_key: str
@@ -878,11 +1012,14 @@ class TestNeo4jProvider(Neo4jProvider):
             )
         return int(result[0]["c"]) if result else 0
 
-    async def count_user_app_relation_edges(self, connector_id: str) -> int:
+    async def count_user_app_relation_edges(
+        self, connector_id: str, *, external: bool | None = None,
+    ) -> int:
         """Count USER_APP_RELATION edges to the App associated with this connector.
 
-        Visibility / log-only: USER_APP_RELATION is typically established at user/app
-        registration, not by connector sync. Returns 0 if the App node has no users.
+        ``external`` narrows to people outside the source directory (``True``, the
+        ``isExternalUser`` edges a share to an outside address creates) or to directory
+        users only (``False``); ``None`` counts both. Returns 0 if the App has no users.
         """
         if not self.client:
             raise RuntimeError("Provider not connected")
@@ -891,9 +1028,10 @@ class TestNeo4jProvider(Neo4jProvider):
             MATCH (g:RecordGroup {connectorId: $cid})-[:BELONGS_TO]->(app:App)
             WITH app LIMIT 1
             MATCH ()-[e:USER_APP_RELATION]->(app)
+            WHERE $external IS NULL OR coalesce(e.isExternalUser, false) = $external
             RETURN count(e) AS c
             """,
-            {"cid": connector_id},
+            {"cid": connector_id, "external": external},
         )
         return int(result[0]["c"]) if result else 0
 

@@ -111,6 +111,7 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
+from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
 from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.core.sync.sync_coordinator import get_coordinator
@@ -1111,6 +1112,25 @@ async def _validate_sync_filter_selections(
     )
     if problems:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
+
+
+async def _validate_sync_custom_fields(
+    connector_registry: ConnectorRegistry,
+    connector_type: str,
+    submitted: object,
+    config: dict[str, Any],
+) -> None:
+    """400 listing every submitted sync setting outside its schema's rules (range, options, required)."""
+    if not isinstance(submitted, dict):
+        return
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        return
+    fields = metadata.get("config", {}).get("sync", {}).get("customFields", [])
+    current = config.get("sync") if isinstance(config.get("sync"), dict) else {}
+    problems = sync_custom_field_problems([f for f in fields if isinstance(f, dict)], submitted, current)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=" ".join(problems))
 
 
 def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
@@ -3307,6 +3327,48 @@ async def _fetch_connector_sync_block(
     return sync
 
 
+_MAX_LISTED_CONNECTOR_IDS = 200
+
+
+async def _connector_schedule_state(
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    organisation_id: str,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """What decides one connector's schedule, for a caller that must not read a gap as "sync is off".
+
+    ``missing``: no such connector. ``unreadable``: its settings could not be read, so the caller
+    keeps the schedule it has and asks again later.
+    """
+    try:
+        # Raising: a read that failed must not look like a connector that is gone.
+        doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    except Exception as e:
+        logger.warning("Failed to read connector %s: %s", connector_id, e)
+        return {"connectorId": connector_id, "unreadable": True}
+    if not doc:
+        return {"connectorId": connector_id, "missing": True}
+    item: dict[str, Any] = {
+        "connectorId": connector_id,
+        "type": doc.get("type"),
+        "orgId": organisation_id,
+        "ownerUserId": doc.get("createdBy"),
+        "isActive": bool(doc.get("isActive")),
+    }
+    try:
+        # Raising, and uncached: a store error otherwise reads as no settings, which removes the schedule.
+        config = await config_service.get_config(
+            _get_config_path_for_instance(connector_id), use_cache=False, raise_on_error=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to read config for connector %s: %s", connector_id, e)
+        return {**item, "sync": None, "unreadable": True}
+    sync = (config or {}).get("sync") if isinstance(config, dict) else None
+    return {**item, "sync": sync if isinstance(sync, dict) else {}}
+
+
 @router.get(
     "/api/v1/connectors/internal/all-scheduled",
     dependencies=[Depends(require_service_token(TokenScopes.FETCH_CONFIG))],
@@ -3315,6 +3377,11 @@ async def get_all_scheduled_connector_instances_internal(
     request: Request,
     page: int = Query(1, ge=1, description="1-based page number"),
     limit: int = Query(50, ge=1, le=200, description="Maximum candidates to process per call"),
+    connector_ids: str | None = Query(
+        None,
+        alias="connectorIds",
+        description="Comma-separated ids: return exactly these connectors, active or not, in one page",
+    ),
 ) -> dict[str, Any]:
     """
     Internal cross-org enumeration of connector instances configured for
@@ -3363,6 +3430,17 @@ async def get_all_scheduled_connector_instances_internal(
                 detail="No organisations found",
             )
         organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+
+        if isinstance(connector_ids, str):
+            ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
+            return {
+                "success": True,
+                "items": [
+                    await _connector_schedule_state(cid, graph_provider, config_service, organisation_id, logger)
+                    for cid in ids
+                ],
+                "hasMore": False,
+            }
 
         # Convert 1-based page to 0-based DB offset.
         skip = (page - 1) * limit
@@ -5435,6 +5513,7 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
@@ -5632,6 +5711,7 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"

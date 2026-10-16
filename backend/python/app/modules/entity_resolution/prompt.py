@@ -14,6 +14,7 @@ _SUMMARY_MAX_CHARS = 1200
 # Spellings shown per offered match; a node keeps up to MAX_TAXONOMY_ALIASES,
 # and the prompt pays for every alias of every candidate of every item.
 PROMPT_ALIASES_PER_MATCH = 10
+_HANDLE_HEX = 8
 
 _PROMPT = """# Task
 You maintain a knowledge-graph taxonomy for one organisation. A document was just classified and produced the names below. For each name decide whether it denotes the SAME concept as one of the existing entities offered next to it (its nearest matches, listed in no particular order), or the same concept as another name in this list, or a genuinely new concept.
@@ -45,6 +46,7 @@ def build_prompt(
     candidates: dict[int, tuple[WinnerCandidate, ...]],
 ) -> str:
     """Render the merge prompt for ``items`` and their offered candidates."""
+    handles = candidate_handles(items, candidates)
     rendered: list[dict[str, Any]] = []
     for item in items:
         entry: dict[str, Any] = {
@@ -53,7 +55,7 @@ def build_prompt(
             "kind": _kind_label(item),
         }
         entry["matches"] = [
-            {"id": c.entity_id, "name": c.name, "aliases": list(c.aliases[:PROMPT_ALIASES_PER_MATCH])}
+            {"id": handles[c.entity_id], "name": c.name, "aliases": list(c.aliases[:PROMPT_ALIASES_PER_MATCH])}
             for c in _shuffled(item, candidates.get(item.index) or ())
         ]
         rendered.append(entry)
@@ -64,10 +66,40 @@ def build_prompt(
     if not text:
         text = "(no summary available)"
 
+    # One item per line: the indented form spent a third of the items' tokens on whitespace.
+    items_json = "[\n" + ",\n".join(
+        json.dumps(entry, ensure_ascii=False, separators=(",", ":")) for entry in rendered
+    ) + "\n]"
     # str.replace, not str.format: names and summaries can contain braces.
-    return _PROMPT.replace("{summary}", text).replace(
-        "{items}", json.dumps(rendered, ensure_ascii=False, indent=2)
-    )
+    return _PROMPT.replace("{summary}", text).replace("{items}", items_json)
+
+
+def candidate_handles(
+    items: list[ExtractedName],
+    candidates: dict[int, tuple[WinnerCandidate, ...]],
+) -> dict[str, str]:
+    """The short id the prompt shows for each offered node, by node id.
+
+    A node id is a UUID, about 35 tokens the model reads for every match and
+    copies into every merge. The prompt shows its first 8 hex digits, longer
+    only where two offered ids share them. Opaque ids, not "m1", "m2": with
+    numbered handles the model merged a fifth less often than with UUIDs.
+    """
+    ids = sorted({c.entity_id for item in items for c in candidates.get(item.index) or ()})
+    width = _HANDLE_HEX
+    while True:
+        handles = {node_id: _hex(node_id)[:width] for node_id in ids}
+        if len(set(handles.values())) == len(handles) or width >= 64:
+            return handles
+        width *= 2
+
+
+def _hex(node_id: str) -> str:
+    """The id's hex digits, or a digest for an id that is not a UUID."""
+    digits = node_id.replace("-", "").lower()
+    if digits and all(ch in "0123456789abcdef" for ch in digits):
+        return digits
+    return hashlib.sha256(node_id.encode()).hexdigest()
 
 
 def _shuffled(item: ExtractedName, offered: tuple[WinnerCandidate, ...]) -> list[WinnerCandidate]:
@@ -86,4 +118,4 @@ def _kind_label(item: ExtractedName) -> str:
     return item.kind.entity_type.value
 
 
-__all__ = ["build_prompt"]
+__all__ = ["build_prompt", "candidate_handles"]

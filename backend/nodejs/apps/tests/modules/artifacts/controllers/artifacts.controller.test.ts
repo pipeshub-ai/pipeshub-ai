@@ -3,6 +3,7 @@ import { NextFunction, Response } from 'express';
 import { Types } from 'mongoose';
 import sinon from 'sinon';
 import {
+  deleteArtifact,
   getArtifact,
   listArtifactMembers,
   listArtifactVersions,
@@ -17,6 +18,8 @@ import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/co
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config';
 import {
   ForbiddenError,
+  NotFoundError,
+  ServiceUnavailableError,
   UnauthorizedError,
 } from '../../../../src/libs/errors/http.errors';
 import { HttpMethod } from '../../../../src/libs/enums/http-methods.enum';
@@ -498,5 +501,79 @@ describe('ConversationTitleService', () => {
     );
 
     expect(titles.get(CONVERSATION_ID)).to.equal('Project chat');
+  });
+});
+
+describe('Artifacts Controller deleteArtifact', () => {
+  afterEach(() => {
+    sinon.restore();
+  });
+
+  function createDeleteResponse(): JsonResponseDouble & { end: sinon.SinonStub } {
+    const res = { ...createMockResponse(), end: sinon.stub() };
+    res.status.returns(res);
+    return res;
+  }
+
+  it('sends DELETE for the encoded id with the caller headers and answers 204 with no body', async () => {
+    const execStub = sinon
+      .stub(connectorUtils, 'executeConnectorCommand')
+      .resolves({ statusCode: 204, data: undefined });
+    const req = createMockRequest({ params: { artifactId: 'art_1-x' } });
+    const res = createDeleteResponse();
+    const next = createMockNext();
+
+    await invoke(deleteArtifact(createMockAppConfig()), req, res, next);
+
+    expect(execStub.calledOnce).to.equal(true);
+    const [uri, method, headers] = execStub.firstCall.args;
+    expect(uri).to.equal('http://connector.local/api/v1/artifacts/art_1-x');
+    expect(method).to.equal('DELETE');
+    expect(headers).to.have.property('authorization', 'Bearer test-token');
+    expect(res.status.calledWith(204)).to.equal(true);
+    expect(res.end.calledOnce).to.equal(true);
+    expect(res.json.called).to.equal(false);
+    expect(next.called).to.equal(false);
+  });
+
+  for (const [statusCode, errorType] of [
+    [403, ForbiddenError],
+    [404, NotFoundError],
+    [503, ServiceUnavailableError],
+  ] as const) {
+    it(`passes a ${statusCode} from the connectors service on as ${errorType.name}`, async () => {
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode,
+        data: { detail: 'from python' },
+      });
+      const res = createDeleteResponse();
+      const next = createMockNext();
+
+      await invoke(
+        deleteArtifact(createMockAppConfig()),
+        createMockRequest({ params: { artifactId: 'art-1' } }),
+        res,
+        next,
+      );
+
+      expect(next.calledOnce).to.equal(true);
+      expect(next.firstCall.args[0]).to.be.instanceOf(errorType);
+      expect(res.status.called).to.equal(false);
+    });
+  }
+
+  it('refuses an unauthenticated caller without calling the connectors service', async () => {
+    const execStub = sinon.stub(connectorUtils, 'executeConnectorCommand');
+    const next = createMockNext();
+
+    await invoke(
+      deleteArtifact(createMockAppConfig()),
+      createMockRequest({ user: undefined, params: { artifactId: 'art-1' } }),
+      createDeleteResponse(),
+      next,
+    );
+
+    expect(execStub.called).to.equal(false);
+    expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
   });
 });

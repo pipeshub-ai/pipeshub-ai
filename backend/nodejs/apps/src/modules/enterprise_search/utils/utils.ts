@@ -2310,6 +2310,8 @@ export const deleteAgentConversation = async (
   agentKey: string,
   userId: string,
   orgId: string,
+  // Runs once access is confirmed and before the delete; a throw keeps the conversation.
+  beforeDelete?: () => Promise<void>,
 ): Promise<IChatSessionDocument | null> => {
   try {
     const conversation = await validateAgentConversationAccess(
@@ -2323,6 +2325,8 @@ export const deleteAgentConversation = async (
     if (!conversation) {
       return null;
     }
+
+    await beforeDelete?.();
 
     conversation.isDeleted = true;
     conversation.deletedBy = userId as any;

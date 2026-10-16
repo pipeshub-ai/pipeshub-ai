@@ -65,7 +65,8 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { BadRequestError, ConflictError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
+import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
@@ -355,6 +356,9 @@ function createMockStream(): any {
 
 describe('Enterprise Search Controller', () => {
   beforeEach(() => {
+    if (!(conversationArtifacts.deleteConversationArtifacts as any).restore) {
+      sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
+    }
     // Default stubs so any code path that hits chatSessionMessages
     // (appendMessages / getMessages / countDocuments / feedback) does not
     // buffer against a real Mongo connection for 10s.
@@ -1755,7 +1759,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1765,7 +1769,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -1792,7 +1796,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -1811,9 +1815,65 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('deleteConversationById deletes the chat artifacts first', () => {
+    const ownerRequest = () =>
+      createMockRequest({
+        params: { conversationId: VALID_OID },
+        headers: { authorization: 'Bearer owner-token' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+    it("deletes the chat's artifacts with the caller's token, then the chat", async () => {
+      stubMongooseFind(ChatSession, 'findOne', { _id: VALID_OID })
+      restoreIfStubbed(ChatSessionMessage, 'find')
+      sinon.stub(ChatSessionMessage, 'find').returns({ lean: sinon.stub().resolves([]) } as any)
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const softDelete = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID, updatedAt: new Date() } as any)
+      const cleanup = conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteConversationById(createMockAppConfig())(ownerRequest(), res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      expect(cleanup.calledOnce).to.be.true
+      const [config, conversationId, request] = cleanup.firstCall.args
+      expect(config.connectorBackend).to.equal(createMockAppConfig().connectorBackend)
+      expect(conversationId).to.equal(VALID_OID)
+      expect(request.headers.authorization).to.equal('Bearer owner-token')
+      expect(cleanup.calledBefore(softDelete)).to.be.true
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('leaves the chat in place when its artifacts could not be deleted', async () => {
+      stubMongooseFind(ChatSession, 'findOne', { _id: VALID_OID })
+      restoreIfStubbed(ChatSession, 'findOneAndUpdate')
+      const softDelete = sinon.stub(ChatSession, 'findOneAndUpdate').resolves({ _id: VALID_OID } as any)
+      const failure = new ServiceUnavailableError('storage down')
+      ;(conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub).rejects(failure)
+      const next = createMockNext()
+
+      await deleteConversationById(createMockAppConfig())(ownerRequest(), createMockResponse(), next)
+
+      expect(next.calledOnceWith(failure)).to.be.true
+      expect(softDelete.called).to.be.false
+    })
+
+    it('deletes nothing for someone who cannot delete the chat', async () => {
+      restoreIfStubbed(ChatSession, 'findOne')
+      sinon.stub(ChatSession, 'findOne').resolves(null)
+      const next = createMockNext()
+
+      await deleteConversationById(createMockAppConfig())(ownerRequest(), createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect((conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub).called).to.be.false
     })
   })
 
@@ -4275,7 +4335,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteAgentConversationById(req, res, next)
+      await deleteAgentConversationById(createMockAppConfig())(req, res, next)
 
       // When user is undefined, validateAgentConversationAccess catches the CastError
       // and returns null, so the controller returns 200 with null conversation
@@ -4291,7 +4351,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteAgentConversationById(req, res, next)
+      await deleteAgentConversationById(createMockAppConfig())(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
     })
@@ -4315,10 +4375,68 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteAgentConversationById(req, res, next)
+      await deleteAgentConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.called).to.be.false
       expect(res.status.calledWith(200)).to.be.true
+    })
+  })
+
+  describe('deleteAgentConversationById deletes the chat artifacts first', () => {
+    const agentChat = () => {
+      const conv: any = {
+        _id: new mongoose.Types.ObjectId(VALID_OID),
+        isDeleted: false,
+        save: sinon.stub(),
+        toJSON: () => ({ _id: VALID_OID, isDeleted: true }),
+      }
+      conv.save.resolves(conv)
+      return conv
+    }
+    const ownerRequest = () =>
+      createMockRequest({
+        params: { conversationId: VALID_OID, agentKey: 'agent-1' },
+        headers: { authorization: 'Bearer owner-token' },
+        user: { userId: new mongoose.Types.ObjectId(VALID_OID), orgId: new mongoose.Types.ObjectId(VALID_OID2) },
+      })
+
+    it("deletes the chat's artifacts with the caller's token, then the chat", async () => {
+      const conv = agentChat()
+      sinon.stub(ChatSession, 'findOne').resolves(conv)
+      const cleanup = conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await deleteAgentConversationById(createMockAppConfig())(ownerRequest(), res, next)
+
+      expect(next.called).to.be.false
+      expect(cleanup.calledOnce).to.be.true
+      expect(cleanup.firstCall.args[1]).to.equal(VALID_OID)
+      expect(cleanup.firstCall.args[2].headers.authorization).to.equal('Bearer owner-token')
+      expect(cleanup.calledBefore(conv.save)).to.be.true
+      expect(conv.isDeleted).to.be.true
+    })
+
+    it('leaves the chat in place when its artifacts could not be deleted', async () => {
+      const conv = agentChat()
+      sinon.stub(ChatSession, 'findOne').resolves(conv)
+      const failure = new ServiceUnavailableError('storage down')
+      ;(conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub).rejects(failure)
+      const next = createMockNext()
+
+      await deleteAgentConversationById(createMockAppConfig())(ownerRequest(), createMockResponse(), next)
+
+      expect(next.calledOnceWith(failure)).to.be.true
+      expect(conv.save.called).to.be.false
+      expect(conv.isDeleted).to.be.false
+    })
+
+    it('deletes nothing when the chat is not found', async () => {
+      sinon.stub(ChatSession, 'findOne').resolves(null)
+
+      await deleteAgentConversationById(createMockAppConfig())(ownerRequest(), createMockResponse(), createMockNext())
+
+      expect((conversationArtifacts.deleteConversationArtifacts as unknown as sinon.SinonStub).called).to.be.false
     })
   })
 
@@ -4460,7 +4578,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -6469,7 +6587,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -8035,7 +8153,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -11475,7 +11593,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -12066,7 +12184,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await deleteAgentConversationById(req, res, next)
+      await deleteAgentConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(Error)
@@ -13920,7 +14038,7 @@ describe('Enterprise Search Controller', () => {
       })
       const res = createMockResponse()
       const next = createMockNext()
-      await deleteConversationById(req, res, next)
+      await deleteConversationById(createMockAppConfig())(req, res, next)
 
       expect(next.called).to.be.false
       expect(findOne.firstCall.args[0].sessionType).to.equal('chat')

@@ -7,6 +7,7 @@ links to every merged PR. Generated with the `release-changelog` skill
 
 | Version | Date | Channel | Summary |
 |---|---|---|---|
+| [0.10.0](0.10.0.md) | October 12, 2026 | Stable | Deleted records go to the trash, agents search the knowledge graph, and a broad security sweep |
 | [0.9.1](0.9.1.md) | September 28, 2026 | Stable | OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0 |
 | [0.9.0](0.9.0.md) | September 28, 2026 | Stable | Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors |
 | [0.8.0](0.8.0.md) | September 14, 2026 | Stable | Fair scheduling across connectors, an indexing pipeline that holds up under load, and Redis Cluster readiness |

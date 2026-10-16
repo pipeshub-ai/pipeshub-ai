@@ -306,7 +306,7 @@ class ArtifactManager:
                 expected_version=expected_version,
             )
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to update this artifact"})
         except VersionConflictError as e:
@@ -368,7 +368,7 @@ class ArtifactManager:
         try:
             url = await registry.get_download_url(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to access this artifact"})
         except Exception:
@@ -455,7 +455,7 @@ class ArtifactManager:
                 })
             raw = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to read this artifact"})
         except Exception:
@@ -677,7 +677,7 @@ class ArtifactManager:
         try:
             metadata = await registry.promote_to_visible(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to promote this artifact"})
         except Exception:

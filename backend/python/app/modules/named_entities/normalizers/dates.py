@@ -10,12 +10,19 @@ from __future__ import annotations
 
 import calendar
 import re
+import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
+from functools import lru_cache
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.named_entities.domain.values import DateRangeValue, DurationValue
+
+if TYPE_CHECKING:
+    from dateparser.conf import Settings
+    from dateparser.date import DateDataParser
 
 _MONTHS = {
     "jan": 1, "january": 1, "feb": 2, "february": 2, "mar": 3, "march": 3,
@@ -365,25 +372,51 @@ def _weekday(which: str, weekday: int, ctx: NormalizationContext) -> DateRangeVa
     )
 
 
+_DATEPARSER_SETTINGS = {
+    "RETURN_AS_TIMEZONE_AWARE": False,
+    "STRICT_PARSING": True,
+    "PREFER_DATES_FROM": "current_period",
+}
+_DATEPARSER_LOCK = threading.Lock()
+
+
+@lru_cache(maxsize=1)
+def _dateparser_engine() -> tuple[DateDataParser, Settings]:
+    """One parser for every reference time. dateparser keys its per-locale word
+    and regex caches on the whole settings, so a base passed in the settings
+    rebuilt them, and registered new settings, for every record. The base is set
+    on the shared settings under the lock instead: no dateparser cache reads it."""
+    from dateparser.conf import settings
+    from dateparser.date import DateDataParser
+
+    shared = settings.replace(mod_settings=dict(_DATEPARSER_SETTINGS), **_DATEPARSER_SETTINGS)
+    return DateDataParser(settings=shared), shared
+
+
+def _parse_date_uncached(text: str, base: datetime) -> datetime | None:
+    parser, shared = _dateparser_engine()
+    with _DATEPARSER_LOCK:
+        shared.RELATIVE_BASE = base
+        data = parser.get_date_data(text)
+    return data["date_obj"] if data else None
+
+
+# Only a fixed reference time is memoized: without one the base is "now", which never repeats.
+_parse_date = lru_cache(maxsize=4096)(_parse_date_uncached)
+
+
 def _dateparser(text: str, kind: EntityKind, ctx: NormalizationContext) -> DateRangeValue | None:
     try:
-        import dateparser
+        import dateparser  # noqa: F401
     except ImportError:
         return None
     tz = _zone(ctx.tz)
     if ctx.reference_time_ms:
         base = datetime.fromtimestamp(ctx.reference_time_ms / 1000, tz=UTC).astimezone(tz)
+        parsed = _parse_date(text, base.replace(tzinfo=None))
     else:
         base = datetime.now(tz)
-    parsed = dateparser.parse(
-        text,
-        settings={
-            "RELATIVE_BASE": base.replace(tzinfo=None),
-            "RETURN_AS_TIMEZONE_AWARE": False,
-            "STRICT_PARSING": True,
-            "PREFER_DATES_FROM": "current_period",
-        },
-    )
+        parsed = _parse_date_uncached(text, base.replace(tzinfo=None))
     if parsed is None:
         return None
     start = parsed.replace(tzinfo=tz)

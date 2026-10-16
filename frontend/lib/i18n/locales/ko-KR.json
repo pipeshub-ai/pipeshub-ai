@@ -341,7 +341,8 @@
       "PRESENTATION": "프레젠테이션",
       "DATA_FILE": "데이터 파일",
       "CODE": "코드",
-      "CODE_OUTPUT": "코드 출력"
+      "CODE_OUTPUT": "코드 출력",
+      "OTHER": "기타"
     },
     "tabs": {
       "all": "모든 아티팩트",
@@ -358,7 +359,20 @@
     },
     "emptyShared": "아직 공유받은 항목이 없습니다",
     "emptySharedHint": "팀원이 공유한 아티팩트가 여기에 표시됩니다.",
-    "notAvailable": "이 아티팩트는 더 이상 사용할 수 없습니다"
+    "notAvailable": "이 아티팩트는 더 이상 사용할 수 없습니다",
+    "deleteTitle": "아티팩트를 삭제할까요?",
+    "deleteConfirmMessage": "\"{{name}}\" 및 모든 버전이 영구적으로 삭제됩니다. 이를 표시하는 채팅에서는 더 이상 사용할 수 없음으로 표시됩니다.",
+    "deleteSuccess": "\"{{name}}\" 삭제됨",
+    "preview": "미리보기",
+    "moreActionsFor": "{{name}} 추가 옵션",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "연결을 확인한 후 다시 시도하세요.",
+    "noMatches": "필터와 일치하는 아티팩트가 없습니다",
+    "noMatchesHint": "다른 검색어를 사용하거나 필터를 지워 모든 아티팩트를 확인하세요.",
+    "clearFilters": "필터 지우기",
+    "gridView": "그리드 보기",
+    "listView": "목록 보기",
+    "closeSearch": "검색 닫기"
   },
   "notifications": {
     "title": "알림",
@@ -455,7 +469,8 @@
     "required": "필수 입력 항목입니다",
     "invalidEmail": "유효하지 않은 이메일 주소입니다",
     "invalidUrl": "유효하지 않은 URL입니다",
-    "name": "이름"
+    "name": "이름",
+    "optional": "(선택 사항)"
   },
   "dialog": {
     "newFolder": "새 컬렉션 폴더",
@@ -688,6 +703,8 @@
       "open": "{{source}} 열기",
       "openIn": "{{source}}에서 열기",
       "openInCollections": "컬렉션에서 열기",
+      "syncedJustNow": "방금 동기화됨",
+      "syncedAgo": "{{age}} 전 동기화됨",
       "relevance": "관련도: {{percent}}%"
     },
     "results": "결과",
@@ -792,6 +809,8 @@
     "copiedAsMarkdown": "Markdown으로 복사됨",
     "copiedAsText": "텍스트로 복사됨",
     "citations": "인용",
+    "showMoreCitations_one": "인용 {{count}}개 더 보기",
+    "showMoreCitations_other": "인용 {{count}}개 더 보기",
     "markdownWithCitations": "인용 포함 Markdown",
     "onlyTextWithoutCitations": "인용 없이 텍스트만",
     "differentModesOfQuery": "다양한 질의 모드",
@@ -1297,7 +1316,20 @@
         "expired": "{{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다",
         "allowedNotRun": "{{tool}}을(를) 허용했지만 실행되지 않았습니다"
       }
-    }
+    },
+    "artifactsPanel": {
+      "generated_other": "아티팩트 {{count}}개 생성됨",
+      "newerVersion": "최신 버전 사용 가능 (v{{version}})",
+      "unavailable": "더 이상 사용할 수 없음",
+      "viewSource": "소스 코드 보기",
+      "loadingSource": "소스 코드 불러오는 중",
+      "viewSourceTitle": "이 아티팩트를 생성한 코드 보기",
+      "preview": "아티팩트 미리보기",
+      "loadingPreview": "미리보기 불러오는 중",
+      "download": "아티팩트 다운로드",
+      "downloading": "아티팩트 다운로드 중"
+    },
+    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -2198,7 +2230,10 @@
         "maxLength": "{{field}}은(는) {{maxLength}}자를 넘을 수 없습니다",
         "email": "{{field}}은(는) 올바른 이메일 주소여야 합니다",
         "url": "{{field}}은(는) 올바른 URL이어야 합니다",
-        "urlProtocol": "{{field}}은(는) http 또는 https를 사용해야 합니다"
+        "urlProtocol": "{{field}}은(는) http 또는 https를 사용해야 합니다",
+        "numberRange": "{{min, number}}에서 {{max, number}} 사이의 정수를 입력하세요.",
+        "numberMin": "{{min, number}} 이상의 정수를 입력하세요.",
+        "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
       "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
       "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다."
@@ -2581,7 +2616,13 @@
         "syncStrategyHelper": "{{name}}에서 데이터를 동기화하는 방식을 선택하세요",
         "syncInterval": "동기화 주기",
         "syncIntervalPlaceholder": "주기 선택...",
-        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요"
+        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요",
+        "lastRunLimit": {
+          "saved": "마지막 동기화: 페이지 {{count, number}}개 저장됨",
+          "stoppedAtLimit": "이 한도에서 중지됨",
+          "leftOut": "{{count, number}}개 제외됨",
+          "nearLimit": "이 커넥터는 이미 이 한도의 90% 이상을 저장하고 있습니다. 이 사이트의 페이지를 더 보관하려면 한도를 늘리세요."
+        }
       },
       "instancePanel": {
         "overview": "개요",
@@ -2614,7 +2655,31 @@
         "recordsByType": "유형별 레코드",
         "noRecordTypes": "사용 가능한 레코드 유형이 없습니다",
         "localWatcherLabel": "로컬 워처",
-        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건"
+        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
+        "lastRun": {
+          "title": "마지막 동기화",
+          "outcome": {
+            "succeeded": "완료",
+            "failed": "실패",
+            "stopped": "중지됨",
+            "skipped": "건너뜀"
+          },
+          "stopReason": {
+            "max_pages": "최대 페이지 한도에 도달함",
+            "time_limit": "시간 제한에 도달함. 다음 동기화에서 이어서 진행합니다",
+            "stalled": "사이트가 응답을 멈춤. 다음 동기화에서 이어서 진행합니다",
+            "rate_limited": "사이트가 요청을 줄여 달라고 계속 응답함. 다음 동기화에서 이어서 진행합니다"
+          },
+          "pagesSaved": "페이지 {{count}}개 저장됨",
+          "failed": "페이지 {{count}}개 실패",
+          "robotsSkipped": "robots.txt로 {{count}}개 건너뜀",
+          "noindexSkipped": "{{count}}개가 색인 제외를 요청함",
+          "skippedMaxPages": "최대 페이지 한도로 {{count}}개 제외됨",
+          "pruned": "사이트에서 사라져 {{count}}개 삭제됨",
+          "sitemapUrls": "사이트맵에서 {{count}}개 발견",
+          "resumed": "완료되지 않은 동기화를 이어서 진행함",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "인스턴스 이름",
@@ -2804,6 +2869,108 @@
           "confirm": "다시 인덱싱 시작"
         },
         "typePrompt": "확인하려면 {{token}}을(를) 입력하세요."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "시작 URL",
+            "help": "PipesHub가 처음 방문하는 페이지입니다. 저장한 후에는 변경할 수 없으며, 다른 사이트를 크롤링하려면 커넥터를 하나 더 추가하세요."
+          },
+          "type": {
+            "label": "크롤링 범위",
+            "options": {
+              "single": "이 페이지만",
+              "recursive": "이 페이지와 여기에 링크된 페이지"
+            }
+          },
+          "discovery": {
+            "label": "페이지 찾는 방법",
+            "help": "사이트맵이 가장 빠르며, 링크는 사이트맵에 없는 페이지를 찾아냅니다.",
+            "options": {
+              "sitemap_and_links": "사이트맵 및 링크(권장)",
+              "links": "링크만",
+              "sitemap": "사이트맵만"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "이 섹션 안에서만",
+            "help": "시작 URL 경로(예: /docs/) 아래의 페이지만 포함합니다."
+          },
+          "max_pages": {
+            "label": "최대 페이지 수",
+            "help": "PipesHub는 이 사이트에서 최대 이 개수만큼 페이지를 보관합니다. PDF 같은 파일도 페이지로 계산됩니다.",
+            "unit": "페이지"
+          },
+          "url_should_contain": {
+            "label": "URL에 다음이 포함된 페이지만 저장",
+            "help": "모든 페이지를 저장하려면 비워 두세요. 일치하지 않는 페이지는 방문하지 않으므로 그 페이지의 링크도 따라가지 않습니다."
+          },
+          "ignore_query_params": {
+            "label": "같은 페이지, 다른 URL",
+            "help": "sort나 ref처럼 페이지 내용을 바꾸지 않는 URL 매개변수입니다. 모두 무시하려면 *를 사용하세요. 추적 매개변수(utm_…)는 항상 무시됩니다."
+          },
+          "depth": {
+            "label": "시작 페이지에서의 클릭 수",
+            "help": "링크를 따라갈 깊이입니다. 사이트맵에 있는 페이지는 1클릭으로 계산됩니다.",
+            "unit": "클릭"
+          },
+          "max_size_mb": {
+            "label": "다운로드할 최대 파일 크기",
+            "help": "이보다 큰 페이지와 파일은 건너뛰며 마지막 동기화에 표시됩니다.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "다른 사이트로 연결되는 링크도 따라가기",
+            "help": "보통 꺼 둡니다. 크롤링이 이 사이트를 훨씬 벗어날 수 있습니다."
+          },
+          "use_headless_browser": {
+            "label": "항상 브라우저 사용(느림)",
+            "help": "꺼짐: PipesHub가 JavaScript가 필요한 페이지를 감지하여 해당 사이트에만 브라우저를 사용합니다."
+          },
+          "browser_like_identity": {
+            "label": "웹 브라우저로 식별",
+            "help": "꺼짐: 요청이 PipesHub 크롤러로 식별됩니다. 크롤링이 허용되었지만 크롤러를 차단하는 사이트에만 켜세요. robots.txt는 계속 준수합니다."
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt 준수",
+            "help": "사이트가 크롤러에게 방문하거나 색인하지 말라고 요청한 페이지를 건너뜁니다."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "웹사이트"
+          },
+          "crawl": {
+            "title": "크롤링 대상"
+          },
+          "skip": {
+            "title": "건너뛸 대상"
+          },
+          "advanced": {
+            "title": "고급",
+            "description": "크롤링 깊이, 파일 크기, 브라우저 및 크롤러 식별 정보."
+          }
+        },
+        "summaryOn": "{{label}} 켜짐",
+        "summaryOff": "{{label}} 꺼짐",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "시작 설정",
+        "custom": "사용자 지정",
+        "suggested": "이 주소에 추천: {{name}}",
+        "replaceTitle": "현재 설정을 바꾸시겠습니까?",
+        "replaceMessage": "{{name}}(으)로 현재 크롤링 설정이 바뀝니다.",
+        "replaceConfirm": "바꾸기",
+        "web": {
+          "docs": "문서 사이트",
+          "helpCenter": "고객센터",
+          "wholeSite": "사이트 전체",
+          "onePage": "한 페이지"
+        }
       }
     },
     "mcpServers": {

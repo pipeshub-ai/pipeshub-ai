@@ -79,8 +79,8 @@ export class ConnectorServiceCommand<T> extends BaseCommand<ConnectorServiceResp
         statusText: response.statusText,
       });
 
-      // Assuming the response is JSON; adjust if needed.
-      const data = await response.json();
+      // A 204 has no body to parse; parsing it would throw and turn a success into a 500.
+      const data = response.status === 204 ? undefined : await response.json();
       
       // Convert Headers object to plain object
       const responseHeaders: Record<string, string> = {};

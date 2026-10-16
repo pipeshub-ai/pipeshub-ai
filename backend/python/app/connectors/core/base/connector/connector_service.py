@@ -121,6 +121,9 @@ class BaseConnector(ABC):
         # Injected post-construction by ConnectorFactory, same as _notification_service.
         self.connector_instance_name: Optional[str] = None
         self.last_synced_by: Optional[str] = None
+        # What the last run did, in the connector's own terms (counts, why it stopped); stored on
+        # the app doc with the run's outcome so the UI can show it. Flat JSON values only.
+        self.last_sync_summary: dict[str, object] | None = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
