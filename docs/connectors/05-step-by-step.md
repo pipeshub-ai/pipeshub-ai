@@ -57,8 +57,9 @@ pytest tests/unit/connectors/test_connector_contract.py tests/unit/connectors/te
 ## Phase 4: users and groups
 
 1. List source users, map to `AppUser` (with email), write with `on_new_app_users`.
-2. List groups and their members, write with `on_new_user_groups`. If the API cannot list members, stop and tell the human what that does to access (`06-permissions.md`).
-3. Personal scope: call `ensure_creator_user_app_relation()` instead (it needs the creator email loaded in `init()`).
+2. List groups and their members (transitively, so nested groups are flattened), write with `on_new_user_groups`. If the API cannot list members, stop and tell the human what that does to access (`06-permissions.md`).
+3. Leave deactivated and suspended users out of member lists. For users whose email is hidden, use pseudo-groups (`06-permissions.md`, "Principals the source makes hard").
+4. Personal scope: call `ensure_creator_user_app_relation()` instead (it needs the creator email loaded in `init()`).
 
 **Check:** behaviour test: the fake's users and groups come out with the right emails and members.
 
@@ -87,10 +88,11 @@ pytest tests/unit/connectors/test_connector_contract.py tests/unit/connectors/te
 
 ## Phase 8: incremental sync, deletions and moves
 
-1. Save a checkpoint per container after its items are written, with `FailedItems` holding it before any failure.
-2. On the next run, list only changes since the checkpoint.
-3. Apply deletions and moves the source reports: `delete_record_by_external_id` for a deletion; re-send a moved record through `on_new_records` with its new parent, or `on_records_moved` if its id changed. For those it does not, rely on the full-sync cleanup, and make `full_sync_coverage()` honest about anything a run skipped.
-4. Permission-only changes: `on_updated_record_permissions`, with the stored record (or its stored id).
+1. Take the next cursor before the full listing starts. Save a checkpoint per container after its items are written, with `FailedItems` holding it before any failure.
+2. On the next run, list only changes since the checkpoint. If the source rejects the cursor as expired, re-list that container in full and `notify` the user.
+3. Placeholder sweep: fill the parents the main pass referenced but did not write (`02-low-level-design.md`, "Placeholders and filters").
+4. Apply deletions and moves the source reports, on confirmed signals only: `delete_record_by_external_id` for a deletion; re-send a moved record through `on_new_records` with its new parent, or `on_records_moved` if its id changed. For those it does not, rely on the full-sync cleanup, and make `full_sync_coverage()` honest about anything a run skipped.
+5. Permission-only changes: `on_updated_record_permissions`, with the stored record (or its stored id).
 
 **Check:** behaviour tests: change, rename, move, delete and unshare an item in the fake between two runs; each shows up correctly after the second run; an unchanged item is not re-sent for indexing.
 

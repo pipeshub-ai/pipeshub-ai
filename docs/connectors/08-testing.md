@@ -57,7 +57,11 @@ Cover at least:
 4. **Deletion and move:** an item deleted or moved at the source is deleted or moved in PipesHub.
 5. **Source errors:** 401 or revoked credentials, 403, 404, 429 with `Retry-After`, and 5xx each end the way `07-errors-and-logging.md` says: the right log content, no secret in the log, the right stream status, and no silent data loss.
 6. **Content:** `stream_record` returns the bytes or blocks for each record type, and maps source failures through `stream_errors`.
-7. **Filters:** each sync and indexing filter the connector declares changes what is fetched or indexed.
+7. **Filters:** each sync and indexing filter the connector declares changes what is fetched or indexed; a narrowed filter does not orphan records whose parents it excludes.
+8. **Principals:** nested groups come out flattened; a deactivated user is in no member list; a user with a hidden email is granted through a pseudo-group that migrates when the email appears; a failed member listing leaves the stored members alone.
+9. **Pagination:** more than one page of users, groups, members, containers, items, comments, attachments and permissions.
+10. **Sync timing:** a change made in the fake while the first full listing runs arrives on the next sync; an expired cursor re-lists the container.
+11. **Corner cases:** an empty container, a very large file, unicode names, a deleted user, a restricted item, an archived container.
 
 Run your tests, then the whole unit suite:
 
@@ -82,6 +86,8 @@ A new suite needs:
 5. The credential variables, empty, in `integration-tests/env.local.template` and `env.prod.template`, named `<NAME>_TEST_<WHAT>`.
 6. A skip when credentials are missing: call `source_unavailable()` from `integration-tests/helper/source_credentials.py`. It skips locally and fails in the nightly, where `PIPESHUB_REQUIRE_CONNECTOR_SECRETS` is set.
 7. Test data that the suite creates and removes itself, with names that carry a run id, so two runs do not collide and a failed run can be swept.
+
+The suite runs against both graph backends (Neo4j and ArangoDB) in CI; include revoked access and connector deletion (delete, then re-create: a clean sync with no duplicates).
 
 The connector type a suite asks for must match the name passed to `ConnectorBuilder` exactly, spaces included. `integration-tests/unit/test_connector_types_are_registered.py` checks this on every PR.
 

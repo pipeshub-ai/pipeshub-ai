@@ -104,6 +104,17 @@ Decide per object type, from the source's sharing model:
 
 Write order: users, then groups and their members, then roles, then containers, then records. A grant to a group or role that does not exist yet is dropped.
 
+### Principals the source makes hard
+
+- **Nested groups.** The access check follows one hop, from a user to a group they are a direct member of; it never follows group-in-group. List members transitively (the source's "transitive members" or "derived membership" option, as SharePoint, Outlook and Google Drive team do), and write every group even when it has no direct user members, so grants to it still land.
+- **Hidden emails.** Some sources hide a user's email without an admin scope, so the user cannot be matched. Grant to a per-user pseudo-group instead (an `AppUserGroup` whose `source_user_group_id` is the user's source id), and when a later sync sees the email, call `migrate_group_to_user_by_external_id(group_external_id, user_email, connector_id)`, which moves the pseudo-group's grants to the user and deletes it. Confluence Cloud is the reference (`_create_pseudo_group`, `PSEUDO_USER_GROUP_PREFIX`).
+- **Deactivated and suspended users.** The platform does not act on `AppUser.is_active`. A deactivated user loses access only when the connector stops naming them: leave them out of group member lists and record grants (Google Drive team skips suspended users). On a complete full sync, each group's members are replaced with exactly what was read.
+- **Group members that could not be read.** Do not re-send the group with a partial or empty member list: that replaces the stored members. Keep the group as stored (`note_kept_user_groups`, or `has_stored_permissions("user_group", ...)`) and log why.
+
+### Children of restricted items
+
+A record with `parent_external_record_id` inherits from its parent record, so attachments, comments and sub-pages of a restricted item are restricted with it. Do not set `inherit_permissions_from_group` on them; that would give them the container's audience instead. A file under a mail, web page or similar container is linked as an `ATTACHMENT` rather than `PARENT_CHILD`, with the same inheritance.
+
 ### Scope-specific patterns
 
 - **Team connectors** register every source user with `on_new_app_users` (that is their gate) and write real grants.

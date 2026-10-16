@@ -68,6 +68,8 @@ Every run writes through `on_new_records`; unchanged revisions are not re-indexe
 ## 8. Deletions and moves
 
 - Prefer the source's own signal (a delete event, a trash listing, a `deleted` flag in the delta).
+- Delete only on a confirmed signal. A 404 for one item can be a deletion; a timeout, 5xx, 429 or 403 is not, and must never delete records.
+- A deleted container takes everything under it: `on_record_group_deleted`.
 - Otherwise the full-sync cleanup handles it, as long as `full_sync_coverage()` is honest. An incremental run alone will not notice a deletion; say how long a deletion can take to show up (until the next full sync).
 - A move is not a delete and re-create. With a stable id, re-send the record through `on_new_records` with its new parent; use `on_records_moved` only when the source's id changes on a move.
 
@@ -89,7 +91,7 @@ Offer the filters admins need to limit volume and scope: containers (`DYNAMIC` l
 
 ## 12. Real-time updates
 
-Scheduled sync is the supported path. Webhook handlers have no caller in the platform today, so a webhook-based design needs the human's agreement, and platform work, before you build it.
+Scheduled sync is the supported path. Webhook handlers have no caller in the platform today, and declaring `SyncStrategy.WEBHOOK` (or `with_webhook_config`) changes nothing: the scheduler acts only on `SCHEDULED`. Do not declare it. A webhook-based design needs the human's agreement, and platform work (a route, signature verification, subscription teardown), before you build it.
 
 ## 13. Framework changes
 

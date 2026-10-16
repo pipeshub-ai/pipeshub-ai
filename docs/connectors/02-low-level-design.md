@@ -27,7 +27,8 @@ The connector does `client = await AcmeClient.build_from_services(...)` and then
 
 - Generators for the `external` wrappers live in `backend/python/code-generator/` (one script per vendor; OpenAPI-based ones take a spec URL). They write into `code-generator/<vendor>/`; copy the result into `app/sources/external/<vendor>/` and review it. They are dev-only and not run in CI.
 - HTTP clients take a `ResiliencePolicy` for rate limiting and retries: `HTTPClient(token, ..., resilience=self.resilience)` (`sources/client/http/http_client.py`, transport in `http_resilient_transport.py`). The policy comes from `.with_resilience_config(...)` on the decorator and is cached on the connector (`BaseConnector.resilience`). Prefer this to a hand-written retry loop. Notion, Nextcloud and Drupal Wiki use it.
-- Re-read the token from config before each batch of calls, not once at `init()`. OAuth tokens are refreshed in the background and written back to config; a client built at `init()` holds an expired token an hour later. Linear's `_get_fresh_datasource()` is the pattern.
+- Re-read the token from config before each batch of calls, not once at `init()`. OAuth tokens are refreshed in the background and written back to config; a client built at `init()` holds an expired token an hour later. Linear's `_get_fresh_datasource()` is the pattern. For a 401 in the middle of a sync, refresh once and retry the call: `TokenRefreshService.refresh_now(connector_id, connector_type, refresh_token)` (get the service from `startup_service.get_token_refresh_service()`), single-flight as in `gitlab/runtime.py`. The shared HTTP retry does not retry a 401.
+- A user-supplied base URL (self-hosted sources) goes through `validate_public_http_url` (`app/utils/url_fetcher.py`) before the client uses it, and must be `https` unless the human agreed otherwise. The Web connector's `address_guard.py` is the reference for fetching arbitrary URLs.
 - A synchronous SDK must not run on the event loop. Submit its calls to the connector's share of the shared thread pool: acquire it in `init()` with `self._thread_lease(max_concurrency)`, then `await asyncio.wrap_future(lease.submit(fn, *args))`, and release it in `cleanup()` with `await self._release_thread_lease()`. Google Drive individual is the example.
 
 ## `App`
@@ -70,6 +71,7 @@ Other members you will use:
 - `display_name`: the instance name the user sees. Use it in user-facing messages.
 - `ensure_creator_user_app_relation()`: personal-scope connectors call it so the creator can reach the App (see `06-permissions.md`). It needs `self.creator_email`, set only by `await self._load_creator_email()`; call that in `init()` first, or the method logs a warning and the creator gets no access (`github/connector.py` and `notion_personal/connector.py` do this).
 - `ConnectorSyncSkippedError`: raise from `run_sync()` when the sync cannot run for a reason the user must fix, instead of returning as if it succeeded.
+- `notify(type, severity, title, message, ...)`: tell the connector's creator and last syncer about something they must act on (auth failure, a missing scope, a skipped container, an expired cursor). Fire-and-forget; repeats of the same title and message are backed off automatically (from one hour, doubling to seven days) except INFO and SUCCESS. Use `notify_and_wait(...)` and check for `NotificationOutcome.SENT` when you persist that a notice was sent. Name the instance with `display_name`.
 
 ## Registration: `ConnectorBuilder`
 
@@ -156,6 +158,8 @@ Everything lives in one config document, read with `await self.config_service.ge
 | `source_created_at`, `source_updated_at` | From the source. |
 | `inherit_permissions`, `inherit_permissions_from_group`, `access_rule`, `rewrite_permissions` | Permission fields. See `06-permissions.md`. |
 | `signed_url`, `fetch_signed_url` | Only if the source gives a URL the indexing service can download from. |
+| `related_external_records` | Links to other records: a list of `RelatedExternalRecord(external_record_id, record_type, relation_type=RecordRelations.X)` (or `weburl` / `issue_key` to point at a record by link or key). Each write replaces the record's links. A missing target in the same connector becomes a placeholder. |
+| people fields | On `TicketRecord`: `assignee_email`, `reporter_email`, `creator_email`. On message records: `mentioned_user_ids`, `mentioned_group_ids`. The processor turns them into assigned-to, reported-by, created-by and mention edges. |
 | `indexing_status` | Leave the default unless an indexing filter excludes the record (`AUTO_INDEX_OFF`). |
 
 **`RecordGroup`**: `name`, `external_group_id`, `group_type` (`RecordGroupType`), `connector_name`, `connector_id`, `parent_external_group_id`, `web_url`, plus the permission fields `inherit_permissions` (defaults to `False`) and `access_rule`.
@@ -202,6 +206,10 @@ How `on_new_records` decides between insert and update:
 
 - `read_sync_point(key)`, `update_sync_point(key, data)`, `delete_sync_point(key)`. Keys are stored as `{org}/{connector}/{type}/{key}`; build per-container keys with `generate_record_sync_point_key(record_type, entity_name, entity_id)`.
 - Save a checkpoint only after the items before it are written. Use `FailedItems` so a failed item holds the checkpoint before it: `failed.add(item_modified_ms)` for each failure, then save `failed.checkpoint(max_seen_ms)`.
+- Take the next incremental cursor (a delta token, a `start_page_token`, the sync start time) **before** a full listing starts, and save it after the listing finishes. A cursor taken at the end skips every change made while the listing ran. OneDrive, Google Drive team and Dropbox do this.
+- When the source rejects a cursor as expired or invalid (Gmail's 404 on an old history id, a Graph delta `410`), drop that container's checkpoint and re-list it in full, and notify the user. Never reset the cursor to "now", which skips the changes in between.
+- Store times as UTC epoch milliseconds and send date filters to the source in UTC (or in the time zone the API says it expects).
+- Pass `encrypt_fields=[...]` to `update_sync_point` for any secret kept in checkpoint data.
 - A full sync deletes all of the connector's sync points before `run_sync()` starts.
 
 ## Filters
@@ -226,6 +234,12 @@ A `run_sync()` that fits the platform:
 6. Return normally only if the run did what it says. If part of the source was skipped, `full_sync_coverage()` must say so; if nothing could run, raise.
 
 Keep memory bounded: process page by page, write batch by batch, and do not hold the whole source in a list.
+
+### Placeholders and filters
+
+When a record names a parent the sync has not written (because it comes later, or a filter excluded it), the processor creates a restricted placeholder. Filling placeholders is the connector's job: after the main pass, list them with `get_placeholder_records(connector_id, record_group_id=None)`, fetch the real parents, and write them. Keep a placeholder when its fetch fails. Do not fetch parents from containers the admin's filters exclude. Jira Cloud ("placeholder sweep", with a depth cap) and Confluence Cloud are the references.
+
+When an admin narrows a sync filter, the platform queues a full sync and its cleanup unlinks whatever that sync did not write. To delete out-of-scope records outright, use the `folder_scope` helpers (`app/connectors/core/registry/folder_scope.py`), as Azure Blob and GCS do. Changing an indexing filter queues nothing: records already left `AUTO_INDEX_OFF` stay unindexed until reindexed.
 
 ## Content: signed URL and streaming
 
