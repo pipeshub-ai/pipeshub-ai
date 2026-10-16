@@ -15,8 +15,8 @@ export interface ExportLabels {
 
 /**
  * Every stored message of a chat, oldest first. The API returns the newest page first, so each
- * further page goes in front. A page that adds nothing ends the walk, so a server that kept
- * reporting more pages could not loop it forever.
+ * further page goes in front. A page that adds nothing while the server still reports more history
+ * fails the export: it would otherwise loop forever, or save a chat with its older messages missing.
  */
 export async function fetchAllConversationRows(
   conversationId: string,
@@ -28,7 +28,12 @@ export async function fetchAllConversationRows(
       ? await AgentsApi.fetchAgentConversation(agentId, conversationId, { page })
       : await ChatApi.fetchConversation(conversationId, page);
     const next = prependOlderRows(rows, detail.messages);
-    if (next === rows) break;
+    if (next === rows) {
+      if (detail.pagination.hasNextPage) {
+        throw new Error(`Chat history page ${page} repeated messages and reported more pages`);
+      }
+      break;
+    }
     rows = next;
     if (!detail.pagination.hasNextPage) break;
   }
@@ -61,7 +66,9 @@ function safeLinkTarget(url: string | undefined): string | null {
 function sourceLines(text: string, maps: CitationMaps | undefined): string[] {
   if (!maps) return [];
   const cited = new Set<number>();
-  for (const match of text.matchAll(/\[(\d+)\]/g)) cited.add(Number(match[1]));
+  // `items[1]` in code is an index, not a source: the chat only turns `[N]` outside code into a badge.
+  const prose = text.replace(/```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`/g, '');
+  for (const match of prose.matchAll(/\[(\d+)\]/g)) cited.add(Number(match[1]));
   const lines: string[] = [];
   for (const index of [...cited].sort((a, b) => a - b)) {
     const citation = maps.citations[maps.citationsOrder[index]];
@@ -101,12 +108,12 @@ export function buildConversationMarkdown(
 
 /** A name every operating system accepts: no path or reserved characters, no trailing dot. */
 export function exportFileName(title: string): string {
-  const base = title
+  const cleaned = title
     .replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ')
     .replace(/\s+/g, ' ')
-    .trim()
-    .slice(0, 80)
-    .replace(/[. ]+$/, '');
+    .trim();
+  // Cut by character, not by UTF-16 unit, so an emoji at the limit is not split in half.
+  const base = Array.from(cleaned).slice(0, 80).join('').replace(/[. ]+$/, '');
   return `${base || 'chat'}.md`;
 }
 

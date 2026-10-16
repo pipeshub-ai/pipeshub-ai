@@ -35,7 +35,7 @@ describe('tableNodeToRows', () => {
     const node = table(
       ['Claim'],
       ['Revenue grew 12% [1]'],
-      ['Costs fell [2](https://x.test/doc) [3]'],
+      ['Costs fell [2] [3]'],
       ['Both agree [1][2]'],
       ['Ends a sentence.[4]'],
       ['[5] Starts with one'],
@@ -48,6 +48,26 @@ describe('tableNodeToRows', () => {
       ['Both agree'],
       ['Ends a sentence.'],
       ['Starts with one'],
+    ]);
+  });
+
+  it('drops a source written as a link, which the parser leaves as a link with only a number', () => {
+    const node = el(
+      'table',
+      el(
+        'tbody',
+        row('td', [text('Costs fell '), el('a', text('2')), text(' sharply')]),
+        row('td', [text('Both agree'), el('a', text('1')), el('a', text('2'))]),
+        row('td', [text('See '), el('a', text('the docs'))]),
+        row('td', [text('Year '), el('a', text('2024'))]),
+      ),
+    );
+
+    expect(tableNodeToRows(node)).toEqual([
+      ['Costs fell sharply'],
+      ['Both agree'],
+      ['See the docs'],
+      ['Year 2024'],
     ]);
   });
 

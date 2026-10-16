@@ -51,7 +51,9 @@ const EXTENSION_BY_LANGUAGE: Record<string, string> = {
 
 export function codeFileName(language: string): string {
   const key = language.trim().toLowerCase().replace(/^language-/, '');
-  return `code.${EXTENSION_BY_LANGUAGE[key] ?? 'txt'}`;
+  // A plain lookup would find `__proto__` or `constructor` on Object.prototype.
+  const known = Object.prototype.hasOwnProperty.call(EXTENSION_BY_LANGUAGE, key);
+  return `code.${known ? EXTENSION_BY_LANGUAGE[key] : 'txt'}`;
 }
 
 export function downloadCode(codeText: string, language: string): void {

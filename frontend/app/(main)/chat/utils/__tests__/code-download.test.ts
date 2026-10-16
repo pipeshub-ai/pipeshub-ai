@@ -28,7 +28,21 @@ describe('codeFileName', () => {
     expect(codeFileName('language-python')).toBe('code.py');
   });
 
-  it.each(['', 'text', 'plaintext', 'brainfuck', 'bat', 'cmd', 'vbs', 'exe', '../../evil.sh'])(
+  it.each([
+    '',
+    'text',
+    'plaintext',
+    'brainfuck',
+    'bat',
+    'cmd',
+    'vbs',
+    'exe',
+    '../../evil.sh',
+    '__proto__',
+    'constructor',
+    'toString',
+    'hasOwnProperty',
+  ])(
     'saves %j as plain text, never with an extension the system would run',
     (language) => {
       expect(codeFileName(language)).toBe('code.txt');

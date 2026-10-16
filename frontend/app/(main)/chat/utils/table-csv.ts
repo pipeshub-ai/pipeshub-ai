@@ -8,8 +8,8 @@ export interface TableNode {
   children?: TableNode[];
 }
 
-// A run of `[3]` or `[3](url)` markers: sources the chat turns into badges, not table data.
-const CITATION_RUN = /(\s*)(?:\[\d+\](?:\([^)]*\))?)+/g;
+// A run of `[3]` markers: sources the chat turns into badges, not table data.
+const CITATION_RUN = /(\s*)(?:\[\d+\])+/g;
 
 // An index tight against a word or bracket, as in `a[0]` or `m[1][2]`, is content, not a source.
 function stripCitationMarkers(text: string): string {
@@ -19,10 +19,15 @@ function stripCitationMarkers(text: string): string {
   });
 }
 
+// The backend writes a web source as `[2](https://…)`, which the parser turns into a link whose
+// text is only the number. Its text alone would leave the number behind in the cell.
+const CITATION_LINK_TEXT = /^\d{1,3}$/;
+
 function textOf(node: TableNode): string {
   if (node.type === 'text') return node.value ?? '';
   if (node.tagName === 'br') return ' ';
-  return (node.children ?? []).map(textOf).join('');
+  const text = (node.children ?? []).map(textOf).join('');
+  return node.tagName === 'a' && CITATION_LINK_TEXT.test(text.trim()) ? '' : text;
 }
 
 function cellText(cell: TableNode): string {

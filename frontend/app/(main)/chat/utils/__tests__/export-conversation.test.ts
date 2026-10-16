@@ -100,13 +100,21 @@ describe('fetchAllConversationRows', () => {
     expect(fetchConversation).toHaveBeenCalledTimes(1);
   });
 
-  it('stops when a page adds nothing, even if the server keeps saying there is more', async () => {
+  it('fails instead of saving a short chat when a page adds nothing but the server says there is more', async () => {
     fetchConversation.mockResolvedValue(page([question('m1', 'same page')], true));
+
+    await expect(fetchAllConversationRows('conv-1')).rejects.toThrow('page 2 repeated messages');
+    expect(fetchConversation).toHaveBeenCalledTimes(2);
+  });
+
+  it('ends quietly when the last page repeats what was read and says there is no more', async () => {
+    fetchConversation
+      .mockResolvedValueOnce(page([question('m1', 'a')], true))
+      .mockResolvedValueOnce(page([question('m1', 'a')], false));
 
     const rows = await fetchAllConversationRows('conv-1');
 
     expect(rows.map((r) => r._id)).toEqual(['m1']);
-    expect(fetchConversation).toHaveBeenCalledTimes(2);
   });
 
   it('returns nothing for a chat with no messages', async () => {
@@ -175,6 +183,28 @@ describe('buildConversationMarkdown', () => {
       '**Sources**\n\n- [1] [Annual report](https://docs.example.com/report)\n- [2] Board notes\n',
     );
     expect(md).not.toContain('Never cited');
+  });
+
+  it('does not count an index inside code as a cited source', () => {
+    const md = markdownOf([
+      question('q1', 'Q'),
+      answer('a1', 'Use `items[1]` here.\n\n```js\nvalues[2] = 0;\n```', [
+        citation(1, 'Unrelated one', 'https://docs.example.com/one'),
+        citation(2, 'Unrelated two'),
+      ]),
+    ]);
+
+    expect(md).not.toContain('Sources');
+    expect(md).toContain('values[2] = 0;');
+  });
+
+  it('lists a source the answer wrote as a link', () => {
+    const md = markdownOf([
+      question('q1', 'Q'),
+      answer('a1', 'Costs fell [2](https://docs.example.com/two).', [citation(2, 'Board notes', 'https://docs.example.com/two')]),
+    ]);
+
+    expect(md).toContain('**Sources**\n\n- [2] [Board notes](https://docs.example.com/two)\n');
   });
 
   it('adds no sources section to an answer that cites nothing', () => {
@@ -264,6 +294,13 @@ describe('exportFileName', () => {
 
   it('cuts a very long title to 80 characters before the extension', () => {
     expect(exportFileName('x'.repeat(200))).toBe(`${'x'.repeat(80)}.md`);
+  });
+
+  it('does not split an emoji that sits at the 80 character limit', () => {
+    const name = exportFileName(`${'x'.repeat(79)}😀 tail`);
+
+    expect(name).toBe(`${'x'.repeat(79)}😀.md`);
+    expect(name).not.toMatch(/[\ud800-\udbff](?![\udc00-\udfff])/);
   });
 
   it('never leaves a path in the name', () => {

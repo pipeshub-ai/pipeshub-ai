@@ -43,6 +43,16 @@ describe('downloading a table as CSV', () => {
     expect(saveTextFile.mock.calls[0][1]).toBe('\uFEFFClaim,Note\r\nRevenue grew 12%,see a[0]\r\n');
   });
 
+  it('leaves out a source the answer wrote as a link, but keeps an ordinary link text', () => {
+    renderAnswer(
+      ['| Claim | Read |', '| --- | --- |', '| Costs fell [2](https://x.test/doc) sharply | [the docs](https://x.test/d) |'].join('\n'),
+    );
+
+    fireEvent.click(downloadCsvButtons()[0]);
+
+    expect(saveTextFile.mock.calls[0][1]).toBe('\uFEFFClaim,Read\r\nCosts fell sharply,the docs\r\n');
+  });
+
   it('quotes a cell that has a comma and keeps formatting out of the text', () => {
     renderAnswer(['| Item | Price |', '| --- | --- |', '| **Tea, green** | $3,50 |'].join('\n'));
 
