@@ -15,6 +15,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
 
   order 1  TC-SYNC-001        — full sync baseline vs fixture snapshot + live JQL
   order 2  TC-JIRA-001        — users / USER_APP_RELATION
+  order 2  TC-JIRA-AUTH-001   — the creator's link to the Jira account the API token belongs to
   order 3  TC-JIRA-002        — site groups count
   order 4  TC-JIRA-ROLE-001   — all primary-project AppRoles + synced User→Role members
   order 5  TC-JIRA-003        — project RecordGroup
@@ -58,6 +59,7 @@ from app.connectors.utils.value_mapper import map_relationship_type  # type: ign
 from app.models.entities import FileRecord, RecordType  # type: ignore[import-not-found]  # noqa: E402
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
@@ -562,6 +564,30 @@ class TestJiraValidation:
         )
         await assert_user_app_edge(account_id, connector_id=connector_id, graph_provider=graph_provider)
         logger.info("TC-JIRA-001 passed: %d users", rel_count)
+
+    @pytest.mark.order(2)
+    async def test_tc_jira_auth_001_authenticated_identity(
+        self,
+        jira_connector: dict[str, Any],
+        jira_datasource: JiraDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-JIRA-AUTH-001: the creator is linked to the Jira account the API token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /myself`` the connector reads.
+        """
+        resp = await jira_api_call_with_retry(
+            jira_datasource.get_current_user, context="TC-JIRA-AUTH-001 get_current_user",
+        )
+        assert resp.status == 200, f"get_current_user failed: HTTP {resp.status}"
+        me = resp.json() or {}
+        await assert_authenticated_identity_link(
+            graph_provider, jira_connector["connector_id"],
+            (me.get("emailAddress") or "").strip() or None,
+            me.get("accountId"),
+        )
+        logger.info("TC-JIRA-AUTH-001 passed: Jira account %s", me.get("accountId"))
 
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(

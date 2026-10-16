@@ -15,6 +15,7 @@ Uses class-scoped connectors (see conftest):
 
   order 0  TC-DRIVE-SYNC-001 — full-sync baseline (records, RG links, edges, app metadata)
   order 1  TC-DRIVE-001      — users / USER_APP_RELATION
+  order 1  TC-DRIVE-AUTH-001 — the creator's link to the admin the service account acts as
   order 2  TC-DRIVE-002      — Workspace groups + member edges
   order 3  TC-DRIVE-003      — My Drive + Shared-with-Me + Shared Drive RecordGroups
   order 4  TC-DRIVE-004      — FILE properties (seed folder + sample files)
@@ -111,6 +112,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     drive_files_get_workspace,
     ensure_pipeshub_user_exists,
     ensure_pipeshub_user_inactive,
+    get_drive_directory_user,
     move_drive_item,
     record_absent,
     record_present,
@@ -126,6 +128,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     wait_until_user_has_file_permission,
 )
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.clients.users_client import UsersClient  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
@@ -493,6 +496,28 @@ class TestDriveWorkspaceEntitySync:
         graph_user = await graph_provider.graph_find_user_by_email(test_email)
         assert graph_user is not None, f"graph user missing for {test_email}"
         logger.info("TC-DRIVE-001 passed: %d users", graph)
+
+    @pytest.mark.order(1)
+    async def test_tc_drive_auth_001_authenticated_identity(
+        self,
+        drive_workspace_entity_connector: dict[str, Any],
+        drive_workspace_admin_datasource: Any,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-DRIVE-AUTH-001: the creator is linked to the admin the service account acts as.
+
+        That link is what lets a creator whose PipesHub email differs see the admin's
+        permissions on this connector. Read from the same Directory ``users.get`` the
+        connector reads for its configured admin email.
+        """
+        admin = await get_drive_directory_user(
+            drive_workspace_admin_datasource, drive_workspace_entity_connector["admin_email"],
+        )
+        await assert_authenticated_identity_link(
+            graph_provider, drive_workspace_entity_connector["connector_id"],
+            admin.get("primaryEmail"), admin.get("id"),
+        )
+        logger.info("TC-DRIVE-AUTH-001 passed: Workspace admin %s", admin.get("id"))
 
     @pytest.mark.order(2)
     async def test_tc_drive_002_workspace_groups(

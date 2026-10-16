@@ -15,6 +15,7 @@ Uses class-scoped connectors (see conftest):
 
   order 0  TC-DRIVE-IND-SYNC-001 — full-sync baseline (records, RG links, edges, app metadata)
   order 1  TC-DRIVE-IND-001      — the single app user + USER_APP_RELATION
+  order 1  TC-DRIVE-IND-AUTH-001 — the creator's link to the Google account the connector signed in as
   order 2  TC-DRIVE-IND-002      — no Workspace-only entities (groups / SWM / extra RGs)
   order 3  TC-DRIVE-IND-003      — the one "Google Drive - {email}" RecordGroup
   order 4  TC-DRIVE-IND-004      — FILE properties (seed folder + sample files)
@@ -105,6 +106,7 @@ from connectors.google_drive_workspace.drive_workspace_test_utils import (  # no
     update_drive_file_content,
 )
 from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     wait_for_sync_completion,
@@ -586,6 +588,25 @@ class TestDriveIndividualEntitySync:
         graph_user = await graph_provider.graph_find_user_by_email(test_email)
         assert graph_user is not None, f"graph user missing for {test_email}"
         logger.info("TC-DRIVE-IND-001 passed: source_user_id=%s", source_user_id)
+
+    @pytest.mark.order(1)
+    async def test_tc_drive_ind_auth_001_authenticated_identity(
+        self,
+        drive_individual_entity_connector: dict[str, Any],
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-DRIVE-IND-AUTH-001: the creator is linked to the Google account the connector signed in as.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. The fixture read the same ``about.get`` user the
+        connector reads.
+        """
+        source_user_id = drive_individual_entity_connector["test_user_source_id"]
+        await assert_authenticated_identity_link(
+            graph_provider, drive_individual_entity_connector["connector_id"],
+            drive_individual_entity_connector["drive_account_email"], source_user_id,
+        )
+        logger.info("TC-DRIVE-IND-AUTH-001 passed: Google account %s", source_user_id)
 
     @pytest.mark.order(2)
     async def test_tc_drive_ind_002_no_workspace_entities(
