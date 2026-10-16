@@ -59,7 +59,7 @@ def convert(src, out_dir):
     # on the page, so linked headings get an explicit id that is unique per version.
     linked = set(re.findall(r"\]\(#([^)\s]+)\)", "\n".join(lines)))
     suffix = re.sub(r"[^0-9a-z]+", "-", version.lower())
-    ids = {a: re.sub(r"-+", "-", a).strip("-") + "-" + suffix for a in linked}
+    ids = {a: f"{a}-{suffix}" for a in linked}  # kept as is so distinct anchors stay distinct
 
     body, in_fence = [], False
     for line in lines[3:]:
