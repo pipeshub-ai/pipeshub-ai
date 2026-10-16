@@ -200,6 +200,7 @@ const getOAuthAuthorizationUrlSchema = z.object({
   }),
   query: z.object({
     baseUrl: z.string().optional(),
+    desktop: z.string().optional(),
   }),
 });
 

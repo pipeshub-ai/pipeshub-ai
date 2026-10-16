@@ -4829,6 +4829,7 @@
     },
     "desktopHandoff": {
       "title": "登录已发送到 PipesHub",
+      "integrationTitle": "授权已发送到 PipesHub",
       "description": "您可以关闭此标签页并返回 PipesHub 应用。",
       "openApp": "打开 PipesHub"
     }

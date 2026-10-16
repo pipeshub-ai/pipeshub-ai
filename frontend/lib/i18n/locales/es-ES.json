@@ -4794,6 +4794,7 @@
     },
     "desktopHandoff": {
       "title": "Inicio de sesión enviado a PipesHub",
+      "integrationTitle": "Autorización enviada a PipesHub",
       "description": "Puedes cerrar esta pestaña y volver a la aplicación de PipesHub.",
       "openApp": "Abrir PipesHub"
     }

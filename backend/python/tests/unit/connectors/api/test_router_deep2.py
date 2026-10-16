@@ -191,6 +191,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
@@ -245,6 +246,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \

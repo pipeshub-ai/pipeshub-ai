@@ -20,3 +20,9 @@ export {
   DesktopOAuthError,
   type DesktopOAuthFlow,
 } from './oauth-deep-link';
+export {
+  runDesktopIntegrationOAuth,
+  desktopAuthorizeParams,
+  desktopIntegrationErrorMessage,
+  type DesktopIntegrationOAuthFlow,
+} from './desktop-oauth-return';

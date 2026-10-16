@@ -8,10 +8,24 @@ import { findDeepLinkInArgv, parseOAuthDeepLink } from '../deep-link';
 test('extracts a GitHub code from the query string', () => {
   const link = parseOAuthDeepLink('pipeshub://auth/github/callback?code=abc123&state=phd.deadbeef');
   assert.deepEqual(link, {
+    kind: 'auth',
     provider: 'github',
     params: { code: 'abc123', state: 'phd.deadbeef' },
   });
 });
+
+for (const family of ['connector', 'toolset', 'mcp']) {
+  test(`extracts a ${family} integration code`, () => {
+    const link = parseOAuthDeepLink(
+      `pipeshub://integration/${family}/callback?code=c0de&state=phd.eyJzIjoxfQ%3D%3D`,
+    );
+    assert.deepEqual(link, {
+      kind: 'integration',
+      provider: family,
+      params: { code: 'c0de', state: 'phd.eyJzIjoxfQ==' },
+    });
+  });
+}
 
 test('extracts a Google id_token', () => {
   const link = parseOAuthDeepLink('pipeshub://auth/google/callback?id_token=jwt.body.sig&state=phd.a1');
@@ -45,6 +59,11 @@ for (const rejected of [
   'pipeshub://auth/google/callback/extra?code=x',
   'pipeshub://other/google/callback?code=x',
   'pipeshub://auth/callback?code=x',
+  'pipeshub://integration/slack/callback?code=x',
+  'pipeshub://integration/google/callback?code=x',
+  'pipeshub://auth/connector/callback?code=x',
+  'pipeshub://integration/connector?code=x',
+  'pipeshub://constructor/connector/callback?code=x',
   'not a url at all',
   '',
 ]) {
@@ -77,7 +96,7 @@ test('returns null when argv holds no link', () => {
 
 test('extracts a SAML handoff code', () => {
   const link = parseOAuthDeepLink('pipeshub://auth/saml/callback?state=phd.a1&code=abc');
-  assert.deepEqual(link, { provider: 'saml', params: { state: 'phd.a1', code: 'abc' } });
+  assert.deepEqual(link, { kind: 'auth', provider: 'saml', params: { state: 'phd.a1', code: 'abc' } });
 });
 
 test('extracts a custom OAuth code', () => {

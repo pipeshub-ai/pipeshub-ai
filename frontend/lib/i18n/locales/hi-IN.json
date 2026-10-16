@@ -4758,6 +4758,7 @@
     },
     "desktopHandoff": {
       "title": "साइन-इन PipesHub को भेज दिया गया",
+      "integrationTitle": "प्राधिकरण PipesHub को भेज दिया गया",
       "description": "आप यह टैब बंद करके PipesHub ऐप पर वापस जा सकते हैं।",
       "openApp": "PipesHub खोलें"
     }

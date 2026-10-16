@@ -1045,7 +1045,7 @@ export const getOAuthAuthorizationUrl =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { baseUrl } = req.query;
+      const { baseUrl, desktop } = req.query;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1054,6 +1054,9 @@ export const getOAuthAuthorizationUrl =
       const queryParams = new URLSearchParams();
       if (baseUrl) {
         queryParams.set('base_url', String(baseUrl));
+      }
+      if (desktop === 'true') {
+        queryParams.set('desktop', 'true');
       }
 
       const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/oauth/authorize?${queryParams.toString()}`;

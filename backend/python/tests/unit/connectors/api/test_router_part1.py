@@ -2535,7 +2535,8 @@ class TestPrepareConnectorConfig:
         ])
         logger = MagicMock()
 
-        with patch("app.connectors.api.router._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]):
+        with patch("app.connectors.api.router._get_oauth_field_names_from_registry", return_value=["clientId", "clientSecret"]), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"):
             result = await _prepare_connector_config(
                 config=config,
                 connector_type="googledrive",
