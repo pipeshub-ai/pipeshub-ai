@@ -385,7 +385,7 @@ jobs:
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
       CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual or zendesk"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
