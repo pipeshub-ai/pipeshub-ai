@@ -99,6 +99,20 @@ class TestConnectorRecordContent:
         assert indexed_text_record["record_name_stem"] in metadata_record["recordName"]
         assert indexed_text_record["record_name_stem"] in content
 
+    def test_get_record_content_unindexed_record_says_not_indexed(
+        self, unindexed_record: str
+    ) -> None:
+        """A record that exists but is not indexed is described, not reported missing."""
+        resp = self.connectors.get_record_content(unindexed_record)
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert_response_matches_openapi_operation(body, _OPERATION_ID)
+
+        content = body["content"]
+        assert content != "No record found", content
+        assert unindexed_record in content
+        assert "exists, but its content is not indexed yet" in content, content
+
     # ---------------------------------------------------------------- negative
 
     def test_get_record_content_unauthenticated(

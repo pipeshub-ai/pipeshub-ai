@@ -168,6 +168,32 @@ def indexed_text_record(
             logger.warning("Failed to delete KB %s: %s", kb_id, e)
 
 
+@pytest.fixture
+def unindexed_record(pipeshub_client: PipeshubClient) -> Iterator[str]:
+    """Id of a KB record that exists but has no indexed content.
+
+    Audio is stored but never indexed, so its status never reaches COMPLETED.
+    """
+    kb_client = KBClient(pipeshub_client)
+    kb_id = _extract_kb_id(
+        kb_client.create_kb(name=f"connector-unindexed-it-kb-{uuid4().hex[:8]}")
+    )
+    assert kb_id, "KB create returned no id"
+    try:
+        record_id = _extract_record_id(
+            kb_client.upload_file(
+                kb_id, f"unindexed-it-{uuid4().hex[:8]}.mp3", os.urandom(2048), mimetype="audio/mpeg"
+            )
+        )
+        assert record_id, "Upload returned no record id"
+        yield record_id
+    finally:
+        try:
+            kb_client.delete_kb(kb_id)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("Failed to delete KB %s: %s", kb_id, e)
+
+
 # ---------------------------------------------------------------------------
 # Connector setup ITs: one instance per connector auth style
 # ---------------------------------------------------------------------------
