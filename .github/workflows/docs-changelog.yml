@@ -91,6 +91,9 @@ jobs:
           HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
+          # The skill can edit the workspace, so the convert step checks the
+          # converter against this hash, taken before the skill runs.
+          echo "converter_sha=$(sha256sum .github/scripts/changelog-to-mdx.py | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
           if [ -f "changelog/${VERSION}.md" ] && [ "$REGENERATE" != "true" ]; then
             echo "changelog/${VERSION}.md is on main; converting it without running the skill."
             echo "run_skill=false" >> "$GITHUB_OUTPUT"
@@ -136,8 +139,13 @@ jobs:
       - name: Convert to the docs format
         env:
           VERSION: ${{ steps.release.outputs.version }}
+          CONVERTER_SHA: ${{ steps.notes.outputs.converter_sha }}
         run: |
           set -euo pipefail
+          if ! echo "$CONVERTER_SHA  .github/scripts/changelog-to-mdx.py" | sha256sum --check --quiet; then
+            echo "::error::.github/scripts/changelog-to-mdx.py changed during the run; not converting."
+            exit 1
+          fi
           python3 -I .github/scripts/changelog-to-mdx.py "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
 
       - name: Upload the docs file
