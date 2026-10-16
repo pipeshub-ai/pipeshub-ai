@@ -31,6 +31,7 @@ on:
             - sharepoint
             - confluence
             - jira
+            - zendesk
             - linear
             - github_teams
             - github
@@ -319,6 +320,10 @@ jobs:
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
+      ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
+      ZENDESK_TEST_ACCESS_TOKEN: ${{ secrets.ZENDESK_TEST_ACCESS_TOKEN }}
+      ZENDESK_TEST_TICKET_ID: ${{ secrets.ZENDESK_TEST_TICKET_ID }}
+      ZENDESK_TEST_ARTICLE_ID: ${{ secrets.ZENDESK_TEST_ARTICLE_ID }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -379,7 +384,7 @@ jobs:
       # runs on the Neo4j leg only). Shard 1 keeps
       # nextcloud and bookstack, the only suites needing selfhosted-sources.
       # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
+      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint or zendesk"
       CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files or smb"
       CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
       # Routed through env (never interpolated into the shell) so untrusted
