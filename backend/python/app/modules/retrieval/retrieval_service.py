@@ -1560,14 +1560,23 @@ class RetrievalService:
             )
             for i in sent
         ]
-        sent_batches: list[list] = []
-        if requests:
-            collections = await self._resolve_search_collections(org_id, user_id)
-            sent_batches = await self._fan_out_searches(collections, requests, limit)
         batches: list[list] = [[] for _ in queries]
-        for i, batch in zip(sent, sent_batches):
-            batches[i] = batch
-        capped = [len(batch) >= limit for batch in batches]
+        capped = [False] * len(queries)
+        failed_collections = searched_collections = 0
+        if requests:
+            per_collection, failed_collections = await self._lexical_fan_out(
+                await self._resolve_search_collections(org_id, user_id), requests, limit,
+            )
+            searched_collections = len(per_collection) + failed_collections
+            for j, i in enumerate(sent):
+                # Judged per collection: merging dedupes chunks across them, and
+                # a merged list shorter than the limit can hide one that was full.
+                capped[i] = any(len(results[j]) >= limit for _name, results in per_collection)
+                batches[i] = merge_collection_results(
+                    [CollectionResults(collection_name=name, results=results[j]) for name, results in per_collection],
+                    limit,
+                    self._result_merger,
+                )
 
         if containers is not None:
             returned = {
@@ -1605,7 +1614,27 @@ class RetrievalService:
             hits=hits,
             capped=capped,
             empty_query=[sparse is None and text is None for sparse, text in requests_legs],
+            failed_collections=failed_collections,
+            searched_collections=searched_collections,
         )
+
+    async def _lexical_fan_out(
+        self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+    ) -> tuple[list[tuple[str, list[list]]], int]:
+        """Each collection's own per-request results, and how many collections
+        could not be searched. Raises when none could."""
+        semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
+
+        async def _one(name: str) -> list[list]:
+            async with semaphore:
+                return await self._fan_out_searches([name], requests, limit)
+
+        outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
+        answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
+        failures = [out for out in outcomes if isinstance(out, BaseException)]
+        if failures and not answered:
+            raise failures[0]
+        return answered, len(failures)
 
     async def _lexical_legs(self, queries: list[str]) -> list[tuple[Any, str | None]]:
         """Per query, the (sparse vector, text query) of a lexical-only request.

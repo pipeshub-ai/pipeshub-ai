@@ -26,7 +26,8 @@ class LexicalSearchResult:
     """Per query, the chunks the user may read, best first.
 
     ``capped[i]`` says the store returned its whole limit for query ``i``
-    before permission checks, so more chunks may hold its terms. ``empty_query[i]``
+    before permission checks in some collection, so more chunks may hold its
+    terms. ``empty_query[i]``
     says query ``i`` had no term the index keeps (stop words only), so its empty
     list proves nothing.
     """
@@ -34,6 +35,9 @@ class LexicalSearchResult:
     hits: list[list[LexicalHit]]
     capped: list[bool]
     empty_query: list[bool] = field(default_factory=list)
+    # Collections that could not be searched, of how many were asked.
+    failed_collections: int = 0
+    searched_collections: int = 0
 
     @classmethod
     def nothing(cls, queries: int) -> "LexicalSearchResult":

@@ -210,3 +210,45 @@ class TestSearchWithFiltersUnchanged:
         assert db.filter_collection.await_args.kwargs == {
             "must": {"orgId": "o1", "virtualRecordId": ["vr-mine"]},
         }
+
+
+class TestSeveralCollections:
+    def _svc(self, db) -> mod.RetrievalService:
+        svc = _service(db, _graph(get_accessible_virtual_record_ids=AsyncMock(
+            return_value={"vr-a": "r-a", "vr-b": "r-b"},
+        )), containers_on=False)
+        svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_a_full_collection_is_capped_even_when_merging_shortens_the_list(self) -> None:
+        # col-1 returns its whole limit as two points of one block; merging
+        # with col-2 dedupes them to a list shorter than the limit.
+        full = [_point("vr-a", "p99 one"), _point("vr-a", "p99 one again")]
+        for point in full:
+            point.payload["metadata"]["blockId"] = "b1"
+        db = _vector_db(sparse=False, text=True, batches=[])
+        db.query_nearest_points = AsyncMock(side_effect=[[full], [full[:1]]])
+
+        result = await self._svc(db).search_lexical(["p99"], "u1", "o1", limit=2)
+
+        assert len(result.hits[0]) < 2
+        assert result.capped == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_collection_that_failed_is_counted_and_the_rest_kept(self) -> None:
+        db = _vector_db(sparse=False, text=True, batches=[])
+        db.query_nearest_points = AsyncMock(side_effect=[RuntimeError("shard down"), [[_point("vr-b", "p99")]]])
+
+        result = await self._svc(db).search_lexical(["p99"], "u1", "o1")
+
+        assert [h.virtual_record_id for h in result.hits[0]] == ["vr-b"]
+        assert (result.failed_collections, result.searched_collections) == (1, 2)
+
+    @pytest.mark.asyncio
+    async def test_every_collection_failing_raises(self) -> None:
+        db = _vector_db(sparse=False, text=True, batches=[])
+        db.query_nearest_points = AsyncMock(side_effect=RuntimeError("store down"))
+
+        with pytest.raises(RuntimeError):
+            await self._svc(db).search_lexical(["p99"], "u1", "o1")
