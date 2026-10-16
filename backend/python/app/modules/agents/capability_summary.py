@@ -235,7 +235,7 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
     `tool_loader.py`'s per-toolset try/except). Without this, a toolset that
     fails auth silently vanishes from the agent's tool list with no signal
     at all, so a query naming it gets a generic "I don't have that tool"
-    instead of "authenticate it in Settings".
+    instead of "authenticate it under Your actions".
 
     Deliberately omitted when empty — most requests have zero auth
     failures, and an empty header would just be noise on every prompt.
@@ -247,13 +247,19 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
     if not unauthenticated:
         return
 
+    # A service-account agent signs in once for everyone, on the agent itself.
+    where = (
+        "this agent's settings in the agent builder (someone who can edit the agent has to do it)"
+        if state.get("is_service_account")
+        else "Your actions"
+    )
     parts.append("### Needs Authentication")
     parts.append(
         "The following toolsets are configured for this agent but are NOT "
         "authenticated yet — their tools are unavailable until the user "
         "authenticates. If the user's query targets one of these, tell them "
-        "plainly that it needs authentication and to authenticate it under "
-        "Your actions, instead of saying the toolset doesn't exist:"
+        f"plainly that it needs authentication and to authenticate it under "
+        f"{where}, instead of saying the toolset doesn't exist:"
     )
     for name in unauthenticated:
         parts.append(f"- {name}")
