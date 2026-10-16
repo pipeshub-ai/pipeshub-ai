@@ -1758,7 +1758,7 @@ class TestGitHubTeamsIncremental:
 
         Assertions are written to survive a concurrent run touching the same PR:
         version must *increase* rather than land on an exact number, and the revision
-        is compared against the value read live at assert time.
+        must be at or past ``updated_at`` read right after this run's own edits.
         """
         state = github_connector
         org = state["org"]
