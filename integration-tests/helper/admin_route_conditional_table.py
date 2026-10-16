@@ -425,6 +425,13 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
              ("{toolset_client_id}", "{toolset_secret}"), admin_sees="{toolset_client_id}",
              admin_hidden=("{toolset_secret}",) if _HIDE_SECRETS else (),
              admin_also=() if _HIDE_SECRETS else ("{toolset_secret}",)),
+    ConditionalRoute(
+        "api/routes/toolsets.py::get_toolset_tool_rules", "GET", f"{_TOOLSETS}/instances/{{toolset}}/tool-rules",
+        cases=(
+            Case("toolset", MEMBER, False, 200, words='"canEdit":false', absent=('"canEdit":true',)),
+            Case("toolset", ADMIN, True, 200, words='"canEdit":true', absent=('"canEdit":false',)),
+        ),
+    ),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.
     ConditionalRoute(

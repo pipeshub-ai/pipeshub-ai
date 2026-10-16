@@ -1,9 +1,12 @@
-"""Per-tool approvals for MCP tool calls: which calls run, which wait for a person, which never run.
+"""Per-tool approvals for MCP and toolset tool calls: which calls run, which wait for a person,
+which never run.
 
-Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Block ("Deny"). The
-rule is the person's own, set for their MCP servers, and it applies in every chat they have,
-agent chats included. Without one, a tool starts from what it does to data (`mcp/tool_kind.py`):
-a read-only tool at Allow, one that changes data at Ask, one that deletes data at Block.
+Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Block ("Deny"). For an
+MCP tool the rule is the person's own, set for their MCP servers, and it applies in every chat they
+have, agent chats included. For a toolset tool (Jira, Slack, ...) it is the toolset instance's, set
+by an admin for everyone in the organization. Without one, a tool starts from what it does to data
+(`mcp/tool_kind.py`): a read-only tool at Allow, one that changes data at Ask, one that deletes
+data at Block.
 
 - **Block**: the call doesn't run, and the model is told why.
 - **Ask**: the call is saved and the turn stops on it, with an approval card on the tool's row.
@@ -11,15 +14,16 @@ a read-only tool at Allow, one that changes data at Ask, one that deletes data a
   with `toolApproval`, like the ask-user card's `User selections:`): the saved call runs, on the
   server, with the arguments it was asked with, and its result becomes the result of the call the
   model made. The model carries on from there in the same reply; it never re-creates the call.
-  "Don't ask again" also saves the answer as the person's rule for the tool.
+  "Don't ask again" also saves the answer as the person's rule for an MCP tool; a toolset's rules
+  change only in its rules editor.
 - Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
-  service account): there, Ask is Block. Only a tool the person pre-approved runs there.
+  service account): there, Ask is Block. Only a pre-approved tool runs there.
 
-Enforced at the tool executor's one checkpoint (PreToolUse), so other kinds of tools can join later.
-`MCP_TOOL_APPROVALS=false` turns it off. Approvals are bound to the signed-in user and the
-conversation they were asked in, and are answered only from a run someone is watching. Whether a
-run is watched rests on the `client-name` header, which Node sets to `api` for OAuth and personal
-access tokens, so only a web sign-in can claim the web app's name.
+Enforced at the tool executor's one checkpoint (PreToolUse). `MCP_TOOL_APPROVALS=false` turns it
+off for MCP tools, `TOOLSET_TOOL_APPROVALS=false` for toolset tools. Approvals are bound to the
+signed-in user and the conversation they were asked in, and are answered only from a run someone
+is watching. Whether a run is watched rests on the `client-name` header, which Node sets to `api`
+for OAuth and personal access tokens, so only a web sign-in can claim the web app's name.
 """
 from __future__ import annotations
 
@@ -43,6 +47,7 @@ from app.agents.constants.mcp_server_constants import (
     get_mcp_tool_approval_path,
     get_mcp_user_tool_rules_path,
 )
+from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
 from app.agents.mcp.models import MCPCamelModel
 from app.utils.env_utils import env_bool
 
@@ -54,6 +59,7 @@ if TYPE_CHECKING:
         AgentLifecycleContext,
         ToolCallContext,
     )
+    from app.agent_loop_lib.tools.base import Tool
     from app.agents.agent_loop.context import AgentContext
     from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
     from app.agents.mcp.tool_kind import ToolKind
@@ -62,6 +68,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 ENABLED_ENV = "MCP_TOOL_APPROVALS"
+TOOLSET_ENABLED_ENV = "TOOLSET_TOOL_APPROVALS"
 APPROVAL_TTL_SECONDS = 900
 # A saved call and its claim are kept longer than they can be answered, so a late or repeated
 # answer still finds the call it was about and is told what happened to it.
@@ -83,9 +90,13 @@ WAITING_PREFIX = "Waiting for your approval to run"
 
 Rule = Literal["allow", "ask", "block"]
 Decision = Literal["allow", "deny"]
+# Whose tool: an MCP server's, or a toolset's.
+Source = Literal["mcp", "toolset"]
 
 # `context.tool_state` keys.
 TOOLS_BY_PATH = "_mcp_tools_by_path"
+# The toolset tools the gate checks, by path (`ApprovalTarget`s, filled by `tool_loader`).
+TOOLSET_TOOLS_BY_PATH = "_toolset_tools_by_path"
 _RULES_CACHE = "_tool_approval_rules"
 _PENDING_IN_RUN = "_tool_approval_pending_id"
 _STOPPED_CALL = "_tool_approval_stopped_call"
@@ -106,6 +117,8 @@ class PendingCall(MCPCamelModel):
     org_id: str
     user_id: str
     conversation_id: str
+    # Calls saved before toolsets were checked are all MCP calls.
+    source: Source = "mcp"
     instance_id: str
     server_name: str
     tool_name: str
@@ -137,8 +150,32 @@ class Outcome(MCPCamelModel):
     ran: bool = False
 
 
-def enabled() -> bool:
-    return env_bool(ENABLED_ENV, True)
+def enabled(source: Source = "mcp") -> bool:
+    return env_bool(TOOLSET_ENABLED_ENV if source == "toolset" else ENABLED_ENV, True)
+
+
+@dataclass(frozen=True)
+class ApprovalTarget:
+    """A tool the gate checks: where its rule is kept, what it does to data, and the tool itself."""
+
+    source: Source
+    instance_id: str
+    # The rule's key: the server's own name for an MCP tool, the toolset's for a toolset tool.
+    tool_name: str
+    # The MCP server's or the toolset instance's name, as people know it.
+    owner: str
+    kind: ToolKind
+    tool: Tool
+    title: Optional[str] = None
+
+
+def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
+    title = (adapter.tool_info.annotations or {}).get("title")
+    return ApprovalTarget(
+        source="mcp", instance_id=adapter.instance_id, tool_name=adapter.raw_name,
+        owner=adapter.server.display_name, kind=adapter.kind, tool=adapter,
+        title=title if isinstance(title, str) else None,
+    )
 
 
 @dataclass(frozen=True)
@@ -206,6 +243,14 @@ async def save_own_rules(config_service: "ConfigurationService", rules: ToolRule
     return await _write(config_service, get_mcp_user_tool_rules_path(user_id, instance_id), rules.model_dump(by_alias=True))
 
 
+async def load_instance_rules(config_service: "ConfigurationService", *, instance_id: str) -> ToolRules:
+    return _model(ToolRules, await _read(config_service, get_toolset_tool_rules_path(instance_id)))
+
+
+async def save_instance_rules(config_service: "ConfigurationService", rules: ToolRules, *, instance_id: str) -> bool:
+    return await _write(config_service, get_toolset_tool_rules_path(instance_id), rules.model_dump(by_alias=True))
+
+
 @dataclass
 class Claim:
     """`claimed`: this answer is the one that settles the call. `used`: an earlier answer did
@@ -264,49 +309,63 @@ async def _keep_outcome(config_service: "ConfigurationService", approval_id: str
 # The gate (PreToolUse)
 # ---------------------------------------------------------------------------
 
-def mcp_tool_identity(path: str) -> Optional[tuple[str, str]]:
-    """(instance id, the server's own tool name) of an MCP tool path `/mcp/{instance}/{tool}`.
-    The tool name may itself contain `/`; the instance id never does."""
-    prefix = "/mcp/"
-    if not path.startswith(prefix):
-        return None
-    instance_id, _, tool_name = path[len(prefix):].partition("/")
-    return (instance_id, tool_name) if instance_id and tool_name else None
+def _target(context: "AgentContext", path: str) -> Optional[ApprovalTarget]:
+    """The tool a call is for, when the gate checks that kind of tool."""
+    adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(path)
+    if adapter is not None:
+        return _mcp_target(adapter) if enabled("mcp") else None
+    target: Optional[ApprovalTarget] = context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).get(path)
+    return target if target is not None and enabled("toolset") else None
+
+
+def _identity(target: ApprovalTarget) -> tuple[str, str, str]:
+    return target.source, target.instance_id, target.tool_name
 
 
 @dataclass
 class _InstanceRules:
-    own: ToolRules
+    rules: ToolRules
     # The rules couldn't be read: every tool of the instance is refused, and nothing is saved.
     unavailable: bool = False
 
 
-async def _rules_for(context: "AgentContext", instance_id: str) -> _InstanceRules:
+async def _rules_for(context: "AgentContext", source: Source, instance_id: str) -> _InstanceRules:
     """Read once per request and instance; an answer to a card updates it in place."""
-    cache: dict[str, _InstanceRules] = context.tool_state.setdefault(_RULES_CACHE, {})
-    if instance_id not in cache:
+    cache: dict[tuple[str, str], _InstanceRules] = context.tool_state.setdefault(_RULES_CACHE, {})
+    key = (source, instance_id)
+    if key not in cache:
         try:
-            own = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
+            if source == "mcp":
+                rules = await load_own_rules(context.config_service, user_id=context.user_id, instance_id=instance_id)
+            elif instance_id:
+                rules = await load_instance_rules(context.config_service, instance_id=instance_id)
+            else:
+                # A toolset whose instance couldn't be told apart: nobody could have set its rules.
+                rules = ToolRules()
         except Exception as e:
-            logger.warning(f"Couldn't read the tool rules of MCP instance {instance_id}: {e}")
-            cache[instance_id] = _InstanceRules(ToolRules(), unavailable=True)
+            logger.warning(f"Couldn't read the tool rules of {source} instance {instance_id}: {e}")
+            cache[key] = _InstanceRules(ToolRules(), unavailable=True)
         else:
-            cache[instance_id] = _InstanceRules(own)
-    return cache[instance_id]
+            cache[key] = _InstanceRules(rules)
+    return cache[key]
 
 
-def _blocked_message(reason: str, tool: str, server: str) -> str:
+def _blocked_message(reason: str, target: ApprovalTarget) -> str:
+    tool, owner = target.tool_name, target.owner
+    # An MCP tool's rules are the person's own; a toolset's are the organization's, set by an admin.
+    whose, who = ("the user's", "they") if target.source == "mcp" else ("the organization's", "an admin")
     if reason == "unattended":
         return (
-            f"{tool} on {server} needs someone to approve it in the PipesHub app, so it wasn't run here. "
-            "Tell the user what you wanted to do."
+            f"{tool} on {owner} needs someone to approve it in the PipesHub app, so it wasn't run here. "
+            "Tell the user what you wanted to do"
+            + ("." if target.source == "mcp" else ", and that an admin can pre-approve it.")
         )
     if reason == "default":
         return (
-            f"{tool} on {server} can delete data, so it's denied unless the user's tool approval rules allow it. "
-            "It wasn't run. Tell the user they can change its rule to run it."
+            f"{tool} on {owner} can delete data, so it's denied unless {whose} tool approval rules allow it. "
+            f"It wasn't run. Tell the user {who} can change its rule to run it."
         )
-    return f"{tool} on {server} is blocked in the user's tool approval rules, so it wasn't run."
+    return f"{tool} on {owner} is blocked in {whose} tool approval rules, so it wasn't run."
 
 
 def _card_arguments(arguments: dict[str, Any]) -> dict[str, Any]:
@@ -321,38 +380,35 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
     leaves pending."""
 
     async def _gate(ctx: "ToolCallContext", next_fn: Any) -> None:  # noqa: ANN401
-        identity = mcp_tool_identity(ctx.tool_path)
-        adapter: Optional[MCPToolAdapter] = context.tool_state.get(TOOLS_BY_PATH, {}).get(ctx.tool_path)
-        if not enabled() or identity is None or adapter is None:
+        target = _target(context, ctx.tool_path)
+        if target is None:
             await next_fn()
             return
-        instance_id, tool_name = identity
-        rules = await _rules_for(context, instance_id)
+        rules = await _rules_for(context, target.source, target.instance_id)
         if rules.unavailable:
             ctx.deny(
-                f"The approval rules for {tool_name} on {adapter.server.display_name} couldn't be checked, "
+                f"The approval rules for {target.tool_name} on {target.owner} couldn't be checked, "
                 "so it wasn't run. Tell the user to try again in a moment."
             )
             await next_fn()
             return
         verdict = decide(
-            own=rules.own.tools.get(tool_name),
-            kind=adapter.kind,
+            own=rules.rules.tools.get(target.tool_name),
+            kind=target.kind,
             watched=watched(context),
-            approved_call=context.tool_state.get(_APPROVED_CALL) == identity,
+            approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
         )
-        server = adapter.server.display_name
         if verdict.rule == "block":
-            ctx.deny(_blocked_message(verdict.reason, tool_name, server))
+            ctx.deny(_blocked_message(verdict.reason, target))
         elif verdict.rule == "ask":
-            await _ask(context, ctx, adapter, instance_id, tool_name)
+            await _ask(context, ctx, target)
         await next_fn()
 
     return _gate
 
 
-async def _ask(context: "AgentContext", ctx: "ToolCallContext", adapter: "MCPToolAdapter", instance_id: str, tool_name: str) -> None:
-    server = adapter.server.display_name
+async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: ApprovalTarget) -> None:
+    tool_name, server = target.tool_name, target.owner
     if context.tool_state.get(_PENDING_IN_RUN):
         # The model reads this when the answer to the other card resumes the turn: it must ask again
         # then, or the action is silently dropped.
@@ -365,8 +421,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", adapter: "MCPToo
     call = getattr(ctx.scope, "call", None)
     pending = PendingCall(
         approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
-        conversation_id=context.conversation_id or "", instance_id=instance_id, server_name=server,
-        tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
+        conversation_id=context.conversation_id or "", source=target.source, instance_id=target.instance_id,
+        server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
         created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
     # Taken before the write is awaited: calls in one wave run concurrently.
@@ -386,13 +442,13 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", adapter: "MCPToo
         return
     message = f"{WAITING_PREFIX} {tool_name} on {server}."
     context.tool_state[PENDING_MESSAGE] = message
-    title = (adapter.tool_info.annotations or {}).get("title")
     ctx.ask_later(PendingApproval(
         message=message,
         details={
-            "approvalId": pending.approval_id, "instanceId": instance_id, "serverName": server,
-            "toolName": tool_name, "toolTitle": title if isinstance(title, str) else None,
-            "readOnly": adapter.kind == "read", "kind": adapter.kind,
+            "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
+            "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
+            # "Don't ask again" sets the person's own rule; a toolset's rules are the admin's.
+            "canRemember": target.source == "mcp",
             "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
         },
     ))
@@ -488,9 +544,9 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
     pending = claim.pending
     if pending is None:
         return _Settled("", "", {}, "The approval request the user answered wasn't found, so nothing ran.", True)
-    adapter = _adapter_for(context, pending.instance_id, pending.tool_name)
+    target = _target_for(context, pending)
     call_id = pending.tool_call_id or f"approval_{pending.approval_id[:16]}"
-    tool_name = adapter.name if adapter is not None else pending.tool_name
+    tool_name = target.tool.name if target is not None else pending.tool_name
     if claim.status == "used":
         outcome = claim.outcome
         if outcome is None:
@@ -499,7 +555,7 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 f"The user already answered the approval for {pending.tool_name} on {pending.server_name}; "
                 "it may still be running. Don't run it again."
             ), True)
-        await _show(run, call_id, tool_name, pending, adapter, outcome)
+        await _show(run, call_id, tool_name, pending, target, outcome)
         return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
     tool, server = pending.tool_name, pending.server_name
     outcome: Optional[Outcome] = None
@@ -520,13 +576,13 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
             )
             if answer.remember:
                 await _remember(context, pending, "block")
-        elif adapter is None:
+        elif target is None:
             outcome = Outcome(
                 answer="allowed", status="blocked", preview="This tool is no longer available.",
                 result=f"{tool} on {server} is no longer available here, so the approved action didn't run.",
             )
         else:
-            outcome = await _run(context, run, adapter, pending, call_id)
+            outcome = await _run(context, run, target, pending, call_id)
             if answer.remember and outcome.status != "blocked":
                 await _remember(context, pending, "allow")
     finally:
@@ -537,46 +593,51 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
                 result=f"The user approved running {tool} on {server}, but the request was stopped while it ran, so it "
                 "may or may not have run. Don't run it again; tell the user to check its effect.",
             ))
-    if outcome.answer != "allowed" or adapter is None:
-        await _show(run, call_id, tool_name, pending, adapter, outcome)
+    if outcome.answer != "allowed" or target is None:
+        await _show(run, call_id, tool_name, pending, target, outcome)
     return _Settled(call_id, tool_name, pending.arguments, outcome.result, outcome.status != "completed")
 
 
 async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
     """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
-    since the card was shown stands over an Allow."""
-    rules = await _rules_for(context, pending.instance_id)
-    if rules.unavailable or (rule == "allow" and rules.own.tools.get(pending.tool_name) == "block"):
+    since the card was shown stands over an Allow. A toolset's rules are the admin's: an answer
+    never changes them, whatever the request says."""
+    if pending.source != "mcp":
         return
-    rules.own.tools[pending.tool_name] = rule
+    rules = await _rules_for(context, "mcp", pending.instance_id)
+    if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
+        return
+    rules.rules.tools[pending.tool_name] = rule
     try:
-        await save_own_rules(context.config_service, rules.own, user_id=context.user_id, instance_id=pending.instance_id)
+        await save_own_rules(context.config_service, rules.rules, user_id=context.user_id, instance_id=pending.instance_id)
     except Exception as e:
         logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
 
 
-def _adapter_for(context: "AgentContext", instance_id: str, tool_name: str) -> Optional["MCPToolAdapter"]:
-    for adapter in context.tool_state.get(TOOLS_BY_PATH, {}).values():
-        if adapter.instance_id == instance_id and adapter.raw_name == tool_name:
-            return adapter
-    return None
+def _target_for(context: "AgentContext", pending: PendingCall) -> Optional[ApprovalTarget]:
+    """The tool a saved call was for, as this request loaded it."""
+    if pending.source == "mcp":
+        targets = [_mcp_target(adapter) for adapter in context.tool_state.get(TOOLS_BY_PATH, {}).values()]
+    else:
+        targets = list(context.tool_state.get(TOOLSET_TOOLS_BY_PATH, {}).values())
+    return next((t for t in targets if (t.instance_id, t.tool_name) == (pending.instance_id, pending.tool_name)), None)
 
 
-def _start_payload(call_id: str, tool_name: str, pending: PendingCall, adapter: Optional["MCPToolAdapter"], outcome_answer: str) -> dict[str, Any]:
+def _start_payload(call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome_answer: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "tool": tool_name, "args": pending.arguments, "tool_call_id": call_id, "approval_answer": outcome_answer,
     }
-    if adapter is not None:
-        payload["display_name"] = adapter.display_name
-        args_summary = _quietly(adapter.summarize_args, pending.arguments)
+    if target is not None:
+        payload["display_name"] = target.tool.display_name
+        args_summary = _quietly(target.tool.summarize_args, pending.arguments)
         if isinstance(args_summary, str):
             payload["args_summary"] = args_summary
     return payload
 
 
-async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, adapter: Optional["MCPToolAdapter"], outcome: Outcome) -> None:  # noqa: ANN401
+async def _show(run: Any, call_id: str, tool_name: str, pending: PendingCall, target: Optional[ApprovalTarget], outcome: Outcome) -> None:  # noqa: ANN401
     """The stopped call's row, settled: the same id, so it replaces the card's row in the reply."""
-    start = _start_payload(call_id, tool_name, pending, adapter, outcome.answer)
+    start = _start_payload(call_id, tool_name, pending, target, outcome.answer)
     if outcome.ran:
         # Kept on the reply's part: regenerating that reply could run the action again.
         start["approved"] = True
@@ -593,18 +654,19 @@ def _end_status(outcome: Outcome) -> dict[str, Any]:
     return {"status": ToolCallStatus.ERROR if outcome.status == "failed" else ToolCallStatus.SUCCESS}
 
 
-async def _run(context: "AgentContext", run: Any, adapter: "MCPToolAdapter", pending: PendingCall, call_id: str) -> Outcome:  # noqa: ANN401
+async def _run(context: "AgentContext", run: Any, target: ApprovalTarget, pending: PendingCall, call_id: str) -> Outcome:  # noqa: ANN401
     """The saved call, through the executor (so every PreToolUse check runs again: a Block set
     since the card was shown still stops it), on the stopped call's row."""
     tool, server = pending.tool_name, pending.server_name
+    name = target.tool.name
     denied: list[str] = []
 
     async def _on_denied(reason: str) -> None:
         denied.append(reason)
 
-    call = ToolCall(id=call_id, name=adapter.name, arguments=pending.arguments)
-    await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, adapter.name, pending, adapter, "allowed"), "approved": True})
-    context.tool_state[_APPROVED_CALL] = (pending.instance_id, pending.tool_name)
+    call = ToolCall(id=call_id, name=name, arguments=pending.arguments)
+    await _emit(run, EventType.TOOL_CALL_START, {**_start_payload(call_id, name, pending, target, "allowed"), "approved": True})
+    context.tool_state[_APPROVED_CALL] = _identity(target)
     try:
         result = await ToolExecutor(run.runtime.tool_registry, run.runtime.hooks).call_tool(
             call, session_id=run.session_id, on_denied=_on_denied,
@@ -617,13 +679,13 @@ async def _run(context: "AgentContext", run: Any, adapter: "MCPToolAdapter", pen
             "or may not have run. Don't run it again; tell the user to check its effect.",
         )
         await _emit(run, EventType.TOOL_CALL_END, {
-            "tool": adapter.name, "tool_call_id": call_id, "is_error": True, "content": outcome.preview,
+            "tool": name, "tool_call_id": call_id, "is_error": True, "content": outcome.preview,
             "result_summary": None, "status": ToolCallStatus.ERROR,
         })
         return outcome
     finally:
         context.tool_state.pop(_APPROVED_CALL, None)
-    end: dict[str, Any] = {"tool": adapter.name, "tool_call_id": call_id, "is_error": result.is_error, "result_summary": None}
+    end: dict[str, Any] = {"tool": name, "tool_call_id": call_id, "is_error": result.is_error, "result_summary": None}
     text = _text(result.content)
     if denied:
         outcome = Outcome(
@@ -638,13 +700,13 @@ async def _run(context: "AgentContext", run: Any, adapter: "MCPToolAdapter", pen
         )
         end.update(content=outcome.preview, status=ToolCallStatus.ERROR)
     else:
-        summary = _quietly(adapter.summarize_result, pending.arguments, result)
+        summary = _quietly(target.tool.summarize_result, pending.arguments, result)
         outcome = Outcome(
             answer="allowed", status="completed", ran=True, preview=text[:_MAX_PREVIEW_CHARS],
             summary=summary if isinstance(summary, str) else None, result=text,
         )
         end.update(content=outcome.preview, result_summary=outcome.summary, status=ToolCallStatus.SUCCESS)
-        view = _quietly(adapter.result_view, pending.arguments, result)
+        view = _quietly(target.tool.result_view, pending.arguments, result)
         if isinstance(view, dict):
             end["result_view"] = view
     await _emit(run, EventType.TOOL_CALL_END, end)

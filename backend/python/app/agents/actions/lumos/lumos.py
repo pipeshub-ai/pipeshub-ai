@@ -910,7 +910,7 @@ class Lumos:
             ToolParameter(name="access_policy_id", type=ParameterType.STRING, description="Access policy ID", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
     )
     async def delete_access_policy(self, access_policy_id: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "delete_access_policy")
@@ -1043,7 +1043,7 @@ class Lumos:
             ToolParameter(name="permission_id", type=ParameterType.STRING, description="Permission ID", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
     )
     async def delete_requestable_permission(self, permission_id: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "delete_requestable_permission")
@@ -1088,7 +1088,7 @@ class Lumos:
             ToolParameter(name="role_name", type=ParameterType.STRING, description="Role name", required=True),
             ToolParameter(name="confirm", type=ParameterType.BOOLEAN, description="Set true to execute mutation", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="identity_access"), Tag(key="type", value="destructive")],
     )
     async def remove_user_role(self, user_id: str, role_name: str, confirm: bool = False) -> tuple[bool, str]:
         blocked = self._confirm_mutation(confirm, "remove_user_role")

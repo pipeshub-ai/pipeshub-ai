@@ -2262,7 +2262,14 @@
         "numberMax": "Enter a whole number no larger than {{max, number}}."
       },
       "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
-      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them."
+      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them.",
+      "toolRules": {
+        "open": "Tool approvals",
+        "title": "Tool approvals: {{name}}",
+        "description": "What happens when an assistant or agent wants to use one of these tools. The same rules apply to everyone in your organization.",
+        "readOnly": "Only an admin can change these.",
+        "toolsError": "Couldn't load this toolset's tools."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Scroll up and complete the required fields (marked with *) to continue.",

@@ -9,6 +9,7 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import { apiClient } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
+import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
 
 export interface ToolsetInstanceRowCardProps {
   /** Team = admin catalog (org instances); personal = per-user credentials. */
@@ -46,6 +47,7 @@ export function ToolsetInstanceRowCard({
 
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
+  const [toolRulesOpen, setToolRulesOpen] = useState(false);
 
   useEffect(() => {
     if (!instance.createdBy) return;
@@ -175,9 +177,18 @@ export function ToolsetInstanceRowCard({
         <>
           <Separator size="4" m="0" />
           <Flex direction="column" gap="2" style={{ padding: '12px 16px 16px' }}>
-            <Text size="1" weight="medium" style={{ color: 'var(--gray-11)', letterSpacing: '0.04em' }}>
-              {t('workspace.actions.instanceCard.availableActionsLabel')}
-            </Text>
+            <Flex align="center" justify="between" gap="3" wrap="wrap">
+              <Text size="1" weight="medium" style={{ color: 'var(--gray-11)', letterSpacing: '0.04em' }}>
+                {t('workspace.actions.instanceCard.availableActionsLabel')}
+              </Text>
+              {/* On the team page they're in Manage. */}
+              {scope === 'personal' && instance.instanceId ? (
+                <Button type="button" size="1" variant="ghost" color="gray" onClick={() => setToolRulesOpen(true)}>
+                  <MaterialIcon name="rule" size={16} color="var(--gray-11)" />
+                  {t('workspace.actions.toolRules.open')}
+                </Button>
+              ) : null}
+            </Flex>
             <Flex gap="2" wrap="wrap">
               {toolTags.map((tag) => (
                 <Badge key={tag} size="1" variant="soft" color="gray">
@@ -214,6 +225,16 @@ export function ToolsetInstanceRowCard({
             </Flex>
           </Flex>
         </>
+      ) : null}
+
+      {scope === 'personal' && instance.instanceId ? (
+        <ToolsetToolRulesDialog
+          open={toolRulesOpen}
+          onOpenChange={setToolRulesOpen}
+          instanceId={instance.instanceId}
+          instanceName={primaryTitle}
+          toolsetType={instance.toolsetType || instance.name}
+        />
       ) : null}
     </Flex>
   );

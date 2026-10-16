@@ -3043,7 +3043,7 @@ class Teams:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
             ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def remove_reaction(
         self,

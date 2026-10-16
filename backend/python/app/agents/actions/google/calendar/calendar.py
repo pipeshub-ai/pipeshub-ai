@@ -710,7 +710,7 @@ class GoogleCalendar:
         parameters=[
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The actual event ID from Google Calendar", required=True),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def delete_calendar_event(
         self,

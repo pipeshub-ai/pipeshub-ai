@@ -2252,7 +2252,14 @@
         "numberMax": "请输入不大于 {{max, number}} 的整数。"
       },
       "adminRequiredToast": "只有管理员可以添加新操作。请让管理员先配置此操作。",
-      "personalNonAdminHint": "标记为「未配置」的操作需要管理员先完成设置，您才能使用。"
+      "personalNonAdminHint": "标记为「未配置」的操作需要管理员先完成设置，您才能使用。",
+      "toolRules": {
+        "open": "工具审批",
+        "title": "工具审批：{{name}}",
+        "description": "当助手或智能体想使用这些工具时会发生什么。这些规则对您组织中的每个人都相同。",
+        "readOnly": "只有管理员可以更改这些规则。",
+        "toolsError": "无法加载此工具集的工具。"
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "请向上滚动并填写必填字段（标有 * 号）以继续。",

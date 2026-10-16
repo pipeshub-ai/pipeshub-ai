@@ -235,6 +235,23 @@ class ToolInstanceCreator:
         Handles the naming gap between the toolset registry (e.g. ``"drive"``)
         and the graph DB toolset names (e.g. ``"Google Drive"`` → ``"googledrive"``).
         """
+        ts = self._toolset_for_app(app_name)
+        if ts is None:
+            return None, None
+        instance_id = ts["instanceId"]
+        self._log.debug("Resolved config for app %s via agent_toolsets (instanceId=%s)", app_name, instance_id)
+        return self._toolset_configs[instance_id], instance_id
+
+    def instance_for_app(self, app_name: str) -> tuple[str, str] | None:
+        """The toolset instance an app's tools run on (the one its credentials come from): its id
+        and name, for the approval gate."""
+        ts = self._toolset_for_app(app_name)
+        if ts is None:
+            return None
+        return ts["instanceId"], ts.get("instanceName") or ts.get("displayName") or ts.get("name") or app_name
+
+    def _toolset_for_app(self, app_name: str) -> dict | None:
+        """The agent's configured toolset for an app, when its config is loaded."""
         normalized = app_name.lower().replace(" ", "").replace("_", "")
         named = [
             ((ts.get("name") or "").lower().replace(" ", "").replace("_", ""), ts)
@@ -245,15 +262,9 @@ class ToolInstanceCreator:
         for name, ts in named:
             if configured_name_matches(normalized, name):
                 instance_id = ts.get("instanceId")
-                if instance_id:
-                    config = self._toolset_configs.get(instance_id)
-                    if config is not None:
-                        self._log.debug(
-                            "Resolved config for app %s via agent_toolsets (instanceId=%s)",
-                            app_name, instance_id,
-                        )
-                        return config, instance_id
-        return None, None
+                if instance_id and self._toolset_configs.get(instance_id) is not None:
+                    return ts
+        return None
 
     def _get_toolset_config(self, tool_full_name: str) -> dict | None:
         """Resolve toolset config for a tool from the context's maps."""

@@ -36,6 +36,7 @@ import {
   stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
+import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
@@ -105,6 +106,7 @@ export function AdminManageActionPanel({
 
   const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
+  const [toolRulesOpen, setToolRulesOpen] = useState(false);
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
   const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
 
@@ -885,9 +887,17 @@ export function AdminManageActionPanel({
 
       {toolNames.length > 0 ? (
         <Flex direction="column" gap="2">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.actions.availableActions')} ({toolNames.length})
-          </Text>
+          <Flex align="center" justify="between" gap="3" wrap="wrap">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.availableActions')} ({toolNames.length})
+            </Text>
+            {instanceId ? (
+              <Button type="button" size="1" variant="soft" color="gray" onClick={() => setToolRulesOpen(true)}>
+                <MaterialIcon name="rule" size={16} color="var(--gray-11)" />
+                {t('workspace.actions.toolRules.open')}
+              </Button>
+            ) : null}
+          </Flex>
           <Flex gap="2" wrap="wrap">
             {toolNames.map((n) => (
               <Badge key={n} size="1" variant="soft" color="gray">
@@ -998,6 +1008,17 @@ export function AdminManageActionPanel({
             </Flex>
           </AlertDialog.Content>
         </AlertDialog.Root>
+      ) : null}
+
+      {instanceId ? (
+        <ToolsetToolRulesDialog
+          open={toolRulesOpen}
+          onOpenChange={setToolRulesOpen}
+          instanceId={instanceId}
+          instanceName={instance.instanceName || instance.displayName || toolsetType}
+          toolsetType={toolsetType}
+          container={nestedModalHost}
+        />
       ) : null}
     </Flex>
   );

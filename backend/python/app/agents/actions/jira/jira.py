@@ -1636,7 +1636,7 @@ class Jira:
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project", required=True),
             ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the Jira issue type", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_create_issue_fields(
         self, project_key: str, issue_type_name: str
@@ -1782,7 +1782,7 @@ class Jira:
             ToolParameter(name="parent_key", type=ParameterType.STRING, description="The key of the Jira parent issue", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.DICT, description="The custom fields of the Jira issue", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
         args_summary=args_template('Creating Jira issue in {project_key}: "{summary}"', "project_key", "summary"),
         result_summary=entity_summary(lambda e: f"Created {e.get('key', '?')}"),
     )
@@ -1969,7 +1969,7 @@ class Jira:
             ToolParameter(name="status", type=ParameterType.STRING, description="The status of the Jira issue", required=False),
             ToolParameter(name="custom_fields", type=ParameterType.DICT, description="The custom fields of the Jira issue", required=False),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="destructive")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
         args_summary=args_template("Updating Jira issue {issue_key}", "issue_key"),
         result_summary=entity_summary(lambda e: f"Updated {e.get('key', '?')}"),
     )

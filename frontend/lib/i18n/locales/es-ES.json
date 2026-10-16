@@ -2136,7 +2136,14 @@
         "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
       "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas."
+      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
+      "toolRules": {
+        "open": "Aprobaciones de herramientas",
+        "title": "Aprobaciones de herramientas: {{name}}",
+        "description": "Qué ocurre cuando un asistente o agente quiere usar una de estas herramientas. Las mismas reglas se aplican a todos en tu organización.",
+        "readOnly": "Solo un administrador puede cambiarlas.",
+        "toolsError": "No se pudieron cargar las herramientas de este conjunto."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",

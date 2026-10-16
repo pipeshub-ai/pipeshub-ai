@@ -2252,7 +2252,14 @@
         "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
       "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
-      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다."
+      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다.",
+      "toolRules": {
+        "open": "도구 승인",
+        "title": "도구 승인: {{name}}",
+        "description": "어시스턴트나 에이전트가 이 도구를 사용하려고 할 때 어떻게 되는지입니다. 조직의 모든 사용자에게 같은 규칙이 적용됩니다.",
+        "readOnly": "관리자만 변경할 수 있습니다.",
+        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",

@@ -1030,7 +1030,7 @@ class JiraDataCenter:
             ToolParameter(name="project_key", type=ParameterType.STRING, description="The key of the Jira project (e.g., 'PA')", required=True),
             ToolParameter(name="issue_type_name", type=ParameterType.STRING, description="The name of the issue type (e.g., 'Task', 'Bug', 'Story')", required=True),
         ],
-        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="project_management"), Tag(key="type", value="read")],
     )
     async def get_create_issue_fields(self, project_key: str, issue_type_name: str) -> tuple[bool, str]:
         try:

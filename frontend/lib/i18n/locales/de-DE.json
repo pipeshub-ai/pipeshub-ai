@@ -2116,7 +2116,14 @@
         "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
       "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können."
+      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können.",
+      "toolRules": {
+        "open": "Tool-Freigaben",
+        "title": "Tool-Freigaben: {{name}}",
+        "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
+        "readOnly": "Nur ein Administrator kann diese ändern.",
+        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",

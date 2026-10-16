@@ -3014,7 +3014,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to delete", required=True),
             ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Delete the message as the authenticated user", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
@@ -3214,7 +3214,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to remove reaction from", required=True),
             ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""

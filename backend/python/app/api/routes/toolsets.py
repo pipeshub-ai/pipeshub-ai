@@ -22,7 +22,11 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from pydantic import BaseModel, Field
 
+from app.agents.agent_loop import tool_approvals
+from app.agents.constants.toolset_constants import get_toolset_tool_rules_path
+from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
@@ -414,6 +418,12 @@ def _get_toolset_metadata(registry: ToolsetRegistry, toolset_type: str) -> dict[
         raise ToolsetNotFoundError(toolset_type)
 
     return metadata
+
+
+def _tool_kind(tool: dict[str, Any]) -> str:
+    """A registry tool's kind (read, write or destructive), as the approval gate sees it."""
+    type_tag = next((t.get("value") for t in tool.get("tags") or [] if isinstance(t, dict) and t.get("key") == "type"), None)
+    return toolset_tool_kind(tool.get("name", ""), type_tag)
 
 
 def _declared_auth_fields(request: Request, instance: dict[str, Any]) -> set[str]:
@@ -1094,7 +1104,8 @@ async def get_toolset_schema(toolset_type: str, request: Request) -> dict[str, A
             "documentationLinks": toolset_config.get("documentationLinks", []),
             "config": toolset_config,
             "oauthConfig": oauth_config,
-            "tools": metadata.get("tools", []),
+            # Each tool's kind (what it does to data) sets its starting approval rule.
+            "tools": [{**tool, "kind": _tool_kind(tool)} for tool in metadata.get("tools", [])],
         }
     }
 
@@ -1884,6 +1895,11 @@ async def delete_toolset_instance(
         logger.error(f"Failed to delete toolset instance from {instances_path}: {e}", exc_info=True)
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to delete toolset instance. Please try again.") from e
 
+    try:
+        await config_service.delete_config(get_toolset_tool_rules_path(instance_id))
+    except Exception as e:
+        logger.warning(f"Couldn't delete the tool approval rules of toolset instance {instance_id}: {e}")
+
     message = "Toolset instance deleted successfully."
     if deleted_credentials_count > 0:
         message += f" {deleted_credentials_count} user credential(s) were also deleted."
@@ -1894,6 +1910,64 @@ async def delete_toolset_instance(
         "instanceId": instance_id,
         "deletedCredentialsCount": deleted_credentials_count
     }
+
+
+# ============================================================================
+# Tool approvals: an instance's rules for its tools (`app/agents/agent_loop/tool_approvals.py`).
+# An admin sets them for everyone in the organization; everyone can read them. Kept apart from
+# the instance record, which an edit rebuilds.
+# ============================================================================
+
+class ToolsetToolRulesBody(BaseModel):
+    tools: dict[str, tool_approvals.Rule] = Field(default_factory=dict)
+
+
+async def _org_toolset_instance(instance_id: str, org_id: str, config_service: ConfigurationService) -> dict[str, Any]:
+    instances = await _load_toolset_instances(org_id, config_service)
+    instance = next((i for i in instances if i.get("_id") == instance_id), None)
+    if not instance:
+        raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=not_found("This toolset"))
+    return instance
+
+
+@router.get("/instances/{instance_id}/tool-rules", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ))])
+@inject
+async def get_toolset_tool_rules(
+    instance_id: str,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict[str, Any]:
+    """The instance's tool rules; `canEdit` says whether the caller may change them."""
+    user_context = _get_user_context(request)
+    await _org_toolset_instance(instance_id, user_context["org_id"], config_service)
+    rules = await tool_approvals.load_instance_rules(config_service, instance_id=instance_id)
+    can_edit = await _check_user_is_admin(user_context["user_id"], request, config_service)
+    return {"tools": rules.tools, "canEdit": can_edit}
+
+
+@router.put("/instances/{instance_id}/tool-rules", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE))])
+@inject
+async def update_toolset_tool_rules(
+    instance_id: str,
+    payload: ToolsetToolRulesBody,
+    request: Request,
+    config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service]),
+) -> dict[str, Any]:
+    """Replaces the instance's tool rules. Admins only: they apply to everyone in the organization."""
+    user_context = _get_user_context(request)
+    if not await _check_user_is_admin(user_context["user_id"], request, config_service):
+        raise HTTPException(status_code=HttpStatusCode.FORBIDDEN.value, detail="Only administrators can change a toolset's tool approvals.")
+    instance = await _org_toolset_instance(instance_id, user_context["org_id"], config_service)
+    metadata = _get_toolset_metadata(_get_registry(request), instance.get("toolsetType", ""))
+    unknown = sorted(set(payload.tools) - {tool.get("name") for tool in metadata.get("tools", [])})
+    if unknown:
+        raise HTTPException(
+            status_code=HttpStatusCode.BAD_REQUEST.value,
+            detail=f"This toolset has no tool named {', '.join(unknown[:5])}.",
+        )
+    if not await tool_approvals.save_instance_rules(config_service, tool_approvals.ToolRules(tools=payload.tools), instance_id=instance_id):
+        raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail="Failed to save the tool approvals.")
+    return {"tools": payload.tools, "canEdit": True}
 
 
 # ============================================================================

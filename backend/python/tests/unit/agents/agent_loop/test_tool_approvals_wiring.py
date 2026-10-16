@@ -9,7 +9,7 @@ from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemIn
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.mcp_access import ResolvedMCPServer
 from app.agents.agent_loop.mcp_tool_adapter import MCPToolAdapter
-from app.agents.agent_loop.tool_approvals import ToolApprovalAnswer, mcp_tool_identity
+from app.agents.agent_loop.tool_approvals import ToolApprovalAnswer, _mcp_target
 from app.agents.mcp.models import MCPToolInfo
 from tests.unit.agents.adapter.conftest import make_context
 
@@ -54,14 +54,11 @@ class TestTheAdapter:
     def test_its_identity_doesnt_depend_on_the_namespace(self) -> None:
         adapter = _adapter()
         assert (adapter.instance_id, adapter.raw_name) == ("inst-1", "create_issue")
-        assert mcp_tool_identity(adapter.path) == ("inst-1", "create_issue")
+        target = _mcp_target(adapter)
+        assert (target.source, target.instance_id, target.tool_name, target.owner) == ("mcp", "inst-1", "create_issue", "Jira")
 
     def test_a_tool_name_with_a_slash_keeps_it(self) -> None:
-        assert mcp_tool_identity(_adapter("issues/create").path) == ("inst-1", "issues/create")
-
-    def test_other_paths_have_no_identity(self) -> None:
-        assert mcp_tool_identity("/toolsets/jira/create_issue") is None
-        assert mcp_tool_identity("/mcp/") is None
+        assert _mcp_target(_adapter("issues/create")).tool_name == "issues/create"
 
     def test_the_kind_comes_from_the_servers_own_tool_name_and_hints(self) -> None:
         assert _adapter(annotations={"readOnlyHint": True}).kind == "read"

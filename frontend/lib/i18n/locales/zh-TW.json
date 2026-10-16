@@ -2252,7 +2252,14 @@
         "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
       "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
-      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。"
+      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。",
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
+        "readOnly": "只有管理員可以變更這些規則。",
+        "toolsError": "無法載入此工具集的工具。"
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "請向上捲動並填寫必填欄位（標有 * 者）以繼續。",

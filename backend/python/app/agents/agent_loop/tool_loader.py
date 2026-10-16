@@ -16,10 +16,12 @@ toolset, only the tools picked for the agent (`agent_toolsets[].tools`).
 Policy on how tools are called is a separate concern. It does, however,
 record WHY a toolset failed to load into `context.toolset_load_failures`
 (`"not_authenticated"` vs `"error"`) and WHICH loaded toolsets are
-`essential=True` metadata into `context.essential_toolset_names` — both are
-facts only this loop can observe, and downstream consumers (the global
-search fallback, the capability summary, `factory.py`'s pinned-toolsets
-derivation) need them without re-deriving.
+`essential=True` metadata into `context.essential_toolset_names`, and which
+instance each external toolset tool runs on, for the approval gate
+(`tool_approvals.TOOLSET_TOOLS_BY_PATH`) — all facts only this loop can
+observe, and downstream consumers (the global search fallback, the capability
+summary, `factory.py`'s pinned-toolsets derivation, the gate) need them
+without re-deriving.
 """
 
 from __future__ import annotations
@@ -37,7 +39,9 @@ from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
 from app.agents.agent_loop.instance_creator import ToolInstanceCreator, configured_name_matches
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
+from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH, ApprovalTarget
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
+from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 
@@ -95,6 +99,20 @@ def _has_tool_decorated_methods(cls: type) -> bool:
             if hasattr(func, TOOL_META_ATTR):
                 return True
     return False
+
+
+def _record_for_approvals(
+    context: "AgentContext", tool: "Tool", instance: tuple[str, str] | None, *, fallback_owner: str,
+) -> None:
+    """Records an external toolset's tool for the approval gate: the instance its calls run on
+    (whose rules apply) and what it does to data."""
+    instance_id, owner = instance or ("", fallback_owner)
+    tool_name = tool.path.rsplit("/", 1)[-1]
+    type_tag = next((tag.value for tag in tool.tags if tag.key == "type"), None)
+    context.tool_state.setdefault(TOOLSET_TOOLS_BY_PATH, {})[tool.path] = ApprovalTarget(
+        source="toolset", instance_id=instance_id, tool_name=tool_name, owner=owner,
+        kind=toolset_tool_kind(tool_name, type_tag), tool=tool,
+    )
 
 
 def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
@@ -364,6 +382,9 @@ class PipesHubToolLoader:
                         state_logger.warning(
                             "Tools picked for toolset %s no longer exist: %s", ts_name, sorted(stale),
                         )
+                # An external toolset's calls pass the approval gate, under its instance's rules.
+                gated = has_factory and not is_internal
+                approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
                 for t in tools:
                     try:
                         registry.register_tool(t)
@@ -371,6 +392,9 @@ class PipesHubToolLoader:
                     except (DuplicateToolPathError, DuplicateToolNameError):
                         if state_logger:
                             state_logger.warning("Skipping duplicate: %s", t.name)
+                        continue
+                    if gated:
+                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name)
 
                 registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
                 if registered_names:
