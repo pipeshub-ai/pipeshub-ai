@@ -1172,7 +1172,7 @@ class Outlook:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Outlook message that owns the attachment", required=True),
             ToolParameter(name="attachment_id", type=ParameterType.STRING, description="ID of the attachment to download", required=True),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="read")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
     )
     async def stage_attachment_to_blob(
         self,

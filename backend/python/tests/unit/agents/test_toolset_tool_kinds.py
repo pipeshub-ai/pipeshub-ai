@@ -60,8 +60,8 @@ def test_deleting_tools_and_only_they_are_tagged_as_deleting() -> None:
     ("/tools/jira_data_center/get_create_issue_fields", "read"),
     ("/tools/slack/delete_message", "destructive"),
     ("/tools/zoom/delete_meeting", "destructive"),
-    # Copies an attachment into PipesHub; Outlook is unchanged.
-    ("/tools/outlook/stage_attachment_to_blob", "read"),
+    # Saves the attachment as a new PipesHub record, though Outlook is unchanged.
+    ("/tools/outlook/stage_attachment_to_blob", "write"),
     # Runs any SQL statement.
     ("/tools/mariadb/execute_query", "write"),
     ("/tools/slack/send_message", "write"),
