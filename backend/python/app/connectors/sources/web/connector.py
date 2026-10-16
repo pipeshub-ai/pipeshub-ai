@@ -1681,13 +1681,18 @@ class WebConnector(BaseConnector):
         })
 
     def _resume_made_progress(self) -> bool:
-        """False for a resumed crawl that reached no page beyond its checkpoint.
+        """False for a resumed crawl that reached no page beyond its checkpoint and has nothing new left.
 
         Its queue was only pages that keep failing until the time runs out (a hanging page, one that
         is always rate limited), so resuming again would do the same on every sync and never revisit
-        the site: changed and new pages would go unseen. The next sync starts over instead.
+        the site: changed and new pages would go unseen. The next sync starts over instead. A page
+        still queued that this run never fetched (a rate-limit stop leaves the rest for later) is
+        progress to keep.
         """
-        return not self._resumed or self._resume is None or len(self.visited_urls) > len(self._resume.visited)
+        if not self._resumed or self._resume is None or len(self.visited_urls) > len(self._resume.visited):
+            return True
+        queued = {self._normalize_url(url) for url, _, _ in self._frontier or ()} | set(self._in_flight) | set(self._fetching)
+        return any(url not in self.retry_urls and url not in self.visited_urls for url in queued)
 
     def _checkpoint_text(self) -> str:
         """This crawl's progress, encoded for the sync point; empty when there is no crawl to resume."""

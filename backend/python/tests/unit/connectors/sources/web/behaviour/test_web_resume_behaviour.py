@@ -284,3 +284,33 @@ async def test_a_resume_left_with_only_pages_that_keep_failing_starts_over_and_s
 
     assert site.gets(START_URL) > start_fetches, "the crawl started over from the start page"
     assert edited in [r.weburl for r in db.content_updates], "the edited page was re-indexed"
+
+
+async def test_a_rate_limit_stop_keeps_the_pages_it_never_reached_for_the_next_sync(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+) -> None:
+    """A resume that reached no new page is still progress while pages it never fetched are queued."""
+    limited = [f"http://site.test/busy-{i}" for i in range(30)]
+    later = "http://site.test/later"
+    site.html(START_URL, "Home", *(u.removeprefix("http://site.test") for u in limited), "/later")
+    for url in limited:
+        site.add(url, Page(status=429))
+    site.html(later, "Later")
+    connector = await make_connector()
+    await connector.run_sync()
+    first = json.loads(_saved(checkpoints)["lastRun"])
+    assert (first["outcome"], first["stop_reason"]) == ("partial", "rate_limited")
+    assert site.gets(later) == 0, "the rate limit stopped the crawl before it got there"
+
+    await connector.run_sync()  # resumes; the queued pages still answer 429
+    second = json.loads(_saved(checkpoints)["lastRun"])
+    assert (second["resumed"], second["stop_reason"]) == (True, "rate_limited")
+    assert _saved(checkpoints)["resume"], "pages it never fetched are still to do"
+
+    for url in limited:
+        site.html(url, url)
+    start_fetches = site.gets(START_URL)
+    await connector.run_sync()
+
+    assert later in db.pages()
+    assert site.gets(START_URL) == start_fetches, "it carried on instead of starting over"
