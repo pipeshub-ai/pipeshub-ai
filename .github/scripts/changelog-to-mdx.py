@@ -31,7 +31,7 @@ def escape(line):
 
 def convert(src, out_dir):
     version = src.stem
-    lines = src.read_text().split("\n")
+    lines = src.read_text(encoding="utf-8").split("\n")
     head = re.match(r"# (\S+) — (.+)", lines[0])
     if not head or head.group(1) != version:
         sys.exit(f"{src}: first line must be '# {version} — <headline>', got: {lines[0]!r}")
@@ -40,7 +40,9 @@ def convert(src, out_dir):
         lines[2])
     if not meta:
         sys.exit(f"{src}: cannot read the metadata line: {lines[2]!r}")
-    month, day, year, channel, _tag, url = meta.groups()
+    month, day, year, channel, tag, url = meta.groups()
+    if tag.removeprefix("v") != version:
+        sys.exit(f"{src}: tag {tag!r} does not match version {version!r}")
     channel = channel.strip()
     if channel not in CHANNELS or month not in MONTHS:
         sys.exit(f"{src}: unknown channel {channel!r} or month {month!r}")
@@ -61,7 +63,7 @@ def convert(src, out_dir):
              f"date: {json.dumps(date)}", f"channel: {json.dumps(channel)}",
              f"release_url: {json.dumps(url)}", f"summary: {json.dumps(head.group(2))}", "---", ""]
     out = out_dir / f"{version}.mdx"
-    out.write_text("\n".join(front + body).rstrip("\n") + "\n")
+    out.write_text("\n".join(front + body).rstrip("\n") + "\n", encoding="utf-8")
     print(out)
 
 
