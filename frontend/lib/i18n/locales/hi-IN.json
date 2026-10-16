@@ -618,6 +618,7 @@
       "open": "चैट खोलें",
       "unread": "नया उत्तर"
     },
+    "jumpToNewest": "नवीनतम संदेश पर जाएँ",
     "recordActions": {
       "preview": "पूर्वावलोकन",
       "open": "{{source}} खोलें",

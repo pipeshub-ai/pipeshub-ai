@@ -625,6 +625,7 @@
       "open": "Abrir chat",
       "unread": "Nueva respuesta"
     },
+    "jumpToNewest": "Ir al mensaje más reciente",
     "recordActions": {
       "preview": "Vista previa",
       "open": "Abrir {{source}}",

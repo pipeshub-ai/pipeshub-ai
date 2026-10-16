@@ -618,6 +618,7 @@
       "open": "Chat öffnen",
       "unread": "Neue Antwort"
     },
+    "jumpToNewest": "Zur neuesten Nachricht springen",
     "recordActions": {
       "preview": "Vorschau",
       "open": "{{source}} öffnen",

@@ -703,6 +703,7 @@
       "open": "채팅 열기",
       "unread": "새 답변"
     },
+    "jumpToNewest": "최신 메시지로 이동",
     "recordActions": {
       "preview": "미리보기",
       "open": "{{source}} 열기",

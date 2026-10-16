@@ -618,6 +618,7 @@
       "open": "Open chat",
       "unread": "New answer"
     },
+    "jumpToNewest": "Jump to latest message",
     "recordActions": {
       "preview": "Preview",
       "open": "Open {{source}}",

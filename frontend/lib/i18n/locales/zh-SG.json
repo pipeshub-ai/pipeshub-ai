@@ -703,6 +703,7 @@
       "open": "打开聊天",
       "unread": "新回答"
     },
+    "jumpToNewest": "跳到最新消息",
     "recordActions": {
       "preview": "预览",
       "open": "打开 {{source}}",
