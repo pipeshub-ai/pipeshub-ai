@@ -7,6 +7,9 @@
 # When the Express mount path (after stripping /api/v1) differs from the
 # OpenAPI spec path prefix. Format: "/mount-segment": "/spec-segment"
 mount_to_spec_overrides:
+  # createOpenAIModelsRouter is mounted at /api/v1 itself (and at /v1), so its
+  # routes start at the API root rather than under a segment.
+  "/": ""
 
 # Inline middleware routes not using the factory pattern.
 # These are mounted directly in app.ts (e.g., raw proxies).
