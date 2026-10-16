@@ -5,6 +5,8 @@ import logging
 import os
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -15,11 +17,11 @@ from app.services.resource_governor.shared_slots import (
     SharedSlots,
     SlotHold,
     open_shared_slots,
+    shared_slots_directory,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
-    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -184,6 +186,22 @@ class TestSharedSlots:
         with caplog.at_level(logging.WARNING):
             assert open_shared_slots(not_a_directory / "slots", 4) is None
         assert "Shared heavy-parse slots unavailable" in caplog.text
+
+
+class TestSharedSlotsDirectory:
+    def test_one_directory_per_uid_in_the_temp_directory(self) -> None:
+        assert shared_slots_directory("slots") == (
+            Path(tempfile.gettempdir()) / f"slots-{os.getuid()}"
+        )
+
+    def test_none_without_posix_file_locks(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Windows has neither ``fcntl`` nor ``os.getuid``, and naming the
+        directory must not stop the indexing service from starting there."""
+        monkeypatch.setattr("app.services.resource_governor.shared_slots.fcntl", None)
+        monkeypatch.delattr(os, "getuid")
+        assert shared_slots_directory("slots") is None
 
 
 class _FixedProbe:

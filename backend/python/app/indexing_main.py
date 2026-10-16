@@ -2,11 +2,9 @@ import asyncio
 import inspect
 import logging
 import os
-import tempfile
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
-from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, TypeVar
 from uuid import uuid4
 
@@ -76,6 +74,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
 from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
@@ -1749,11 +1748,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
         worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
-        # Every worker of this container opens the same directory; another
-        # container has its own /tmp. Per uid so a directory left by another
-        # user on a shared host cannot block startup.
-        heavy_parse_slots_dir=Path(tempfile.gettempdir())
-        / f"pipeshub-indexing-heavy-parse-slots-{os.getuid()}",
+        heavy_parse_slots_dir=shared_slots_directory(
+            "pipeshub-indexing-heavy-parse-slots"
+        ),
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
