@@ -92,6 +92,17 @@ describe('fetchAllConversationRows', () => {
     expect(fetchConversation).toHaveBeenNthCalledWith(2, 'conv-1', 2);
   });
 
+  it('still reads everything when a new message arrives mid-export and a page overlaps the last', async () => {
+    fetchConversation
+      .mockResolvedValueOnce(page([question('m3', 'third'), answer('m4', 'fourth')], true, 1))
+      .mockResolvedValueOnce(page([answer('m2', 'second'), question('m3', 'third')], true, 2))
+      .mockResolvedValueOnce(page([question('m1', 'first')], false, 3));
+
+    const rows = await fetchAllConversationRows('conv-1');
+
+    expect(rows.map((r) => r._id)).toEqual(['m1', 'm2', 'm3', 'm4']);
+  });
+
   it('stops after the last page without asking for another', async () => {
     fetchConversation.mockResolvedValueOnce(page([question('m1', 'only')], false));
 
@@ -103,18 +114,17 @@ describe('fetchAllConversationRows', () => {
   it('fails instead of saving a short chat when a page adds nothing but the server says there is more', async () => {
     fetchConversation.mockResolvedValue(page([question('m1', 'same page')], true));
 
-    await expect(fetchAllConversationRows('conv-1')).rejects.toThrow('page 2 repeated messages');
+    await expect(fetchAllConversationRows('conv-1')).rejects.toThrow('page 2 added no messages');
     expect(fetchConversation).toHaveBeenCalledTimes(2);
   });
 
-  it('ends quietly when the last page repeats what was read and says there is no more', async () => {
-    fetchConversation
-      .mockResolvedValueOnce(page([question('m1', 'a')], true))
-      .mockResolvedValueOnce(page([question('m1', 'a')], false));
+  it.each([
+    ['repeats what was read', () => page([question('m1', 'a')], false)],
+    ['comes back empty', () => page([], false)],
+  ])('fails when the last page %s, since the older messages were never read', async (_name, lastPage) => {
+    fetchConversation.mockResolvedValueOnce(page([question('m1', 'a')], true)).mockResolvedValueOnce(lastPage());
 
-    const rows = await fetchAllConversationRows('conv-1');
-
-    expect(rows.map((r) => r._id)).toEqual(['m1']);
+    await expect(fetchAllConversationRows('conv-1')).rejects.toThrow('page 2 added no messages');
   });
 
   it('returns nothing for a chat with no messages', async () => {

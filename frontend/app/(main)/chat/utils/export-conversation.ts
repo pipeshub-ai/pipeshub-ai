@@ -15,8 +15,9 @@ export interface ExportLabels {
 
 /**
  * Every stored message of a chat, oldest first. The API returns the newest page first, so each
- * further page goes in front. A page that adds nothing while the server still reports more history
- * fails the export: it would otherwise loop forever, or save a chat with its older messages missing.
+ * further page goes in front. A page is only asked for because the one before reported older
+ * messages, so a later page that adds nothing means those were not retrieved. It fails the export,
+ * whatever that page says about more history: saving would drop older messages, or loop forever.
  */
 export async function fetchAllConversationRows(
   conversationId: string,
@@ -29,9 +30,7 @@ export async function fetchAllConversationRows(
       : await ChatApi.fetchConversation(conversationId, page);
     const next = prependOlderRows(rows, detail.messages);
     if (next === rows) {
-      if (detail.pagination.hasNextPage) {
-        throw new Error(`Chat history page ${page} repeated messages and reported more pages`);
-      }
+      if (page > 1) throw new Error(`Chat history page ${page} added no messages after page ${page - 1} reported older ones`);
       break;
     }
     rows = next;
