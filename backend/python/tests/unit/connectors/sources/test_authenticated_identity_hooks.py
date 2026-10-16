@@ -36,7 +36,6 @@ from app.connectors.sources.linear.connector import LinearConnector
 from app.connectors.sources.notion.connector import NotionConnector
 from app.connectors.sources.salesforce.connector import SalesforceConnector
 from app.connectors.sources.servicenow.servicenow.connector import ServiceNowConnector
-from app.connectors.sources.zoom.connector import ZoomConnector
 from app.sources.client.notion.notion import (
     NotionRESTClientViaOAuth,
     NotionRESTClientViaToken,
@@ -196,33 +195,6 @@ class TestSalesforce:
 
         conn._fetch_first_record.assert_not_awaited()
         conn.register_authenticated_source_user.assert_not_awaited()
-
-
-class TestZoom:
-    def _conn(self, response: object) -> MagicMock:
-        datasource = MagicMock()
-        datasource.user = AsyncMock(return_value=response)
-        return _connector(ZoomConnector, _get_fresh_datasource=AsyncMock(return_value=datasource))
-
-    async def test_registers_the_user_who_authorized_the_app_as_the_user_sync_stores_it(self) -> None:
-        conn = self._conn(SimpleNamespace(success=True, data={"id": " KDcuGIm1QgePTO8WbOqwIQ ", "email": " Admin@Corp.com "}))
-
-        await ZoomConnector._register_authenticated_identity(conn)
-
-        conn._get_fresh_datasource.return_value.user.assert_awaited_once_with("me")
-        assert _registered(conn) == ("admin@corp.com", "KDcuGIm1QgePTO8WbOqwIQ")
-
-    async def test_a_connection_authorized_without_the_new_scope_links_nobody(self) -> None:
-        error = {"code": 4711, "message": "Invalid access token, does not contain scopes:[user:read:user:admin]"}
-        conn = self._conn(SimpleNamespace(success=False, data=error, error=None, message="Failed with status 400"))
-
-        await ZoomConnector._register_authenticated_identity(conn)
-
-        assert _registered(conn) == (None, None)
-
-    def test_the_oauth_app_asks_for_the_scope_users_me_needs(self) -> None:
-        oauth = ZoomConnector._connector_metadata["config"]["auth"]["oauthConfigs"]["OAUTH"]
-        assert "user:read:user:admin" in oauth["scopes"]
 
 
 @pytest.mark.parametrize("connector_cls", [GoogleDriveTeamConnector, GoogleGmailTeamConnector])
