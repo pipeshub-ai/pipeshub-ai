@@ -683,7 +683,8 @@
     "chatWithSelection": "Chat",
     "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again.",
     "chatTooManyCollections": "Chat can search up to {{max}} collections at once, and you have more. Open a collection, or tick the ones to ask about.",
-    "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again."
+    "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again.",
+    "chatNoCollections": "You have no collections to ask about yet."
   },
   "connectorTypes": {
     "slack": "Slack",

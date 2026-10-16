@@ -683,7 +683,8 @@
     "chatWithSelection": "聊天",
     "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
     "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
-    "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。"
+    "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。",
+    "chatNoCollections": "您还没有可提问的集合。"
   },
   "connectorTypes": {
     "slack": "Slack",
