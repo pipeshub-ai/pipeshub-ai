@@ -8,9 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
+import uuid
 from dataclasses import dataclass, field, replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations, RecordTypes
 from app.modules.code_graph.facts_source import CodeFactsSource
@@ -23,6 +25,9 @@ from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
 from app.modules.code_graph.symbol_index import SymbolIndex, build_symbol_index
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 __all__ = ["CODE_GRAPH_SOURCE", "EdgeBuildAbortedError", "EdgeBuildResult", "build_code_graph_edges"]
 
@@ -78,6 +83,10 @@ _EXTERNAL = ""
 # this many), the store is presumed unavailable rather than a few blobs being
 # missing, and the build stops before touching any edge.
 _MAX_MISSING_FACTS_SHARE = 0.2
+# A build holds every block of the repo in memory (SC-1); past this many it is
+# refused instead of risking the connectors service's memory.
+# shortcut: a ceiling, not a bounded-memory build; phase 2 streams the index.
+MAX_BLOCKS_PER_BUILD = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_BLOCKS", "300000")))
 # A bare name with no import, same-file or module evidence and more definitions
 # than this is left unresolved: a proximity guess among that many is how god
 # nodes form, and scoring every candidate per call made builds quadratic.
@@ -85,6 +94,10 @@ _MAX_HEURISTIC_CANDIDATES = 64
 _MIN_MISSING_FACTS_TO_ABORT = 5
 
 logger = logging.getLogger(__name__)
+
+
+class EdgeBuildTooLargeError(RuntimeError):
+    """The repo has more blocks than one build may load; nothing was read or written."""
 
 
 class EdgeBuildAbortedError(RuntimeError):
@@ -227,6 +240,7 @@ class _Builder:
         self.record_group_id = record_group_id
         self.log = log
         self.result = EdgeBuildResult()
+        self.build_id = uuid.uuid4().hex
         self.edges: dict[tuple[str, str, str], dict] = {}
         self.external_nodes: dict[str, dict] = {}
         # file -> imported module files, the evidence a module-level reference uses
@@ -270,6 +284,7 @@ class _Builder:
             "line": line,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
+            "buildId": self.build_id,
         }
         self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
 
@@ -928,6 +943,7 @@ async def build_code_graph_edges(
     facts_source: CodeFactsSource | None = None,
     dry_run: bool = False,
     log: logging.Logger | None = None,
+    fence: Callable[[], Awaitable[None]] | None = None,
 ) -> EdgeBuildResult:
     """Resolve and write the repo's cross-file edges.
 
@@ -939,10 +955,22 @@ async def build_code_graph_edges(
     their nodes carry only the resident relations. Without one, node facts are
     used as they are, which is complete only for blocks projected before the
     residue change.
+
+    ``fence`` is awaited before every write and raises if this build may no
+    longer write -- its lease was lost and another build may own the repo.
     """
     started = time.monotonic()
     log = log or logger
+    fence = fence or _no_fence
 
+    block_count = await graph_provider.count_nodes_by_filters(
+        collection=CollectionNames.BLOCKS.value,
+        filters={"orgId": org_id, "recordGroupId": record_group_id},
+    )
+    if block_count > MAX_BLOCKS_PER_BUILD:
+        raise EdgeBuildTooLargeError(
+            f"{block_count} blocks is over the {MAX_BLOCKS_PER_BUILD} one build may load"
+        )
     docs = await _scan_blocks(graph_provider, org_id, record_group_id)
     paths, referenced_names = await _scan_file_info(graph_provider, org_id, docs)
     repo_paths = await _scan_repo_paths(graph_provider, org_id, record_group_id)
@@ -982,14 +1010,25 @@ async def build_code_graph_edges(
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
 
     if not dry_run:
-        source_keys = _source_keys_for(index, reresolve)
-        removed = await _delete_previous_edges(graph_provider, org_id, record_group_id, source_keys)
-        builder.result.edges_removed = removed
+        # Write, then delete what this build did not write: deleting first
+        # left readers an empty graph for the length of the writes, and a
+        # failed write left it empty until the next build (R-8).
         for chunk in _chunks(edges):
+            await fence()
             await graph_provider.batch_upsert_record_relations(chunk)
+        source_keys = _source_keys_for(index, reresolve)
+        await fence()
+        removed = await _delete_previous_edges(
+            graph_provider, org_id, record_group_id, source_keys, builder.build_id
+        )
+        builder.result.edges_removed = removed
     builder.result.edges_written = len(edges)
     builder.result.duration_s = time.monotonic() - started
     return builder.result
+
+
+async def _no_fence() -> None:
+    return None
 
 
 def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list[dict]:
@@ -1147,8 +1186,10 @@ async def _records_pointing_into(
 
 
 async def _delete_previous_edges(graph_provider: IGraphDBProvider, org_id: str,
-                                 record_group_id: str, source_keys: list[str]) -> int:
-    """Remove prior code_graph edges sourced by the files being re-resolved.
+                                 record_group_id: str, source_keys: list[str],
+                                 build_id: str) -> int:
+    """Remove the code_graph edges sourced by the re-resolved files that this
+    build (``build_id``) did not write.
 
     Scoped by `_from`: an unscoped delete would erase edges belonging to files
     this run is not going to rebuild.
@@ -1166,5 +1207,6 @@ async def _delete_previous_edges(graph_provider: IGraphDBProvider, org_id: str,
                 "orgId": org_id,
                 "recordGroupId": record_group_id,
             },
+            exclude={"buildId": build_id},
         )
     return removed

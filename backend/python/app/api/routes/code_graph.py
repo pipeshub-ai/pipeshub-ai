@@ -28,6 +28,7 @@ from app.agents.actions.code_graph.repos import (
 )
 from app.api.middlewares.auth import require_scopes
 from app.config.constants.service import OAuthScopes
+from app.modules.code_graph.build_state import BuildStateStore, graph_status
 from app.modules.transformers.blob_storage import BlobStorage
 
 if TYPE_CHECKING:
@@ -187,10 +188,27 @@ async def code_repos(request: Request) -> JSONResponse:
         container.logger().exception("code-graph repo listing failed")
         return _response({"error": "graph unavailable"}, 503)
     names = [r.name for r in repos]
-    return _response({"repos": [
-        {"repo": r.qualified if names.count(r.name) > 1 else r.name, "source": r.connector_name}
-        for r in repos
-    ]})
+    store = BuildStateStore(graph_provider)
+    out = []
+    for r in repos:
+        entry: dict[str, Any] = {
+            "repo": r.qualified if names.count(r.name) > 1 else r.name,
+            "source": r.connector_name,
+        }
+        try:
+            state = await store.read(org_id, r.group_id)
+        except Exception:
+            container.logger().warning("code-graph build state unreadable for %s", r.group_id,
+                                       exc_info=True)
+            entry["graph_status"] = "unknown"
+        else:
+            entry["graph_status"] = graph_status(state).value
+            if state is not None and state.last_build is not None:
+                entry["last_built_at"] = state.last_build
+            if state is not None and state.last_error:
+                entry["last_error"] = state.last_error
+        out.append(entry)
+    return _response({"repos": out})
 
 
 @router.post("/query")

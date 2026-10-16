@@ -23,6 +23,20 @@ def neo4j_provider() -> Neo4jProvider:
     return provider
 
 
+class TestDeleteEdgesBySourceKeys:
+    @pytest.mark.asyncio
+    async def test_exclude_keeps_matching_edges_and_drops_unstamped_ones(self, neo4j_provider) -> None:
+        neo4j_provider.client.execute_query = AsyncMock(return_value=[{"deleted": 2}])
+
+        await neo4j_provider.delete_edges_by_source_keys(
+            ["blocks/b1"], "recordRelations", filters={"source": "code_graph"}, exclude={"buildId": "new"},
+        )
+
+        query = neo4j_provider.client.execute_query.call_args.args[0]
+        assert "(rel.buildId IS NULL OR rel.buildId <> $exclude_buildId)" in query
+        assert neo4j_provider.client.execute_query.call_args.kwargs["parameters"]["exclude_buildId"] == "new"
+
+
 class TestDeleteBlocksForRecords:
     @pytest.mark.asyncio
     async def test_empty_record_ids_is_a_noop(self, neo4j_provider) -> None:

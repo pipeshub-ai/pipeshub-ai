@@ -1597,8 +1597,13 @@ class IGraphDBProvider(ABC):
         edge_collection: str,
         filters: dict[str, Any] | None = None,
         transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
     ) -> int:
-        """Delete filtered edges originating from any requested node."""
+        """Delete filtered edges originating from any requested node.
+
+        ``exclude`` keeps the edges whose field holds that value; an edge
+        without the field is not kept.
+        """
         pass
 
     @abstractmethod
@@ -4421,6 +4426,30 @@ class IGraphDBProvider(ABC):
 
         Returns:
             bool: True if successful, False otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set ``nameFolded`` (lower-cased ``name``) on up to ``limit`` code blocks lacking it.
+
+        Returns how many were updated; 0 means none is left.
+        """
+        pass
+
+    @abstractmethod
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Update an existing sync point only if every ``expected`` field still holds its value.
+
+        A compare-and-set: ``None`` matches a missing or null field. Returns
+        whether the update was applied; False when the sync point is missing
+        or any expected field has changed since the caller read it.
         """
         pass
 

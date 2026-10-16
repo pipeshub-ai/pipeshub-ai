@@ -1050,6 +1050,12 @@ class Neo4jProvider(IGraphDBProvider):
             "FOR (n:Block) ON (n.recordId)"
         )
 
+        # COMPOSITE: exact bare-name lookup within a connector, case-insensitive (SC-6).
+        indexes.append(
+            "CREATE INDEX block_org_connector_name_folded IF NOT EXISTS "
+            "FOR (n:Block) ON (n.orgId, n.connectorId, n.nameFolded)"
+        )
+
         # SINGLE: connectorId — connector-instance deletion pages by this alone.
         # Without it every batch is a full Block label scan.
         indexes.append(
@@ -3102,6 +3108,7 @@ class Neo4jProvider(IGraphDBProvider):
         edge_collection: str,
         filters: dict[str, Any] | None = None,
         transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
     ) -> int:
         if not source_keys:
             return 0
@@ -3109,6 +3116,10 @@ class Neo4jProvider(IGraphDBProvider):
             relationship = edge_collection_to_relationship(edge_collection)
             source_ids = sorted({key.split("/", 1)[-1] for key in source_keys})
             conditions, parameters = self._filter_conditions(filters, var="rel")
+            for field, value in (exclude or {}).items():
+                # `<>` on a missing property is null, which would keep the edge.
+                conditions.append(f"(rel.{field} IS NULL OR rel.{field} <> $exclude_{field})")
+                parameters[f"exclude_{field}"] = value
             parameters["source_ids"] = source_ids
             where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
             query = f"""
@@ -8041,7 +8052,9 @@ class Neo4jProvider(IGraphDBProvider):
                     "to_key": to_key,
                     "relationshipType": relationship_type,
                     "constraintName": constraint_name,
-                    "props": props
+                    "props": props,
+                    # An edge written again keeps when it was first created.
+                    "updateProps": {k: v for k, v in props.items() if k != "createdAtTimestamp"},
                 })
 
             # An endpoint is a Record or a Block, and the id indexes are
@@ -8057,7 +8070,8 @@ class Neo4jProvider(IGraphDBProvider):
             WITH edge, from, coalesce(toRecord, toBlock) AS to
             WHERE from IS NOT NULL AND to IS NOT NULL
             MERGE (from)-[r:RECORD_RELATION {relationshipType: edge.relationshipType, constraintName: edge.constraintName}]->(to)
-            SET r += edge.props
+            ON CREATE SET r += edge.props
+            ON MATCH SET r += edge.updateProps
             RETURN count(r) AS upserted
             """
 
@@ -8675,6 +8689,54 @@ class Neo4jProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Upsert sync point failed: {str(e)}")
             raise
+
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set nameFolded on blocks projected before it existed; see the interface."""
+        results = await self.client.execute_query(
+            """
+            MATCH (n:Block)
+            WHERE n.nameFolded IS NULL AND n.name IS NOT NULL
+            WITH n LIMIT $limit
+            SET n.nameFolded = toLower(n.name)
+            RETURN count(n) AS updated
+            """,
+            {"limit": limit},
+        )
+        return int(results[0].get("updated") or 0) if results else 0
+
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Compare-and-set update of a sync point; see the interface."""
+        label = collection_to_label(collection)
+        conditions = []
+        parameters: dict[str, Any] = {"key": sync_point_key}
+        for i, (field, value) in enumerate(expected.items()):
+            parameters[f"f{i}"] = field
+            if value is None:
+                conditions.append(f"sp[$f{i}] IS NULL")
+            else:
+                conditions.append(f"sp[$f{i}] = $v{i}")
+                parameters[f"v{i}"] = value
+        parameters["data"] = {
+            **sync_point_data,
+            "syncPointKey": sync_point_key,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        query = f"""
+        MATCH (sp:{label} {{syncPointKey: $key}})
+        {where}
+        WITH sp LIMIT 1
+        SET sp += $data
+        RETURN count(sp) AS updated
+        """
+        results = await self.client.execute_query(query, parameters)
+        return bool(results and results[0].get("updated"))
 
     async def remove_sync_point(
         self,
@@ -15016,6 +15078,8 @@ class Neo4jProvider(IGraphDBProvider):
                 # time indexing handles this event the record is gone.
                 "recordGroupId": record.get("recordGroupId"),
                 "connectorName": record.get("connectorName"),
+                # Only a deleted CODE_FILE changes the graph, not an issue or PR.
+                "recordType": record.get("recordType"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")

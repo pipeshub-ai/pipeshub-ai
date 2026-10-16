@@ -88,3 +88,30 @@ async def test_a_failed_block_scan_stops_the_build_with_the_graph_untouched(grap
     with pytest.raises(RuntimeError, match="graph unavailable"):
         await _build(graph)
     assert _calls(graph) == ["function:foo"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_write_keeps_the_previous_edges(graph, index_file) -> None:
+    """Edges were deleted before the new ones were written, so readers saw an
+    empty graph during every build, and after a failed write until the next (R-8)."""
+    await _good_build(graph, index_file)
+
+    async def _fail(edges, transaction=None) -> bool:
+        raise ConnectionError("graph unavailable")
+    graph.batch_upsert_record_relations = _fail
+
+    with pytest.raises(ConnectionError):
+        await _build(graph)
+    assert _calls(graph) == ["function:foo"]
+
+
+@pytest.mark.asyncio
+async def test_a_rebuild_drops_only_the_edges_it_no_longer_finds(graph, index_file) -> None:
+    await _good_build(graph, index_file)
+    await index_file("recA", "src/a.py", b"from .b import foo\n\n\ndef run():\n    return 1\n", "python")
+
+    result = await _build(graph)
+
+    assert _calls(graph) == []
+    assert result.edges_removed == 1
+    assert len({e["buildId"] for e in graph.code_edges()}) == 1

@@ -32,9 +32,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.config.configuration_service import ConfigurationService  # noqa: E402
-from app.config.constants.arangodb import CollectionNames  # noqa: E402
 from app.config.providers.encrypted_store import EncryptedKeyValueStore  # noqa: E402
 from app.modules.code_graph import edge_build_trigger  # noqa: E402
+from app.modules.code_graph.build_state import BuildStateStore  # noqa: E402
 from app.modules.code_graph.edge_builder import (  # noqa: E402
     build_code_graph_edges,
 )
@@ -43,36 +43,12 @@ from app.modules.transformers.blob_storage import BlobStorage  # noqa: E402
 from app.services.graph_db.graph_db_provider_factory import (  # noqa: E402
     GraphDBProviderFactory,
 )
-from app.services.graph_db.interface.graph_db_provider import (  # noqa: E402
-    IGraphDBProvider,
-)
 from app.services.vector_db.rebuild_state import (  # noqa: E402
     redis_from_config_service,
 )
 from app.utils.logger import create_logger  # noqa: E402
 
 logger = create_logger("build_code_graph_edges")
-
-
-async def _stamp_last_build(provider: IGraphDBProvider, org_id: str,
-                            connector_id: str, record_group_id: str, at_ms: int,
-                            started_request_id: str | None) -> None:
-    """Advance the marker only on success -- a failed run must not skip files.
-
-    ``at_ms`` is when this run started; a request made after it stays owed.
-    """
-    state = await edge_build_trigger.read_build_state(provider, org_id, record_group_id)
-    await provider.upsert_sync_point(
-        sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
-        sync_point_data={
-            "orgId": org_id,
-            "connectorId": connector_id,
-            "syncDataPointType": "codeEdgeBuild",
-            "lastEdgeBuildAt": at_ms,
-            "edgeBuildPending": edge_build_trigger.still_owed(state, at_ms, started_request_id),
-        },
-        collection=CollectionNames.SYNC_POINTS.value,
-    )
 
 
 async def run(args: argparse.Namespace) -> int:
@@ -118,8 +94,11 @@ async def run(args: argparse.Namespace) -> int:
         # Read before the watermark query, as the automatic build does: a record
         # updated in between would otherwise sit below the next run's `since`.
         started_at_ms = int(time.time() * 1000)
-        start_state = await edge_build_trigger.read_build_state(
-            provider, args.org_id, args.record_group_id
+        store = BuildStateStore(provider, logger)
+        # A dry run writes nothing, its own state included.
+        start_state = (
+            await store.read_or_empty(args.org_id, args.record_group_id) if args.dry_run
+            else await store.begin(args.org_id, args.connector_id, args.record_group_id, lock[1])
         )
 
         touched: set[str] | None = None
@@ -131,6 +110,12 @@ async def run(args: argparse.Namespace) -> int:
                 )
                 if not touched:
                     logger.info("No file changed since the last edge build; nothing to do.")
+                    if not args.dry_run:
+                        await store.settle_built(
+                            args.org_id, args.record_group_id, lease_token=lock[1],
+                            start=start_state, started_at_ms=started_at_ms,
+                            advance_watermark=False, full=False,
+                        )
                     return 0
                 logger.info("Incremental run: %d file(s) changed since last build", len(touched))
             else:
@@ -144,21 +129,24 @@ async def run(args: argparse.Namespace) -> int:
             facts_source=facts_source,
             dry_run=args.dry_run,
             log=logger,
+            fence=lambda: edge_build_trigger.assert_lease_held(redis, *lock),
         )
 
         logger.info("code_graph_edge_build %s", json.dumps(result.as_log_fields()))
         _print_summary(result, dry_run=args.dry_run)
 
-        if not args.dry_run and result.facts_missing:
-            logger.warning(
-                "%d file(s) had no readable facts and kept their old edges; the "
-                "build marker is not advanced so the next run retries them",
-                result.facts_missing,
-            )
-        elif not args.dry_run:
-            await _stamp_last_build(
-                provider, args.org_id, args.connector_id, args.record_group_id, started_at_ms,
-                start_state.request_id,
+        if not args.dry_run:
+            if result.facts_missing:
+                logger.warning(
+                    "%d file(s) had no readable facts and kept their old edges; the "
+                    "build marker is not advanced so the next run retries them",
+                    result.facts_missing,
+                )
+            # Advance the marker only on success -- a failed run must not skip files.
+            await store.settle_built(
+                args.org_id, args.record_group_id, lease_token=lock[1], start=start_state,
+                started_at_ms=started_at_ms, advance_watermark=not result.facts_missing,
+                full=touched is None, result=result,
             )
         return 0
     finally:

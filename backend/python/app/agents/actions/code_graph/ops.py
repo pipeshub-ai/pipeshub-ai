@@ -19,8 +19,10 @@ from app.config.constants.arangodb import CollectionNames, RecordRelations
 from app.modules.parsers.code_parser.lang_config import LANGUAGES
 from app.modules.parsers.code_parser.models import FILLER_KINDS
 
+from .results import touched
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Callable, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,7 @@ __all__ = [
     "CROSS_FILE_RELATIONS",
     "DEFAULT_MAX_DEPTH",
     "DEFAULT_MAX_LINES",
+    "MAX_READ_LINES",
     "DEFAULT_NEIGHBOR_LIMIT",
     "MAX_NEIGHBOUR_DEPTH",
     "MAX_PATH_DEPTH",
@@ -115,6 +118,9 @@ _DEGREE_ROW_LIMIT = 50000
 # it is the hub files an architecture question lands on that overrun it -- which
 # is exactly where an uncapped read costs thousands of tokens of context.
 DEFAULT_MAX_LINES = 600
+# The most one read returns however much is asked for: a model that asks for a
+# whole generated file would otherwise fill its context with it (S-9).
+MAX_READ_LINES = 3000
 # Ceiling on nodes expanded per side, so one hub symbol cannot walk the repo.
 _MAX_VISITED = 4000
 _FRONTIER_LIMIT = 2000
@@ -480,6 +486,30 @@ async def _readable_blocks(
     return out
 
 
+async def _readable_keys(
+    graph_provider: Any, org_id: str, access: RecordAccess, keys: "Iterable[str]",
+) -> set[str]:
+    """The keys among ``keys`` of blocks in this org whose file the caller may read.
+
+    The one check a traversal applies at every hop (S-7): what is reached
+    through a file the caller cannot read, and what is counted, must not
+    depend on that file. Loads only key, record and org.
+    """
+    wanted = sorted({k for k in keys if k})
+    if not wanted:
+        return set()
+    rows = [
+        _unwrap(row) for row in await graph_provider.get_nodes_by_field_in(
+            collection=_BLOCKS, field_name="_key", field_values=wanted,
+            return_fields=["_key", "recordId", "orgId"], raise_on_error=True,
+        ) or []
+    ]
+    rows = [r for r in rows if r.get("orgId") == org_id]
+    readable = await access.readable(r.get("recordId") for r in rows)
+    return {key for r in rows
+            if r.get("recordId") in readable and (key := r.get("_key") or r.get("id"))}
+
+
 async def attach_file_paths(
     graph_provider: Any, org_id: str, blocks: "Iterable[dict[str, Any]]"
 ) -> None:
@@ -509,7 +539,8 @@ def _key_of(block: dict) -> str:
 
 
 async def _degrees(
-    graph_provider: Any, blocks: list[dict], relations: list[str]
+    graph_provider: Any, blocks: list[dict], relations: list[str],
+    org_id: str, access: RecordAccess,
 ) -> tuple[dict[str, int], bool]:
     """How many edges touch each block, in one batched call.
 
@@ -538,12 +569,23 @@ async def _degrees(
     except Exception as exc:
         logger.warning("Degree lookup failed: %s", exc)
         return {}, False
+    rows = list(rows or [])
+    # Only edges to what the caller can read: a count over hidden files says
+    # how much is hidden there (S-7).
+    readable_blocks = await _readable_keys(
+        graph_provider, org_id, access,
+        (r.get("key") for r in rows if r.get("collection") == _BLOCKS),
+    )
+    readable_records = await access.readable(
+        r.get("key") for r in rows if r.get("collection") == _RECORDS
+    )
     counts: Counter = Counter()
-    for row in rows or []:
+    for row in rows:
         anchor = row.get("anchorKey")
-        if anchor:
+        key = row.get("key")
+        if anchor and (key in readable_blocks or key in readable_records):
             counts[anchor] += 1
-    capped = len(rows or []) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
+    capped = len(rows) >= _DEGREE_ROW_LIMIT or len(blocks) > _DEGREE_CANDIDATES
     return dict(counts), capped
 
 
@@ -731,21 +773,32 @@ async def _resolve_anchors_by_name(
     name = _bare_name(qualified_name)
     if not name:
         return []
-    rows = await graph_provider.search_nodes_by_field_terms(
+    folded = name.lower()
+    # Exact and indexed first: the text search below caps an unordered scan of
+    # partial matches, so a common name lost its exact hits past the cap (SC-6).
+    rows = await graph_provider.get_documents_paginated(
         collection=_BLOCKS,
-        field_name="name",
-        terms=[name],
-        filters={"orgId": org_id, "connectorId": connector_id},
         limit=_NAME_CANDIDATE_LIMIT,
+        filters={"orgId": org_id, "connectorId": connector_id, "nameFolded": folded},
+        sort_field="_key",
         raise_on_error=True,
     )
+    if not rows:
+        # Blocks projected before nameFolded existed, until the backfill has run.
+        rows = await graph_provider.search_nodes_by_field_terms(
+            collection=_BLOCKS,
+            field_name="name",
+            terms=[name],
+            filters={"orgId": org_id, "connectorId": connector_id},
+            limit=_NAME_CANDIDATE_LIMIT,
+            raise_on_error=True,
+        )
 
-    folded = name.casefold()
-    # The index scores partial matches, and a walk anchored on a symbol the
-    # caller did not name is worse than admitting the name did not resolve.
+    # The text search scores partial matches, and a walk anchored on a symbol
+    # the caller did not name is worse than admitting the name did not resolve.
     matches = [
         row for row in rows or []
-        if (row.get("name") or "").casefold() == folded
+        if (row.get("name") or "").lower() == folded
         and row.get("orgId") == org_id
         and row.get("connectorId") == connector_id
     ]
@@ -787,6 +840,7 @@ async def _name_candidates(
     connector_id: str,
     org_id: str,
     include_tests: bool,
+    access: RecordAccess,
 ) -> dict[str, Any]:
     """The addresses a bare name matched, instead of a walk of all of them.
 
@@ -802,7 +856,7 @@ async def _name_candidates(
         kept = [a for a in anchors if roles.get(a.get("recordId")) != TEST_ROLE]
         anchors = kept or anchors
 
-    degrees, degree_capped = await _degrees(graph_provider, anchors, relations)
+    degrees, degree_capped = await _degrees(graph_provider, anchors, relations, org_id, access)
     ranked = sorted(
         anchors,
         key=lambda b: (-degrees.get(_key_of(b), 0), b.get("filePath") or ""),
@@ -897,7 +951,7 @@ async def get_neighbour_impl(
     if by_name and len(anchors) > 1:
         return await _name_candidates(
             graph_provider, anchors, relations, qualified_name, direction,
-            connector_id, org_id, include_tests,
+            connector_id, org_id, include_tests, access,
         )
     fanout_capped = len(anchors) > _NEIGHBOUR_FANOUT
     anchors = anchors[:_NEIGHBOUR_FANOUT]
@@ -933,7 +987,7 @@ async def get_neighbour_impl(
             ) or [])
         except Exception as exc:
             logger.exception("Neighbour walk failed")
-            return {"error": f"Failed to walk the code graph: {exc}"}
+            raise RuntimeError("Failed to walk the code graph") from exc
         if len(batch) > row_limit:
             fanout_capped = True
             del batch[row_limit:]
@@ -959,6 +1013,11 @@ async def get_neighbour_impl(
                 visited.add(key)
                 origin_of[key] = origin
                 next_frontier.append(key)
+        # The next hop starts only from what the caller can read: rows reached
+        # through a hidden file would show what that file calls (S-7).
+        if hop < depth and next_frontier:
+            readable_next = await _readable_keys(graph_provider, org_id, access, next_frontier)
+            next_frontier = [k for k in next_frontier if k in readable_next]
         frontier = next_frontier
 
     block_keys = [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
@@ -1019,7 +1078,7 @@ async def get_neighbour_impl(
 
     anchored = ({"symbol": SymbolRef.from_block(anchors[0])} if qualified_name
                 else {"file_path": file_path, "symbols_walked": len(anchor_keys)})
-    result: dict[str, Any] = {
+    result: dict[str, Any] = touched({
         **anchored,
         "connector_id": connector_id,
         **({"coverage": gap} if (gap := coverage_for(anchors)) else {}),
@@ -1033,7 +1092,7 @@ async def get_neighbour_impl(
         # will state a wrong conclusion confidently. A walk that hit its
         # traversal cap is truncated even when every fetched row fits the page.
         "truncated": total > offset + limit or fanout_capped,
-    }
+    }, anchors)
     if fanout_capped:
         result["fanout_capped"] = True
     if total > offset + limit:
@@ -1167,7 +1226,7 @@ async def read_code_impl(
     span = _parse_line_range(lines)
     if lines and span is None:
         return {"error": f"lines must look like '40-80', got {lines!r}"}
-    budget = DEFAULT_MAX_LINES if max_lines is None else max(1, int(max_lines))
+    budget = DEFAULT_MAX_LINES if max_lines is None else max(1, min(int(max_lines), MAX_READ_LINES))
     out = _file_code(record, file_path, connector_id, span, budget)
     names = await repo_names(graph_provider, org_id, [(record_doc or {}).get("recordGroupId")])
     if names:
@@ -1451,19 +1510,23 @@ async def find_symbol_path_impl(
     if start_key == end_key:
         return {"found": True, "hops": []}
 
+    def readable(keys: list[str]) -> Awaitable[set[str]]:
+        return _readable_keys(graph_provider, org_id, access, keys)
+
     edges, capped = await _bfs_edges(
         graph_provider, start_key, end_key, max_depth=max_depth, relations=edge_types,
-        undirected=undirected,
+        undirected=undirected, readable=readable,
     )
     reversed_path = False
     if edges is None and not undirected:
         edges, back_capped = await _bfs_edges(
             graph_provider, end_key, start_key, max_depth=max_depth, relations=edge_types,
+            readable=readable,
         )
         capped = capped or back_capped
         reversed_path = edges is not None
     if edges is None:
-        missed: dict[str, Any] = {"found": False, "hops": []}
+        missed: dict[str, Any] = touched({"found": False, "hops": []}, [start, end])
         if gap := coverage_for([start, end]):
             missed["coverage"] = gap
         if capped:
@@ -1498,7 +1561,9 @@ async def find_symbol_path_impl(
             "explain": _explain_hop(src, dst, edge),
         })
 
-    found: dict[str, Any] = {"found": True, "connector_id": connector_id, "hops": hops}
+    found: dict[str, Any] = touched(
+        {"found": True, "connector_id": connector_id, "hops": hops}, [start, end],
+    )
     if reversed_path:
         found["reversed"] = True
         found["note"] = (
@@ -1518,6 +1583,7 @@ async def _bfs_edges(
     max_depth: int,
     relations: list[str] | None = None,
     undirected: bool = False,
+    readable: Callable[[list[str]], Awaitable[set[str]]] | None = None,
 ) -> tuple[list[dict[str, str]] | None, bool]:
     """Breadth-first search from ``start_key`` towards ``end_key``.
 
@@ -1534,6 +1600,9 @@ async def _bfs_edges(
     Done in Python rather than with a native shortest-path call so it behaves
     identically on Arango and Neo4j, and so each hop keeps the relation type and
     direction a native call would not return.
+
+    ``readable`` keeps the search to blocks the caller may read, so a path
+    through a hidden file neither shows nor hides a readable one (S-7).
 
     Returns ``(edges, capped)``. ``capped`` is set whenever a frontier or row
     cap bit, so the caller can say that an absent path is unproven.
@@ -1566,12 +1635,19 @@ async def _bfs_edges(
         ) or [])
         if len(rows) >= _FRONTIER_LIMIT:
             capped = True
+        allowed = None
+        if readable is not None:
+            allowed = await readable(
+                [r["key"] for r in rows if r.get("collection") == _BLOCKS and r.get("key")]
+            )
 
         next_frontier: list[tuple[str, int]] = []
         for row in rows:
             if row.get("collection") != _BLOCKS:
                 continue
             key = row.get("key")
+            if allowed is not None and key not in allowed:
+                continue
             anchor = row.get("anchorKey")
             if not key or not anchor:
                 continue

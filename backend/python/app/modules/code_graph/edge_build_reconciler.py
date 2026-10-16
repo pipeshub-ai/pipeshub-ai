@@ -10,12 +10,14 @@ there make a repeat request harmless.
 from __future__ import annotations
 
 import asyncio
+import itertools
 import random
 import time
+from collections import defaultdict
 from typing import TYPE_CHECKING
 
 from app.config.constants.arangodb import EventTypes
-from app.modules.code_graph import edge_build_trigger
+from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:
@@ -25,10 +27,12 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 __all__ = [
+    "FULL_REBUILD_INTERVAL_SECONDS",
     "RECONCILE_INTERVAL_SECONDS",
     "RECONCILE_MAX_STARTS_PER_SWEEP",
     "reconcile_forever",
     "reconcile_once",
+    "request_due_full_rebuilds",
 ]
 
 RECONCILE_INTERVAL_SECONDS = env_seconds(
@@ -37,8 +41,23 @@ RECONCILE_INTERVAL_SECONDS = env_seconds(
 # A full build scans every block of a repo; after a long outage the first
 # sweep would otherwise start one for every repo at once.
 RECONCILE_MAX_STARTS_PER_SWEEP = 5
+# Incremental builds are checked against a full one this often per repo; the
+# full build's removed-edge count is the drift the incremental ones left (R-3).
+FULL_REBUILD_INTERVAL_SECONDS = env_seconds(
+    "CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS", 7 * 24 * 3600.0
+)
 _JITTER_FRACTION = 0.1
 _FIRST_SWEEP_DELAY_SECONDS = (30.0, 90.0)
+
+
+def _round_robin_by_org(builds: list[PendingBuild]) -> list[PendingBuild]:
+    """Oldest-due first within an org, one org at a time, so one org's
+    backlog cannot take every start of a sweep."""
+    by_org: dict[str, list[PendingBuild]] = defaultdict(list)
+    for build in sorted(builds, key=lambda b: (b.state.next_attempt_at or 0,
+                                               b.state.requested_at or 0)):
+        by_org[build.org_id].append(build)
+    return [b for group in itertools.zip_longest(*by_org.values()) for b in group if b]
 
 
 async def reconcile_once(
@@ -52,14 +71,14 @@ async def reconcile_once(
     """Start builds for repos still owed one. Returns how many were started.
 
     A request younger than the dedupe window still has its message in flight
-    and is left alone. ``process_event`` returning False means another build
-    holds the repo's lock, on this replica or another, so it is skipped too.
+    and is left alone, as is a retry whose backoff has not run out and a repo
+    whose builds failed for good. ``process_event`` returning False means another
+    build holds the repo's lock, on this replica or another, so it is skipped too.
     """
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    owed = await BuildStateStore(graph_provider, log).all(owed_only=True)
     started = 0
-    for pending in await edge_build_trigger.pending_builds(graph_provider):
-        if not edge_build_trigger.request_is_stale(pending.state, now_ms):
-            continue
+    for pending in _round_robin_by_org([b for b in owed if is_due(b.state, now_ms)]):
         try:
             handled = await event_service.process_event(
                 EventTypes.BUILD_CODE_EDGES.value,
@@ -89,6 +108,35 @@ async def reconcile_once(
     return started
 
 
+async def request_due_full_rebuilds(
+    graph_provider: IGraphDBProvider,
+    log: Logger,
+    *,
+    now_ms: int | None = None,
+    interval_s: float = FULL_REBUILD_INTERVAL_SECONDS,
+) -> int:
+    """Owe a full rebuild for every built repo whose last full one is older than
+    ``interval_s``. The owed builds are started by later sweeps, within their limit.
+    """
+    now_ms = int(time.time() * 1000) if now_ms is None else now_ms
+    store = BuildStateStore(graph_provider, log)
+    requested = 0
+    for build in await store.all():
+        state = build.state
+        if state.pending or state.last_build is None:
+            continue
+        if state.last_full_build is not None and \
+                now_ms - state.last_full_build < interval_s * 1000:
+            continue
+        await store.request_full(build.org_id, build.connector_id, build.record_group_id)
+        await store.mark_requested(build.org_id, build.connector_id, build.record_group_id,
+                                   now_ms)
+        requested += 1
+    if requested:
+        log.info("Requested scheduled full code edge rebuilds for %d repo(s)", requested)
+    return requested
+
+
 async def reconcile_forever(
     graph_provider: IGraphDBProvider,
     event_service: CodeGraphEventService,
@@ -104,6 +152,7 @@ async def reconcile_forever(
     await asyncio.sleep(random.uniform(*_FIRST_SWEEP_DELAY_SECONDS))
     while True:
         try:
+            await request_due_full_rebuilds(graph_provider, log)
             await reconcile_once(graph_provider, event_service, log)
         except asyncio.CancelledError:
             raise

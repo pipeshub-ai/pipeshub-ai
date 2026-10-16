@@ -132,6 +132,10 @@ def serialize_block_for_graph(
         "recordGroupId": ctx.record_group_id,
         "connectorId": ctx.connector_id,
         "name": item.name,
+        # What a bare-name lookup matches on, exactly and through an index (SC-6).
+        # lower(), not casefold(): it must equal the databases' LOWER/toLower,
+        # which the backfill uses.
+        "nameFolded": item.name.lower() if item.name else None,
         "index": item.index,
         "isBlockGroup": is_block_group,
         "isExternal": False,

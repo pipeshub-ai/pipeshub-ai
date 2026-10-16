@@ -130,7 +130,7 @@ def test_the_validator_is_live() -> None:
 
 _OPTIONAL_KEYS = (
     "subType", "kind", "qualifiedName", "startLine", "endLine",
-    "language", "pendingEdges", "typeTable", "referencedNames",
+    "language", "pendingEdges", "typeTable", "referencedNames", "nameFolded",
 )
 
 
@@ -150,6 +150,14 @@ async def test_empty_optional_fields_are_written_as_null_not_omitted() -> None:
     assert any(doc["pendingEdges"] is None for doc in docs), (
         "the fixture must contain a symbol with no cross-file references"
     )
+
+
+@pytest.mark.asyncio
+async def test_every_named_block_carries_its_lowercased_name() -> None:
+    """What the exact bare-name lookup and its index match on (SC-6)."""
+    docs, _ = await _project(_PYTHON, "client.py", "python")
+    assert all(doc["nameFolded"] == (doc["name"].lower() if doc["name"] else None)
+               for doc in docs)
 
 
 @pytest.mark.asyncio

@@ -996,6 +996,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.error(f"❌ Failed to start code edge build reconciler: {str(e)}", exc_info=True)
             _start_retrying("code_edge_reconciler", start_reconciler, logger, e)
 
+        # Last: a large install takes a while, and lookups fall back meanwhile.
+        try:
+            from app.migrations.code_block_name_folded_migration import (
+                run_code_block_name_folded_backfill,
+            )
+
+            await run_code_block_name_folded_backfill(
+                app_container.config_service(), graph_provider, logger
+            )
+        except Exception as e:
+            logger.error(f"❌ Code block nameFolded backfill failed: {e}", exc_info=True)
+
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 

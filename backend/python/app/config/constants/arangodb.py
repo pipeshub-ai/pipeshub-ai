@@ -348,6 +348,13 @@ class ExtensionTypes(Enum):
     DART = "dart"
     SH = "sh"
     BASH = "bash"
+    PYI = "pyi"
+    MTS = "mts"
+    CTS = "cts"
+    SCALA = "scala"
+    GROOVY = "groovy"
+    GRADLE = "gradle"
+    LUA = "lua"
     HTM = "htm"
     BLOCKS = "blocks"
     JSON = "json"
@@ -466,6 +473,15 @@ CODE_FILE_EXTENSION_VALUES = frozenset({
     ExtensionTypes.DART.value,
     ExtensionTypes.SH.value,
     ExtensionTypes.BASH.value,
+    # Parsed by the code parser too; test_code_file_extensions keeps this list
+    # a superset of lang_config's, which it had drifted from (P-3).
+    ExtensionTypes.PYI.value,
+    ExtensionTypes.MTS.value,
+    ExtensionTypes.CTS.value,
+    ExtensionTypes.SCALA.value,
+    ExtensionTypes.GROOVY.value,
+    ExtensionTypes.GRADLE.value,
+    ExtensionTypes.LUA.value,
 })
 
 # MIME type mapping for common file extensions

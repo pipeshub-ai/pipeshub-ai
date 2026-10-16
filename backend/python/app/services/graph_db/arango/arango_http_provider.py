@@ -1151,6 +1151,13 @@ class ArangoHTTPProvider(IGraphDBProvider):
             ["orgId", "name"],
         )
 
+        # COMPOSITE: exact bare-name lookup within a connector, case-insensitive
+        # (SC-6). _key trailing serves the deterministic page order.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.BLOCKS.value,
+            ["orgId", "connectorId", "nameFolded", "_key"],
+        )
+
         # SINGLE: connector-scoped block delete (delete_blocks_by_connector_id),
         # which runs inside the connector-deletion transaction.
         await self.http_client.ensure_persistent_index(
@@ -3063,7 +3070,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
             FOR edge IN @edges
                 UPSERT { _from: edge._from, _to: edge._to, relationshipType: edge.relationshipType, constraintName: edge.constraintName }
                 INSERT edge
-                UPDATE edge
+                UPDATE UNSET(edge, "createdAtTimestamp")
                 IN @@collection
                 RETURN NEW
             """
@@ -3868,6 +3875,7 @@ class ArangoHTTPProvider(IGraphDBProvider):
         edge_collection: str,
         filters: dict[str, Any] | None = None,
         transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
     ) -> int:
         if not source_keys:
             return 0
@@ -3877,6 +3885,10 @@ class ArangoHTTPProvider(IGraphDBProvider):
         for field, value in filters.items():
             parameter = f"filter_{field}"
             conditions.append(f"edge.{field} == @{parameter}")
+            bind_vars[parameter] = value
+        for field, value in (exclude or {}).items():
+            parameter = f"exclude_{field}"
+            conditions.append(f"edge.{field} != @{parameter}")
             bind_vars[parameter] = value
         query = f"""
         FOR edge IN {edge_collection}
@@ -8747,6 +8759,50 @@ class ArangoHTTPProvider(IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"❌ Upsert sync point failed: {str(e)}")
             raise
+
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set nameFolded on blocks projected before it existed; see the interface."""
+        query = """
+        FOR b IN @@blocks
+            FILTER b.nameFolded == null AND b.name != null
+            LIMIT @limit
+            UPDATE b WITH { nameFolded: LOWER(b.name) } IN @@blocks
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"@blocks": CollectionNames.BLOCKS.value, "limit": limit}
+        )
+        return len(result or [])
+
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Compare-and-set update of a sync point; see the interface."""
+        conditions = []
+        bind_vars: dict[str, Any] = {"@collection": collection, "key": sync_point_key}
+        for i, (field, value) in enumerate(expected.items()):
+            # == null also matches a missing attribute, which is what None means here.
+            conditions.append(f"doc[@f{i}] == @v{i}")
+            bind_vars[f"f{i}"] = field
+            bind_vars[f"v{i}"] = value
+        bind_vars["data"] = {
+            **sync_point_data,
+            "syncPointKey": sync_point_key,
+            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+        }
+        query = f"""
+        FOR doc IN @@collection
+            FILTER doc.syncPointKey == @key {"".join(f" AND {c}" for c in conditions)}
+            LIMIT 1
+            UPDATE doc WITH @data IN @@collection
+            RETURN 1
+        """
+        result = await self.http_client.execute_aql(query, bind_vars)
+        return bool(result)
 
     async def remove_sync_point(
         self,
@@ -14128,6 +14184,8 @@ class ArangoHTTPProvider(IGraphDBProvider):
                 # time indexing handles this event the record is gone.
                 "recordGroupId": record.get("recordGroupId"),
                 "connectorName": record.get("connectorName"),
+                # Only a deleted CODE_FILE changes the graph, not an issue or PR.
+                "recordType": record.get("recordType"),
             }
         except Exception as e:
             self.logger.error(f"❌ Failed to create deleted record event payload: {str(e)}")

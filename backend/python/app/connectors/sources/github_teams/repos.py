@@ -77,7 +77,6 @@ from app.modules.parsers.code_parser.gitattributes import (
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
 from app.services.graph_db.common.record_visibility import RecordVisibility
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -958,11 +957,6 @@ class ReposSync:
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
             weburl=f"{repo.html_url}/blob/{repo.default_branch}/{path}",
-            # Must be passed: the model's default is evaluated once at import,
-            # so every file would share one frozen time and a content change
-            # would never pass the code edge build's `updatedAtTimestamp`
-            # watermark, leaving the file's old edges in place.
-            updated_at=get_epoch_timestamp_in_ms(),
         )
         if not code_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value

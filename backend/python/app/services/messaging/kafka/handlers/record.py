@@ -45,6 +45,7 @@ from app.modules.indexing.connector_off_events import (
     resuming_enrichment as record_resuming_enrichment,
 )
 from app.modules.code_graph import edge_build_trigger
+from app.modules.code_graph.build_state import BuildStateStore, request_is_stale
 from app.modules.indexing.duplicate_reconcile import DuplicateReconciler
 from app.modules.indexing.rate_limit_deferral import (
     cleared_deferral,
@@ -759,54 +760,31 @@ class RecordEventHandler(BaseEventService):
         self, org_id: str, connector_id: str, record_group_id: str, *, full: bool = False
     ) -> None:
         graph_provider = self.event_processor.graph_provider
-        sync_point_key = edge_build_trigger.sync_point_key_for(record_group_id)
+        store = BuildStateStore(graph_provider, self.logger)
         if full:
             # Before the drain check: the build this owes is the one that runs
             # when the repo's other records finish, which asks only for an
             # incremental one.
-            await graph_provider.upsert_sync_point(
-                sync_point_key=sync_point_key,
-                sync_point_data={
-                    "orgId": org_id,
-                    "connectorId": connector_id,
-                    "syncDataPointType": "codeEdgeBuild",
-                    "edgeBuildFullRequestId": edge_build_trigger.new_request_id(),
-                },
-                collection=CollectionNames.SYNC_POINTS.value,
-            )
+            await store.request_full(org_id, connector_id, record_group_id)
         if await edge_build_trigger.group_has_unfinished_records(
             graph_provider, org_id, record_group_id
         ):
             return
 
-        state = await edge_build_trigger.read_build_state(
-            graph_provider, org_id, record_group_id
-        )
+        state = await store.read_or_empty(org_id, record_group_id)
         now_ms = int(time.time() * 1000)
         # The mark comes first and is written every time: only the publish is
         # deduplicated. A request inside the dedupe window, or one made while
         # Redis is down, used to leave nothing behind, and the reconciler only
         # sweeps repos carrying this mark. The fresh request id is what tells a
         # build that is already running that it was asked again.
-        mark = {
-            "orgId": org_id,
-            "connectorId": connector_id,
-            "syncDataPointType": "codeEdgeBuild",
-            "edgeBuildPending": True,
-            "edgeBuildRequestedAt": now_ms,
-            "edgeBuildRequestId": edge_build_trigger.new_request_id(),
-        }
-        await graph_provider.upsert_sync_point(
-            sync_point_key=sync_point_key,
-            sync_point_data=mark,
-            collection=CollectionNames.SYNC_POINTS.value,
-        )
+        await store.mark_requested(org_id, connector_id, record_group_id, now_ms)
         redis = await self._redis_client()
         # Only a pending request older than the window, presumed lost, gets
         # past a lost claim.
         if not await edge_build_trigger.claim_publish(
             redis, org_id, record_group_id
-        ) and not edge_build_trigger.request_is_stale(state, now_ms):
+        ) and not request_is_stale(state, now_ms):
             return
         await self._publish_code_edges_event(
             org_id=org_id,

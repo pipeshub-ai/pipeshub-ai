@@ -516,6 +516,21 @@ class TestBatchCreateEdges:
             )
 
 
+class TestDeleteEdgesBySourceKeys:
+    @pytest.mark.asyncio
+    async def test_exclude_keeps_matching_edges(self, connected_provider: ArangoHTTPProvider) -> None:
+        connected_provider.http_client.execute_aql.return_value = [1, 1]
+
+        removed = await connected_provider.delete_edges_by_source_keys(
+            ["blocks/b1"], "recordRelations", filters={"source": "code_graph"}, exclude={"buildId": "new"},
+        )
+
+        call = connected_provider.http_client.execute_aql.await_args
+        assert "edge.buildId != @exclude_buildId" in call.args[0]
+        assert call.kwargs["bind_vars"]["exclude_buildId"] == "new"
+        assert removed == 2
+
+
 class TestCreateEdgesIfAbsent:
     """Create-only: an edge that is already there is left as it is."""
 
@@ -5177,7 +5192,7 @@ class TestEnsureIndexes:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 60
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 61
 
     @pytest.mark.asyncio
     async def test_registers_the_purge_walk_index_by_name(self, connected_provider) -> None:
@@ -5216,6 +5231,7 @@ class TestEnsureIndexes:
             ("orgId", "recordId", "qualifiedName"),       # the agent tools' addressing
             ("orgId", "name"),                            # free-text select, repo-agnostic
             ("connectorId",),                             # connector-scoped delete
+            ("orgId", "connectorId", "nameFolded", "_key"),  # exact bare-name lookup (SC-6)
         }
 
         code_files = {
@@ -7570,7 +7586,7 @@ class TestEnsureIndexesExtended:
     async def test_calls_ensure_persistent_index(self, connected_provider):
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.await_count == 60
+        assert connected_provider.http_client.ensure_persistent_index.await_count == 61
 
 
 # ---------------------------------------------------------------------------

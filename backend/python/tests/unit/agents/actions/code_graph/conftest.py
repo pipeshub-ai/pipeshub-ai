@@ -32,6 +32,7 @@ def _block(key, record_id, file_path, symbol_id, name, kind="function"):
         "symbolId": symbol_id,
         "qualifiedName": f"{kind}:{name}",
         "name": name,
+        "nameFolded": name.lower(),
         "kind": kind,
         "startLine": 1,
         "endLine": 5,
@@ -121,6 +122,17 @@ class FakeGraphProvider:
 
     async def get_document(self, document_key, collection, raise_on_error=False):
         return self.records.get(document_key)
+
+    async def get_documents_paginated(self, collection, skip=0, limit=50, filters=None,
+                                      sort_field=None, transaction=None, *,
+                                      raise_on_error=False, after_key=None,
+                                      return_fields=None) -> list[dict]:
+        if collection != BLOCKS:
+            return []
+        rows = sorted((d for d in self.blocks.values()
+                       if all(d.get(k) == v for k, v in (filters or {}).items())),
+                      key=lambda d: d["_key"])
+        return rows[skip:skip + limit]
 
     async def search_nodes_by_field_terms(
         self, collection, field_name, terms, filters=None, limit=400,

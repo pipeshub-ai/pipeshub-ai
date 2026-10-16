@@ -201,7 +201,30 @@ async def test_an_ambiguous_name_is_a_409_listing_the_choices(blobs) -> None:
 
 async def test_repos_route_lists_readable_repos() -> None:
     res = _client(Repos(deny={"rec-shop"})).get("/api/v1/code-graph/repos")
-    assert res.json() == {"repos": [{"repo": "acme/admin", "source": "GitHub"}]}
+    assert res.json() == {"repos": [
+        {"repo": "acme/admin", "source": "GitHub", "graph_status": "never_built"},
+    ]}
+
+
+async def test_repos_route_reports_each_repos_graph_status() -> None:
+    """Built, pending or failed is visible per repo (O-3)."""
+    class Built(Repos):
+        async def get_nodes_by_filters(self, collection, filters, return_fields=None,
+                                       transaction=None, raise_on_error=False) -> list[dict]:
+            if collection == "syncPoints":
+                failed = filters.get("syncPointKey", "").startswith("g-admin-code")
+                return [{"lastEdgeBuildAt": 1700, "edgeBuildStatus":
+                         "failed" if failed else "ready",
+                         "edgeBuildLastError": "boom" if failed else None}]
+            return await super().get_nodes_by_filters(collection, filters, return_fields,
+                                                      transaction, raise_on_error)
+
+    res = _client(Built()).get("/api/v1/code-graph/repos")
+    by_repo = {r["repo"]: r for r in res.json()["repos"]}
+    assert by_repo["acme/shop"]["graph_status"] == "ready"
+    assert by_repo["acme/shop"]["last_built_at"] == 1700
+    assert by_repo["acme/admin"]["graph_status"] == "failed"
+    assert by_repo["acme/admin"]["last_error"] == "boom"
 
 
 async def test_an_oauth_token_without_connector_read_is_refused() -> None:

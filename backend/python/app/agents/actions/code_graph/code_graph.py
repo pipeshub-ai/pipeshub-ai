@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import TYPE_CHECKING, Any
+from uuid import uuid4
 
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
@@ -47,11 +48,13 @@ from .ops import (
     get_neighbour_impl,
     path_for_record,
     read_code_impl,
+    repo_names,
 )
 from .query import (
     DEFAULT_QUERY_LIMIT,
     query_code_graph_impl,
 )
+from .results import attach_graph_status, without_marker
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -160,16 +163,18 @@ class CodeGraph:
         self._org_id: str = state.get("org_id", "")
         self._user_id: str = state.get("user_id", "")
         self._blob_store = state.get("blob_store")
+        self._scope_unknown = False
 
         try:
             from app.agents.actions.knowledge_graph.ops.scope import derive_scope
             self._allowed_connector_ids: tuple[str, ...] = tuple(derive_scope(state).app_ids)
         except Exception:
-            # Empty means "no connector restriction", the same as a chat-mode
-            # agent that has no knowledge attached; per-record ACLs still gate
-            # every result, so this degrades rather than opening anything up.
+            # Fails closed: an empty list means "every connector", and a scope
+            # the agent was meant to have must not widen because it could not
+            # be read (S-6).
             self._log.warning("codegraph: connector scope derivation failed", exc_info=True)
             self._allowed_connector_ids = ()
+            self._scope_unknown = True
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -186,12 +191,24 @@ class CodeGraph:
         if denied:
             return denied
         try:
-            return await call()
+            result = await call()
         except AmbiguousRepoError as exc:
             return {"error": str(exc), "repos": exc.repos}
-        except Exception as exc:
-            self._log.exception("codegraph %s failed", name)
-            return {"error": f"{failure}: {exc}"}
+        except Exception:
+            # The exception text can name hosts, queries and internal paths;
+            # the model gets an id to quote, the log keeps the detail (S-9).
+            error_id = uuid4().hex[:12]
+            self._log.exception("codegraph %s failed (error id %s)", name, error_id)
+            return {"error": f"{failure} (error id {error_id})"}
+        try:
+            return await attach_graph_status(
+                result, self._graph_provider, self._org_id,
+                lambda groups: repo_names(self._graph_provider, self._org_id, groups),
+            )
+        except Exception:
+            # The answer stands without its status note.
+            self._log.warning("codegraph %s: graph status unavailable", name, exc_info=True)
+            return without_marker(result)
 
     async def _anchor_path(
         self, connector_id: str, file_path: str | None, record_id: str | None,
@@ -246,6 +263,8 @@ class CodeGraph:
         return resolved, (record or {}).get("recordGroupId") or repo, None
 
     def _in_scope(self, connector_id: str) -> dict[str, Any] | None:
+        if self._scope_unknown:
+            return {"error": "This agent's knowledge sources could not be read; try again."}
         if self._allowed_connector_ids and connector_id not in self._allowed_connector_ids:
             return {"error": (
                 f"connector_id {connector_id!r} is not one this agent can read. "

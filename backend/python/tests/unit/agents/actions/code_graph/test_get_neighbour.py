@@ -499,6 +499,30 @@ class TestNameOnlyAnchor:
         assert result["neighbors"] == []
 
     @pytest.mark.asyncio
+    async def test_an_exact_name_is_found_past_the_text_search_cap(self, graph) -> None:
+        """The capped text search returned partial matches first, so a common
+        name's exact hits fell off the end (SC-6). The exact lookup has no such cap."""
+        for i in range(500):
+            key = f"k_noise_{i}"
+            graph.blocks[key] = {**graph.blocks["k_caller"], "_key": key,
+                                 "name": f"caller_{i}", "nameFolded": f"caller_{i}",
+                                 "qualifiedName": f"function:caller_{i}"}
+
+        async def capped_text_search(*_args, **_kwargs) -> list[dict]:
+            raise AssertionError("an exact hit must not reach the text search")
+
+        graph.search_nodes_by_field_terms = capped_text_search
+        result = await self._by_name(graph, "Caller", direction="outbound")
+        assert result["symbol"]["qualified_name"] == "function:caller"
+
+    @pytest.mark.asyncio
+    async def test_blocks_from_before_name_folded_still_resolve(self, graph) -> None:
+        for block in graph.blocks.values():
+            block.pop("nameFolded", None)
+        result = await self._by_name(graph, "caller", direction="outbound")
+        assert result["symbol"]["qualified_name"] == "function:caller"
+
+    @pytest.mark.asyncio
     async def test_no_anchor_at_all_is_rejected(self, graph) -> None:
         result = await get_neighbour_impl(
             graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,

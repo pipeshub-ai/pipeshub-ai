@@ -726,6 +726,7 @@ block_schema = {
             "filePath": {"type": ["string", "null"]},
             "qualifiedName": {"type": ["string", "null"]},
             "name": {"type": ["string", "null"]},
+            "nameFolded": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
             "isBlockGroup": {"type": "boolean"},

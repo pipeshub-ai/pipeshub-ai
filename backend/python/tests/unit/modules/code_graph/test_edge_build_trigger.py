@@ -22,6 +22,17 @@ def _record(**overrides) -> dict:
 
 
 class TestPublishableScope:
+    @pytest.mark.parametrize("record_type", ["TICKET", "PULL_REQUEST", "FILE"])
+    def test_an_issue_or_merge_request_is_not_code(self, record_type) -> None:
+        """Same connector, its own group, no blocks: finishing one asked for an empty build (O-8)."""
+        assert not edge_build_trigger.is_code_record(_record(recordType=record_type))
+        assert edge_build_trigger.publishable_scope(_record(recordType=record_type)) is None
+
+    def test_a_code_file_and_a_payload_without_a_type_are_code(self) -> None:
+        assert edge_build_trigger.is_code_record(_record(recordType="CODE_FILE"))
+        # Delete events published before they carried recordType.
+        assert edge_build_trigger.is_code_record(_record())
+
     def test_completed_code_record_yields_its_scope(self) -> None:
         assert edge_build_trigger.publishable_scope(_record()) == (
             "org-1",
@@ -100,67 +111,6 @@ class TestGroupHasUnfinishedRecords:
         }
 
 
-class TestReadBuildState:
-    @pytest.mark.asyncio
-    async def test_no_sync_point_means_never_built_and_nothing_owed(self) -> None:
-        graph_provider = MagicMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[])
-
-        assert await edge_build_trigger.read_build_state(
-            graph_provider, "org-1", "repo-1"
-        ) == (None, False, None, None, None)
-
-    @pytest.mark.asyncio
-    async def test_reads_every_field_off_the_sync_point(self) -> None:
-        graph_provider = MagicMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{
-            "lastEdgeBuildAt": 1700.0, "edgeBuildPending": True,
-            "edgeBuildRequestedAt": 1800,
-        }])
-
-        state = await edge_build_trigger.read_build_state(graph_provider, "org-1", "repo-1")
-        assert state == (1700, True, 1800, None, None)
-        assert state.requested_at == 1800
-
-        kwargs = graph_provider.get_nodes_by_filters.await_args.kwargs
-        assert kwargs["filters"]["syncPointKey"] == "repo-1/code-edge-build"
-
-    @pytest.mark.asyncio
-    async def test_unusable_timestamp_reads_as_never_built(self) -> None:
-        graph_provider = MagicMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(
-            return_value=[{"lastEdgeBuildAt": "not-a-number", "edgeBuildRequestedAt": True}]
-        )
-
-        assert await edge_build_trigger.read_build_state(
-            graph_provider, "org-1", "repo-1"
-        ) == (None, False, None, None, None)
-
-
-class TestFullBuildRequest:
-    @pytest.mark.asyncio
-    async def test_reads_the_full_build_request(self) -> None:
-        graph_provider = MagicMock()
-        graph_provider.get_nodes_by_filters = AsyncMock(return_value=[{
-            "lastEdgeBuildAt": 1700, "edgeBuildFullRequestId": "full-1",
-        }])
-        state = await edge_build_trigger.read_build_state(graph_provider, "org-1", "repo-1")
-        assert state.full_request_id == "full-1"
-
-    def test_a_full_build_serves_the_request_it_started_under(self) -> None:
-        state = edge_build_trigger.BuildState(1, False, None, None, "full-1")
-        assert not edge_build_trigger.full_build_still_owed(state, "full-1")
-
-    def test_a_request_made_during_the_build_is_still_owed(self) -> None:
-        state = edge_build_trigger.BuildState(1, True, None, None, "full-2")
-        assert edge_build_trigger.full_build_still_owed(state, "full-1")
-        assert edge_build_trigger.full_build_still_owed(state, None)
-
-    def test_no_request_is_owed_when_none_was_made(self) -> None:
-        state = edge_build_trigger.BuildState(1, False, None, None, None)
-        assert not edge_build_trigger.full_build_still_owed(state, None)
-
-
 class TestClaimPublish:
     @pytest.mark.asyncio
     async def test_first_caller_wins_the_window(self) -> None:
@@ -220,22 +170,43 @@ class TestRenewBuildLock:
 
 class TestRecordsUpdatedSince:
     @pytest.mark.asyncio
-    async def test_returns_only_string_keys_of_touched_records(self) -> None:
+    async def test_unions_connector_and_indexer_stamps_with_a_margin(self) -> None:
+        """A rename moves updatedAtTimestamp; a reindex only lastIndexTimestamp (R-3, R-10)."""
         graph_provider = MagicMock()
-        graph_provider.get_nodes_updated_since = AsyncMock(
-            return_value=[{"_key": "r1"}, {"_key": None}, {"_key": "r2"}]
-        )
+        graph_provider.get_nodes_updated_since = AsyncMock(side_effect=[
+            [{"_key": "r1"}, {"_key": None}],
+            [{"_key": "r2"}, {"_key": "r1"}],
+        ])
 
         assert await edge_build_trigger.records_updated_since(
-            graph_provider, "org-1", "repo-1", 1700
+            graph_provider, "org-1", "repo-1", 1_000_000
         ) == {"r1", "r2"}
 
-        kwargs = graph_provider.get_nodes_updated_since.await_args.kwargs
-        assert kwargs["collection"] == CollectionNames.RECORDS.value
-        assert kwargs["timestamp_field"] == "updatedAtTimestamp"
-        assert kwargs["since"] == 1700
-        assert kwargs["filters"] == {"orgId": "org-1", "recordGroupId": "repo-1"}
-        assert kwargs["return_fields"] == ["_key"]
+        calls = [c.kwargs for c in graph_provider.get_nodes_updated_since.await_args_list]
+        assert [c["timestamp_field"] for c in calls] == ["updatedAtTimestamp",
+                                                         "lastIndexTimestamp"]
+        for kwargs in calls:
+            assert kwargs["collection"] == CollectionNames.RECORDS.value
+            assert kwargs["since"] == 1_000_000 - edge_build_trigger.WATERMARK_MARGIN_MS
+            assert kwargs["filters"] == {"orgId": "org-1", "recordGroupId": "repo-1"}
+            assert kwargs["raise_on_error"] is True
+
+
+class TestLeaseFence:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("held", ["token-1", b"token-1"])
+    async def test_passes_while_the_lease_is_ours(self, held) -> None:
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=held)
+        await edge_build_trigger.assert_lease_held(redis, "lock-key", "token-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("held", [None, "token-2"])
+    async def test_raises_once_the_lease_is_gone_or_taken(self, held) -> None:
+        redis = MagicMock()
+        redis.get = AsyncMock(return_value=held)
+        with pytest.raises(edge_build_trigger.LeaseLostError):
+            await edge_build_trigger.assert_lease_held(redis, "lock-key", "token-1")
 
 
 class TestBuildLock:
@@ -272,81 +243,3 @@ class TestBuildLock:
         assert redis.eval.await_args.args == (
             edge_build_trigger.RELEASE_LOCK_IF_OWNER_LUA, 1, "lock-key", "token-1",
         )
-
-
-class TestSyncPointKey:
-    def test_round_trips_the_record_group(self) -> None:
-        key = edge_build_trigger.sync_point_key_for("repo-1-code-repository")
-        assert edge_build_trigger.record_group_id_from_key(key) == "repo-1-code-repository"
-
-    @pytest.mark.parametrize(
-        "key",
-        ["repo-1/vector-rebuild", "code-edge-build", "/code-edge-build", None, 42],
-    )
-    def test_other_keys_are_not_edge_build_points(self, key) -> None:
-        assert edge_build_trigger.record_group_id_from_key(key) is None
-
-
-class TestPendingBuilds:
-    @pytest.mark.asyncio
-    async def test_maps_rows_to_scopes_and_state(self) -> None:
-        provider = MagicMock()
-        provider.get_nodes_by_filters = AsyncMock(return_value=[
-            {
-                "orgId": "org-1",
-                "connectorId": "connector-1",
-                "syncPointKey": "repo-1/code-edge-build",
-                "lastEdgeBuildAt": 1000,
-                "edgeBuildPending": True,
-                "edgeBuildRequestedAt": 2000,
-            },
-            {"orgId": "org-1", "connectorId": "", "syncPointKey": "repo-2/code-edge-build"},
-            {"orgId": "org-1", "connectorId": "connector-1", "syncPointKey": "repo-3/other"},
-        ])
-
-        pending = await edge_build_trigger.pending_builds(provider)
-
-        assert pending == [
-            edge_build_trigger.PendingBuild(
-                "org-1", "connector-1", "repo-1",
-                edge_build_trigger.BuildState(1000, True, 2000),
-            )
-        ]
-        query = provider.get_nodes_by_filters.await_args.kwargs
-        assert query["collection"] == CollectionNames.SYNC_POINTS.value
-        assert query["filters"] == {
-            "syncDataPointType": "codeEdgeBuild",
-            "edgeBuildPending": True,
-        }
-
-
-class TestPendingRules:
-    BuildState = edge_build_trigger.BuildState
-
-    def test_a_request_after_the_build_started_stays_owed(self) -> None:
-        assert edge_build_trigger.still_owed(self.BuildState(1000, True, 2001), 2000)
-
-    def test_a_request_the_build_covered_is_settled(self) -> None:
-        assert not edge_build_trigger.still_owed(self.BuildState(1000, True, 1999), 2000)
-        assert not edge_build_trigger.still_owed(self.BuildState(1000, True, None), 2000)
-
-    def test_a_request_id_decides_regardless_of_clocks(self) -> None:
-        # Stamped "before" the start by a clock running behind, yet a new request.
-        assert edge_build_trigger.still_owed(self.BuildState(1000, True, 1500, "b"), 2000, "a")
-        # Stamped "after" the start by a clock running ahead, yet the same request.
-        assert not edge_build_trigger.still_owed(self.BuildState(1000, True, 2500, "a"), 2000, "a")
-        # A request made while a build with none in hand ran is owed.
-        assert edge_build_trigger.still_owed(self.BuildState(1000, True, 1500, "b"), 2000, None)
-
-    def test_a_fresh_pending_request_is_not_stale(self) -> None:
-        """The tail of a repo: the first record marked it pending seconds ago."""
-        assert not edge_build_trigger.request_is_stale(self.BuildState(None, True, 100_000), 110_000)
-
-    def test_an_old_pending_request_is_presumed_lost(self) -> None:
-        assert edge_build_trigger.request_is_stale(self.BuildState(None, True, 100_000), 161_000)
-
-    def test_a_pending_mark_with_no_timestamp_is_presumed_lost(self) -> None:
-        assert edge_build_trigger.request_is_stale(self.BuildState(None, True, None), 0)
-
-    def test_nothing_pending_is_never_stale(self) -> None:
-        assert not edge_build_trigger.request_is_stale(self.BuildState(None, False, 0), 10**9)

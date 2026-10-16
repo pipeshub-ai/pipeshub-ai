@@ -102,7 +102,7 @@ class FakeGraphProvider:
         })
 
     async def delete_edges_by_source_keys(
-        self, source_keys, edge_collection, filters=None, transaction=None,
+        self, source_keys, edge_collection, filters=None, transaction=None, exclude=None,
     ):
         sources = set(source_keys)
         keep, removed = [], 0
@@ -113,6 +113,7 @@ class FakeGraphProvider:
                     edge.get(field) == value
                     for field, value in (filters or {}).items()
                 )
+                and not any(edge.get(field) == value for field, value in (exclude or {}).items())
             )
             if matches:
                 removed += 1
@@ -144,6 +145,13 @@ class FakeGraphProvider:
             if all(doc.get(field) == value for field, value in filters.items())
         ]
 
+    async def count_nodes_by_filters(self, collection, filters=None, in_filters=None,
+                                     transaction=None) -> int:
+        return sum(
+            1 for doc in self.blocks.values()
+            if all(doc.get(field) == value for field, value in (filters or {}).items())
+        )
+
     async def delete_blocks_for_records(self, record_ids, transaction=None) -> None:
         doomed = [k for k, b in self.blocks.items() if b.get("recordId") in set(record_ids)]
         await self.delete_edges_touching_nodes(doomed, CollectionNames.BLOCKS.value,
@@ -166,12 +174,15 @@ class FakeGraphProvider:
         return True
 
     async def batch_upsert_record_relations(self, edges, transaction=None):
-        seen = {(e["_from"], e["_to"], e["relationshipType"]) for e in self.edges}
+        # Both providers update a matching edge in place.
+        index = {(e["_from"], e["_to"], e["relationshipType"]): e for e in self.edges}
         for edge in edges:
             key = (edge["_from"], edge["_to"], edge["relationshipType"])
-            if key not in seen:
+            if key in index:
+                index[key].update(edge)
+            else:
                 self.edges.append(edge)
-                seen.add(key)
+                index[key] = edge
         return True
 
     # -- assertions helpers ---------------------------------------------

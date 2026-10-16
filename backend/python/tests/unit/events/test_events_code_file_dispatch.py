@@ -294,3 +294,37 @@ async def test_a_clean_file_writes_no_redaction_count() -> None:
 
     assert processor.process_code_document.call_args.kwargs["code_binary"] == b"x = 1\n"
     assert _recorded_redactions(ep) == []
+
+
+_LEAKY_COMPOSE = b'services:\n  db:\n    environment:\n      DB_PASSWORD: "CANARYSECRET-7f3a9c1e5b2d4086"\n'
+
+
+@pytest.mark.parametrize(("name", "mime_type"), [
+    ("docker-compose.yml", "application/yaml"),
+    ("appsettings.json", "application/json"),
+    ("README.md", "text/markdown"),
+])
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_repository_config_file_is_scanned_whatever_parser_reads_it(
+    name: str, mime_type: str,
+) -> None:
+    """These reach the YAML/JSON/Markdown parsers, not the code one, and used
+    to be indexed with their credentials in place."""
+    processor = _legacy_processor()
+    ep, parsing_client = _service_processor(processor)
+    _as_code_file(ep, mime_type)
+
+    await _drain(ep, _repository_event(name, mime_type, _LEAKY_COMPOSE))
+
+    sent = parsing_client.parse.await_args.kwargs
+    payload = next(v for v in sent.values() if isinstance(v, (bytes, bytearray)))
+    assert b"CANARYSECRET" not in payload
+    assert _recorded_redactions(ep) == [1]
+
+
+@pytest.mark.parametrize(("record_type", "expected"), [
+    ("CODE_FILE", True), ("FILE", False), (None, False),
+])
+def test_only_repository_files_are_scanned_unless_read_as_code(record_type, expected) -> None:
+    assert EventProcessor._scans_for_secrets(record_type, reads_as_code_file=False) is expected
+    assert EventProcessor._scans_for_secrets(record_type, reads_as_code_file=True) is True

@@ -402,6 +402,16 @@ class EventProcessor:
             mime_type == MimeTypes.PLAIN_TEXT.value or is_generated_file_name(record_name)
         )
 
+    @staticmethod
+    def _scans_for_secrets(record_type: str | None, *, reads_as_code_file: bool) -> bool:
+        """Every file from a code repository, whatever parser reads it (S-2).
+
+        Credentials sit in docker-compose.yml, values.yaml and appsettings.json
+        at least as often as in source; those reach the JSON/YAML/XML/Markdown
+        parsers, not the code one. Binary content is left as it is by the scanner.
+        """
+        return reads_as_code_file or record_type == RecordTypes.CODE_FILE.value
+
     async def _redact_code_secrets(
         self, doc: dict[str, Any], record_name: str, content: bytes | str
     ) -> bytes | str:
@@ -1542,7 +1552,7 @@ class EventProcessor:
             reads_as_code_file = self._reads_as_code_file(
                 record_type, mime_type, code_ext, record_name
             )
-            if reads_as_code_file:
+            if self._scans_for_secrets(record_type, reads_as_code_file=reads_as_code_file):
                 # Once, ahead of both pipelines: blocks, embeddings, LLM
                 # extraction and read_code all derive from these bytes.
                 file_content = await self._redact_code_secrets(doc, record_name, file_content)

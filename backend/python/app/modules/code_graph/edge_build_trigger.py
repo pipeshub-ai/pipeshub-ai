@@ -15,10 +15,11 @@ busy repo never looks drained at all.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, NamedTuple
+from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames, ProgressStatus, RecordTypes
+from app.modules.code_graph.build_state import REQUEST_IN_FLIGHT_MS
 from app.modules.code_graph.connectors import (
     NORMALIZED_CODE_TYPES,
     normalize_connector_type,
@@ -35,28 +36,20 @@ if TYPE_CHECKING:
 __all__ = [
     "BLOCKING_STATUSES",
     "BUILD_LOCK_PREFIX",
-    "BuildState",
     "BUILD_LOCK_RENEW_INTERVAL_SECONDS",
     "BUILD_LOCK_TTL_SECONDS",
-    "PendingBuild",
+    "LeaseLostError",
     "REFRESH_LOCK_IF_OWNER_LUA",
     "RELEASE_LOCK_IF_OWNER_LUA",
-    "SYNC_POINT_SUFFIX",
     "acquire_build_lock",
+    "assert_lease_held",
     "claim_publish",
-    "new_request_id",
     "group_has_unfinished_records",
     "is_code_record",
-    "pending_builds",
     "publishable_scope",
-    "read_build_state",
-    "record_group_id_from_key",
     "records_updated_since",
     "release_build_lock",
     "renew_build_lock_until_cancelled",
-    "request_is_stale",
-    "still_owed",
-    "sync_point_key_for",
 ]
 
 BUILD_LOCK_PREFIX = "pipeshub:code-edge-build:"
@@ -65,7 +58,6 @@ BUILD_LOCK_PREFIX = "pipeshub:code-edge-build:"
 # wrote, while a long lease would block every later build after a crash.
 BUILD_LOCK_TTL_SECONDS = 300
 BUILD_LOCK_RENEW_INTERVAL_SECONDS = 60
-SYNC_POINT_SUFFIX = "code-edge-build"
 
 # A file still being indexed means an incomplete symbol table, and an
 # incomplete symbol table produces wrong edges rather than missing ones.
@@ -96,50 +88,21 @@ return 0
 # drain produces a small burst of identical requests. Long enough to cover that
 # burst, short enough that a genuine second drain minutes later is not swallowed.
 _PUBLISH_DEDUPE_PREFIX = "pipeshub:code-edge-publish:"
-_PUBLISH_DEDUPE_TTL_SECONDS = 60
-
-class BuildState(NamedTuple):
-    last_build: int | None
-    pending: bool
-    requested_at: int | None
-    # Unique per request; a build compares it with the one it started under,
-    # so no clock has to agree with another service's.
-    request_id: str | None = None
-    # Set when a change only a full rebuild sees -- a deleted code file leaves
-    # no record for an incremental build to start from. Cleared, by the same
-    # id comparison, by the full build that served it.
-    full_request_id: str | None = None
-
-
-class PendingBuild(NamedTuple):
-    org_id: str
-    connector_id: str
-    record_group_id: str
-    state: BuildState
-
-
-def sync_point_key_for(record_group_id: str) -> str:
-    return f"{record_group_id}/{SYNC_POINT_SUFFIX}"
-
-
-def record_group_id_from_key(sync_point_key: object) -> str | None:
-    """Inverse of ``sync_point_key_for``; None for a key of another type."""
-    if not isinstance(sync_point_key, str):
-        return None
-    record_group_id, sep, suffix = sync_point_key.rpartition("/")
-    if not sep or suffix != SYNC_POINT_SUFFIX or not record_group_id:
-        return None
-    return record_group_id
-
+_PUBLISH_DEDUPE_TTL_SECONDS = REQUEST_IN_FLIGHT_MS // 1000
 
 def is_code_record(record: "Mapping[str, Any] | None") -> bool:
-    """Whether this record came from a connector that puts code in the graph.
+    """Whether this record is a file from a connector that puts code in the graph.
 
     Split out from ``publishable_scope`` because it is the one part answerable
     from a copy of the record that may predate its final status write, which is
     what lets a caller skip re-reading the record at all.
     """
     if not record:
+        return False
+    # Issues and merge requests come from the same connectors, into groups of
+    # their own with no blocks (O-8). A payload without the field predates it.
+    record_type = record.get("recordType")
+    if record_type is not None and record_type != RecordTypes.CODE_FILE.value:
         return False
     return normalize_connector_type(record.get("connectorName")) in NORMALIZED_CODE_TYPES
 
@@ -183,143 +146,16 @@ async def group_has_unfinished_records(
     )
 
 
-async def read_build_state(
-    graph_provider: "IGraphDBProvider",
-    org_id: str,
-    record_group_id: str,
-) -> BuildState:
-    """``lastEdgeBuildAt``, ``edgeBuildPending`` and ``edgeBuildRequestedAt``.
+# How far behind the last build's start the watermark looks. lastIndexTimestamp
+# comes from the indexing service's clock and the watermark from this one's, and
+# a connector stamps updatedAtTimestamp before it commits the record (R-10).
+# shortcut: a fixed margin, not a shared clock; re-resolving a few extra files is
+# cheap, so widen it rather than add one if skew is ever larger.
+WATERMARK_MARGIN_MS = 5 * 60_000
 
-    ``edgeBuildPending`` outlives the message that was going to do the build,
-    so a request that died in the broker leaves a mark instead of nothing.
-    ``edgeBuildRequestedAt`` says when it was last asked for, which is what
-    tells a finishing build whether someone asked again while it ran.
-    """
-    rows = await graph_provider.get_nodes_by_filters(
-        collection=CollectionNames.SYNC_POINTS.value,
-        filters={
-            "orgId": org_id,
-            "syncPointKey": sync_point_key_for(record_group_id),
-        },
-        return_fields=[
-            "lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt", "edgeBuildRequestId",
-            "edgeBuildFullRequestId",
-        ],
-        # Unreadable must not read as "never built, nothing owed": a finishing
-        # build would clear a request it never saw.
-        raise_on_error=True,
-    )
-    if not rows:
-        return BuildState(None, False, None)
-    row = rows[0]
-    return BuildState(
-        _ms_or_none(row.get("lastEdgeBuildAt")),
-        bool(row.get("edgeBuildPending")),
-        _ms_or_none(row.get("edgeBuildRequestedAt")),
-        _str_or_none(row.get("edgeBuildRequestId")),
-        _str_or_none(row.get("edgeBuildFullRequestId")),
-    )
-
-
-def _str_or_none(value: object) -> str | None:
-    return value if isinstance(value, str) and value else None
-
-
-def new_request_id() -> str:
-    return uuid4().hex
-
-
-def _ms_or_none(value: object) -> int | None:
-    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
-
-
-async def pending_builds(graph_provider: "IGraphDBProvider") -> list[PendingBuild]:
-    """Every repo still marked as owing a build, across all orgs.
-
-    The mark is written before the request is published and cleared only when a
-    build settles, so a build that died with its process, or whose request was
-    dead-lettered, is still visible here afterwards.
-    """
-    rows = await graph_provider.get_nodes_by_filters(
-        collection=CollectionNames.SYNC_POINTS.value,
-        filters={"syncDataPointType": "codeEdgeBuild", "edgeBuildPending": True},
-        return_fields=[
-            "orgId",
-            "connectorId",
-            "syncPointKey",
-            "lastEdgeBuildAt",
-            "edgeBuildPending",
-            "edgeBuildRequestedAt",
-            "edgeBuildRequestId",
-            "edgeBuildFullRequestId",
-        ],
-        raise_on_error=True,
-    )
-    out: list[PendingBuild] = []
-    for row in rows or []:
-        record_group_id = record_group_id_from_key(row.get("syncPointKey"))
-        org_id = row.get("orgId")
-        connector_id = row.get("connectorId")
-        if not record_group_id or not _non_empty(org_id) or not _non_empty(connector_id):
-            continue
-        out.append(
-            PendingBuild(
-                str(org_id),
-                str(connector_id),
-                record_group_id,
-                BuildState(
-                    _ms_or_none(row.get("lastEdgeBuildAt")),
-                    bool(row.get("edgeBuildPending")),
-                    _ms_or_none(row.get("edgeBuildRequestedAt")),
-                    _str_or_none(row.get("edgeBuildRequestId")),
-                    _str_or_none(row.get("edgeBuildFullRequestId")),
-                ),
-            )
-        )
-    return out
-
-
-def _non_empty(value: object) -> bool:
-    return isinstance(value, str) and bool(value)
-
-
-def still_owed(state: BuildState, started_at_ms: int,
-               started_request_id: str | None = None) -> bool:
-    """Whether a build leaves one owed: someone asked again while it ran.
-
-    That request was for records this build may not have seen, so clearing
-    ``edgeBuildPending`` there would erase it. Decided by request id when there
-    is one: comparing ``edgeBuildRequestedAt`` (the indexing service's clock)
-    with ``started_at_ms`` (this service's) loses a request whenever the two
-    clocks disagree by more than the gap between them. A mark written before
-    request ids existed falls back to that comparison.
-    """
-    if state.request_id is not None or started_request_id is not None:
-        return state.pending and state.request_id != started_request_id
-    return state.requested_at is not None and state.requested_at > started_at_ms
-
-
-def full_build_still_owed(state: BuildState, started_full_request_id: str | None) -> bool:
-    """Whether a full rebuild is still owed after a build that started under *started_full_request_id*.
-
-    Only a full build serves the request it saw; one asked for while it ran
-    carries a new id and stays.
-    """
-    return state.full_request_id is not None and state.full_request_id != started_full_request_id
-
-
-def request_is_stale(state: BuildState, now_ms: int) -> bool:
-    """A pending build whose request is older than the dedupe window.
-
-    Such a request is presumed lost, so the dedupe claim must not suppress the
-    next one. A pending mark with no timestamp predates the field and is
-    treated the same way.
-    """
-    if not state.pending:
-        return False
-    if state.requested_at is None:
-        return True
-    return now_ms - state.requested_at > _PUBLISH_DEDUPE_TTL_SECONDS * 1000
+# The connector's stamp sees a rename (a new path, same blocks); the indexer's
+# sees a re-projection the connector never made (a reindex, a retry) (R-3).
+_CHANGE_STAMPS = ("updatedAtTimestamp", "lastIndexTimestamp")
 
 
 async def records_updated_since(
@@ -328,18 +164,34 @@ async def records_updated_since(
     record_group_id: str,
     since_ms: int,
 ) -> set[str]:
-    """Keys of the group's records touched after the last build's watermark."""
-    rows = await graph_provider.get_nodes_updated_since(
-        collection=CollectionNames.RECORDS.value,
-        timestamp_field="updatedAtTimestamp",
-        since=since_ms,
-        filters={"orgId": org_id, "recordGroupId": record_group_id},
-        return_fields=["_key"],
-        # An unreadable graph must not read as "nothing changed": the build
-        # would settle and clear the request it was asked to serve.
-        raise_on_error=True,
-    )
-    return {row["_key"] for row in rows if isinstance(row.get("_key"), str)}
+    """Keys of the group's records changed by a connector or re-indexed after the watermark."""
+    keys: set[str] = set()
+    for field in _CHANGE_STAMPS:
+        rows = await graph_provider.get_nodes_updated_since(
+            collection=CollectionNames.RECORDS.value,
+            timestamp_field=field,
+            since=since_ms - WATERMARK_MARGIN_MS,
+            filters={"orgId": org_id, "recordGroupId": record_group_id},
+            return_fields=["_key"],
+            # An unreadable graph must not read as "nothing changed": the build
+            # would settle and clear the request it was asked to serve.
+            raise_on_error=True,
+        )
+        keys.update(row["_key"] for row in rows if isinstance(row.get("_key"), str))
+    return keys
+
+
+class LeaseLostError(RuntimeError):
+    """This build no longer holds the repo's lock; another may be writing its edges."""
+
+
+async def assert_lease_held(redis: "Redis", lock_key: str, lock_token: str) -> None:
+    """Fence a write: raise unless this build still owns the lock (O-6)."""
+    held = await redis.get(lock_key)
+    if isinstance(held, bytes):
+        held = held.decode()
+    if held != lock_token:
+        raise LeaseLostError(f"code edge build lost its lock {lock_key}")
 
 
 async def acquire_build_lock(

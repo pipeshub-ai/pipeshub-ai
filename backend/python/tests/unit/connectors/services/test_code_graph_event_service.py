@@ -7,6 +7,8 @@ from app.config.constants.arangodb import EventTypes
 from app.connectors.core.sync.task_manager import SyncTaskManager
 from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
+from app.modules.code_graph.edge_builder import EdgeBuildResult
+from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
 
 
 def _redis(*, lock_results=True) -> MagicMock:
@@ -16,12 +18,10 @@ def _redis(*, lock_results=True) -> MagicMock:
     return redis
 
 
-def _graph_provider() -> MagicMock:
-    provider = MagicMock()
+def _graph_provider() -> FakeSyncPoints:
+    provider = FakeSyncPoints()
     provider.has_nodes_by_filters = AsyncMock(return_value=False)
-    provider.get_nodes_by_filters = AsyncMock(return_value=[])
     provider.get_nodes_updated_since = AsyncMock(return_value=[])
-    provider.upsert_sync_point = AsyncMock()
     return provider
 
 
@@ -30,9 +30,7 @@ async def test_runner_builds_settles_and_releases_lock() -> None:
     graph_provider = _graph_provider()
     redis = _redis()
     logger = MagicMock()
-    result = MagicMock()
-    result.facts_missing = 0
-    result.as_log_fields.return_value = {"edges_written": 3}
+    result = EdgeBuildResult(edges_written=3)
     runner = CodeEdgeBuildRunner(graph_provider, redis, logger)
 
     with patch(
@@ -45,23 +43,19 @@ async def test_runner_builds_settles_and_releases_lock() -> None:
             record_group_id="repo-1",
         )
 
-    build.assert_awaited_once_with(
-        graph_provider=graph_provider,
-        org_id="org-1",
-        record_group_id="repo-1",
-        touched_record_ids=None,
-        facts_source=None,
-        log=logger,
-    )
-    sync_point = graph_provider.upsert_sync_point.await_args.kwargs
-    assert sync_point["sync_point_key"] == "repo-1/code-edge-build"
-    assert sync_point["sync_point_data"]["edgeBuildPending"] is False
-    assert "lastEdgeBuildAt" in sync_point["sync_point_data"]
+    kwargs = build.await_args.kwargs
+    assert kwargs["graph_provider"] is graph_provider
+    assert (kwargs["org_id"], kwargs["record_group_id"]) == ("org-1", "repo-1")
+    assert kwargs["touched_record_ids"] is None
+    sync_point = graph_provider.points["repo-1/code-edge-build"]
+    assert sync_point["edgeBuildPending"] is False
+    assert sync_point["edgeBuildStatus"] == "ready"
+    assert "lastEdgeBuildAt" in sync_point
     redis.eval.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_runner_failure_leaves_pending_and_releases_lock() -> None:
+async def test_runner_failure_stays_owed_with_a_retry_and_releases_lock() -> None:
     graph_provider = _graph_provider()
     redis = _redis()
     runner = CodeEdgeBuildRunner(graph_provider, redis, MagicMock())
@@ -79,7 +73,10 @@ async def test_runner_failure_leaves_pending_and_releases_lock() -> None:
             record_group_id="repo-1",
         )
 
-    graph_provider.upsert_sync_point.assert_not_awaited()
+    sync_point = graph_provider.points["repo-1/code-edge-build"]
+    assert sync_point["edgeBuildPending"] is True
+    assert sync_point["edgeBuildStatus"] == "retrying"
+    assert "lastEdgeBuildAt" not in sync_point
     redis.eval.assert_awaited_once()
 
 

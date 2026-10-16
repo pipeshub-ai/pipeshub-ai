@@ -398,7 +398,7 @@ async def query_code_graph_impl(
     # the top slots on rows the caller never sees. Degree counts every code
     # relation: a path carries no name to match on, so it is the only signal
     # separating an entry point from a helper.
-    degrees, degree_capped = await _degrees(graph_provider, matched, ALL_RELATIONS)
+    degrees, degree_capped = await _degrees(graph_provider, matched, ALL_RELATIONS, org_id, access)
     matched = _rank_by_degree(matched, degrees)
 
     total_matched = len(matched)

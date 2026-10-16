@@ -8,6 +8,7 @@ helpers that merely shared a caller came back "connected".
 import pytest
 
 from app.agents.actions.code_graph.ops import find_symbol_path_impl, get_neighbour_impl
+from app.agents.actions.code_graph.results import without_marker
 
 from .conftest import BLOCKS, CONN, ORG, USER
 from .conftest import FakeGraphProvider as _BaseFake
@@ -38,11 +39,13 @@ async def _neighbours(graph, symbol=CALLER, **kwargs) -> dict:
 
 
 async def _path(graph, a, b, **kwargs) -> dict:
-    return await find_symbol_path_impl(
+    # The toolset turns the repos a result touched into graph_status; not this test's subject.
+    result = await find_symbol_path_impl(
         graph_provider=graph, connector_id=CONN, org_id=ORG, user_id=USER,
         file_path_a=a[0], qualified_name_a=a[1], file_path_b=b[0], qualified_name_b=b[1],
         **kwargs,
     )
+    return without_marker(result)
 
 
 async def test_every_row_says_which_way_its_edge_points() -> None:
@@ -112,9 +115,9 @@ class _Swallowing(FakeGraphProvider):
 
 
 async def test_a_storage_failure_is_an_error_not_an_empty_walk() -> None:
-    out = await _neighbours(_Swallowing(), direction="inbound", edge_types=["CALLS"])
-    assert "error" in out
-    assert "neighbors" not in out
+    """Raised, like the path search: the toolset turns it into an error."""
+    with pytest.raises(RuntimeError, match="Failed to walk"):
+        await _neighbours(_Swallowing(), direction="inbound", edge_types=["CALLS"])
 
 
 async def test_a_storage_failure_is_not_reported_as_no_path() -> None:

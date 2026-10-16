@@ -4,11 +4,14 @@ import asyncio
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import CollectionNames
 from app.modules.code_graph import edge_build_trigger
-from app.modules.code_graph.edge_builder import build_code_graph_edges
+from app.modules.code_graph.build_state import BuildStateStore
+from app.modules.code_graph.edge_builder import (
+    EdgeBuildTooLargeError,
+    build_code_graph_edges,
+)
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -49,11 +52,13 @@ class CodeEdgeBuildRunner:
         redis: Redis,
         log: Logger,
         facts_source: CodeFactsSource | None = None,
+        state: BuildStateStore | None = None,
     ) -> None:
         self._graph_provider = graph_provider
         self._redis = redis
         self._log = log
         self._facts_source = facts_source
+        self._state = state or BuildStateStore(graph_provider, log)
 
     async def acquire(
         self,
@@ -102,13 +107,28 @@ class CodeEdgeBuildRunner:
         try:
             async with _build_slot(org_id):
                 await self._build(org_id=org_id, connector_id=connector_id,
-                                  record_group_id=record_group_id)
-        except Exception:
+                                  record_group_id=record_group_id, lease=owned_lease)
+        except edge_build_trigger.LeaseLostError:
+            # The state now belongs to whichever build took the lock; it settles it.
+            self._log.error(
+                "Code edge build for org=%s record_group=%s stopped: it lost its lock",
+                org_id, record_group_id,
+            )
+            raise
+        except Exception as exc:
             self._log.exception(
                 "Automatic code edge build failed for org=%s record_group=%s",
                 org_id,
                 record_group_id,
             )
+            try:
+                await self._state.settle_failed(
+                    org_id, record_group_id, lease_token=owned_lease[1],
+                    now_ms=_now_ms(), error=exc,
+                )
+            except Exception:
+                self._log.exception("Failed to record the failed code edge build for "
+                                    "record_group=%s", record_group_id)
             raise
         finally:
             renewal.cancel()
@@ -123,41 +143,39 @@ class CodeEdgeBuildRunner:
                     record_group_id,
                 )
 
-    async def _build(self, *, org_id: str, connector_id: str, record_group_id: str) -> None:
+    async def _build(self, *, org_id: str, connector_id: str, record_group_id: str,
+                     lease: BuildLease) -> None:
+        token = lease[1]
+        start = await self._state.begin(org_id, connector_id, record_group_id, token)
         if await edge_build_trigger.group_has_unfinished_records(
             self._graph_provider,
             org_id,
             record_group_id,
         ):
+            self._log.info(
+                "Code edge build for org=%s record_group=%s deferred: files are still "
+                "indexing; the last of them asks again", org_id, record_group_id,
+            )
+            await self._state.settle_deferred(org_id, record_group_id, lease_token=token,
+                                              now_ms=_now_ms())
             return
-
-        start_state = await edge_build_trigger.read_build_state(
-            self._graph_provider,
-            org_id,
-            record_group_id,
-        )
-        last_build = start_state.last_build
 
         # Read before the watermark query: a record updated in between is
         # invisible now and would otherwise also fall below the next run.
-        started_at_ms = int(time.time() * 1000)
+        started_at_ms = _now_ms()
 
         touched_record_ids = None
-        full_requested = start_state.full_request_id is not None
-        if last_build is not None and not full_requested:
+        if start.last_build is not None and start.full_request_id is None:
             touched_record_ids = await edge_build_trigger.records_updated_since(
                 self._graph_provider,
                 org_id,
                 record_group_id,
-                last_build,
+                start.last_build,
             )
             if not touched_record_ids:
-                await self._settle(
-                    org_id=org_id,
-                    connector_id=connector_id,
-                    record_group_id=record_group_id,
-                    started_at_ms=started_at_ms,
-                    started_request_id=start_state.request_id,
+                await self._state.settle_built(
+                    org_id, record_group_id, lease_token=token, start=start,
+                    started_at_ms=started_at_ms, advance_watermark=False, full=False,
                 )
                 return
 
@@ -173,14 +191,24 @@ class CodeEdgeBuildRunner:
                 else "all"
             ),
         )
-        result = await build_code_graph_edges(
-            graph_provider=self._graph_provider,
-            org_id=org_id,
-            record_group_id=record_group_id,
-            touched_record_ids=touched_record_ids,
-            facts_source=self._facts_source,
-            log=self._log,
-        )
+        try:
+            result = await build_code_graph_edges(
+                graph_provider=self._graph_provider,
+                org_id=org_id,
+                record_group_id=record_group_id,
+                touched_record_ids=touched_record_ids,
+                facts_source=self._facts_source,
+                log=self._log,
+                fence=lambda: edge_build_trigger.assert_lease_held(self._redis, *lease),
+            )
+        except EdgeBuildTooLargeError as exc:
+            self._log.warning("Code edge build for org=%s record_group=%s refused: %s",
+                              org_id, record_group_id, exc)
+            await self._state.settle_too_large(
+                org_id, record_group_id, lease_token=token, start=start,
+                started_at_ms=started_at_ms, reason=str(exc),
+            )
+            return
         if result.facts_missing:
             # Those files kept their old edges; holding the watermark back
             # keeps them in the next build instead of skipping them for good.
@@ -189,57 +217,19 @@ class CodeEdgeBuildRunner:
                 "without readable facts; the watermark stays where it was",
                 org_id, record_group_id, result.facts_missing,
             )
-        await self._settle(
-            org_id=org_id,
-            connector_id=connector_id,
-            record_group_id=record_group_id,
-            started_at_ms=started_at_ms,
-            started_request_id=start_state.request_id,
-            last_build_at=None if result.facts_missing else started_at_ms,
-            served_full_request_id=(
-                start_state.full_request_id
-                if touched_record_ids is None and not result.facts_missing else None
-            ),
+        await self._state.settle_built(
+            org_id, record_group_id, lease_token=token, start=start,
+            started_at_ms=started_at_ms, advance_watermark=not result.facts_missing,
+            full=touched_record_ids is None, result=result,
         )
         self._log.info(
             "Automatic code edge build complete: %s",
             result.as_log_fields(),
         )
 
-    async def _settle(
-        self,
-        *,
-        org_id: str,
-        connector_id: str,
-        record_group_id: str,
-        started_at_ms: int,
-        started_request_id: str | None = None,
-        last_build_at: int | None = None,
-        served_full_request_id: str | None = None,
-    ) -> None:
-        state = await edge_build_trigger.read_build_state(
-            self._graph_provider,
-            org_id,
-            record_group_id,
-        )
-        sync_point_data: dict[str, Any] = {
-            "orgId": org_id,
-            "connectorId": connector_id,
-            "syncDataPointType": "codeEdgeBuild",
-            "edgeBuildPending": edge_build_trigger.still_owed(
-                state,
-                started_at_ms,
-                started_request_id,
-            ),
-        }
-        if last_build_at is not None:
-            sync_point_data["lastEdgeBuildAt"] = last_build_at
-        if served_full_request_id is not None and not edge_build_trigger.full_build_still_owed(
-            state, served_full_request_id,
-        ):
-            sync_point_data["edgeBuildFullRequestId"] = None
-        await self._graph_provider.upsert_sync_point(
-            sync_point_key=edge_build_trigger.sync_point_key_for(record_group_id),
-            sync_point_data=sync_point_data,
-            collection=CollectionNames.SYNC_POINTS.value,
-        )
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+__all__ = ["BuildLease", "CodeEdgeBuildRunner"]

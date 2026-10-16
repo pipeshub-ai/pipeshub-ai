@@ -15,9 +15,10 @@ Covers:
 """
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -320,23 +321,16 @@ class TestIncrementalTimestampStamping:
         assert persisted["src/b.py"].source_created_at is None
 
     async def test_upserted_files_carry_a_fresh_updated_at(self) -> None:
-        """A content change must carry a fresh `updatedAtTimestamp`.
-
-        The model default is frozen at import, so relying on it made every
-        modified file look older than the last code edge build, which then
-        skipped the file and kept its removed CALLS edges.
-        """
+        """A content change must carry a fresh `updatedAtTimestamp`, or the code
+        edge build's watermark skips the file and keeps its removed CALLS edges.
+        The model's default_factory stamps it when the record is built."""
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
         sync.timestamps.fetch_commit_dates = AsyncMock(return_value={})
 
-        sync_time = 1_900_000_000_000
-        with patch(
-            "app.connectors.sources.github_teams.repos.get_epoch_timestamp_in_ms",
-            return_value=sync_time,
-        ):
-            ok = await sync._upsert_code_files(repo, {"src/a.py": "sha-a"})
+        before = int(time.time() * 1000)
+        ok = await sync._upsert_code_files(repo, {"src/a.py": "sha-a"})
 
         assert ok is True
         persisted = [
@@ -346,8 +340,8 @@ class TestIncrementalTimestampStamping:
             if getattr(r, "file_path", None) == "src/a.py"
         ]
         assert len(persisted) == 1
-        assert persisted[0].updated_at == sync_time
-        assert persisted[0].to_arango_base_record()["updatedAtTimestamp"] == sync_time
+        assert persisted[0].updated_at >= before
+        assert persisted[0].to_arango_base_record()["updatedAtTimestamp"] >= before
 
 
 class TestFullSync:

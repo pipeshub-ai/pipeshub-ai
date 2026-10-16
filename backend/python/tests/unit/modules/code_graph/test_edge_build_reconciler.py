@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames, EventTypes
-from app.modules.code_graph import edge_build_reconciler, edge_build_trigger
+from app.modules.code_graph import edge_build_reconciler
+from app.modules.code_graph.build_state import sync_point_key_for
+from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
 
 NOW_MS = 10_000_000
 STALE_MS = NOW_MS - 120_000
@@ -16,7 +18,7 @@ def _row(record_group_id: str, requested_at: int | None, org_id: str = "org-1") 
     return {
         "orgId": org_id,
         "connectorId": "connector-1",
-        "syncPointKey": edge_build_trigger.sync_point_key_for(record_group_id),
+        "syncPointKey": sync_point_key_for(record_group_id),
         "lastEdgeBuildAt": None,
         "edgeBuildPending": True,
         "edgeBuildRequestedAt": requested_at,
@@ -143,3 +145,69 @@ async def test_rows_without_a_usable_scope_are_skipped() -> None:
 
     assert started == 1
     assert service.process_event.await_args.args[1]["recordGroupId"] == "repo-3"
+
+
+def _started(service) -> list[str]:
+    return [c.args[1]["recordGroupId"] for c in service.process_event.await_args_list]
+
+
+@pytest.mark.asyncio
+async def test_a_retry_waits_out_its_backoff() -> None:
+    provider = _graph_provider([
+        {**_row("repo-1", STALE_MS), "edgeBuildNextAttemptAt": NOW_MS + 1},
+        {**_row("repo-2", STALE_MS), "edgeBuildNextAttemptAt": NOW_MS - 1},
+    ])
+    service = _event_service()
+    await edge_build_reconciler.reconcile_once(provider, service, MagicMock(), now_ms=NOW_MS)
+    assert _started(service) == ["repo-2"]
+
+
+@pytest.mark.asyncio
+async def test_a_repo_that_failed_for_good_is_not_retried() -> None:
+    """A repo that always fails used to come back first on every sweep (O-5)."""
+    provider = _graph_provider([{**_row("repo-1", STALE_MS), "edgeBuildStatus": "failed"},
+                                _row("repo-2", STALE_MS)])
+    service = _event_service()
+    await edge_build_reconciler.reconcile_once(provider, service, MagicMock(), now_ms=NOW_MS)
+    assert _started(service) == ["repo-2"]
+
+
+@pytest.mark.asyncio
+async def test_orgs_take_turns_within_a_sweep() -> None:
+    rows = [_row(f"a-{i}", STALE_MS, org_id="org-a") for i in range(3)]
+    rows.append(_row("b-0", STALE_MS, org_id="org-b"))
+    service = _event_service()
+    await edge_build_reconciler.reconcile_once(
+        _graph_provider(rows), service, MagicMock(), now_ms=NOW_MS, limit=2
+    )
+    assert sorted(_started(service)) == ["a-0", "b-0"]
+
+
+@pytest.mark.asyncio
+async def test_a_repo_without_a_recent_full_build_is_owed_one() -> None:
+    """The scheduled full rebuild the incremental builds are checked against (R-3)."""
+    day = 24 * 3600 * 1000
+    points = FakeSyncPoints()
+    for key, extra in [
+        ("old", {"lastEdgeBuildAt": 5, "lastFullEdgeBuildAt": NOW_MS - 8 * day}),
+        ("recent", {"lastEdgeBuildAt": 5, "lastFullEdgeBuildAt": NOW_MS - day}),
+        ("never-full", {"lastEdgeBuildAt": 5}),
+        ("never-built", {}),
+        ("already-owed", {"lastEdgeBuildAt": 5, "edgeBuildPending": True}),
+    ]:
+        points.points[sync_point_key_for(key)] = {
+            "syncPointKey": sync_point_key_for(key), "orgId": "org-1",
+            "connectorId": "c-1", "syncDataPointType": "codeEdgeBuild", **extra,
+        }
+
+    requested = await edge_build_reconciler.request_due_full_rebuilds(
+        points, MagicMock(), now_ms=NOW_MS, interval_s=7 * 24 * 3600
+    )
+
+    assert requested == 2
+    for key in ("old", "never-full"):
+        point = points.points[sync_point_key_for(key)]
+        assert point["edgeBuildPending"] is True
+        assert point["edgeBuildFullRequestId"]
+    assert "edgeBuildFullRequestId" not in points.points[sync_point_key_for("recent")]
+
