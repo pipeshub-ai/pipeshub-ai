@@ -11,9 +11,12 @@ import httpx
 
 from app.web.errors import UnknownProvider
 from app.web.ports import SearchProvider
+from app.web.search.brave import BraveSearch
 from app.web.search.ddgs_search import DdgsSearch
 from app.web.search.duckduckgo_html import DuckDuckGoHtml
 from app.web.search.exa import ExaSearch
+from app.web.search.firecrawl import FirecrawlSearch
+from app.web.search.searxng import SearxngSearch
 from app.web.search.serper import SerperSearch
 from app.web.search.tavily import TavilySearch
 
@@ -37,6 +40,9 @@ PROVIDERS: dict[str, ProviderSpec] = {
         ProviderSpec("serper", SerperSearch.name, SerperSearch),
         ProviderSpec("tavily", TavilySearch.name, TavilySearch),
         ProviderSpec("exa", ExaSearch.name, ExaSearch),
+        ProviderSpec("brave", BraveSearch.name, BraveSearch),
+        ProviderSpec("searxng", SearxngSearch.name, SearxngSearch),
+        ProviderSpec("firecrawl", FirecrawlSearch.name, FirecrawlSearch),
     )
 }
 
@@ -50,8 +56,3 @@ def spec_for(type_id: str) -> ProviderSpec:
     if spec is None:
         raise UnknownProvider(f"Unknown web search provider: {type_id}", source=type_id)
     return spec
-
-
-def provider_name(type_id: str | None) -> str:
-    spec = PROVIDERS.get(type_id or "")
-    return spec.name if spec else (type_id or "The web search provider")

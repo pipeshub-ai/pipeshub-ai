@@ -52,8 +52,7 @@ from app.web.errors import (
     UpstreamError,
     WebError,
 )
-from app.web.http_client import shared_http_client
-from app.web.search import provider_name, spec_for
+from app.web.health import check_provider, provider_name
 
 router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
@@ -524,13 +523,12 @@ def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
 
 @router.post("/web-search-health-check")
 async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
-    """Health check endpoint to validate a web search provider configuration."""
+    """Health check endpoint to validate a web search or page-reading provider configuration."""
     provider = provider_config.get("provider", "duckduckgo")
     configuration = provider_config.get("configuration") or {}
     deadline = Deadline.after(_WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0))
     try:
-        searcher = spec_for(provider).build(configuration, shared_http_client())
-        await searcher.search("health check test", deadline)
+        await check_provider(provider, configuration, deadline)
     except WebError as e:
         request.app.container.logger().warning(f"Web search health check failed for {provider}: {e.error_type}")
         return _web_search_failure(provider, e)

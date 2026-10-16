@@ -7,10 +7,11 @@ from app.web.chain import Cooldowns
 from app.web.config import DEFAULT_PROVIDER
 from app.web.deadline import Deadline
 from app.web.errors import UnknownProvider
+from app.web.fetch import FETCHERS
 from app.web.fetch.builtin import BuiltinFetcher
 from app.web.http_client import shared_http_client
 from app.web.models import WebResult
-from app.web.ports import SearchProvider, WebAccessGate
+from app.web.ports import ContentFetcher, SearchProvider, WebAccessGate
 from app.web.search import FREE_PROVIDERS, PROVIDERS, spec_for
 from app.web.services import WebFetchService, WebSearchService
 
@@ -36,20 +37,36 @@ class UnknownSearchProvider:
         raise UnknownProvider(f"Unknown web search provider: {self.id}", source=self.id)
 
 
+def _others(selection: dict[str, Any]) -> list[dict[str, Any]]:
+    return [p for p in selection.get("providers") or [] if isinstance(p, dict)]
+
+
 def search_providers(selection: dict[str, Any]) -> list[SearchProvider]:
-    """The configured provider, then the free ones."""
+    """The chosen provider, then the other stored providers that search, then the free ones."""
     http = shared_http_client()
     type_id = selection.get("provider") or DEFAULT_PROVIDER
-    free = [PROVIDERS[free_id].build({}, http) for free_id in FREE_PROVIDERS]
-    if type_id == DEFAULT_PROVIDER:
-        return free
-    if type_id not in PROVIDERS:
+    if type_id != DEFAULT_PROVIDER and type_id not in PROVIDERS:
         return [UnknownSearchProvider(type_id)]
-    return [spec_for(type_id).build(selection.get("configuration") or {}, http), *free]
+    chosen = [] if type_id == DEFAULT_PROVIDER else [spec_for(type_id).build(selection.get("configuration") or {}, http)]
+    others = [
+        PROVIDERS[p["provider"]].build(p.get("configuration") or {}, http)
+        for p in _others(selection)
+        if p.get("provider") in PROVIDERS and p.get("provider") not in (type_id, DEFAULT_PROVIDER)
+    ]
+    free = [PROVIDERS[free_id].build({}, http) for free_id in FREE_PROVIDERS]
+    return [*chosen, *others, *free]
+
+
+def fetchers(selection: dict[str, Any]) -> list[ContentFetcher]:
+    """The built-in fetcher, then the stored providers that read pages (Firecrawl, Crawl4AI), which
+    render JavaScript and get past more bot checks but cost a request to another server."""
+    stored = [{"provider": selection.get("provider"), "configuration": selection.get("configuration")}, *_others(selection)]
+    remote = [FETCHERS[p["provider"]](p.get("configuration") or {}) for p in stored if p.get("provider") in FETCHERS]
+    return [BuiltinFetcher(), *remote]
 
 
 def build_web_services(selection: dict[str, Any], gate: WebAccessGate) -> WebServices:
     return WebServices(
         search=WebSearchService(search_providers(selection), gate, cooldowns=COOLDOWNS),
-        fetch=WebFetchService([BuiltinFetcher()], gate, cooldowns=COOLDOWNS),
+        fetch=WebFetchService(fetchers(selection), gate, cooldowns=COOLDOWNS),
     )

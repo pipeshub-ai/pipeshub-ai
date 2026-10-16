@@ -25,12 +25,30 @@ ANSWERS: dict[str, object] = {
     "serper": {"organic": [{"title": "One", "link": "https://a.example/1", "snippet": "first"}]},
     "tavily": {"results": [{"title": "One", "url": "https://a.example/1", "content": "first"}]},
     "exa": {"results": [{"title": "One", "url": "https://a.example/1", "highlights": ["first"]}]},
+    "brave": {"web": {"results": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
+    "searxng": {"results": [{"title": "One", "url": "https://a.example/1", "content": "first"}]},
+    "firecrawl": {"success": True, "data": {"web": [{"title": "One", "url": "https://a.example/1", "description": "first"}]}},
 }
+CONFIGURATION = {"apiKey": "test-key", "baseUrl": "https://provider.example"}
 
 
-def build(type_id: str, handler: object) -> object:
+@pytest.fixture(autouse=True)
+def network(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Every request a provider sends, whether through the shared client or to its own server,
+    goes to the handler the test sets in ``network[0]``."""
+    handler: list = [lambda request: httpx.Response(500)]
+    monkeypatch.setattr(
+        "app.web.endpoint.guarded_async_client",
+        lambda endpoint, timeout: httpx.AsyncClient(transport=httpx.MockTransport(lambda r: handler[0](r))),
+    )
+    return handler
+
+
+def build(type_id: str, handler: object, network: list | None = None) -> object:
+    if network is not None:
+        network[0] = handler
     http = httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[arg-type]
-    return PROVIDERS[type_id].build({"apiKey": "test-key"}, http)
+    return PROVIDERS[type_id].build(dict(CONFIGURATION), http)
 
 
 def test_every_provider_has_a_canned_answer() -> None:
@@ -38,9 +56,9 @@ def test_every_provider_has_a_canned_answer() -> None:
 
 
 @pytest.mark.parametrize("type_id", sorted(PROVIDERS))
-async def test_answers_with_web_results_tagged_with_its_id(type_id: str) -> None:
+async def test_answers_with_web_results_tagged_with_its_id(type_id: str, network: list) -> None:
     answer = ANSWERS[type_id]
-    provider = build(type_id, lambda request: httpx.Response(200, json=answer))
+    provider = build(type_id, lambda request: httpx.Response(200, json=answer), network)
     with patch("app.web.search.duckduckgo_html.fetch_public", AsyncMock(return_value=answer)), \
             patch.object(DdgsSearch, "_text", return_value=answer):
         results = await provider.search("query", Deadline.after(5))
@@ -52,9 +70,9 @@ async def test_answers_with_web_results_tagged_with_its_id(type_id: str) -> None
 
 
 @pytest.mark.parametrize("type_id", sorted(PROVIDERS))
-async def test_an_expired_deadline_fails_fast_without_a_request(type_id: str) -> None:
+async def test_an_expired_deadline_fails_fast_without_a_request(type_id: str, network: list) -> None:
     sent = AsyncMock()
-    provider = build(type_id, sent)
+    provider = build(type_id, sent, network)
     with patch.object(DdgsSearch, "_text") as ddgs_call, pytest.raises(TimedOut):
         await provider.search("query", Deadline(expires_at=0, clock=lambda: 1))
     sent.assert_not_called()
@@ -70,8 +88,8 @@ def test_has_the_source_attributes(type_id: str) -> None:
 
 
 @pytest.mark.parametrize("type_id", sorted(PROVIDERS))
-async def test_failures_are_web_errors(type_id: str) -> None:
-    provider = build(type_id, lambda request: httpx.Response(500))
+async def test_failures_are_web_errors(type_id: str, network: list) -> None:
+    provider = build(type_id, lambda request: httpx.Response(500), network)
     with patch("app.web.search.duckduckgo_html.fetch_public", AsyncMock(return_value=FetchedBody("u", 500, None, b""))), \
             patch.object(DdgsSearch, "_text", side_effect=DDGSException("boom")), \
             pytest.raises(WebError):

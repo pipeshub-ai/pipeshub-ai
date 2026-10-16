@@ -19,6 +19,10 @@
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
 #   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
+#   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
+#                    Workspace → Web search)
+#   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
+#                    http://crawl4ai:11235 with CRAWL4AI_API_TOKEN as its token)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
 # COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
@@ -436,6 +440,7 @@ services:
     networks:
       - pipeshub
       - sandbox-control
+      - web-readers
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -601,6 +606,35 @@ services:
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
       - pipeshub
+
+  # ---------------------------------------------------------------------------
+  # Web search and page reading — profiles: search-searxng, fetch-crawl4ai
+  # Both fetch whatever the web search or a page link points them at, so they sit on
+  # web-readers only: they reach the internet and the app, not the databases.
+  # ---------------------------------------------------------------------------
+  searxng:
+    profiles: ["search-searxng"]
+    image: searxng/searxng:2026.9.30-a9d990033
+    restart: always
+    environment:
+      # Required: SearXNG refuses to start with its default key. A required-variable check here
+      # would fail every stack, since Compose fills in variables before it drops unused profiles.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      - web-readers
+
+  crawl4ai:
+    profiles: ["fetch-crawl4ai"]
+    # 0.8.8 or later: earlier servers let anyone who can reach them run code.
+    image: unclecode/crawl4ai:0.9.4
+    restart: always
+    environment:
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+    shm_size: 1g
+    networks:
+      - web-readers
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
@@ -779,3 +813,6 @@ networks:
   sandbox-control:
     driver: bridge
     internal: true
+  # App <-> the optional web search and page-reading servers, which need the internet.
+  web-readers:
+    driver: bridge

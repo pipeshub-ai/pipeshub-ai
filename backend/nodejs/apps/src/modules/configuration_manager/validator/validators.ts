@@ -9,6 +9,7 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { canSearch } from '../types/web-search.types';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -702,7 +703,21 @@ export const webSearchProviderType = z.enum([
   'serper',
   'tavily',
   'exa',
+  'brave',
+  'searxng',
+  'firecrawl',
+  'crawl4ai',
 ]);
+
+const notADefaultPageReader = (body: {
+  provider: string;
+  isDefault?: boolean;
+}): boolean => !(body.isDefault && !canSearch(body.provider));
+const PAGE_READER_DEFAULT_MESSAGE = {
+  message:
+    'This provider only reads pages, so it cannot be the default web search provider',
+  path: ['isDefault'],
+};
 
 export const webSearchConfigurationSchema = z
   .record(z.any())
@@ -720,28 +735,32 @@ export const webSearchProviderConfigSchema = z.object({
 });
 
 export const addWebSearchProviderSchema = z.object({
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const updateWebSearchProviderSchema = z.object({
   params: z.object({
     providerKey: z.string().min(1, { message: 'Provider key is required' }),
   }),
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const deleteWebSearchProviderSchema = z.object({

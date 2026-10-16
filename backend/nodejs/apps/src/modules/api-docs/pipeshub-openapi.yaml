@@ -15369,8 +15369,11 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily, exa]
-      description: Supported web search provider
+      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai]
+      description: >-
+        Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader)
+        and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and
+        crawl4ai take a baseUrl; firecrawl defaults to its cloud API.
 
     WebSearchSettingsUpdate:
       type: object
@@ -15398,7 +15401,7 @@ components:
           $ref: '#/components/schemas/WebSearchProviderType'
         configuration:
           type: object
-          description: Provider-specific configuration (e.g. apiKey, cx, endpoint, engine)
+          description: Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)
           additionalProperties: true
         isDefault:
           type: boolean
@@ -15442,7 +15445,8 @@ components:
           type: object
           description: |
             Provider-specific configuration as stored and returned by the gateway (open record).
-            Serper, Tavily, and Exa typically include `apiKey`; additional keys may be present.
+            API providers include `apiKey` (masked for non-admins); searxng, firecrawl and crawl4ai
+            include `baseUrl`. Additional keys may be present.
           additionalProperties: true
         isDefault:
           type: boolean
@@ -45424,7 +45428,10 @@ paths:
       tags:
         - Web Search
       summary: Add a new web search provider
-      description: Add a new web search provider (duckduckgo, serper, tavily, or exa) with provider-specific configuration.
+      description: >-
+        Add a web search provider with provider-specific configuration (apiKey, and baseUrl for
+        searxng, firecrawl and crawl4ai). The configuration is checked with a real request before it
+        is saved. A provider that only reads pages (crawl4ai) cannot be the default.
       operationId: addWebSearchProvider
       security:
         - bearerAuth: []

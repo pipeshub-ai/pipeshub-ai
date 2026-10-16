@@ -133,7 +133,8 @@ export function WebSearchProviderRow({
         {renderBadge()}
 
         {/* Set as Default */}
-        {!isDefault && !(inherited && isConfigurable) && (
+        {/* A provider that only reads pages backs up page reading; it is never the default search. */}
+        {meta.searches && !isDefault && !(inherited && isConfigurable) && (
           setDefaultTooltip ? (
             <Tooltip content={setDefaultTooltip}>
               <span style={{ display: 'inline-flex' }}>

@@ -364,6 +364,33 @@ describe('Configuration manager stored settings', () => {
       ]);
     });
 
+    it('never makes a provider that only reads pages the default', async () => {
+      const reader = await run(addWebSearchProvider(store(), appConfig), {
+        body: { provider: 'crawl4ai', configuration: { baseUrl: 'http://crawl4ai:11235' } },
+      });
+      const searcher = await run(addWebSearchProvider(store(), appConfig), {
+        body: { provider: 'searxng', configuration: { baseUrl: 'http://searxng:8080' } },
+      });
+
+      expect(reader.res.body?.details?.isDefault).to.be.false;
+      expect(searcher.res.body?.details?.isDefault).to.be.true;
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+        ['crawl4ai', false],
+        ['searxng', true],
+      ]);
+    });
+
+    it('refuses to set a provider that only reads pages as the default', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader] }));
+
+      const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-crawl' } });
+
+      expect(res.statusCode).to.equal(400);
+      expect(healthChecks).to.have.length(0);
+      expect(stored().providers.map((p) => p.isDefault)).to.deep.equal([serper.isDefault, false]);
+    });
+
     it('keeps the stored key when the form sends the masked placeholder back', async () => {
       kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
 

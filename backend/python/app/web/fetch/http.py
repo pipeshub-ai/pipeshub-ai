@@ -64,7 +64,8 @@ class FetchedBody:
     content: bytes
 
 
-async def _check_public(url: str) -> None:
+async def check_public(url: str) -> None:
+    """Raise ``UnsafeUrl`` unless every address ``url``'s host resolves to is public."""
     try:
         await asyncio.to_thread(resolve_public_http_target, url)
     except UnresolvableHostError as e:
@@ -76,7 +77,7 @@ async def _check_public(url: str) -> None:
 def _public_hops(allow_hop: HopCheck | None) -> HopCheck:
     async def allowed(url: str) -> bool:
         try:
-            await _check_public(url)
+            await check_public(url)
         except UnsafeUrl:
             return False
         except Unreachable:
@@ -103,7 +104,7 @@ async def fetch_public(
         raise TimedOut(f"No time left to fetch {redact_url(url)}")
     try:
         async with asyncio.timeout(deadline.remaining()):
-            await _check_public(url)
+            await check_public(url)
             async with create_guarded_session() as session:
                 response: FetchResponse | None = await fetch_url_with_fallback(
                     url,

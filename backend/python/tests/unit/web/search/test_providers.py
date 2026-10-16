@@ -26,7 +26,8 @@ from app.web.errors import (
     UpstreamError,
 )
 from app.web.fetch.http import FetchedBody
-from app.web.search import PROVIDERS, provider_name, spec_for
+from app.web.health import provider_name
+from app.web.search import PROVIDERS, spec_for
 from app.web.search.ddgs_search import DdgsSearch
 from app.web.search.duckduckgo_html import (
     MAX_RESULTS,
@@ -291,7 +292,7 @@ class TestApiProviders:
 
 class TestRegistry:
     def test_every_stored_type_is_registered(self) -> None:
-        assert {"duckduckgo", "serper", "tavily", "exa"} <= set(PROVIDERS)
+        assert {"duckduckgo", "serper", "tavily", "exa", "brave", "searxng", "firecrawl"} <= set(PROVIDERS)
 
     def test_unknown_type(self) -> None:
         with pytest.raises(UnknownProvider):
@@ -299,5 +300,6 @@ class TestRegistry:
 
     def test_names(self) -> None:
         assert provider_name("serper") == "Serper"
+        assert provider_name("crawl4ai") == "Crawl4AI"
         assert provider_name("bing") == "bing"
         assert provider_name(None) == "The web search provider"

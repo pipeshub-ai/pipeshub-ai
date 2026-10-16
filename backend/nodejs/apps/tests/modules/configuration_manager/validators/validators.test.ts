@@ -328,10 +328,18 @@ describe('CM Validators', () => {
 
   describe('web search schemas', () => {
     it('webSearchProviderType should accept valid providers', () => {
-      for (const p of ['duckduckgo', 'serper', 'tavily', 'exa']) {
+      for (const p of ['duckduckgo', 'serper', 'tavily', 'exa', 'brave', 'searxng', 'firecrawl', 'crawl4ai']) {
         expect(webSearchProviderType.safeParse(p).success).to.be.true
       }
       expect(webSearchProviderType.safeParse('google').success).to.be.false
+    })
+
+    it('refuses a page-reading-only provider as the default', () => {
+      const asDefault = { provider: 'crawl4ai', configuration: { baseUrl: 'http://c:1' }, isDefault: true }
+      expect(addWebSearchProviderSchema.safeParse({ body: asDefault }).success).to.be.false
+      expect(updateWebSearchProviderSchema.safeParse({ params: { providerKey: 'pk' }, body: asDefault }).success).to.be.false
+      expect(addWebSearchProviderSchema.safeParse({ body: { ...asDefault, isDefault: false } }).success).to.be.true
+      expect(addWebSearchProviderSchema.safeParse({ body: { ...asDefault, provider: 'firecrawl' } }).success).to.be.true
     })
 
     it('addWebSearchProviderSchema should accept valid config', () => {

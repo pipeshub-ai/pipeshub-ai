@@ -44,29 +44,26 @@ class TestWebSearchHealthCheck:
     """The check runs one search with the provider alone; its network answer is stubbed."""
 
     @staticmethod
-    async def _check(mock_request, provider_config: dict, outcome: object = None) -> tuple[JSONResponse, MagicMock]:
+    async def _check(mock_request, provider_config: dict, outcome: object = None) -> tuple[JSONResponse, AsyncMock]:
         from app.api.routes.health import web_search_health_check
 
-        spec_for = MagicMock()
-        searcher = spec_for.return_value.build.return_value
-        searcher.search = AsyncMock(side_effect=outcome) if isinstance(outcome, BaseException) else AsyncMock(return_value=outcome or [])
-        with patch(f"{MODULE}.spec_for", spec_for):
+        check = AsyncMock(side_effect=outcome) if isinstance(outcome, BaseException) else AsyncMock(return_value=None)
+        with patch(f"{MODULE}.check_provider", check):
             resp = await web_search_health_check(mock_request, provider_config)
-        return resp, spec_for
+        return resp, check
 
     @pytest.mark.asyncio
     async def test_success(self, mock_request):
-        resp, spec_for = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}, [{"title": "r"}])
+        resp, check = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}})
         assert resp.status_code == 200
         assert "serper" in resp.body.decode()
-        spec_for.assert_called_once_with("serper")
-        assert spec_for.return_value.build.call_args.args[0] == {"apiKey": "k"}
+        assert check.call_args.args[:2] == ("serper", {"apiKey": "k"})
 
     @pytest.mark.asyncio
     async def test_default_provider_is_duckduckgo(self, mock_request):
-        resp, spec_for = await self._check(mock_request, {"configuration": {}})
+        resp, check = await self._check(mock_request, {"configuration": {}})
         assert resp.status_code == 200
-        spec_for.assert_called_once_with("duckduckgo")
+        assert check.call_args.args[0] == "duckduckgo"
 
     @pytest.mark.asyncio
     async def test_unknown_provider_returns_400(self, mock_request):

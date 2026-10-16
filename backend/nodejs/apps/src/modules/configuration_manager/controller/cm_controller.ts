@@ -77,7 +77,10 @@ import {
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
 import { WebSearchConfig } from '../types/web-search.types';
-import { WebSearchProviderConfiguration } from '../types/web-search.types';
+import {
+  WebSearchProviderConfiguration,
+  canSearch,
+} from '../types/web-search.types';
 import {
   CONFIG_SECRET_PLACEHOLDER,
   SMTP_SECRET_KEYS,
@@ -4644,8 +4647,11 @@ export const addWebSearchProvider =
         }
       }
 
-      // If this is the first provider, make it default
-      const shouldBeDefault = webSearchConfig.providers.length === 0 || isDefault;
+      // The first provider that can search becomes the default; one that only reads pages never does.
+      const shouldBeDefault =
+        canSearch(provider) &&
+        (isDefault ||
+          !webSearchConfig.providers.some((p) => canSearch(p.provider)));
 
       // Add the new configuration
       const newConfig = {
@@ -4989,6 +4995,17 @@ export const updateDefaultWebSearchProvider =
         res.status(404).json({
           status: 'error',
           message: `Provider with key '${providerKey}' not found`,
+        });
+        return;
+      }
+
+      if (
+        !canSearch((targetProvider as WebSearchProviderConfiguration).provider)
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message:
+            'This provider only reads pages, so it cannot be the default web search provider',
         });
         return;
       }
