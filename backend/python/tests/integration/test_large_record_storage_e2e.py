@@ -23,13 +23,16 @@ import threading
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import aiohttp
 import msgspec
 import pytest
 
-from app.exceptions.storage_exceptions import StoredRecordTooLargeError
+from app.exceptions.storage_exceptions import (
+    StorageRequestRejectedError,
+    StoredRecordTooLargeError,
+)
 from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import BlobStorage, close_shared_session
+from app.utils.user_errors import FILE_TOO_LARGE, to_user_reason, too_large_refusal
 from tests.support.fake_storage_gateway import FakeStorageGateway
 
 if TYPE_CHECKING:
@@ -102,13 +105,20 @@ class TestLocalStorageUploadLimit:
     async def test_a_record_that_does_not_compress_is_still_refused(
         self, local_gateway: FakeStorageGateway, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The limit is Node's to enforce; this change only makes repeats smaller."""
+        """The limit is Node's to enforce; this change only makes repeats smaller.
+
+        The refusal must reach the indexing handler as a too-large rejection: that
+        is what sets the record's reason and the too-large counter.
+        """
         monkeypatch.setenv(bs_mod._COMPRESSION_THRESHOLD_ENV, "0")
         photos = {"blocks": [{"type": "image", "data": base64.b64encode(os.urandom(MiB)).decode()}
                              for _ in range(6)]}
-        with patch.object(bs_mod, "_STORAGE_RETRY_ATTEMPTS", 1), pytest.raises(aiohttp.ClientError):
+        with pytest.raises(StorageRequestRejectedError) as refused:
             await _store(_storage(local_gateway), photos, "vr-photos")
-        assert local_gateway.rejected_uploads == 1
+        assert refused.value.too_large
+        assert too_large_refusal(refused.value) is refused.value
+        assert to_user_reason(refused.value) == FILE_TOO_LARGE
+        assert local_gateway.rejected_uploads == 1, "a refusal is not retried"
 
 
 class TestCloudStorageReads:
