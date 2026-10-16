@@ -26,7 +26,6 @@ Does the code do what the PR claims? Trace the happy path and the failure paths.
 - Idempotency for message-broker consumers and retryable handlers.
 - Auth and permission checks on every new route or tool. Never trust client-supplied org or user IDs.
 - New or changed HTTP routes without a matching change in `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` (blocking).
-- A PR that adds or changes a connector: check it against `CONNECTOR_CHECKLIST.md`, including the API error-logging items.
 
 ### 2. Scalability
 
