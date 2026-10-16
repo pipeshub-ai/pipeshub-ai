@@ -464,3 +464,18 @@ async def test_the_keyword_scan_adds_to_its_lookup_hits_and_never_replaces_them(
     vrids = {r["virtual_record_id"] for r in result}
     assert _TOKEN_RECORD["vrid"] in vrids
     assert vrids == {_TOKEN_RECORD["vrid"], *(r["virtual_record_id"] for r in scanned)}
+
+
+@pytest.mark.asyncio
+async def test_a_keyword_scan_that_raises_keeps_its_lookup_hits() -> None:
+    searcher = InvertedIndexSearcher([(_TOKEN_RECORD["vrid"], _TOKEN_RECORD["text"])], store_chunks=1)
+    coverage = PatternMatchCoverage()
+    with _llm_commands('grep -rci "nothing matches this" .'), \
+            patch("app.utils.pattern_match.execute_pattern_match_pipeline",
+                  AsyncMock(side_effect=[[], RuntimeError("grep blew up")])):
+        result = await run_pattern_match_with_llm_grep(
+            **_kwargs(llm=MagicMock(), query="cache"), coverage=coverage, retrieval_service=searcher,
+        )
+
+    assert [r["virtual_record_id"] for r in result] == [_TOKEN_RECORD["vrid"]]
+    assert "keyword search failed" in render_pattern_match_coverage_note(coverage)
