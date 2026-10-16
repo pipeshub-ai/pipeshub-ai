@@ -1511,3 +1511,23 @@ class TestIncompleteExactTextSearch:
             parsed = json.loads(await execute_search(_state(retrieval), "p99 latency regression"))
 
         assert parsed["message"] == "No results found"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_records_the_merge_drops_are_said(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+
+        async def _merge(*, coverage: PatternMatchCoverage, **_kwargs: object) -> list:
+            coverage.records_truncated = True
+            return []
+
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "vr9"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=_merge), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "p99 latency regression")
+
+        assert "more records matched than are listed" in result

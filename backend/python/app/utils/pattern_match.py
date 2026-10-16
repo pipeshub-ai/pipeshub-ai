@@ -35,7 +35,6 @@ from app.services.graph_db.interface.graph_db_provider import (
 )
 from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
 from app.utils.exact_text_index import (
-    MAX_RECORDS_PER_COMMAND,
     LexicalSearcher,
     plan_command,
     run_index_pattern_match,
@@ -117,8 +116,9 @@ class PatternMatchCoverage:
     stopped: str | None = None
     # A keyword-index lookup returned its whole limit, so more chunks may match.
     index_capped: bool = False
-    # A command matched more records than it lists.
-    index_truncated: bool = False
+    # More records matched than are listed: one command past its own cap, or
+    # all commands together past the merge's.
+    records_truncated: bool = False
     # A command looked up in the index found nothing.
     index_missed: bool = False
     # (collections the index could not search, collections asked), when any failed.
@@ -134,7 +134,7 @@ class PatternMatchCoverage:
     def complete(self) -> bool:
         return not (
             self.timed_out or self.failed or self.capped or self.stopped
-            or self.index_capped or self.index_truncated or self.index_unsearched
+            or self.index_capped or self.records_truncated or self.index_unsearched
         )
 
 
@@ -183,10 +183,8 @@ def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") 
     if coverage.index_unsearched:
         failed, asked = coverage.index_unsearched
         parts.append(f"the keyword index could not search {failed} of its {asked} collections")
-    if coverage.index_truncated:
-        parts.append(
-            f"a keyword search matched more than the {MAX_RECORDS_PER_COMMAND} records it lists",
-        )
+    if coverage.records_truncated:
+        parts.append("more records matched than are listed")
     if coverage.index_capped:
         parts.append(
             "some of its words are in more passages than the keyword index returns "
@@ -1333,7 +1331,7 @@ async def _match_through_index(
         return commands
     if coverage is not None:
         coverage.index_capped = coverage.index_capped or outcome.capped
-        coverage.index_truncated = coverage.index_truncated or outcome.truncated
+        coverage.records_truncated = coverage.records_truncated or outcome.truncated
         coverage.index_missed = coverage.index_missed or any(not hits for hits in outcome.hits)
         if outcome.failed_collections:
             coverage.index_unsearched = (outcome.failed_collections, outcome.searched_collections)
@@ -1907,8 +1905,11 @@ async def merge_pattern_match_results(
     time_range: dict[str, int] | None = None,
     filters: dict[str, Any] | None = None,
     config_service: ConfigurationService | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Dedup → permission check → time-range filter → fetch blob → flatten.
+
+    Records past *max_records* are dropped, and *coverage* says so.
 
     The permission check is the one semantic search uses
     (``filter_accessible_virtual_record_ids``): APP_LEVEL apps and
@@ -1926,11 +1927,10 @@ async def merge_pattern_match_results(
     # Rank across connectors before the cap; each connector's list is already
     # ranked, but concatenation order would otherwise decide who is dropped.
     unique = _best_hit_per_record(raw_records)
-    new_records = [
-        r
-        for r in unique
-        if r.get("virtual_record_id") not in virtual_record_id_to_result
-    ][:max_records]
+    unseen = [r for r in unique if r.get("virtual_record_id") not in virtual_record_id_to_result]
+    if len(unseen) > max_records and coverage is not None:
+        coverage.records_truncated = True
+    new_records = unseen[:max_records]
 
     if not new_records:
         return []

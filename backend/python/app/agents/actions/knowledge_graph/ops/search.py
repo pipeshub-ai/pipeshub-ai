@@ -880,6 +880,7 @@ async def _execute_search(
                     time_range=time_range,
                     filters=grep_filters,
                     config_service=config_service,
+                    coverage=grep_coverage,
                 )
                 if pm_record_entries:
                     logger_instance.info(

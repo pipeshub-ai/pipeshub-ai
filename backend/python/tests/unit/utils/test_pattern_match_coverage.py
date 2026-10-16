@@ -173,3 +173,38 @@ class TestWholeSearchCutShort:
         coverage = PatternMatchCoverage()
         assert await await_pattern_match(asyncio.create_task(_boom()), MagicMock(), coverage=coverage) == []
         assert coverage.stopped == "it failed before it finished"
+
+
+class TestMergeCap:
+    """Each command can stay under its own cap while all of them together pass
+    the merge's, which then drops records."""
+
+    @staticmethod
+    async def _merge(raw: list[dict], coverage: PatternMatchCoverage, **kwargs) -> None:
+        from app.utils.pattern_match import merge_pattern_match_results
+
+        graph = AsyncMock()
+        graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+        await merge_pattern_match_results(
+            raw_records=raw, virtual_record_id_to_result={}, user_id="u1", org_id="o1",
+            blob_store=AsyncMock(), graph_provider=graph, is_multimodal_llm=False,
+            logger_instance=MagicMock(), coverage=coverage, **kwargs,
+        )
+
+    @pytest.mark.asyncio
+    async def test_records_dropped_by_the_merge_cap_are_reported(self) -> None:
+        coverage = PatternMatchCoverage()
+        raw = [{"virtual_record_id": f"vr-a{i}"} for i in range(40)] + [{"virtual_record_id": f"vr-b{i}"} for i in range(40)]
+
+        await self._merge(raw, coverage)
+
+        assert coverage.records_truncated
+        assert "more records matched than are listed" in render_pattern_match_coverage_note(coverage)
+
+    @pytest.mark.asyncio
+    async def test_records_within_the_cap_leave_the_search_complete(self) -> None:
+        coverage = PatternMatchCoverage()
+
+        await self._merge([{"virtual_record_id": f"vr-{i}"} for i in range(50)], coverage)
+
+        assert coverage.complete

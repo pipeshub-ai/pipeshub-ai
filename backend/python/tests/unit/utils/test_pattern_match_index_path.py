@@ -256,7 +256,7 @@ class TestIndexNotes:
                 **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
             )
 
-        assert "matched more than the 50 records it lists" in render_pattern_match_coverage_note(coverage)
+        assert "more records matched than are listed" in render_pattern_match_coverage_note(coverage)
 
     @pytest.mark.asyncio
     async def test_a_lookup_that_found_nothing_says_words_are_whole(self) -> None:
