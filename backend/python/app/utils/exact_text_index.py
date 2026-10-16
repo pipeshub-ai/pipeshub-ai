@@ -21,7 +21,7 @@ import asyncio
 import logging
 import re
 import re._parser as sre_parse
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 import regex
@@ -60,6 +60,8 @@ _WORD_RE = re.compile(r"\w+")
 
 class LexicalSearcher(Protocol):
     async def lexical_search_available(self) -> bool: ...
+
+    async def lexical_store_chunks(self, org_id: str, user_id: str) -> int | None: ...
 
     async def search_lexical(
         self,
@@ -214,18 +216,19 @@ class IndexMatchOutcome:
     # The most collections any lookup could not search, of how many it asked.
     failed_collections: int = 0
     searched_collections: int = 0
+    # Per plan: some candidate took too long to check against its pattern.
+    unverified: list[bool] = field(default_factory=list)
+    # A lookup after the first failed; what the others found is kept.
+    lookup_failed: bool = False
 
 
-class VerificationTimeoutError(RuntimeError):
-    """A pattern took too long to check against a candidate chunk."""
-
-
-def _stage_matches(stage: IndexStage, text: str) -> bool:
+def _stage_matches(stage: IndexStage, text: str) -> bool | None:
+    """Whether *text* matches the stage; None when the check ran out of time,
+    which is neither a hit nor a miss."""
     try:
         return any(rx.search(text, timeout=_VERIFY_TIMEOUT_SECS) for rx in stage.regexes)
-    except TimeoutError as exc:
-        # A candidate that could not be checked is neither a hit nor a miss.
-        raise VerificationTimeoutError(stage.query) from exc
+    except TimeoutError:
+        return None
 
 
 def _collect(texts: dict[str, list[str]], result: LexicalSearchResult) -> None:
@@ -236,16 +239,33 @@ def _collect(texts: dict[str, list[str]], result: LexicalSearchResult) -> None:
                 chunks.append(hit.text)
 
 
-def _stages_met(plan: IndexPlan, chunks: list[str]) -> list[bool]:
-    return [any(_stage_matches(stage, chunk) for chunk in chunks) for stage in plan.stages]
+def _stages_met(plan: IndexPlan, chunks: list[str]) -> list[bool] | None:
+    """Per stage, whether some chunk matches it; None when a check that could
+    decide the record ran out of time."""
+    met: list[bool] = []
+    for stage in plan.stages:
+        outcomes = [_stage_matches(stage, chunk) for chunk in chunks]
+        if any(outcomes):
+            met.append(True)
+        elif None in outcomes:
+            return None
+        else:
+            met.append(False)
+    return met
 
 
-def _rank(plan: IndexPlan, texts: dict[str, list[str]]) -> tuple[list[dict[str, str]], bool]:
-    """Records meeting every stage, as find_records shapes a hit, best first,
-    and whether more met them than are listed."""
+def _rank(plan: IndexPlan, texts: dict[str, list[str]]) -> tuple[list[dict[str, str]], bool, bool]:
+    """Records meeting every stage, as find_records shapes a hit, best first;
+    whether more met them than are listed; and whether some record could not
+    be checked in time (it is left out, the others are kept)."""
     ranked: list[tuple[int, int, str, str]] = []
+    unverified = False
     for vrid, chunks in texts.items():
-        if not all(_stages_met(plan, chunks)):
+        met = _stages_met(plan, chunks)
+        if met is None:
+            unverified = True
+            continue
+        if not all(met):
             continue
         distinct, total, snippet = score_text("\n".join(chunks), plan.regexes)
         # Scoring gives up on a slow regex with 0; the stages were verified,
@@ -258,7 +278,7 @@ def _rank(plan: IndexPlan, texts: dict[str, list[str]]) -> tuple[list[dict[str, 
         if snippet:
             hit["match_preview"] = snippet
         hits.append(hit)
-    return hits, len(ranked) > MAX_RECORDS_PER_COMMAND
+    return hits, len(ranked) > MAX_RECORDS_PER_COMMAND, unverified
 
 
 def _partial_records(
@@ -277,7 +297,8 @@ def _partial_records(
             continue
         for vrid, chunks in texts.items():
             met = _stages_met(plan, chunks)
-            if not any(met) or all(met):
+            # An unchecked record is reported by _rank, not looked up again.
+            if met is None or not any(met) or all(met):
                 continue
             lacking = {stage.query for stage, ok in zip(plan.stages, met) if not ok}
             if not lacking <= capped_queries:
@@ -360,11 +381,18 @@ async def run_index_pattern_match(
             limit=INDEX_CANDIDATE_CHUNKS, virtual_record_ids=scope,
         )
         for queries, scope in rounds
-    ))
+    ), return_exceptions=True)
+    lookup_failed = False
     for (queries, _scope), result in zip(rounds, results):
+        if isinstance(result, BaseException):
+            # What the first lookup found stays; these stages count as cut.
+            logger_instance.warning("pattern_match index: a lookup failed: %s", result)
+            lookup_failed = True
+            capped_queries.update(queries)
+            continue
         capped_queries.update(q for q, cut in zip(queries, result.capped) if cut)
         _collect(texts, result)
-    lookups.extend(results)
+        lookups.append(result)
 
     # A plan's matches all meet each of its stages, so one stage the index
     # returned in full already names every candidate; only when every stage
@@ -375,17 +403,22 @@ async def run_index_pattern_match(
     if missing:
         follow_up = missing[:_FOLLOW_UP_RECORDS]
         follow_queries = sorted({q for _vrid, lacking in follow_up for q in lacking})
-        follow = await searcher.search_lexical(
-            follow_queries, user_id, org_id, filter_groups=filters,
-            limit=INDEX_CANDIDATE_CHUNKS, virtual_record_ids=[vrid for vrid, _lacking in follow_up],
-        )
-        capped = capped or len(missing) > len(follow_up) or any(follow.capped)
-        _collect(texts, follow)
-        lookups.append(follow)
+        try:
+            follow = await searcher.search_lexical(
+                follow_queries, user_id, org_id, filter_groups=filters,
+                limit=INDEX_CANDIDATE_CHUNKS, virtual_record_ids=[vrid for vrid, _lacking in follow_up],
+            )
+        except Exception as exc:
+            logger_instance.warning("pattern_match index: the follow-up lookup failed: %s", exc)
+            lookup_failed = True
+        else:
+            capped = capped or len(missing) > len(follow_up) or any(follow.capped)
+            _collect(texts, follow)
+            lookups.append(follow)
 
     ranked = await asyncio.to_thread(lambda: [_rank(plan, texts) for plan in plans])
-    hits = [plan_hits for plan_hits, _more in ranked]
-    truncated = any(more for _hits, more in ranked)
+    hits = [plan_hits for plan_hits, _more, _unverified in ranked]
+    truncated = any(more for _hits, more, _unverified in ranked)
     logger_instance.info(
         "pattern_match index: %d command(s), %d lookup round(s), %d candidate record(s), "
         "hits=%s capped=%s truncated=%s",
@@ -395,4 +428,5 @@ async def run_index_pattern_match(
     return IndexMatchOutcome(
         hits=hits, capped=capped, truncated=truncated,
         failed_collections=worst.failed_collections, searched_collections=worst.searched_collections,
+        unverified=[unchecked for _hits, _more, unchecked in ranked], lookup_failed=lookup_failed,
     )

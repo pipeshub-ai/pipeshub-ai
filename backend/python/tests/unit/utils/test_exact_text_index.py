@@ -9,7 +9,6 @@ from app.utils.exact_text_index import (
     INDEX_CANDIDATE_CHUNKS,
     MAX_RECORDS_PER_COMMAND,
     IndexMatchOutcome,
-    VerificationTimeoutError,
     anchor_words,
     plan_command,
     run_index_pattern_match,
@@ -163,12 +162,41 @@ class TestRunIndexPatternMatch:
         assert outcome.capped is False
 
     @pytest.mark.asyncio
-    async def test_a_candidate_that_cannot_be_checked_in_time_is_not_a_miss(self) -> None:
-        searcher = InvertedIndexSearcher([("vr-1", "p99 latency")])
+    async def test_a_slow_check_leaves_out_one_record_and_keeps_the_rest(self) -> None:
+        from app.utils import exact_text_index
 
-        with patch("app.utils.exact_text_index._VERIFY_TIMEOUT_SECS", 0), \
-                pytest.raises(VerificationTimeoutError):
-            await _match(searcher, 'grep -rci "p99 latency" .')
+        searcher = InvertedIndexSearcher([("vr-fast", "p99 latency here"), ("vr-slow", "p99 latency slow")])
+        real = exact_text_index._stage_matches
+
+        def _check(stage, text: str) -> bool | None:
+            return None if "slow" in text else real(stage, text)
+
+        with patch.object(exact_text_index, "_stage_matches", _check):
+            outcome = await _match(searcher, 'grep -rci "p99 latency" .')
+
+        assert [h["virtual_record_id"] for h in outcome.hits[0]] == ["vr-fast"]
+        assert outcome.unverified == [True]
+
+    @pytest.mark.asyncio
+    async def test_a_later_lookup_that_fails_keeps_what_the_first_found(self) -> None:
+        searcher = InvertedIndexSearcher([("vr-1", "zebrafinch report"), ("vr-1", "cache tier")])
+        lookup = searcher.search_lexical
+        calls = 0
+
+        async def _second_fails(*args: object, **kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise RuntimeError("store hiccup")
+            return await lookup(*args, **kwargs)
+
+        searcher.search_lexical = _second_fails
+        single = await _match(searcher, 'grep -rci "zebrafinch" .')
+        calls = 0
+        anded = await _match(searcher, 'grep -rliZ "zebrafinch" . | xargs -0 grep -Hci "cache"')
+
+        assert [h["virtual_record_id"] for h in single.hits[0]] == ["vr-1"]
+        assert anded.lookup_failed is True
 
     @pytest.mark.asyncio
     async def test_a_match_the_scorer_gives_up_on_is_still_listed(self) -> None:
