@@ -38,7 +38,11 @@ from app.events.dedup import (
     will_promote_queued_copies,
 )
 from app.events.processor import Processor
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.exceptions.indexing_exceptions import (
+    EntityLookupUnavailableError,
+    IndexingError,
+    ProcessingError,
+)
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -573,6 +577,11 @@ class EventProcessor:
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
                 )
+            except EntityLookupUnavailableError:
+                # Nothing of the enrichment is written yet and the record stays
+                # searchable; redelivery resumes the enrichment (extractionStatus
+                # is IN_PROGRESS), and its last attempt ends it FAILED.
+                raise
             except Exception as enrich_exc:
                 self.logger.error(
                     "❌ Enrichment failed for record %s (document remains searchable): %s",

@@ -1484,6 +1484,62 @@ class TestAlreadyIndexed:
 
 
     @pytest.mark.asyncio
+    async def test_a_deferred_entity_lookup_is_retried_and_its_last_attempt_keeps_the_record_searchable(
+        self,
+    ) -> None:
+        """Indexing finished, then resolution could not look an entity up (a
+        4xx from the store here). Every attempt but the last leaves the
+        enrichment IN_PROGRESS for the redelivery; the last ends only the
+        enrichment FAILED."""
+        from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
+
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1", "virtualRecordId": "vr1", "origin": OriginTypes.UPLOAD.value,
+            "indexingStatus": ProgressStatus.QUEUED.value, "mimeType": "application/pdf",
+        }
+        gp.get_document = AsyncMock(side_effect=lambda *_a, **_k: dict(record))
+
+        async def update_node(_doc_id, _collection, fields) -> bool:
+            record.update(fields)
+            return True
+
+        gp.update_node = AsyncMock(side_effect=update_node)
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+
+        class _StoreRefused(Exception):
+            status_code = 400
+
+        async def indexed_then_deferred(*_a, **_k) -> AsyncGenerator:
+            record.update(
+                indexingStatus=ProgressStatus.COMPLETED.value,
+                extractionStatus=ProgressStatus.IN_PROGRESS.value,
+            )
+            yield {"event": "parsing_complete", "data": {"record_id": "r1"}}
+            raise EntityLookupUnavailableError("lookup could not run") from _StoreRefused()
+
+        handler.event_processor.on_event = MagicMock(side_effect=indexed_then_deferred)
+        payload = {
+            "recordId": "r1", "orgId": "org-1", "virtualRecordId": "vr1",
+            "mimeType": "application/pdf", "extension": "pdf",
+            "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock, return_value=b"pdf"):
+            with pytest.raises(EntityLookupUnavailableError):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, {**payload, "is_final_failure": False})
+            assert record["indexingStatus"] == ProgressStatus.COMPLETED.value
+            assert record["extractionStatus"] == ProgressStatus.IN_PROGRESS.value
+
+            with pytest.raises(EntityLookupUnavailableError):
+                await _collect_events(handler, EventTypes.NEW_RECORD.value, {**payload, "is_final_failure": True})
+
+        assert handler.event_processor.on_event.call_count == 2
+        assert record["indexingStatus"] == ProgressStatus.COMPLETED.value, "still searchable"
+        assert record["extractionStatus"] == ProgressStatus.FAILED.value
+
+    @pytest.mark.asyncio
     @pytest.mark.parametrize("connector", [{"_key": "conn-1", "isActive": False}, None], ids=["inactive", "removed"])
     async def test_a_cut_short_enrichment_on_a_stopped_connector_ends_and_releases_its_copies(
         self, connector
