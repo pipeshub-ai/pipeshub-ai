@@ -108,6 +108,25 @@ class TestGetCalendarEvents:
 
         assert data["nextPageToken"] == "page-2"
 
+    async def test_page_token_round_trips_to_google(self, cal, http) -> None:
+        # The tool hands nextPageToken back to the agent, so the agent must be able
+        # to send it again; otherwise events past the first page are unreachable.
+        http.on("GET", EVENTS, {"items": [{"id": "e2"}]})
+
+        ok, _ = result(await cal.get_calendar_events(page_token="page-2"))
+
+        assert ok is True
+        query = http.calls("GET", EVENTS)[0].query
+        assert query["pageToken"] == "page-2"
+
+    async def test_unset_page_token_is_not_sent(self, cal, http) -> None:
+        http.on("GET", EVENTS, {"items": []})
+
+        ok, _ = result(await cal.get_calendar_events())
+
+        assert ok is True
+        assert "pageToken" not in http.calls("GET", EVENTS)[0].query
+
     async def test_time_without_offset_is_sent_as_rfc3339_in_the_requested_zone(self, cal, http) -> None:
         # Google rejects timeMin/timeMax without an offset, so a bare local time must gain one.
         http.on("GET", EVENTS, {"items": []})

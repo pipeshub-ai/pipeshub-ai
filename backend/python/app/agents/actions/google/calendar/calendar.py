@@ -305,11 +305,13 @@ class GoogleCalendar:
         short_description="Get upcoming calendar events",
         description=(
             "Retrieve calendar events from Google Calendar with optional filters. "
-            "Supports filtering by time range, search query, calendar ID, and ordering."
+            "Supports filtering by time range, search query, calendar ID, and ordering. "
+            "Pass the nextPageToken from a previous response as page_token to fetch the next page."
         ),
         parameters=[
             ToolParameter(name="calendar_id", type=ParameterType.STRING, description="The ID of the calendar to use (default: 'primary')", required=False),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of events to return", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page of events", required=False),
             ToolParameter(name="time_min", type=ParameterType.STRING, description="Lower bound for event start time (RFC3339 format)", required=False),
             ToolParameter(name="time_max", type=ParameterType.STRING, description="Upper bound for event start time (RFC3339 format)", required=False),
             ToolParameter(name="order_by", type=ParameterType.STRING, description="Order by (e.g., 'startTime' or 'updated')", required=False),
@@ -328,6 +330,7 @@ class GoogleCalendar:
         self,
         calendar_id: Optional[str] = None,
         max_results: Optional[int] = None,
+        page_token: Optional[str] = None,
         time_min: Optional[str] = None,
         time_max: Optional[str] = None,
         order_by: Optional[str] = None,
@@ -341,6 +344,7 @@ class GoogleCalendar:
         Args:
             calendar_id: The ID of the calendar to use
             max_results: Maximum number of events to return
+            page_token: Token from a previous response's nextPageToken, to fetch the next page
             time_min: Lower bound for event start time
             time_max: Upper bound for event start time
             order_by: Order by key
@@ -356,6 +360,7 @@ class GoogleCalendar:
             events = await self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
+                pageToken=page_token,
                 timeMin=_parse_time(time_min, zone).isoformat() if time_min else None,
                 timeMax=_parse_time(time_max, zone).isoformat() if time_max else None,
                 orderBy=order_by,
