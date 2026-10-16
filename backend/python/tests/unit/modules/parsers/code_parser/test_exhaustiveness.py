@@ -229,10 +229,22 @@ def test_qualified_names_survive_an_edit_above_them():
     before, after = names(base), names(shifted)
     assert before["function"] == after["function"]
 
-    # The readable name does track the lines.
-    container = parse(base, "m.py", "src/m.py")
-    imports = next(b for b in container.blocks if b.code_metadata.kind == "imports")
-    assert imports.code_metadata.qualified_name.startswith("imports:L1")
+
+
+def test_an_unnamed_span_keeps_its_key_when_lines_shift_above_it():
+    """Keyed by scope and content, not line range (P-10): an edit above a
+    statement must not re-key it, and an edit to it must."""
+    def key(src, kind):
+        container = parse(src, "m.py", "src/m.py")
+        return [b.code_metadata.qualified_name for b in container.blocks
+                if b.code_metadata and b.code_metadata.kind == kind]
+
+    base = b"def go():\n    return 1\n\n\nCONFIG = load()\n"
+    shifted = b"# a new comment\n\ndef go():\n    return 1\n\n\nCONFIG = load()\n"
+    edited = b"def go():\n    return 1\n\n\nCONFIG = load(strict=True)\n"
+    assert key(base, "statements") == key(shifted, "statements")
+    assert key(base, "statements") != key(edited, "statements")
+    assert key(base, "statements")[0].startswith("statements:@")
 
 
 @pytest.mark.parametrize("suffix", [".py", ".ts", ".tsx", ".js"])
@@ -303,3 +315,12 @@ class TestNesting:
         container = parse(src, "m.py")
         assert [b.code_metadata.kind for b in container.blocks
                 if b.type is BlockType.CODE] == ["function"]
+
+
+def test_a_syntax_error_is_recorded_on_the_file_summary():
+    container = parse(b"def ok():\n    return 1\n\ndef broken(:\n    pass\n", "m.py", "src/m.py")
+    summary = next(b for b in container.blocks if b.type is BlockType.RECORD_SUMMARY)
+    assert summary.data["parse_error_line"] == 4
+    clean = parse(b"def ok():\n    return 1\n", "m.py", "src/m.py")
+    assert "parse_error_line" not in next(
+        b for b in clean.blocks if b.type is BlockType.RECORD_SUMMARY).data

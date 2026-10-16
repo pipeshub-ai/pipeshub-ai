@@ -8,18 +8,15 @@ waiting or running, so a single-org install keeps the whole pool.
 """
 from __future__ import annotations
 
-import os
 from collections import Counter
+
+from app.utils.env_config import env_float
 
 __all__ = ["OrgShare", "max_org_share"]
 
 
 def max_org_share() -> float:
-    try:
-        share = float(os.getenv("PARSE_MAX_ORG_SHARE", "0.5"))
-    except ValueError:
-        return 0.5
-    return min(1.0, max(0.05, share))
+    return env_float("PARSE_MAX_ORG_SHARE", 0.5, low=0.05, high=1.0)
 
 
 class OrgShare:

@@ -92,3 +92,16 @@ async def test_entry_points_are_uncalled_functions() -> None:
     assert "function:caller" in names, "nothing calls it"
     assert "function:target" not in names, "caller calls it"
     assert all(p["reason"] for p in out["entry_points"])
+
+
+async def test_outline_says_when_the_file_did_not_parse_cleanly() -> None:
+    """P-9: a syntax error ends the parse early; the outline must not look complete."""
+    broken = {"block_containers": {"block_groups": [], "blocks": [
+        *_B_SOURCE["block_containers"]["blocks"],
+        {"index": 2, "data": {"text": "b.py", "kind": "file_summary", "parse_error_line": 5}},
+    ]}}
+    out = await outline_impl(**_ctx(QueryGraphProvider()), blob_store=FakeBlobStore({"v-b": broken}),
+                             file_path="src/b.py")
+    assert out["parse_error_line"] == 5 and "line 5" in out["note"]
+    clean = await outline_impl(**_ctx(QueryGraphProvider()), blob_store=_blobs(), file_path="src/b.py")
+    assert "parse_error_line" not in clean

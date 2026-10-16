@@ -783,6 +783,23 @@ class TestRequestCodeEdges:
         handler.logger.exception.assert_called()
 
     @pytest.mark.asyncio
+    async def test_an_outage_logs_one_traceback_then_one_recovery_line(self) -> None:
+        """O-12: one failed request per code file used to log a traceback each."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        for record_id in ("r1", "r2", "r3"):
+            await handler._request_code_edge_build_if_repo_drained(record_id)
+        assert handler.logger.exception.call_count == 1
+        assert handler._edge_request_failures == 3
+
+        handler._edge_request_succeeded()
+        handler.logger.warning.assert_called_once()
+        assert "3 failed" in handler.logger.warning.call_args.args[0] % handler.logger.warning.call_args.args[1:]
+        assert handler._edge_request_failures == 0
+
+    @pytest.mark.asyncio
     async def test_a_non_code_record_in_hand_costs_no_reads(self) -> None:
         """Every record on the platform reaches this; only code ones may read."""
         handler = _make_handler()

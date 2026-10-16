@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import time
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -13,6 +12,7 @@ from app.modules.code_graph.edge_builder import (
     build_code_graph_edges,
 )
 from app.telemetry.modules import code_graph_metrics
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -27,14 +27,15 @@ BuildLease = tuple[str, str]
 # How many builds this process runs at once, and per org. A build is CPU-bound
 # for seconds to minutes; nothing bounded them, so an onboarding burst ran one
 # per repo in parallel on the connectors service.
-_MAX_CONCURRENT_BUILDS = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_CONCURRENT", "2")))
-_MAX_BUILDS_PER_ORG = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_PER_ORG", "1")))
+_MAX_CONCURRENT_BUILDS = max(1, env_int("CODE_EDGE_BUILD_MAX_CONCURRENT", 2))
+_MAX_BUILDS_PER_ORG = max(1, env_int("CODE_EDGE_BUILD_MAX_PER_ORG", 1))
 # Requests that arrive during a build are served by the same lease, up to this
 # many extra builds, so a busy repo's events can be acked instead of redelivered
 # (SC-7); anything still owed after that waits for the reconciler.
 _MAX_FOLLOW_UP_BUILDS = 3
 _process_slots: dict[str, asyncio.Semaphore] = {}
 _org_slots: dict[str, asyncio.Semaphore] = {}
+_org_users: dict[str, int] = {}
 
 
 @asynccontextmanager
@@ -46,8 +47,16 @@ async def _build_slot(org_id: str):  # noqa: ANN202 -- an async context manager
     """
     process = _process_slots.setdefault("all", asyncio.Semaphore(_MAX_CONCURRENT_BUILDS))
     org = _org_slots.setdefault(org_id, asyncio.Semaphore(_MAX_BUILDS_PER_ORG))
-    async with org, process:
-        yield
+    _org_users[org_id] = _org_users.get(org_id, 0) + 1
+    try:
+        async with org, process:
+            yield
+    finally:
+        # Every org that ever built would otherwise keep a semaphore for good.
+        _org_users[org_id] -= 1
+        if not _org_users[org_id]:
+            del _org_users[org_id]
+            _org_slots.pop(org_id, None)
 
 
 class CodeEdgeBuildRunner:

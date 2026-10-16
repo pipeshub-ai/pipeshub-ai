@@ -124,6 +124,10 @@ GENERATED_FILE_SKIPPED = (
     "a file its generator marked DO NOT EDIT), "
     "so PipesHub skips it to keep search results useful. Nothing needs fixing."
 )
+LFS_POINTER_SKIPPED = (
+    "This file is stored with Git LFS, so the repository holds only a pointer to it, not "
+    "its content. PipesHub skips the pointer. Nothing needs fixing."
+)
 BINARY_FILE_SKIPPED = (
     "This file holds binary data rather than text, so PipesHub can't read it. If it is "
     "meant to be text, commit it as plain text (UTF-8) and the next sync will index it."

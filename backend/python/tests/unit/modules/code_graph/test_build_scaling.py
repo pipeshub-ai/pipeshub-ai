@@ -26,6 +26,7 @@ def _runner() -> edge_build_runner.CodeEdgeBuildRunner:
 def _fresh_slots(monkeypatch) -> None:
     monkeypatch.setattr(edge_build_runner, "_process_slots", {})
     monkeypatch.setattr(edge_build_runner, "_org_slots", {})
+    monkeypatch.setattr(edge_build_runner, "_org_users", {})
     monkeypatch.setattr(edge_build_runner, "_MAX_CONCURRENT_BUILDS", 2)
     monkeypatch.setattr(edge_build_runner, "_MAX_BUILDS_PER_ORG", 1)
 
@@ -57,6 +58,14 @@ async def test_one_orgs_repos_build_one_at_a_time() -> None:
 @pytest.mark.asyncio
 async def test_builds_across_orgs_stop_at_the_process_cap() -> None:
     assert await _peak_concurrency(["a", "b", "c", "d"]) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_org_keeps_no_slot_once_its_builds_are_done() -> None:
+    """O-12: one semaphore per org that ever built, kept for the process's life."""
+    await _peak_concurrency(["org-a"] * 3 + ["org-b"])
+    assert edge_build_runner._org_slots == {}
+    assert edge_build_runner._org_users == {}
 
 
 @pytest.mark.asyncio

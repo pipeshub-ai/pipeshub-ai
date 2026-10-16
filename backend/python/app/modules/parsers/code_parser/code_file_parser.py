@@ -70,13 +70,22 @@ _NON_SIGNATURE_PREFIXES = ("@", "#", "//", "/*", "*", "--", "[")
 
 
 def qualified_name_for(kind: str, name: str | None, parent_chain: tuple[str, ...] = (),
-                       *, start_line: int | None = None, end_line: int | None = None) -> str:
+                       *, start_line: int | None = None, end_line: int | None = None,
+                       content: str | None = None) -> str:
     """``"{kind}:{dotted.scope}"`` -- the human-readable identity of a symbol.
 
-    Unnamed spans are addressed by line range instead (``imports:L1-5``).
+    An unnamed span is addressed by its nearest named scope and a hash of its
+    whitespace-normalised text (``imports:@3f2a9c1d``, ``statements:Cart@…``):
+    a line range changed whenever anything above it moved, so every edit
+    re-keyed the file's imports and statements and churned their nodes (P-10).
+    Without ``content``, by line range (``imports:L1-5``).
     """
     if name:
         return f"{kind}:{'.'.join([*parent_chain, name])}"
+    if content is not None:
+        digest = hashlib.sha1(" ".join(content.split()).encode("utf-8", errors="replace"),
+                              usedforsecurity=False).hexdigest()[:8]
+        return f"{kind}:{'.'.join(parent_chain)}@{digest}"
     if start_line is not None:
         span = f"L{start_line}" if end_line in (None, start_line) else f"L{start_line}-{end_line}"
         return f"{kind}:{span}"
@@ -247,7 +256,7 @@ class CodeFileParser:
         for sym in symbols:
             qname = qualified_name_for(
                 sym.kind, sym.name, sym.parent_chain,
-                start_line=sym.start_line, end_line=sym.end_line,
+                start_line=sym.start_line, end_line=sym.end_line, content=sym.text,
             )
             seen = used.get(qname, 0) + 1
             used[qname] = seen
@@ -458,6 +467,9 @@ class CodeFileParser:
                 "kind": "file_summary",
                 "symbols": top_level,
                 "file_path": file_path,
+                # The parse recovered past a syntax error here; symbols after it may be
+                # missing or partial. Kept so tools can say so instead of looking complete (P-9).
+                **({"parse_error_line": parsed.parse_error_line} if parsed.parse_error_line else {}),
             },
             code_metadata=CodeMetadata(
                 language=parsed.language,

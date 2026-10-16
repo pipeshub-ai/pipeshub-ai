@@ -11,4 +11,6 @@ __all__ = ["CODE_GRAPH_VERSION"]
 
 # 2026.10.17: owner-qualified Go/C++ methods, name-matched calls for more
 # languages, JSX/require/decorator/annotation facts, nameFolded.
-CODE_GRAPH_VERSION = "2026.10.17"
+# 2026.10.18: unnamed spans keyed by scope + content hash, not line range (P-10);
+# code embedding units (SC-9).
+CODE_GRAPH_VERSION = "2026.10.18"

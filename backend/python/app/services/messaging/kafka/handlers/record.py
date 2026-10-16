@@ -148,6 +148,9 @@ class RecordEventHandler(BaseEventService):
         # from a loop other than the one that opened its connections fails with
         # "attached to a different loop".
         self._redis_by_loop: dict[asyncio.AbstractEventLoop, Redis] = {}
+        # Edge-build requests failed since the last one that went through. An
+        # outage fails one per code file; one traceback says it (O-12).
+        self._edge_request_failures = 0
         # The producer's client is bound to the loop that created it — the main
         # loop this handler is constructed on (indexing_main.start_kafka_consumers).
         # process_event runs on the indexing consumer's worker-thread loop, so
@@ -696,11 +699,9 @@ class RecordEventHandler(BaseEventService):
                 return
             await self._ask_for_code_edge_build(*scope)
         except Exception as exc:
-            self.logger.exception(
-                "Failed to request a code edge build after record %s", record_id
+            await self._edge_request_failed(
+                exc, "Failed to request a code edge build after record %s", record_id
             )
-            if self._is_redis_connection_error(exc):
-                await self._discard_redis()
 
     async def _request_code_edge_builds_for_copies(
         self, record_id: str, virtual_record_id: str | None
@@ -725,11 +726,31 @@ class RecordEventHandler(BaseEventService):
             for scope in scopes:
                 await self._ask_for_code_edge_build(*scope)
         except Exception as exc:
-            self.logger.exception(
-                "Failed to request code edge builds for the copies of record %s", record_id
+            await self._edge_request_failed(
+                exc, "Failed to request code edge builds for the copies of record %s", record_id
             )
-            if self._is_redis_connection_error(exc):
-                await self._discard_redis()
+
+    async def _edge_request_failed(self, exc: Exception, message: str, *args: object) -> None:
+        """The first failure since the last success is logged with its traceback,
+        the rest at debug. The request is already marked on the sync point, so
+        the reconciler builds it once the outage ends."""
+        self._edge_request_failures += 1
+        if self._edge_request_failures == 1:
+            self.logger.exception(message + "; later failures are counted until one succeeds",
+                                  *args)
+        else:
+            self.logger.debug(message, *args, exc_info=True)
+        if self._is_redis_connection_error(exc):
+            await self._discard_redis()
+
+    def _edge_request_succeeded(self) -> None:
+        if self._edge_request_failures:
+            self.logger.warning(
+                "Code edge build requests are going through again after %d failed; "
+                "the reconciler builds the repos they were for",
+                self._edge_request_failures,
+            )
+            self._edge_request_failures = 0
 
     async def _request_code_edge_build_for_deleted(self, payload: dict) -> None:
         """A deleted code file changes the repo's graph too.
@@ -749,12 +770,10 @@ class RecordEventHandler(BaseEventService):
             # that called into it would keep their old bindings.
             await self._ask_for_code_edge_build(*scope, full=True)
         except Exception as exc:
-            self.logger.exception(
-                "Failed to request a code edge build after deleting record %s",
+            await self._edge_request_failed(
+                exc, "Failed to request a code edge build after deleting record %s",
                 payload.get("recordId"),
             )
-            if self._is_redis_connection_error(exc):
-                await self._discard_redis()
 
     async def _ask_for_code_edge_build(
         self, org_id: str, connector_id: str, record_group_id: str, *, full: bool = False
@@ -782,15 +801,16 @@ class RecordEventHandler(BaseEventService):
         redis = await self._redis_client()
         # Only a pending request older than the window, presumed lost, gets
         # past a lost claim.
-        if not await edge_build_trigger.claim_publish(
-            redis, org_id, record_group_id
-        ) and not request_is_stale(state, now_ms):
+        claimed = await edge_build_trigger.claim_publish(redis, org_id, record_group_id)
+        if not claimed and not request_is_stale(state, now_ms):
+            self._edge_request_succeeded()
             return
         await self._publish_code_edges_event(
             org_id=org_id,
             connector_id=connector_id,
             record_group_id=record_group_id,
         )
+        self._edge_request_succeeded()
         self.logger.info(
             "Requested code edge build for org=%s record_group=%s",
             org_id,

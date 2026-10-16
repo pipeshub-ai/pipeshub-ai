@@ -198,6 +198,7 @@ EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge sing
 # DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
 # is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
 BLOCK_DELETE_BATCH_SIZE = 500
+_BLOCK_FULLTEXT_INDEX = "block_text_org"
 
 # One node per stored taxonomy alias, so alias matches seek an index instead
 # of scanning a list property on every node of the org (see find_taxonomy_nodes).
@@ -1074,8 +1075,12 @@ class Neo4jProvider(IGraphDBProvider):
         scoring every Block on each call.
         """
         return [
-            "CREATE FULLTEXT INDEX block_text IF NOT EXISTS "
-            "FOR (n:Block) ON EACH [n.name, n.qualifiedName]"
+            # Replaced by block_text_org: a full-text index can't be altered in place.
+            "DROP INDEX block_text IF EXISTS",
+            # orgId is indexed so a query is scoped to one tenant inside Lucene,
+            # rather than collecting and scoring every tenant's matches first (S-9).
+            f"CREATE FULLTEXT INDEX {_BLOCK_FULLTEXT_INDEX} IF NOT EXISTS "
+            "FOR (n:Block) ON EACH [n.name, n.qualifiedName, n.orgId]",
         ]
 
     def _generate_required_field_constraints(self) -> list[str]:
@@ -2816,9 +2821,15 @@ class Neo4jProvider(IGraphDBProvider):
         def _lucene_literal(term: str) -> str:
             return '"' + term.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
+        # Fields named: orgId is indexed too, and a bare term would match its tokens.
+        lucene = " OR ".join(
+            f"{field}:{_lucene_literal(term)}" for term in terms for field in ("name", "qualifiedName")
+        )
+        if filters.get("orgId"):
+            lucene = f"({lucene}) AND orgId:{_lucene_literal(str(filters['orgId']))}"
         parameters: dict[str, Any] = {
             "terms": [term.lower() for term in terms],
-            "query": " OR ".join(_lucene_literal(term) for term in terms),
+            "query": lucene,
             "limit": limit,
         }
         for field, value in filters.items():
@@ -2834,7 +2845,7 @@ class Neo4jProvider(IGraphDBProvider):
                 )
                 where_clause = f"WHERE {filter_clause}" if filter_clause else ""
                 fulltext_query = f"""
-                CALL db.index.fulltext.queryNodes('block_text', $query)
+                CALL db.index.fulltext.queryNodes('{_BLOCK_FULLTEXT_INDEX}', $query)
                 YIELD node, score
                 {where_clause}
                 RETURN node AS n, score

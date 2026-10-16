@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -25,6 +24,7 @@ from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
 from app.modules.code_graph.symbol_index import SymbolIndex
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterable
@@ -86,7 +86,7 @@ _MAX_MISSING_FACTS_SHARE = 0.2
 # A build holds every block of the repo in memory (SC-1); past this many it is
 # refused instead of risking the connectors service's memory.
 # shortcut: a ceiling, not a bounded-memory build; phase 2 streams the index.
-MAX_BLOCKS_PER_BUILD = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_BLOCKS", "300000")))
+MAX_BLOCKS_PER_BUILD = max(1, env_int("CODE_EDGE_BUILD_MAX_BLOCKS", 300000))
 # A bare name with no import, same-file or module evidence and more definitions
 # than this is left unresolved: a proximity guess among that many is how god
 # nodes form, and scoring every candidate per call made builds quadratic.

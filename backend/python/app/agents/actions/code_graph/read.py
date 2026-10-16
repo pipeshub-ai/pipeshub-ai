@@ -232,7 +232,23 @@ async def outline_impl(
         if meta.get("decorators"):
             entry["decorators"] = meta["decorators"]
         symbols.append(entry)
-    return {"file_path": file_path, "connector_id": connector_id, "symbols": symbols}
+    out: dict[str, Any] = {"file_path": file_path, "connector_id": connector_id, "symbols": symbols}
+    error_line = _parse_error_line(record)
+    if error_line:
+        out["parse_error_line"] = error_line
+        out["note"] = (f"The file has a syntax error at line {error_line}; definitions after it "
+                       "may be missing. Read the source to check.")
+    return out
+
+
+def _parse_error_line(record: dict) -> int | None:
+    blocks = ((record.get("block_containers") or {}).get("blocks")) or []
+    for block in blocks:
+        data = block.get("data") if isinstance(block, dict) else None
+        if isinstance(data, dict) and data.get("kind") == "file_summary":
+            line = data.get("parse_error_line")
+            return line if isinstance(line, int) else None
+    return None
 
 
 def _parse_line_range(lines: str | None) -> tuple[int, int] | None:

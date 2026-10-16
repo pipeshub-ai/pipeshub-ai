@@ -8,10 +8,11 @@ never fed to it.
 """
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -30,10 +31,7 @@ _ELIDED = "    …"
 def unit_token_budget() -> int:
     """Tokens per code unit. Defaults to 512, the window of the default local
     embedding model; a larger remote model only gains from smaller, focused units."""
-    try:
-        return max(64, int(os.getenv("CODE_EMBED_UNIT_TOKENS", "512")))
-    except ValueError:
-        return 512
+    return max(64, env_int("CODE_EMBED_UNIT_TOKENS", 512))
 
 
 @dataclass(frozen=True)

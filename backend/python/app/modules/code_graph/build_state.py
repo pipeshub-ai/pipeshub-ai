@@ -9,7 +9,6 @@ overwritten (O-6).
 """
 from __future__ import annotations
 
-import os
 import random
 from dataclasses import dataclass
 from enum import Enum
@@ -18,6 +17,7 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.code_graph.version import CODE_GRAPH_VERSION
+from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -128,7 +128,7 @@ class RetryPolicy:
 
 
 DEFAULT_RETRY_POLICY = RetryPolicy(
-    max_failures=max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_FAILURES", "6"))),
+    max_failures=max(1, env_int("CODE_EDGE_BUILD_MAX_FAILURES", 6)),
 )
 
 

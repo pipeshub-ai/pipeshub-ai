@@ -184,3 +184,22 @@ def test_the_reason_for_a_repository_file_names_a_step_that_exists() -> None:
     # A "File Type Not Supported" record has no Reindex action of its own.
     result = plan_repository("dump.sql", None, None, b"x" * (LIMIT + 1))
     assert result.skip_reason.endswith("and then choose Index all on the repository.")
+
+
+_LFS_POINTER = (b"version https://git-lfs.github.com/spec/v1\n"
+                b"oid sha256:4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393\n"
+                b"size 12345\n")
+
+
+def test_a_git_lfs_pointer_is_skipped_with_a_reason() -> None:
+    """The repo holds a stub, not the file; parsing it as code indexes three lines of
+    metadata under the real file's name (P-9)."""
+    plan = plan_code_file("model.py", "ml/model.py", "py", _LFS_POINTER, repository_file=True)
+    assert plan.route is CodeFileRoute.SKIP
+    assert plan.skip_cause is SkipCause.LFS_POINTER
+    assert "LFS" in plan.skip_reason
+
+
+def test_an_upload_that_happens_to_look_like_a_pointer_is_still_read() -> None:
+    assert plan_code_file("notes.txt", None, "txt", _LFS_POINTER,
+                          repository_file=False).route is CodeFileRoute.TEXT
