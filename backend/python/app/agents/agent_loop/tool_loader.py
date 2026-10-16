@@ -11,8 +11,9 @@ except `web_search`/`fetch_url`, which get the `WebToolAdapter` subclass so
 their output is rendered through `ToolHandlerRegistry.format_message`
 (restores Citation IDs — see `web_tool_adapter.py`).
 
-The loader's only responsibility is loading and registration. Filtering,
-gating, and policy enforcement are separate concerns. It does, however,
+The loader's responsibility is loading and registration: of each attached
+toolset, only the tools picked for the agent (`agent_toolsets[].tools`).
+Policy on how tools are called is a separate concern. It does, however,
 record WHY a toolset failed to load into `context.toolset_load_failures`
 (`"not_authenticated"` vs `"error"`) and WHICH loaded toolsets are
 `essential=True` metadata into `context.essential_toolset_names` — both are
@@ -243,11 +244,16 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
     return tools
 
 
+def _normalized_toolset_name(toolset: dict) -> str:
+    """An agent toolset entry's name in the form `configured_name_matches` compares."""
+    return (toolset.get("name") or "").lower().replace(" ", "").replace("_", "")
+
+
 class PipesHubToolLoader:
     """Registers PipesHub tools into an agent-loop ``ToolRegistry`` per request.
 
-    The loader's responsibility is strictly loading and registration.
-    It does not filter, gate, or enforce policy on which tools are available.
+    Of each toolset attached to the agent it registers only the tools picked
+    for it; it does not enforce policy on how those tools are called.
     """
 
     async def load(self, context: "AgentContext", *, skip_apps: set[str] | None = None) -> ToolRegistry:
@@ -347,6 +353,17 @@ class PipesHubToolLoader:
                                 "No UI client, withholding %s (conversation=%s)",
                                 ui_only, context.conversation_id,
                             )
+                selected = None if is_internal else self._selected_tool_names(ts_name, context.agent_toolsets)
+                if selected is not None:
+                    # Same name the agent builder lists and saves: the last segment of the @tool path.
+                    tools = [t for t in tools if t.path.rsplit("/", 1)[-1] in selected]
+                    # Agents saved before a tool was renamed still pick the old name,
+                    # and the builder shows it as picked.
+                    stale = selected - {t.path.rsplit("/", 1)[-1] for t in toolset.tools}
+                    if stale and state_logger:
+                        state_logger.warning(
+                            "Tools picked for toolset %s no longer exist: %s", ts_name, sorted(stale),
+                        )
                 for t in tools:
                     try:
                         registry.register_tool(t)
@@ -409,12 +426,7 @@ class PipesHubToolLoader:
         Used to skip external toolsets the user hasn't configured on this agent,
         avoiding noisy factory errors for unconfigured connectors.
         """
-        configured: set[str] = set()
-        for ts in agent_toolsets:
-            name = (ts.get("name") or "").lower().replace(" ", "").replace("_", "")
-            if name:
-                configured.add(name)
-        return configured
+        return {name for ts in agent_toolsets if (name := _normalized_toolset_name(ts))}
 
     @staticmethod
     def _is_configured(ts_name: str, configured_apps: set[str]) -> bool:
@@ -425,6 +437,23 @@ class PipesHubToolLoader:
         DB (e.g. ``"googledrive"``, ``"googlecalendar"``).
         """
         return any(configured_name_matches(ts_name, cfg_name) for cfg_name in configured_apps)
+
+    @staticmethod
+    def _selected_tool_names(ts_name: str, agent_toolsets: list[dict]) -> set[str] | None:
+        """The tool names picked for toolset *ts_name* — in the agent builder,
+        narrowed by the chat composer's picks — across every entry for it (the
+        assistant has one per instance). ``None`` when no entry lists a tool:
+        an entry saved without tools has always loaded all of them.
+        """
+        selected: set[str] = set()
+        for ts in agent_toolsets:
+            name = _normalized_toolset_name(ts)
+            if not name or not configured_name_matches(ts_name, name):
+                continue
+            for picked in ts.get("tools") or []:
+                if isinstance(picked, dict) and isinstance(tool_name := picked.get("name"), str) and tool_name:
+                    selected.add(tool_name)
+        return selected or None
 
 
 __all__ = ["PipesHubToolLoader"]
