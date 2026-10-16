@@ -339,19 +339,27 @@ are re-embedded in place.
   entity call. This is a fresh install: the rebuild's first tick creates the
   collection with the default model before an admin configures one. Nothing
   is lost, so writes do not wait for the leader.
+- A store that keeps a collection per org applies both rules to each org's
+  collection when it first uses it after a model change. The leader drops
+  one that holds entities when the rebuild reaches that org
+  (`recreate_stale_collection`); any indexing replica recreates one that
+  holds none, such as an org's collection emptied by deletes.
 - Every drop and re-create, the leader's included, runs under a Redis lock
-  per collection (`entity_collection:recreate:<collection>`, 2 minutes), because the vector stores
-  delete a collection by name only: a replica acting on a stale read would
-  otherwise drop a collection another had just recreated and written to.
+  per collection (`entity_collection:recreate:<collection>`, 2 minutes), so
+  recreating one org's collection never waits on another's. The vector
+  stores delete a collection by name only: without the lock, a replica
+  acting on a stale read would drop a collection another had just recreated
+  and written to.
   Under the lock the store reads the collection again and keeps it if
   another replica has already recreated it for the new model. It also reads
   the embedding config from the key-value store, not its cache: a process
   that missed the change notification would otherwise judge the new
   collection against the old model and drop it. Such a process drops
-  nothing and takes the stored model instead. A store that
-  cannot take the lock, or cannot reach Redis, drops nothing; its call fails
-  and the next one after the 30-second retry window tries again. "Holds" is what a filtered scroll
-  sees: on OpenSearch, points written since the last refresh do not count,
+  nothing and takes the stored model instead. A store that cannot take the
+  lock, or cannot reach Redis, drops nothing; its call fails and a later
+  one tries again (for the shared collection, the first after the
+  30-second retry window). "Holds" is what a
+  filtered scroll sees: on OpenSearch, points written since the last refresh do not count,
   and those have the old dimension anyway.
 - Two replicas creating the collection at the same moment is not an error:
   the one whose create fails uses the collection the other made when it has

@@ -337,6 +337,10 @@ class EntityVectorStore:
         # against the model on first use (``_ensure_collection``).
         self._shared_collection: str | None = collection_name
         self._ready_collections: set[str] = set()
+        # When each collection's "only the leader recreates it" error was last
+        # logged. A per-org collection is checked on every call until the
+        # leader recreates it, so the error is rate-limited per collection.
+        self._mismatch_reported_at: dict[str, float] = {}
 
         # Per-entity locks guarding the membership read-merge-write below; see
         # ``_entity_lock``. Weakly held so the map does not grow with every
@@ -714,9 +718,10 @@ class EntityVectorStore:
         filtered scroll sees, so on OpenSearch a point written since the last
         refresh does not count; such a point has the old dimension, which the
         new model cannot use, and the rebuild refills the new collection."""
-        holds_entities = await self._holds_entities(name)
+        # A store that never drops (query, connectors) need not read it.
+        holds_entities = not self.recreate_on_dimension_mismatch or await self._holds_entities(name)
         if not (leader or (self.recreate_on_dimension_mismatch and not holds_entities)):
-            if self.recreate_on_dimension_mismatch:
+            if self.recreate_on_dimension_mismatch and self._mismatch_report_due(name):
                 self.logger.error(
                     "Entity collection '%s' does not match the embedding model (%s) and holds "
                     "entities, so only the entity index rebuild leader recreates and refills it; "
@@ -749,6 +754,14 @@ class EntityVectorStore:
         finally:
             with contextlib.suppress(Exception):
                 await redis.aclose()
+
+    def _mismatch_report_due(self, name: str) -> bool:
+        now = time.monotonic()
+        last = self._mismatch_reported_at.get(name)
+        if last is not None and now - last < _INIT_RETRY_SECONDS:
+            return False
+        self._mismatch_reported_at[name] = now
+        return True
 
     async def _drop_and_create_under_lock(
         self, name: str, mismatch: str, *, leader: bool, holds_entities: bool, config_hash: str | None,
