@@ -188,7 +188,11 @@ export function createKeyedRateLimiter(
     return `${prefix}:ip:${getClientIpKey(req)}`;
   };
 
-  const reject = (req: Request, res: Response, retryAfter?: string | number | string[]): void => {
+  const reject = (
+    req: Request,
+    res: Response,
+    retryAfter?: string | number | string[],
+  ): void => {
     logger.warn('Rate limit exceeded', {
       key: keyFor(req),
       path: req.path,
