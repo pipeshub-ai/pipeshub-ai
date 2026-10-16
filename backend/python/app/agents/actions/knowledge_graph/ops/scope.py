@@ -382,9 +382,13 @@ async def selection_browse_refusal(
     """Why a browse of ``node_id`` is refused while the turn's selection is
     below app level, or None when it may go ahead. Only a node inside the
     selection may be browsed; without a node there is no root to list; and a
-    record selected alone has nothing under it that belongs to the turn."""
+    record selected alone has nothing under it that belongs to the turn.
+    Without a selection a named node must still be inside the picked apps and
+    every bound, as for a read by id."""
     filters: dict = state.get("filters") or {}
     if not _has_selection(filters):
+        if node_id and node_id not in await ids_within_scope(state, graph_provider, user_key, org_id, [node_id]):
+            return SELECTION_OUTSIDE_MESSAGE
         return None
     if not node_id:
         return SELECTION_BROWSE_HINT

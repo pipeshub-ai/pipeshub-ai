@@ -106,6 +106,25 @@ class TestBrowsing:
         graph.check_access.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_without_a_selection_a_node_outside_the_picked_apps_is_refused(self) -> None:
+        graph = _graph(readable={"in-b"}, inside=set())
+        state = {"filters": {
+            "apps": ["a"], "kb": [], "allowedApps": ["a", "b"], "allowedRecordGroups": [], "allowedRecords": [],
+        }}
+        assert await selection_browse_refusal(state, graph, "u", "o", "in-b") == SELECTION_OUTSIDE_MESSAGE
+
+    @pytest.mark.asyncio
+    async def test_without_a_selection_a_node_inside_the_picked_apps_may_be_browsed(self) -> None:
+        graph = _graph(readable={"in-a"}, inside={"in-a"})
+        assert await selection_browse_refusal({"filters": {"apps": ["a"], "kb": []}}, graph, "u", "o", "in-a") is None
+
+    @pytest.mark.asyncio
+    async def test_without_a_selection_or_a_pick_browsing_is_not_gated(self) -> None:
+        graph = _graph()
+        assert await selection_browse_refusal({"filters": {"apps": [], "kb": []}}, graph, "u", "o", "x") is None
+        graph.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_a_selection_has_no_root_to_browse(self) -> None:
         assert await selection_browse_refusal({"filters": SELECTION}, _graph(), "u", "o", None) == SELECTION_BROWSE_HINT
 
