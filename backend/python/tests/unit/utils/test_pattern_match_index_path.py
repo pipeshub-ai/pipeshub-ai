@@ -432,3 +432,17 @@ class TestLookupsBeforeScans:
             result = await await_pattern_match(task, MagicMock(), wait_budget=0.5, found_so_far=found)
 
         assert [r["virtual_record_id"] for r in result] == ["vr-1"]
+
+
+@pytest.mark.asyncio
+async def test_a_small_store_scans_the_keyword_fallback_even_after_its_lookup_hit(tmp_path) -> None:
+    chunks = _store(tmp_path, [_TOKEN_RECORD, _INSIDE_WORD_RECORD])
+    searcher = InvertedIndexSearcher(chunks, store_chunks=len(chunks))
+    with patch("app.agents.actions.storage_search.storage_search._resolve_mount_root", return_value=str(tmp_path)), \
+            _llm_commands('grep -rci "nothing matches this" .'):
+        result = await run_pattern_match_with_llm_grep(
+            **_kwargs(llm=MagicMock(), query="cache"), retrieval_service=searcher,
+        )
+
+    # The lookup finds the whole word; the keyword grep adds "precache".
+    assert {r["virtual_record_id"] for r in result} == {_TOKEN_RECORD["vrid"], _INSIDE_WORD_RECORD["vrid"]}

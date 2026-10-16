@@ -1261,13 +1261,18 @@ async def _run_pattern_match_with_llm_grep(
     }
     keyword_cmd = build_grep_command_from_query(query)
     scan_cmds = list(llm_grep_cmds or [])
+    # Whether the LLM commands matched anything; the keyword grep is their
+    # fallback, so their hits, not the keyword lookup's, decide it.
+    llm_matched = False
     scan_keyword = True
     if searcher is not None:
         # Every lookup runs before any scan: a scan can take what is left of
         # the budget, and a lookup answers in milliseconds.
         if scan_cmds:
             scan_cmds = await _match_through_index(scan_cmds, searcher, **index_kwargs)
-        if not found and keyword_cmd:
+        llm_matched = bool(found)
+        scan_keyword = False
+        if not llm_matched and keyword_cmd:
             scan_keyword = bool(await _match_through_index([keyword_cmd], searcher, **index_kwargs))
 
     if scan_cmds:
@@ -1290,12 +1295,16 @@ async def _run_pattern_match_with_llm_grep(
                     if coverage is not None:
                         coverage.stop("one of its keyword searches failed")
                     continue
+                llm_matched = llm_matched or bool(result)
                 _merge_command_hits(found, result)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-    if found or not scan_keyword:
+    # Without the index, any hit means the LLM commands matched. With it, the
+    # keyword grep still runs when its lookup asked for a scan (a small store,
+    # or a miss), even if that lookup found records itself.
+    if (llm_matched or (searcher is None and found)) or not scan_keyword:
         return list(found.values())
     if llm_grep_cmds:
         logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
