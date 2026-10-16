@@ -595,11 +595,14 @@ class TestSearchLeavesImageRoomForAFetch:
 
         live = state.setdefault("virtual_record_id_to_result", {})
         live[record["virtual_record_id"]] = record
-        # The fetch checks the record is readable: this user may read every record asked for.
+        # The fetch checks the record is readable and inside the turn's apps: this
+        # user may read every record asked for, and each is in the picked app.
         graph = AsyncMock()
         graph.get_user_by_user_id = AsyncMock(return_value={"_key": "u1", "id": "u1"})
         graph.check_access = AsyncMock(
-            side_effect=lambda *_args, node_ids=(), **_kwargs: AccessCheck(node_ids=frozenset(node_ids)),
+            side_effect=lambda *_args, node_ids=(), **_kwargs: AccessCheck(
+                node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids),
+            ),
         )
         context = SimpleNamespace(
             model_name="gpt-4", org_id="o1", user_id="u1", graph_provider=graph,
