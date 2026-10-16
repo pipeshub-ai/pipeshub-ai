@@ -314,7 +314,7 @@ class TestNavigateRecordWithChildren:
             {"id": "in-wiki", "name": "Wiki page", "recordType": "CONFLUENCE_PAGE", "relationshipType": "LINKED_TO"},
         ])
         gp.check_access = AsyncMock(side_effect=lambda key, org, node_ids=(), scopes=(), **_: AccessCheck(
-            node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids) & {"in-jira"},
+            node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids) & {"rec1", "in-jira"},
         ))
         mock_resp = _make_knowledge_hub_response(items=[], total=0)
         mock_resp.breadcrumbs = []
