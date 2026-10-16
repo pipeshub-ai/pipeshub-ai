@@ -43,9 +43,9 @@ MAX_DEPTH = 50
 # Bumped whenever what a stamp writes changes meaning; a meta of another version is restamped, never read.
 STAMP_VERSION = 2
 
-# The listing's sort fields and the stored property each reads. The full query sorts on coalesce(updatedAt, 0)
-# and coalesce(createdAt, 0); a connector with a null timestamp is listed by the full query for that sort.
-SORT_PROPS = {"name": "khSortName", "updatedAt": "updatedAtTimestamp", "createdAt": "createdAtTimestamp"}
+# The listing's sort fields and the stored property each reads. Dates are not here: the listing shows a
+# connector node's source date, which no stamped property holds, so a date sort is always the full query's.
+SORT_PROPS = {"name": "khSortName"}
 # A predicate that implies the property's type, so the planner reads the index in order.
 _LOW = {"khSortName": "''", "updatedAtTimestamp": "-9223372036854775807", "createdAtTimestamp": "-9223372036854775807"}
 

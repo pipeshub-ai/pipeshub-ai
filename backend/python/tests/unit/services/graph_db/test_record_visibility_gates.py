@@ -394,7 +394,8 @@ class TestNeo4jKnowledgeHubListing:
     @pytest.mark.parametrize("page", [{"flatten": False}, {"flatten": True}, {"start_id": "f1", "start_type": "folder"}])
     async def test_a_row_counts_only_its_live_children(self, page) -> None:
         listing = await self._listing(**page)
-        assert listing.count(self._live("ch")) == 2, "hierarchy children and belonging records"
+        assert listing.count(self._live("kh_ch")) == 1, "hierarchy children"
+        assert listing.count(self._live("kh_bc")) == 1, "belonging records"
 
 
 @pytest.mark.parametrize("backend", ["arango", "neo4j"])

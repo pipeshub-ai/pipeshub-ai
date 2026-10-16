@@ -39,8 +39,7 @@ pytestmark = pytest.mark.integration
 APP = "sc-app"
 SMALL = "sc-small"
 DEEP = 60
-SORTS = [("name", "ASC"), ("name", "DESC"), ("updatedAt", "ASC"), ("updatedAt", "DESC"),
-         ("createdAt", "ASC"), ("createdAt", "DESC")]
+SORTS = [("name", "ASC"), ("name", "DESC")]
 
 
 def _graph() -> tuple[list, list]:
@@ -202,6 +201,15 @@ async def test_scope_listing_equals_the_full_query(
     assert on == off
     # Served by scopes, except where the null names send a previous page to the full query.
     assert scope_counter["served"] > 0
+
+
+@pytest.mark.parametrize("sort_field", ["updatedAt", "createdAt"])
+async def test_a_date_sort_is_listed_by_the_full_query(
+    scope_graph, neo4j_provider, monkeypatch, scope_counter, sort_field,
+) -> None:
+    on, off = await _pair(neo4j_provider, monkeypatch, USER_U, APP, 4, sort_field=sort_field, sort_dir="DESC")
+    assert on == off
+    assert scope_counter["served"] == 0
 
 
 async def test_the_walk_stops_at_fifty_hops(scope_graph, neo4j_provider, monkeypatch) -> None:

@@ -282,6 +282,26 @@ def _cypher_hub_origin(v: str) -> str:
             f"THEN 'COLLECTION' ELSE 'CONNECTOR' END")
 
 
+def _cypher_kh_date(v: str, source: str, ingest: str) -> str:
+    """A knowledge hub date: the source's own for a connector node, the upload's
+    for a collection item (its source date is the file's, not when it was added)."""
+    return (f"CASE WHEN {v}.connectorName = 'KB' THEN coalesce({v}.{ingest}, 0) "
+            f"ELSE coalesce({v}.{source}, {v}.{ingest}, 0) END")
+
+
+def _cypher_kh_has_children(v: str) -> str:
+    """Whether a knowledge hub node has a live child: one below it in the
+    hierarchy, or a record filed in it. Collection items often belong to the
+    folder instead of hanging off it by NODE_RELATION."""
+    return (
+        f"(EXISTS {{ ({v})-[kh_hr:NODE_RELATION]->(kh_ch) "
+        "WHERE kh_hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
+        "AND NOT coalesce(kh_ch.isDeleted, false) } "
+        f"OR EXISTS {{ (kh_bc)-[:BELONGS_TO]->({v}) "
+        "WHERE NOT coalesce(kh_bc.isDeleted, false) })"
+    )
+
+
 # Listing state: what the knowledge hub listing would otherwise re-derive for
 # every visible node on every request. Every write that can change an input
 # rewrites it in the same statement, so a committed graph never carries a stale
@@ -5319,6 +5339,67 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if left and left[0].get("n"):
                 raise RuntimeError(f"Hierarchy backfill left {left[0]['n']} {name} edge(s) unwritten")
         return {"added": added}
+
+    # A record holding an edge from or to its own group while it inherits from a
+    # parent record of that group; see drop_redundant_group_edges.
+    _REDUNDANT_PARENT = """EXISTS {
+              MATCH (p:Record)-[h:NODE_RELATION]->(child)
+              WHERE h.relationshipType IN $hierarchy
+                AND p.recordGroupId = child.recordGroupId
+                AND NOT coalesce(p.isPlaceholder, false) AND NOT coalesce(p.isDeleted, false)
+                AND EXISTS { (child)-[:INHERIT_PERMISSIONS]->(p) }
+          }"""
+    _REDUNDANT_GROUP_EDGES = f"""
+        CALL () {{
+            MATCH (child:Record)-[:INHERIT_PERMISSIONS]->(g:RecordGroup) RETURN child, g
+            UNION
+            MATCH (g:RecordGroup)-[h:NODE_RELATION]->(child:Record) WHERE h.relationshipType IN $hierarchy
+            RETURN child, g
+        }}
+        WITH child, g
+        WHERE g.id = child.recordGroupId AND {_REDUNDANT_PARENT}
+        WITH DISTINCT child, g"""
+
+    async def drop_redundant_group_edges(self, batch_size: int = 1000) -> dict:
+        """See the interface. One scan committed in batches, the tree labels of
+        each record rewritten with it, then a re-scan that raises if anything is
+        left. Connectors it touches are listed by the full query until restamped."""
+        params = {"hierarchy": sorted(HIERARCHY_RELATION_TYPES)}
+        # Marked first, so a run that fails part way still lists them by the full query.
+        touched = await self.client.execute_query(
+            f"{self._REDUNDANT_GROUP_EDGES} RETURN collect(DISTINCT child.connectorId) AS connectors",
+            parameters=params,
+        )
+        for connector_id in (touched or [{}])[0].get("connectors") or []:
+            if connector_id:
+                await self.kh_scope_mark_changed(connector_id)
+        # The record is locked and its parent re-checked: a sync since the scan may
+        # have moved the parent away and hung the record on its group again.
+        rows = await self.client.execute_query(
+            f"""{self._REDUNDANT_GROUP_EDGES}
+            CALL (child, g) {{
+                SET child.{_MATCH_LOCK} = true
+                REMOVE child.{_MATCH_LOCK}
+                WITH child, g
+                WHERE {self._REDUNDANT_PARENT}
+                OPTIONAL MATCH (child)-[gi:INHERIT_PERMISSIONS]->(g)
+                DELETE gi
+                WITH child, g
+                OPTIONAL MATCH (g)-[gh:NODE_RELATION]->(child)
+                WHERE gh.relationshipType IN $hierarchy
+                DELETE gh
+                WITH child
+                {_cypher_kh_tree_refresh("NODE_RELATION|INHERIT_PERMISSIONS", "child")}
+            }} IN TRANSACTIONS OF {int(batch_size)} ROWS
+            RETURN count(*) AS n""",
+            parameters=params,
+        )
+        row = (rows or [{}])[0]
+        left = await self.client.execute_query(
+            f"{self._REDUNDANT_GROUP_EDGES} RETURN count(*) AS n", parameters=params)
+        if left and left[0].get("n"):
+            raise RuntimeError(f"{left[0]['n']} record(s) still hold a redundant group edge")
+        return {"removed": row.get("n", 0)}
 
     async def split_link_edges(self, batch_size: int = 1000) -> dict:
         """Move every link off NODE_RELATION onto RECORD_LINK, so NODE_RELATION
@@ -16610,8 +16691,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "recordType": f"{node_var}.recordType",
             "recordGroupType": f"{node_var}.groupType",
             "indexingStatus": f"{node_var}.indexingStatus",
-            "createdAt": f"coalesce({node_var}.createdAtTimestamp, 0)",
-            "updatedAt": f"coalesce({node_var}.updatedAtTimestamp, 0)",
+            "createdAt": _cypher_kh_date(node_var, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
+            "updatedAt": _cypher_kh_date(node_var, "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": f"{node_var}.sizeInBytes",
             "mimeType": f"{node_var}.mimeType",
             "extension": f"{node_var}.extension",
@@ -17308,8 +17389,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WHERE all(kh_our IN relationships(kh_oup)
                       WHERE kh_our.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'])
             WITH start, ancs, collect(DISTINCT og) + collect(DISTINCT oga) AS ownLine
+            // As the check, which admits by group membership: the start's own
+            // groups declare a scope even when no hierarchy edge links them.
             RETURN [a IN ancs + [o IN ownLine WHERE NOT o IN ancs] | a.id] AS ancestors,
-                   [a IN [start] + ancs
+                   [a IN [start] + ancs + [o IN ownLine WHERE NOT o IN ancs]
                       WHERE a:RecordGroup AND a.permissionModel = 'RECORD_GROUP_LEVEL'
                         AND a.connectorId = $app_id | a.id] AS declared
             """,
@@ -18166,14 +18249,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ) if state else node_type_expr,
             "recordType": "node.recordType",
             "indexingStatus": "node.indexingStatus",
-            "createdAt": "coalesce(node.createdAtTimestamp, 0)",
-            "updatedAt": "coalesce(node.updatedAtTimestamp, 0)",
+            "createdAt": _cypher_kh_date("node", "sourceCreatedAtTimestamp", "createdAtTimestamp"),
+            "updatedAt": _cypher_kh_date("node", "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": "node.sizeInBytes",
             "origin": _cypher_hub_origin("node"),
             "connector": "coalesce(node.connector, app.type)",
             "connectorId": "coalesce(node.connectorId, app.id)",
             "isPlaceholder": "coalesce(node.isPlaceholder, false)",
-            "hasChildren": "false",
+            # The sidebar keeps a record only when it has children, and decides
+            # that on this map, before the page is cut. Other listings never
+            # filter on it, so they skip the expand.
+            "hasChildren": (
+                _cypher_kh_has_children("node") if any("node.hasChildren" in c for c in conditions) else "false"
+            ),
         }
         needed = {"id"}
         # nodeType costs two string reads per node and only the per-type counts
@@ -18212,13 +18300,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 # Only the page is projected, so this expand is one hop per
                 # returned row. Collection items often belong to the folder
                 # instead of hanging off it by NODE_RELATION.
-                "hasChildren": (
-                    "EXISTS { (node)-[hr:NODE_RELATION]->(ch) "
-                    "WHERE hr.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT'] "
-                    "AND NOT coalesce(ch.isDeleted, false) } "
-                    "OR EXISTS { (ch)-[:BELONGS_TO]->(node) "
-                    "WHERE NOT coalesce(ch.isDeleted, false) }"
-                ),
+                "hasChildren": _cypher_kh_has_children("node"),
             },
             include_comparator=False,
         )

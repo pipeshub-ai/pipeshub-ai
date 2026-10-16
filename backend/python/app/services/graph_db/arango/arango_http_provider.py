@@ -514,6 +514,26 @@ def _aql_hub_origin(v: str) -> str:
             f' ? "COLLECTION" : "CONNECTOR")')
 
 
+def _aql_kh_date(v: str, source: str, ingest: str) -> str:
+    """A knowledge hub date: the source's own for a connector node, the upload's
+    for a collection item (its source date is the file's, not when it was added)."""
+    return (f'({v}.connectorName == "KB" ? NOT_NULL({v}.{ingest}, 0)'
+            f" : NOT_NULL({v}.{source}, {v}.{ingest}, 0))")
+
+
+def _aql_kh_has_children(v: str) -> str:
+    """Whether a knowledge hub node has a live child: one below it in the
+    hierarchy, or a record filed in it. Collection items often belong to the
+    folder instead of hanging off it by a hierarchy edge."""
+    return (
+        f"(LENGTH(FOR kh_ch, kh_ce IN 1..1 OUTBOUND {v} {CollectionNames.NODE_RELATIONS.value}"
+        f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL} AND kh_ch.isDeleted != true"
+        f" LIMIT 1 RETURN 1) > 0"
+        f" OR LENGTH(FOR kh_ch IN 1..1 INBOUND {v} {CollectionNames.BELONGS_TO.value}"
+        f" FILTER kh_ch.isDeleted != true LIMIT 1 RETURN 1) > 0)"
+    )
+
+
 # Edges one statement moves; a hub node's millions go in batches.
 _EDGE_MOVE_BATCH = 5000
 
@@ -1870,6 +1890,72 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if left:
                 raise RuntimeError(f"Hierarchy backfill left {len(left)} {name} edge(s) unwritten")
         return {"added": added}
+
+    # A live, non-placeholder parent record of the child's own group that the
+    # child inherits from; {child} is a records handle. See drop_redundant_group_edges.
+    _REDUNDANT_PARENT = """(LENGTH(
+        FOR rp_h IN @@nr
+            FILTER rp_h._to == {child} AND rp_h.relationshipType IN @hierarchy
+                AND IS_SAME_COLLECTION("records", rp_h._from)
+            LET rp_p = DOCUMENT(rp_h._from)
+            FILTER rp_p != null AND rp_p.recordGroupId == DOCUMENT({child}).recordGroupId
+                AND rp_p.isPlaceholder != true AND rp_p.isDeleted != true
+            FILTER LENGTH(FOR rp_i IN @@ip FILTER rp_i._from == {child} AND rp_i._to == rp_h._from
+                          LIMIT 1 RETURN 1) > 0
+            LIMIT 1 RETURN 1) > 0)"""
+
+    # [child, group] handles: a record's edge to or from its own group.
+    _REDUNDANT_GROUP_PAIRS = (
+        """
+        FOR i IN @@ip
+            FILTER IS_SAME_COLLECTION("records", i._from) AND IS_SAME_COLLECTION("recordGroups", i._to)
+            LET child = DOCUMENT(i._from)
+            FILTER child != null AND child.recordGroupId != null AND i._to == CONCAT("recordGroups/", child.recordGroupId)
+            FILTER {parent}
+            RETURN DISTINCT [i._from, i._to]""",
+        """
+        FOR h IN @@nr
+            FILTER h.relationshipType IN @hierarchy
+                AND IS_SAME_COLLECTION("recordGroups", h._from) AND IS_SAME_COLLECTION("records", h._to)
+            LET child = DOCUMENT(h._to)
+            FILTER child != null AND child.recordGroupId != null AND h._from == CONCAT("recordGroups/", child.recordGroupId)
+            FILTER {parent}
+            RETURN DISTINCT [h._to, h._from]""",
+    )
+
+    async def drop_redundant_group_edges(self, batch_size: int = 1000) -> dict:
+        """See the interface. Scans the pairs, then per batch re-checks the parent
+        (a sync in between may have moved it) before removing, then scans again
+        and raises if anything is left. Each collection is read before it is
+        modified in a statement, as AQL requires."""
+        c = CollectionNames
+        bind = {"@nr": c.NODE_RELATIONS.value, "@ip": c.INHERIT_PERMISSIONS.value,
+                "hierarchy": sorted(HIERARCHY_RELATION_TYPES)}
+        scans = [q.replace("{parent}", self._REDUNDANT_PARENT.format(child="child._id"))
+                 for q in self._REDUNDANT_GROUP_PAIRS]
+        pairs = list({
+            tuple(p): p for scan in scans for p in await self.http_client.execute_aql(scan, bind) or []
+        }.values())
+        recheck = f"LET ok = (FOR pr IN @pairs FILTER {self._REDUNDANT_PARENT.format(child='pr[0]')} RETURN pr)"
+        drop_inherit = f"""{recheck}
+            FOR pr IN ok
+                FOR i IN @@ip FILTER i._from == pr[0] AND i._to == pr[1]
+                    REMOVE i IN @@ip
+                    RETURN DISTINCT pr[0]"""
+        drop_hierarchy = f"""{recheck}
+            FOR pr IN ok
+                FOR h IN @@nr FILTER h._from == pr[1] AND h._to == pr[0] AND h.relationshipType IN @hierarchy
+                    REMOVE h IN @@nr
+                    RETURN DISTINCT pr[0]"""
+        removed: set[str] = set()
+        for i in range(0, len(pairs), batch_size):
+            batch = {**bind, "pairs": pairs[i:i + batch_size]}
+            removed.update(await self.http_client.execute_aql(drop_inherit, batch) or [])
+            removed.update(await self.http_client.execute_aql(drop_hierarchy, batch) or [])
+        left = sum([len(await self.http_client.execute_aql(scan, bind) or []) for scan in scans])
+        if left:
+            raise RuntimeError(f"{left} record(s) still hold a redundant group edge")
+        return {"removed": len(removed)}
 
     async def split_link_edges(self, batch_size: int = 1000) -> dict:
         """See the interface. One scan for the links still in nodeRelations, then
@@ -16577,8 +16663,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             "recordType": f"{node_var}.recordType",
             "recordGroupType": f"{node_var}.groupType",
             "indexingStatus": f"{node_var}.indexingStatus",
-            "createdAt": f"NOT_NULL({node_var}.createdAtTimestamp, 0)",
-            "updatedAt": f"NOT_NULL({node_var}.updatedAtTimestamp, 0)",
+            "createdAt": _aql_kh_date(node_var, "sourceCreatedAtTimestamp", "createdAtTimestamp"),
+            "updatedAt": _aql_kh_date(node_var, "sourceLastModifiedTimestamp", "updatedAtTimestamp"),
             "sizeInBytes": f"{node_var}.sizeInBytes",
             "mimeType": f"{node_var}.mimeType",
             "extension": f"{node_var}.extension",
@@ -17565,31 +17651,54 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         # A node with two parents is walked once per path, so the walk reads up
         # to twice the limit before the rows are made distinct.
         bind = {"org_id": org_id, "limit": limit + 1, "scan": 2 * (limit + 1)}
+
+        def under_another(v: str, roots: str, collection: str) -> str:
+            # A root that another selected root's walk reaches adds only repeats to it.
+            return f"""LENGTH(
+                FOR kh_a, kh_ae, kh_ap IN 1..{ACCESS_WALK_MAX_DEPTH} INBOUND {v} {relations}
+                    PRUNE kh_ae != null AND (kh_ae.relationshipType NOT IN {hierarchy} OR kh_a.isDeleted == true)
+                    OPTIONS {{bfs: true, uniqueVertices: "path", vertexCollections: ["{collection}"]}}
+                    FILTER kh_ap.edges[*].relationshipType ALL IN {hierarchy}
+                    FILTER kh_ap.vertices[*].isDeleted NONE == true
+                    FILTER kh_a._key IN {roots} AND kh_a.orgId == @org_id
+                    LIMIT 1 RETURN 1) == 0"""
         groups: list[dict[str, Any]] = []
         records: list[dict[str, Any]] = []
+        truncated = False
         if group_ids:
-            groups = await self.http_client.execute_aql(
+            found = await self.http_client.execute_aql(
                 f"""
-                FOR kh_sg IN {groups_coll}
-                    FILTER kh_sg._key IN @group_ids AND kh_sg.orgId == @org_id AND kh_sg.isDeleted != true
-                    FOR kh_g, kh_e, kh_gp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND kh_sg {relations}
-                        PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_g.isDeleted == true)
-                        OPTIONS {{uniqueVertices: "path", vertexCollections: ["{groups_coll}"]}}
-                        FILTER kh_gp.edges[*].relationshipType ALL IN {hierarchy}
-                        FILTER kh_gp.vertices[*].isDeleted NONE == true
-                        LIMIT @scan
-                        COLLECT id = kh_g._key, connectorId = kh_g.connectorId
+                LET kh_raw = (
+                    FOR kh_sg IN {groups_coll}
+                        FILTER kh_sg._key IN @group_ids AND kh_sg.orgId == @org_id AND kh_sg.isDeleted != true
+                        FILTER {under_another("kh_sg", "@group_ids", groups_coll)}
+                        FOR kh_g, kh_e, kh_gp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND kh_sg {relations}
+                            PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_g.isDeleted == true)
+                            OPTIONS {{uniqueVertices: "path", vertexCollections: ["{groups_coll}"]}}
+                            FILTER kh_gp.edges[*].relationshipType ALL IN {hierarchy}
+                            FILTER kh_gp.vertices[*].isDeleted NONE == true
+                            LIMIT @scan
+                            RETURN {{id: kh_g._key, connectorId: kh_g.connectorId}}
+                )
+                LET kh_rows = (
+                    FOR kh_row IN kh_raw
+                        COLLECT id = kh_row.id, connectorId = kh_row.connectorId
                         LIMIT @limit
                         RETURN {{id, connectorId}}
+                )
+                RETURN {{rows: kh_rows, truncated: LENGTH(kh_raw) >= @scan AND LENGTH(kh_rows) < @limit}}
                 """,
                 bind_vars={**bind, "group_ids": group_ids},
-            ) or []
+            ) or [{}]
+            groups = found[0].get("rows") or []
+            truncated = bool(found[0].get("truncated"))
         if record_ids or exact_record_ids:
-            records = await self.http_client.execute_aql(
+            found = await self.http_client.execute_aql(
                 f"""
                 LET kh_under = (
                     FOR kh_sr IN {records_coll}
                         FILTER kh_sr._key IN @record_ids AND kh_sr.orgId == @org_id AND {aql_live_record("kh_sr")}
+                        FILTER {under_another("kh_sr", "@record_ids", records_coll)}
                         FOR kh_r, kh_e, kh_rp IN 0..{ACCESS_WALK_MAX_DEPTH} OUTBOUND kh_sr {relations}
                             PRUNE kh_e != null AND (kh_e.relationshipType NOT IN {hierarchy} OR kh_r.isDeleted == true)
                             OPTIONS {{bfs: true, uniqueVertices: "path", vertexCollections: ["{records_coll}"]}}
@@ -17604,13 +17713,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                             AND {aql_live_record("kh_x")}
                         RETURN {{id: kh_x._key, vrid: kh_x.virtualRecordId, connectorId: kh_x.connectorId}}
                 )
-                FOR kh_row IN UNION_DISTINCT(kh_under, kh_exact)
-                    LIMIT @limit
-                    RETURN kh_row
+                LET kh_rows = (
+                    FOR kh_row IN UNION_DISTINCT(kh_under, kh_exact)
+                        LIMIT @limit
+                        RETURN kh_row
+                )
+                RETURN {{rows: kh_rows, truncated: LENGTH(kh_under) >= @scan AND LENGTH(kh_rows) < @limit}}
                 """,
                 bind_vars={**bind, "record_ids": record_ids, "exact_record_ids": exact_record_ids},
-            ) or []
-        return {"groups": list(groups), "records": list(records)}
+            ) or [{}]
+            records = found[0].get("rows") or []
+            truncated = truncated or bool(found[0].get("truncated"))
+        # The walk reads a bounded number of paths before they are made distinct;
+        # a node reached by many of them can fill that bound with repeats, and what
+        # was not reached cannot be told apart from what does not exist.
+        result: dict[str, Any] = {"groups": list(groups), "records": list(records)}
+        if truncated:
+            result["truncated"] = True
+        return result
 
     @staticmethod
     @functools.cache
@@ -17626,6 +17746,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         belongs = CollectionNames.BELONGS_TO.value
         key_expr = ArangoHTTPProvider._kh_v2_sort_key_aql(ArangoHTTPProvider, sort_field)
         where = "".join(f"\n                    FILTER {c}" for c in conditions)
+        # The sidebar keeps a record only when it has children, and decides that
+        # here, before the page is cut. Other listings never filter on it, so
+        # they skip the edge reads.
+        has_children = (
+            _aql_kh_has_children("kh_n") if any("node.hasChildren" in c for c in conditions) else "false"
+        )
 
         def rows(collection: str) -> str:
             return f"""(
@@ -17640,14 +17766,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         nodeType: {_aql_node_type("kh_n")},
                         recordType: kh_n.recordType,
                         indexingStatus: kh_n.indexingStatus,
-                        createdAt: NOT_NULL(kh_n.createdAtTimestamp, 0),
-                        updatedAt: NOT_NULL(kh_n.updatedAtTimestamp, 0),
+                        createdAt: {_aql_kh_date("kh_n", "sourceCreatedAtTimestamp", "createdAtTimestamp")},
+                        updatedAt: {_aql_kh_date("kh_n", "sourceLastModifiedTimestamp", "updatedAtTimestamp")},
                         sizeInBytes: kh_n.sizeInBytes,
                         origin: {_aql_hub_origin("kh_n")},
                         connector: NOT_NULL(kh_n.connector, kh_app.type),
                         connectorId: NOT_NULL(kh_n.connectorId, kh_app._key),
                         isPlaceholder: kh_n.isPlaceholder == true,
-                        hasChildren: false
+                        hasChildren: {has_children}
                     }}{where}
                     LET sortKey = {key_expr}
                     RETURN [kh_h, node.nodeType, sortKey]
@@ -17866,12 +17992,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER p.edges[*].relationshipType ALL IN {hierarchy}
                     RETURN DISTINCT a
             )
+            LET kh_own = {own_line("kh_start")}
             RETURN {{
                 // A chain-top's trail can pass through its own group
                 // when that group is not among its hierarchy ancestors.
-                ancestors: UNION_DISTINCT(kh_ancs[*]._key, {own_line("kh_start")}[*]._key),
+                ancestors: UNION_DISTINCT(kh_ancs[*]._key, kh_own[*]._key),
+                // As the check, which admits by group membership: the start's own
+                // groups declare a scope even when no hierarchy edge links them.
                 declared: (
-                    FOR a IN APPEND([kh_start], kh_ancs)
+                    FOR a IN UNION_DISTINCT([kh_start], kh_ancs, kh_own)
                         FILTER IS_SAME_COLLECTION("{groups}", a)
                             AND a.permissionModel == "RECORD_GROUP_LEVEL" AND a.connectorId == @app_id
                         RETURN a._key
@@ -18033,7 +18162,6 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """The page row, the v2 projection with the listing's computed fields."""
         _records, _groups, _apps = (CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value,
                                  CollectionNames.APPS.value)
-        relations = CollectionNames.NODE_RELATIONS.value
         return ArangoHTTPProvider._kh_v2_projection_aql(
             ArangoHTTPProvider,
             node_var="node",
@@ -18052,15 +18180,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "sizeInBytes": (f"(node.sizeInBytes != null ? node.sizeInBytes"
                                 f" : FIRST(FOR kh_f IN 1..1 OUTBOUND node {CollectionNames.IS_OF_TYPE.value}"
                                 f" RETURN kh_f.sizeInBytes))"),
-                # Collection items often belong to the folder instead of hanging
-                # off it by a hierarchy edge.
-                "hasChildren": (
-                    f"LENGTH(FOR kh_ch, kh_ce IN 1..1 OUTBOUND node {relations}"
-                    f" FILTER kh_ce.relationshipType IN {_HIERARCHY_AQL} AND kh_ch.isDeleted != true"
-                    f" LIMIT 1 RETURN 1) > 0"
-                    f" OR LENGTH(FOR kh_ch IN 1..1 INBOUND node {CollectionNames.BELONGS_TO.value}"
-                    f" FILTER kh_ch.isDeleted != true LIMIT 1 RETURN 1) > 0"
-                ),
+                "hasChildren": _aql_kh_has_children("node"),
             },
             include_comparator=False,
         )
