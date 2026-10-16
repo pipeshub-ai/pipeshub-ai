@@ -46,7 +46,7 @@ USERS = CollectionNames.USERS.value
 EDGE_COLLECTIONS = (
     CollectionNames.PERMISSION.value,
     CollectionNames.IS_OF_TYPE.value,
-    CollectionNames.RECORD_RELATIONS.value,
+    CollectionNames.NODE_RELATIONS.value,
 )
 
 logger = logging.getLogger("artifact-delete-it")

@@ -432,6 +432,27 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("toolset", ADMIN, True, 200, words='"canEdit":true', absent=('"canEdit":false',)),
         ),
     ),
+    # The knowledge hub lists what the caller may open; the admin flag only labels the
+    # root's `permissions` block and is unused below a parent.
+    ConditionalRoute(
+        "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_root_nodes",
+        "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes",
+        cases=(
+            Case("hub", MEMBER, True, 200, '"items"'),
+            Case("hub", ADMIN, True, 200, '"items"'),
+        ),
+        params={"limit": "50"},
+        same_for_everyone="the admin flag fills only the root permissions block",
+    ),
+    ConditionalRoute(
+        "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes",
+        "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes/app/{target}",
+        cases=(
+            Case("personal", CREATOR, True, 200, '"items"'),
+            Case("personal", ADMIN, False, 404, "Node not found"),
+        ),
+        params={"limit": "50"},
+    ),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.
     ConditionalRoute(
