@@ -322,6 +322,9 @@ class Record(BaseModel):
     preview_renderable: bool | None = True
     is_shared: bool | None = False
     shared_with_me_record_group_ids: list[str] = Field(default_factory=list)
+    # Write-time only. The connector listed every group the record is shared into,
+    # so one it no longer lists is left; otherwise a shorter list removes nothing.
+    shared_groups_complete: bool = Field(default=False)
     hide_weburl: bool = Field(default=False, description="Flag indicating if web URL should be hidden")
     is_internal: bool = Field(default=False, description="Flag indicating if record is internal")
     is_placeholder: bool = Field(default=False, description="Stub parent created for a not-yet-synced or out-of-scope ancestor; reconciled when the real record syncs")

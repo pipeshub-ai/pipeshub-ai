@@ -1995,7 +1995,7 @@ class TestProcessDriveItem:
                 {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
                 {
                     "id": "p2", "role": "reader", "type": "user", "emailAddress": "member@x.com",
-                    "permissionDetails": [{"permissionType": "file"}],
+                    "permissionDetails": [{"permissionType": "file", "inherited": False}],
                 },
             ],
         })
@@ -2015,7 +2015,7 @@ class TestProcessDriveItem:
                 {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
                 {
                     "id": "p2", "role": "reader", "type": "user", "emailAddress": "external@x.com",
-                    "permissionDetails": [{"permissionType": "file"}],
+                    "permissionDetails": [{"permissionType": "file", "inherited": False}],
                 },
             ],
         })

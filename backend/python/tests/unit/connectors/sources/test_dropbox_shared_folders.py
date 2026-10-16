@@ -93,6 +93,15 @@ class TestFolderGrants:
     def test_a_user_without_a_usable_email_is_skipped(self) -> None:
         assert folder_grants([_user("", "viewer"), _user("hidden#", "viewer")], [], []) == []
 
+    def test_traverse_no_access_and_unknown_levels_grant_nothing(self) -> None:
+        grants = folder_grants(
+            [_user("traverse@x.com", "traverse"), _user("none@x.com", "no_access"), _user("odd@x.com", "other"),
+             _user("quiet@x.com", "viewer_no_comment")],
+            [SimpleNamespace(group=SimpleNamespace(group_id="g:1"), access_type=_tag("traverse"), is_inherited=False)],
+            [SimpleNamespace(invitee=SimpleNamespace(email="guest@y.com"), access_type=_tag("no_access"), is_inherited=False)],
+        )
+        assert [(g.email, g.type) for g in grants] == [("quiet@x.com", PermissionType.READ)]
+
 
 def _file(*, parent: str | None = None, own: str | None = None) -> SimpleNamespace:
     info = None if parent is None and own is None else SimpleNamespace(parent_shared_folder_id=parent, shared_folder_id=own)

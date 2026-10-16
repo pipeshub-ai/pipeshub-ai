@@ -126,6 +126,10 @@ _MAX_STREAM_CANDIDATES = 25
 SHARING_CHANGE_EVENTS = frozenset({
     "shared_content_add_member",
     "shared_content_remove_member",
+    "shared_content_relinquish_membership",
+    "shared_content_add_invitees",
+    "shared_content_remove_invitees",
+    "shared_content_claim_invitation",
     "shared_content_change_member_role",
     "shared_content_unshare",
     "shared_folder_create",
@@ -347,6 +351,8 @@ class DropboxConnector(BaseConnector):
         self.rate_limiter = AsyncLimiter(50, 1)  # 50 requests per second
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+        # This run's shared folders, so a sharing event is re-read as the folder's syncer.
+        self._shared_folder_plan: dict[str, SharedFolder] = {}
 
     async def init(self) -> bool:
         """Initializes the Dropbox client using credentials from the config service."""
@@ -1213,6 +1219,7 @@ class DropboxConnector(BaseConnector):
             self.logger.info(f"Processing {len(users_to_sync)} active users out of {len(users)} total users")
 
             plan = await self._plan_shared_folders(users_to_sync)
+            self._shared_folder_plan = plan
             await self._sync_shared_folder_groups(plan)
             assigned: dict[str, list[str]] = {}
             for folder in plan.values():
@@ -1296,24 +1303,18 @@ class DropboxConnector(BaseConnector):
             cursor = _next_cursor(response.data)
         return entries
 
-    async def _sync_shared_folder_groups(self, plan: dict[str, SharedFolder], *, reread: frozenset[str] = frozenset()) -> None:
+    async def _sync_shared_folder_groups(self, plan: dict[str, SharedFolder]) -> None:
         """Write each shared folder as a record group under its own name, granted to its members.
 
-        Members are read when the folder is new, still a placeholder, renamed, or in
-        ``reread``; otherwise the stored grants stay (None) and sharing events keep
-        them current, so a sync does not list every folder's members again.
+        Members are read every time, in place of the stored grants: a member who left
+        can no longer read the folder, so the event that says so can't be relied on.
         Team folders are written from the team folder list.
         """
         for folder in parents_first(plan):
             if folder.is_team_folder:
                 continue
             try:
-                stored = await self.data_entities_processor.get_record_group_by_external_id(
-                    self.connector_id, folder.folder_id
-                )
-                grants = None
-                if stored is None or stored.name != folder.name or folder.folder_id in reread:
-                    grants = await self._shared_folder_members(folder.folder_id, folder.syncer)
+                grants = await self._shared_folder_members(folder.folder_id, folder.syncer)
                 record_group = RecordGroup(
                     name=folder.name,
                     org_id=self.data_entities_processor.org_id,
@@ -1333,14 +1334,18 @@ class DropboxConnector(BaseConnector):
         """A shared folder's own members as grants, every page; None when they could not all be read."""
         response = await self.data_source.sharing_list_folder_members(shared_folder_id=folder_id, team_member_id=member_id)
         if not response.success:
-            self.logger.warning(f"Could not read the members of shared folder {folder_id}: {response.error}")
+            self.logger.error(
+                f"Could not read the members of shared folder {folder_id}, so its stored grants stay: {response.error}"
+            )
             return None
         users, groups, invitees = list(response.data.users), list(response.data.groups), list(response.data.invitees)
         cursor = _next_cursor(response.data)
         while cursor:
             response = await self.data_source.sharing_list_folder_members_continue(cursor=cursor, team_member_id=member_id)
             if not response.success:
-                self.logger.warning(f"Could not read every member of shared folder {folder_id}: {response.error}")
+                self.logger.error(
+                    f"Could not read every member of shared folder {folder_id}, so its stored grants stay: {response.error}"
+                )
                 return None
             users.extend(response.data.users)
             groups.extend(response.data.groups)
@@ -1348,14 +1353,22 @@ class DropboxConnector(BaseConnector):
             cursor = _next_cursor(response.data)
         return folder_grants(users, groups, invitees)
 
-    async def _refresh_shared_folder(self, folder_id: str, member_id: str) -> None:
-        """Re-read one shared folder's name, place and members after a sharing event on it."""
+    async def _refresh_shared_folder(self, folder_id: str, event_member_id: str) -> None:
+        """Re-read one shared folder's name, place and members after a sharing event on it.
+
+        It is read as the member who lists it this run: the event's member may be the
+        one who just left. A folder this run did not list (shared since) has only them.
+        """
+        planned = self._shared_folder_plan.get(folder_id)
+        member_id = planned.syncer if planned else event_member_id
         response = await self.data_source.sharing_get_folder_metadata(shared_folder_id=folder_id, team_member_id=member_id)
         if not response.success:
-            self.logger.warning(f"Could not read shared folder {folder_id} after a sharing event: {response.error}")
+            self.logger.error(
+                f"Could not read shared folder {folder_id} as {member_id} after a sharing event, so its stored "
+                f"grants stay until a full sync re-reads its members: {response.error}"
+            )
             return
-        plan = plan_shared_folders({member_id: [response.data]})
-        await self._sync_shared_folder_groups(plan, reread=frozenset(plan))
+        await self._sync_shared_folder_groups(plan_shared_folders({member_id: [response.data]}))
 
     async def _drop_mount_record(self, entry: object) -> None:
         """Remove a record an earlier sync wrote for a shared folder's mount point; the folder is a record group now."""

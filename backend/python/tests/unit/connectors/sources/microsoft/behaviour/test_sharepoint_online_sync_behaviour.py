@@ -1179,6 +1179,7 @@ class TestSharingChanges:
 class TestPrincipalMapping:
     async def test_an_m365_owners_grant_reaches_only_the_group_owners(self, connector, api, db) -> None:
         api.on("GET", f"/v1.0/groups/{M365_GROUP_ID}/owners", page([user_member("u-owner", "olu@contoso.com")]))
+        api.on("GET", f"/v1.0/groups/{M365_GROUP_ID}", {"id": M365_GROUP_ID, "groupTypes": ["Unified"]})
         delta_pages(api, {None: page([file_item("i1", "a.pdf"), file_item("i2", "b.pdf")], delta_link=delta_url("d1"))})
         serve_item(api, "i1", [
             m365_grant(M365_GROUP_ID, "IT Team Site Owners", "owner", owners_claim=True),
@@ -1194,6 +1195,16 @@ class TestPrincipalMapping:
         }
         assert mapped(db.record_permissions["i2"]) == {(EntityType.USER, "u-owner", PermissionType.OWNER)}
         assert len(api.calls("GET", f"/v1.0/groups/{M365_GROUP_ID}/owners")) == 1, "owners are read once per run"
+
+    async def test_a_security_group_named_owners_keeps_all_its_members(self, connector, api, db) -> None:
+        api.on("GET", "/v1.0/groups/sec-1", {"id": "sec-1", "groupTypes": []})
+        delta_pages(api, {None: page([file_item("i1", "a.pdf")], delta_link=delta_url("d1"))})
+        serve_item(api, "i1", [m365_grant("sec-1", "Data Owners", "read")])
+
+        await sync_site(connector)
+
+        assert mapped(db.record_permissions["i1"]) == {(EntityType.GROUP, "sec-1", PermissionType.READ)}
+        assert not api.calls("GET", "/v1.0/groups/sec-1/owners")
 
     async def test_a_site_group_holding_everyone_also_grants_the_org(self, connector, api, db) -> None:
         serve_site(api)

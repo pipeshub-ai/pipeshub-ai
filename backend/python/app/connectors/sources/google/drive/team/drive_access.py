@@ -13,7 +13,8 @@ def permission_is_direct(permission: dict) -> bool | None:
     for detail in details:
         if not isinstance(detail, dict):
             continue
-        if detail.get("inherited") is False or detail.get("permissionType") == "file":
+        # A "file" entry can still be inherited from a parent folder.
+        if detail.get("inherited") is False:
             return True
     return False
 

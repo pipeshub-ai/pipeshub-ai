@@ -454,6 +454,33 @@ class TestLinearConnectorTeams:
             assert rg.parent_external_group_id == "team-parent"
 
 
+    @pytest.mark.asyncio
+    async def test_only_a_team_without_sub_teams_is_declared(self) -> None:
+        """A declared group admits every group below it, and a private sub-team
+        is hidden from its parent team's members."""
+        from app.models.entities import PermissionModel
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        team = lambda tid, parent=None: {  # noqa: E731
+            "id": tid, "name": tid, "key": tid.upper(), "private": False,
+            "parent": {"id": parent, "name": parent} if parent else None, "members": {"nodes": []},
+        }
+        mock_ds = MagicMock()
+        mock_ds.teams = AsyncMock(return_value=_mock_teams_response(
+            [team("eng"), team("fe", parent="eng"), team("ops")], has_next=False,
+        ))
+
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            _, record_groups = await connector._fetch_teams()
+            models = {rg.external_group_id: rg.permission_model for rg, _ in record_groups}
+            assert models == {"eng": None, "fe": PermissionModel.RECORD_GROUP_LEVEL,
+                              "ops": PermissionModel.RECORD_GROUP_LEVEL}
+
+            _, record_groups = await connector._fetch_teams(team_ids=["ops"])
+            assert all(rg.permission_model is None for rg, _ in record_groups)
+
 # ===================================================================
 # LinearConnector - Sync orchestration
 # ===================================================================

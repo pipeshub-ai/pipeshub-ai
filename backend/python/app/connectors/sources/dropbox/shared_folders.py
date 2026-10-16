@@ -19,7 +19,13 @@ if TYPE_CHECKING:
 
 # Dropbox access levels, strongest first; the member listing a folder should be able to read all of it.
 _ACCESS_RANK = {"owner": 0, "editor": 1, "viewer": 2, "viewer_no_comment": 3, "traverse": 4}
-_PERMISSION = {"owner": PermissionType.OWNER, "editor": PermissionType.WRITE}
+# Levels that open a folder's content; traverse, no_access and anything new grant nothing.
+_PERMISSION = {
+    "owner": PermissionType.OWNER,
+    "editor": PermissionType.WRITE,
+    "viewer": PermissionType.READ,
+    "viewer_no_comment": PermissionType.READ,
+}
 
 
 @dataclass
@@ -84,21 +90,21 @@ def folder_grants(users: Iterable, groups: Iterable, invitees: Iterable) -> list
     for membership in users:
         user = membership.user
         email = getattr(user, "email", None)
-        if getattr(membership, "is_inherited", False) is True or not email or email.endswith("#"):
+        level = _permission(membership)
+        if getattr(membership, "is_inherited", False) is True or not email or email.endswith("#") or level is None:
             continue
-        grants.append(Permission(external_id=user.account_id, email=email,
-                                 type=_permission(membership), entity_type=EntityType.USER))
+        grants.append(Permission(external_id=user.account_id, email=email, type=level, entity_type=EntityType.USER))
     for membership in groups:
-        if getattr(membership, "is_inherited", False) is True:
+        level = _permission(membership)
+        if getattr(membership, "is_inherited", False) is True or level is None:
             continue
-        grants.append(Permission(external_id=membership.group.group_id, type=_permission(membership),
-                                 entity_type=EntityType.GROUP))
+        grants.append(Permission(external_id=membership.group.group_id, type=level, entity_type=EntityType.GROUP))
     for membership in invitees:
         email = getattr(getattr(membership, "invitee", None), "email", None)
-        if getattr(membership, "is_inherited", False) is True or not email:
+        level = _permission(membership)
+        if getattr(membership, "is_inherited", False) is True or not email or level is None:
             continue
-        grants.append(Permission(external_id=email, email=email, type=_permission(membership),
-                                 entity_type=EntityType.USER))
+        grants.append(Permission(external_id=email, email=email, type=level, entity_type=EntityType.USER))
     return grants
 
 
@@ -121,5 +127,5 @@ def outside_namespace(entry: object, namespace_id: str | None, shared_folder_ids
     return bool(parent) and parent != namespace_id and parent in shared_folder_ids
 
 
-def _permission(membership: object) -> PermissionType:
-    return _PERMISSION.get(getattr(getattr(membership, "access_type", None), "_tag", "viewer"), PermissionType.READ)
+def _permission(membership: object) -> PermissionType | None:
+    return _PERMISSION.get(getattr(getattr(membership, "access_type", None), "_tag", None))

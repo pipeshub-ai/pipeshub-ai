@@ -1822,6 +1822,7 @@ class TestRunSync:
         c._sync_spaces = AsyncMock(return_value=[space])
         c._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
         c._sync_permission_changes_from_audit_log = AsyncMock()
+        c._sweep_placeholder_records = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()

@@ -968,7 +968,7 @@ class GoogleDriveTeamConnector(BaseConnector):
             self.logger.warning(f"Unknown Google Drive role '{role}', defaulting to READ")
             return PermissionType.READ
 
-    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: Optional[str] = None) -> Optional[EntityType]:
+    def _map_drive_permission_type_to_entity_type(self, permission_type: str, email: str | None = None) -> EntityType | None:
         """
         Map Google Drive permission type to EntityType enum.
 
@@ -997,7 +997,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         resource_id: str,
         is_drive: bool = False,
         user_email: Optional[str] = None,
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
         *,
         inherited_permissions_disabled: bool = False,
     ) -> Tuple[List[Permission], bool, List[str]]:
@@ -1089,11 +1089,15 @@ class GoogleDriveTeamConnector(BaseConnector):
 
                         self._track_external_collaborator(entity_type, email)
 
-                        # A "file"-type entry means this user was granted access directly on this
-                        # item, as opposed to inheriting it via Shared Drive membership ("member").
+                        # A "file"-type entry means this user was granted access on an item, as
+                        # opposed to Shared Drive membership ("member"); inherited ones were
+                        # granted on a parent folder, not on this item.
                         permission_details = perm_data.get("permissionDetails") or []
                         if entity_type == EntityType.USER and email and any(
-                            detail.get("permissionType") == "file" for detail in permission_details
+                            isinstance(detail, dict)
+                            and detail.get("permissionType") == "file"
+                            and detail.get("inherited") is False
+                            for detail in permission_details
                         ):
                             individually_shared_emails.add(email)
 
@@ -1164,22 +1168,6 @@ class GoogleDriveTeamConnector(BaseConnector):
                     self.logger.error(f"Error fetching permissions for {resource_type} {resource_id}: {e}", exc_info=True)
                     return ([], True, [])
 
-        # If we found an "anyone with link" permission and have a user_email, create a fallback permission
-        if anyone_with_link_permission_type is not None and user_email:
-            # Check if user_email is already in the permissions list
-            user_already_has_permission = any(
-                perm.email == user_email for perm in permissions
-            )
-
-            if not user_already_has_permission:
-                fallback_permission = Permission(
-                    email=user_email,
-                    type=anyone_with_link_permission_type,
-                    entity_type=EntityType.USER
-                )
-                self.logger.info("Anyone with link permission found for file")
-                return ([fallback_permission], True, list(individually_shared_emails))
-
         # A successful but empty ACL means this user cannot enumerate permissions: a
         # viewer on a shared drive item gets 200 with an empty list rather than the 403
         # handled above. Record the access they demonstrably have instead of leaving a
@@ -1191,7 +1179,11 @@ class GoogleDriveTeamConnector(BaseConnector):
                 f"falling back to read access for {user_email}"
             )
             return (
-                [Permission(email=user_email, type=PermissionType.READ, entity_type=EntityType.USER)],
+                [Permission(
+                    email=user_email,
+                    type=anyone_with_link_permission_type or PermissionType.READ,
+                    entity_type=EntityType.USER,
+                )],
                 True,
                 list(individually_shared_emails),
             )
@@ -1204,6 +1196,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             is_drive=is_drive,
             organizer_permissions=organizer_permissions,
         )
+        # The syncing user may reach the item only through the link (or a group), so add
+        # their grant to the list that was read rather than replacing it.
+        if anyone_with_link_permission_type is not None and user_email and not any(
+            (perm.email or "").lower() == user_email.lower() for perm in stored
+        ):
+            stored = [*stored, Permission(
+                email=user_email,
+                type=anyone_with_link_permission_type,
+                entity_type=EntityType.USER,
+            )]
         return (
             DrivePermissionBatch(stored, saw_permission_details=bool(saw_permission_details and not is_drive)),
             False,
@@ -1486,7 +1488,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         batch_records: List,
         batch_count: int,
         total_counter: int,
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
         tracked_folder_ids: Optional[set] = None,
         *,
         force_shared_with_me: bool = False
@@ -2259,7 +2261,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_email: str,
         drive_id: str,
         is_shared_drive: bool = False,
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
         tracked_folder_ids: Optional[set] = None,
         *,
         bypass_folder_filter: bool = False,
@@ -2344,10 +2346,16 @@ class GoogleDriveTeamConnector(BaseConnector):
             # Determine indexing status - shared files are not indexed by default
             is_shared = metadata.get("shared", False) or force_shared_with_me
 
-            # Check if file is shared with me (user is not owner and file is shared)
-            owners = metadata.get("owners", [])
-            owner_emails = [owner.get("emailAddress") for owner in owners if owner.get("emailAddress")]
-            is_shared_with_me = force_shared_with_me or (is_shared and user_email not in owner_emails)
+            # Decided by ownership: Drive reports shared=false for items nested in a shared
+            # folder, so the owner's pass and a sharee's pass would keep moving the item.
+            # Shared drive items have no owners; only the shared-with-me paths force them.
+            owners = metadata.get("owners") or []
+            owner_emails = {owner["emailAddress"].lower() for owner in owners if owner.get("emailAddress")}
+            is_shared_with_me = force_shared_with_me or (
+                not metadata.get("driveId")
+                and bool(owner_emails)
+                and (user_email or "").lower() not in owner_emails
+            )
 
             if not is_shared_drive and not is_shared_with_me:
                 if existing_record and existing_record.external_record_group_id is None:
@@ -2503,7 +2511,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         user_email: str,
         drive_id: str,
         is_shared_drive: bool = False,
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
         tracked_folder_ids: Optional[set] = None,
         *,
         bypass_folder_filter: bool = False,
@@ -4064,7 +4072,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self,
         request,
         error_context: str = "download",
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
     ) -> AsyncGenerator[bytes, None]:
         """Stream a Drive media request. ``MediaIoBaseDownload`` stays in this module so tests can patch it."""
         source = drive_data_source or self.drive_data_source
@@ -4149,7 +4157,7 @@ class GoogleDriveTeamConnector(BaseConnector):
         self,
         file_id: str,
         drive_service,
-        drive_data_source: Optional[GoogleDriveDataSource] = None,
+        drive_data_source: GoogleDriveDataSource | None = None,
     ) -> Dict:
         """
         Get file metadata from Google Drive API.
