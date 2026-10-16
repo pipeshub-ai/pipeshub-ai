@@ -172,6 +172,11 @@ ASSIGNED_STAFF_GROUP_PREFIX = "assigned_"
 # Agents whose access is "tickets in their organization", per organization. Not "org_":
 # that prefix is the organization's customers.
 ORG_AGENTS_GROUP_PREFIX = "orgagents_"
+# Per ticket folder: the customers its tickets grant by email, so they can open the
+# folder their tickets are filed in instead of finding them lifted to the app root.
+# Only added to, so a customer whose ticket moved away keeps the folder until a full
+# sync wipes the edges.
+FOLDER_CUSTOMERS_GROUP_PREFIX = "customers_"
 # Earlier per-staff groups; emptied every sync so grants written with them stay inert.
 RETIRED_STAFF_GROUP_PREFIX = "staff_"
 ASSIGNED_ONLY_ACCESS = frozenset({"assigned", "assigned_only"})
@@ -189,6 +194,13 @@ REQUIRED_OAUTH_SCOPES = ("read",)
 AUTH_FAILED_MESSAGE = (
     "Zendesk rejected the stored credentials and refreshing them failed. "
     "Re-authorize the connector."
+)
+
+
+NOT_ADMIN_MESSAGE = (
+    "Zendesk is connected as {email}, whose role is {role}. The connector reads Zendesk's "
+    "incremental ticket and user exports, which only admins may call, so reconnect it "
+    "with a Zendesk admin account."
 )
 
 
@@ -358,6 +370,8 @@ class ZendeskConnector(BaseConnector):
         self._current_help_center_group_ids: list[str] = []
         self._current_ticket_group_ids: list[str] = []
         self._deleted_ticket_group_ids: set[str] = set()
+        self._ticket_folders: dict[str, tuple[RecordGroup, list[Permission]]] = {}
+        self._folder_org_group_ids: dict[str, set[str]] = {}
         self._skipped_this_sync: list[str] = []
         self._token_refresh_lock = asyncio.Lock()
         self.records_sync_point = SyncPoint(
@@ -455,6 +469,36 @@ class ZendeskConnector(BaseConnector):
     def _skip(self, what: str) -> None:
         self._skipped_this_sync.append(what)
 
+    async def _ensure_admin_account(self) -> None:
+        """Stop with one actionable error when the connected account is not an admin.
+
+        Otherwise every admin-only export fails on its own with a bare 403, and the run
+        still ends as completed with nothing synced. A lookup that fails for any other
+        reason does not block the sync: the exports report their own failures.
+        """
+        datasource = await self._get_fresh_datasource()
+        response = await self._call_api_with_retry(
+            datasource.show_current_user, "zendesk/show_current_user"
+        )
+        user = (
+            self._extract_required_object(response.data, "user")
+            if response is not None and response.success
+            else None
+        )
+        if not user:
+            self.logger.warning(
+                "Zendesk: could not read the connected account (%s) — syncing anyway",
+                response.error if response is not None else "retries exhausted",
+            )
+            return
+        if user.get("role") != "admin":
+            message = NOT_ADMIN_MESSAGE.format(
+                email=user.get("email") or "an unknown account",
+                role=user.get("role") or "unknown",
+            )
+            self.logger.error("Zendesk: %s", message)
+            raise ZendeskAuthError(message)
+
     async def _run_sync(self) -> None:
         self.logger.info(f"Starting Zendesk sync for connector {self.connector_id}")
 
@@ -465,6 +509,8 @@ class ZendeskConnector(BaseConnector):
         self._section_id_to_data.clear()
         self._category_id_to_data.clear()
         self._org_id_to_data.clear()
+        self._ticket_folders.clear()
+        self._folder_org_group_ids.clear()
 
         self.sync_filters, self.indexing_filters = await load_connector_filters(
             self.config_service,
@@ -472,6 +518,7 @@ class ZendeskConnector(BaseConnector):
             self.connector_id,
             self.logger,
         )
+        await self._ensure_admin_account()
 
         # A full sync deletes the sync points and every edge with them, keeping the
         # nodes. Skipping an unchanged record would leave it stranded: still in the
@@ -497,7 +544,6 @@ class ZendeskConnector(BaseConnector):
         if users:
             await self.data_entities_processor.on_new_app_users(users)
         self.logger.info(f"Zendesk: synced {len(users)} users")
-        await self._ensure_workspace_app_edge()
 
         self._role_ticket_access, self._roles_complete = (
             await self._fetch_custom_role_ticket_access()
@@ -562,7 +608,9 @@ class ZendeskConnector(BaseConnector):
             )
 
         if group_record_groups:
-            await self.data_entities_processor.on_new_record_groups(group_record_groups)
+            await self.data_entities_processor.on_new_record_groups(
+                await self._prepare_ticket_folders(group_record_groups)
+            )
         self.logger.info(f"Zendesk: synced {len(group_record_groups)} groups")
 
         org_user_groups, orgs_complete = await self._fetch_organizations()
@@ -608,7 +656,7 @@ class ZendeskConnector(BaseConnector):
         if users_complete and memberships_complete and orgs_complete:
             try:
                 self._refresh_ticket_grants, users_checkpoint = (
-                    await self._users_deleted_since_last_sync()
+                    await self._users_revoked_since_last_sync()
                 )
                 if not self._rebuild_ticket_edges and await self._ticket_grants_outdated():
                     self.logger.info(
@@ -680,18 +728,6 @@ class ZendeskConnector(BaseConnector):
             self._user_id_to_app_user[app_user.source_user_id] = app_user
 
         return users, user_email_map, complete
-
-    async def _ensure_workspace_app_edge(self) -> None:
-        """Let every workspace member reach this connector's records they hold a grant on.
-
-        Only agents and admins are app users, and search starts from the apps a user
-        belongs to. Without this edge a public Help Center article, granted org-wide,
-        reaches nobody else. Non-fatal: staff access does not depend on it.
-        """
-        try:
-            await self.data_entities_processor.ensure_team_app_edge(self.connector_id)
-        except Exception as e:
-            self.logger.warning(f"Zendesk: could not link the workspace to the app: {e}")
 
     async def _ticket_grants_outdated(self) -> bool:
         """Whether the stored tickets carry grants from an earlier model (see TICKET_GRANT_MODEL)."""
@@ -858,6 +894,63 @@ class ZendeskConnector(BaseConnector):
             group_type=RecordGroupType.PROJECT,
         )
         return record_group, [self._all_tickets_permission(), self._public_groups_permission()]
+
+    async def _prepare_ticket_folders(
+        self, record_groups: list[tuple[RecordGroup, list[Permission]]]
+    ) -> list[tuple[RecordGroup, list[Permission]]]:
+        """The ticket folders, each also open to its customer group and to the
+        ticket-sharing organizations whose tickets it holds.
+
+        A folder's grants are replaced on every write and only the graph remembers
+        which organizations earlier syncs found in it, so those are read back first.
+        """
+        self._ticket_folders = {rg.external_group_id: (rg, grants) for rg, grants in record_groups}
+        # Before the folders: a grant to a group that does not exist yet is dropped.
+        await self.data_entities_processor.on_new_user_groups(
+            [(self._folder_customers_group(rg), []) for rg, _ in record_groups],
+            replace_members=False,
+        )
+        self._folder_org_group_ids = {
+            folder_id: await self._stored_folder_org_group_ids(folder_id)
+            for folder_id in self._ticket_folders
+        }
+        return [self._ticket_folder_with_grants(folder_id) for folder_id in self._ticket_folders]
+
+    async def _stored_folder_org_group_ids(self, folder_id: str) -> set[str]:
+        folder = await self.data_entities_processor.get_record_group_by_external_id(
+            self.connector_id, folder_id
+        )
+        if folder is None:
+            return set()
+        # Raising: read as none, the rewrite would close the folder to those organizations.
+        groups = await self.data_entities_processor.get_groups_with_permission_to_node(
+            folder.id, CollectionNames.RECORD_GROUPS.value, raise_on_error=True
+        )
+        return {
+            group.source_user_group_id
+            for group in groups
+            if group.source_user_group_id.startswith("org_")
+        }
+
+    def _ticket_folder_with_grants(self, folder_id: str) -> tuple[RecordGroup, list[Permission]]:
+        record_group, grants = self._ticket_folders[folder_id]
+        readers = [
+            f"{FOLDER_CUSTOMERS_GROUP_PREFIX}{folder_id}",
+            *sorted(self._folder_org_group_ids.get(folder_id, ())),
+        ]
+        return record_group, [
+            *grants,
+            *(
+                Permission(external_id=group_id, type=PermissionType.READ, entity_type=EntityType.GROUP)
+                for group_id in readers
+            ),
+        ]
+
+    def _folder_customers_group(self, record_group: RecordGroup) -> AppUserGroup:
+        return self._person_group(
+            f"{FOLDER_CUSTOMERS_GROUP_PREFIX}{record_group.external_group_id}",
+            f"Zendesk: customers of {record_group.name}",
+        )
 
     async def _fetch_custom_role_ticket_access(self) -> tuple[dict[str, str], bool]:
         """Map custom role id -> ticket_access, plus whether the list is trustworthy.
@@ -1318,13 +1411,13 @@ class ZendeskConnector(BaseConnector):
                 replace_members=False,
             )
 
-    async def _users_deleted_since_last_sync(self) -> tuple[bool, int | None]:
-        """Whether anyone was deleted since the last completed ticket sync.
+    async def _users_revoked_since_last_sync(self) -> tuple[bool, int | None]:
+        """Whether anyone was deleted or suspended since the last completed ticket sync.
 
-        Deleting a user drops them from every ticket's CCs without moving the ticket's
-        updated_at, and Zendesk scrubs their email, so their email grants can only be
-        withdrawn by re-reading the tickets. Second value is the checkpoint to save once
-        that has happened; None leaves the saved one so the next run asks again.
+        Neither moves the updated_at of the tickets the user is on, and a customer is
+        granted on each ticket by email, so their grants can only be withdrawn by
+        re-reading the tickets. Second value is the checkpoint to save once that has
+        happened; None leaves the saved one so the next run asks again.
         """
         checkpoint = get_epoch_timestamp_in_ms() // 1000 - INCREMENTAL_SAFETY_LAG_SECONDS
         if self._rebuild_ticket_edges:
@@ -1334,7 +1427,7 @@ class ZendeskConnector(BaseConnector):
         )
         if not start_time:
             return False, checkpoint
-        deleted = False
+        revoked = False
         cursor: str | None = None
         while True:
             response = await self._call_incremental(
@@ -1343,17 +1436,21 @@ class ZendeskConnector(BaseConnector):
             payload = response.data if response is not None and response.success else None
             if not isinstance(payload, dict) or not isinstance(payload.get("users"), list):
                 self.logger.warning(
-                    "Zendesk: could not check for deleted users (%s) — will retry next sync",
+                    "Zendesk: could not check for deleted or suspended users (%s) — will "
+                    "retry next sync",
                     response.error if response is not None else "retries exhausted",
                 )
                 return False, None
-            if any(user.get("active") is False for user in payload["users"]):
-                deleted = True
+            if any(
+                user.get("active") is False or user.get("suspended")
+                for user in payload["users"]
+            ):
+                revoked = True
             if payload.get("end_of_stream", True):
-                return deleted, checkpoint
+                return revoked, checkpoint
             next_cursor = payload.get("after_cursor")
             if not next_cursor or next_cursor == cursor:
-                return deleted, None
+                return revoked, None
             cursor = next_cursor
 
     async def _sync_tickets(self) -> int:
@@ -1373,8 +1470,8 @@ class ZendeskConnector(BaseConnector):
         )
         if self._refresh_ticket_grants:
             self.logger.info(
-                "Zendesk: users were deleted since the last sync — re-reading every "
-                "ticket to withdraw their grants"
+                "Zendesk: users were deleted or suspended since the last sync — "
+                "re-reading every ticket to withdraw their grants"
             )
         max_end_time = start_time
         complete = True
@@ -1599,6 +1696,8 @@ class ZendeskConnector(BaseConnector):
             await self._replace_changed_record_permissions(
                 records_with_permissions, replace_all=replace_grants
             )
+            await self._add_folder_customers(tickets, records_with_permissions)
+            await self._grant_folders_to_sharing_orgs(records_with_permissions)
             # At sync time, not on the streaming path: an attachment is a record in
             # its own right and must exist even if its ticket is never indexed. This
             # is also what rebuilds their edges after a full sync wipes them, so an
@@ -1621,6 +1720,88 @@ class ZendeskConnector(BaseConnector):
                 sorted(external_emails), self.connector_id
             )
         return len(records_with_permissions), len(removed_ids), failed_ids
+
+    async def _add_folder_customers(
+        self,
+        tickets: list[dict[str, Any]],
+        records_with_permissions: list[tuple[Record, list[Permission]]],
+    ) -> None:
+        """Put the customers each ticket grants into its folder's customer group.
+
+        Additive, never a rebuild: a page holds a slice of a folder's tickets, and
+        rebuilding from it would drop the customers of every other ticket there.
+        """
+        tickets_by_id = {str(ticket.get("id")): ticket for ticket in tickets}
+        members: dict[str, dict[str, AppUser]] = defaultdict(dict)
+        for record, permissions in records_with_permissions:
+            folder_id = record.external_record_group_id
+            if folder_id not in self._ticket_folders:
+                continue
+            ticket_data = tickets_by_id.get(record.external_record_id, {})
+            for customer in self._ticket_customers(ticket_data, permissions):
+                members[folder_id][customer.email.lower()] = customer
+        if members:
+            await self.data_entities_processor.on_new_user_groups(
+                [
+                    (self._folder_customers_group(self._ticket_folders[folder_id][0]), list(found.values()))
+                    for folder_id, found in members.items()
+                ],
+                replace_members=False,
+            )
+
+    def _ticket_customers(
+        self, ticket_data: dict[str, Any], permissions: list[Permission]
+    ) -> list[AppUser]:
+        """The requester and CCs the ticket grants by email, which only customers get."""
+        granted = {
+            permission.email.lower()
+            for permission in permissions
+            if permission.entity_type == EntityType.USER and permission.email
+        }
+        customers: list[AppUser] = []
+        for user_id in [ticket_data.get("requester_id"), *(ticket_data.get("collaborator_ids") or [])]:
+            user_data = self._user_data(user_id)
+            if (user_data.get("email") or "").lower() in granted:
+                app_user = self._to_app_user(user_data)
+                if app_user:
+                    customers.append(app_user)
+        return customers
+
+    async def _grant_folders_to_sharing_orgs(
+        self, records_with_permissions: list[tuple[Record, list[Permission]]]
+    ) -> None:
+        """Open a ticket's folder to its organization's group while that org shares tickets.
+
+        The group rather than its people: its members are rewritten every sync, so a
+        colleague who joins later, or sharing turned off, reaches the folder too. Only
+        sharing organizations: any other one's group is empty, and a folder write looks
+        up each of its grants. Rewritten only when the folder gains one.
+        """
+        gained: set[str] = set()
+        for record, permissions in records_with_permissions:
+            held = self._folder_org_group_ids.get(record.external_record_group_id)
+            if held is None:
+                continue
+            new_org_group_ids = self._sharing_org_group_ids(permissions) - held
+            if new_org_group_ids:
+                held.update(new_org_group_ids)
+                gained.add(record.external_record_group_id)
+        if gained:
+            await self.data_entities_processor.on_new_record_groups(
+                [self._ticket_folder_with_grants(folder_id) for folder_id in sorted(gained)]
+            )
+
+    def _sharing_org_group_ids(self, permissions: list[Permission]) -> set[str]:
+        return {
+            permission.external_id
+            for permission in permissions
+            if permission.entity_type == EntityType.GROUP
+            and permission.external_id
+            and permission.external_id.startswith("org_")
+            and self._org_data_shares_tickets(
+                self._org_id_to_data.get(permission.external_id.removeprefix("org_"))
+            )
+        }
 
     async def _retry_pending_tickets(self, ticket_ids: list[str]) -> set[str]:
         """Re-read set-aside tickets by id; returns the ones that still fail."""
@@ -1832,9 +2013,10 @@ class ZendeskConnector(BaseConnector):
             ),
             external_record_group_id=external_group_id,
             record_group_type=RecordGroupType.PROJECT,
-            # Unassigned's grants are for tickets with no group; one whose group was
-            # deleted is filed there but carries only its own grants.
-            inherit_permissions=known_group or not group_id,
+            # The folder is also open to every customer and sharing organization with a
+            # ticket in it, so they can browse to their own; inheriting would hand each
+            # of them every other ticket filed there.
+            inherit_permissions=False,
             version=version,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.ZENDESK,
@@ -2048,10 +2230,13 @@ class ZendeskConnector(BaseConnector):
         )
         return len(records_with_permissions)
 
-    async def _delete_empty_record_groups(self, external_group_ids: list[str]) -> list[str]:
+    async def _delete_empty_record_groups(
+        self, external_group_ids: list[str], *, with_customer_groups: bool = False
+    ) -> list[str]:
         """Delete removed folders once their records and child folders have moved.
 
         Returns the ones still holding something, to be retried next sync.
+        ``with_customer_groups``: ticket folders, whose customer group goes with them.
         """
         remaining: list[str] = []
         for external_group_id in external_group_ids:
@@ -2088,6 +2273,10 @@ class ZendeskConnector(BaseConnector):
             )
             if not deleted:
                 remaining.append(external_group_id)
+            elif with_customer_groups:
+                await self.data_entities_processor.on_user_group_deleted(
+                    f"{FOLDER_CUSTOMERS_GROUP_PREFIX}{external_group_id}", self.connector_id
+                )
         return remaining
 
     async def _remove_vanished_articles(self) -> None:
@@ -2185,12 +2374,17 @@ class ZendeskConnector(BaseConnector):
             (set(previous.get("groupIds") or []) | deselected | self._deleted_ticket_group_ids)
             - current
         )
-        remaining = await self._delete_empty_record_groups(stale) if stale else []
+        remaining = (
+            await self._delete_empty_record_groups(stale, with_customer_groups=True)
+            if stale else []
+        )
         if remaining:
             # Zendesk does not touch a deleted group's tickets, so the export never
             # re-files them; re-read them here or the folder outlives its group.
             await self._retry_pending_tickets(await self._ticket_ids_in_groups(remaining))
-            remaining = await self._delete_empty_record_groups(remaining)
+            remaining = await self._delete_empty_record_groups(
+                remaining, with_customer_groups=True
+            )
         await self.records_sync_point.update_sync_point(
             TICKET_GROUPS_STATE_KEY,
             {
