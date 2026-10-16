@@ -3873,7 +3873,10 @@ class DataSourceEntitiesProcessor:
                     if attempt < _DELETE_CONFLICT_ATTEMPTS - 1:
                         await asyncio.sleep(0.2 * (attempt + 1))
                         continue
-                elif is_transient_conflict(e):
+                    # A writer holding the record longer than these quick retries:
+                    # retry_on_deadlock waits it out with a longer backoff.
+                    raise
+                if is_transient_conflict(e):
                     # A Neo4j deadlock: retry_on_deadlock runs the method again.
                     raise
                 result = {"success": False, "reason": str(e)}
