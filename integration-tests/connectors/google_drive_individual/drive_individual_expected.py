@@ -121,7 +121,8 @@ class DriveIndividualExpected:
             source_created_at=source_created_at,
             source_updated_at=source_updated_at,
             weburl=meta.get("webViewLink"),
-            mime_type=mime_type,
+            # Folders are stored with the shared folder type, whatever the source calls them.
+            mime_type=mime_type if is_file else MimeTypes.FOLDER.value,
             is_file=is_file,
             size_in_bytes=int(meta.get("size", 0) or 0),
             extension=file_extension,

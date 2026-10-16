@@ -3736,25 +3736,38 @@ class DataSourceEntitiesProcessor:
         """Link records under a parent written in place of a deleted one with the same external id.
 
         Their stored parent external id already names it; only the edges went with the deleted
-        record. Rewriting the records instead would re-index content that hasn't changed. One
-        idempotent batch: Neo4j commits each statement on its own, so a loop could stop half done.
+        record. Rewriting the records instead would re-index content that hasn't changed. The
+        delete hung them off their record group (``_reparent_orphans``); under a record they must
+        not keep that edge, and one that inherited from the group inherits from the parent instead.
         """
         if not record_ids:
             return
-        ts = get_epoch_timestamp_in_ms()
         async with self.data_store_provider.transaction() as tx_store:
-            await tx_store.batch_create_edges(
-                [{
-                    "from_id": parent_record_id,
-                    "from_collection": CollectionNames.RECORDS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "relationshipType": RecordRelations.PARENT_CHILD.value,
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                } for record_id in record_ids],
-                collection=CollectionNames.RECORD_RELATIONS.value,
-            )
+            parent = await tx_store.get_record_by_key(parent_record_id, raise_on_error=True)
+            if parent is None:
+                raise ValueError(f"Parent record {parent_record_id} not found")
+            # Raw documents: the parent's group decides whether it lends the record its audience.
+            parent_group_id = parent.get("recordGroupId")
+            for record_id in record_ids:
+                record = await tx_store.get_record_by_key(record_id, raise_on_error=True)
+                if record is None:
+                    continue
+                group_id = record.get("recordGroupId")
+                inherited = 0
+                if group_id:
+                    inherited = await tx_store.link_record_to_group(
+                        record_id, group_id, inherit=False, browse_root=False,
+                    )
+                await self._create_hierarchy_edge(
+                    tx_store, parent_record_id, CollectionNames.RECORDS.value,
+                    record_id, CollectionNames.RECORDS.value,
+                )
+                other_group = (
+                    not parent.get("isPlaceholder", False)
+                    and bool(group_id) and bool(parent_group_id) and parent_group_id != group_id
+                )
+                if inherited and not other_group:
+                    await tx_store.create_inherit_permissions_relation_record(record_id, parent_record_id)
 
     @retry_on_deadlock()
     async def on_records_deleted_cascade(
