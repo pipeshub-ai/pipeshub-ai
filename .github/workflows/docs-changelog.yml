@@ -3,6 +3,8 @@ name: Docs Changelog
 # Manual only. Runs the `release-changelog` skill (.claude/skills/release-changelog/SKILL.md)
 # for a published release, converts the result to the docs format, and opens a
 # PR on pipeshub-ai/documentation that adds changelog/platform/<version>.mdx.
+# When changelog/<version>.md is already on main (reviewed notes), it is converted
+# as is and the skill does not run, unless `regenerate` is set.
 # Nothing else in the docs repo is edited; its own workflow regenerates the page.
 #
 # Claude reads contributor-written release notes and PR text, so it runs in a
@@ -23,6 +25,11 @@ on:
         required: false
         default: claude-sonnet-5-5
         type: string
+      regenerate:
+        description: Run the skill even when changelog/<version>.md is already on main
+        required: false
+        default: false
+        type: boolean
 
 env:
   DOCS_REPO: pipeshub-ai/documentation
@@ -41,19 +48,14 @@ jobs:
     outputs:
       version: ${{ steps.release.outputs.version }}
     steps:
-      - name: Check the inputs, the tag and the API key
+      - name: Check the inputs and the tag
         id: release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
           MODEL: ${{ inputs.model }}
-          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
         run: |
           set -euo pipefail
-          if [ "$HAS_API_KEY" != "true" ]; then
-            echo "::error::The ANTHROPIC_API_KEY repository secret is not set."
-            exit 1
-          fi
           # The values reach a command line and a prompt, so allow plain characters only.
           if ! [[ "$TAG" =~ ^[0-9A-Za-z._-]+$ ]]; then
             echo "::error::Tag \"$TAG\" has characters that are not allowed."
@@ -81,9 +83,29 @@ jobs:
         with:
           ref: main
 
+      - name: Use the reviewed notes if they exist
+        id: notes
+        env:
+          VERSION: ${{ steps.release.outputs.version }}
+          REGENERATE: ${{ inputs.regenerate }}
+          HAS_API_KEY: ${{ secrets.ANTHROPIC_API_KEY != '' }}
+        run: |
+          set -euo pipefail
+          if [ -f "changelog/${VERSION}.md" ] && [ "$REGENERATE" != "true" ]; then
+            echo "changelog/${VERSION}.md is on main; converting it without running the skill."
+            echo "run_skill=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$HAS_API_KEY" != "true" ]; then
+            echo "::error::The ANTHROPIC_API_KEY repository secret is not set."
+            exit 1
+          fi
+          echo "run_skill=true" >> "$GITHUB_OUTPUT"
+
       # The skill's own `gh release view ... > file` is denied in a headless run
       # (shell redirects are not covered by a tool allow rule), so save it here.
       - name: Save the release for the skill
+        if: steps.notes.outputs.run_skill == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
@@ -93,6 +115,7 @@ jobs:
           gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name,publishedAt,isPrerelease,body > tmp-release/release.json
 
       - name: Run the release-changelog skill
+        if: steps.notes.outputs.run_skill == 'true'
         uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1
         env:
           GH_TOKEN: ${{ github.token }}
