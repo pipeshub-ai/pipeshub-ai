@@ -16,7 +16,8 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from app.agents.actions.code_graph.code_graph import CodeGraph
-from app.agents.actions.code_graph.ops import DEFAULT_MAX_DEPTH, DEFAULT_NEIGHBOR_LIMIT
+from app.agents.actions.code_graph.neighbours import DEFAULT_NEIGHBOR_LIMIT
+from app.agents.actions.code_graph.path import DEFAULT_MAX_DEPTH
 from app.agents.actions.code_graph.query import DEFAULT_QUERY_LIMIT
 from app.agents.actions.code_graph.repos import (
     AmbiguousRepoNameError,
@@ -85,6 +86,29 @@ class PathBody(RepoRef):
     max_depth: int = Field(default=DEFAULT_MAX_DEPTH, ge=1, le=8)
     edge_types: list[str] | None = None
     undirected: bool = False
+
+
+class SearchBody(RepoRef):
+    pattern: str = Field(min_length=1, max_length=200)
+    mode: Literal["identifier", "text", "regex"] = "identifier"
+    path: str | None = None
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class OutlineBody(RepoRef):
+    file_path: str | None = None
+    record_id: str | None = None
+
+
+class ImpactBody(RepoRef):
+    file_path: str | None = None
+    record_id: str | None = None
+    qualified_name: str | None = None
+    depth: int = Field(default=2, ge=1, le=3)
+
+
+class EntryPointsBody(RepoRef):
+    limit: int = Field(default=30, ge=1, le=200)
 
 
 def _caller(request: Request) -> tuple[str, str]:
@@ -246,4 +270,37 @@ async def code_path(request: Request, body: PathBody) -> JSONResponse:
         qualified_name_b=body.qualified_name_b, max_depth=body.max_depth,
         edge_types=body.edge_types, include_tests=body.include_tests,
         undirected=body.undirected, repo=repo.group_id,
+    ))
+
+
+@router.post("/search")
+async def code_search(request: Request, body: SearchBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.search_code(
+        connector_id=repo.connector_id, pattern=body.pattern, mode=body.mode, path=body.path,
+        limit=body.limit, include_tests=body.include_tests, repo=repo.group_id,
+    ))
+
+
+@router.post("/outline")
+async def code_outline(request: Request, body: OutlineBody) -> JSONResponse:
+    return await _run(request, body, body.record_id, lambda t, repo: t.outline(
+        connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
+        include_tests=body.include_tests, repo=repo.group_id,
+    ))
+
+
+@router.post("/impact")
+async def code_impact(request: Request, body: ImpactBody) -> JSONResponse:
+    return await _run(request, body, body.record_id, lambda t, repo: t.impact(
+        connector_id=repo.connector_id, file_path=body.file_path, record_id=body.record_id,
+        qualified_name=body.qualified_name, depth=body.depth,
+        include_tests=body.include_tests, repo=repo.group_id,
+    ))
+
+
+@router.post("/entry-points")
+async def code_entry_points(request: Request, body: EntryPointsBody) -> JSONResponse:
+    return await _run(request, body, None, lambda t, repo: t.entry_points(
+        connector_id=repo.connector_id, limit=body.limit,
+        include_tests=body.include_tests, repo=repo.group_id,
     ))

@@ -10,6 +10,7 @@ Covers:
 from __future__ import annotations
 
 import json
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -293,28 +294,21 @@ class TestBuildCodeFileRecords:
         assert updates[0].record.to_kafka_record()["extension"] == "py"
 
     async def test_updated_at_is_taken_at_build_time(self) -> None:
-        """A content change must carry a fresh `updatedAtTimestamp`.
-
-        The model default is frozen at import, so relying on it made every
-        modified blob look older than the last code edge build, which then
-        skipped the file and kept its removed CALLS edges.
-        """
+        """A content change must carry a fresh `updatedAtTimestamp`, or the code
+        edge build's watermark skips the file and keeps its removed CALLS edges.
+        The model's default_factory stamps it when the record is built."""
         c = make_mock_connector()
         repos = ReposSync(c)
         repos._process_records = AsyncMock()
 
-        build_time = 1_900_000_000_000
-        with patch(
-            "app.utils.time_conversion.get_epoch_timestamp_in_ms",
-            return_value=build_time,
-        ):
-            await repos.build_code_file_records(
-                [self._blob_node("src/main.py")], _PROJECT_ID, _PROJECT_PATH
-            )
+        before = int(time.time() * 1000)
+        await repos.build_code_file_records(
+            [self._blob_node("src/main.py")], _PROJECT_ID, _PROJECT_PATH
+        )
 
         record = repos._process_records.call_args.args[0][0].record
-        assert record.updated_at == build_time
-        assert record.to_arango_base_record()["updatedAtTimestamp"] == build_time
+        assert record.updated_at >= before
+        assert record.to_arango_base_record()["updatedAtTimestamp"] >= before
 
     async def test_dotfile_blob_skipped(self) -> None:
         c = make_mock_connector()

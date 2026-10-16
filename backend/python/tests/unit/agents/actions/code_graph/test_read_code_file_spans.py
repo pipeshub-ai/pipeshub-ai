@@ -5,7 +5,7 @@ block, and a nested definition's bytes are inside its parent block's. Emitting
 every stored span repeated a class once per method, charged the budget twice,
 and tripped `truncated` early.
 """
-from app.agents.actions.code_graph.ops import _file_code
+from app.agents.actions.code_graph.read import _file_code
 
 
 def _item(qualified_name: str | None, kind: str, start: int, end: int, text: str | None = None) -> dict:

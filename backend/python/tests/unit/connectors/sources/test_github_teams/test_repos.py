@@ -1097,6 +1097,40 @@ class TestFetchCodeFileContentSizeGuard:
 
         assert result == b"print(1)"
 
+    async def test_an_incremental_file_is_read_at_the_commit_it_was_synced_at(self) -> None:
+        """Not at the branch head, which may have moved on since (P-8)."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        record = CodeFileRecord(
+            id="rec-1", org_id="org-1", record_name="ok.py",
+            record_type="CODE_FILE", version=0, origin="CONNECTOR",
+            connector_name="GITHUB TEAMS", connector_id="github-conn-1",
+            external_record_id="/1/blob/ok.py", external_record_group_id="1-code-repository",
+            file_path="ok.py", commit_sha="c0ffee",
+        )
+        refs = []
+
+        def dispatch(method: object, *args: object, **kwargs: object) -> object:
+            if method is c.data_source.get_repo_by_id:
+                return ok_response(repo)
+            if method is c.data_source.get_file_contents:
+                refs.append(args[-1])
+                return ok_response(SimpleNamespace(size=10, decoded_content=b"x = 1"))
+            raise AssertionError(f"unexpected ds_call for {method!r}")
+
+        c.runtime.ds_call.side_effect = dispatch
+        assert await ReposSync(c).fetch_code_file_content(record) == b"x = 1"
+        assert refs == ["c0ffee"]
+
+    async def test_a_record_built_at_a_commit_links_to_that_commit(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        record = ReposSync(c)._build_code_file_record(
+            repo, "src/a.py", "blob-1", True, True, commit_sha="c0ffee")
+        assert record.commit_sha == "c0ffee"
+        assert "/blob/c0ffee/src/a.py" in record.weburl
+        assert record.to_arango_record()["commitSha"] == "c0ffee"
+
 
 class TestLargeBlobFallback:
     """The Contents API returns empty content above 1 MB while the size guard

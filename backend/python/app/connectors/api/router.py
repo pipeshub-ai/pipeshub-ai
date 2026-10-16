@@ -64,6 +64,7 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
+from app.connectors.services.reindex_events import build_reindex_event
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -2434,41 +2435,6 @@ def _parse_status_filters(request_body: dict | None) -> list[str] | None:
     return raw_filters if raw_filters else None
 
 
-def _build_reindex_event(
-    *,
-    event_type: str,
-    org_id: str,
-    connector_id: str,
-    connector_name: str | None = None,
-    record_id: str | None = None,
-    record_group_id: str | None = None,
-    depth: int | None = None,
-    user_key: str | None = None,
-    status_filters: list[str] | None = None,
-) -> dict:
-    """Build the {eventType, topic, payload} envelope for a '*.reindex' sync-event.
-
-    Shared by the record-group and connector-wide reindex routes so the payload
-    shape stays consistent (single-record reindex builds its own payload inside
-    reindex_single_record, which has a KB depth==0 'newRecord' special-case that
-    doesn't fit this generic shape).
-    """
-    payload: dict[str, Any] = {"orgId": org_id, "connectorId": connector_id}
-    if connector_name is not None:
-        payload["connector"] = connector_name
-    if record_id is not None:
-        payload["recordId"] = record_id
-    if record_group_id is not None:
-        payload["recordGroupId"] = record_group_id
-    if depth is not None:
-        payload["depth"] = depth
-    if user_key is not None:
-        payload["userKey"] = user_key
-    if status_filters:
-        payload["statusFilters"] = status_filters
-    return {"eventType": event_type, "topic": "sync-events", "payload": payload}
-
-
 @router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
 @inject
 async def reindex_single_record(
@@ -2640,7 +2606,7 @@ async def reindex_record_group(
             connector_normalized = connector_name.replace(" ", "").lower()
             event_type = f"{connector_normalized}.reindex"
 
-            event_data = _build_reindex_event(
+            event_data = build_reindex_event(
                 event_type=event_type,
                 org_id=org_id,
                 connector_id=connector_id,
@@ -2933,7 +2899,7 @@ async def reindex_connector(
             f"status_filters={status_filters}"
         )
 
-        event_data = _build_reindex_event(
+        event_data = build_reindex_event(
             event_type=event_type,
             org_id=org_id,
             connector_id=connector_id,

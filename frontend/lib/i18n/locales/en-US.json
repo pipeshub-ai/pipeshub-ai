@@ -623,9 +623,9 @@
   },
   "reindexBlocked": {
     "title": "This record can't be reindexed on its own",
-    "message": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. Run a connector sync instead — it updates all changed files together.",
+    "message": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
     "folderTitle": "This folder can't be reindexed on its own",
-    "folderMessage": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. Run a connector sync instead — it updates all changed files together.",
+    "folderMessage": "GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.",
     "goToConnectors": "Go to connectors"
   },
   "kb": {

@@ -427,6 +427,22 @@ class TestSharedToolNames:
         coding = registry.resolve_by_name("coding_agent")._spec
         assert "load_skill" not in coding.tool_names
 
+    def test_code_tools_go_only_to_domains_that_read_code(self) -> None:
+        """Every domain paid the four code-graph schemas on every turn (A-11)."""
+        registry = _full_registry()
+        registry.register_tool(FakeTool("codegraph__get_neighbour"))
+        runtime = AgentRuntime(tool_registry=registry)
+
+        top_names = compose_domain_agents(
+            registry, runtime, make_context(), provider="scripted", model_name="scripted-model",
+            code_tool_names=frozenset({"codegraph__get_neighbour"}),
+        )
+
+        assert "codegraph__get_neighbour" in registry.resolve_by_name("coding_agent")._spec.tool_names
+        assert "codegraph__get_neighbour" not in (
+            registry.resolve_by_name("calculator_agent")._spec.tool_names)
+        assert "codegraph__get_neighbour" in top_names
+
     def test_defaults_to_empty_and_changes_nothing(self) -> None:
         registry = _full_registry()
         runtime = AgentRuntime(tool_registry=registry)

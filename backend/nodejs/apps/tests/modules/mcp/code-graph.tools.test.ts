@@ -98,12 +98,38 @@ describe('MCP code-graph tools', () => {
 
   it('requires repo where no record id can stand in for it', () => {
     const tools = register()
-    for (const name of ['pipeshub_code_symbols', 'pipeshub_code_path']) {
+    for (const name of [
+      'pipeshub_code_symbols',
+      'pipeshub_code_path',
+      'pipeshub_code_search',
+      'pipeshub_code_entry_points',
+    ]) {
       const schema = z.object(tools.get(name)!.config.inputSchema)
       expect(schema.safeParse({}).success, name).to.equal(false)
     }
     const read = z.object(tools.get('pipeshub_code_read')!.config.inputSchema)
     expect(read.safeParse({ record_id: 'r1' }).success).to.equal(true)
     expect(read.safeParse({ record_id: 'r1', lines: 'abc' }).success).to.equal(false)
+  })
+
+  it('forwards each new tool to its own route', async () => {
+    const tools = register()
+    const routes: Record<string, string> = {
+      pipeshub_code_search: '/search',
+      pipeshub_code_outline: '/outline',
+      pipeshub_code_impact: '/impact',
+      pipeshub_code_entry_points: '/entry-points',
+    }
+    for (const [name, route] of Object.entries(routes)) {
+      fetchStub.resetHistory()
+      fetchStub.resolves(jsonResponse(200, {}))
+      await tools.get(name)!.handler({ repo: 'acme/shop' })
+      expect(fetchStub.firstCall.args[0], name).to.equal(
+        `http://query:8000/api/v1/code-graph${route}`,
+      )
+    }
+    const search = z.object(tools.get('pipeshub_code_search')!.config.inputSchema)
+    expect(search.safeParse({ repo: 'acme/shop', pattern: 'x', mode: 'grep' }).success)
+      .to.equal(false)
   })
 })

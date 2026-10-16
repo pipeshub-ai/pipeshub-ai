@@ -1,12 +1,9 @@
 """A file the caller cannot read is a wall, not a window, at every hop (S-7)."""
 import pytest
 
-from app.agents.actions.code_graph.ops import (
-    RecordAccess,
-    _degrees,
-    find_symbol_path_impl,
-    get_neighbour_impl,
-)
+from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+from app.agents.actions.code_graph.ops import RecordAccess, _degrees
+from app.agents.actions.code_graph.path import find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 
 from .conftest import BLOCKS, CONN, ORG, USER, FakeGraphProvider, _block

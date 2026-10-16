@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import bisect
 import importlib
+import re
 import threading
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -201,6 +202,38 @@ def _name_of(node: Node, src: bytes, cfg: LanguageConfig) -> str | None:
         if inner is not None:
             return _text(inner, src)
     return None
+
+
+def _owner_of(node: Node, src: bytes) -> tuple[str, ...]:
+    """The type a definition belongs to when the grammar says so outside its body.
+
+    Go puts a method's type in its receiver (`func (s *Server) Run()`); C++
+    defines a member out of line (`int Resizer::run() {}`). Without it the
+    qualified name was `run`, not `Server.run`, and every edge into the
+    method named the wrong symbol (P-3).
+    """
+    receiver = _field(node, "receiver")
+    if receiver is not None:
+        names = [c for c in _walk_types(receiver) if c.type == "type_identifier"]
+        return (_text(names[0], src),) if names else ()
+    cur = _field(node, "declarator")
+    for _ in range(8):
+        if cur is None:
+            return ()
+        if cur.type == "qualified_identifier":
+            scope = _text(cur, src).rsplit("::", 1)[0]
+            return tuple(part for part in scope.split("::") if part)
+        cur = _field(cur, "declarator")
+    return ()
+
+
+def _walk_types(node: Node) -> list[Node]:
+    stack, out = [node], []
+    while stack:
+        current = stack.pop()
+        out.append(current)
+        stack.extend(reversed(current.named_children))
+    return out
 
 
 def _body_of(node: Node, cfg: LanguageConfig) -> Node | None:
@@ -436,17 +469,32 @@ def _collect_type_table_js(root: Node, src: bytes, table: dict[str, str]) -> Non
         stack.extend(node.named_children)
 
 
+def _annotated_type(annotation: str) -> str:
+    """The class an annotation names: `Optional[Foo]` and `Foo | None` are `Foo`."""
+    text = annotation.strip().strip("'\"")
+    if text.startswith("Optional[") and text.endswith("]"):
+        text = text[len("Optional["):-1]
+    text = next((part.strip() for part in text.split("|") if part.strip() != "None"), text)
+    return text.split("[")[0].rsplit(".", 1)[-1]
+
+
 def _collect_type_table_python(root: Node, src: bytes, table: dict[str, str]) -> None:
-    """`self.x = Foo()` and `x: Foo = …` are the two usable bindings."""
+    """`self.x = Foo()`, `x: Foo = …` and a parameter's `x: Foo` are the usable bindings."""
     stack = [root]
     while stack:
         node = stack.pop()
-        if node.type == "assignment":
+        if node.type in ("typed_parameter", "typed_default_parameter"):
+            # A parameter's annotation types every call on it in the body (P-5).
+            name = next((c for c in node.named_children if c.type == "identifier"), None)
+            ann = _field(node, "type")
+            if name is not None and ann is not None:
+                table.setdefault(_text(name, src), _annotated_type(_text(ann, src)))
+        elif node.type == "assignment":
             left = _field(node, "left")
             right = _field(node, "right")
             ann = _field(node, "type")
             if left is not None and ann is not None:
-                table.setdefault(_text(left, src).split(".")[-1], _text(ann, src).split("[")[0])
+                table.setdefault(_text(left, src).split(".")[-1], _annotated_type(_text(ann, src)))
             elif left is not None and right is not None and right.type == "call":
                 fn = _field(right, "function")
                 if fn is not None and fn.type in ("identifier", "attribute"):
@@ -471,10 +519,73 @@ def _callee_info(
     node: Node, src: bytes, cfg: LanguageConfig,
 ) -> tuple[str | None, bool, str | None, str | None]:
     """Return (name, is_member, receiver, qualified_prefix) for a call node."""
+    if not cfg.import_handler_name:
+        return _generic_callee(node, src, cfg)
     target = _field(node, cfg.call_function_field) or _field(node, "constructor")
     if target is None:
         return None, False, None, None
+    return _reference_info(target, src, cfg)
 
+
+_IDENTIFIER_TYPES = frozenset({
+    "identifier", "simple_identifier", "name", "type_identifier", "field_identifier",
+    "property_identifier", "constant",
+})
+_SEPARATORS = (".", "->", "::", ":", "?.", "!.")
+
+
+def _identifier_leaves(node: Node) -> list[Node]:
+    stack, out = [node], []
+    while stack:
+        current = stack.pop()
+        if current.type in _IDENTIFIER_TYPES and not current.named_children:
+            out.append(current)
+        stack.extend(reversed(current.named_children))
+    return out
+
+
+def _generic_callee(
+    node: Node, src: bytes, cfg: LanguageConfig,
+) -> tuple[str | None, bool, str | None, str | None]:
+    """The callee of a call in a grammar with no import handler (P-3).
+
+    These languages get calls only, resolved by name: the same file first, a
+    repo-unique name after, always INFERRED. The callee is whatever the call
+    names -- a field, the first child -- reduced to its last identifier, with
+    what precedes it as the receiver: `pkg.Run`, `obj->run`, `ns::run`, `m:run`.
+    """
+    named = _field(node, cfg.call_name_field) if cfg.call_name_field else None
+    target = (named or _field(node, cfg.call_function_field) or _field(node, "type")
+              or _field(node, "constructor")
+              or (node.named_children[0] if node.named_children else None))
+    if target is None:
+        return None, False, None, None
+    if target.type in _IDENTIFIER_TYPES:
+        receiver = next((r for f in cfg.call_receiver_fields if (r := _field(node, f)) is not None), None)
+        if receiver is None:
+            return _text(target, src), False, None, None
+        qualifier = _text(receiver, src)
+        return _text(target, src), True, qualifier.rsplit(".", 1)[-1], qualifier
+    leaves = _identifier_leaves(target)
+    if not leaves:
+        return None, False, None, None
+    # `List<Order>` names List, not its argument.
+    leaf = leaves[0] if "generic" in target.type else leaves[-1]
+    qualifier = src[target.start_byte:leaf.start_byte].decode("utf-8", "replace").rstrip()
+    for sep in _SEPARATORS:
+        if qualifier.endswith(sep):
+            qualifier = qualifier[: -len(sep)].rstrip()
+            break
+    if not qualifier:
+        return _text(leaf, src), False, None, None
+    return _text(leaf, src), True, re.split(r"\.|->|::|:", qualifier)[-1], qualifier
+
+
+def _reference_info(
+    target: Node, src: bytes, cfg: LanguageConfig,
+) -> tuple[str | None, bool, str | None, str | None]:
+    """(name, is_member, receiver, qualified_prefix) for what a call, a decorator
+    or a JSX tag names: `f`, `obj.f`, `pkg.mod.f`."""
     if target.type in ("identifier", "type_identifier"):
         return _text(target, src), False, None, None
 
@@ -518,6 +629,10 @@ class _Span:
 
 # Filler kinds that absorb an adjacent run of the same kind.
 _COALESCING = frozenset({"imports", "statements", "comment"})
+# The clauses of a branch statement that carry blocks of their own.
+_BRANCH_CLAUSES = frozenset({
+    "elif_clause", "else_clause", "except_clause", "except_group_clause", "finally_clause",
+})
 
 _COMMENT_PREFIXES = ("#", "//", "/*", "*", "--")
 
@@ -864,6 +979,11 @@ class _Walker:
         kind = span.kind
         if kind == "definition":
             kind = span.def_kind or self._kind_for(span.def_node.type, in_type=in_type) or "statements"
+            owner = _owner_of(span.def_node, self.src)
+            if owner:
+                chain = (*chain, *owner)
+                if kind == "function":
+                    kind = "method"
 
         idx = self._add_symbol(ParsedSymbol(
             kind=kind,
@@ -883,9 +1003,14 @@ class _Walker:
             for node in span.nodes:
                 if node.type in cfg.import_types or node.type in cfg.export_types:
                     self._run_handler(node, idx)
+                elif node.type in cfg.branch_types and parent_idx is None:
+                    self._emit_branches(node, idx, chain)
                 else:
-                    self._walk_facts(node, idx)
+                    self._facts_of(node, idx)
             return
+
+        if span.nodes and span.nodes[0].type in cfg.decorator_wrapper_types:
+            self._emit_decorators(span.nodes[0], idx)
 
         if self.heritage_handler and kind in cfg.method_container_kinds:
             before = len(self.out.pending)
@@ -943,7 +1068,40 @@ class _Walker:
             if child.type in cfg.import_types or child.type in cfg.export_types:
                 self._run_handler(child, enclosing)
             else:
+                self._facts_of(child, enclosing)
+
+    def _emit_branches(self, node: Node, enclosing: int, chain: tuple[str, ...]) -> None:
+        """Definitions in the blocks of a module-level `if`/`try` (P-3).
+
+        `try: import ujson as json / except ImportError: def loads(...)` and
+        `if TYPE_CHECKING:` define module symbols the rest of the repo calls;
+        read as plain statements, they were never symbols at all. They hang off
+        the statement's block, keeping their module-level names.
+        """
+        for child in node.named_children:
+            if child.type == "block":
+                self._emit_nested(child, enclosing, chain, in_type=False)
+            elif child.type in _BRANCH_CLAUSES:
+                self._emit_branches(child, enclosing, chain)
+            else:
+                if child.type in self.cfg.call_types:
+                    self._emit_call(child, enclosing)
                 self._walk_facts(child, enclosing)
+
+    def _emit_decorators(self, wrapper: Node, enclosing: int) -> None:
+        """A decorator calls its function: `@login_required` as much as `@app.route(...)` (P-5)."""
+        cfg = self.cfg
+        for child in wrapper.named_children:
+            if child.type not in cfg.attached_types or child.type in COMMENT_NODE_TYPES:
+                continue
+            expr = child.named_children[0] if child.named_children else None
+            if expr is None:
+                continue
+            if expr.type in cfg.call_types:
+                self._emit_call(expr, enclosing)
+                self._walk_facts(expr, enclosing)
+            else:
+                self._emit_reference(expr, enclosing)
 
     def _run_handler(self, node, idx: int) -> None:
         cfg = self.cfg
@@ -959,6 +1117,17 @@ class _Walker:
         # re-export (`export ... from`) has none.
         if node.type in cfg.export_types and _field(node, "source") is None:
             self._walk_facts(node, idx)
+
+    def _facts_of(self, node: Node, enclosing: int) -> None:
+        """Facts of *node* itself and everything inside it.
+
+        A statement is usually wrapped (`expression_statement`), so its call is
+        a descendant; in Ruby, Lua and Scala a body holds the call directly,
+        and walking only the descendants missed it.
+        """
+        if node.type in self.cfg.call_types:
+            self._emit_call(node, enclosing)
+        self._walk_facts(node, enclosing)
 
     def _walk_facts(self, node: Node, enclosing: int) -> None:
         """Collect references inside *node*, all owned by *enclosing*.
@@ -982,9 +1151,16 @@ class _Walker:
                 continue
             if ntype in cfg.call_types:
                 self._emit_call(child, enclosing)
+            elif ntype in cfg.jsx_element_types:
+                tag = _field(child, "name") or (child.named_children[0] if child.named_children else None)
+                # Lower-case tags are DOM elements; a component is capitalised.
+                if tag is not None and _text(tag, self.src)[:1].isupper():
+                    self._emit_reference(tag, enclosing)
             stack.extend(reversed(child.named_children))
 
     def _emit_call(self, node, enclosing: int) -> None:
+        if self.cfg.import_handler_name == "js" and self._emit_js_dynamic_import(node, enclosing):
+            return
         name, is_member, receiver, qualifier = _callee_info(node, self.src, self.cfg)
         # Builtin globals only shadow bare calls; `this.fetch()` is a method.
         if not name or (not is_member and name in self.builtins):
@@ -1001,6 +1177,66 @@ class _Walker:
             receiver_type=self.out.type_table.get(receiver) if receiver else None,
             qualified_prefix=qualifier,
         ))
+
+    def _emit_reference(self, target: Node, enclosing: int) -> None:
+        """A CALLS fact for something referenced as a callee without a call node."""
+        name, is_member, receiver, qualifier = _reference_info(target, self.src, self.cfg)
+        if not name or (not is_member and name in self.builtins):
+            return
+        self.out.pending.append(PendingEdgeFact(
+            relation=Relation.CALLS, to_name=name, line=self._line_at(target.start_byte),
+            byte_offset=target.start_byte, from_symbol=enclosing, to_kind="block",
+            is_member_call=is_member, receiver=receiver,
+            receiver_type=self.out.type_table.get(receiver) if receiver else None,
+            qualified_prefix=qualifier,
+        ))
+
+    def _emit_js_dynamic_import(self, node: Node, enclosing: int) -> bool:
+        """`require('./m')` and `import('./m')` as imports (P-5). True if it was one.
+
+        `const x = require(...)` binds the module, `const {a, b: c} = require(...)`
+        binds names from it -- the same facts an `import` statement records.
+        """
+        target = _field(node, self.cfg.call_function_field)
+        if target is None or not (target.type == "import" or (
+                target.type == "identifier" and _text(target, self.src) == "require")):
+            return False
+        args = _field(node, "arguments")
+        spec = next((a for a in (args.named_children if args is not None else ())
+                     if a.type == "string"), None)
+        if spec is None:
+            return True
+        specifier = _text(spec, self.src).strip("'\"`")
+        line = self._line_at(node.start_byte)
+        module = PendingEdgeFact(relation=Relation.IMPORTS_FROM, to_name=specifier, line=line,
+                                 to_kind="record")
+        facts = [module]
+        parent = node.parent
+        bound = _field(parent, "name") if parent is not None and parent.type == "variable_declarator" else None
+        if bound is not None and bound.type == "identifier":
+            module.local_name = _text(bound, self.src)
+        elif bound is not None and bound.type == "object_pattern":
+            for prop in bound.named_children:
+                if prop.type == "shorthand_property_identifier_pattern":
+                    facts.append(PendingEdgeFact(
+                        relation=Relation.IMPORTS, to_name=_text(prop, self.src), line=line,
+                        to_kind="block", qualified_prefix=specifier))
+                elif prop.type == "pair_pattern":
+                    key, value = _field(prop, "key"), _field(prop, "value")
+                    if key is not None:
+                        facts.append(PendingEdgeFact(
+                            relation=Relation.IMPORTS, to_name=_text(key, self.src), line=line,
+                            to_kind="block", qualified_prefix=specifier,
+                            local_name=_text(value, self.src) if value is not None else None))
+        for fact in facts:
+            fact.byte_offset = node.start_byte
+            fact.from_symbol = enclosing
+            # A file's dependency, wherever in it the call sits: an import
+            # statement's facts are the file's too.
+            fact.from_kind = "record"
+            fact.pinned = True
+        self.out.pending.extend(facts)
+        return True
 
     def _line_at(self, offset: int) -> int:
         return bisect.bisect_right(self._line_starts, offset)

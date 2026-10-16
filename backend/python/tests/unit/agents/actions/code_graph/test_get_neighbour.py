@@ -7,10 +7,7 @@ the model never had a reason to reach for it.
 """
 import pytest
 
-from app.agents.actions.code_graph.ops import (
-    CODE_RELATIONS,
-    get_neighbour_impl,
-)
+from app.agents.actions.code_graph.neighbours import get_neighbour_impl
 
 from .conftest import BLOCKS, CODE_FILES
 from .conftest import FakeGraphProvider as _BaseFake
@@ -69,7 +66,10 @@ class TestEdgeTypes:
     @pytest.mark.asyncio
     async def test_defaults_to_every_code_relation(self, graph) -> None:
         result = await _neighbours(graph, direction="any")
-        assert result["edge_types"] == CODE_RELATIONS
+        # CALLS (target) and the caller's own containment are both walked.
+        relations = {n["relation"] for n in result["neighbors"]}
+        assert "CALLS" in relations
+        assert "edge_types" not in result, "arguments are not echoed back (A-8)"
 
     @pytest.mark.asyncio
     async def test_structural_edges_are_included_by_default(self, graph) -> None:
@@ -146,7 +146,8 @@ class TestDepth:
     @pytest.mark.asyncio
     async def test_depth_is_clamped_not_rejected(self, graph) -> None:
         result = await _neighbours(graph, direction="outbound", depth=99)
-        assert result["depth"] == 3
+        assert "error" not in result
+        assert max(n["hop"] for n in result["neighbors"]) <= 3
 
     @pytest.mark.asyncio
     async def test_limit_keeps_the_nearest_and_says_it_truncated(self, graph) -> None:
@@ -346,7 +347,7 @@ class TestPagination:
         while True:
             page = await self._page(graph, limit=1, offset=offset)
             assert page["total"] == total
-            assert page["offset"] == offset
+            assert page.get("offset", 0) == offset
             assert len(page["neighbors"]) == 1
             pages.extend(page["neighbors"])
             if not page["truncated"]:
@@ -408,9 +409,9 @@ class TestTraversalCap:
 
     @pytest.mark.asyncio
     async def test_hitting_the_row_cap_is_reported_not_silent(self, monkeypatch) -> None:
-        from app.agents.actions.code_graph import ops
+        from app.agents.actions.code_graph import neighbours
 
-        monkeypatch.setattr(ops, "_ROWS_PER_ANCHOR", 3)
+        monkeypatch.setattr(neighbours, "_ROWS_PER_ANCHOR", 3)
         result = await self._inbound(self._hub_with_callers(5), limit=100)
         assert result["total"] == 3, "rows past the cap are not fetched"
         assert result["fanout_capped"] is True
@@ -420,9 +421,9 @@ class TestTraversalCap:
     @pytest.mark.asyncio
     async def test_exactly_the_cap_is_complete(self, monkeypatch) -> None:
         """The sentinel row is what separates 'exactly N' from 'more than N'."""
-        from app.agents.actions.code_graph import ops
+        from app.agents.actions.code_graph import neighbours
 
-        monkeypatch.setattr(ops, "_ROWS_PER_ANCHOR", 5)
+        monkeypatch.setattr(neighbours, "_ROWS_PER_ANCHOR", 5)
         result = await self._inbound(self._hub_with_callers(5), limit=100)
         assert result["total"] == 5
         assert result["truncated"] is False
@@ -430,9 +431,9 @@ class TestTraversalCap:
 
     @pytest.mark.asyncio
     async def test_a_frontier_wider_than_the_fanout_is_reported(self, monkeypatch) -> None:
-        from app.agents.actions.code_graph import ops
+        from app.agents.actions.code_graph import neighbours
 
-        monkeypatch.setattr(ops, "_NEIGHBOUR_FANOUT", 2)
+        monkeypatch.setattr(neighbours, "_NEIGHBOUR_FANOUT", 2)
         graph = self._hub_with_callers(3)
         # Hop 2 would expand three nodes; only two are walked.
         result = await self._inbound(graph, depth=2, limit=100)

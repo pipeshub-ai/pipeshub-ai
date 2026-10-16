@@ -74,6 +74,15 @@ class LanguageConfig:
     # rest parse into blocks without contributing cross-file facts.
     call_types: frozenset[str] = frozenset()
     call_function_field: str = "function"
+    # Grammars that name the callee and its receiver as two fields of the call
+    # (Java's `method_invocation` name/object, Ruby's `call` method/receiver).
+    call_name_field: str = ""
+    call_receiver_fields: tuple[str, ...] = ()
+    # JSX: a capitalised tag renders a component, which is a call (P-5).
+    jsx_element_types: frozenset[str] = frozenset()
+    # Statements whose blocks hold module-level definitions: Python's
+    # `try: ... except ImportError: def ...` and `if TYPE_CHECKING:` (P-3).
+    branch_types: frozenset[str] = frozenset()
     # Member access -- Python's `attribute`, JS's `member_expression`. The field
     # names stay empty by default: a language that sets no accessor_types never
     # reads them, and Python's names as the default would silently misapply.
@@ -135,6 +144,7 @@ _PYTHON = LanguageConfig(
     decorator_wrapper_types=frozenset({"decorated_definition"}),
     import_types=frozenset({"import_statement", "import_from_statement", "future_import_statement"}),
     call_types=frozenset({"call"}),
+    branch_types=frozenset({"if_statement", "try_statement"}),
     accessor_types=frozenset({"attribute"}),
     accessor_property_field="attribute",
     accessor_object_field="object",
@@ -145,6 +155,7 @@ _PYTHON = LanguageConfig(
 )
 
 _JS_CALL_TYPES = frozenset({"call_expression", "new_expression"})
+_JSX_ELEMENT_TYPES = frozenset({"jsx_opening_element", "jsx_self_closing_element"})
 _JS_ACCESSOR_TYPES = frozenset({"member_expression"})
 _JS_FUNCTION_TYPES = frozenset({
     "function_declaration", "generator_function_declaration",
@@ -158,6 +169,7 @@ _JAVASCRIPT = LanguageConfig(
     ts_module="tree_sitter_javascript",
     ts_language_fn="language",
     extensions=frozenset({"js", "jsx", "mjs", "cjs"}),
+    jsx_element_types=_JSX_ELEMENT_TYPES,
     class_types=frozenset({"class_declaration", "class"}),
     function_types=_JS_FUNCTION_TYPES,
     method_types=frozenset({"method_definition"}),
@@ -213,6 +225,7 @@ _TSX = LanguageConfig(
     ts_module="tree_sitter_typescript",
     ts_language_fn="language_tsx",
     extensions=frozenset({"tsx"}),
+    jsx_element_types=_JSX_ELEMENT_TYPES,
     class_types=_TS_CLASS_TYPES,
     interface_types=_TYPESCRIPT.interface_types,
     enum_types=_TYPESCRIPT.enum_types,
@@ -237,6 +250,7 @@ _TSX = LanguageConfig(
 
 _C = LanguageConfig(
     name="c",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_c",
     ts_language_fn="language",
     extensions=frozenset({"c"}),
@@ -254,6 +268,7 @@ _C = LanguageConfig(
 
 _CPP = LanguageConfig(
     name="cpp",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_cpp",
     ts_language_fn="language",
     # .h uses the C++ grammar rather than the C one: it is a superset, headers
@@ -278,6 +293,7 @@ _CPP = LanguageConfig(
 
 _CSHARP = LanguageConfig(
     name="csharp",
+    call_types=frozenset({"invocation_expression", "object_creation_expression"}),
     ts_module="tree_sitter_c_sharp",
     ts_language_fn="language",
     extensions=frozenset({"cs"}),
@@ -302,6 +318,9 @@ _CSHARP = LanguageConfig(
 
 _JAVA = LanguageConfig(
     name="java",
+    call_types=frozenset({"method_invocation", "object_creation_expression"}),
+    call_name_field="name",
+    call_receiver_fields=("object",),
     ts_module="tree_sitter_java",
     ts_language_fn="language",
     extensions=frozenset({"java"}),
@@ -323,6 +342,7 @@ _JAVA = LanguageConfig(
 
 _KOTLIN = LanguageConfig(
     name="kotlin",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_kotlin",
     ts_language_fn="language",
     extensions=frozenset({"kt", "kts"}),
@@ -338,6 +358,7 @@ _KOTLIN = LanguageConfig(
 
 _SCALA = LanguageConfig(
     name="scala",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_scala",
     ts_language_fn="language",
     extensions=frozenset({"scala"}),
@@ -355,6 +376,9 @@ _SCALA = LanguageConfig(
 
 _GROOVY = LanguageConfig(
     name="groovy",
+    call_types=frozenset({"method_invocation"}),
+    call_name_field="name",
+    call_receiver_fields=("object",),
     ts_module="tree_sitter_groovy",
     ts_language_fn="language",
     extensions=frozenset({"groovy", "gradle"}),
@@ -371,6 +395,7 @@ _GROOVY = LanguageConfig(
 
 _GO = LanguageConfig(
     name="go",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_go",
     ts_language_fn="language",
     extensions=frozenset({"go"}),
@@ -390,6 +415,7 @@ _GO = LanguageConfig(
 
 _RUST = LanguageConfig(
     name="rust",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_rust",
     ts_language_fn="language",
     extensions=frozenset({"rs"}),
@@ -414,6 +440,9 @@ _RUST = LanguageConfig(
 
 _RUBY = LanguageConfig(
     name="ruby",
+    call_types=frozenset({"call"}),
+    call_name_field="method",
+    call_receiver_fields=("receiver",),
     ts_module="tree_sitter_ruby",
     ts_language_fn="language",
     extensions=frozenset({"rb"}),
@@ -429,6 +458,9 @@ _RUBY = LanguageConfig(
 
 _PHP = LanguageConfig(
     name="php",
+    call_types=frozenset({"function_call_expression", "member_call_expression", "scoped_call_expression"}),
+    call_name_field="name",
+    call_receiver_fields=("object", "scope"),
     ts_module="tree_sitter_php",
     ts_language_fn="language_php",
     extensions=frozenset({"php"}),
@@ -451,6 +483,7 @@ _PHP = LanguageConfig(
 
 _SWIFT = LanguageConfig(
     name="swift",
+    call_types=frozenset({"call_expression"}),
     ts_module="tree_sitter_swift",
     ts_language_fn="language",
     extensions=frozenset({"swift"}),
@@ -493,6 +526,8 @@ _DART = LanguageConfig(
 
 _LUA = LanguageConfig(
     name="lua",
+    call_types=frozenset({"function_call"}),
+    call_name_field="name",
     ts_module="tree_sitter_lua",
     ts_language_fn="language",
     extensions=frozenset({"lua"}),

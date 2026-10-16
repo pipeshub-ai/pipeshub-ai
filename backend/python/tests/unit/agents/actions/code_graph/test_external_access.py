@@ -171,6 +171,21 @@ async def test_read_names_the_repo_and_reads_only_its_file(blobs) -> None:
     assert "admin" in json.dumps(body) and "'shop'" not in json.dumps(body)
 
 
+async def test_outline_and_entry_points_routes_answer_for_one_repo(blobs) -> None:
+    """The A-9 tools reach MCP through these routes, scoped like the rest."""
+    client = _client(Repos())
+    outline = client.post("/api/v1/code-graph/outline",
+                          json={"repo": "acme/admin", "file_path": MAIN})
+    assert outline.status_code == 200, outline.text
+    assert [s["qualified_name"] for s in outline.json()["symbols"]] == ["function:create_app"]
+    entries = client.post("/api/v1/code-graph/entry-points", json={"repo": "acme/admin"})
+    assert entries.status_code == 200, entries.text
+    assert "entry_points" in entries.json()
+    bad = client.post("/api/v1/code-graph/search",
+                      json={"repo": "acme/admin", "pattern": "x", "mode": "grep"})
+    assert bad.status_code == 422
+
+
 async def test_read_by_search_hit_needs_no_repo(blobs) -> None:
     res = _client(Repos()).post("/api/v1/code-graph/read", json={"record_id": "rec-shop"})
     assert res.status_code == 200, res.text

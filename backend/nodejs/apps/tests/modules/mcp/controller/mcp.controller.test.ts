@@ -10,6 +10,7 @@ import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffe
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
 // to our fakes.
 import { handleMCPRequest } from '../../../../src/modules/mcp/controller/mcp.controller'
+import { CODE_GRAPH_TOOL_NAMES } from '../../../../src/modules/mcp/code-graph.tools'
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).
@@ -222,10 +223,7 @@ describe('MCP Controller — handleMCPRequest', () => {
       const req = createMockRequest({ headers: { authorization: 'Bearer t' }, body: {} })
       await handleMCPRequest(appConfig)(req, createMockResponse() as any, createMockNext())
 
-      expect(registered).to.deep.equal([
-        'pipeshub_code_repos', 'pipeshub_code_symbols', 'pipeshub_code_neighbours',
-        'pipeshub_code_read', 'pipeshub_code_path',
-      ])
+      expect(registered).to.deep.equal([...CODE_GRAPH_TOOL_NAMES])
       expect(connectedAfter).to.equal(registered.length)
     })
   })

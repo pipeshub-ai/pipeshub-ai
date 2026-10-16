@@ -7,6 +7,7 @@ from app.modules.code_graph import edge_build_trigger
 from app.modules.code_graph.build_state import BuildStateStore, sync_point_key_for
 from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
 from app.modules.code_graph.edge_builder import EdgeBuildResult, EdgeBuildTooLargeError
+from app.modules.code_graph.version import CODE_GRAPH_VERSION
 from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
 
 _BUILD = "app.modules.code_graph.edge_build_runner.build_code_graph_edges"
@@ -36,7 +37,8 @@ def _point(graph: FakeSyncPoints) -> dict:
     return graph.points[sync_point_key_for("g")]
 
 
-OWED = {"lastEdgeBuildAt": 1000, "edgeBuildPending": True, "edgeBuildRequestId": "r1"}
+OWED = {"lastEdgeBuildAt": 1000, "edgeBuildPending": True, "edgeBuildRequestId": "r1",
+        "edgeBuildVersion": CODE_GRAPH_VERSION}
 
 
 @pytest.mark.asyncio
@@ -160,3 +162,14 @@ async def test_the_build_is_fenced_on_its_own_lease() -> None:
     with pytest.raises(edge_build_trigger.LeaseLostError):
         await captured["fence"]()
     runner._redis.get.assert_awaited_with("lock")
+
+
+@pytest.mark.asyncio
+async def test_a_repo_built_by_another_code_graph_version_is_rebuilt_in_full() -> None:
+    """Blocks and edges change shape between versions; an incremental build mixes both (O-10)."""
+    runner, graph = _runner({**OWED, "edgeBuildVersion": "older"})
+    build = AsyncMock(return_value=EdgeBuildResult())
+    await _run(runner, build)
+    assert build.await_args.kwargs["touched_record_ids"] is None
+    assert _point(graph)["edgeBuildVersion"] == CODE_GRAPH_VERSION
+

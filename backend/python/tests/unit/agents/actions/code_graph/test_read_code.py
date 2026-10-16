@@ -6,7 +6,7 @@ has to reach the right blob block.
 """
 import pytest
 
-from app.agents.actions.code_graph.ops import read_code_impl
+from app.agents.actions.code_graph.read import read_code_impl
 
 from .conftest import CONN, ORG, USER, FakeBlobStore, FakeGraphProvider
 

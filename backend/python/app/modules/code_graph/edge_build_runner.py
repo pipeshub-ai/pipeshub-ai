@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 from app.modules.code_graph import edge_build_trigger
-from app.modules.code_graph.build_state import BuildStateStore
+from app.modules.code_graph.build_state import BuildStateStore, needs_full_build
 from app.modules.code_graph.edge_builder import (
     EdgeBuildTooLargeError,
     build_code_graph_edges,
@@ -165,7 +165,7 @@ class CodeEdgeBuildRunner:
         started_at_ms = _now_ms()
 
         touched_record_ids = None
-        if start.last_build is not None and start.full_request_id is None:
+        if not needs_full_build(start):
             touched_record_ids = await edge_build_trigger.records_updated_since(
                 self._graph_provider,
                 org_id,

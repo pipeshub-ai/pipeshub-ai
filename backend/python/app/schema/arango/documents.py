@@ -698,6 +698,7 @@ code_file_record_schema={
             # source | test | config | build | migration | script |
             # type_definition | generated -- see parsers/code_parser/file_role.py
             "fileRole": {"type": ["string", "null"]},
+            "commitSha": {"type": ["string", "null"]},
             # Symbol names referenced by this file (calls, imports, type refs).
             # Used by the edge builder to find files that need re-resolution
             # when a touched file adds or removes a symbol definition.
@@ -727,6 +728,7 @@ block_schema = {
             "qualifiedName": {"type": ["string", "null"]},
             "name": {"type": ["string", "null"]},
             "nameFolded": {"type": ["string", "null"]},
+            "parserVersion": {"type": ["string", "null"]},
             "kind": {"type": ["string", "null"]},
             "subType": {"type": ["string", "null"]},
             "isBlockGroup": {"type": "boolean"},

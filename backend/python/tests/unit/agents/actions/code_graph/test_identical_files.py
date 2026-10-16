@@ -7,8 +7,9 @@ while results still said `truncated: false`.
 """
 import pytest
 
-from app.agents.actions.code_graph.ops import get_neighbour_impl, read_code_impl
+from app.agents.actions.code_graph.neighbours import get_neighbour_impl
 from app.agents.actions.code_graph.query import query_code_graph_impl
+from app.agents.actions.code_graph.read import read_code_impl
 
 from .conftest import BLOCKS, CONN, ORG, USER, FakeBlobStore, QueryGraphProvider, _block
 

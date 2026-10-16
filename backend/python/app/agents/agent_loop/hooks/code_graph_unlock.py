@@ -14,6 +14,7 @@ visibility of an already-loaded toolset.
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING, Any
 
 from app.models.entities import RecordType
@@ -44,6 +45,32 @@ def virtual_records_include_code(virtual_records: dict[str, Any] | None) -> bool
     if not virtual_records:
         return False
     return any(record_is_code_file(r) for r in virtual_records.values())
+
+
+# Shapes that make a question about code: an identifier (snake_case, camelCase,
+# dotted.path), a file name or backticks. Case-sensitive: camelCase is a case.
+_CODE_SHAPE = re.compile(
+    r"`|\b[a-z0-9]+_[a-z0-9_]+\b|\b[a-z]+[A-Z][A-Za-z0-9]*\b|\b\w+\.\w+\.\w+\b"
+    r"|\b\w+\.(?:py|pyi|js|jsx|ts|tsx|go|java|kt|rs|rb|php|cs|cpp|cc|c|h|swift|scala|dart)\b"
+)
+_CODE_WORDS = re.compile(
+    r"\b(?:code|codebase|source|repo|repos|repository|function|functions|method|methods"
+    r"|class|classes|module|modules|import|imports|call|calls|called|caller|callers|callee"
+    r"|endpoint|handler|api|bug|stack ?trace|exception|implement\w*|refactor\w*|test|tests"
+    r"|commit|branch|pull request|library|package|sdk|script|variable|interface)\b",
+    re.IGNORECASE,
+)
+
+
+def has_code_intent(query: str, virtual_records: dict[str, Any] | None) -> bool:
+    """Whether a turn is about code, not merely one whose retrieval brushed a code file (A-10).
+
+    The question says so, or code files are most of what retrieval found.
+    """
+    if query and (_CODE_SHAPE.search(query) or _CODE_WORDS.search(query)):
+        return True
+    records = list((virtual_records or {}).values())
+    return bool(records) and sum(map(record_is_code_file, records)) * 2 > len(records)
 
 
 def unlock_code_graph_tools(run_scope: Any, registry: Any) -> list[str]:
@@ -84,7 +111,9 @@ def unlock_code_graph_tools(run_scope: Any, registry: Any) -> list[str]:
 
 def _maybe_unlock(context: "AgentContext", run_scope: Any) -> list[str]:
     records = context.tool_state.get("virtual_record_id_to_result") or {}
-    code_hits = virtual_records_include_code(records)
+    code_hits = virtual_records_include_code(records) and has_code_intent(
+        getattr(context, "query", "") or "", records,
+    )
     if context.tool_state.get(_UNLOCK_FLAG) or code_hits:
         context.tool_state[_UNLOCK_FLAG] = True
     else:
@@ -128,6 +157,7 @@ __all__ = [
     "CODE_GRAPH_TOOLSET",
     "code_graph_unlock_after_tools",
     "code_graph_unlock_on_turn",
+    "has_code_intent",
     "record_is_code_file",
     "unlock_code_graph_tools",
     "virtual_records_include_code",

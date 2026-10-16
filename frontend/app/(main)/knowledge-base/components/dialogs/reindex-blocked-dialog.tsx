@@ -1,9 +1,7 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
-import { getCodeRepoConnectorsUrl } from '../../utils/reindex-label';
 
 export interface ReindexBlockedDialogProps {
   open: boolean;
@@ -12,15 +10,12 @@ export interface ReindexBlockedDialogProps {
   nodeType?: string;
 }
 
-/** Shown instead of reindexing a GitHub / GitLab file or folder; points the user at a connector sync. */
-export function ReindexBlockedDialog({
-  open,
-  onOpenChange,
-  connector,
-  nodeType,
-}: ReindexBlockedDialogProps) {
+/**
+ * Shown instead of reindexing a GitHub / GitLab file or folder. Points the user
+ * at a repository reindex: a connector sync skips files that did not change.
+ */
+export function ReindexBlockedDialog({ open, onOpenChange, nodeType }: ReindexBlockedDialogProps) {
   const { t } = useTranslation();
-  const router = useRouter();
   const isFolder = nodeType === 'folder';
 
   return (
@@ -34,16 +29,13 @@ export function ReindexBlockedDialog({
       })}
       message={t(isFolder ? 'reindexBlocked.folderMessage' : 'reindexBlocked.message', {
         defaultValue: isFolder
-          ? 'GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. Run a connector sync instead — it updates all changed files together.'
-          : 'GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. Run a connector sync instead — it updates all changed files together.',
+          ? 'GitHub and GitLab files form one code graph for the whole repo. Reindexing a folder would update only those files and put them ahead of the rest, breaking cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.'
+          : 'GitHub and GitLab files form one code graph for the whole repo. Reindexing a single file would put it ahead of the rest and break cross-file links. To refresh it, reindex the whole repository from the knowledge hub — that re-indexes every file together. A connector sync only picks up files that changed.',
       })}
-      confirmLabel={t('reindexBlocked.goToConnectors', { defaultValue: 'Go to connectors' })}
-      cancelLabel={t('common.cancel', { defaultValue: 'Cancel' })}
+      confirmLabel={t('common.ok', { defaultValue: 'OK' })}
+      cancelLabel={t('common.close', { defaultValue: 'Close' })}
       confirmVariant="primary"
-      onConfirm={() => {
-        onOpenChange(false);
-        router.push(getCodeRepoConnectorsUrl(connector));
-      }}
+      onConfirm={() => onOpenChange(false)}
     />
   );
 }

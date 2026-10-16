@@ -588,6 +588,7 @@ class ReposSync:
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
                 test_files_enabled=test_files_enabled,
+                commit_sha=_commit_ref(ref),
             )
             old_external_id = _code_blob_web_path(project_path, old_path)
             moves.append((old_external_id, new_record, []))
@@ -645,7 +646,9 @@ class ReposSync:
                                "webPath": web_path, "webUrl": f"{c._gitlab_base_url}{web_path}"})
 
         if nodes:
-            all_ok = await self.build_code_file_records(nodes, project_id, project_path) and all_ok
+            all_ok = await self.build_code_file_records(
+                nodes, project_id, project_path, commit_sha=_commit_ref(ref),
+            ) and all_ok
         return all_ok
 
     async def _delete_code_files_by_paths(
@@ -810,6 +813,7 @@ class ReposSync:
         test_files_enabled: bool,
         source_created_at: int | None = None,
         source_updated_at: int | None = None,
+        commit_sha: str | None = None,
     ) -> CodeFileRecord:
         """Build the record for one repository blob.
 
@@ -825,11 +829,13 @@ class ReposSync:
         ``version`` is always 0 here; ``_process_record`` carries the stored
         version forward, where the existing record is already loaded.
         """
-        from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
         c = self.c
         extension = _blob_extension(file_name)
         file_role = classify_file_role(file_path, file_name)
+        if commit_sha and weburl:
+            # A citation keeps pointing at the lines it quoted (P-8, A-12).
+            weburl = weburl.replace("/-/blob/HEAD/", f"/-/blob/{commit_sha}/", 1)
         record = CodeFileRecord(
             language=detect_language(file_name),
             file_role=file_role.value,
@@ -856,11 +862,7 @@ class ReposSync:
             weburl=weburl,
             source_created_at=source_created_at,
             source_updated_at=source_updated_at,
-            # Must be passed: the model's default is evaluated once at import,
-            # so every blob would share one frozen time and a content change
-            # would never pass the code edge build's `updatedAtTimestamp`
-            # watermark, leaving the file's old edges in place.
-            updated_at=get_epoch_timestamp_in_ms(),
+            commit_sha=commit_sha,
         )
 
         if not code_files_enabled:
@@ -870,7 +872,8 @@ class ReposSync:
         return record
 
     async def build_code_file_records(
-        self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str
+        self, code_file_list: list[dict[str, Any]], project_id: int, project_path: str,
+        commit_sha: str | None = None,
     ) -> None:
         """Build and persist repository blob records from a blob list."""
         list_records_new: list[RecordUpdate] = []
@@ -911,6 +914,7 @@ class ReposSync:
                 parent_external_record_id=parent_external_record_id,
                 code_files_enabled=code_files_enabled,
                 test_files_enabled=test_files_enabled,
+                commit_sha=commit_sha,
             )
             list_records_new.append(RecordUpdate(
                 record=blob_record, is_new=True, is_updated=False, is_deleted=False,
@@ -950,7 +954,12 @@ class ReposSync:
         if not external_group_id:
             raise HTTPException(HttpStatusCode.BAD_REQUEST.value, "Project id not found.")
         project_id = external_group_id.split("-")[0]
-        file_res = await c.runtime.ds_call(c.data_source.get_file_content, project_id=project_id, file_path=file_path)
+        # At the synced commit when the record has one, so the content indexed
+        # is the content the record describes (P-8).
+        file_res = await c.runtime.ds_call(
+            c.data_source.get_file_content, project_id=project_id, file_path=file_path,
+            ref=getattr(record, "commit_sha", None) or "HEAD",
+        )
         if not file_res.success or not file_res.data:
             raise_for_stream_fetch(
                 success=file_res.success,
@@ -1237,6 +1246,16 @@ def _blob_mime_type(file_name: str, extension: str | None) -> str:
     if extension in SUPPORTED_CODE_FILE_EXTENSIONS:
         return MimeTypes.PLAIN_TEXT.value
     return MimeTypes.BIN.value
+
+
+def _commit_ref(ref: str | None) -> str | None:
+    """A ref that names a commit, or None for a moving one.
+
+    shortcut: a full sync lists files at HEAD and stamps no commit, so those
+    records read the branch head until the file changes; pass the branch's
+    head sha through the full sync to pin them too.
+    """
+    return ref if ref and ref != "HEAD" else None
 
 
 def _code_blob_web_path(project_path: str, repo_path: str, ref: str = "HEAD") -> str:

@@ -327,7 +327,7 @@ class ReposSync:
             if el.path
         ]
         entries = self._kept_entries(all_entries)
-        persisted_ok, folders, blobs = await self._persist_tree_entries(repo, entries)
+        persisted_ok, folders, blobs = await self._persist_tree_entries(repo, entries, head_sha)
         self.logger.info(
             "Full code sync for %s: %s folder(s), %s file(s) persisted in 1 tree call "
             "(%s excluded as dependency/build/generated)",
@@ -417,7 +417,7 @@ class ReposSync:
             children = [(p, sha_) for p, sha_ in children if self._keeps_folder(p)]
 
             if entries:
-                ok, n_folders, n_blobs = await self._persist_tree_entries(repo, entries)
+                ok, n_folders, n_blobs = await self._persist_tree_entries(repo, entries, head_sha)
                 all_ok = ok and all_ok
                 folders_walked += n_folders
                 blobs_walked += n_blobs
@@ -451,7 +451,8 @@ class ReposSync:
         return all_ok
 
     async def _persist_tree_entries(
-        self, repo: GhObject, entries: list[tuple[str, str, str, int | None]]
+        self, repo: GhObject, entries: list[tuple[str, str, str, int | None]],
+        commit_sha: str | None = None,
     ) -> tuple[bool, int, int]:
         """Persist one batch of ``(path, type, sha, size)`` Git Tree entries.
 
@@ -482,7 +483,8 @@ class ReposSync:
         for path, sha, size in blobs:
             batch.append(
                 self._build_code_file_record(
-                    repo, path, sha, code_files_enabled, test_files_enabled, size=size
+                    repo, path, sha, code_files_enabled, test_files_enabled, size=size,
+                    commit_sha=commit_sha,
                 )
             )
             if len(batch) >= c.batch_size * 4:
@@ -664,10 +666,10 @@ class ReposSync:
         if deletes:
             await self._delete_code_files_by_paths(repo, list(deletes.keys()))
         if renames:
-            all_ok = await self._apply_code_renames(repo, renames) and all_ok
+            all_ok = await self._apply_code_renames(repo, renames, to_sha) and all_ok
         upserts: dict[str, str] = {**adds, **modifies}
         if upserts:
-            all_ok = await self._upsert_code_files(repo, upserts) and all_ok
+            all_ok = await self._upsert_code_files(repo, upserts, to_sha) and all_ok
 
         removed_paths = list(deletes.keys()) + [old for old, _new, _sha in renames]
         if removed_paths:
@@ -772,7 +774,8 @@ class ReposSync:
             if record:
                 await c.data_entities_processor.on_record_deleted(record.id)
 
-    async def _apply_code_renames(self, repo: GhObject, renames: list[tuple[str, str, str]]) -> bool:
+    async def _apply_code_renames(self, repo: GhObject, renames: list[tuple[str, str, str]],
+                                  commit_sha: str | None = None) -> bool:
         """Apply in-place renames via ``on_records_moved`` — reuses the existing
         DB vertex, so permission/parent edges survive and no reindex fires
         unless the blob SHA also changed."""
@@ -787,7 +790,8 @@ class ReposSync:
         moves = [
             (blob_external_id(repo.id, old_path),
              self._build_code_file_record(
-                 repo, new_path, new_sha, code_files_enabled, test_files_enabled
+                 repo, new_path, new_sha, code_files_enabled, test_files_enabled,
+                 commit_sha=commit_sha,
              ),
              [])
             for old_path, new_path, new_sha in renames
@@ -802,7 +806,8 @@ class ReposSync:
             return False
         return folders_ok
 
-    async def _upsert_code_files(self, repo: GhObject, path_to_sha: dict[str, str]) -> bool:
+    async def _upsert_code_files(self, repo: GhObject, path_to_sha: dict[str, str],
+                                 commit_sha: str | None = None) -> bool:
         """Upsert (add/modify) code file records for the given repo-relative paths."""
         if not path_to_sha:
             return True
@@ -820,7 +825,7 @@ class ReposSync:
         records: list[Record] = []
         for path, sha in path_to_sha.items():
             record = self._build_code_file_record(
-                repo, path, sha, code_files_enabled, test_files_enabled
+                repo, path, sha, code_files_enabled, test_files_enabled, commit_sha=commit_sha,
             )
             created_ms, updated_ms = dates.get(path, (None, None))
             if created_ms is not None or updated_ms is not None:
@@ -926,6 +931,7 @@ class ReposSync:
         code_files_enabled: bool,
         test_files_enabled: bool,
         size: int | None = None,
+        commit_sha: str | None = None,
     ) -> CodeFileRecord:
         """A code file record. Every file gets one — oversized files (size only
         known on the full-sync path; Compare Commits carries no blob size) keep
@@ -956,7 +962,10 @@ class ReposSync:
             language=detect_language(name),
             inherit_permissions=True, parent_external_record_id=parent_external_id,
             parent_record_type=(RecordType.FILE if parent_external_id else None),
-            weburl=f"{repo.html_url}/blob/{repo.default_branch}/{path}",
+            # Pinned to the commit the file was synced at: a citation keeps
+            # pointing at the lines it quoted after the branch moves (P-8, A-12).
+            weburl=f"{repo.html_url}/blob/{commit_sha or repo.default_branch}/{path}",
+            commit_sha=commit_sha,
         )
         if not code_files_enabled:
             record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -1029,8 +1038,11 @@ class ReposSync:
             self._stream_repos.pop(repo_id, None)
             repo = await self._stream_repo(repo_id)
 
+        # At the commit the record was synced at, not the moving branch head:
+        # the content indexed is the content the record describes (P-8).
         content_res = await c.runtime.ds_call(
-            c.data_source.get_file_contents, repo.owner.login, repo.name, file_path, repo.default_branch,
+            c.data_source.get_file_contents, repo.owner.login, repo.name, file_path,
+            getattr(record, "commit_sha", None) or repo.default_branch,
         )
         if not content_res.success or content_res.data is None:
             raise_for_stream_fetch(

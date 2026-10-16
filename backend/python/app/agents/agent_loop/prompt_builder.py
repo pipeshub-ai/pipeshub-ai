@@ -235,11 +235,14 @@ def _bound_tool_view(
     # Unlock hook also stores names here before the sync runs.
     bound |= frozenset(state.get("unlocked_codegraph_tools") or ())
 
-    loaded_groups = frozenset(pinned_toolsets or []) | _toolsets_covering(registry, bound)
+    pinned = frozenset(pinned_toolsets or [])
+    loaded_groups = pinned | _toolsets_covering(registry, bound)
 
+    # A pinned group is bound whole; any other group only as far as its tools
+    # are bound. A group with one granted tool listed every tool as callable (A-13).
     loaded_tool_names: set[str] = set(bound)
     for group in registry.toolsets():
-        if group.name in loaded_groups:
+        if group.name in pinned:
             loaded_tool_names.update(group.tool_names)
 
     grouped = registry.grouped_tool_names()

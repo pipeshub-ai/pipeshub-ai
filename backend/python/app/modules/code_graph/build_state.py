@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.modules.code_graph.version import CODE_GRAPH_VERSION
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -37,6 +38,7 @@ __all__ = [
     "full_build_still_owed",
     "graph_status",
     "is_due",
+    "needs_full_build",
     "new_request_id",
     "record_group_id_from_key",
     "request_is_stale",
@@ -97,6 +99,8 @@ class BuildState(NamedTuple):
     last_error: str | None = None
     lease_token: str | None = None
     last_full_build: int | None = None
+    # CODE_GRAPH_VERSION of the last full build; another means rebuild in full.
+    build_version: str | None = None
 
 
 class PendingBuild(NamedTuple):
@@ -196,6 +200,12 @@ def is_due(state: BuildState, now_ms: int) -> bool:
     return state.next_attempt_at is None or state.next_attempt_at <= now_ms
 
 
+def needs_full_build(state: BuildState) -> bool:
+    """A full rebuild is owed, never built, or the last one ran under another version."""
+    return (state.full_request_id is not None or state.last_build is None
+            or state.build_version != CODE_GRAPH_VERSION)
+
+
 def graph_status(state: BuildState | None) -> GraphStatus:
     """The one status a person or an agent is told for a repo's graph."""
     if state is None:
@@ -212,7 +222,7 @@ def graph_status(state: BuildState | None) -> GraphStatus:
 _STATE_FIELDS = (
     "lastEdgeBuildAt", "edgeBuildPending", "edgeBuildRequestedAt", "edgeBuildRequestId",
     "edgeBuildFullRequestId", "edgeBuildStatus", "edgeBuildAttempts", "edgeBuildNextAttemptAt",
-    "edgeBuildLastError", "edgeBuildLeaseToken", "lastFullEdgeBuildAt",
+    "edgeBuildLastError", "edgeBuildLeaseToken", "lastFullEdgeBuildAt", "edgeBuildVersion",
 )
 
 
@@ -237,6 +247,7 @@ def _state_from_row(row: dict[str, Any]) -> BuildState:
         _str_or_none(row.get("edgeBuildLastError")),
         _str_or_none(row.get("edgeBuildLeaseToken")),
         _ms_or_none(row.get("lastFullEdgeBuildAt")),
+        _str_or_none(row.get("edgeBuildVersion")),
     )
 
 
@@ -339,6 +350,7 @@ class BuildStateStore:
                 out["lastEdgeBuildAt"] = started_at_ms
                 if full:
                     out["lastFullEdgeBuildAt"] = started_at_ms
+                    out["edgeBuildVersion"] = CODE_GRAPH_VERSION
                     if not full_build_still_owed(now, start.full_request_id):
                         out["edgeBuildFullRequestId"] = None
             if result is not None:

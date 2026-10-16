@@ -12,12 +12,17 @@ How to run
         --org-id <org> --connector-id <connector> --record-group-id <repo>
 
 Options
-    --dry-run   resolve and print the histogram without writing anything
+    --dry-run   resolve and print the histogram without writing anything (takes no lock)
     --force     run even while files are still queued or in progress
     --full      ignore lastEdgeBuildAt and re-resolve every file
+    --list      list every repo's graph state (built, owed, retrying, failed...) and exit
+    --explain   explain one repo's state and what a build would do now, and exit
 
-Takes the same Redis lock as the automatic build and exits 3 if one is already
-running for the repo. Requires backend/python/.env, same as the other scripts.
+    python -m app.scripts.build_code_graph_edges --list [--org-id <org>]
+    python -m app.scripts.build_code_graph_edges --explain --org-id <org> --record-group-id <repo>
+
+A build takes the same Redis lock as the automatic build and exits 3 if one is
+already running for the repo. Requires backend/python/.env, same as the other scripts.
 """
 from __future__ import annotations
 
@@ -34,7 +39,11 @@ load_dotenv()
 from app.config.configuration_service import ConfigurationService  # noqa: E402
 from app.config.providers.encrypted_store import EncryptedKeyValueStore  # noqa: E402
 from app.modules.code_graph import edge_build_trigger  # noqa: E402
-from app.modules.code_graph.build_state import BuildStateStore  # noqa: E402
+from app.modules.code_graph.build_state import (  # noqa: E402
+    BuildStateStore,
+    graph_status,
+    needs_full_build,
+)
 from app.modules.code_graph.edge_builder import (  # noqa: E402
     build_code_graph_edges,
 )
@@ -56,6 +65,10 @@ async def run(args: argparse.Namespace) -> int:
     # every re-resolved file are read from blob storage, whose config lives there.
     config_service = ConfigurationService(logger, EncryptedKeyValueStore(logger))
     provider = await GraphDBProviderFactory.create_provider(logger, config_service)
+    if args.list:
+        return await _list(provider, args.org_id)
+    if args.explain:
+        return await _explain(provider, args.org_id, args.record_group_id)
     facts_source = BlobCodeFactsSource(
         BlobStorage(logger, config_service, provider), provider, logger
     )
@@ -64,20 +77,22 @@ async def run(args: argparse.Namespace) -> int:
     renewal: asyncio.Task | None = None
 
     try:
-        lock = await edge_build_trigger.acquire_build_lock(
-            redis, args.org_id, args.record_group_id
-        )
-        if lock is None:
-            logger.error(
-                "Another code edge build already holds the lock for this repo; "
-                "wait for it to finish and run again."
+        # A dry run writes nothing, so it neither needs nor blocks the lock.
+        if not args.dry_run:
+            lock = await edge_build_trigger.acquire_build_lock(
+                redis, args.org_id, args.record_group_id
             )
-            return 3
-        renewal = asyncio.create_task(
-            edge_build_trigger.renew_build_lock_until_cancelled(
-                redis, lock[0], lock[1], logger
+            if lock is None:
+                logger.error(
+                    "Another code edge build already holds the lock for this repo; "
+                    "wait for it to finish and run again."
+                )
+                return 3
+            renewal = asyncio.create_task(
+                edge_build_trigger.renew_build_lock_until_cancelled(
+                    redis, lock[0], lock[1], logger
+                )
             )
-        )
 
         if await edge_build_trigger.group_has_unfinished_records(
             provider, args.org_id, args.record_group_id
@@ -104,7 +119,7 @@ async def run(args: argparse.Namespace) -> int:
         touched: set[str] | None = None
         if not args.full:
             last_build = start_state.last_build
-            if last_build is not None:
+            if not needs_full_build(start_state):
                 touched = await edge_build_trigger.records_updated_since(
                     provider, args.org_id, args.record_group_id, last_build
                 )
@@ -119,7 +134,7 @@ async def run(args: argparse.Namespace) -> int:
                     return 0
                 logger.info("Incremental run: %d file(s) changed since last build", len(touched))
             else:
-                logger.info("No previous edge build recorded; running a full build")
+                logger.info("Full build: owed, never built, or built by another code graph version")
 
         result = await build_code_graph_edges(
             graph_provider=provider,
@@ -129,7 +144,7 @@ async def run(args: argparse.Namespace) -> int:
             facts_source=facts_source,
             dry_run=args.dry_run,
             log=logger,
-            fence=lambda: edge_build_trigger.assert_lease_held(redis, *lock),
+            fence=(lambda: edge_build_trigger.assert_lease_held(redis, *lock)) if lock else None,
         )
 
         logger.info("code_graph_edge_build %s", json.dumps(result.as_log_fields()))
@@ -182,14 +197,52 @@ def _print_summary(result, *, dry_run: bool) -> None:
             print(f"    {relation:16} {count}")
 
 
+async def _list(provider: object, org_id: str | None) -> int:
+    """Every repo's graph state, one line each: what is built, owed, failing."""
+    builds = await BuildStateStore(provider).all()
+    rows = [b for b in builds if not org_id or b.org_id == org_id]
+    print(f"{'record group':40} {'org':24} {'status':20} {'last build':>14} {'tries':>5}  error")
+    for b in sorted(rows, key=lambda b: (b.org_id, b.record_group_id)):
+        s = b.state
+        print(f"{b.record_group_id:40} {b.org_id:24} {graph_status(s).value:20} "
+              f"{s.last_build or '-':>14} {s.attempts:>5}  {s.last_error or ''}")
+    print(f"\n{len(rows)} repo(s)")
+    return 0
+
+
+async def _explain(provider: object, org_id: str, record_group_id: str) -> int:
+    """Why one repo's graph is in the state it is in, and what a build would do now."""
+    state = await BuildStateStore(provider).read(org_id, record_group_id)
+    if state is None:
+        print("No build was ever asked for this repo.")
+        return 0
+    for field, value in state._asdict().items():
+        print(f"  {field:16} {value}")
+    print(f"  {'status':16} {graph_status(state).value}")
+    if await edge_build_trigger.group_has_unfinished_records(provider, org_id, record_group_id):
+        print("A build now would wait: files in this repo are still indexing.")
+    elif needs_full_build(state):
+        print("A build now would be full (a full build is owed, the repo was never built, "
+              "or it was last built by another code graph version).")
+    else:
+        touched = await edge_build_trigger.records_updated_since(
+            provider, org_id, record_group_id, state.last_build or 0)
+        print(f"A build now would re-check {len(touched)} changed file(s) and what depends on them.")
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Resolve cross-file code edges for one repository."
+        description="Resolve cross-file code edges for one repository, or report on them."
     )
-    parser.add_argument("--org-id", required=True)
-    parser.add_argument("--connector-id", required=True)
-    parser.add_argument("--record-group-id", required=True,
+    parser.add_argument("--org-id")
+    parser.add_argument("--connector-id")
+    parser.add_argument("--record-group-id",
                         help="The repo's recordGroupId (a GitLab project's code repository).")
+    parser.add_argument("--list", action="store_true",
+                        help="List every repo's graph state (optionally for --org-id) and exit.")
+    parser.add_argument("--explain", action="store_true",
+                        help="Explain one repo's graph state and what a build would do, and exit.")
     parser.add_argument("--dry-run", action="store_true",
                         help="Resolve and report without writing.")
     parser.add_argument("--force", action="store_true",
@@ -197,6 +250,11 @@ def main() -> int:
     parser.add_argument("--full", action="store_true",
                         help="Ignore lastEdgeBuildAt and re-resolve every file.")
     args = parser.parse_args()
+    if not args.list:
+        needed = ["org_id", "record_group_id"] + ([] if args.explain else ["connector_id"])
+        missing = [f"--{n.replace('_', '-')}" for n in needed if not getattr(args, n)]
+        if missing:
+            parser.error(f"{', '.join(missing)} required")
     return asyncio.run(run(args))
 
 

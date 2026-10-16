@@ -238,6 +238,10 @@ _DOMAIN_SHARED_CODE_TOOL_NAMES: frozenset[str] = frozenset({
     "codegraph__get_neighbour",
     "codegraph__read_code",
     "codegraph__find_symbol_path",
+    "codegraph__search_code",
+    "codegraph__outline",
+    "codegraph__impact",
+    "codegraph__entry_points",
 })
 
 # Matches nodes.py's ReAct/planner loop cap (`MAX_ITERATIONS` — see
@@ -247,13 +251,18 @@ _MAX_TURNS = 15
 
 #: Traversal results L3 keeps past its turn window. A walk spans more turns
 #: than the window holds, and each hop is the address the next one needs —
-#: clearing an earlier hop strands the walk. Small enough to hold: a walk is
-#: ~7KB, a symbol read under 1KB. `query_code_graph` is deliberately absent —
-#: its 25-50KB directory dumps are re-callable, not something to carry.
+#: clearing an earlier hop strands the walk. Measured on the eval fixture
+#: (A-8-result-size): a one-hop walk is ~3KB median / 7KB p90, a two-hop walk
+#: ~15KB / 22KB, a symbol read under 1KB. A run of two-hop walks is the costly
+#: case; L4-L7 still compact by budget, which bounds it. `query_code_graph` is
+#: deliberately absent — its listings are re-callable, not something to carry.
 _CODE_TRAVERSAL_TOOLS = frozenset({
     "codegraph__get_neighbour",
     "codegraph__read_code",
     "codegraph__find_symbol_path",
+    # A walk too, grouped by file; and an outline is a few hundred bytes.
+    "codegraph__impact",
+    "codegraph__outline",
 })
 
 
@@ -799,8 +808,8 @@ class PipesHubAgentFactory:
                 shared_tool_names=(
                     (DOMAIN_SHARED_SKILL_TOOL_NAMES if skill_manager is not None else frozenset())
                     | _DOMAIN_SHARED_NAV_TOOL_NAMES
-                    | _DOMAIN_SHARED_CODE_TOOL_NAMES
                 ),
+                code_tool_names=_DOMAIN_SHARED_CODE_TOOL_NAMES,
             )
             run_code_delegated_to_coding_agent = "coding_agent" in composed_names
             logger.info(

@@ -7,7 +7,8 @@ helpers that merely shared a caller came back "connected".
 """
 import pytest
 
-from app.agents.actions.code_graph.ops import find_symbol_path_impl, get_neighbour_impl
+from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+from app.agents.actions.code_graph.path import find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 
 from .conftest import BLOCKS, CONN, ORG, USER
@@ -67,8 +68,7 @@ async def test_a_second_hop_names_the_node_it_came_through_and_never_the_anchor(
 
     assert set(rows) == {"function:target", "function:fetchTarget"}
     assert "via" not in rows["function:target"]
-    assert rows["function:fetchTarget"]["via"] == {
-        "file_path": "src/b.py", "qualified_name": "function:target"}
+    assert rows["function:fetchTarget"]["via"] == "src/b.py#function:target"
 
 
 async def test_two_callees_of_one_caller_are_not_a_path() -> None:

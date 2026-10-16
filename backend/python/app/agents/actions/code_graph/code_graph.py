@@ -35,26 +35,31 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 
-from .ops import (
-    CODE_RELATIONS,
-    DEFAULT_MAX_DEPTH,
-    DEFAULT_MAX_LINES,
+from .neighbours import (
+    DEFAULT_IMPACT_DEPTH,
     DEFAULT_NEIGHBOR_LIMIT,
     MAX_NEIGHBOUR_DEPTH,
+    get_neighbour_impl,
+    impact_impl,
+)
+from .ops import (
+    CODE_RELATIONS,
     AmbiguousRepoError,
     _record_in_connector,
     _user_can_read,
-    find_symbol_path_impl,
-    get_neighbour_impl,
     path_for_record,
-    read_code_impl,
     repo_names,
 )
+from .path import DEFAULT_MAX_DEPTH, find_symbol_path_impl
 from .query import (
+    DEFAULT_ENTRY_LIMIT,
     DEFAULT_QUERY_LIMIT,
+    entry_points_impl,
     query_code_graph_impl,
 )
-from .results import attach_graph_status, without_marker
+from .read import DEFAULT_MAX_LINES, outline_impl, read_code_impl
+from .results import as_untrusted, attach_graph_status, without_marker
+from .search import DEFAULT_SEARCH_LIMIT, search_code_impl
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -103,37 +108,58 @@ _TAGS = [Tag(key="category", value="code_graph"), Tag(key="type", value="action"
 # tags (`tools/index.py::_tool_haystack`), normalised by QUERY length — so
 # extra vocabulary here can only raise a match, never dilute one. It is
 # needed because the descriptions are phrased structurally ("directory",
-# "symbol", "edges") while the questions these tools answer are phrased
-# behaviourally ("what happens when", "what breaks if"), sharing no tokens.
+# "symbol", "edges") while questions are phrased behaviourally ("what calls",
+# "what breaks"). The tokenizer keeps every word, so these hold only words a
+# code question uses: "what happens when" matched every question asked (A-10).
 _BEHAVIOUR = Tag(
     key="answers",
-    value="what happens happen behaves behaviour at runtime when running, from indexed repository source code",
+    value="code codebase source repository repo runtime behaviour behavior implementation",
 )
 
 _QUERY_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
     key="finds",
-    value="module structure layout contents which classes functions a directory or file defines",
+    value="module modules structure layout classes functions methods directory defines",
 )]
 
 _NEIGHBOUR_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
     key="answers",
-    value="who what calls call uses use imports import references reference depends depend on this, and what breaks break affects affect impact if it changes change",
+    value="calls call called imports import references depends dependency breaks impact",
 ), Tag(
     key="finds",
-    value="caller callers callee callees usage usages reference references dependency dependencies impact blast radius wiring edges",
+    value="caller callers callee callees usages references dependencies impact blast radius wiring edges",
 )]
 
 _READ_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
     key="finds",
-    value="source body definition implementation of a symbol or file",
+    value="source body definition implementation symbol function method class",
 )]
 
 _PATH_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
     key="answers",
-    value="how one part reach reaches another, what sits between them, how something propagates propagate flows flow travels through the code",
+    value="reaches reach propagates propagate flows flow path between symbols",
 ), Tag(
     key="finds",
-    value="path chain route connection connects between through two symbols end to end",
+    value="path chain route connection connects through callers callees",
+)]
+
+_SEARCH_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="finds",
+    value="where defined definition identifier symbol name grep text string regex occurrences usages literal",
+)]
+
+_OUTLINE_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="finds",
+    value="outline signatures functions methods classes declared file overview api",
+)]
+
+_IMPACT_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="answers",
+    value="breaks impact blast radius affected callers dependents change refactor rename",
+)]
+
+_ENTRY_TAGS = [*_TAGS, _BEHAVIOUR, Tag(
+    key="finds",
+    value="entry points entrypoint main handlers routes cli jobs start starts",
 )]
 
 
@@ -182,7 +208,8 @@ class CodeGraph:
 
     def _to_output(self, result: dict[str, Any]) -> tuple[bool, str]:
         is_error = isinstance(result, dict) and "error" in result
-        return not is_error, json.dumps(result, default=str)
+        # No spaces after separators: ~10% of every result, for nothing (A-8).
+        return not is_error, json.dumps(result, default=str, separators=(",", ":"))
 
     async def _run(
         self, name: str, connector_id: str, call: Any, failure: str,
@@ -626,7 +653,7 @@ class CodeGraph:
             and not result.get("truncated")
         ):
             self._state.setdefault("full_records_fetched", set()).add(record_id)
-        return self._to_output(result)
+        return self._to_output(as_untrusted(result))
 
     @tool(
         path="/tools/codegraph/find_symbol_path",
@@ -724,5 +751,206 @@ class CodeGraph:
                 include_tests=include_tests, undirected=undirected, repo=repo,
             ),
             "Failed to search for a path",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/search_code",
+        short_description="Find code by a symbol name, or by exact text or a regex in file bodies",
+        description=(
+            "Find code without knowing its file.\n\n"
+            "`mode='identifier'` (default): every definition with that name, exactly "
+            "(case-insensitive), across the repo — `parse_config`, `Client.fetch` and "
+            "`method:Client.fetch` all match the `fetch`/`parse_config` definitions.\n\n"
+            "`mode='text'` or `mode='regex'`: lines in file bodies that contain the text or "
+            "match the regex — a string literal, a call site, a config key. These read "
+            "file contents, so they need `path` (a directory, file or glob) and stop after "
+            "100 files.\n\n"
+            "Results are addresses: read_code reads one, get_neighbour walks from one."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="pattern", type=ParameterType.STRING,
+                          description="A symbol name, a literal piece of text, or a regex."),
+            ToolParameter(name="mode", type=ParameterType.STRING, required=False,
+                          default="identifier",
+                          description="'identifier' (default), 'text' or 'regex'."),
+            ToolParameter(name="path", type=ParameterType.STRING, required=False, default=None,
+                          description=("Directory, file or glob to search in. Required for "
+                                       "'text' and 'regex'; narrows 'identifier'.")),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_SEARCH_LIMIT, description="Maximum matches."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_SEARCH_TAGS,
+    )
+    async def search_code(
+        self,
+        connector_id: str,
+        pattern: str,
+        mode: str = "identifier",
+        path: str | None = None,
+        limit: int = DEFAULT_SEARCH_LIMIT,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        result = await self._run(
+            "search_code",
+            connector_id,
+            lambda: search_code_impl(
+                graph_provider=self._graph_provider, blob_store=self._blob_store,
+                org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
+                pattern=pattern, mode=mode, path=path, limit=limit,
+                include_tests=include_tests, repo=repo,
+            ),
+            "Failed to search the code",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/outline",
+        short_description="A file's definitions with their signatures and line ranges",
+        description=(
+            "What a file declares, without its bodies: each class, function and method "
+            "with its signature, decorators, first doc line and line range. Read this "
+            "before read_code to pick what to read."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="file_path", type=ParameterType.STRING, required=False,
+                          default=None, description="Repo-relative path of the file."),
+            ToolParameter(name="record_id", type=ParameterType.STRING, required=False,
+                          default=None,
+                          description="A code file's `Record ID` from a search result."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_OUTLINE_TAGS,
+    )
+    async def outline(
+        self,
+        connector_id: str,
+        file_path: str | None = None,
+        record_id: str | None = None,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
+        if error is not None:
+            return self._to_output(error)
+        result = await self._run(
+            "outline",
+            connector_id,
+            lambda: outline_impl(
+                graph_provider=self._graph_provider, blob_store=self._blob_store,
+                org_id=self._org_id, user_id=self._user_id, connector_id=connector_id,
+                file_path=path, include_tests=include_tests, repo=repo,
+            ),
+            "Failed to outline the file",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/impact",
+        short_description="What a change to a symbol can break, grouped by file",
+        description=(
+            "The blast radius of changing a symbol: everything that calls it, imports "
+            "it, or builds on it (inherits, implements, overrides), followed backwards "
+            f"up to `depth` hops (default {DEFAULT_IMPACT_DEPTH}), grouped by file with "
+            "the nearest hop. Only edges the parser could prove; `coverage` says when a "
+            "language has none."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="file_path", type=ParameterType.STRING, required=False,
+                          default=None, description="Repo-relative path of the symbol's file."),
+            ToolParameter(name="record_id", type=ParameterType.STRING, required=False,
+                          default=None,
+                          description="A code file's `Record ID` from a search result."),
+            ToolParameter(name="qualified_name", type=ParameterType.STRING, required=False,
+                          default=None,
+                          description=f"The symbol, e.g. `function:parse_config`. {_ADDRESS_RULE}"),
+            ToolParameter(name="depth", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_IMPACT_DEPTH,
+                          description=f"Hops to follow backwards, up to {MAX_NEIGHBOUR_DEPTH}."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_IMPACT_TAGS,
+    )
+    async def impact(
+        self,
+        connector_id: str,
+        file_path: str | None = None,
+        record_id: str | None = None,
+        qualified_name: str | None = None,
+        depth: int = DEFAULT_IMPACT_DEPTH,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        path, repo, error = await self._anchor_path(connector_id, file_path, record_id, repo)
+        if error is not None:
+            return self._to_output(error)
+        result = await self._run(
+            "impact",
+            connector_id,
+            lambda: impact_impl(
+                graph_provider=self._graph_provider, org_id=self._org_id,
+                user_id=self._user_id, connector_id=connector_id, file_path=path,
+                qualified_name=qualified_name, depth=depth,
+                include_tests=include_tests, repo=repo,
+            ),
+            "Failed to compute the impact",
+        )
+        return self._to_output(result)
+
+    @tool(
+        path="/tools/codegraph/entry_points",
+        short_description="Where control enters a repo: functions nothing in it calls",
+        description=(
+            "Functions and methods no code in the repo calls — routes, CLIs, jobs, "
+            "framework hooks — with conventional names (main, handler, ...) and files "
+            "(main.py, routes/, ...) first. A place to start reading an unfamiliar repo. "
+            "Only Python, JavaScript and TypeScript have call edges; `coverage` says when "
+            "a language has none."
+        ),
+        parameters=[
+            ToolParameter(name="connector_id", type=ParameterType.STRING,
+                          description=_CONNECTOR_ID_DESC),
+            ToolParameter(name="limit", type=ParameterType.INTEGER, required=False,
+                          default=DEFAULT_ENTRY_LIMIT, description="Maximum entry points."),
+            ToolParameter(name="include_tests", type=ParameterType.BOOLEAN, required=False,
+                          default=False, description=_INCLUDE_TESTS_DESC),
+            ToolParameter(name="repo", type=ParameterType.STRING, required=False, default=None,
+                          description=_REPO_DESC),
+        ],
+        tags=_ENTRY_TAGS,
+    )
+    async def entry_points(
+        self,
+        connector_id: str,
+        limit: int = DEFAULT_ENTRY_LIMIT,
+        include_tests: bool = False,
+        repo: str | None = None,
+    ) -> tuple[bool, str]:
+        result = await self._run(
+            "entry_points",
+            connector_id,
+            lambda: entry_points_impl(
+                graph_provider=self._graph_provider, org_id=self._org_id,
+                user_id=self._user_id, connector_id=connector_id, limit=limit,
+                include_tests=include_tests, repo=repo,
+            ),
+            "Failed to list entry points",
         )
         return self._to_output(result)

@@ -7,12 +7,10 @@ symbols, or read whichever record came first.
 """
 import pytest
 
-from app.agents.actions.code_graph.ops import (
-    AmbiguousRepoError,
-    find_symbol_path_impl,
-    get_neighbour_impl,
-    read_code_impl,
-)
+from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+from app.agents.actions.code_graph.ops import AmbiguousRepoError
+from app.agents.actions.code_graph.path import find_symbol_path_impl
+from app.agents.actions.code_graph.read import read_code_impl
 from app.config.constants.arangodb import CollectionNames
 
 from .conftest import CONN, ORG, USER, FakeBlobStore, FakeGraphProvider, _block

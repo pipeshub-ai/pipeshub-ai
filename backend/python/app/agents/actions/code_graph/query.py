@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import fnmatch
 import logging
+import re
 from typing import Any
 
 from app.config.constants.arangodb import CollectionNames, RecordRelations
@@ -33,6 +34,7 @@ from .ops import (
     _readable_only,
     _repo_matches,
     _unwrap,
+    attach_file_paths,
     coverage_for,
     get_record_roles,
     repo_names,
@@ -44,6 +46,9 @@ __all__ = [
     "CONNECTOR_ID_REQUIRED",
     "DEFAULT_QUERY_LIMIT",
     "QUERY_CODE_GRAPH_TOOL_NAME",
+    "DEFAULT_ENTRY_LIMIT",
+    "entry_points_impl",
+    "files_by_pattern",
     "query_code_graph_impl",
 ]
 
@@ -118,18 +123,13 @@ def _looks_like_locator(select: str) -> bool:
     return bool(sep and path.strip() and qualified.strip())
 
 
-async def _select_by_path(
-    graph_provider: Any, org_id: str, pattern: str, connector_id: str
-) -> tuple[list[dict], bool]:
-    """Blocks of the files whose path matches a glob (or a literal prefix).
+async def files_by_pattern(
+    graph_provider: Any, org_id: str, pattern: str,
+) -> tuple[dict[str, str], bool]:
+    """``(record id -> path, scan_capped)`` for the code files a glob or prefix matches.
 
-    Matched against ``codeFiles``, which holds one row per file, rather than
-    against blocks, which hold ~30 copies of the same path. The scan limit
-    therefore counts files, not symbols.
-
-    Returns ``(rows, scan_capped)``. Both caps bite silently otherwise: the
-    caller counts what it got and would report a clean ``truncated: false``
-    for a prefix that was cut short.
+    Matched against ``codeFiles``, one row per file. Neither connector nor
+    access is applied here: callers re-apply both.
     """
     # Anchor the DB-side filter on the pattern's literal prefix so the index does
     # the work; the glob itself is applied in Python.
@@ -152,14 +152,33 @@ async def _select_by_path(
         if ("*" in pattern or "?" in pattern) and not fnmatch.fnmatch(path, pattern):
             continue
         paths[key] = path
+    return paths, len(files or []) >= _SELECT_SCAN_LIMIT
+
+
+async def _select_by_path(
+    graph_provider: Any, org_id: str, pattern: str, connector_id: str
+) -> tuple[list[dict], bool]:
+    """Blocks of the files whose path matches a glob (or a literal prefix).
+
+    Matched against ``codeFiles``, which holds one row per file, rather than
+    against blocks, which hold ~30 copies of the same path. The scan limit
+    therefore counts files, not symbols.
+
+    Returns ``(rows, scan_capped)``. Both caps bite silently otherwise: the
+    caller counts what it got and would report a clean ``truncated: false``
+    for a prefix that was cut short.
+    """
+    paths, files_capped = await files_by_pattern(graph_provider, org_id, pattern)
     if not paths:
         return [], False
 
     # Bound the fan-out. Files are cheap to list, blocks are not: `backend/**`
     # matches thousands of files at ~30 blocks each, and an unbounded IN would
     # pull the whole repo into memory to answer one call.
-    capped = sorted(paths)[:_PATH_FANOUT_FILES]
-    scan_capped = len(files or []) >= _SELECT_SCAN_LIMIT or len(capped) < len(paths)
+    # By path, not record id: the sample a capped glob shows is a stable,
+    # readable slice of the tree (A-12).
+    capped = sorted(paths, key=lambda key: (paths[key], key))[:_PATH_FANOUT_FILES]
+    scan_capped = files_capped or len(capped) < len(paths)
     rows = await graph_provider.get_nodes_by_field_in(
         collection=_BLOCKS, field_name="recordId", field_values=capped, raise_on_error=True
     )
@@ -371,13 +390,18 @@ async def query_code_graph_impl(
         names = await repo_names(graph_provider, org_id, (m.get("recordGroupId") for m in matched))
         matched = [m for m in matched if _repo_matches(repo, m.get("recordGroupId"), names)]
 
-    _rids = {b.get("recordId") for b in matched if b.get("recordId")}
     access = RecordAccess(graph_provider, org_id, user_id)
-    if not include_tests:
-        _roles = await get_record_roles(graph_provider, org_id, _rids)
-        matched = [b for b in matched if _roles.get(b.get("recordId")) != TEST_ROLE]
-
+    # Readable first: the hidden-test count must not reveal unreadable files.
     matched = await _readable_only(access, matched)
+
+    hidden_tests = 0
+    if not include_tests:
+        _rids = {b.get("recordId") for b in matched if b.get("recordId")}
+        _roles = await get_record_roles(graph_provider, org_id, _rids)
+        kept = [b for b in matched if _roles.get(b.get("recordId")) != TEST_ROLE]
+        # Files, not blocks: "3 test files hidden" is what the model can act on (A-12).
+        hidden_tests = len({b.get("recordId") for b in matched} - {b.get("recordId") for b in kept})
+        matched = kept
 
     if not matched:
         empty: dict[str, Any] = {
@@ -392,6 +416,10 @@ async def query_code_graph_impl(
         }
         if scan_capped:
             empty["scan_capped"] = True
+        if hidden_tests:
+            empty["hidden_tests"] = hidden_tests
+            empty["hint"] = (f"{hidden_tests} test file(s) matched and were hidden; "
+                             "set include_tests=true to see them.")
         return empty
 
     # Rank after gating, not before: ranking a set that is then filtered spends
@@ -423,6 +451,8 @@ async def query_code_graph_impl(
     }
     if scan_capped:
         result["scan_capped"] = True
+    if hidden_tests:
+        result["hidden_tests"] = hidden_tests
     if degree_capped:
         # Counts truncate in scan order, so the ordering is not a ranking.
         result["degree_capped"] = True
@@ -485,3 +515,111 @@ def _miss_hint(select: str, how: str) -> str:
         "select a path to list a directory or file, or search the knowledge "
         "base for wording that appears in the code itself."
     )
+
+
+# Where a reader starts: names and files that are entry points by convention.
+_ENTRY_NAMES = re.compile(
+    r"^(?:main|run|start|serve|app|create_app|cli|handler|lambda_handler|handle\w*"
+    r"|on_\w+|get|post|put|patch|delete|index|setup|bootstrap|init_app)$",
+    re.IGNORECASE,
+)
+_ENTRY_FILES = re.compile(
+    r"(?:^|/)(?:main|app|server|cli|index|wsgi|asgi|manage|__main__)\.\w+$"
+    r"|(?:^|/)(?:routes?|handlers?|views?|controllers?|api|endpoints?|commands?|jobs?)/",
+    re.IGNORECASE,
+)
+_ENTRY_KINDS = {"function", "method"}
+_ENTRY_SCAN_BLOCKS = 5000
+_ENTRY_BATCH = 400
+DEFAULT_ENTRY_LIMIT = 30
+
+
+async def entry_points_impl(
+    *,
+    graph_provider: Any,
+    connector_id: str,
+    org_id: str,
+    user_id: str,
+    repo: str | None = None,
+    limit: int = DEFAULT_ENTRY_LIMIT,
+    include_tests: bool = False,
+) -> dict[str, Any]:
+    """Functions and methods nothing in the repo calls, conventional entry points first (A-9).
+
+    Code with no caller in the graph is where control arrives from outside: a
+    route, a CLI, a job, a framework hook. Conventional names and files rank
+    first; the rest follow by path. Only Python/JS/TS have CALLS edges, so in
+    other languages every function looks uncalled -- coverage says so.
+    """
+    if not connector_id:
+        return {"error": CONNECTOR_ID_REQUIRED}
+    limit = max(1, min(int(limit or DEFAULT_ENTRY_LIMIT), MAX_QUERY_LIMIT))
+    candidates: list[dict[str, Any]] = []
+    after: str | None = None
+    scanned = 0
+    while scanned < _ENTRY_SCAN_BLOCKS:
+        page = await graph_provider.get_documents_paginated(
+            collection=_BLOCKS, limit=2000, sort_field="_key", after_key=after,
+            filters={"orgId": org_id, "connectorId": connector_id}, raise_on_error=True,
+        )
+        if not page:
+            break
+        scanned += len(page)
+        candidates += [b for b in page if (b.get("kind") or "").lower() in _ENTRY_KINDS]
+        if len(page) < 2000:
+            break
+        after = page[-1].get("_key")
+    scan_capped = scanned >= _ENTRY_SCAN_BLOCKS
+
+    if repo:
+        names = await repo_names(graph_provider, org_id, (b.get("recordGroupId") for b in candidates))
+        candidates = [b for b in candidates if _repo_matches(repo, b.get("recordGroupId"), names)]
+    access = RecordAccess(graph_provider, org_id, user_id)
+    candidates = await _readable_only(access, candidates)
+    if not include_tests:
+        roles = await get_record_roles(graph_provider, org_id,
+                                       {b.get("recordId") for b in candidates if b.get("recordId")})
+        candidates = [b for b in candidates if roles.get(b.get("recordId")) != TEST_ROLE]
+
+    called: set[str] = set()
+    keys = [k for b in candidates if (k := _key_of(b))]
+    for start in range(0, len(keys), _ENTRY_BATCH):
+        rows = await graph_provider.get_neighbors_for_nodes_by_relationship_types(
+            node_keys=keys[start:start + _ENTRY_BATCH], node_collection=_BLOCKS,
+            relationship_types=[RecordRelations.CALLS.value], direction="inbound",
+            limit=50000, raise_on_error=True,
+        )
+        called |= {r.get("anchorKey") for r in rows or []}
+    uncalled = [b for b in candidates if _key_of(b) not in called]
+    await attach_file_paths(graph_provider, org_id, uncalled)
+
+    def reason(block: dict[str, Any]) -> str:
+        if _ENTRY_NAMES.match(block.get("name") or ""):
+            return "conventional name, no callers"
+        if _ENTRY_FILES.search(block.get("filePath") or ""):
+            return "entry-point file, no callers"
+        return "no callers"
+
+    ranked = sorted(uncalled, key=lambda b: (
+        not _ENTRY_NAMES.match(b.get("name") or ""),
+        not _ENTRY_FILES.search(b.get("filePath") or ""),
+        b.get("filePath") or "", b.get("startLine") or 0,
+    ))
+    points = []
+    for block in ranked[:limit]:
+        ref = SymbolRef.from_block(block)
+        ref.pop("kind", None)
+        ref["reason"] = reason(block)
+        points.append(ref)
+    out: dict[str, Any] = {
+        "connector_id": connector_id,
+        **({"coverage": gap} if (gap := coverage_for(candidates)) else {}),
+        "entry_points": points,
+        "total": len(uncalled),
+        "truncated": len(uncalled) > limit or scan_capped,
+    }
+    if scan_capped:
+        out["note"] = (f"Only the first {_ENTRY_SCAN_BLOCKS} symbols were scanned; pass `repo` "
+                       "to look at one repository.")
+    return out
+

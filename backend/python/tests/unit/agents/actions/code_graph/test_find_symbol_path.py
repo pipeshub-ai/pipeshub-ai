@@ -6,8 +6,8 @@ came back as a plain `found: False`, which reads as "no path exists".
 """
 import pytest
 
-from app.agents.actions.code_graph import ops
-from app.agents.actions.code_graph.ops import MAX_PATH_DEPTH, find_symbol_path_impl
+from app.agents.actions.code_graph import path as path_mod
+from app.agents.actions.code_graph.path import MAX_PATH_DEPTH, find_symbol_path_impl
 from app.agents.actions.code_graph.results import without_marker
 
 from .conftest import BLOCKS, CONN, ORG, USER, FakeGraphProvider
@@ -73,7 +73,7 @@ class TestDepth:
 
 class TestFrontierCap:
     async def test_hitting_the_cap_is_reported_not_silent(self, graph, monkeypatch) -> None:
-        monkeypatch.setattr(ops, "_FRONTIER_LIMIT", 1)
+        monkeypatch.setattr(path_mod, "_FRONTIER_LIMIT", 1)
         result = await _path(graph, b=PANEL)
         assert result["found"] is False
         assert result["capped"] is True
@@ -92,7 +92,7 @@ class TestAccessControl:
 @pytest.mark.asyncio
 async def test_a_provider_failure_is_not_reported_as_no_path() -> None:
     """`found: False` reads as "no path exists"; a failed hop must surface instead."""
-    from app.agents.actions.code_graph.ops import _bfs_edges
+    from app.agents.actions.code_graph.path import _bfs_edges
 
     class _Broken:
         async def get_neighbors_for_nodes_by_relationship_types(self, **kwargs: object) -> list:

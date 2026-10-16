@@ -2,6 +2,8 @@
 
 from types import SimpleNamespace
 
+import pytest
+
 from app.agents.agent_loop.hooks.code_graph_unlock import (
     CODE_GRAPH_TOOLSET,
     unlock_code_graph_tools,
@@ -68,3 +70,45 @@ class TestUnlockCodeGraphTools:
         )
         assert unlock_code_graph_tools(run_scope, registry) == []
         assert run_scope.visible_tools == set()
+
+
+class TestCodeIntent:
+    """A turn whose retrieval brushed one code file is not a code question (A-10)."""
+
+    CODE = {"record_type": "CODE_FILE"}
+    DOC = {"record_type": "FILE"}
+
+    def test_a_policy_question_with_one_stray_code_hit_does_not_unlock(self) -> None:
+        from app.agents.agent_loop.hooks.code_graph_unlock import has_code_intent
+        records = {"a": self.DOC, "b": self.DOC, "c": self.CODE}
+        assert not has_code_intent("what happens when I submit an expense report", records)
+
+    @pytest.mark.parametrize("query", [
+        "who calls the payment handler",
+        "what does build_code_graph_edges do",
+        "where is getUserById defined",
+        "explain app/events/events.py",
+        "how does `RecordAccess` decide",
+    ])
+    def test_a_code_question_unlocks(self, query: str) -> None:
+        from app.agents.agent_loop.hooks.code_graph_unlock import has_code_intent
+        assert has_code_intent(query, {"c": self.CODE, "d": self.DOC, "e": self.DOC})
+
+    def test_mostly_code_results_unlock_whatever_the_wording(self) -> None:
+        from app.agents.agent_loop.hooks.code_graph_unlock import has_code_intent
+        assert has_code_intent("what happens at checkout", {"a": self.CODE, "b": self.CODE,
+                                                            "c": self.DOC})
+
+
+@pytest.mark.asyncio
+async def test_tool_search_ranks_code_tools_for_code_questions_only() -> None:
+    """The tags held "what happens when"; the tokenizer keeps every word (A-10)."""
+    from app.agent_loop_lib.core.text_scoring import tokenize
+    from app.agent_loop_lib.tools.base import ToolSummary
+    from app.agent_loop_lib.tools.index import _score
+    from app.agents.actions.code_graph import code_graph as cg
+
+    summary = ToolSummary(name="get_neighbour", short_description="Walk code edges",
+                          path="/tools/codegraph/get_neighbour", tags=tuple(cg._NEIGHBOUR_TAGS))
+    assert _score(tokenize("what happens when I submit an expense report"), summary) == 0
+    assert _score(tokenize("who calls the payment handler function"), summary) > 0

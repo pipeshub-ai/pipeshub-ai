@@ -1008,6 +1008,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Code block nameFolded backfill failed: {e}", exc_info=True)
 
+        # After nameFolded: re-indexes repos whose blocks predate this code
+        # graph version, once per version.
+        try:
+            from app.migrations.code_graph_backfill import run_code_graph_backfill
+
+            await run_code_graph_backfill(
+                app_container.config_service(), graph_provider, app_container.kafka_service(), logger,
+            )
+        except Exception as e:
+            logger.error(f"❌ Code graph backfill failed: {e}", exc_info=True)
+
     post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 

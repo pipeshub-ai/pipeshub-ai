@@ -134,6 +134,10 @@ export const CODE_GRAPH_TOOL_NAMES = [
   'pipeshub_code_neighbours',
   'pipeshub_code_read',
   'pipeshub_code_path',
+  'pipeshub_code_search',
+  'pipeshub_code_outline',
+  'pipeshub_code_impact',
+  'pipeshub_code_entry_points',
 ] as const;
 
 export function registerCodeGraphTools(
@@ -275,5 +279,85 @@ export function registerCodeGraphTools(
       annotations: READ_ONLY,
     },
     async (args) => call(deps, HttpMethod.POST, '/path', args),
+  );
+
+  const repoRequired = repo
+    .unwrap()
+    .describe('Repository as `owner/name`, from pipeshub_code_repos.');
+
+  server.registerTool(
+    'pipeshub_code_search',
+    {
+      description:
+        'Find code without knowing its file. `mode: "identifier"` (default) lists every ' +
+        'definition with that name. `mode: "text"` or `"regex"` finds lines in file bodies ' +
+        '(a string, a call site, a config key); these need `path` and read at most 100 files.',
+      inputSchema: {
+        repo: repoRequired,
+        pattern: z.string().min(1).max(200).describe('A symbol name, text, or a regex.'),
+        mode: z.enum(['identifier', 'text', 'regex']).default('identifier'),
+        path: z
+          .string()
+          .min(1)
+          .optional()
+          .describe('Directory, file or glob to search. Required for text and regex.'),
+        limit: z.number().int().min(1).max(200).optional().describe('Maximum matches.'),
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/search', args),
+  );
+
+  server.registerTool(
+    'pipeshub_code_outline',
+    {
+      description:
+        "A file's classes, functions and methods with signatures, decorators, first doc " +
+        'line and line ranges — no bodies. Read before pipeshub_code_read to pick what to read.',
+      inputSchema: {
+        repo,
+        file_path: filePath,
+        record_id: recordId,
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/outline', args),
+  );
+
+  server.registerTool(
+    'pipeshub_code_impact',
+    {
+      description:
+        'What changing a symbol can break: everything that calls, imports or builds on it, ' +
+        `followed backwards up to \`depth\` hops, grouped by file. ${COVERAGE}`,
+      inputSchema: {
+        repo,
+        file_path: filePath,
+        record_id: recordId,
+        qualified_name: qualifiedName,
+        depth: z.number().int().min(1).max(3).optional().describe('Hops back, default 2.'),
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/impact', args),
+  );
+
+  server.registerTool(
+    'pipeshub_code_entry_points',
+    {
+      description:
+        'Where control enters a repo: functions nothing in it calls (routes, CLIs, jobs, ' +
+        `hooks), conventional names and files first. ${COVERAGE}`,
+      inputSchema: {
+        repo: repoRequired,
+        limit: z.number().int().min(1).max(200).optional().describe('Maximum entry points.'),
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/entry-points', args),
   );
 }

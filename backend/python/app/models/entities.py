@@ -2675,6 +2675,8 @@ class CodeFileRecord(Record):
     # generated. Classified by the connector from the path alone; the resolver
     # reads it instead of re-deriving "is this a test?" from the path.
     file_role: str | None = None
+    # The commit this version of the file was synced at (P-8).
+    commit_sha: str | None = None
 
     def to_llm_context(self, frontend_url: str | None = None, *, include_full_semantic: bool = True) -> str:
         """Adds the repo-relative path the code-graph tools address files by.
@@ -2712,6 +2714,7 @@ class CodeFileRecord(Record):
             "fileHash": self.file_hash,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     def to_arango_record(self) -> dict:
@@ -2724,6 +2727,7 @@ class CodeFileRecord(Record):
             "extension": self.extension,
             "language": self.language,
             "fileRole": self.file_role,
+            "commitSha": self.commit_sha,
         }
 
     @staticmethod
@@ -2786,6 +2790,7 @@ class CodeFileRecord(Record):
             extension=extension,
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
+            commit_sha=arango_base_code_file_record.get("commitSha"),
             **Record.delete_state_from_arango(arango_base_record),
         )
 

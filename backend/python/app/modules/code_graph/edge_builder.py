@@ -657,9 +657,24 @@ class _Builder:
             return typed or candidates
         if relation in _CALL_RELATIONS:
             # Class exclusion: `select(Model)` is not a call to Model.
-            callable_only = [cid for cid in candidates if cid in self.index.callable_blocks]
-            return callable_only or candidates
+            callable_only = [cid for cid in candidates
+                             if cid in self.index.callable_blocks and not self._is_constructor(cid)]
+            if callable_only:
+                return callable_only
+            # `Foo()` / `new Foo()` calls the type, which is where a constructor
+            # call points in every language; a field or variable never is (P-3).
+            return [cid for cid in candidates if cid in self.index.type_blocks]
         return candidates
+
+    def _is_constructor(self, block_id: str) -> bool:
+        """A method named for its type (Java, C#, C++, Kotlin): the call names the type."""
+        row = self.index.rows.get(block_id)
+        if row is None or row.kind not in ("method", "constructor") or not row.qualified_name:
+            return False
+        # `method:img.Resizer.Resizer`: its owner is the segment before its name,
+        # whether the method sits in the class body or is defined out of line.
+        path = row.qualified_name.partition(":")[2].split(".")
+        return len(path) >= 2 and path[-2] == row.name
 
     def _resolve_module_qualified_call(self, fact: dict, record_id: str) -> str | None:
         """`import analysis; analysis.analyze_game()`.

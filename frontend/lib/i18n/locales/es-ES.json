@@ -545,9 +545,9 @@
   },
   "reindexBlocked": {
     "title": "Este registro no se puede reindexar por separado",
-    "message": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar un solo archivo lo dejaría en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para obtener los últimos cambios, ejecuta una sincronización en el conector: actualiza a la vez todos los archivos modificados del repositorio.",
+    "message": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar un solo archivo lo dejaría en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
     "folderTitle": "Esta carpeta no se puede reindexar por separado",
-    "folderMessage": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar una carpeta dejaría solo esos archivos en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para obtener los últimos cambios, ejecuta una sincronización en el conector: actualiza a la vez todos los archivos modificados del repositorio.",
+    "folderMessage": "Los archivos de GitHub y GitLab se indexan juntos como un único grafo de código para todo el repositorio. Reindexar una carpeta dejaría solo esos archivos en una versión más reciente que el resto del repositorio y rompería los vínculos entre archivos. Para actualizarlo, vuelve a indexar el repositorio completo desde el centro de conocimiento: así se reindexan todos los archivos juntos. Una sincronización del conector solo recoge los archivos que cambiaron.",
     "goToConnectors": "Ir a conectores"
   },
   "kb": {
