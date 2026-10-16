@@ -28,7 +28,7 @@ def _empty_parse(ep) -> None:
     )
 
 
-def _with_pipeline(ep):
+def _with_pipeline(ep) -> MagicMock:
     pipeline = MagicMock()
     pipeline.delete_points_for_virtual_record = AsyncMock()
     ep.processor.indexing_pipeline = pipeline
@@ -57,7 +57,7 @@ async def test_a_failed_empty_write_does_not_complete_the_event() -> None:
     _with_pipeline(ep)
     ep.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
 
-    async def update_node(_key, _collection, fields):
+    async def update_node(_key, _collection, fields) -> bool:
         return fields.get("indexingStatus") != "EMPTY"
 
     ep.graph_provider.update_node = AsyncMock(side_effect=update_node)
