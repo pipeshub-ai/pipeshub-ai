@@ -26,12 +26,17 @@ from atlassian_behaviour_fakes import (
 from confluence_dc_removal_fakes import RemovalRecordsDb
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import AccessRule, CollectionNames, Connectors
+from app.config.constants.arangodb import (
+    AccessRule,
+    CollectionNames,
+    Connectors,
+    OriginTypes,
+)
 from app.connectors.sources.atlassian.confluence_datacenter.connector import (
     ConfluenceDataCenterConnector,
 )
 from app.connectors.sources.atlassian.core import confluence_dc_removal
-from app.models.entities import AppUserGroup, Record, RecordType
+from app.models.entities import AppUserGroup, Record, RecordType, WebpageRecord
 from app.models.permission import EntityType, PermissionType
 from app.sources.client.confluence.confluence import ConfluenceRESTClientViaToken
 from app.sources.external.confluence.confluence import ConfluenceDataSource
@@ -61,6 +66,9 @@ class TeamDb(RemovalRecordsDb):
 
     async def migrate_group_to_user_by_external_id(self, **kwargs: str) -> None:
         self.migrations.append(kwargs)
+
+    async def get_placeholder_records(self, connector_id: str) -> list[Any]:
+        return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
     def members_of(self, group_name: str) -> Optional[list[str]]:
         for group, members in reversed(self.user_groups):
@@ -615,6 +623,56 @@ class TestSpacePermissions:
 
         assert len(atlassian_api.calls("GET", f"{API}/space/ENG/permissions")) == 1
         assert len(atlassian_api.calls("GET", f"{API}/server-information")) == 1, "probed once, then cached"
+
+
+def page_stub(cid: str) -> WebpageRecord:
+    """What the processor writes for a parent no sync has read yet."""
+    return WebpageRecord(
+        org_id="org-1", record_name=cid, record_type=RecordType.CONFLUENCE_PAGE, external_record_id=cid,
+        connector_name=Connectors.CONFLUENCE_DATA_CENTER, connector_id=CONNECTOR_ID, origin=OriginTypes.CONNECTOR,
+        version=0, is_placeholder=True, access_rule=AccessRule.RESTRICTED, external_record_group_id="10",
+    )
+
+
+class TestPlaceholderSweep:
+    async def test_a_parent_the_filters_left_out_is_filled_in_up_to_the_first_real_ancestor(
+        self, atlassian_api, db, store
+    ) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        with_directory(atlassian_api, [user("alice", "alice@example.com")], {})
+        await connector._sync_users()
+        parent, grandparent = page_stub("10"), page_stub("5")
+        db.records.update({"10": parent, "5": grandparent, "404": page_stub("404")})
+        seeds = [parent, db.records["404"]]
+        db.get_placeholder_records = AsyncMock(return_value=seeds)
+        atlassian_api.on("GET", f"{API}/content/10", {**content("10", version=3), "ancestors": [{"id": "5", "type": "page"}]})
+        atlassian_api.on("GET", f"{API}/content/5", content("5"))
+        atlassian_api.on(
+            "GET", f"{API}/content/5/restriction/relevantViewRestrictions", restricted_to(users=[{"userKey": "alice"}])
+        )
+
+        await connector._sweep_placeholder_records("org-1")
+
+        page, top, gone = db.records["10"], db.records["5"], db.records["404"]
+        assert page.record_name == "Title 10" and page.id == parent.id
+        assert page.access_rule == AccessRule.STRICT, "an unrestricted parent no longer hides the pages under it"
+        assert page.is_placeholder is True, "out-of-scope content is still never indexed"
+        assert (page.parent_external_record_id, page.parent_record_type) == ("5", RecordType.CONFLUENCE_PAGE)
+        assert top.record_name == "Title 5" and top.access_rule == AccessRule.RESTRICTED
+        assert [p.email for p in db.record_permissions["5"]] == ["alice@example.com"]
+        assert gone.access_rule == AccessRule.RESTRICTED and db.record_permissions["404"] == [], (
+            "an ancestor the source no longer returns fails closed"
+        )
+
+    async def test_a_full_sync_ends_with_the_sweep(self, atlassian_api, db, store, search) -> None:
+        connector = await make_connector(atlassian_api, db, store)
+        db.records["10"] = page_stub("10")
+        atlassian_api.on("GET", f"{API}/content/10", content("10"))
+
+        await connector.run_sync()
+
+        assert db.records["10"].record_name == "Title 10"
+        assert db.records["10"].access_rule == AccessRule.STRICT
 
 
 class TestPageRestrictions:

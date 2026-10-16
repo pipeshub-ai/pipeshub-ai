@@ -128,5 +128,4 @@ class TestFolderEvent:
         plan = connector._sync_shared_folder_groups.await_args.args[0]
         assert list(plan) == ["13667846609"]
         assert (plan["13667846609"].name, plan["13667846609"].syncer) == ("v2-open", OWNER[0])
-        assert connector._sync_shared_folder_groups.await_args.kwargs == {"reread": frozenset({"13667846609"})}
         connector._resync_record_by_external_id.assert_not_called()

@@ -69,16 +69,23 @@ class TestSharedFolderGroups:
         connector._shared_folder_members.assert_awaited_once_with("sf-1", "dbmid:a")
 
     @pytest.mark.asyncio
-    async def test_a_known_folder_keeps_its_stored_grants(self, connector) -> None:
-        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(name_attr=None))
-        connector.data_entities_processor.get_record_group_by_external_id.return_value.name = "Korean files"
-        connector._shared_folder_members = AsyncMock()
+    async def test_a_member_removed_at_the_source_loses_the_grant_on_a_full_sync(self, connector) -> None:
+        stored = MagicMock()
+        stored.name = "Korean files"
+        connector.data_entities_processor.get_record_group_by_external_id = AsyncMock(return_value=stored)
+        owner = SimpleNamespace(user=SimpleNamespace(email="a@x.com", account_id="dbid:a"),
+                                access_type=SimpleNamespace(_tag="owner"), is_inherited=False)
+        connector.data_source.sharing_list_folder_members = AsyncMock(return_value=DropboxResponse(
+            success=True, data=SimpleNamespace(users=[owner], groups=[], invitees=[], cursor=None),
+        ))
 
         await connector._sync_shared_folder_groups({"sf-1": _folder()})
 
-        connector._shared_folder_members.assert_not_awaited()
+        connector.data_source.sharing_list_folder_members.assert_awaited_once_with(
+            shared_folder_id="sf-1", team_member_id="dbmid:a",
+        )
         (_, grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
-        assert grants is None
+        assert [g.email for g in grants] == ["a@x.com"], "the stored grants are replaced, so the leaver's is gone"
 
     @pytest.mark.asyncio
     async def test_a_placeholder_named_by_its_id_or_a_renamed_folder_rereads_its_members(self, connector) -> None:
@@ -122,6 +129,47 @@ class TestSharedFolderGroups:
         await connector._refresh_shared_folder("sf-1", "dbmid:a")
 
         connector._shared_folder_members.assert_awaited_once_with("sf-1", "dbmid:a")
+
+    @pytest.mark.asyncio
+    async def test_a_relinquish_event_rereads_the_folder_as_its_syncer_not_the_leaver(self, connector) -> None:
+        connector._shared_folder_plan = {"sf-1": _folder()}
+        metadata = SimpleNamespace(shared_folder_id="sf-1", name="Korean files", access_type=SimpleNamespace(_tag="owner"),
+                                   parent_shared_folder_id=None, access_inheritance=SimpleNamespace(_tag="inherit"),
+                                   is_team_folder=False)
+        connector.data_source.sharing_get_folder_metadata = AsyncMock(return_value=DropboxResponse(success=True, data=metadata))
+        connector._shared_folder_members = AsyncMock(return_value=[GRANT])
+        event = MagicMock()
+        event.event_type._tag = "shared_content_relinquish_membership"
+        event.context.is_team_member.return_value = True
+        event.context.get_team_member.return_value = MagicMock(team_member_id="dbmid:leaver", email="leaver@x.com")
+        asset = MagicMock()
+        asset.is_file.return_value = False
+        asset.is_folder.return_value = True
+        asset.get_folder.return_value = MagicMock(path=MagicMock(namespace_relative=MagicMock(ns_id="sf-1")))
+        event.assets = [asset]
+        connector.data_source.team_log_get_events_continue = AsyncMock(return_value=DropboxResponse(
+            success=True, data=MagicMock(events=[event], cursor="c2", has_more=False),
+        ))
+        connector.dropbox_cursor_sync_point = MagicMock(update_sync_point=AsyncMock())
+
+        await connector._sync_sharing_changes_with_cursor("key", "c1")
+
+        connector.data_source.sharing_get_folder_metadata.assert_awaited_once_with(
+            shared_folder_id="sf-1", team_member_id="dbmid:a",
+        )
+        connector._shared_folder_members.assert_awaited_once_with("sf-1", "dbmid:a")
+        (_, grants), = connector.data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert grants == [GRANT]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_event_reread_is_logged_as_an_error_with_the_folder(self, connector) -> None:
+        connector.data_source.sharing_get_folder_metadata = AsyncMock(return_value=DropboxResponse(success=False, error="no access"))
+        connector.logger = MagicMock()
+
+        await connector._refresh_shared_folder("sf-1", "dbmid:leaver")
+
+        assert "sf-1" in connector.logger.error.call_args.args[0]
+        connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
 
 class TestDeletedSharedFolders:

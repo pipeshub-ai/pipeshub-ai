@@ -6,6 +6,7 @@ Scaffold copied from Confluence Cloud; implementation will target Confluence Dat
 Authentication: API token (personal access token or HTTP basic with API token).
 """
 
+import asyncio
 import uuid
 import re
 from collections.abc import AsyncGenerator
@@ -63,6 +64,7 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.atlassian.core.apps import ConfluenceDataCenterApp
 from app.connectors.sources.atlassian.core.confluence_access import (
+    _is_folder,
     apply_page_access_to_dependents,
     listing_modified_after,
     unresolved_principal_permission,
@@ -520,11 +522,102 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
             # This catches permission changes that don't update content's lastModified
             await self._sync_permission_changes_from_audit_log()
 
+            # Step 6: Backfill placeholder ancestors that out-of-scope sync filters left
+            # unreconciled (metadata + permissions only; they remain non-indexed stubs).
+            await self._sweep_placeholder_records(org_id)
+
             self.logger.info("✅ Confluence sync completed successfully")
 
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
             raise
+
+    # Bound the per-level source fanout; Confluence is rate-limited.
+    _PLACEHOLDER_SWEEP_CONCURRENCY = 5
+    # Runaway backstop only — `visited` already guarantees termination.
+    _PLACEHOLDER_SWEEP_SAFETY_MAX = 10000
+
+    async def _sweep_placeholder_records(self, org_id: str) -> None:
+        """Backfill ancestors that sync filters left as placeholder stubs.
+
+        A page only carries its own restrictions; those on an ancestor stay on the
+        ancestor. When the ancestor was filtered out, its stub is RESTRICTED with no
+        grants and hides everything under it, so each stub is fetched from source
+        (metadata + permissions, still ``is_placeholder`` so it is never indexed),
+        walking up parent by parent until a real record or the space root.
+        Keyed by external id and idempotent: an interrupted sweep finishes next sync.
+        """
+        visited: set[str] = set()
+        frontier: list[Record] = []
+        for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id):
+            if stub.external_record_id not in visited:
+                visited.add(stub.external_record_id)
+                frontier.append(stub)
+
+        total = 0
+        while frontier:
+            self.logger.info(f"Placeholder sweep: backfilling {len(frontier)} ancestor stub(s)")
+            results = await self._fetch_ancestor_level(org_id, frontier)
+
+            backfills: list[tuple[Record, list[Permission]]] = []
+            for stub, result in zip(frontier, results):
+                if result:
+                    record, permissions = result
+                else:
+                    # Re-submit the stub so its BELONGS_TO / PARENT_CHILD edges, which a
+                    # full sync deletes, come back; access stays fail-closed.
+                    record, permissions = stub, []
+                record.is_placeholder = True
+                backfills.append((record, permissions))
+
+            # Also writes the next level's parent stubs via _handle_parent_record.
+            await self.data_entities_processor.on_new_records(backfills)
+
+            next_frontier: list[Record] = []
+            for record, _ in backfills:
+                parent_ext_id = record.parent_external_record_id
+                if not parent_ext_id or not record.parent_record_type or parent_ext_id in visited:
+                    continue
+                visited.add(parent_ext_id)
+                parent_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, parent_ext_id
+                )
+                if parent_record is not None and parent_record.is_placeholder:
+                    next_frontier.append(parent_record)
+
+            total += len(frontier)
+            if total > self._PLACEHOLDER_SWEEP_SAFETY_MAX:
+                self.logger.error(
+                    f"Placeholder sweep exceeded safety bound ({self._PLACEHOLDER_SWEEP_SAFETY_MAX}); aborting"
+                )
+                break
+            frontier = next_frontier
+
+    async def _fetch_ancestor_level(
+        self, org_id: str, frontier: list[Record]
+    ) -> list[tuple[Record, list[Permission]] | None]:
+        """Fetch one frontier level from source, aligned with ``frontier``; None when gone.
+
+        Placeholders carry no external_revision_id, so ``_check_and_fetch_updated_record``
+        always treats them as changed.
+        """
+        semaphore = asyncio.Semaphore(self._PLACEHOLDER_SWEEP_CONCURRENCY)
+
+        async def fetch_one(stub: Record) -> tuple[Record, list[Permission]] | None:
+            # DC has no folder API, and a FILE stub would otherwise go to the attachment fetch.
+            if _is_folder(stub):
+                return None
+            async with semaphore:
+                try:
+                    return await self._check_and_fetch_updated_record(org_id, stub)
+                except Exception as e:
+                    self.logger.warning(
+                        f"Placeholder sweep: failed to fetch {stub.external_record_id} "
+                        f"({stub.record_type}): {e}"
+                    )
+                    return None
+
+        return await asyncio.gather(*[fetch_one(stub) for stub in frontier])
 
     async def _sync_users(self) -> None:
         """

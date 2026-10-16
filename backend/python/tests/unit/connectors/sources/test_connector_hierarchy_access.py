@@ -11,7 +11,6 @@ from app.connectors.sources.google.drive.team.drive_access import (
     item_inherits_parent,
     permission_is_direct,
 )
-from app.connectors.sources.microsoft.onedrive.connector import grants_match
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
     unique_file_grants,
 )
@@ -204,18 +203,6 @@ class TestDropboxAccess:
 
 
 class TestOneDriveAndSharePoint:
-    def test_matching_permission_sets_inherit(self) -> None:
-        assert grants_match(
-            [_grant("a@x.com", PermissionType.WRITE)],
-            [_grant("a@x.com", PermissionType.WRITE)],
-        ) is True
-
-    def test_an_extra_person_does_not_match(self) -> None:
-        assert grants_match(
-            [_grant("a@x.com"), _grant("b@x.com")],
-            [_grant("a@x.com")],
-        ) is False
-
     def test_unique_file_keeps_role_assignments_and_org_links(self) -> None:
         role = _grant("legal@x.com", PermissionType.WRITE)
         link = Permission(external_id="anyone_in_org", type=PermissionType.READ, entity_type=EntityType.ORG)

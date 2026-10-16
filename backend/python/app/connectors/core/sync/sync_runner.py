@@ -692,7 +692,7 @@ async def run_sync_task(
     skipped_code: str | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
-    scope_generation = await _kh_scope_begin(graph_provider, logger, connector_id)
+    scope_generation: int | None = None
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
@@ -701,6 +701,7 @@ async def run_sync_task(
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
+        scope_generation = await _kh_scope_begin(graph_provider, logger, connector_id)
         # A cached connector still holds the last run's summary until run_sync starts;
         # a stop before then must not file it under this run.
         connector.last_sync_summary = None

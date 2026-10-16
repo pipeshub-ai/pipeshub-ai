@@ -31,6 +31,8 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from app.connectors.sources.google.drive.team.drive_access import permission_is_direct
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -3981,3 +3983,104 @@ class TestShortcutTargetsInOtherDrives:
             pass
         processed = [c.args[0]["id"] for c in connector._process_drive_item.await_args_list]
         assert processed == ["mine", "common", "readme", "other"]
+
+
+class TestPlacementByOwnership:
+    @pytest.mark.asyncio
+    async def test_item_owned_by_someone_else_goes_to_shared_with_me_even_when_not_shared(self, connector: GoogleDriveTeamConnector) -> None:
+        # Drive reports shared=false for an item nested in a shared folder.
+        meta = _make_file_metadata(shared=False, owners=[{"emailAddress": "owner@t.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
+
+        assert result.record.external_record_group_id is None
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
+
+    @pytest.mark.asyncio
+    async def test_owned_item_stays_in_my_drive_whatever_the_email_case(self, connector: GoogleDriveTeamConnector) -> None:
+        meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "U@T.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
+
+        assert result.record.external_record_group_id == "d1"
+        assert result.record.shared_with_me_record_group_ids == []
+
+
+def _drive_perm(perm_id: str, email: str, *, inherited: bool, role: str = "reader") -> dict:
+    return {
+        "id": perm_id, "type": "user", "role": role, "emailAddress": email,
+        "permissionDetails": [{"permissionType": "file", "role": role, "inherited": inherited}],
+    }
+
+
+class TestInheritedFileGrants:
+    def test_inherited_file_entry_is_not_direct(self) -> None:
+        assert permission_is_direct(_drive_perm("p", "a@t.com", inherited=True)) is False
+        assert permission_is_direct(_drive_perm("p", "a@t.com", inherited=False)) is True
+        assert permission_is_direct({"id": "p", "type": "user"}) is None
+
+    @pytest.mark.asyncio
+    async def test_limited_access_child_drops_parent_folder_sharees(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            _drive_perm("p1", "parent-sharee@t.com", inherited=True),
+            _drive_perm("p2", "direct@t.com", inherited=False),
+        ]})
+        connector.synced_user_emails = {"parent-sharee@t.com", "direct@t.com"}
+
+        perms, is_fallback, individually_shared = await connector._fetch_permissions(
+            "file-1", inherited_permissions_disabled=True
+        )
+
+        assert [p.email for p in perms] == ["direct@t.com"]
+        assert is_fallback is False
+        assert individually_shared == ["direct@t.com"]
+
+
+class TestAnyoneLinkKeepsTheReadList:
+    @pytest.mark.asyncio
+    async def test_unlisted_syncing_user_is_added_to_the_read_list(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "group", "role": "writer", "emailAddress": "team@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "writer", "inherited": True}]},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
+
+        assert is_fallback is False
+        assert perms.saw_permission_details is True
+        assert [(p.email, p.type) for p in perms if p.entity_type == EntityType.USER] == [
+            ("u@t.com", PermissionType.READ)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_listed_user_with_other_case_gets_no_duplicate_grant(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "u1", "type": "user", "role": "writer", "emailAddress": "U@T.com"},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
+
+        assert is_fallback is False
+        assert [(p.email, p.type) for p in perms] == [("U@T.com", PermissionType.WRITE)]
+
+    @pytest.mark.asyncio
+    async def test_new_shared_drive_record_keeps_its_inheritance(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "group", "role": "writer", "emailAddress": "team@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "writer", "inherited": True}]},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+
+        result = await connector._process_drive_item(meta, "", "u@t.com", "sd-1", is_shared_drive=True)
+
+        assert result.record.inherit_permissions is True
+        assert result.permissions_changed is True
+        assert any(p.email == "u@t.com" for p in result.new_permissions)
+        connector.data_entities_processor.inheritance_when_unreadable.assert_not_awaited()

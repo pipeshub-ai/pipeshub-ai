@@ -33,6 +33,9 @@ from msgraph import GraphServiceClient
 from msgraph.generated.drives.item.drive_item_request_builder import (
     DriveItemRequestBuilder,
 )
+from msgraph.generated.groups.item.group_item_request_builder import (
+    GroupItemRequestBuilder,
+)
 from msgraph.generated.models.drive_item import DriveItem
 from msgraph.generated.models.group import Group
 from msgraph.generated.models.list_item import ListItem
@@ -683,6 +686,7 @@ class SharePointConnector(BaseConnector):
         self._library_scopes: dict[str, ListPermissionScope | None] = {}
         self._site_pages_scopes: dict[str, ListPermissionScope | None] = {}
         self._m365_group_owners: dict[str, list[dict]] = {}
+        self._unified_groups: dict[str, bool | None] = {}
         self._directory_object_types: dict[str, str | None] = {}
         self._directory_role_members: dict[str, list[dict]] = {}
 
@@ -3027,7 +3031,7 @@ class SharePointConnector(BaseConnector):
 
     async def _graph_group_grant(self, group: object, site_user: object, role: PermissionType) -> list[Permission]:
         """A Graph group grant. An M365 group's owners claim names the whole group, so it is narrowed to the owners."""
-        if self._is_m365_owners_grant(group, site_user):
+        if await self._is_m365_owners_grant(group, site_user):
             return await self._m365_owner_permissions(group.id, role)
         return [Permission(
             external_id=group.id,
@@ -3036,15 +3040,35 @@ class SharePointConnector(BaseConnector):
             entity_type=EntityType.GROUP
         )]
 
-    @staticmethod
-    def _is_m365_owners_grant(group: object, site_user: object) -> bool:
-        # The site user's claim says owners or members outright; the " Owners" display
-        # name is what is left when the grant carries no claim.
+    async def _is_m365_owners_grant(self, group: object, site_user: object) -> bool:
+        # The site user's claim says owners or members outright. Without one, an " Owners"
+        # name means the owners grant only on an M365 group: a security group can be named that.
         login_name = getattr(site_user, 'login_name', None) if site_user else None
         if isinstance(login_name, str) and 'federateddirectoryclaimprovider' in login_name.lower():
             return is_m365_owners_claim(login_name)
         display_name = getattr(group, 'display_name', None)
-        return isinstance(display_name, str) and display_name.endswith(M365_OWNERS_DISPLAY_SUFFIX)
+        if not (isinstance(display_name, str) and display_name.endswith(M365_OWNERS_DISPLAY_SUFFIX)):
+            return False
+        return await self._is_unified_group(group.id) is not False
+
+    async def _is_unified_group(self, group_id: str) -> bool | None:
+        """Whether a Graph group is an M365 (Unified) group, or None when it can't be read."""
+        if group_id in self._unified_groups:
+            return self._unified_groups[group_id]
+        is_unified = None
+        try:
+            query = GroupItemRequestBuilder.GroupItemRequestBuilderGetQueryParameters(select=["groupTypes"])
+            async with self.rate_limiter:
+                graph_group = await self.client.groups.by_group_id(group_id).get(
+                    request_configuration=RequestConfiguration(query_parameters=query)
+                )
+            is_unified = "Unified" in (getattr(graph_group, 'group_types', None) or [])
+        except Exception as e:
+            self.logger.warning(
+                f"⚠️ Could not read the type of group {group_id}; its Owners grant is narrowed to the group owners: {e}"
+            )
+        self._unified_groups[group_id] = is_unified
+        return is_unified
 
     def _org_permission(self, role: PermissionType) -> Permission:
         return Permission(

@@ -2788,8 +2788,9 @@ class SlackConnector(BaseConnector):
                 cid for cid in self._shared_conversation_ids(fd)
                 if cid and cid != ctx.channel_id
             ]
-            if others:
-                record.shared_with_me_record_group_ids = others
+            record.shared_with_me_record_group_ids = others
+            # A file object without shares does not say which channels it left.
+            record.shared_groups_complete = isinstance(fd.get("shares"), dict)
             return record
         except Exception as exc:
             self.logger.error(f"_process_file_raw({fid}): {exc}")
@@ -2811,8 +2812,8 @@ class SlackConnector(BaseConnector):
                 cid for cid in self._shared_conversation_ids(fd)
                 if cid and cid != ctx.channel_id
             ]
-            if other_channels:
-                fr.shared_with_me_record_group_ids = other_channels
+            fr.shared_with_me_record_group_ids = other_channels
+            fr.shared_groups_complete = isinstance(fd.get("shares"), dict)
         return fr
 
 

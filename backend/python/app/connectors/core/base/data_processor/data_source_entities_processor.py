@@ -245,6 +245,10 @@ class DataSourceEntitiesProcessor:
         RecordType.MESSAGE,
     ]
 
+    # A record of these inherits from the groups it is shared into (a channel, a
+    # team). Drive and Box share one user's copy, which lends no audience.
+    COMPLETE_SHARED_GROUP_CONNECTORS = (Connectors.SLACK_WORKSPACE, Connectors.LINEAR)
+
     # Record relation types that connectors create for related external records
     # Used for cleanup when related_external_records changes
     LINK_RELATION_TYPES = [
@@ -1301,6 +1305,16 @@ class DataSourceEntitiesProcessor:
             collection=CollectionNames.NODE_RELATIONS.value,
         )
 
+    @staticmethod
+    async def _drop_shared_groups(tx_store: TransactionStore, record_id: str, group_ids: Iterable[str]) -> None:
+        """Remove the membership, inheritance and hierarchy edges a record has to
+        groups it is no longer shared into."""
+        records, groups = CollectionNames.RECORDS.value, CollectionNames.RECORD_GROUPS.value
+        for group_id in group_ids:
+            await tx_store.delete_edge(record_id, records, group_id, groups, CollectionNames.BELONGS_TO.value)
+            await tx_store.delete_edge(record_id, records, group_id, groups, CollectionNames.INHERIT_PERMISSIONS.value)
+            await tx_store.delete_edge(group_id, groups, record_id, records, CollectionNames.NODE_RELATIONS.value)
+
     async def _reparent_orphans(self, tx_store: TransactionStore, orphans: list[dict]) -> None:
         """Re-point the children of a deleted record at what it hung under: the
         record in ``parent`` when the entry has one, their record group otherwise.
@@ -1518,7 +1532,8 @@ class DataSourceEntitiesProcessor:
                     record, record_group_id, existing_record.external_record_id, tx_store
                 )
 
-        if record.shared_with_me_record_group_ids:
+        prunes_shared = bool(record_group_id) and record.shared_groups_complete
+        if record.shared_with_me_record_group_ids or prunes_shared:
             # create_record_group_relation is an idempotent upsert and cannot
             # report insert-vs-noop, so the already-attached groups are read
             # once and diffed. Reporting every call as a move would republish
@@ -1535,12 +1550,14 @@ class DataSourceEntitiesProcessor:
                     or []
                 )
             }
+            listed_group_ids = {record_group_id}
             for external_group_id in record.shared_with_me_record_group_ids:
                 shared_with_me_record_group = await tx_store.get_record_group_by_external_id(
                     connector_id=record.connector_id,
                     external_id=external_group_id
                 )
                 if shared_with_me_record_group:
+                    listed_group_ids.add(shared_with_me_record_group.id)
                     await tx_store.create_record_group_relation(
                         record.id, shared_with_me_record_group.id
                     )
@@ -1549,10 +1566,7 @@ class DataSourceEntitiesProcessor:
                     )
                     if (
                         record.inherit_permissions
-                        and record.connector_name in (
-                            Connectors.SLACK_WORKSPACE,
-                            Connectors.LINEAR,
-                        )
+                        and record.connector_name in self.COMPLETE_SHARED_GROUP_CONNECTORS
                     ):
                         await tx_store.create_inherit_permissions_relation_record_group(
                             record.id, shared_with_me_record_group.id
@@ -1567,6 +1581,13 @@ class DataSourceEntitiesProcessor:
                         moved = True
                 else:
                     self.logger.warning(f"Shared with me record group with external ID {external_group_id} not found in database")
+            if prunes_shared:
+                left_group_ids = attached_group_ids - listed_group_ids - {None}
+                if left_group_ids:
+                    await self._drop_shared_groups(tx_store, record.id, left_group_ids)
+                    moved = True
+                    if narrowed_connectors is not None:
+                        narrowed_connectors.add(record.connector_id)
 
         return moved
 
@@ -2155,7 +2176,8 @@ class DataSourceEntitiesProcessor:
         pending_moves: list[PendingMove] = []
 
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
-        stored_record: Record | None = None
+        membership_moved = False
+        unlisted_group_ids: set[str] = set()
         try:
             async with self._sync_transaction() as tx_store:
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
@@ -2175,7 +2197,7 @@ class DataSourceEntitiesProcessor:
                         publishes_event=False,
                     )
                     pending_moves.extend(inner_moves)
-                elif record.shared_with_me_record_group_ids:
+                elif record.shared_with_me_record_group_ids or record.shared_groups_complete:
                     # The record already has BELONGS_TO edges (e.g. to the owner's "My Drive"), but
                     # the shared-with-me edge for *this* user may still be missing because
                     # _process_record is skipped in the belongs_to_edges branch above.
@@ -2187,6 +2209,7 @@ class DataSourceEntitiesProcessor:
                     attached_group_ids = {
                         record_group_id_from_edge(edge) for edge in belongs_to_edges
                     }
+                    listed_group_ids: set[str | None] = {None}
                     for external_group_id in record.shared_with_me_record_group_ids:
                         self.logger.debug(
                             "Creating shared-with-me record group relation for record %s and record group %s",
@@ -2198,13 +2221,11 @@ class DataSourceEntitiesProcessor:
                             external_id=external_group_id,
                         )
                         if shared_with_me_rg:
+                            listed_group_ids.add(shared_with_me_rg.id)
                             await tx_store.create_record_group_relation(record.id, shared_with_me_rg.id)
                             if (
                                 record.inherit_permissions
-                                and record.connector_name in (
-                                    Connectors.SLACK_WORKSPACE,
-                                    Connectors.LINEAR,
-                                )
+                                and record.connector_name in self.COMPLETE_SHARED_GROUP_CONNECTORS
                             ):
                                 await tx_store.create_inherit_permissions_relation_record_group(
                                     record.id, shared_with_me_rg.id
@@ -2216,30 +2237,14 @@ class DataSourceEntitiesProcessor:
                                 record.id, CollectionNames.RECORDS.value,
                             )
                             if shared_with_me_rg.id not in attached_group_ids:
-                                # The VRID has to come from the *stored* record.
-                                # Callers here build a fresh Record from the
-                                # source payload, and a connector never sets a
-                                # VRID — it is minted during indexing — so
-                                # reading it off `record` would silently never
-                                # publish. Hydrated lazily: a genuinely new
-                                # share is rare, permission sync is not.
-                                if stored_record is None:
-                                    stored_record = await tx_store.get_record_by_external_id(
-                                        connector_id=record.connector_id,
-                                        external_id=record.external_record_id,
-                                    )
-                                if stored_record and stored_record.virtual_record_id:
-                                    moved_virtual_record_ids.append(
-                                        (
-                                            stored_record.virtual_record_id,
-                                            record.connector_id,
-                                        )
-                                    )
+                                membership_moved = True
                         else:
                             self.logger.warning(
                                 "Shared with me record group with external ID %s not found in database",
                                 external_group_id,
                             )
+                    if record.shared_groups_complete:
+                        unlisted_group_ids = attached_group_ids - listed_group_ids
 
                 # Every principal and the group are looked up first, then the old edges,
                 # the new ones and the inherit edge go in one write: on Neo4j each
@@ -2250,6 +2255,23 @@ class DataSourceEntitiesProcessor:
                     connector_id=record.connector_id,
                     external_id=record.external_record_group_id,
                 )
+                # Without its own group known, any attached group could be that one.
+                left_group_ids = unlisted_group_ids - {record_group.id} if record_group else set()
+                if left_group_ids:
+                    await self._drop_shared_groups(tx_store, record.id, left_group_ids)
+                    membership_moved = True
+                if membership_moved:
+                    # The VRID has to come from the *stored* record. Callers here
+                    # build a fresh Record from the source payload, and a connector
+                    # never sets a VRID — it is minted during indexing — so reading
+                    # it off `record` would silently never publish. Read only on a
+                    # change: a genuinely new share is rare, permission sync is not.
+                    stored_record = await tx_store.get_record_by_external_id(
+                        connector_id=record.connector_id,
+                        external_id=record.external_record_id,
+                    )
+                    if stored_record and stored_record.virtual_record_id:
+                        moved_virtual_record_ids.append((stored_record.virtual_record_id, record.connector_id))
                 parent_record = None
                 if record.parent_external_record_id:
                     parent_record = await tx_store.get_record_by_external_id(
@@ -5976,7 +5998,13 @@ class DataSourceEntitiesProcessor:
                         f"Cannot delete record group: Group with external ID {external_group_id} not found."
                     )
                     return False
-                group_ids, record_ids = await self._collect_group_subtree(tx_store, record_group.id)
+                group_ids, record_ids, shared = await self._collect_group_subtree(tx_store, record_group.id)
+                # A record whose own group is elsewhere only leaves these groups.
+                for record_id, (_, in_groups) in shared.items():
+                    await self._drop_shared_groups(tx_store, record_id, in_groups)
+            if shared:
+                await self._access_changed([connector_id])
+                await self._publish_membership_sync((vrid, connector_id) for vrid, _ in shared.values())
 
             self.logger.debug(
                 f"Deleting record group '{record_group.name}' ({record_group.id}): "
@@ -6026,10 +6054,14 @@ class DataSourceEntitiesProcessor:
             return False
 
     @staticmethod
-    async def _collect_group_subtree(tx_store: TransactionStore, group_id: str) -> tuple[list[str], list[str]]:
-        """The group, its descendant groups, and the records that belong to any of them."""
+    async def _collect_group_subtree(
+        tx_store: TransactionStore, group_id: str
+    ) -> tuple[list[str], list[str], dict[str, tuple[str | None, set[str]]]]:
+        """The group, its descendant groups, the records whose own group is one of
+        them, and the other records shared into them: by record id, its VRID and
+        the groups of the subtree it belongs to."""
         group_ids: list[str] = []
-        record_ids: list[str] = []
+        members: dict[str, set[str]] = {}
         seen = {group_id}
         pending = [group_id]
         while pending:
@@ -6043,11 +6075,21 @@ class DataSourceEntitiesProcessor:
                 if edge.get("from_collection"):
                     collection, key = edge["from_collection"], edge.get("from_id")
                 if collection == CollectionNames.RECORDS.value and key:
-                    record_ids.append(key)
+                    members.setdefault(key, set()).add(current)
                 elif collection == CollectionNames.RECORD_GROUPS.value and key and key not in seen:
                     seen.add(key)
                     pending.append(key)
-        return group_ids, list(dict.fromkeys(record_ids))
+        record_ids: list[str] = []
+        shared: dict[str, tuple[str | None, set[str]]] = {}
+        # shortcut: one read per member; batch it with a provider read of members and their recordGroupId if group deletes get slow.
+        for record_id, in_groups in members.items():
+            doc = await tx_store.get_record_by_key(record_id, raise_on_error=True) or {}
+            own_group = doc.get("recordGroupId")
+            if own_group and own_group not in seen:
+                shared[record_id] = (doc.get("virtualRecordId"), in_groups)
+            else:
+                record_ids.append(record_id)
+        return group_ids, record_ids, shared
 
 
     async def _delete_group_organization_edges(self, tx_store, group_internal_id: str) -> None:

@@ -93,6 +93,7 @@ from app.models.entities import (
     LinkRecord,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -892,6 +893,11 @@ class LinearConnector(BaseConnector):
         # Convert teams to both UserGroups and RecordGroups
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        # Linear has no per-issue access, so a team's audience is everything in it.
+        # A team with sub-teams is not declared: a private sub-team is hidden from the
+        # parent's members, and a declared group admits every group below it. A
+        # filtered sync may not list a team's sub-teams, so it declares none.
+        parent_team_ids = {str((t.get("parent") or {}).get("id")) for t in all_teams if t.get("parent")}
 
         for team in all_teams:
             team_id = team.get("id")
@@ -954,6 +960,11 @@ class LinearConnector(BaseConnector):
                 group_type=RecordGroupType.PROJECT,
                 web_url=web_url,
                 parent_external_group_id=parent_external_group_id,
+                permission_model=(
+                    PermissionModel.RECORD_GROUP_LEVEL
+                    if not team_ids and str(team_id) not in parent_team_ids
+                    else None
+                ),
             )
 
             visibility = (team.get("visibility") or ("private" if is_private else "public")).lower()
@@ -3200,8 +3211,8 @@ class LinearConnector(BaseConnector):
             for node in team_nodes
             if isinstance(node, dict) and node.get("id") and str(node.get("id")) != str(team_id)
         ]
-        if other_teams:
-            project.shared_with_me_record_group_ids = other_teams
+        project.shared_with_me_record_group_ids = other_teams
+        project.shared_groups_complete = "teams" in project_data
 
 
         return project

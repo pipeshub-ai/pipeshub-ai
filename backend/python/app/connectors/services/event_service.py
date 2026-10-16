@@ -814,6 +814,8 @@ class EventService:
                         f"Recorded pendingResync for re-issue when it finishes."
                     )
                     await self._persist_pending_resync(connector_id, full_sync=True)
+                    # The running sync ends only its own mark, not this one.
+                    await self._kh_scope_end(connector_id, prep_generation, stamp=False)
                 else:
                     handed_off = True
                     self.logger.info(f"Started full sync task for {connector_name} {connector_id}")
