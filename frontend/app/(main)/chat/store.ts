@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { debugLog } from './debug-logger';
 import {
+  forgetUnreadConversation,
+  loadUnreadConversationIds,
+  rememberUnreadConversation,
+} from '@/lib/storage/chat-unread';
+import { getCurrentUserId } from './utils/current-user-id';
+import {
   Conversation,
   ChatMode,
   QueryMode,
@@ -270,6 +276,16 @@ function createDefaultSlot(convId: string | null): ChatSlot {
   };
 }
 
+/** Whose saved unread chats are in memory; null until the first hydrate. */
+let unreadOwnerId: string | null = null;
+
+function withoutId(ids: Set<string>, id: string): Set<string> {
+  if (!ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
+}
+
 // ── Helper: generate a stable slot ID ───────────────────────────────
 
 let slotCounter = 0;
@@ -298,6 +314,11 @@ interface ChatState {
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
+  /**
+   * Conversations whose answer finished while the user was looking at something
+   * else. Mirrored to localStorage per user so a reload keeps the dot.
+   */
+  unreadConversationIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
   moreChatsSectionType: 'shared' | 'your' | null;
   /** Agents browser panel (same shell as More Chats) */
@@ -513,6 +534,10 @@ interface ChatState {
     modelInfo: ModelInfo | undefined
   ) => void;
   removeConversation: (conversationId: string) => void;
+  markConversationUnread: (conversationId: string) => void;
+  markConversationRead: (conversationId: string) => void;
+  /** Bring back this user's unread chats from before a reload. */
+  hydrateUnreadConversations: (userId: string) => void;
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
   bumpConversationsVersion: () => void;
@@ -696,6 +721,7 @@ const initialState = {
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
+  unreadConversationIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
   moreChatsSectionType: null as 'shared' | 'your' | null,
   isAgentsSidebarOpen: false,
@@ -871,6 +897,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setActiveSlot: (slotId) => {
+    const openedConvId = get().slots[slotId]?.convId;
+    const wasUnread = Boolean(openedConvId && get().unreadConversationIds.has(openedConvId));
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
@@ -880,8 +908,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...state.slots,
           [slotId]: { ...existing, lastAccessedAt: Date.now() },
         },
+        // Opening a chat is what reads it, whichever sidebar row the user used.
+        ...(existing.convId && state.unreadConversationIds.has(existing.convId)
+          ? { unreadConversationIds: withoutId(state.unreadConversationIds, existing.convId) }
+          : {}),
       };
     });
+    if (openedConvId && wasUnread) forgetUnreadConversation(getCurrentUserId(), openedConvId);
   },
 
   evictSlot: (slotId) => {
@@ -1302,12 +1335,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  removeConversation: (conversationId) =>
+  removeConversation: (conversationId) => {
+    const wasUnread = get().unreadConversationIds.has(conversationId);
     set((state) => ({
       conversations: state.conversations.filter((c) => c.id !== conversationId),
       sharedConversations: state.sharedConversations.filter((c) => c.id !== conversationId),
       agentConversations: state.agentConversations.filter((c) => c.id !== conversationId),
-    })),
+      unreadConversationIds: withoutId(state.unreadConversationIds, conversationId),
+    }));
+    if (wasUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationUnread: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = new Set(state.unreadConversationIds);
+        next.add(conversationId);
+        return { unreadConversationIds: next };
+      });
+    }
+    // Written even when already unread, which refreshes how long it is kept.
+    rememberUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationRead: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) return;
+    set((state) => ({ unreadConversationIds: withoutId(state.unreadConversationIds, conversationId) }));
+    forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  hydrateUnreadConversations: (userId) => {
+    const stored = loadUnreadConversationIds(userId);
+    // Chats flagged before this ran belong to the same person on a first hydrate;
+    // after a switch to someone else they must not carry over.
+    const keepCurrent = unreadOwnerId === null || unreadOwnerId === userId;
+    unreadOwnerId = userId;
+    set((state) => {
+      const next = new Set(stored);
+      if (keepCurrent) state.unreadConversationIds.forEach((id) => next.add(id));
+      const unchanged = next.size === state.unreadConversationIds.size
+        && [...next].every((id) => state.unreadConversationIds.has(id));
+      return unchanged ? state : { unreadConversationIds: next };
+    });
+  },
 
   renameConversation: (conversationId, newTitle) =>
     set((state) => ({
@@ -1583,6 +1653,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     for (const slot of Object.values(slots)) {
       slot.abortController?.abort();
     }
+    unreadOwnerId = null;
     set(initialState);
   },
 }));

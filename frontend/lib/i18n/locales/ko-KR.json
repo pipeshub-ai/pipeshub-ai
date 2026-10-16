@@ -683,6 +683,11 @@
     "record": "레코드"
   },
   "chat": {
+    "answerReady": {
+      "title": "답변이 준비되었습니다",
+      "open": "채팅 열기",
+      "unread": "새 답변"
+    },
     "recordActions": {
       "preview": "미리보기",
       "open": "{{source}} 열기",

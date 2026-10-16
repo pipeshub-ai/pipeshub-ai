@@ -59,6 +59,7 @@ import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
+import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -186,6 +187,7 @@ function ChatContent() {
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const threadRuntime = useThreadRuntime();
+  useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
   // Actions are stable refs in Zustand — selecting them individually

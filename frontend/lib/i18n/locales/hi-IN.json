@@ -598,6 +598,11 @@
     "record": "रिकॉर्ड"
   },
   "chat": {
+    "answerReady": {
+      "title": "उत्तर तैयार है",
+      "open": "चैट खोलें",
+      "unread": "नया उत्तर"
+    },
     "recordActions": {
       "preview": "पूर्वावलोकन",
       "open": "{{source}} खोलें",

@@ -683,6 +683,11 @@
     "record": "記錄"
   },
   "chat": {
+    "answerReady": {
+      "title": "回答已完成",
+      "open": "開啟對話",
+      "unread": "新回答"
+    },
     "recordActions": {
       "preview": "預覽",
       "open": "開啟 {{source}}",

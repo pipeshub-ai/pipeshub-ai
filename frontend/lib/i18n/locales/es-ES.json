@@ -605,6 +605,11 @@
     "record": "registro"
   },
   "chat": {
+    "answerReady": {
+      "title": "Respuesta lista",
+      "open": "Abrir chat",
+      "unread": "Nueva respuesta"
+    },
     "recordActions": {
       "preview": "Vista previa",
       "open": "Abrir {{source}}",

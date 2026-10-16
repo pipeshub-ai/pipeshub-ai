@@ -598,6 +598,11 @@
     "record": "record"
   },
   "chat": {
+    "answerReady": {
+      "title": "Answer ready",
+      "open": "Open chat",
+      "unread": "New answer"
+    },
     "recordActions": {
       "preview": "Preview",
       "open": "Open {{source}}",

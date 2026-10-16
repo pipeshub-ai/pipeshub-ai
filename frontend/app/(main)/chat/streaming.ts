@@ -35,6 +35,7 @@ import {
 import { i18n } from '@/lib/i18n';
 import { toast } from '@/lib/store/toast-store';
 import { showNoModelToast } from './utils/no-model-toast';
+import { notifyAnswerFinishedInBackground } from './utils/background-finish';
 import type { ThreadMessageLike } from '@assistant-ui/react';
 import {
   buildAssistantApiFilters,
@@ -1092,6 +1093,8 @@ export async function streamMessageForSlot(
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
+        // Settling clears `stopping`, so a user-stopped run is only knowable here.
+        const wasStopped = Boolean(slotBeforeComplete?.stopping);
         const liveParts = slotBeforeComplete?.streamingParts ?? [];
         const liveFollowUp = resumeAskUserQuestion
           ? [
@@ -1282,6 +1285,7 @@ export async function streamMessageForSlot(
           }
         }
 
+        notifyAnswerFinishedInBackground(slotId, wasStopped);
         debugLog.flush('stream-completed', { slotId, convId: newConvId || slot.convId });
       },
 
@@ -1626,6 +1630,7 @@ export async function streamRegenerateForSlot(
 
     onComplete: async () => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
+      const wasStopped = Boolean(useChatStore.getState().slots[slotId]?.stopping);
       if (flushTimer !== null) {
         clearTimeout(flushTimer);
         flushTimer = null;
@@ -1682,6 +1687,7 @@ export async function streamRegenerateForSlot(
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
+        notifyAnswerFinishedInBackground(slotId, wasStopped);
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {
         if (!slotIsOnRun(slotId, streamRunId)) return;

@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { isElectron } from '@/lib/electron';
+import { allowChatUnreadWrites, discardAllChatUnread } from '@/lib/storage/chat-unread';
 import {
   clearElectronLogoutServerState,
   persistElectronServerUrlOnLogin,
@@ -86,6 +87,7 @@ export const useAuthStore = create<AuthStore>()(
       ...initialState,
 
       setTokens: (accessToken, refreshToken) => {
+        allowChatUnreadWrites();
         writeAccessToken(accessToken);
         writeRefreshToken(refreshToken);
         persistElectronServerUrlOnLogin();
@@ -206,6 +208,9 @@ export function requestElectronServerUrlChange(): void {
  * add-URL screen so the user can confirm or change the server before signing in.
  */
 export function logoutFromWorkspaceMenu(): void {
+  // Deliberate sign-out: which chats had a new answer must not outlive the
+  // session. A session that merely expires keeps them.
+  discardAllChatUnread();
   if (typeof window !== 'undefined' && isElectron()) {
     useAuthStore.getState().logout();
     requestElectronServerUrlChange();
