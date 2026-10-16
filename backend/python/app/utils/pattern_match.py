@@ -34,7 +34,12 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
-from app.utils.exact_text_index import LexicalSearcher, plan_command, run_index_pattern_match
+from app.utils.exact_text_index import (
+    MAX_RECORDS_PER_COMMAND,
+    LexicalSearcher,
+    plan_command,
+    run_index_pattern_match,
+)
 from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
@@ -112,6 +117,12 @@ class PatternMatchCoverage:
     stopped: str | None = None
     # A keyword-index lookup returned its whole limit, so more chunks may match.
     index_capped: bool = False
+    # A command matched more records than it lists.
+    index_truncated: bool = False
+    # A command looked up in the index found nothing.
+    index_missed: bool = False
+    # (collections the index could not search, collections asked), when any failed.
+    index_unsearched: tuple[int, int] | None = None
     # Why some commands were scanned file by file instead of looked up.
     scan_reasons: set[str] = field(default_factory=set)
 
@@ -121,7 +132,10 @@ class PatternMatchCoverage:
 
     @property
     def complete(self) -> bool:
-        return not (self.timed_out or self.failed or self.capped or self.stopped or self.index_capped)
+        return not (
+            self.timed_out or self.failed or self.capped or self.stopped
+            or self.index_capped or self.index_truncated or self.index_unsearched
+        )
 
 
 _SCAN_NO_WORD = "no_word"
@@ -138,13 +152,21 @@ _SCAN_NOTES = {
 }
 
 
+_WHOLE_WORD_NOTE = (
+    "Keyword words are looked up as whole words and their inflections, so text "
+    "inside a longer word (a cut-off stem, part of an identifier) is not matched."
+)
+
 def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") -> str:
     """One paragraph for the tool result when exact-text matching was cut
     short or fell back to scanning files; empty when it looked everything up
     in the index and covered all of it."""
     if coverage is None:
         return ""
-    scan_note = " ".join(_SCAN_NOTES[r] for r in sorted(coverage.scan_reasons) if r in _SCAN_NOTES)
+    notes = [_SCAN_NOTES[r] for r in sorted(coverage.scan_reasons) if r in _SCAN_NOTES]
+    if coverage.index_missed:
+        notes.append(_WHOLE_WORD_NOTE)
+    scan_note = " ".join(notes)
     if coverage.complete:
         return f"\n\n{scan_note}" if scan_note else ""
     parts: list[str] = []
@@ -158,6 +180,13 @@ def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") 
         parts.append(f"{len(coverage.failed - coverage.timed_out)} source(s) could not be searched")
     if coverage.capped:
         parts.append(f"{len(coverage.capped)} source(s) matched more than could be listed")
+    if coverage.index_unsearched:
+        failed, asked = coverage.index_unsearched
+        parts.append(f"the keyword index could not search {failed} of its {asked} collections")
+    if coverage.index_truncated:
+        parts.append(
+            f"a keyword search matched more than the {MAX_RECORDS_PER_COMMAND} records it lists",
+        )
     if coverage.index_capped:
         parts.append(
             "some of its words are in more passages than the keyword index returns "
@@ -1302,8 +1331,12 @@ async def _match_through_index(
         if coverage is not None:
             coverage.scan_reasons.add(_SCAN_INDEX_FAILED)
         return commands
-    if coverage is not None and outcome.capped:
-        coverage.index_capped = True
+    if coverage is not None:
+        coverage.index_capped = coverage.index_capped or outcome.capped
+        coverage.index_truncated = coverage.index_truncated or outcome.truncated
+        coverage.index_missed = coverage.index_missed or any(not hits for hits in outcome.hits)
+        if outcome.failed_collections:
+            coverage.index_unsearched = (outcome.failed_collections, outcome.searched_collections)
     for hits in outcome.hits:
         _merge_command_hits(found, hits)
     return unplanned

@@ -7,11 +7,14 @@ store's keyword index (``search_lexical``), and the stage's exact patterns are
 then checked on the chunks that come back. The cost follows how many chunks
 hold the words, not how many the store holds.
 
-Semantics against grep: a candidate must hold one of a pattern's whole words
-(or, through the index's stemming, an inflection of one); the exact pattern
-is then verified, so a hit always matches. A pattern with no whole word to
-look up (a bare regex, a stem such as ``subscri``, an IP address) cannot be
-looked up and is left to the bounded file scan.
+Semantics against grep: a candidate must hold one of a pattern's words as a
+whole word (or, through the index's stemming, an inflection of one); the
+exact pattern is then verified, so a hit always matches. Unlike grep's
+substring match, a word inside a longer token (a cut-off stem such as
+``subscri``) is not found; the tool result says so when a lookup finds
+nothing. A pattern with no whole word to look up (a bare regex, ``colou?r``,
+an IP address) or one the verifier would only approximate (``.*``) is left
+to the bounded file scan.
 """
 
 import asyncio
@@ -37,7 +40,8 @@ from app.modules.retrieval.lexical_search import LexicalSearchResult
 INDEX_CANDIDATE_CHUNKS = 300
 # Records that matched some stages of a command and are checked for the rest.
 _FOLLOW_UP_RECORDS = 300
-_MAX_RECORDS_PER_COMMAND = 50
+MAX_RECORDS_PER_COMMAND = 50
+_VERIFY_TIMEOUT_SECS = 0.25
 
 # Stop words the index drops on at least one backend (the Qdrant/bm25 model's
 # English list, which OpenSearch's English analyser shares, and RediSearch's
@@ -91,45 +95,69 @@ class IndexPlan:
         return list(seen.values())
 
 
-def _required_literals(parsed: Any) -> list[str]:  # noqa: ANN401 - sre_parse.SubPattern
-    """Literal runs every match of *parsed* must contain."""
-    runs: list[str] = []
-    current: list[str] = []
+@dataclass(frozen=True)
+class _Run:
+    """A literal run every match contains. An open edge touches a regex
+    construct (a quantifier, a class, ``.``, a group), so the word at that edge
+    may be part of a longer token in the text."""
 
-    def flush() -> None:
+    text: str
+    left_open: bool
+    right_open: bool
+
+
+def _required_literals(parsed: Any, *, open_edges: bool = False) -> list[_Run]:  # noqa: ANN401 - sre_parse.SubPattern
+    """Literal runs every match of *parsed* must contain. The pattern's own
+    start and end are closed edges; a group's are open (*open_edges*)."""
+    runs: list[_Run] = []
+    current: list[str] = []
+    left_open = open_edges
+
+    def flush(*, right_open: bool) -> None:
         if current:
-            runs.append("".join(current))
+            runs.append(_Run("".join(current), left_open, right_open))
             current.clear()
 
     for op, av in parsed:
         if op is sre_parse.LITERAL:
             current.append(chr(av))
             continue
-        flush()
+        # A word boundary keeps the neighbouring word whole.
+        boundary = op is sre_parse.AT and av is sre_parse.AT_BOUNDARY
+        flush(right_open=not boundary)
+        left_open = not boundary
         if op is sre_parse.SUBPATTERN:
-            runs.extend(_required_literals(av[-1]))
+            runs.extend(_required_literals(av[-1], open_edges=True))
         elif op in (sre_parse.MAX_REPEAT, sre_parse.MIN_REPEAT, sre_parse.POSSESSIVE_REPEAT):
             low, _high, sub = av
             if low >= 1:
-                runs.extend(_required_literals(sub))
+                runs.extend(_required_literals(sub, open_edges=True))
         elif op is sre_parse.ATOMIC_GROUP:
-            runs.extend(_required_literals(av))
+            runs.extend(_required_literals(av, open_edges=True))
         # Anything else (a branch, a class, ".", an anchor) breaks the run and
         # requires no particular literal.
-    flush()
+    flush(right_open=open_edges)
     return runs
 
 
 def anchor_words(pattern: str) -> list[str]:
     """Whole words a match of *pattern* must contain, lower-cased, stop words
-    and single characters left out. Empty when there are none to look up."""
+    and single characters left out. Empty when there are none to look up.
+
+    A word glued to a regex construct (``colo`` in ``colou?r``, ``ms`` in
+    ``[0-9]+ms``) is not a whole word of the text, so it is not one to look up.
+    """
     try:
         parsed = sre_parse.parse(pattern)
     except (re.error, OverflowError, RecursionError, ValueError):
         return []
     words: list[str] = []
     for run in _required_literals(parsed):
-        for word in _WORD_RE.findall(run.lower()):
+        text = run.text.lower()
+        for m in _WORD_RE.finditer(text):
+            if (m.start() == 0 and run.left_open) or (m.end() == len(text) and run.right_open):
+                continue
+            word = m.group()
             if len(word) >= 2 and word not in STOP_WORDS and word not in words:
                 words.append(word)
     return words
@@ -176,17 +204,28 @@ def plan_command(command: str) -> IndexPlan | None:
 
 @dataclass
 class IndexMatchOutcome:
-    """Per plan, its ranked hits, plus whether any lookup was cut at a limit."""
+    """Per plan, its ranked hits; whether a lookup was cut at its limit
+    (*capped*); and whether a plan matched more records than it lists
+    (*truncated*)."""
 
     hits: list[list[dict[str, str]]]
     capped: bool
+    truncated: bool = False
+    # The most collections any lookup could not search, of how many it asked.
+    failed_collections: int = 0
+    searched_collections: int = 0
+
+
+class VerificationTimeoutError(RuntimeError):
+    """A pattern took too long to check against a candidate chunk."""
 
 
 def _stage_matches(stage: IndexStage, text: str) -> bool:
     try:
-        return any(rx.search(text, timeout=0.25) for rx in stage.regexes)
-    except TimeoutError:
-        return False
+        return any(rx.search(text, timeout=_VERIFY_TIMEOUT_SECS) for rx in stage.regexes)
+    except TimeoutError as exc:
+        # A candidate that could not be checked is neither a hit nor a miss.
+        raise VerificationTimeoutError(stage.query) from exc
 
 
 def _collect(texts: dict[str, list[str]], result: LexicalSearchResult) -> None:
@@ -201,23 +240,25 @@ def _stages_met(plan: IndexPlan, chunks: list[str]) -> list[bool]:
     return [any(_stage_matches(stage, chunk) for chunk in chunks) for stage in plan.stages]
 
 
-def _rank(plan: IndexPlan, texts: dict[str, list[str]]) -> list[dict[str, str]]:
-    """Records meeting every stage, as find_records shapes a hit, best first."""
+def _rank(plan: IndexPlan, texts: dict[str, list[str]]) -> tuple[list[dict[str, str]], bool]:
+    """Records meeting every stage, as find_records shapes a hit, best first,
+    and whether more met them than are listed."""
     ranked: list[tuple[int, int, str, str]] = []
     for vrid, chunks in texts.items():
         if not all(_stages_met(plan, chunks)):
             continue
         distinct, total, snippet = score_text("\n".join(chunks), plan.regexes)
-        if distinct:
-            ranked.append((distinct, total, vrid, snippet))
+        # Scoring gives up on a slow regex with 0; the stages were verified,
+        # so the record still matches, it is only ranked last.
+        ranked.append((distinct, total, vrid, snippet))
     ranked.sort(key=lambda r: (r[0], r[1]), reverse=True)
     hits: list[dict[str, str]] = []
-    for distinct, total, vrid, snippet in ranked[:_MAX_RECORDS_PER_COMMAND]:
-        hit = {"virtual_record_id": vrid, "matched_terms": str(distinct), "match_count": str(total)}
+    for distinct, total, vrid, snippet in ranked[:MAX_RECORDS_PER_COMMAND]:
+        hit = {"virtual_record_id": vrid, "matched_terms": str(max(distinct, 1)), "match_count": str(max(total, 1))}
         if snippet:
             hit["match_preview"] = snippet
         hits.append(hit)
-    return hits
+    return hits, len(ranked) > MAX_RECORDS_PER_COMMAND
 
 
 def _partial_records(
@@ -289,6 +330,7 @@ async def run_index_pattern_match(
     )
     capped_queries = {q for q, cut in zip(lead_queries, first.capped) if cut}
     texts: dict[str, list[str]] = {}
+    lookups = [first]
     _collect(texts, first)
 
     lead_records = {
@@ -322,6 +364,7 @@ async def run_index_pattern_match(
     for (queries, _scope), result in zip(rounds, results):
         capped_queries.update(q for q, cut in zip(queries, result.capped) if cut)
         _collect(texts, result)
+    lookups.extend(results)
 
     # A plan's matches all meet each of its stages, so one stage the index
     # returned in full already names every candidate; only when every stage
@@ -338,10 +381,18 @@ async def run_index_pattern_match(
         )
         capped = capped or len(missing) > len(follow_up) or any(follow.capped)
         _collect(texts, follow)
+        lookups.append(follow)
 
-    hits = await asyncio.to_thread(lambda: [_rank(plan, texts) for plan in plans])
+    ranked = await asyncio.to_thread(lambda: [_rank(plan, texts) for plan in plans])
+    hits = [plan_hits for plan_hits, _more in ranked]
+    truncated = any(more for _hits, more in ranked)
     logger_instance.info(
-        "pattern_match index: %d command(s), %d lookup round(s), %d candidate record(s), hits=%s capped=%s",
-        len(plans), 1 + len(rounds) + bool(missing), len(texts), [len(h) for h in hits], capped,
+        "pattern_match index: %d command(s), %d lookup round(s), %d candidate record(s), "
+        "hits=%s capped=%s truncated=%s",
+        len(plans), 1 + len(rounds) + bool(missing), len(texts), [len(h) for h in hits], capped, truncated,
     )
-    return IndexMatchOutcome(hits=hits, capped=capped)
+    worst = max(lookups, key=lambda r: r.failed_collections)
+    return IndexMatchOutcome(
+        hits=hits, capped=capped, truncated=truncated,
+        failed_collections=worst.failed_collections, searched_collections=worst.searched_collections,
+    )

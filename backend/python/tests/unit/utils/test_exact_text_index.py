@@ -1,12 +1,15 @@
 """Exact-text matching through the lexical index (``app.utils.exact_text_index``)."""
 
 import logging
+from unittest.mock import patch
 
 import pytest
 
 from app.utils.exact_text_index import (
     INDEX_CANDIDATE_CHUNKS,
+    MAX_RECORDS_PER_COMMAND,
     IndexMatchOutcome,
+    VerificationTimeoutError,
     anchor_words,
     plan_command,
     run_index_pattern_match,
@@ -27,12 +30,17 @@ class TestAnchorWords:
     @pytest.mark.parametrize(("pattern", "words"), [
         ("p99 latency", ["p99", "latency"]),
         ("ERR_CONN_RESET", ["err_conn_reset"]),
-        (r"ci.cd", ["ci", "cd"]),
+        (r"\bdeploy\b", ["deploy"]),
+        (r"edge proxy, approved", ["edge", "proxy", "approved"]),
         (r"out of (memory|disk)", []),
-        (r"colou?r", ["colo"]),
-        (r"[0-9]{3}-[0-9]{4}", []),
-        (r"(?:deploy)+ment", ["deploy", "ment"]),
         ("the of and", []),
+        # A word glued to a regex construct is not a whole word of the text.
+        (r"ci.cd", []),
+        (r"colou?r", []),
+        (r"[0-9]+ms", []),
+        (r"[0-9]{3}-[0-9]{4}", []),
+        (r"(?:deploy)+ment", []),
+        (r"rollback [a-z]+ plan", ["rollback", "plan"]),
     ])
     def test_words_every_match_must_contain(self, pattern: str, words: list[str]) -> None:
         assert anchor_words(pattern) == words
@@ -60,6 +68,8 @@ class TestPlanCommand:
         'grep -rliZ "a" . | xargs -0 grep -L "draft"',
         'grep -rcx "exact line" .',
         'grep -rciE "(a+)+b" .',  # the verifier would have to match it literally
+        'grep -rciE "colou?r" .',  # "colo" is not a word of "colour"
+        'grep -rciE "error.*rollback" .',  # the verifier would bound ".*"
     ])
     def test_a_command_the_index_cannot_express_is_left_to_the_scan(self, command: str) -> None:
         assert plan_command(command) is None
@@ -139,6 +149,50 @@ class TestRunIndexPatternMatch:
 
         assert [h["virtual_record_id"] for h in outcome.hits[0]] == ["vr-needle"]
         assert searcher.calls == [{"queries": ["err_conn_reset"], "limit": INDEX_CANDIDATE_CHUNKS, "virtual_record_ids": None}]
+
+    @pytest.mark.asyncio
+    async def test_more_matching_records_than_are_listed_is_reported(self) -> None:
+        searcher = InvertedIndexSearcher(
+            [(f"vr-{i}", f"zebrafinch sighting {i}") for i in range(MAX_RECORDS_PER_COMMAND + 1)]
+        )
+
+        outcome = await _match(searcher, 'grep -rci "zebrafinch" .')
+
+        assert len(outcome.hits[0]) == MAX_RECORDS_PER_COMMAND
+        assert outcome.truncated is True
+        assert outcome.capped is False
+
+    @pytest.mark.asyncio
+    async def test_a_candidate_that_cannot_be_checked_in_time_is_not_a_miss(self) -> None:
+        searcher = InvertedIndexSearcher([("vr-1", "p99 latency")])
+
+        with patch("app.utils.exact_text_index._VERIFY_TIMEOUT_SECS", 0), \
+                pytest.raises(VerificationTimeoutError):
+            await _match(searcher, 'grep -rci "p99 latency" .')
+
+    @pytest.mark.asyncio
+    async def test_a_match_the_scorer_gives_up_on_is_still_listed(self) -> None:
+        searcher = InvertedIndexSearcher([("vr-1", "p99 latency")])
+
+        with patch("app.utils.exact_text_index.score_text", return_value=(0, 0, "")):
+            outcome = await _match(searcher, 'grep -rci "p99 latency" .')
+
+        assert [h["virtual_record_id"] for h in outcome.hits[0]] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_collections_the_index_could_not_search_are_reported(self) -> None:
+        searcher = InvertedIndexSearcher([("vr-1", "p99 latency")])
+        lookup = searcher.search_lexical
+
+        async def _partly(*args: object, **kwargs: object) -> object:
+            result = await lookup(*args, **kwargs)
+            result.failed_collections, result.searched_collections = 1, 3
+            return result
+
+        searcher.search_lexical = _partly
+        outcome = await _match(searcher, 'grep -rci "p99" .')
+
+        assert (outcome.failed_collections, outcome.searched_collections) == (1, 3)
 
     @pytest.mark.asyncio
     async def test_only_records_the_searcher_admitted_come_back(self) -> None:

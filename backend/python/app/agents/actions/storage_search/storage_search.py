@@ -1173,6 +1173,8 @@ def _compile_alternatives(
                 raise ValueError("nested quantifier")
             alt = regex.escape(raw_alt)
         else:
+            if strict and _UNBOUNDED_DOT_RE.search(alt):
+                raise ValueError("unbounded wildcard")
             # Unbounded ".*" is quadratic on the long single-line blocks records hold.
             alt = _UNBOUNDED_DOT_RE.sub(lambda m: ".{0,200}" if m.group(1) == "*" else ".{1,200}", alt)
         flags = regex.IGNORECASE if ignore_case else 0
