@@ -1171,6 +1171,10 @@ class NextcloudConnector(BaseConnector):
                     resave is not None and record_id in resave
                 )
                 if not (record_update.is_updated or relink):
+                    # Unchanged and not written: without this the unlink after a full
+                    # sync cuts its only path to the app.
+                    if file_record:
+                        self.data_entities_processor.note_kept_records(self.connector_id, [file_record.id])
                     continue
                 await flush()  # folders sort first, so any new folder above this one is stored
                 update = record_update if record_update.is_updated else dataclasses.replace(
