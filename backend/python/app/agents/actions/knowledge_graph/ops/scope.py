@@ -26,6 +26,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     ALLOWED_FILTER_KEYS,
     SELECTION_APPS_FILTER_KEY,
     SELECTION_FILTER_KEYS,
+    STRICT_SCOPE_FILTER_KEY,
 )
 
 if TYPE_CHECKING:
@@ -130,6 +131,16 @@ def _has_selection(filters: Mapping[str, object]) -> bool:
     return any(filters.get(key) for key in SELECTION_FILTER_KEYS)
 
 
+def _picked_apps(filters: Mapping[str, object]) -> frozenset[str] | None:
+    """The whole apps a turn without a selection is limited to, as search is:
+    ``apps`` and ``kb`` (a project's apps narrowed by the picker), where an
+    empty list under ``strictScope`` means none. None when nothing was picked."""
+    if _has_selection(filters):
+        return None
+    picked = frozenset((*(i for i in filters.get("apps") or () if i), *_clean_kb(list(filters.get("kb") or ()))))
+    return picked if picked or filters.get(STRICT_SCOPE_FILTER_KEY) else None
+
+
 def search_scope(state: "ChatState") -> KnowledgeScope:
     """The scope a content search runs in.
 
@@ -225,19 +236,24 @@ async def ids_within_scope(
     node_ids: Sequence[str],
 ) -> set[str]:
     """Of ``node_ids``, those the turn may read: inside the selection below
-    app level and inside every bound. All of them for a turn with neither.
+    app level, or the whole apps picked without one, and inside every bound.
+    All of them for a turn with none of these.
 
     For the tools that reach a record by name or by id, which no vector
     filter narrows. A file the user attached to this conversation is always
     readable: it is part of the question, not of the sources.
     """
     from app.config.constants.arangodb import CollectionNames
-    from app.modules.retrieval.selection_scope import resolve_request_scopes
+    from app.modules.retrieval.selection_scope import (
+        SelectionScope,
+        resolve_request_scopes,
+    )
     from app.utils.attachment_utils import is_chat_attachment
 
     filters = state.get("filters") or {}
     ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
-    scoped = _has_selection(filters) or any(key in filters for key in ALLOWED_FILTER_KEYS)
+    picked = _picked_apps(filters)
+    scoped = _has_selection(filters) or picked is not None or any(key in filters for key in ALLOWED_FILTER_KEYS)
     if not scoped or not ids:
         return set(ids)
     attached = {
@@ -254,6 +270,8 @@ async def ids_within_scope(
         )
         attached = {row.get("id") or row.get("_key") for row in rows or [] if is_chat_attachment(row, org_id)}
     _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filters)
+    if picked is not None:
+        scopes = [*scopes, SelectionScope(app_ids=picked)]
     access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes)
     return set(access.node_ids_in_scope) | attached
 
@@ -269,7 +287,10 @@ async def ids_outside_scope(
     below app level, or outside a saved agent's or a project's sources. None
     for a turn with neither, without asking the graph."""
     filters = state.get("filters") or {}
-    scoped = _has_selection(filters) or any(key in filters for key in ALLOWED_FILTER_KEYS)
+    scoped = (
+        _has_selection(filters) or _picked_apps(filters) is not None
+        or any(key in filters for key in ALLOWED_FILTER_KEYS)
+    )
     if not scoped:
         return []
     user = await graph_provider.get_user_by_user_id(user_id=user_id)

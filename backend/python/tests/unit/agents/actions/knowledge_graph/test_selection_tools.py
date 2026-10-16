@@ -222,11 +222,37 @@ class TestReachingARecordByNameOrId:
     """Find-by-name and open-by-id are held to a saved agent's and a project's sources."""
 
     @pytest.mark.asyncio
-    async def test_a_turn_of_whole_apps_is_not_checked(self) -> None:
+    async def test_a_turn_that_picked_nothing_is_not_checked(self) -> None:
         graph = _graph()
-        state = {"filters": {"apps": ["a"], "kb": []}}
+        state = {"filters": {"apps": [], "kb": ["NO_KB_SELECTED"]}}
         assert await ids_within_scope(state, graph, "u", "o", ["x", "y"]) == {"x", "y"}
         graph.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_picked_apps_hold_them_as_they_hold_search(self) -> None:
+        """A project's apps narrowed by the picker: an id in another app is not read."""
+        graph = _graph(readable={"in-a", "in-b"}, inside={"in-a"})
+        state = {"filters": {"apps": ["a"], "kb": ["k", "NO_KB_SELECTED"], "strictScope": True}}
+        assert await ids_within_scope(state, graph, "u", "o", ["in-a", "in-b"]) == {"in-a"}
+        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [frozenset({"a", "k"})]
+
+    @pytest.mark.asyncio
+    async def test_a_strict_turn_that_picked_nothing_admits_nothing(self) -> None:
+        graph = _graph(readable={"x"}, inside=set())
+        state = {"filters": {"apps": [], "kb": [], "strictScope": True}}
+        assert await ids_within_scope(state, graph, "u", "o", ["x"]) == set()
+        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [frozenset()]
+
+    @pytest.mark.asyncio
+    async def test_the_picked_apps_and_an_agent_bound_hold_them_together(self) -> None:
+        graph = _graph(readable={"in-a"}, inside={"in-a"})
+        state = {"filters": {
+            "apps": ["a"], "kb": [], "allowedApps": ["a", "b"], "allowedRecordGroups": [], "allowedRecords": [],
+        }}
+        assert await ids_within_scope(state, graph, "u", "o", ["in-a"]) == {"in-a"}
+        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [
+            frozenset({"a", "b"}), frozenset({"a"}),
+        ]
 
     @pytest.mark.asyncio
     async def test_the_users_own_selection_holds_them(self) -> None:
@@ -288,10 +314,16 @@ class TestOpeningARecordById:
         return context
 
     @pytest.mark.asyncio
-    async def test_a_turn_of_whole_apps_asks_the_graph_nothing(self) -> None:
+    async def test_a_turn_that_picked_nothing_asks_the_graph_nothing(self) -> None:
         graph = _graph()
-        assert await _ids_outside_scope(self._context({"apps": ["a"], "kb": []}, graph), ["x"]) == []
+        assert await _ids_outside_scope(self._context({"apps": [], "kb": []}, graph), ["x"]) == []
         graph.get_user_by_user_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_outside_the_picked_apps_is_refused(self) -> None:
+        graph = _graph(readable={"in-a", "in-b"}, inside={"in-a"})
+        context = self._context({"apps": ["a"], "kb": []}, graph)
+        assert await _ids_outside_scope(context, ["in-a", "in-b"]) == ["in-b"]
 
     @pytest.mark.asyncio
     async def test_a_whole_app_agent_refuses_a_record_of_another_app(self) -> None:
@@ -302,7 +334,9 @@ class TestOpeningARecordById:
             graph,
         )
         assert await _ids_outside_scope(context, ["in-a", "in-b"]) == ["in-b"]
-        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [frozenset({"a"})]
+        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [
+            frozenset({"a"}), frozenset({"a"}),
+        ]
 
     @pytest.mark.asyncio
     async def test_an_id_outside_the_users_selection_is_reported(self) -> None:
