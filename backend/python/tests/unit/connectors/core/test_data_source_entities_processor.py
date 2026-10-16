@@ -5232,21 +5232,41 @@ class TestOnRecordsDetachedFromParent:
 
 class TestOnRecordsAttachedToParent:
     @pytest.mark.asyncio
-    async def test_links_every_record_under_the_parent_in_one_write(self) -> None:
+    async def test_moves_each_record_from_its_group_to_the_parent(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
-        tx_store.batch_create_edges = AsyncMock()
+        docs = {
+            "folder": {"recordGroupId": "g1"},
+            "a": {"recordGroupId": "g1"},
+            "b": {"recordGroupId": "g1"},
+        }
+        tx_store.get_record_by_key = AsyncMock(side_effect=lambda key, **_: docs.get(key))
+        # a inherited from the group after its parent was deleted; b had its own grants.
+        tx_store.link_record_to_group = AsyncMock(side_effect=lambda rid, *_a, **_k: 1 if rid == "a" else 0)
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+        proc._create_hierarchy_edge = AsyncMock()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_records_attached_to_parent("folder", ["a", "b"])
 
-        tx_store.batch_create_edges.assert_awaited_once()
-        edges = tx_store.batch_create_edges.await_args.args[0]
-        assert [(e["from_id"], e["to_id"], e["relationshipType"]) for e in edges] == [
-            ("folder", "a", RecordRelations.PARENT_CHILD.value),
-            ("folder", "b", RecordRelations.PARENT_CHILD.value),
+        assert [c.args for c in tx_store.link_record_to_group.await_args_list] == [("a", "g1"), ("b", "g1")]
+        for call in tx_store.link_record_to_group.await_args_list:
+            assert call.kwargs == {"inherit": False, "browse_root": False}
+        assert [c.args[1:] for c in proc._create_hierarchy_edge.await_args_list] == [
+            ("folder", CollectionNames.RECORDS.value, "a", CollectionNames.RECORDS.value),
+            ("folder", CollectionNames.RECORDS.value, "b", CollectionNames.RECORDS.value),
         ]
-        assert tx_store.batch_create_edges.await_args.kwargs["collection"] == CollectionNames.RECORD_RELATIONS.value
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("a", "folder")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_parent_fails_loudly(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_key = AsyncMock(return_value=None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(ValueError):
+            await proc.on_records_attached_to_parent("folder", ["a"])
 
     @pytest.mark.asyncio
     async def test_nothing_to_attach_touches_nothing(self) -> None:
