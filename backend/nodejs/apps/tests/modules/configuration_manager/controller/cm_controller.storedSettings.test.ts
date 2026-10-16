@@ -20,6 +20,7 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor';
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
 import { InternalServerError } from '../../../../src/libs/errors/http.errors';
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import type { NextFunction, Response } from 'express';
 import type { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types';
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
@@ -553,6 +554,39 @@ describe('Configuration manager stored settings', () => {
       expect(JSON.stringify(res.body)).to.not.include('real-key');
       expect(res.body?.providers?.map((p) => p.provider)).to.deep.equal(['duckduckgo', 'serper', 'tavily']);
       expect(res.body?.providers?.[0]?.isDefault).to.be.false;
+    });
+
+    describe('self-hosted server addresses', () => {
+      const crawl4ai = {
+        provider: 'crawl4ai',
+        configuration: { baseUrl: 'http://crawl4ai:11235', apiKey: 'crawl-token' },
+        isDefault: false,
+      };
+      const signedIn = { user: { userId: 'u1', orgId: 'o1' } };
+
+      it('hides them from members, who only need the provider list', async () => {
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+        kv.values.set(configPaths.webSearch, seal({ providers: [serper, crawl4ai] }));
+
+        const { res } = await run(getWebSearchProviders(store()), signedIn);
+
+        const listed = res.body?.providers?.find((p) => p.provider === 'crawl4ai');
+        expect(listed?.configuration.baseUrl).to.equal(CONFIG_SECRET_PLACEHOLDER);
+        expect(JSON.stringify(res.body)).to.not.include('crawl4ai:11235');
+        expect(JSON.stringify(res.body)).to.not.include('crawl-token');
+      });
+
+      it('shows them to admins, even when secrets are hidden', async () => {
+        process.env.HIDE_SECRET_CONFIG = 'true';
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+        kv.values.set(configPaths.webSearch, seal({ providers: [crawl4ai] }));
+
+        const { res } = await run(getWebSearchProviders(store()), signedIn);
+
+        const listed = res.body?.providers?.find((p) => p.provider === 'crawl4ai');
+        expect(listed?.configuration.baseUrl).to.equal('http://crawl4ai:11235');
+        expect(JSON.stringify(res.body)).to.not.include('crawl-token');
+      });
     });
 
     it('answers a failing store with an error, not an empty provider list', async () => {

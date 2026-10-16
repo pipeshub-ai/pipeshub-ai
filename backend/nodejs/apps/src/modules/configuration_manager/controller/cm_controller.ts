@@ -90,6 +90,7 @@ import {
   stripAiModelSecrets,
   mergeAiModelCredentials,
   maskWebSearchProvider,
+  maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
@@ -4466,9 +4467,13 @@ export const getWebSearchProviders =
         ? webSearchConfig.providers
         : [];
       // Members may list providers (the agent builder does), but only admins
-      // may read their API keys.
+      // may read their API keys or server addresses.
+      const isAdmin = await requesterIsOrgAdmin(req);
       const hideSecrets =
-        !(await requesterIsOrgAdmin(req)) || (shouldHideSecrets() && !canRevealSecrets(req));
+        !isAdmin || (shouldHideSecrets() && !canRevealSecrets(req));
+      const mask = isAdmin
+        ? maskWebSearchProvider
+        : maskWebSearchProviderForMember;
       const providers = [
         {
           ...DUCKDUCKGO_WEB_SEARCH_PROVIDER,
@@ -4476,7 +4481,7 @@ export const getWebSearchProviders =
         },
         ...storedProviders.map((p) =>
           hideSecrets && p.configuration
-            ? { ...p, configuration: maskWebSearchProvider(p.configuration) }
+            ? { ...p, configuration: mask(p.configuration) }
             : p,
         ),
       ];

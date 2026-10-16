@@ -151,6 +151,8 @@ instructions still apply.
 - SearXNG, Firecrawl (self-hosted) and Crawl4AI are admin-configured servers: their address
   follows the AI model servers' policy (`app/utils/model_egress.py`). Link-local and metadata
   addresses are always refused; private ones only with `PIPESHUB_BLOCK_PRIVATE_ADDRESSES` on.
+- Only admins see a provider's server address. The provider list members read (the agent
+  builder uses it) masks `baseUrl` along with the API key.
 - Docker Compose ships both as opt-in profiles in `deployment/docker-compose/docker-compose.yml`.
   Add `search-searxng` and/or `fetch-crawl4ai` to `COMPOSE_PROFILES` in `.env`, set
   `SEARXNG_SECRET` and `CRAWL4AI_API_TOKEN` there, then add the provider under Workspace → Web
