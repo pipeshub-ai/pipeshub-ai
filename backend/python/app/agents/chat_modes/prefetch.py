@@ -186,7 +186,10 @@ async def prefetch_retrieval(
             citation_ref_mapper=ref_mapper,
             is_empty=True,
             error_message=message,
-            failure_notice=message if result.get("status") in _SEARCH_FAILED_STATUSES else None,
+            failure_notice=(
+                message if result.get("status") in _SEARCH_FAILED_STATUSES
+                else result.get("searchIncomplete") or None
+            ),
         )
 
     incomplete_notice = result.get("searchIncomplete") or None

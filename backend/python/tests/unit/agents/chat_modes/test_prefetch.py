@@ -299,6 +299,18 @@ class TestSearchFailureNotice:
 
         assert result.failure_notice is None
 
+    async def test_nothing_readable_where_the_search_ran_with_part_of_the_index_down_is_a_failure(self) -> None:
+        notice = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": "accessible_records_not_found", "status_code": 404,
+            "message": f"{notice} No documents are available.", "searchIncomplete": notice,
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.failure_notice == notice
+
     async def test_a_raised_search_names_no_internals(self) -> None:
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters.side_effect = RuntimeError("qdrant at 10.0.0.4:6334 refused")
