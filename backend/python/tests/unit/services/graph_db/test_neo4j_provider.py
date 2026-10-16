@@ -6342,3 +6342,33 @@ class TestBlockPropertyRoundTrip:
         assert "SET n += node" in call.args[0]
         node = call.kwargs["parameters"]["nodes"][0]
         assert "pendingEdges" in node and node["pendingEdges"] is None
+
+
+@pytest.mark.parametrize(("collection", "doc"), [
+    ("blocks", {"pendingEdges": [{"to": "x"}], "typeTable": {"c": "Client"}}),
+    ("sqlTables", {"name": "t", "foreignKeys": [{"column": "a", "references": "b.id"}]}),
+    ("artifacts", {"resultSchema": {"type": "object"}}),
+    ("agentTemplates", {"tools": [{"name": "t"}], "memory": {"type": ["chat"]}}),
+])
+def test_dict_fields_read_back_as_written(neo4j_provider: Neo4jProvider, collection: str, doc: dict) -> None:
+    """Neo4j stores these as JSON strings; reads decode them from the same schemas (SC-8)."""
+    stored = neo4j_provider._arango_to_neo4j_node({"_key": "k", **doc}, collection)
+    assert all(isinstance(stored[k], str) for k in doc if k != "name")
+    back = neo4j_provider._neo4j_to_arango_node(stored, collection)
+    assert {k: back[k] for k in doc} == doc
+
+
+def test_a_string_that_looks_like_json_is_left_alone(neo4j_provider: Neo4jProvider) -> None:
+    back = neo4j_provider._neo4j_to_arango_node({"id": "k", "comment": '{"a": 1}'}, "sqlTables")
+    assert back["comment"] == '{"a": 1}'
+
+
+def test_a_type_doc_read_without_its_collection_is_decoded_by_record_type(
+        neo4j_provider: Neo4jProvider) -> None:
+    record = {"_key": "r1", "recordType": RecordType.SQL_TABLE.value}
+    type_doc = neo4j_provider._neo4j_to_arango_node(
+        neo4j_provider._arango_to_neo4j_node({"_key": "r1", "name": "t", "foreignKeys": [{"c": 1}]},
+                                             "sqlTables"), "")
+    with patch("app.services.graph_db.neo4j.neo4j_provider.SQLTableRecord.from_arango_record") as build:
+        neo4j_provider._create_typed_record_from_neo4j(record, type_doc)
+    assert build.call_args.args[0]["foreignKeys"] == [{"c": 1}]

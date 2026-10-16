@@ -112,7 +112,7 @@ async def test_handler_acks_then_runs_build_in_background() -> None:
 
 
 @pytest.mark.asyncio
-async def test_lock_contention_retries_without_starting_second_build() -> None:
+async def test_lock_contention_is_acked_without_starting_second_build() -> None:
     runner = MagicMock()
     runner.acquire = AsyncMock(
         side_effect=[("lock-key", "lock-token"), None]
@@ -135,7 +135,8 @@ async def test_lock_contention_retries_without_starting_second_build() -> None:
         EventTypes.BUILD_CODE_EDGES.value,
         payload,
     )
-    assert not await service.process_event(
+    # The request is marked pending before publish; the running build serves it.
+    assert await service.process_event(
         EventTypes.BUILD_CODE_EDGES.value,
         payload,
     )

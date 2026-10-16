@@ -10,6 +10,7 @@ import type {
   FilterOptionsResponse,
   ConnectorStatsResponse,
   ConnectionCheckResponse,
+  CodeGraphRepo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
@@ -488,5 +489,14 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Code repositories the caller can read, with each one's code-graph status. */
+  async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
+    const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
+      '/api/v1/code-graph/repos',
+      { suppressErrorToast: true }
+    );
+    return data.repos ?? [];
   },
 };

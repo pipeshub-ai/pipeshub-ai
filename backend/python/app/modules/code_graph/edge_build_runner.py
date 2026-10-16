@@ -12,6 +12,7 @@ from app.modules.code_graph.edge_builder import (
     EdgeBuildTooLargeError,
     build_code_graph_edges,
 )
+from app.telemetry.modules import code_graph_metrics
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -28,6 +29,10 @@ BuildLease = tuple[str, str]
 # per repo in parallel on the connectors service.
 _MAX_CONCURRENT_BUILDS = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_CONCURRENT", "2")))
 _MAX_BUILDS_PER_ORG = max(1, int(os.getenv("CODE_EDGE_BUILD_MAX_PER_ORG", "1")))
+# Requests that arrive during a build are served by the same lease, up to this
+# many extra builds, so a busy repo's events can be acked instead of redelivered
+# (SC-7); anything still owed after that waits for the reconciler.
+_MAX_FOLLOW_UP_BUILDS = 3
 _process_slots: dict[str, asyncio.Semaphore] = {}
 _org_slots: dict[str, asyncio.Semaphore] = {}
 
@@ -106,9 +111,13 @@ class CodeEdgeBuildRunner:
         )
         try:
             async with _build_slot(org_id):
-                await self._build(org_id=org_id, connector_id=connector_id,
-                                  record_group_id=record_group_id, lease=owned_lease)
+                for _ in range(1 + _MAX_FOLLOW_UP_BUILDS):
+                    built = await self._build(org_id=org_id, connector_id=connector_id,
+                                              record_group_id=record_group_id, lease=owned_lease)
+                    if not built or not (await self._state.read_or_empty(org_id, record_group_id)).pending:
+                        break
         except edge_build_trigger.LeaseLostError:
+            code_graph_metrics.record_build("lease_lost")
             # The state now belongs to whichever build took the lock; it settles it.
             self._log.error(
                 "Code edge build for org=%s record_group=%s stopped: it lost its lock",
@@ -116,6 +125,7 @@ class CodeEdgeBuildRunner:
             )
             raise
         except Exception as exc:
+            code_graph_metrics.record_build("error")
             self._log.exception(
                 "Automatic code edge build failed for org=%s record_group=%s",
                 org_id,
@@ -144,7 +154,8 @@ class CodeEdgeBuildRunner:
                 )
 
     async def _build(self, *, org_id: str, connector_id: str, record_group_id: str,
-                     lease: BuildLease) -> None:
+                     lease: BuildLease) -> bool:
+        """One build; True when it settled ready, so a request it missed can follow."""
         token = lease[1]
         start = await self._state.begin(org_id, connector_id, record_group_id, token)
         if await edge_build_trigger.group_has_unfinished_records(
@@ -158,7 +169,8 @@ class CodeEdgeBuildRunner:
             )
             await self._state.settle_deferred(org_id, record_group_id, lease_token=token,
                                               now_ms=_now_ms())
-            return
+            code_graph_metrics.record_build("waiting_on_indexing")
+            return False
 
         # Read before the watermark query: a record updated in between is
         # invisible now and would otherwise also fall below the next run.
@@ -177,7 +189,8 @@ class CodeEdgeBuildRunner:
                     org_id, record_group_id, lease_token=token, start=start,
                     started_at_ms=started_at_ms, advance_watermark=False, full=False,
                 )
-                return
+                code_graph_metrics.record_build("ready")
+                return True
 
         self._log.info(
             "Automatic code edge build starting for org=%s record_group=%s "
@@ -208,7 +221,8 @@ class CodeEdgeBuildRunner:
                 org_id, record_group_id, lease_token=token, start=start,
                 started_at_ms=started_at_ms, reason=str(exc),
             )
-            return
+            code_graph_metrics.record_build("too_large")
+            return False
         if result.facts_missing:
             # Those files kept their old edges; holding the watermark back
             # keeps them in the next build instead of skipping them for good.
@@ -222,10 +236,13 @@ class CodeEdgeBuildRunner:
             started_at_ms=started_at_ms, advance_watermark=not result.facts_missing,
             full=touched_record_ids is None, result=result,
         )
+        code_graph_metrics.record_build(
+            "ready", result, "incremental" if touched_record_ids is not None else "full")
         self._log.info(
             "Automatic code edge build complete: %s",
             result.as_log_fields(),
         )
+        return True
 
 
 def _now_ms() -> int:

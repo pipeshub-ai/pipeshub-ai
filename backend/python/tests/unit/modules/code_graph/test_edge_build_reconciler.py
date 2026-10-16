@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.config.constants.arangodb import CollectionNames, EventTypes
+from app.config.constants.arangodb import CollectionNames
 from app.modules.code_graph import edge_build_reconciler
 from app.modules.code_graph.build_state import sync_point_key_for
 from tests.unit.modules.code_graph.sync_point_fakes import FakeSyncPoints
@@ -33,7 +33,7 @@ def _graph_provider(rows: list[dict]) -> MagicMock:
 
 def _event_service(results=True) -> MagicMock:
     service = MagicMock()
-    service.process_event = AsyncMock(
+    service.start_build = AsyncMock(
         side_effect=results if isinstance(results, list) else None,
         return_value=None if isinstance(results, list) else results,
     )
@@ -50,10 +50,7 @@ async def test_stale_pending_repo_is_handed_to_the_event_service() -> None:
     )
 
     assert started == 1
-    service.process_event.assert_awaited_once_with(
-        EventTypes.BUILD_CODE_EDGES.value,
-        {"orgId": "org-1", "connectorId": "connector-1", "recordGroupId": "repo-1"},
-    )
+    service.start_build.assert_awaited_once_with("org-1", "connector-1", "repo-1")
     query = provider.get_nodes_by_filters.await_args.kwargs
     assert query["collection"] == CollectionNames.SYNC_POINTS.value
     assert query["filters"] == {
@@ -73,7 +70,7 @@ async def test_a_request_still_in_flight_is_left_alone() -> None:
     )
 
     assert started == 0
-    service.process_event.assert_not_awaited()
+    service.start_build.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -88,7 +85,7 @@ async def test_a_legacy_mark_with_no_timestamp_is_started() -> None:
 
 @pytest.mark.asyncio
 async def test_a_busy_repo_does_not_count_and_the_sweep_continues() -> None:
-    """process_event returning False means another build holds the lock."""
+    """start_build returning False means another build holds the lock."""
     provider = _graph_provider([_row("repo-1", STALE_MS), _row("repo-2", STALE_MS)])
     service = _event_service([False, True])
 
@@ -97,7 +94,7 @@ async def test_a_busy_repo_does_not_count_and_the_sweep_continues() -> None:
     )
 
     assert started == 1
-    assert service.process_event.await_count == 2
+    assert service.start_build.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -111,7 +108,7 @@ async def test_one_failing_repo_does_not_stop_the_next() -> None:
     )
 
     assert started == 1
-    assert service.process_event.await_count == 2
+    assert service.start_build.await_count == 2
     log.exception.assert_called_once()
 
 
@@ -126,7 +123,7 @@ async def test_starts_per_sweep_are_capped() -> None:
     )
 
     assert started == 2
-    assert service.process_event.await_count == 2
+    assert service.start_build.await_count == 2
 
 
 @pytest.mark.asyncio
@@ -144,11 +141,11 @@ async def test_rows_without_a_usable_scope_are_skipped() -> None:
     )
 
     assert started == 1
-    assert service.process_event.await_args.args[1]["recordGroupId"] == "repo-3"
+    assert service.start_build.await_args.args[2] == "repo-3"
 
 
 def _started(service) -> list[str]:
-    return [c.args[1]["recordGroupId"] for c in service.process_event.await_args_list]
+    return [c.args[2] for c in service.start_build.await_args_list]
 
 
 @pytest.mark.asyncio
@@ -211,3 +208,31 @@ async def test_a_repo_without_a_recent_full_build_is_owed_one() -> None:
         assert point["edgeBuildFullRequestId"]
     assert "edgeBuildFullRequestId" not in points.points[sync_point_key_for("recent")]
 
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_loop_survives_a_failed_sweep_and_stops_when_cancelled(monkeypatch) -> None:
+    """reconcile_forever: a jittered first delay, a failing sweep logged not fatal, then
+    one sweep per interval until the task is cancelled (T-3)."""
+    import asyncio
+
+    sleeps: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 3:
+            raise asyncio.CancelledError
+
+    sweeps = AsyncMock(side_effect=[RuntimeError("graph down"), 0])
+    monkeypatch.setattr(edge_build_reconciler.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(edge_build_reconciler, "reconcile_once", sweeps)
+    monkeypatch.setattr(edge_build_reconciler, "request_due_full_rebuilds", AsyncMock(return_value=0))
+    log = MagicMock()
+
+    with pytest.raises(asyncio.CancelledError):
+        await edge_build_reconciler.reconcile_forever(MagicMock(), MagicMock(), log, interval_s=100)
+
+    assert sweeps.await_count == 2
+    log.exception.assert_called_once()
+    assert 30 <= sleeps[0] <= 90
+    assert all(100 <= s <= 110 for s in sleeps[1:])

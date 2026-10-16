@@ -119,37 +119,32 @@ class SymbolIndex:
     def candidates(self, name: str) -> list[str]:
         return self.by_name.get(name, [])
 
+    def add_docs(self, docs: Iterable[dict[str, Any]], paths: dict[str, str],
+                 referenced_names: dict[str, tuple[str, ...]]) -> None:
+        """Index block docs; called once per scanned page, so no full list is kept (SC-1)."""
+        for doc in docs:
+            row = BlockRow.from_doc(doc, paths)
+            if row.key:
+                self._add(row, referenced_names.get(row.record_id))
 
-def build_symbol_index(
-    docs: Iterable[dict[str, Any]],
-    paths: dict[str, str] | None = None,
-    referenced_names: dict[str, tuple[str, ...]] | None = None,
-) -> SymbolIndex:
-    paths = paths or {}
-    referenced_names = referenced_names or {}
-    index = SymbolIndex()
-    for doc in docs:
-        row = BlockRow.from_doc(doc, paths)
-        if not row.key:
-            continue
-        index.rows[row.key] = row
-        index.record_by_block[row.key] = row.record_id
-        index.blocks_by_record[row.record_id].append(row.key)
+    def _add(self, row: BlockRow, file_refs: tuple[str, ...] | None) -> None:
+        self.rows[row.key] = row
+        self.record_by_block[row.key] = row.record_id
+        self.blocks_by_record[row.record_id].append(row.key)
         if row.file_path:
-            index.file_by_block[row.key] = row.file_path
-            index.file_by_record.setdefault(row.record_id, row.file_path)
-            index.record_by_file.setdefault(row.file_path, row.record_id)
+            self.file_by_block[row.key] = row.file_path
+            self.file_by_record.setdefault(row.record_id, row.file_path)
+            self.record_by_file.setdefault(row.file_path, row.record_id)
         family = lang_family(row.language, row.file_path)
         if family:
-            index.family_by_block[row.key] = family
+            self.family_by_block[row.key] = family
         if row.type_table:
-            index.type_table_by_record[row.record_id] = row.type_table
+            self.type_table_by_record[row.record_id] = row.type_table
 
         # referencedNames comes from codeFiles (passed in referenced_names).
         # Fallback to block's resident facts for nodes projected before the
         # move, or for files that lack a codeFiles entry (uploaded .py).
-        ref_set = index.referenced_names_by_record[row.record_id]
-        file_refs = referenced_names.get(row.record_id)
+        ref_set = self.referenced_names_by_record[row.record_id]
         if file_refs:
             ref_set.update(file_refs)
         else:
@@ -160,12 +155,21 @@ def build_symbol_index(
             )
 
         if row.name:
-            index.by_name[row.name].append(row.key)
-            index.names_by_record[row.record_id].add(row.name)
+            self.by_name[row.name].append(row.key)
+            self.names_by_record[row.record_id].add(row.name)
             if row.parent_block_id and row.kind in ("method", "constructor"):
-                index.method_index[(row.parent_block_id, row.name)] = row.key
+                self.method_index[(row.parent_block_id, row.name)] = row.key
         if row.kind in CALLABLE_KINDS:
-            index.callable_blocks.add(row.key)
+            self.callable_blocks.add(row.key)
         elif row.kind in TYPE_KINDS:
-            index.type_blocks.add(row.key)
+            self.type_blocks.add(row.key)
+
+
+def build_symbol_index(
+    docs: Iterable[dict[str, Any]],
+    paths: dict[str, str] | None = None,
+    referenced_names: dict[str, tuple[str, ...]] | None = None,
+) -> SymbolIndex:
+    index = SymbolIndex()
+    index.add_docs(docs, paths or {}, referenced_names or {})
     return index

@@ -2392,7 +2392,21 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "लोकल वॉचर",
-        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
+        "codeGraph": {
+          "title": "कोड ग्राफ़",
+          "status": {
+            "never_built": "अभी नहीं बना",
+            "building": "बन रहा है",
+            "ready": "तैयार",
+            "stale": "अपडेट हो रहा है",
+            "waiting_on_indexing": "इंडेक्सिंग की प्रतीक्षा",
+            "retrying": "फिर से कोशिश",
+            "failed": "विफल",
+            "too_large": "बहुत बड़ा",
+            "unknown": "अज्ञात"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",

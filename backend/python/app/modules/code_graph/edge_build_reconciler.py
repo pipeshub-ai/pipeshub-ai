@@ -16,8 +16,8 @@ import time
 from collections import defaultdict
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import EventTypes
 from app.modules.code_graph.build_state import BuildStateStore, PendingBuild, is_due
+from app.telemetry.modules import code_graph_metrics
 from app.utils.env_config import env_seconds
 
 if TYPE_CHECKING:
@@ -72,21 +72,24 @@ async def reconcile_once(
 
     A request younger than the dedupe window still has its message in flight
     and is left alone, as is a retry whose backoff has not run out and a repo
-    whose builds failed for good. ``process_event`` returning False means another
+    whose builds failed for good. ``start_build`` returning False means another
     build holds the repo's lock, on this replica or another, so it is skipped too.
     """
     now_ms = int(time.time() * 1000) if now_ms is None else now_ms
     owed = await BuildStateStore(graph_provider, log).all(owed_only=True)
+    due = [b for b in owed if is_due(b.state, now_ms)]
+    started = await _start_due(event_service, log, due, limit)
+    code_graph_metrics.record_reconcile_sweep(len(due), len(owed) - len(due), started)
+    return started
+
+
+async def _start_due(event_service: CodeGraphEventService, log: Logger,
+                     due: list[PendingBuild], limit: int) -> int:
     started = 0
-    for pending in _round_robin_by_org([b for b in owed if is_due(b.state, now_ms)]):
+    for pending in _round_robin_by_org(due):
         try:
-            handled = await event_service.process_event(
-                EventTypes.BUILD_CODE_EDGES.value,
-                {
-                    "orgId": pending.org_id,
-                    "connectorId": pending.connector_id,
-                    "recordGroupId": pending.record_group_id,
-                },
+            handled = await event_service.start_build(
+                pending.org_id, pending.connector_id, pending.record_group_id,
             )
         except Exception:
             log.exception(

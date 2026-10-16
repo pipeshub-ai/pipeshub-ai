@@ -24,6 +24,7 @@ import type {
   LocalSyncStatus,
 } from '../../types';
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
+import { CodeGraphStatus } from './code-graph-status';
 
 // ========================================
 // Props
@@ -271,6 +272,10 @@ export function OverviewTab({
             })}
           </Text>
         </Flex>
+      )}
+
+      {stats?.byRecordType?.some((t) => t.recordType === 'CODE_FILE' && t.total > 0) && (
+        <CodeGraphStatus connectorId={instance._key} />
       )}
 
       {/* Shared stats panel */}

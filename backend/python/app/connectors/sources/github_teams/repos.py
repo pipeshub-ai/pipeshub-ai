@@ -48,7 +48,6 @@ from collections import deque
 from typing import TYPE_CHECKING, Any
 
 from fastapi import HTTPException
-from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import (
     Connectors,
@@ -62,21 +61,29 @@ from app.connectors.core.base.error.stream_errors import (
     not_downloadable,
     raise_for_stream_fetch,
 )
-from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
-from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
-from app.models.entities import CodeFileRecord, FileRecord, Record, RecordGroupType, RecordType
-from app.modules.parsers.code_parser.file_role import (
-    FileRole,
-    classify_file_role,
-    should_index_code_file,
-    should_index_code_folder,
+from app.connectors.core.base.sync_point.sync_point import (
+    generate_record_sync_point_key,
 )
+from app.connectors.core.registry.code_indexing_flags import (
+    code_exclude_globs,
+    code_indexing_flags,
+)
+from app.models.entities import (
+    CodeFileRecord,
+    FileRecord,
+    Record,
+    RecordGroupType,
+    RecordType,
+)
+from app.modules.parsers.code_parser.file_role import FileRole, classify_file_role
 from app.modules.parsers.code_parser.gitattributes import (
     LinguistExclusions,
     parse_linguist_exclusions,
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
+from app.modules.parsers.code_parser.path_policy import PathPolicy
 from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.sources.external.github.github_async import GhObject
 
 from .constants import (
     CODE_FILE_MAX_SIZE_BYTES,
@@ -87,7 +94,12 @@ from .constants import (
     REPO_DELETE_VALVE_MAX_FRACTION,
     REPO_DELETE_VALVE_MIN_ABSOLUTE,
 )
-from .models import GitHubLiterals, blob_external_id, path_from_external_id, tree_external_id
+from .models import (
+    GitHubLiterals,
+    blob_external_id,
+    path_from_external_id,
+    tree_external_id,
+)
 from .timestamps import TimestampBackfill
 
 if TYPE_CHECKING:
@@ -135,7 +147,7 @@ class ReposSync:
         self.logger = connector.logger
         self.timestamps = TimestampBackfill(connector)
         # Per repo, loaded at the start of each run.
-        self._linguist = LinguistExclusions()
+        self._policy = PathPolicy()
         # repo id -> (fetched at, repo). Indexing streams every file of a repo
         # in a burst, and a lookup per file was a third of the content budget.
         self._stream_repos: dict[int, tuple[float, GhObject]] = {}
@@ -166,7 +178,10 @@ class ReposSync:
             self.logger.error("No HEAD commit SHA on branch %s for %s", default_branch, repo.full_name)
             return
 
-        self._linguist = await self._load_linguist_exclusions(repo, current_sha)
+        self._policy = PathPolicy(
+            linguist=await self._load_linguist_exclusions(repo, current_sha),
+            exclude_globs=code_exclude_globs(c.sync_filters),
+        )
 
         checkpoint = await self._get_checkpoint(repo.id)
         last_sha = checkpoint.get(GitHubLiterals.LAST_COMMIT_SHA.value) if checkpoint else None
@@ -236,10 +251,10 @@ class ReposSync:
         return rules
 
     def _keeps_file(self, path: str) -> bool:
-        return should_index_code_file(path)[0] and not self._linguist.excludes(path)
+        return self._policy.keeps_file(path)
 
     def _keeps_folder(self, path: str) -> bool:
-        return should_index_code_folder(path)
+        return self._policy.keeps_folder(path)
 
     def _kept_entries(
         self, entries: list[tuple[str, str, str, int | None]]
@@ -607,8 +622,9 @@ class ReposSync:
     # ------------------------------------------------------------------
 
     async def _incremental_sync(self, repo: GhObject, from_sha: str, to_sha: str) -> bool:
-        """Compare-commits-based incremental sync. Returns False (triggering a
-        full-sync fallback) on any untrusted-delta condition or API failure."""
+        """Compare-commits-based incremental sync, with a two-tree diff when the
+        compare can't be trusted. Returns False (triggering a full-sync fallback)
+        when neither gives a delta or an API call fails."""
         c = self.c
         owner, name = repo.owner.login, repo.name
         cmp_res = await c.runtime.ds_call(c.data_source.compare_commits, owner, name, from_sha, to_sha)
@@ -617,36 +633,21 @@ class ReposSync:
             return False
 
         comparison = cmp_res.data
-        status = getattr(comparison, "status", None)
-        # Only "ahead" carries a trustworthy delta. "diverged" is a force-push;
-        # "behind" is a branch reset to an ancestor, where compare returns an
-        # EMPTY files list — applying it would "succeed", advance the checkpoint,
-        # and leave every rolled-back file as a permanent record. Both need the
-        # full-sync re-baseline, whose pruning removes what the delta never saw.
-        # ("identical" can't reach here: equal SHAs short-circuit in run().)
-        if status and status != "ahead":
-            self.logger.warning(
-                "compare_commits returned status=%s for %s (force-push/branch reset); falling back to full sync",
-                status, repo.full_name,
-            )
-            return False
-
-        files = list(getattr(comparison, "files", None) or [])
-        total_commits = getattr(comparison, "total_commits", 0) or 0
-        if len(files) >= COMPARE_COMMITS_FILES_LIMIT:
-            self.logger.warning(
-                "compare_commits files list capped (%s) for %s; some changes may be missing — falling back to full sync",
-                len(files), repo.full_name,
-            )
-            return False
-        if total_commits >= COMPARE_COMMITS_TOTAL_LIMIT:
-            self.logger.warning(
-                "compare_commits total_commits=%s (>=%s) for %s; falling back to full sync",
-                total_commits, COMPARE_COMMITS_TOTAL_LIMIT, repo.full_name,
-            )
-            return False
-
-        deletes, adds, modifies, renames = self._classify_compare_files(files)
+        untrusted = self._untrusted_compare_reason(comparison)
+        if untrusted:
+            # Two tree calls give the exact delta between the snapshots, whatever
+            # happened between them; only a truncated tree needs the full walk (SC-11).
+            delta = await self._tree_delta(repo, from_sha, to_sha)
+            if delta is None:
+                self.logger.warning("%s for %s and no tree diff; falling back to full sync",
+                                    untrusted, repo.full_name)
+                return False
+            self.logger.info("%s for %s; using the tree diff", untrusted, repo.full_name)
+            deletes, adds, modifies = delta
+            renames: list[tuple[str, str, str]] = []
+        else:
+            deletes, adds, modifies, renames = self._classify_compare_files(
+                list(getattr(comparison, "files", None) or []))
         self.logger.info(
             "Incremental code sync for %s: %s deletes, %s adds, %s modifies, %s renames (before SHA reconcile)",
             repo.full_name, len(deletes), len(adds), len(modifies), len(renames),
@@ -680,6 +681,47 @@ class ReposSync:
                 "Incremental sync for %s completed with partial failures; checkpoint not advanced", repo.full_name
             )
         return all_ok
+
+    @staticmethod
+    def _untrusted_compare_reason(comparison: GhObject) -> str | None:
+        """Why a compare's files list is not the full delta; None when it is.
+
+        Only "ahead" carries a trustworthy delta. "diverged" is a force-push;
+        "behind" is a branch reset, where compare returns an EMPTY files list --
+        applying it would advance the checkpoint and keep every rolled-back file.
+        ("identical" can't reach here: equal SHAs short-circuit in run().)
+        """
+        status = getattr(comparison, "status", None)
+        if status and status != "ahead":
+            return f"compare_commits status={status} (force-push/branch reset)"
+        files = getattr(comparison, "files", None) or []
+        if len(files) >= COMPARE_COMMITS_FILES_LIMIT:
+            return f"compare_commits files list capped ({len(files)})"
+        total_commits = getattr(comparison, "total_commits", 0) or 0
+        if total_commits >= COMPARE_COMMITS_TOTAL_LIMIT:
+            return f"compare_commits total_commits={total_commits} (>={COMPARE_COMMITS_TOTAL_LIMIT})"
+        return None
+
+    async def _tree_delta(
+        self, repo: GhObject, from_sha: str, to_sha: str,
+    ) -> tuple[dict[str, str], dict[str, str], dict[str, str]] | None:
+        """``(deletes, adds, modifies)`` as ``{path: blob sha}`` between two
+        commits' recursive trees; None when either fetch fails or is truncated."""
+        before = await self._blob_shas(repo, from_sha)
+        after = await self._blob_shas(repo, to_sha) if before is not None else None
+        if before is None or after is None:
+            return None
+        deletes = {p: sha for p, sha in before.items() if p not in after}
+        adds = {p: sha for p, sha in after.items() if p not in before}
+        modifies = {p: sha for p, sha in after.items() if p in before and before[p] != sha}
+        return deletes, adds, modifies
+
+    async def _blob_shas(self, repo: GhObject, sha: str) -> dict[str, str] | None:
+        c = self.c
+        res = await c.runtime.ds_call(c.data_source.get_git_tree, repo.owner.login, repo.name, sha, True)
+        if not res.success or res.data is None or getattr(res.data, "truncated", False):
+            return None
+        return {el.path: el.sha for el in (res.data.tree or []) if el.path and el.type == "blob"}
 
     def _classify_compare_files(
         self, files: list[Any]

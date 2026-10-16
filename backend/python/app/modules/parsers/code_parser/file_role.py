@@ -55,10 +55,20 @@ _IGNORED_DIRS = frozenset({
 })
 
 # Build-output names that are also ordinary package names (Go
-# `internal/build`, Java `com/acme/build`). They count as output only when no
-# enclosing directory is a source root, so `dist/` and `packages/web/dist/` are
-# skipped while `src/main/java/com/acme/build/` is indexed.
+# `internal/build`, Java `com/acme/build`). One counts as output at the top of
+# the repo; deeper, only with no source root above it and only for what a
+# build emits (bundles, objects, classes), so `packages/web/dist/app.js` is
+# skipped while `com/acme/build/Builder.java` and `pkg/env/settings.py` are
+# indexed (P-7). `bin/` holds scripts as often as binaries, and `env/` is a
+# virtualenv only at the top, so neither is output deeper down on name alone.
 _OUTPUT_DIRS = frozenset({"dist", "build", "target", "out", "bin", "obj", "env"})
+_TOP_LEVEL_ONLY_OUTPUT = frozenset({"bin", "env"})
+# Also everyday package names, so deeper down only built artifacts in them are output.
+_PACKAGE_LIKE_OUTPUT = frozenset({"build", "out"})
+_BUILD_ARTIFACT_SUFFIXES = (
+    ".js", ".mjs", ".cjs", ".css", ".map", ".html", ".class", ".jar", ".war",
+    ".o", ".obj", ".a", ".so", ".dll", ".pyc", ".d.ts", ".wasm",
+)
 _SOURCE_ROOTS = frozenset({
     "src", "source", "sources", "internal", "pkg", "cmd", "app", "lib", "main",
     "java", "kotlin", "scala",
@@ -95,17 +105,22 @@ _GENERATED_SUFFIXES = (
 )
 _GENERATED_RE = re.compile(r"\.generated\.[A-Za-z0-9]+$")
 
+# Matched case-insensitively: `Tests/`, `UnitTests/` and `__Tests__` are as
+# common as their lower-case spellings (P-6).
 _TEST_DIRS = frozenset({
     "test", "tests", "spec", "specs", "__tests__", "__mocks__",
     "testing", "e2e", "integration-tests", "integration_tests",
+    "unittests", "unit_tests", "unit-tests", "testdata", "fixtures",
 })
-_TEST_FILENAMES = frozenset({"conftest.py", "setup.cfg.test"})
+_TEST_FILENAMES = frozenset({"conftest.py", "setup.cfg.test", "tests.py"})
 _TEST_PATTERNS = (
-    re.compile(r"^test_.+\.py$"),
-    re.compile(r".+_test\.(py|go|rb|ts|js)$"),
-    re.compile(r".+\.(test|spec)\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$"),
-    re.compile(r".+Tests?\.(java|cs|kt)$"),
+    re.compile(r"^test_.+\.pyi?$"),
+    re.compile(r".+_test\.(py|go|rb|ts|js|dart|cc|cpp|cxx|c|exs|ex|rs|lua)$"),
+    re.compile(r".+\.(test|spec|e2e-spec|e2e)\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$"),
+    re.compile(r".+Tests?\.(java|cs|kt|kts|swift|php|scala|groovy)$"),
+    re.compile(r".+(Spec|Suite|IT)\.(scala|groovy|kt|java)$"),
     re.compile(r".+_spec\.rb$"),
+    re.compile(r"^test.+\.php$", re.IGNORECASE),
 )
 
 _MIGRATION_DIRS = frozenset({"migrations", "migrate", "versions"})
@@ -205,11 +220,24 @@ def is_generated_content(content: bytes) -> bool:
     return bool(_GENERATED_HEADER.search(content[:_GENERATED_HEADER_BYTES]))
 
 
-def _in_ignored_dir(dirs: list[str]) -> bool:
+def _in_ignored_dir(dirs: list[str], file_name: str | None = None) -> bool:
+    """A dependency/cache dir anywhere, or a build-output dir by the rule above.
+
+    ``file_name`` is None for a folder: then a deeper `build/` or `out/` is still
+    walked and its files are judged one by one.
+    """
     for i, seg in enumerate(dirs):
         if seg in _IGNORED_DIRS:
             return True
-        if seg in _OUTPUT_DIRS and not any(d in _SOURCE_ROOTS for d in dirs[:i]):
+        if seg not in _OUTPUT_DIRS:
+            continue
+        if i == 0:
+            return True
+        if seg in _TOP_LEVEL_ONLY_OUTPUT or any(d in _SOURCE_ROOTS for d in dirs[:i]):
+            continue
+        if seg not in _PACKAGE_LIKE_OUTPUT:
+            return True
+        if file_name is not None and file_name.lower().endswith(_BUILD_ARTIFACT_SUFFIXES):
             return True
     return False
 
@@ -219,7 +247,7 @@ def is_ignored_path(file_path: str) -> bool:
     segs = _segments(file_path)
     if not segs:
         return False
-    if _in_ignored_dir(segs[:-1]):
+    if _in_ignored_dir(segs[:-1], segs[-1]):
         return True
     return is_generated_file_name(segs[-1])
 
@@ -243,11 +271,13 @@ def classify_file_role(file_path: str, file_name: str | None = None) -> FileRole
     name = file_name or _basename(file_path)
     segs = _segments(file_path)
     dirs = set(segs[:-1]) if segs else set()
+    lower_dirs = {d.lower() for d in dirs}
 
     if dirs & _GENERATED_DIRS or name.endswith(_GENERATED_SUFFIXES) or _GENERATED_RE.search(name):
         return FileRole.GENERATED
 
-    if dirs & _TEST_DIRS or name in _TEST_FILENAMES or any(p.match(name) for p in _TEST_PATTERNS):
+    if lower_dirs & _TEST_DIRS or name.lower() in _TEST_FILENAMES or any(
+            p.match(name) for p in _TEST_PATTERNS):
         return FileRole.TEST
 
     if dirs & _MIGRATION_DIRS or any(p.match(name) for p in _MIGRATION_PATTERNS):

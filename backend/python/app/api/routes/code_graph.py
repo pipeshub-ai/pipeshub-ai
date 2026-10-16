@@ -218,6 +218,8 @@ async def code_repos(request: Request) -> JSONResponse:
         entry: dict[str, Any] = {
             "repo": r.qualified if names.count(r.name) > 1 else r.name,
             "source": r.connector_name,
+            # Lets a connector's page show only its own repos.
+            "connector_id": r.connector_id,
         }
         try:
             state = await store.read(org_id, r.group_id)

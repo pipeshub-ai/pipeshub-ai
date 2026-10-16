@@ -43,6 +43,7 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
 
@@ -75,6 +76,8 @@ PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS = 5
 # heavy documents) can legitimately take several minutes, so this is set
 # well above typical large-document parse times, not just above the median.
 SLOW_PARSE_WARN_SECONDS = 300.0
+# Per pool, one org holds at most this share while another org wants the pool (S-4).
+_ORG_SHARE = OrgShare(max_org_share())
 
 
 def _get_registry(request: Request) -> ParserRegistry:
@@ -172,16 +175,27 @@ async def parse_file(
     )
 
     governor = request.app.state.governor
+    pool = gate_pool(tier).value
     gate = governor.gate(gate_pool(tier))
+    org_key = org_id or ""
 
-    admitted = await acquire_gate_with_backpressure(
-        gate, cost, tier, message_id,
-        logger=logger,
-        log_prefix="parsing",
-        queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
-        gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
-    )
+    _ORG_SHARE.arrive(pool, org_key)
+    try:
+        if _ORG_SHARE.over_share(pool, org_key, cost, gate.limit):
+            admitted = False
+        else:
+            admitted = await acquire_gate_with_backpressure(
+                gate, cost, tier, message_id,
+                logger=logger,
+                log_prefix="parsing",
+                queue_wait_warn_seconds=PARSE_QUEUE_WAIT_WARN_SECONDS,
+                gate_timeout_seconds=PARSE_GATE_TIMEOUT_SECONDS,
+            )
+    except BaseException:
+        _ORG_SHARE.leave(pool, org_key)
+        raise
     if not admitted:
+        _ORG_SHARE.leave(pool, org_key)
         return JSONResponse(
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
             headers={"Retry-After": str(PARSE_BACKPRESSURE_RETRY_AFTER_SECONDS)},
@@ -194,6 +208,7 @@ async def parse_file(
                 },
             },
         )
+    _ORG_SHARE.hold(pool, org_key, cost)
 
     parse_start = time.monotonic()
     try:
@@ -237,6 +252,7 @@ async def parse_file(
             )
     finally:
         gate.release(cost)
+        _ORG_SHARE.leave(pool, org_key, cost)
         SemaphoreLogger.log_semaphore_release(
             f"parsing:{tier.value}", message_id, gate.limit - gate.in_use, gate.limit
         )

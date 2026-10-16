@@ -35,29 +35,40 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
-from app.connectors.core.registry.code_indexing_flags import code_indexing_flags
 from app.connectors.core.constants import (
     IconPaths,
+)
+from app.connectors.core.registry.code_indexing_flags import (
+    code_exclude_globs,
+    code_indexing_flags,
 )
 from app.models.entities import CodeFileRecord, FileRecord, RecordGroupType, RecordType
 from app.modules.parsers.code_parser.file_role import (
     FileRole,
     classify_file_role,
-    should_index_code_file,
+)
+from app.modules.parsers.code_parser.gitattributes import (
+    LinguistExclusions,
+    parse_linguist_exclusions,
 )
 from app.modules.parsers.code_parser.lang_config import detect_language
+from app.modules.parsers.code_parser.path_policy import PathPolicy
 
 from .constants import (
-    GITLAB_COMPARE_DIFF_LIMIT,
-    PREVIEW_RENDERABLE_EXTENSIONS,
     _GITLAB_BACKFILL_CONCURRENCY,
     _GITLAB_TREE_PAGE_MAX_ATTEMPTS,
     _GITLAB_TREE_PAGE_RETRY_BACKOFF_SECONDS,
+    GITLAB_COMPARE_DIFF_LIMIT,
+    PREVIEW_RENDERABLE_EXTENSIONS,
 )
 from .models import GitlabLiterals, RecordUpdate
 
 if TYPE_CHECKING:
     from app.connectors.sources.gitlab.connector import GitLabConnector
+
+
+# Rules alone, before a project's .gitattributes and filters are loaded.
+_BUILT_IN_POLICY = PathPolicy()
 
 
 class ReposSync:
@@ -66,10 +77,31 @@ class ReposSync:
     def __init__(self, connector: "GitLabConnector") -> None:
         self.c = connector
         self.logger = connector.logger
+        # Per project, loaded at the start of each run.
+        self._policy = _BUILT_IN_POLICY
 
     # ------------------------------------------------------------------
     # Entry point
     # ------------------------------------------------------------------
+
+    async def _load_linguist_exclusions(self, project_id: int, sha: str) -> LinguistExclusions:
+        """The project's root ``.gitattributes`` linguist rules at ``sha``; none when absent (P-7)."""
+        c = self.c
+        try:
+            res = await c.runtime.ds_call(
+                c.data_source.get_file_content, project_id=project_id, file_path=".gitattributes", ref=sha,
+            )
+        except Exception as e:
+            self.logger.warning("Could not read .gitattributes for project %s: %s", project_id, e)
+            return LinguistExclusions()
+        content = getattr(res.data, "content", None) if res.success and res.data is not None else None
+        if not content:
+            return LinguistExclusions()
+        try:
+            text = base64.b64decode(content).decode("utf-8", errors="replace")
+        except (ValueError, TypeError):
+            return LinguistExclusions()
+        return parse_linguist_exclusions(text)
 
     async def run(
         self, project_id: int, project_path: str, default_branch: str
@@ -95,6 +127,10 @@ class ReposSync:
             )
             return
 
+        self._policy = PathPolicy(
+            linguist=await self._load_linguist_exclusions(project_id, current_sha),
+            exclude_globs=code_exclude_globs(c.sync_filters),
+        )
         last_sha = await self._get_code_repo_checkpoint(project_id)
         if last_sha is None:
             self.logger.info("No code-repo checkpoint for project %s; running full sync", project_id)
@@ -157,7 +193,9 @@ class ReposSync:
     async def _get_code_repo_checkpoint(self, project_id: int) -> str | None:
         """Return the last synced HEAD commit SHA for a project's code repository."""
         from app.config.constants.arangodb import Connectors
-        from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
+        from app.connectors.core.base.sync_point.sync_point import (
+            generate_record_sync_point_key,
+        )
         try:
             group_project_id = f"{project_id}-code-repository"
             key = generate_record_sync_point_key(Connectors.GITLAB.value, group_project_id, "")
@@ -172,7 +210,9 @@ class ReposSync:
     async def _update_code_repo_checkpoint(self, project_id: int, commit_sha: str) -> None:
         """Persist the HEAD commit SHA after a successful code repository sync."""
         from app.config.constants.arangodb import Connectors
-        from app.connectors.core.base.sync_point.sync_point import generate_record_sync_point_key
+        from app.connectors.core.base.sync_point.sync_point import (
+            generate_record_sync_point_key,
+        )
         key = generate_record_sync_point_key(
             Connectors.GITLAB.value, f"{project_id}-code-repository", ""
         )
@@ -403,6 +443,9 @@ class ReposSync:
             diffs = getattr(compare_data, "diffs", None) or []
             overflow = getattr(compare_data, "overflow", None)
 
+        # shortcut: unlike GitHub (SC-11) there is no tree-diff fallback -- GitLab's tree is a
+        # paginated walk, so diffing two trees costs two full walks; add one if full syncs
+        # after >1000-file pushes show up in the logs as a cost.
         if overflow:
             self.logger.warning(
                 "compare_commits returned overflow=true for project %s (%s diffs); falling back to full sync",
@@ -413,7 +456,7 @@ class ReposSync:
             self.logger.warning("Too many diffs (%s) for project %s; falling back to full sync", len(diffs), project_id)
             return False
 
-        deletes, adds, modifies, renames = _classify_compare_diffs(diffs)
+        deletes, adds, modifies, renames = _classify_compare_diffs(diffs, self._policy)
         self.logger.info(
             "Incremental code sync for project %s: %s deletes, %s adds, %s modifies, %s renames (before SHA reconcile)",
             project_id, len(deletes), len(adds), len(modifies), len(renames),
@@ -569,7 +612,7 @@ class ReposSync:
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
                 await self._upsert_code_files_by_paths(project_id, project_path, [new_path], ref=ref)
                 continue
-            if _should_skip_dotfile_repo_path(new_path):
+            if _should_skip_dotfile_repo_path(new_path, self._policy):
                 await self._delete_code_files_by_paths(project_id, project_path, [old_path])
                 continue
             web_path = _code_blob_web_path(project_path, new_path)
@@ -895,8 +938,7 @@ class ReposSync:
             if file_name.startswith("."):
                 files_skipped += 1
                 continue
-            should_index, _role = should_index_code_file(file_path, file_name)
-            if not should_index:
+            if not self._policy.keeps_file(file_path, str(file_name)):
                 files_skipped += 1
                 continue
             if "/" in file_path:
@@ -1193,7 +1235,7 @@ def _should_continue_repo_tree_pagination(page_info: dict[str, Any]) -> tuple[bo
     return True, end_cursor
 
 
-def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
+def _should_skip_dotfile_repo_path(repo_path: str, policy: PathPolicy = _BUILT_IN_POLICY) -> bool:
     """True when a repo path should not become a record at all.
 
     Dotfiles, plus dependency/build-output/cache trees and generated code. This
@@ -1203,8 +1245,7 @@ def _should_skip_dotfile_repo_path(repo_path: str) -> bool:
     basename = repo_path.rsplit("/", 1)[-1]
     if basename.startswith("."):
         return True
-    should_index, _role = should_index_code_file(repo_path, basename)
-    return not should_index
+    return not policy.keeps_file(repo_path, basename)
 
 
 def _blob_extension(file_name: str) -> str | None:
@@ -1282,7 +1323,7 @@ def _repo_path_from_blob_web_url(web_url: str | None) -> str | None:
 
 
 def _classify_compare_diffs(
-    diffs: list[Any],
+    diffs: list[Any], policy: PathPolicy = _BUILT_IN_POLICY,
 ) -> tuple[list[str], list[str], list[str], list[tuple[str, str]]]:
     """Classify compare-API diffs into (deletes, adds, modifies, renames)."""
     deletes: list[str] = []
@@ -1295,17 +1336,17 @@ def _classify_compare_diffs(
     seen_rename_old: set[str] = set()
 
     def _add_delete(path: str) -> None:
-        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_delete and not _should_skip_dotfile_repo_path(path, policy):
             deletes.append(path)
             seen_delete.add(path)
 
     def _add_add(path: str) -> None:
-        if path and path not in seen_add and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_add and not _should_skip_dotfile_repo_path(path, policy):
             adds.append(path)
             seen_add.add(path)
 
     def _add_modify(path: str) -> None:
-        if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path):
+        if path and path not in seen_modify and not _should_skip_dotfile_repo_path(path, policy):
             modifies.append(path)
             seen_modify.add(path)
 
@@ -1322,10 +1363,10 @@ def _classify_compare_diffs(
         if is_renamed:
             effective_old = old_path
             effective_new = new_path or old_path
-            if _should_skip_dotfile_repo_path(effective_new):
+            if _should_skip_dotfile_repo_path(effective_new, policy):
                 _add_delete(effective_old)
                 continue
-            if _should_skip_dotfile_repo_path(effective_old):
+            if _should_skip_dotfile_repo_path(effective_old, policy):
                 _add_add(effective_new)
                 continue
             if effective_old and effective_old not in seen_rename_old:

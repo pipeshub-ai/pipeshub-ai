@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.agents.actions.code_graph.neighbours import impact_impl
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -40,6 +41,7 @@ from app.modules.code_graph.edge_builder import (
 )
 from app.modules.code_graph.facts_source import facts_from_blob_record
 from app.modules.parsers.code_parser import CodeFileParser
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.integration.real_graph import (
     backend_unavailable,
     connect_arango,
@@ -370,3 +372,61 @@ async def test_deleting_a_files_blocks(repo: _Repo) -> None:
     rid = repo.record_ids["src/shop/a.py"]
     assert await repo.graph.delete_blocks_for_records([rid]) >= 1
     assert not await repo.graph.has_nodes_by_filters(BLOCKS, filters={"recordId": rid})
+
+
+# -- end to end: parse -> project -> build -> an agent tool's answer ---------
+
+
+async def _grant(repo: _Repo, user_key: str, user_id: str) -> None:
+    """A user who owns the repo's files through the connector, as a sync leaves it."""
+    g, now = repo.graph, get_epoch_timestamp_in_ms()
+    await g.batch_upsert_nodes(
+        [{"id": user_key, "userId": user_id, "orgId": repo.org_id, "email": f"{user_id}@example.com",
+          "fullName": "Code Graph Tester", "isActive": True,
+          "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.USERS.value,
+    )
+    await g.batch_upsert_nodes(
+        [{"id": repo.connector_id, "name": "GitHub", "type": "GitHub", "appGroup": "GitHub",
+          "scope": "team", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now}],
+        collection=CollectionNames.APPS.value,
+    )
+
+    def edge(to_id: str, to_collection: str, **extra: object) -> dict:
+        return {"from_id": user_key, "from_collection": CollectionNames.USERS.value,
+                "to_id": to_id, "to_collection": to_collection,
+                "createdAtTimestamp": now, "updatedAtTimestamp": now, **extra}
+
+    await g.batch_create_edges(
+        [edge(rid, RECORDS, role="OWNER", type="USER") for rid in repo.record_ids.values()],
+        collection=CollectionNames.PERMISSION.value,
+    )
+    await g.batch_create_edges(
+        [edge(repo.connector_id, CollectionNames.APPS.value, syncState="COMPLETED", lastSyncUpdate=now)],
+        collection=CollectionNames.USER_APP_RELATION.value,
+    )
+
+
+async def test_an_agent_tool_answers_from_the_built_graph(repo: _Repo) -> None:
+    """The chain production runs, on a real backend: code files parsed and projected,
+    the edge builder, then the impact tool asked as a user with access (T-3)."""
+    user_id = f"user-{uuid.uuid4().hex[:8]}"
+    user_key = f"u-{user_id}"
+    await _grant(repo, user_key, user_id)
+    try:
+        await _build(repo)
+        out = await impact_impl(
+            graph_provider=repo.graph, connector_id=repo.connector_id, org_id=repo.org_id,
+            user_id=user_id, file_path="src/shop/b.py", qualified_name="function:target",
+        )
+        assert [f["file_path"] for f in out["impacted_files"]] == ["src/shop/a.py"], out
+        stranger = await impact_impl(
+            graph_provider=repo.graph, connector_id=repo.connector_id, org_id=repo.org_id,
+            user_id="nobody", file_path="src/shop/b.py", qualified_name="function:target",
+        )
+        assert "impacted_files" not in stranger or not stranger["impacted_files"], stranger
+    finally:
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([user_key], CollectionNames.USERS.value)
+        with contextlib.suppress(Exception):
+            await repo.graph.delete_nodes_and_edges([repo.connector_id], CollectionNames.APPS.value)

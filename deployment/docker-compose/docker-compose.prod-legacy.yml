@@ -61,6 +61,7 @@ services:
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
       # Set to "true" to defer graph enrichment after vectordb indexing
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-etcd}

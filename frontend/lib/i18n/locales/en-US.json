@@ -2543,7 +2543,21 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "codeGraph": {
+          "title": "Code graph",
+          "status": {
+            "never_built": "Not built yet",
+            "building": "Building",
+            "ready": "Ready",
+            "stale": "Updating",
+            "waiting_on_indexing": "Waiting for indexing",
+            "retrying": "Retrying",
+            "failed": "Failed",
+            "too_large": "Too large",
+            "unknown": "Unknown"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "Instance Name",

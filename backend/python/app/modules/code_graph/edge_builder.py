@@ -23,11 +23,11 @@ from app.modules.code_graph.guards import (
 )
 from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
-from app.modules.code_graph.symbol_index import SymbolIndex, build_symbol_index
+from app.modules.code_graph.symbol_index import SymbolIndex
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
 __all__ = ["CODE_GRAPH_SOURCE", "EdgeBuildAbortedError", "EdgeBuildResult", "build_code_graph_edges"]
 
@@ -151,14 +151,65 @@ class EdgeBuildResult:
         }
 
 
-async def _scan_blocks(graph_provider: IGraphDBProvider, org_id: str,
-                       record_group_id: str) -> list[dict]:
-    """Keyset sweep of every block in the repo, projected to the index's fields.
+class _RepoFiles:
+    """recordId -> path and referencedNames, read from codeFiles.
+
+    Resolution is path-driven -- a relative import resolves against the
+    importing file's directory, and the proximity guards score on it -- but the
+    path lives on the codeFiles node, so it is fetched once per record rather
+    than read off every block.
+    """
+
+    def __init__(self, graph_provider: IGraphDBProvider, org_id: str) -> None:
+        self._graph_provider = graph_provider
+        self._org_id = org_id
+        self.paths: dict[str, str] = {}
+        self.referenced: dict[str, tuple[str, ...]] = {}
+        self._asked: set[str] = set()
+
+    async def load(self, record_ids: Iterable[str]) -> None:
+        todo = sorted({r for r in record_ids if r and r not in self._asked})
+        self._asked.update(todo)
+        for chunk in _chunks(todo, 2000):
+            info = await self._graph_provider.get_file_paths_for_records(
+                org_id=self._org_id, record_ids=chunk, raise_on_error=True
+            )
+            for record_id, file_info in info.items():
+                if file_info.file_path:
+                    self.paths[record_id] = file_info.file_path
+                if file_info.referenced_names:
+                    self.referenced[record_id] = file_info.referenced_names
+
+
+async def _scan_repo_files(graph_provider: IGraphDBProvider, org_id: str,
+                           record_group_id: str) -> _RepoFiles:
+    """Every code file in the repo, including those with no blocks.
+
+    Import resolution needs the empty ones: an empty `__init__.py` is what
+    makes its directory a package, and without it `import requests` matches
+    `app/legacy/requests.py` as though `legacy/` were a source root.
+    """
+    rows = await graph_provider.get_nodes_by_filters(
+        collection=CollectionNames.RECORDS.value,
+        filters={"orgId": org_id, "recordGroupId": record_group_id,
+                 "recordType": RecordTypes.CODE_FILE.value},
+        return_fields=["_key"],
+        raise_on_error=True,
+    )
+    files = _RepoFiles(graph_provider, org_id)
+    await files.load(row.get("_key") for row in rows)
+    return files
+
+
+async def _index_blocks(graph_provider: IGraphDBProvider, org_id: str,
+                        record_group_id: str, files: _RepoFiles) -> SymbolIndex:
+    """Keyset sweep of every block in the repo, folded into the index page by page.
 
     A growing offset makes each page rescan everything before it; seeking on
-    `_key > last` keeps every page the same cost.
+    `_key > last` keeps every page the same cost. Each page is indexed and
+    dropped, so the repo's blocks are never held twice (SC-1).
     """
-    out: list[dict] = []
+    index = SymbolIndex()
     after_key: str | None = None
     filters = {"orgId": org_id, "recordGroupId": record_group_id}
     while True:
@@ -173,63 +224,15 @@ async def _scan_blocks(graph_provider: IGraphDBProvider, org_id: str,
         )
         if not page:
             break
-        out.extend(page)
+        # A block of a record with no codeFiles row in this repo (an upload).
+        await files.load(doc.get("recordId") for doc in page)
+        await asyncio.to_thread(index.add_docs, page, files.paths, files.referenced)
         if len(page) < _SCAN_PAGE:
             break
         after_key = page[-1].get("_key")
         if not after_key:
             break
-    return out
-
-
-async def _scan_file_info(graph_provider: IGraphDBProvider, org_id: str,
-                          docs: list[dict]) -> tuple[dict[str, str], dict[str, tuple[str, ...]]]:
-    """(recordId -> filePath, recordId -> referencedNames) for every record.
-
-    Resolution is path-driven -- a relative import resolves against the
-    importing file's directory, and the proximity guards score on it -- but the
-    path lives on the codeFiles node, so it is fetched once per record rather
-    than read off every block. referencedNames is also on codeFiles.
-    """
-    record_ids = sorted({doc.get("recordId") for doc in docs if doc.get("recordId")})
-    if not record_ids:
-        return {}, {}
-    paths: dict[str, str] = {}
-    referenced: dict[str, tuple[str, ...]] = {}
-    for chunk in _chunks(record_ids, 2000):
-        info = await graph_provider.get_file_paths_for_records(
-            org_id=org_id, record_ids=chunk, raise_on_error=True
-        )
-        for record_id, file_info in info.items():
-            paths[record_id] = file_info.file_path
-            if file_info.referenced_names:
-                referenced[record_id] = file_info.referenced_names
-    return paths, referenced
-
-
-async def _scan_repo_paths(graph_provider: IGraphDBProvider, org_id: str,
-                           record_group_id: str) -> set[str]:
-    """Every code file in the repo, including those with no blocks.
-
-    Import resolution needs the empty ones: an empty `__init__.py` is what
-    makes its directory a package, and without it `import requests` matches
-    `app/legacy/requests.py` as though `legacy/` were a source root.
-    """
-    rows = await graph_provider.get_nodes_by_filters(
-        collection=CollectionNames.RECORDS.value,
-        filters={"orgId": org_id, "recordGroupId": record_group_id,
-                 "recordType": RecordTypes.CODE_FILE.value},
-        return_fields=["_key"],
-        raise_on_error=True,
-    )
-    record_ids = sorted({row["_key"] for row in rows if row.get("_key")})
-    paths: set[str] = set()
-    for chunk in _chunks(record_ids, 2000):
-        info = await graph_provider.get_file_paths_for_records(
-            org_id=org_id, record_ids=chunk, raise_on_error=True
-        )
-        paths.update(file_info.file_path for file_info in info.values() if file_info.file_path)
-    return paths
+    return index
 
 
 class _Builder:
@@ -241,7 +244,10 @@ class _Builder:
         self.log = log
         self.result = EdgeBuildResult()
         self.build_id = uuid.uuid4().hex
-        self.edges: dict[tuple[str, str, str], dict] = {}
+        # (from, to, relation) -> (confidence, resolution, line). The edge
+        # documents are built per write chunk: a full dict per edge held at once
+        # was most of a large build's heap (SC-1).
+        self.edges: dict[tuple[str, str, str], tuple[str, str | None, int | None]] = {}
         self.external_nodes: dict[str, dict] = {}
         # file -> imported module files, the evidence a module-level reference uses
         self.module_imports: dict[str, set[str]] = {}
@@ -270,8 +276,14 @@ class _Builder:
         dedup = (from_key, to_key, relation)
         if dedup in self.edges:
             return
-        now = int(time.time() * 1000)
-        self.edges[dedup] = {
+        self.edges[dedup] = (confidence, resolution, line)
+        self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
+
+    def edge_document(self, key: tuple[str, str, str],
+                      meta: tuple[str, str | None, int | None], now: int) -> dict:
+        from_key, to_key, relation = key
+        confidence, resolution, line = meta
+        return {
             "_from": from_key,
             "_to": to_key,
             "relationshipType": relation,
@@ -286,7 +298,6 @@ class _Builder:
             "updatedAtTimestamp": now,
             "buildId": self.build_id,
         }
-        self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
 
     @staticmethod
     def _block_key(block_id: str) -> str:
@@ -917,22 +928,20 @@ class _Builder:
 
     # -- step 8: prune ---------------------------------------------------
 
-    def prune_dangling(self) -> list[dict]:
-        """Drop any edge whose endpoint is not a live node.
+    def prune_dangling(self) -> list[tuple[tuple[str, str, str], tuple[str, str | None, int | None]]]:
+        """Drop any edge whose endpoint is not a live node; ``(key, meta)`` pairs
+        for ``edge_document``.
 
         The last safety net: a resolver bug can only make the graph smaller,
         never wrong.
         """
         live_blocks = set(self.index.rows)
         live_records = set(self.index.blocks_by_record)
-        kept: list[dict] = []
-        for edge in self.edges.values():
-            if not self._endpoint_live(edge["_from"], live_blocks, live_records):
-                continue
-            if not self._endpoint_live(edge["_to"], live_blocks, live_records):
-                continue
-            kept.append(edge)
-        return kept
+        return [
+            (key, meta) for key, meta in self.edges.items()
+            if self._endpoint_live(key[0], live_blocks, live_records)
+            and self._endpoint_live(key[1], live_blocks, live_records)
+        ]
 
     @staticmethod
     def _endpoint_live(key: str, live_blocks: set[str], live_records: set[str]) -> bool:
@@ -986,15 +995,14 @@ async def build_code_graph_edges(
         raise EdgeBuildTooLargeError(
             f"{block_count} blocks is over the {MAX_BLOCKS_PER_BUILD} one build may load"
         )
-    docs = await _scan_blocks(graph_provider, org_id, record_group_id)
-    paths, referenced_names = await _scan_file_info(graph_provider, org_id, docs)
-    repo_paths = await _scan_repo_paths(graph_provider, org_id, record_group_id)
+    files = await _scan_repo_files(graph_provider, org_id, record_group_id)
+    repo_paths = set(files.paths.values())
     # The CPU-bound phases run in a worker thread: this runs on the connectors
     # service's event loop, which a large repo held for minutes -- no HTTP, no
     # other syncs, no lease renewal, and Kafka sessions timing out.
-    index = await asyncio.to_thread(build_symbol_index, docs, paths, referenced_names)
+    index = await _index_blocks(graph_provider, org_id, record_group_id, files)
     builder = await asyncio.to_thread(_Builder, index, org_id, record_group_id, log, repo_paths)
-    builder.result.blocks = len(docs)
+    builder.result.blocks = len(index.rows)
     builder.result.files_total = len(index.blocks_by_record)
 
     changed_names = await _names_changed_by(graph_provider, index, org_id, touched_record_ids)
@@ -1028,9 +1036,11 @@ async def build_code_graph_edges(
         # Write, then delete what this build did not write: deleting first
         # left readers an empty graph for the length of the writes, and a
         # failed write left it empty until the next build (R-8).
+        now = int(time.time() * 1000)
         for chunk in _chunks(edges):
             await fence()
-            await graph_provider.batch_upsert_record_relations(chunk)
+            await graph_provider.batch_upsert_record_relations(
+                [builder.edge_document(key, meta, now) for key, meta in chunk])
         source_keys = _source_keys_for(index, reresolve)
         await fence()
         removed = await _delete_previous_edges(
@@ -1046,7 +1056,7 @@ async def _no_fence() -> None:
     return None
 
 
-def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list[dict]:
+def _resolve(builder: _Builder, index: SymbolIndex, reresolve: set[str]) -> list[tuple]:
     work = [
         (block_id, fact)
         for block_id, row in index.rows.items() if row.record_id in reresolve

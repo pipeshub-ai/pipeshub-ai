@@ -18,7 +18,7 @@ from __future__ import annotations
 import time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -37,6 +37,7 @@ from app.connectors.sources.github_teams.timestamps import (
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection
 from app.models.entities import CodeFileRecord
+from app.modules.parsers.code_parser.path_policy import PathPolicy
 from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -716,7 +717,7 @@ class TestExcludedTrees:
             "assets/legacy/** linguist-vendored=true\n"
             "assets/legacy/keep.js -linguist-vendored\n"
         )
-        sync._linguist = await sync._load_linguist_exclusions(repo, "head-sha")
+        sync._policy = PathPolicy(linguist=await sync._load_linguist_exclusions(repo, "head-sha"))
         c.runtime.ds_call.return_value = ok_response(tree)
         sync._prune_deleted_paths = AsyncMock()
 
@@ -890,7 +891,7 @@ class TestIncrementalSyncEndToEnd:
             for i in range(COMPARE_COMMITS_FILES_LIMIT)
         ]
         comparison = make_comparison(many_files)
-        c.runtime.ds_call.return_value = ok_response(comparison)
+        c.runtime.ds_call.side_effect = [ok_response(comparison), failed_response(status_code=404)]
 
         sync = ReposSync(c)
         ok = await sync._incremental_sync(repo, "old-sha", "new-sha")
@@ -905,7 +906,8 @@ class TestIncrementalSyncEndToEnd:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         comparison = make_comparison([], status=status)
-        c.runtime.ds_call.return_value = ok_response(comparison)
+        # The old commit is gone after a force-push, so there is no tree to diff against.
+        c.runtime.ds_call.side_effect = [ok_response(comparison), failed_response(status_code=404)]
 
         sync = ReposSync(c)
         ok = await sync._incremental_sync(repo, "old-sha", "new-sha")
@@ -1541,17 +1543,48 @@ class TestIncrementalCompareLimits:
             make_compare_file(filename=f"f{i}.py", status="added", sha=f"s{i}")
             for i in range(COMPARE_COMMITS_FILES_LIMIT)
         ]
-        c.runtime.ds_call.return_value = ok_response(make_comparison(files, total_commits=1))
+        c.runtime.ds_call.side_effect = [ok_response(make_comparison(files, total_commits=1)),
+                                         failed_response(status_code=404)]
         assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
 
     async def test_compare_commits_cap_returns_false(self) -> None:
         from app.connectors.sources.github_teams.constants import COMPARE_COMMITS_TOTAL_LIMIT
 
         c = make_mock_connector()
-        c.runtime.ds_call.return_value = ok_response(
+        truncated = make_git_tree([], truncated=True)
+        c.runtime.ds_call.side_effect = [ok_response(
             make_comparison([make_compare_file(filename="a.py", status="added")], total_commits=COMPARE_COMMITS_TOTAL_LIMIT)
-        )
+        ), ok_response(truncated)]
         assert await ReposSync(c)._incremental_sync(make_repo(repo_id=1), "old", "new") is False
+
+    async def test_a_capped_compare_is_replaced_by_a_tree_diff(self) -> None:
+        """Two tree calls give the exact delta, so a big push stays incremental (SC-11)."""
+        c = make_mock_connector()
+        before = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t1"),
+            make_tree_element("src/same.py", entry_type="blob", sha="s1"),
+            make_tree_element("src/edit.py", entry_type="blob", sha="e1"),
+            make_tree_element("src/gone.py", entry_type="blob", sha="g1"),
+        ])
+        after = make_git_tree([
+            make_tree_element("src", entry_type="tree", sha="t2"),
+            make_tree_element("src/same.py", entry_type="blob", sha="s1"),
+            make_tree_element("src/edit.py", entry_type="blob", sha="e2"),
+            make_tree_element("src/new.py", entry_type="blob", sha="n1"),
+        ])
+        c.runtime.ds_call.side_effect = [
+            ok_response(make_comparison([], status="diverged")), ok_response(before), ok_response(after)]
+        sync = ReposSync(c)
+        sync._reconcile_sha_moves = AsyncMock(side_effect=lambda _r, d, a: (d, a, []))
+        sync._delete_code_files_by_paths = AsyncMock()
+        sync._upsert_code_files = AsyncMock(return_value=True)
+        sync._cleanup_emptied_folders = AsyncMock()
+
+        assert await sync._incremental_sync(make_repo(repo_id=1), "old", "new") is True
+
+        sync._delete_code_files_by_paths.assert_awaited_once_with(ANY, ["src/gone.py"])
+        assert sync._upsert_code_files.await_args.args[1] == {"src/new.py": "n1", "src/edit.py": "e2"}
+        assert [call.args[3] for call in c.runtime.ds_call.await_args_list[1:]] == ["old", "new"]
 
     def test_copied_is_classified_as_add(self) -> None:
         files = [make_compare_file(filename="copy.py", status="copied", sha="sha-c")]

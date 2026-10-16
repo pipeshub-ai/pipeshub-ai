@@ -2534,7 +2534,21 @@
         "recordsByType": "按类型划分的记录",
         "noRecordTypes": "没有可用的记录类型",
         "localWatcherLabel": "本地监视器",
-        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败"
+        "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
+        "codeGraph": {
+          "title": "代码图",
+          "status": {
+            "never_built": "尚未构建",
+            "building": "构建中",
+            "ready": "就绪",
+            "stale": "更新中",
+            "waiting_on_indexing": "等待索引",
+            "retrying": "重试中",
+            "failed": "失败",
+            "too_large": "过大",
+            "unknown": "未知"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "实例名称",

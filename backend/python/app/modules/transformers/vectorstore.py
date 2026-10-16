@@ -36,6 +36,7 @@ from app.exceptions.indexing_exceptions import (
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
+from app.modules.transformers.code_units import code_units
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
@@ -106,6 +107,8 @@ _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 # MAX_TOKENS_PER_REQUEST, above which it silently splits one aembed_documents
 # call into several *sequential* HTTP requests inside that one timeout.
 _DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
+# Document metadata key for text that feeds the sparse (keyword) vector only.
+_SPARSE_EXTRA = "_sparseExtra"
 _LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
 
 # One positive answer to "does the record still exist" covers the batches of
@@ -509,38 +512,32 @@ def _build_code_documents(
     org_id: str,
     context: str = "",
 ) -> List[Document]:
-    """One embeddable Document per code symbol.
+    """Embeddable Documents for a record's code symbols (see ``code_units``).
 
-    Sentence-splitting is meaningless for code, so each symbol is embedded
-    whole from ``block.data["text"]`` — the raw source text produced by the
-    parser, same pattern every other block type follows.
-
-    Each symbol additionally carries ``context`` (see ``_record_context_line``)
-    and its own qualified name, so a block says WHERE it lives and not only
-    what it contains.
+    Each carries ``context`` (see ``_record_context_line``) and the symbol's
+    qualified name, so a block says WHERE it lives and not only what it
+    contains. A symbol over the unit budget becomes several Documents, each
+    repeating its signature; the block's subtokens go to keyword search only.
     """
-    documents: List[Document] = []
-    for block in code_blocks:
-        data = block.data if isinstance(block.data, dict) else {}
-        text = data.get("text") or ""
-        if not text.strip():
-            continue
+    def header_of(block: object) -> str:
         code_meta = getattr(block, "code_metadata", None)
         qualified_name = (getattr(code_meta, "qualified_name", None) or "").strip()
-        header = " · ".join(p for p in (context, qualified_name) if p)
+        return " · ".join(p for p in (context, qualified_name) if p)
+
+    documents: List[Document] = []
+    for unit in code_units(code_blocks, header_of, exceeds=_exceeds_token_ceiling,
+                           token_len=_token_len, split_long_line=_split_to_token_ceiling):
         metadata = {
             "virtualRecordId": virtual_record_id,
-            "blockId": block.id,
-            "blockIndex": block.index,
+            "blockId": unit.block.id,
+            "blockIndex": unit.block.index,
             "orgId": org_id,
             "isBlockGroup": False,
+            "isBlock": unit.whole,
         }
-        documents.append(
-            Document(
-                page_content=f"{header}\n{text}" if header else text,
-                metadata={**metadata, "isBlock": True},
-            )
-        )
+        if unit.sparse_extra:
+            metadata[_SPARSE_EXTRA] = unit.sparse_extra
+        documents.append(Document(page_content=unit.text, metadata=metadata))
     return documents
 
 
@@ -1488,15 +1485,22 @@ class VectorStore(Transformer):
 
         dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
-        # Sparse embeddings (provider-dependent)
-        sparse_embeddings = await self._compute_sparse_embeddings(texts)
+        # Sparse embeddings (provider-dependent). Code adds its subtokens here only.
+        sparse_embeddings = await self._compute_sparse_embeddings([
+            f"{doc.page_content}\n{doc.metadata[_SPARSE_EXTRA]}"
+            if doc.metadata.get(_SPARSE_EXTRA) else doc.page_content
+            for doc in documents
+        ])
 
         points: List[VectorPoint] = [
             VectorPoint(
                 id=str(uuid.uuid4()),
                 dense_vector=dense,
                 sparse_vector=sparse,
-                payload=vector_point_payload(doc.metadata, doc.page_content),
+                payload=vector_point_payload(
+                    {k: v for k, v in doc.metadata.items() if k != _SPARSE_EXTRA},
+                    doc.page_content,
+                ),
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]

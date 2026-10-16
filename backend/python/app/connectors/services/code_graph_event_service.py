@@ -7,6 +7,7 @@ from app.connectors.core.sync.task_manager import (
     SyncTaskManager,
     code_edge_build_task_manager,
 )
+from app.telemetry.modules import code_graph_metrics
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -46,18 +47,23 @@ class CodeGraphEventService:
             )
             return True
 
-        org_id, connector_id, record_group_id = (
-            str(scope[0]),
-            str(scope[1]),
-            str(scope[2]),
-        )
+        await self.start_build(str(scope[0]), str(scope[1]), str(scope[2]))
+        # Acked whether or not a build started: the request is marked pending on
+        # the sync point before publish, and a busy repo's running build serves
+        # it before releasing its lease (or the reconciler does). Redelivery only
+        # blocked the partition behind the busy repo (SC-7).
+        return True
+
+    async def start_build(self, org_id: str, connector_id: str, record_group_id: str) -> bool:
+        """Start a background build unless one holds the repo; True when started."""
         lease = await self._runner.acquire(
             org_id=org_id,
             record_group_id=record_group_id,
         )
         if lease is None:
+            code_graph_metrics.record_busy_request()
             self._logger.info(
-                "Code edge build busy for org=%s record_group=%s; retrying event",
+                "Code edge build busy for org=%s record_group=%s; the running build serves it",
                 org_id,
                 record_group_id,
             )
@@ -78,6 +84,7 @@ class CodeGraphEventService:
             raise
 
         if task is None:
+            # The previous build is still winding down.
             await self._runner.release(lease)
             return False
         return True

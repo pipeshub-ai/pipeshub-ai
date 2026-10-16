@@ -218,6 +218,7 @@ services:
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
       # Set to "true" to defer graph enrichment until after vectordb indexing completes
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       # Lazy tool loading: group connector tools into toolsets and disclose
       # their schemas on demand (list_toolsets/fetch_tools/search_tools)

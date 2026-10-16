@@ -2534,7 +2534,21 @@
         "recordsByType": "유형별 레코드",
         "noRecordTypes": "사용 가능한 레코드 유형이 없습니다",
         "localWatcherLabel": "로컬 워처",
-        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건"
+        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
+        "codeGraph": {
+          "title": "코드 그래프",
+          "status": {
+            "never_built": "아직 생성되지 않음",
+            "building": "생성 중",
+            "ready": "준비됨",
+            "stale": "업데이트 중",
+            "waiting_on_indexing": "인덱싱 대기 중",
+            "retrying": "재시도 중",
+            "failed": "실패",
+            "too_large": "너무 큼",
+            "unknown": "알 수 없음"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "인스턴스 이름",

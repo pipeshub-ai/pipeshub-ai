@@ -43,6 +43,7 @@ from app.connectors.core.registry.auth_builder import (
     AuthType,
     OAuthScopeConfig,
 )
+from app.connectors.core.registry.code_indexing_flags import exclude_paths_filter_field
 from app.connectors.core.registry.connector_builder import (
     AuthField,
     CommonFields,
@@ -215,6 +216,7 @@ _GITLAB_EXECUTOR_MAX_WORKERS = 8
             display_name="Index Merge Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(exclude_paths_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",

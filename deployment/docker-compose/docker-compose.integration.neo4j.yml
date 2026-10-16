@@ -81,6 +81,7 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
       - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
       # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
       # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
       - SANDBOX_MODE=${SANDBOX_MODE:-local}

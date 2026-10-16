@@ -217,7 +217,7 @@ async def test_an_ambiguous_name_is_a_409_listing_the_choices(blobs) -> None:
 async def test_repos_route_lists_readable_repos() -> None:
     res = _client(Repos(deny={"rec-shop"})).get("/api/v1/code-graph/repos")
     assert res.json() == {"repos": [
-        {"repo": "acme/admin", "source": "GitHub", "graph_status": "never_built"},
+        {"repo": "acme/admin", "source": "GitHub", "connector_id": CONN, "graph_status": "never_built"},
     ]}
 
 

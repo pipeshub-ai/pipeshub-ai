@@ -22,19 +22,21 @@ def reconstruct(container) -> str:
     its bytes sit inside the block it hangs off -- so parent_block_index excludes
     it too.
     """
+    # Line, then index: several spans can start on one line, and the parser
+    # numbers them in source order.
     items = [
-        (b.code_metadata.start_line, b.data["text"])
+        (b.code_metadata.start_line, b.index, b.data["text"])
         for b in container.blocks
         if b.type is BlockType.CODE
         and b.parent_index is None
         and b.parent_block_index is None
     ]
     items += [
-        (g.code_metadata.start_line, g.data["text"])
+        (g.code_metadata.start_line, g.index, g.data["text"])
         for g in container.block_groups
         if g.parent_index is None
     ]
-    return "".join(text for _, text in sorted(items))
+    return "".join(text for *_, text in sorted(items))
 
 
 def parse(src: bytes, name: str, path: str | None = None):

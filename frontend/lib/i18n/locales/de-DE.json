@@ -2397,7 +2397,21 @@
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "codeGraph": {
+          "title": "Code-Graph",
+          "status": {
+            "never_built": "Noch nicht erstellt",
+            "building": "Wird erstellt",
+            "ready": "Bereit",
+            "stale": "Wird aktualisiert",
+            "waiting_on_indexing": "Wartet auf Indexierung",
+            "retrying": "Neuer Versuch",
+            "failed": "Fehlgeschlagen",
+            "too_large": "Zu groß",
+            "unknown": "Unbekannt"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "Instanzname",

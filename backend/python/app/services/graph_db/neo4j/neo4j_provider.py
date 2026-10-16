@@ -92,7 +92,11 @@ from app.models.entities import (
 from app.models.entities import EntityType as KnowledgeGraphEntityType
 from app.models.permission import ORG_SHARE_PERMISSION_TYPES, EntityType
 from app.modules.code_graph.edge_build_trigger import is_code_record
-from app.schema.node_schema_registry import NODE_SCHEMA_REGISTRY, get_required_fields
+from app.schema.node_schema_registry import (
+    JSON_ENCODED_FIELDS,
+    NODE_SCHEMA_REGISTRY,
+    get_required_fields,
+)
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
@@ -194,9 +198,6 @@ EDGE_DELETE_BATCH_SIZE = 2000  # Batch size for edge deletion to avoid huge sing
 # DETACH DELETE holds every touched node/rel in txn state; a mid-size code repo
 # is 100k+ blocks and blows dbms.memory.transaction.total.max (~70% of heap).
 BLOCK_DELETE_BATCH_SIZE = 500
-# Block properties that hold a dict or a list of dicts, which Neo4j cannot
-# store natively; written as JSON strings and decoded again on read.
-JSON_ENCODED_BLOCK_FIELDS = ("pendingEdges", "typeTable")
 
 # One node per stored taxonomy alias, so alias matches seek an index instead
 # of scanning a list property on every node of the org (see find_taxonomy_nodes).
@@ -1261,15 +1262,18 @@ class Neo4jProvider(IGraphDBProvider):
             # Also create _id for compatibility
             arango_node["_id"] = f"{collection}/{arango_node['id']}"
 
-        # Undo the JSON encoding _arango_to_neo4j_node applied on write, so a
-        # block reads the same here as it does from ArangoDB.
-        for key in JSON_ENCODED_BLOCK_FIELDS:
-            value = arango_node.get(key)
+        return self._decode_json_fields(arango_node, collection)
+
+    @staticmethod
+    def _decode_json_fields(node: dict, collection: str) -> dict:
+        """Undo the JSON encoding _arango_to_neo4j_node applied on write, so a
+        node reads the same here as it does from ArangoDB."""
+        for key in JSON_ENCODED_FIELDS.get(collection, ()):
+            value = node.get(key)
             if isinstance(value, str):
                 with contextlib.suppress(json.JSONDecodeError, TypeError):
-                    arango_node[key] = json.loads(value)
-
-        return arango_node
+                    node[key] = json.loads(value)
+        return node
 
     def _neo4j_to_arango_edge(self, neo4j_edge: dict, edge_collection: str) -> dict:
         """
@@ -4208,6 +4212,8 @@ class Neo4jProvider(IGraphDBProvider):
         try:
             # Determine which collection this type uses
             collection = RECORD_TYPE_COLLECTION_MAPPING[record_type]
+            # Callers convert the type doc without knowing its collection.
+            type_doc = self._decode_json_fields(type_doc, collection)
 
             # Map collections to their corresponding Record classes
             if collection == CollectionNames.FILES.value:

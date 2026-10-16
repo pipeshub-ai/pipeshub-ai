@@ -2414,7 +2414,21 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
-        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "codeGraph": {
+          "title": "Grafo de código",
+          "status": {
+            "never_built": "Aún no creado",
+            "building": "Creando",
+            "ready": "Listo",
+            "stale": "Actualizando",
+            "waiting_on_indexing": "Esperando la indexación",
+            "retrying": "Reintentando",
+            "failed": "Error",
+            "too_large": "Demasiado grande",
+            "unknown": "Desconocido"
+          }
+        }
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",

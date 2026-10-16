@@ -74,6 +74,36 @@ async def test_a_request_made_during_the_build_stays_owed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_request_made_during_the_build_is_served_before_the_lease_is_released() -> None:
+    """A busy repo's event is acked, so the build in hand serves what arrived meanwhile (SC-7)."""
+    runner, graph = _runner(OWED)
+    calls = []
+
+    async def build(**_) -> EdgeBuildResult:
+        calls.append(1)
+        if len(calls) == 1:
+            await BuildStateStore(graph).mark_requested("org", "conn", "g", 5000)
+        return EdgeBuildResult()
+
+    await _run(runner, build)
+    assert len(calls) == 2
+    assert _point(graph)["edgeBuildPending"] is False
+
+
+@pytest.mark.asyncio
+async def test_follow_up_builds_are_bounded() -> None:
+    runner, graph = _runner(OWED)
+    build = AsyncMock(return_value=EdgeBuildResult())
+
+    async def always_requested(**kwargs) -> EdgeBuildResult:
+        await BuildStateStore(graph).mark_requested("org", "conn", "g", 5000)
+        return await build(**kwargs)
+
+    await _run(runner, always_requested)
+    assert build.await_count == 4, "the first build plus three follow-ups; the reconciler has the rest"
+
+
+@pytest.mark.asyncio
 async def test_a_full_build_request_runs_a_full_build_and_clears_it() -> None:
     """A deleted file leaves no record for an incremental build to start from (R-3)."""
     runner, graph = _runner({**OWED, "edgeBuildFullRequestId": "full-1"}, touched=())
@@ -173,3 +203,29 @@ async def test_a_repo_built_by_another_code_graph_version_is_rebuilt_in_full() -
     assert build.await_args.kwargs["touched_record_ids"] is None
     assert _point(graph)["edgeBuildVersion"] == CODE_GRAPH_VERSION
 
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_build_releases_its_lock_and_stays_owed() -> None:
+    """Shutdown cancels a build mid-way: the lock is freed for the next replica and
+    the request is still pending for the reconciler (T-3)."""
+    import asyncio
+
+    runner, graph = _runner(OWED)
+    started = asyncio.Event()
+
+    async def hang(**_) -> EdgeBuildResult:
+        started.set()
+        await asyncio.Event().wait()
+        return EdgeBuildResult()
+
+    with patch(_BUILD, hang):
+        task = asyncio.create_task(runner.run(org_id="org", connector_id="conn",
+                                              record_group_id="g", lease=("lock", "token")))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    runner._redis.eval.assert_awaited()  # release_build_lock
+    assert _point(graph)["edgeBuildPending"] is True

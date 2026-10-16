@@ -242,6 +242,8 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    # Code repositories: gitignore-style paths whose files get no record
+    EXCLUDE_PATHS = "exclude_paths"
 
     # Content filters
     CONTENT_STATUS = "content_status"

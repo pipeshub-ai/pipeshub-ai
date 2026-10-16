@@ -32,6 +32,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.modules.parsers.code_parser.classification_policy import code_classification_skip_reason
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
@@ -550,6 +551,10 @@ class EventProcessor:
             ctx.settings.get("defer_extraction")
             or os.environ.get("DEFER_EXTRACTION", "false").lower() == "true"
         )
+        skip_reason = code_classification_skip_reason(file_path, block_container) if is_code else None
+        if skip_reason:
+            self.logger.info("Skipping LLM classification of code file %s: %s", record_id, skip_reason)
+            defer_extraction = True
         if not defer_extraction:
             ctx.settings = {**ctx.settings, ENRICHMENT_FOLLOWS: True}
 

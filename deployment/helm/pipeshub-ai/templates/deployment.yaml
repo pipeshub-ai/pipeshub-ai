@@ -146,6 +146,8 @@ spec:
               value: {{ .Values.config.governorLightParseSlotsPerCpu | quote }}
             - name: GOVERNOR_LIGHT_PARSE_MAX
               value: {{ .Values.config.governorLightParseMax | quote }}
+            - name: PARSE_MAX_ORG_SHARE
+              value: {{ .Values.config.parseMaxOrgShare | quote }}
             - name: GOVERNOR_INDEX_HEADROOM
               value: {{ .Values.config.governorIndexHeadroom | quote }}
             - name: GOVERNOR_INDEX_MAX

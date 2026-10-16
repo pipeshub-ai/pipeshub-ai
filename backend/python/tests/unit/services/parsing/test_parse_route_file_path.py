@@ -59,3 +59,30 @@ def test_file_path_form_field_reaches_parser_config(form_extra, expected) -> Non
     assert response.status_code == 200
     config = parser.parse.await_args.args[2]
     assert config.get("file_path") == expected
+
+
+def test_an_org_past_its_share_is_backpressured_while_another_org_waits() -> None:
+    """S-4: org-123 already holds the pool's share and another org is queued."""
+    from app.api.routes import parsing
+
+    client, parser = _client_and_parser()
+    share = parsing.OrgShare(0.5)
+    pool = parsing.gate_pool(parsing.classify("py", "text/x-python")).value
+    share.arrive(pool, "org-123")
+    share.hold(pool, "org-123", 3)
+    share.arrive(pool, "other-org")
+    acquire = AsyncMock(return_value=True)
+
+    with patch.object(parsing, "_ORG_SHARE", share), \
+            patch("app.api.routes.parsing.acquire_gate_with_backpressure", acquire):
+        response = client.post(
+            "/api/v1/parse",
+            files={"file": ("a.py", b"x = 1\n", "text/x-python")},
+            data={"record_name": "a.py", "extension": "py", "provider": "default",
+                  "org_id": "org-123"},
+        )
+
+    assert response.status_code == 429
+    acquire.assert_not_awaited()
+    parser.parse.assert_not_awaited()
+    assert share._demand[(pool, "org-123")] == 1, "the refused request left no demand behind"

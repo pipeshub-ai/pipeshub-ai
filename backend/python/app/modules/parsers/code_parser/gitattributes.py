@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-__all__ = ["LinguistExclusions", "parse_linguist_exclusions"]
+__all__ = ["LinguistExclusions", "glob_regex", "parse_linguist_exclusions"]
 
 _ATTRS = ("linguist-generated", "linguist-vendored")
 
@@ -28,7 +28,7 @@ def _attr_state(token: str) -> tuple[str, bool] | None:
     return (name, value) if name in _ATTRS else None
 
 
-def _pattern_regex(pattern: str) -> re.Pattern[str]:
+def glob_regex(pattern: str) -> re.Pattern[str]:
     """gitattributes glob -> regex over a repo-relative path.
 
     A pattern without a slash matches the basename at any depth; one with a
@@ -87,6 +87,32 @@ class LinguistExclusions:
                 state.update(attrs)
         return any(state.values())
 
+    def forces_in(self, file_path: str) -> bool:
+        """True when the matching rules explicitly mark the file not generated and
+        not vendored (`-linguist-generated`): the repo says it is source, which
+        overrides the path heuristics (P-7)."""
+        state: dict[str, bool] = {}
+        for regex, attrs in self.rules:
+            if regex.match(file_path):
+                state.update(attrs)
+        return bool(state) and not any(state.values())
+
+    def may_force_in_under(self, folder_path: str) -> bool:
+        """Whether some file under ``folder_path`` could be forced in, so the
+        folder must be walked even if the path heuristics would prune it."""
+        folder = folder_path.strip("/")
+        inside = f"^{re.escape(folder + '/')}"
+        probe = f"{folder}/__probe__"
+        for regex, attrs in self.rules:
+            if any(v for _a, v in attrs):
+                continue
+            # Unanchored (`*.js`, `**/x`), rooted at or below this folder, or
+            # matching something directly in it.
+            if (regex.pattern.startswith("^(?:.*/)?") or regex.pattern.startswith(inside)
+                    or regex.match(probe)):
+                return True
+        return False
+
     def __bool__(self) -> bool:
         return bool(self.rules)
 
@@ -103,5 +129,5 @@ def parse_linguist_exclusions(text: str) -> LinguistExclusions:
             continue
         attrs = tuple(a for a in (_attr_state(t) for t in tokens) if a is not None)
         if attrs:
-            rules.append((_pattern_regex(pattern), attrs))
+            rules.append((glob_regex(pattern), attrs))
     return LinguistExclusions(tuple(rules))
