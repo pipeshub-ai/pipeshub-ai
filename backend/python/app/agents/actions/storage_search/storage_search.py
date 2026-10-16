@@ -326,14 +326,22 @@ class RunCommandInput(BaseModel):
 _MAX_FIND_RECORDS = 20
 # find_records answers every empty outcome identically, so it never reveals
 # whether matching content exists in records the user cannot read.
-_NO_ACCESSIBLE_MATCH = json_mod.dumps({
+_NO_ACCESSIBLE_MATCH_BODY = {
     "records": [],
     "total_found": 0,
     "message": (
         "No accessible records matched. The command must list record files "
         "(grep -l or -c, or find) for records to be returned."
     ),
-})
+}
+_NO_ACCESSIBLE_MATCH = json_mod.dumps(_NO_ACCESSIBLE_MATCH_BODY)
+
+
+def _no_accessible_match(*, output_truncated: bool) -> str:
+    """The "nothing" answer; one that was cut at a size limit says so."""
+    if not output_truncated:
+        return _NO_ACCESSIBLE_MATCH
+    return json_mod.dumps({**_NO_ACCESSIBLE_MATCH_BODY, "output_truncated": True})
 
 
 def _public_failure(output: str) -> str:
@@ -382,10 +390,14 @@ class FindRecordsInput(BaseModel):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_TRUNCATION_MARKER_PREFIX = "[...output truncated"
+_BYTE_CAP_MARKER = f"{_TRUNCATION_MARKER_PREFIX} at a pipeline stage's byte cap]"
+
+
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    return text[:max_len] + f"\n[...output truncated ({len(text)} chars total)]"
+    return text[:max_len] + f"\n{_TRUNCATION_MARKER_PREFIX} ({len(text)} chars total)]"
 
 
 def _resolve_mount_root(mount_name: str) -> str:
@@ -918,6 +930,7 @@ async def _run_subprocess(
     last_proc: asyncio.subprocess.Process | None = None
     last_stderr = b""
     killed_early = max_stdout_bytes > 0
+    capped = False
 
     try:
         for i, tokens in enumerate(stage_tokens):
@@ -950,6 +963,7 @@ async def _run_subprocess(
             )
             if truncated:
                 killed_early = True
+                capped = True
                 # A half-written path would reach the next stage as a bogus file name.
                 if i < len(stage_tokens) - 1:
                     stdout_bytes = _trim_to_last_record(stdout_bytes)
@@ -963,7 +977,12 @@ async def _run_subprocess(
         exit_code = last_proc.returncode if last_proc else 0
 
         if killed_early and stdout.strip():
-            return True, _truncate(stdout, max_output_chars)
+            output = _truncate(stdout, max_output_chars)
+            if capped:
+                # Said in the output: a stage stopped at its byte cap, so files
+                # past it were never searched and their absence means nothing.
+                output += f"\n{_BYTE_CAP_MARKER}"
+            return True, output
 
         if exit_code == 0:
             output = stdout if stdout.strip() else "No matches found."
@@ -1751,8 +1770,13 @@ class StoragePatternMatch:
         max_results: int = 10,
         max_stdout_bytes: int = 0,
         max_output_chars: int = _MAX_OUTPUT_CHARS,
+        max_output_lines: int | None = None,
     ) -> tuple[bool, str]:
-        """Run a command and parse record file paths from output into structured metadata."""
+        """Run a command and parse record file paths from output into structured metadata.
+
+        *max_output_lines* is the line cap the caller put on the command (a
+        trailing ``head``); output that reaches it counts as truncated.
+        """
         org_id = self.state.get("org_id", "")
         logger.info(
             "[storage_pattern_match.find_records] org_id=%s connector_id=%s command_len=%d max_results=%d",
@@ -1802,10 +1826,11 @@ class StoragePatternMatch:
         # Extract candidate record file paths (cheap regex, no file opens).
         # Handles both grep -l output (plain paths) and grep -c output
         # (path:count) so results can be ranked by keyword density.
-        lines = [
-            line.strip() for line in output.splitlines()
-            if line.strip() and not line.startswith("[...output truncated")
-        ]
+        all_lines = [line.strip() for line in output.splitlines() if line.strip()]
+        lines = [line for line in all_lines if not line.startswith(_TRUNCATION_MARKER_PREFIX)]
+        output_truncated = len(lines) < len(all_lines) or (
+            max_output_lines is not None and len(lines) >= max_output_lines
+        )
         line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
         for line in lines:
             path = line
@@ -1834,7 +1859,7 @@ class StoragePatternMatch:
         )
 
         if not line_vrids:
-            return True, _NO_ACCESSIBLE_MATCH
+            return True, _no_accessible_match(output_truncated=output_truncated)
 
         # Permission gate: keep only records the requesting user may access.
         # Fail closed if the check cannot be performed.
@@ -1901,7 +1926,7 @@ class StoragePatternMatch:
             records.append(meta)
 
         if not records:
-            return True, _NO_ACCESSIBLE_MATCH
+            return True, _no_accessible_match(output_truncated=output_truncated)
 
         remember_record_ids(
             self.state,
@@ -1916,10 +1941,17 @@ class StoragePatternMatch:
             f"fetch_full_record accepts at most {_MAX_FETCH_RECORD_IDS} IDs per call.",
         ]
 
+        if output_truncated:
+            hint_parts.append(
+                "The command's output was cut at a size limit, so records past it were "
+                "not searched: a record missing here may still match.",
+            )
+
         result = {
             "records": records,
             "total_found": paths_found,
             "returned": len(records),
+            "output_truncated": output_truncated,
             "hint": " ".join(hint_parts),
             "success": True,
         }

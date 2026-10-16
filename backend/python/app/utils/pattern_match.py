@@ -8,6 +8,7 @@ import re
 import shlex
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from cachetools import TTLCache
@@ -78,6 +79,7 @@ KEYWORD_SEARCH_BUDGETS = ("short", "full")
 _RRF_K = 60
 _GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
 _MAX_PATTERN_MATCH_RECORDS = 50
+_MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
 # Pattern match fans out per-connector (max_results=10 each) and then expands each
 # accessible record into one synthetic result per block, so an unbounded record
@@ -86,6 +88,59 @@ _MAX_PATTERN_MATCH_RECORDS = 50
 # the <=1 source case) and ChatQuery.limit's own default, so pattern-match and
 # semantic search share the same budget baseline across both call paths.
 DEFAULT_PATTERN_MATCH_BLOCK_BUDGET = 50
+
+_GREP_TIMEOUT_PREFIX = "Error: command timed out"
+
+
+@dataclass
+class PatternMatchCoverage:
+    """How much of the store one search's exact-text matching covered.
+
+    Filled while it runs, and read once it is over: a search cut short by a
+    time or size limit must say so, or a missing match reads as "the text is
+    not there".
+    """
+
+    sources: set[str] = field(default_factory=set)
+    timed_out: set[str] = field(default_factory=set)
+    failed: set[str] = field(default_factory=set)
+    capped: set[str] = field(default_factory=set)
+    # Set when the whole search stopped before it finished.
+    stopped: str | None = None
+
+    def stop(self, reason: str) -> None:
+        if self.stopped is None:
+            self.stopped = reason
+
+    @property
+    def complete(self) -> bool:
+        return not (self.timed_out or self.failed or self.capped or self.stopped)
+
+
+def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") -> str:
+    """One paragraph for the tool result when exact-text matching was cut
+    short; empty when it covered everything it was asked to."""
+    if coverage is None or coverage.complete:
+        return ""
+    parts: list[str] = []
+    total = len(coverage.sources)
+    unreached = coverage.timed_out | coverage.failed
+    if total and unreached:
+        parts.append(f"searched {total - len(unreached)} of {total} sources in full")
+    if coverage.timed_out:
+        parts.append(f"{len(coverage.timed_out)} source(s) hit the time limit")
+    if coverage.failed - coverage.timed_out:
+        parts.append(f"{len(coverage.failed - coverage.timed_out)} source(s) could not be searched")
+    if coverage.capped:
+        parts.append(f"{len(coverage.capped)} source(s) matched more than could be listed")
+    if coverage.stopped:
+        parts.append(coverage.stopped)
+    return (
+        "\n\nExact-text search incomplete: " + "; ".join(parts) + ". "
+        "Records it did not reach may still contain the exact words, so a record "
+        "missing from the keyword matches is not evidence that the text is absent."
+    )
+
 
 _STOP_WORDS = frozenset({
     "a", "an", "the", "is", "are", "was", "were", "be", "been", "being",
@@ -1021,6 +1076,7 @@ async def run_pattern_match_with_llm_grep(
     user_query: str | None = None,
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
     found: dict[str, dict[str, Any]] | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict[str, Any]]:
     """Generate grep commands via LLM, run pipelines in parallel, dedup.
 
@@ -1039,6 +1095,9 @@ async def run_pattern_match_with_llm_grep(
     *found*, when given, is filled with the best hit per record as each LLM
     command finishes, so a caller that stops waiting early can keep them
     (``await_pattern_match`` with ``wait_budget``).
+
+    *coverage*, when given, records every source that timed out, failed or
+    was capped, and whether the total budget ran out.
     """
     if found is None:
         found = {}
@@ -1048,7 +1107,7 @@ async def run_pattern_match_with_llm_grep(
                 query=query, config_service=config_service, org_id=org_id,
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
-                found=found, on_llm_usage=on_llm_usage,
+                found=found, on_llm_usage=on_llm_usage, coverage=coverage,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1057,6 +1116,8 @@ async def run_pattern_match_with_llm_grep(
             "pattern_match: total budget of %.0fs exceeded, returning %d match(es) found so far",
             _PATTERN_MATCH_TOTAL_BUDGET, len(found),
         )
+        if coverage is not None:
+            coverage.stop(f"it stopped at its {_PATTERN_MATCH_TOTAL_BUDGET:.0f} s time limit")
         return list(found.values())
 
 
@@ -1073,6 +1134,7 @@ async def _run_pattern_match_with_llm_grep(
     user_query: str | None,
     found: dict[str, dict[str, Any]],
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
     so the caller still has them if the total budget cancels this."""
@@ -1099,6 +1161,7 @@ async def _run_pattern_match_with_llm_grep(
         "graph_provider": graph_provider,
         "filters": filters,
         "logger_instance": logger_instance,
+        "coverage": coverage,
     }
     if llm_grep_cmds:
         async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
@@ -1117,6 +1180,8 @@ async def _run_pattern_match_with_llm_grep(
                     logger_instance.warning(
                         "pattern_match: LLM grep pipeline failed for %r: %s", cmd[:100], result,
                     )
+                    if coverage is not None:
+                        coverage.stop("one of its keyword searches failed")
                     continue
                 _merge_command_hits(found, result)
         finally:
@@ -1183,6 +1248,7 @@ async def execute_pattern_match_pipeline(
     logger_instance: logging.Logger,
     grep_command: str | None = None,
     skip_grep_validation: bool = False,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Full pipeline: eligibility check → build grep → resolve connectors → run.
 
@@ -1240,6 +1306,7 @@ async def execute_pattern_match_pipeline(
         command=grep_command,
         connector_ids=connector_ids,
         logger_instance=logger_instance,
+        coverage=coverage,
     )
 
 
@@ -1253,6 +1320,7 @@ async def run_pattern_match(
     connector_ids: list[str],
     logger_instance: logging.Logger,
     timeout: int = _PATTERN_MATCH_TIMEOUT,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict]:
     """Run grep pattern match across connectors. Returns raw, UNADJUDICATED records.
 
@@ -1275,6 +1343,8 @@ async def run_pattern_match(
     if not valid:
         logger_instance.warning("Pattern match command rejected: %s", err)
         return []
+    if coverage is not None:
+        coverage.sources.update(connector_ids)
 
     containers: AccessibleContainers | None = None
     try:
@@ -1309,6 +1379,9 @@ async def run_pattern_match(
     }
     storage_tool = StoragePatternMatch(state)
 
+    # Per connector, the outcome of its last grep; read once into *coverage*.
+    outcomes: dict[str, str] = {}
+
     async def _run_grep(connector_id: str, cmd: str) -> list[dict] | None:
         """Run one grep against a connector; None when the command itself failed
         (as opposed to matching nothing), so callers can fall back."""
@@ -1316,18 +1389,23 @@ async def run_pattern_match(
             success, output = await storage_tool.find_records(
                 connector_id=connector_id,
                 command=cmd,
-                max_results=10,
+                max_results=_MAX_RECORDS_PER_CONNECTOR,
                 max_stdout_bytes=_MAX_GREP_STDOUT_BYTES,
                 max_output_chars=_MAX_GREP_OUTPUT_CHARS,
+                max_output_lines=_MAX_GREP_OUTPUT_LINES,
             )
         except Exception:
             logger_instance.warning(
                 "pattern_match: grep raised for cid=%s", connector_id, exc_info=True,
             )
+            outcomes[connector_id] = "failed"
             return None
         if not success:
             logger_instance.info(
                 "pattern_match: grep failed for cid=%s: %s", connector_id, output[:300],
+            )
+            outcomes[connector_id] = (
+                "timed_out" if str(output).startswith(_GREP_TIMEOUT_PREFIX) else "failed"
             )
             return None
         try:
@@ -1336,8 +1414,15 @@ async def run_pattern_match(
             logger_instance.warning(
                 "pattern_match: unreadable grep output for cid=%s: %r", connector_id, str(output)[:200],
             )
+            outcomes[connector_id] = "failed"
             return None
-        return parsed.get("records", []) if isinstance(parsed, dict) else None
+        if not isinstance(parsed, dict):
+            outcomes[connector_id] = "failed"
+            return None
+        records = parsed.get("records", [])
+        capped = bool(parsed.get("output_truncated")) or _int_field(parsed, "total_found") > len(records)
+        outcomes[connector_id] = "capped" if capped else "ok"
+        return records
 
     async def _search_connector(connector_id: str) -> list[dict]:
         # APP_LEVEL: full grep, all records accessible
@@ -1433,17 +1518,24 @@ async def run_pattern_match(
             logger_instance.warning(
                 "Pattern match timed out after %ds for cid=%s", timeout, connector_id,
             )
+            outcomes[connector_id] = "timed_out"
             return []
 
-    results = await asyncio.gather(
-        *(_search_connector_bounded(cid) for cid in connector_ids),
-        return_exceptions=True,
-    )
+    try:
+        results = await asyncio.gather(
+            *(_search_connector_bounded(cid) for cid in connector_ids),
+            return_exceptions=True,
+        )
+    finally:
+        if coverage is not None:
+            _record_outcomes(coverage, connector_ids, outcomes)
 
     all_records: list[dict] = []
     for i, result in enumerate(results):
         if isinstance(result, Exception):
             logger_instance.info("Pattern match connector %d error: %s", i, result)
+            if coverage is not None:
+                coverage.failed.add(connector_ids[i])
             continue
         logger_instance.info(
             "Pattern match connector %d returned %d records", i, len(result),
@@ -1451,6 +1543,21 @@ async def run_pattern_match(
         all_records.extend(result)
     logger_instance.info("Pattern match total raw records: %d", len(all_records))
     return all_records
+
+
+def _record_outcomes(
+    coverage: PatternMatchCoverage, connector_ids: list[str], outcomes: Mapping[str, str],
+) -> None:
+    """Fold one command's per-connector outcomes into *coverage*. A connector
+    with no outcome was still running when the search was cancelled."""
+    for cid in connector_ids:
+        outcome = outcomes.get(cid, "timed_out")
+        if outcome == "timed_out":
+            coverage.timed_out.add(cid)
+        elif outcome == "failed":
+            coverage.failed.add(cid)
+        elif outcome == "capped":
+            coverage.capped.add(cid)
 
 
 def pattern_match_wait_budget(requested: str | None) -> float | None:
@@ -1472,9 +1579,11 @@ async def await_pattern_match(
     *,
     wait_budget: float | None = None,
     found_so_far: Mapping[str, dict[str, Any]] | None = None,
+    coverage: PatternMatchCoverage | None = None,
 ) -> list[dict[str, Any]]:
     """Result of a pattern-match task started beside semantic search; any
-    failure is ``[]`` so semantic results are always returned.
+    failure is ``[]`` so semantic results are always returned, and is
+    recorded in *coverage* when given.
 
     A CancelledError from inside the task is a pattern-match failure too
     (``except Exception`` misses it); only cancellation of the caller itself
@@ -1517,16 +1626,22 @@ async def await_pattern_match(
             "pattern_match: stopped waiting %.1fs after semantic results, keeping %d match(es) found so far",
             wait_budget, len(kept),
         )
+        if coverage is not None:
+            coverage.stop(f"the search stopped waiting for it {wait_budget:g} s after the semantic results")
         return kept
     except asyncio.CancelledError:
         current = asyncio.current_task()
         if current is not None and current.cancelling():
             raise
         logger_instance.warning("Pattern match was cancelled, continuing with semantic results only")
+        if coverage is not None:
+            coverage.stop("it was cancelled before it finished")
     except Exception as exc:
         logger_instance.warning(
             "Pattern match failed, continuing with semantic results only: %s", exc,
         )
+        if coverage is not None:
+            coverage.stop("it failed before it finished")
     finally:
         if run_timer is not None:
             run_timer.record("pattern_match_wait", (time.perf_counter() - wait_started) * 1000.0)
