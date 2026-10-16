@@ -507,12 +507,14 @@ class RecordEventHandler(BaseEventService):
                 details={"record_id": record_id},
             )
 
-    async def _enrichment_still_cut_short(self, record_id: str) -> bool:
-        """False only on proof that this attempt re-indexed the record.
+    async def _enrichment_still_cut_short(self, record_id: str, *, unreadable: bool = True) -> bool:
+        """Whether the record is indexed with its enrichment still running.
 
-        An unreadable record proves nothing, and the FAILED/FAILED write it
-        would otherwise get makes a searchable record unsearchable; the
-        resumed-enrichment exit writes only extraction, so it is the safe one.
+        For a resumed enrichment, False only on proof that this attempt
+        re-indexed the record: an unreadable record proves nothing, and the
+        FAILED/FAILED write it would otherwise get makes a searchable record
+        unsearchable; the resumed-enrichment exit writes only extraction, so it
+        is the safe one. ``unreadable`` is the answer when the re-read fails.
         """
         try:
             current = await self.event_processor.graph_provider.get_document(
@@ -520,10 +522,9 @@ class RecordEventHandler(BaseEventService):
             )
         except Exception as e:
             self.logger.warning(
-                "Could not re-read record %s after its last attempt; keeping it searchable: %s",
-                record_id, e,
+                "Could not re-read record %s after its last attempt: %s", record_id, e,
             )
-            return True
+            return unreadable
         return bool(current) and (
             current.get("indexingStatus") == ProgressStatus.COMPLETED.value
             and current.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
@@ -1816,17 +1817,17 @@ class RecordEventHandler(BaseEventService):
                         f"🔄 Record {record_id} cancelled mid-flight; leaving it "
                         f"IN_PROGRESS for redelivery or stale recovery"
                     )
-                elif (
-                    is_final
-                    and resuming_enrichment
-                    and await self._enrichment_still_cut_short(record_id)
+                elif is_final and await self._enrichment_still_cut_short(
+                    record_id, unreadable=resuming_enrichment,
                 ):
-                    # Nothing re-indexed it in this attempt, so its vectors are
-                    # intact: only the enrichment failed, and the record stays
-                    # searchable. A first-time indexing failure takes the
-                    # branch below unchanged.
+                    # Indexed, by this attempt or an earlier one, so its vectors
+                    # are intact: only the enrichment failed, and the record
+                    # stays searchable. An attempt that did not start as a
+                    # resume takes this branch only on proof it indexed the
+                    # record; a first-time indexing failure takes the branch
+                    # below unchanged.
                     self.logger.error(
-                        f"Final failure resuming the enrichment of record {record_id}: {error_msg}",
+                        f"Final failure in the enrichment of record {record_id}: {error_msg}",
                         exc_info=last_exception,
                     )
                     await self._fail_resumed_enrichment(record_id)
