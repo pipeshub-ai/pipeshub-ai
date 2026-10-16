@@ -24,9 +24,10 @@ import type { MessagePart, StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
 import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
-import { createMarkdownComponents } from './answer-content';
+import { CodeBlock, createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
+  extractSqlQuery,
   extractToolsetLabel,
   isMcpTool,
   isSkillTool,
@@ -940,6 +941,7 @@ const TOOL_TEXT_STYLE: React.CSSProperties = {
 /** A built-in or toolset tool: the server's summary, or the raw text when there is none. */
 function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<MessagePart['status']> }) {
   const { t } = useTranslation();
+  const sqlQuery = extractSqlQuery(part.toolName, part.args);
   return (
     <>
       {(part.argsSummary || part.args) && (
@@ -948,6 +950,19 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
             {t('chat.toolCard.arguments')}
           </Text>
           {part.argsSummary ? <ToolSummaryText content={part.argsSummary} /> : <Box style={TOOL_TEXT_STYLE}>{part.args}</Box>}
+        </Box>
+      )}
+      {sqlQuery && (
+        <Box>
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.toolCard.query')}
+          </Text>
+          <CodeBlock
+            language="sql"
+            codeText={sqlQuery}
+            maxHeight="260px"
+            style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
+          />
         </Box>
       )}
       {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content
