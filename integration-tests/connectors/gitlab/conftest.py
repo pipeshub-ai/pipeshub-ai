@@ -25,6 +25,7 @@ import os
 import uuid
 from typing import Any, AsyncGenerator
 
+import httpx
 import pytest
 import pytest_asyncio
 
@@ -49,7 +50,9 @@ from connectors.gitlab.constants import (  # type: ignore[import-not-found]
     GL_SYNC_WAIT_SEC,
 )
 from connectors.gitlab.gitlab_test_utils import (  # type: ignore[import-not-found]
+    GitLabHTTPError,
     GitLabRestClient,
+    gl_call,
     create_gitlab_connector,
     deepest_blob_path,
     discover_body_attachment,
@@ -110,6 +113,16 @@ async def gitlab_rest(gitlab_env: dict[str, str]) -> AsyncGenerator[GitLabRestCl
     """Raw REST client — used for both source-of-truth reads and mutations."""
     client = GitLabRestClient(gitlab_env["token"], gitlab_env["instance_url"])
     try:
+        # A down test instance skips on a pull request and fails a run meant to cover
+        # GitLab. A refused token or any 4xx always fails the suite.
+        try:
+            await gl_call(client.get_json, "/version", context="GitLab reachability check")
+        except GitLabHTTPError as e:
+            if e.status < 500:
+                raise
+            source_unavailable(f"The GitLab test instance answered HTTP {e.status}.", secrets=[ENV_INSTANCE_URL])
+        except httpx.TransportError as e:
+            source_unavailable(f"The GitLab test instance cannot be reached ({type(e).__name__}).", secrets=[ENV_INSTANCE_URL])
         yield client
     finally:
         await client.aclose()
