@@ -81,6 +81,17 @@ jobs:
         with:
           ref: main
 
+      # The skill's own `gh release view ... > file` is denied in a headless run
+      # (shell redirects are not covered by a tool allow rule), so save it here.
+      - name: Save the release for the skill
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p tmp-release
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json tagName,name,publishedAt,isPrerelease,body > tmp-release/release.json
+
       - name: Run the release-changelog skill
         uses: anthropics/claude-code-action@8ce9314fa9a404564fa7e954cd84f25bcba2b829 # v1
         env:
@@ -92,6 +103,9 @@ jobs:
             Run the release-changelog skill for the release tagged "${{ inputs.tag }}"
             of pipeshub-ai/pipeshub-ai. Follow .claude/skills/release-changelog/SKILL.md
             for Steps 1 to 3 only: write changelog/${{ steps.release.outputs.version }}.md.
+            For Step 1, the output of the gh release view command is already saved at
+            tmp-release/release.json: read it with the Read tool instead of running
+            gh release view.
             Do NOT edit CHANGELOG.md or changelog/README.md. Do NOT run git commit or
             git push, and do NOT open a PR. Your only output is that one file.
           claude_args: '--model ${{ steps.release.outputs.model }} --allowedTools "Read,Write,Edit,Glob,Grep,Skill,Bash(gh release view:*),Bash(gh pr view:*),Bash(ls:*),Bash(cat:*),Bash(wc:*),Bash(grep:*),Bash(mkdir:*)"'
