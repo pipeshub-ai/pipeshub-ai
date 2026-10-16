@@ -19,6 +19,7 @@ from app.modules.retrieval.retrieval_service import (
     SEARCH_INDEX_UNREACHABLE_MESSAGE,
     RetrievalService,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 
 pytestmark = pytest.mark.asyncio
@@ -79,6 +80,14 @@ def service(logger, mock_config_service, mock_vector_db_service, mock_graph_prov
     # The Qdrant provider's own classifier, so gRPC codes are judged as in production.
     mock_vector_db_service.transient_search_error = MagicMock(side_effect=classify_qdrant_search_error)
     mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+    # Every hit is checked by virtual record id before it is served.
+    mock_graph_provider.get_user_by_user_id.return_value = {"_key": "user-key", "email": "test@example.com"}
+    mock_graph_provider.check_access = AsyncMock(
+        side_effect=lambda _user_key, _org_id, *, node_ids=(), virtual_record_ids=(), **_kwargs: AccessCheck(
+            node_ids=frozenset(node_ids),
+            records_by_vrid={v: "rec1" for v in virtual_record_ids if v == "vr1"},
+        )
+    )
     mock_graph_provider.get_records_by_record_ids.return_value = [dict(_RECORD)]
     return svc
 
