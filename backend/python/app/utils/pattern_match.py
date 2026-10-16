@@ -324,9 +324,9 @@ STEP 2 — Scale command complexity to the number of distinct concepts:
 - 1 concept → single grep with OR alternatives (synonyms, abbreviations, stems). \
 Example: grep -rci "deploy\\|deployment\\|ci.cd\\|pipeline" .
 - 2 concepts → one AND stage: two grep commands piped, each with OR alternatives. \
-Example: grep -rliZ "invoice\\|billing\\|payment" . | xargs -0 grep -Hci "recurring\\|subscri"
+Example: grep -rliZ "invoice\\|billing\\|payment" . | xargs -0 grep -Hci "recurring\\|subscription"
 - 3 concepts → at most 2 AND stages (max 3 piped greps). \
-Example: grep -rliZ "hierarch\\|tree\\|nested" . | xargs -0 grep -liZ "storage\\|store\\|persist" \
+Example: grep -rliZ "hierarchy\\|tree\\|nested" . | xargs -0 grep -liZ "storage\\|store\\|persist" \
 | xargs -0 grep -Hci "pattern\\|match\\|search"
 - NEVER use more than 3 piped stages. Each AND stage exponentially reduces matches \
 on small document sets.
@@ -335,8 +335,10 @@ Key principles:
 - Use OR (\\|) liberally within each stage for synonyms, abbreviations, and stems.
 - Each AND stage must represent a genuinely DIFFERENT concept, not a synonym of \
 something already in an earlier stage.
-- Prefer word stems to match inflections (e.g. "hierarch" matches hierarchy, \
-hierarchical; "subscri" matches subscribe, subscription).
+- Use whole words, and list other forms that matter as alternatives \
+(e.g. "hierarchy\\|hierarchical", "subscribe\\|subscription"). Commands are looked up \
+in a word index that already matches a word's inflections; a cut-off stem such as \
+"subscri" is not a word and finds nothing there.
 - Skip terms that appear in most documents (site names, navigation labels, generic \
 words like "data", "system", "service").
 - When the user's query is short or vague (1-2 words), cast a wide net with many \
