@@ -74,7 +74,7 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
         "toolset_oauth_name", "toolset_client_id", "toolset_secret",
     ),
     # A note in the admin's private knowledge base, and one in a member's.
-    "records": ("admin_record", "admin_record_text", "member_record", "member_record_text"),
+    "records": ("admin_record", "admin_record_text", "member_record", "member_record_text", "member_kb"),
     # A download link for the admin's note, made out to the admin.
     "signed_link": ("signed_token",),
     # A built-in skill, and a member's own skills: one switched on, one off.
@@ -447,9 +447,10 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     ConditionalRoute(
         "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes",
         "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes/app/{target}",
+        # The member's own collection: its owner opens it, and being an admin opens nothing.
         cases=(
-            Case("personal", CREATOR, True, 200, '"items"'),
-            Case("personal", ADMIN, False, 404, "Node not found"),
+            Case("member_kb", CREATOR, True, 200, '"items"'),
+            Case("member_kb", ADMIN, False, 404, "Node not found"),
         ),
         params={"limit": "50"},
     ),
