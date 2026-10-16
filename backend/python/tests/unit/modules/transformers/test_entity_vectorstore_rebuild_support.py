@@ -429,6 +429,26 @@ class TestARecreatedCollectionReachesRunningServices:
         assert len(request.dense_query) == 4
 
 
+class TestEntitySearchRidesOutATransientStoreError:
+    async def test_a_timeout_then_an_answer_is_a_search_not_a_failure(self) -> None:
+        db = MagicMock()
+        db.get_capabilities.return_value = MagicMock(supports_sparse_vectors=False)
+        db.transient_search_error = MagicMock(return_value=None)
+        db.filter_collection = AsyncMock(return_value={})
+        db.query_nearest_points = AsyncMock(side_effect=[TimeoutError("search timed out"), [[]]])
+        db.get_collection_info = AsyncMock(return_value=VectorCollectionInfo(
+            name="entities", exists=True, dense_dimension=2,
+        ))
+        store, _ = _store(db)
+        store._query_vector_cache["pricing"] = ([0.1, 0.2], None)
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            assert await store.search_entities("pricing", ORG, set(), {"c1"}) == []
+
+        assert db.query_nearest_points.await_count == 2
+        assert store._initialized is True
+
+
 async def test_an_embedding_in_flight_across_a_reset_is_not_cached() -> None:
     """A query embedded by the old model, finishing after the store reset for
     a recreated collection, must not be cached: the next search for that text

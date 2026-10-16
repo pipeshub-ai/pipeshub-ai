@@ -76,6 +76,7 @@ from app.services.vector_db.rebuild_state import (
     RebuildJobLock,
     redis_from_config_service,
 )
+from app.services.vector_db.search_retry import query_nearest_points_with_retry
 from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
     get_default_sparse_embedder,
@@ -1921,8 +1922,8 @@ class EntityVectorStore:
                     with_payload=True,
                 ))
         try:
-            batch = await self.vector_db_service.query_nearest_points(
-                collection_name=collection, requests=requests,
+            batch = await query_nearest_points_with_retry(
+                self.vector_db_service, collection, requests, logger=self.logger,
             )
         except Exception as exc:
             self.logger.error(
@@ -2045,8 +2046,8 @@ class EntityVectorStore:
             for text, dense, sparse in zip(texts, dense_vecs, sparse_vecs)
         ]
         try:
-            batch_results = await self.vector_db_service.query_nearest_points(
-                collection_name=collection, requests=requests,
+            batch_results = await query_nearest_points_with_retry(
+                self.vector_db_service, collection, requests, logger=self.logger,
             )
         except Exception:
             await self._search_failed(collection)
