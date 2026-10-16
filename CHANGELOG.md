@@ -37,12 +37,12 @@ Changes merged to `main` since the last release: [`v0.10.0...HEAD`](https://gith
 
 ## 0.10.0 — 2026-10-12
 
-**Deleted records go to a trash, agents search the knowledge graph, and a broad security sweep** · Stable · [`v0.10.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.10.0) · [Full changelog](changelog/0.10.0.md)
+**Deleted records go to the trash, agents search the knowledge graph, and a broad security sweep** · Stable · [`v0.10.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.10.0) · [Full changelog](changelog/0.10.0.md)
 
-A large release, 373 PRs since 0.9.1. It adds a recoverable trash, knowledge-graph tools for agents, AI model discovery and prompt caching, and a security sweep that locks down the code sandbox and MCP.
+A large release, 373 PRs since 0.9.1. It adds recoverable trash, knowledge-graph tools for agents, AI model discovery and prompt caching, and a security sweep that locks down the code sandbox and MCP.
 
 ### Added
-- Deleted records can go to a trash, be restored, and are purged after the retention period, behind the Labs setting `ENABLE_SOFT_DELETE` ([#3718](https://github.com/pipeshub-ai/pipeshub-ai/pull/3718), [#3799](https://github.com/pipeshub-ai/pipeshub-ai/pull/3799), [#3847](https://github.com/pipeshub-ai/pipeshub-ai/pull/3847))
+- Deleted records can go to the trash, be restored, and are purged after the retention period, behind the Labs setting `ENABLE_SOFT_DELETE` ([#3718](https://github.com/pipeshub-ai/pipeshub-ai/pull/3718), [#3799](https://github.com/pipeshub-ai/pipeshub-ai/pull/3799), [#3847](https://github.com/pipeshub-ai/pipeshub-ai/pull/3847))
 - Agents get knowledge-graph entity tools, backed by a new permission-checked entity index ([#3308](https://github.com/pipeshub-ai/pipeshub-ai/pull/3308))
 - AI models can be discovered from a provider and added several at a time, and configured models are listed at `GET /v1/models` ([#4012](https://github.com/pipeshub-ai/pipeshub-ai/pull/4012))
 - Provider prompt caching for the agent loop's prompt and tool definitions ([#4038](https://github.com/pipeshub-ai/pipeshub-ai/pull/4038))
@@ -53,7 +53,7 @@ A large release, 373 PRs since 0.9.1. It adds a recoverable trash, knowledge-gra
 - Invite emails are queued through the message broker and sent in the background ([#2906](https://github.com/pipeshub-ai/pipeshub-ai/pull/2906))
 
 ### Fixed
-- About twenty connectors now remove items deleted at the source or left out by a narrowed filter ([#3705](https://github.com/pipeshub-ai/pipeshub-ai/pull/3705), [#3709](https://github.com/pipeshub-ai/pipeshub-ai/pull/3709), [#3708](https://github.com/pipeshub-ai/pipeshub-ai/pull/3708))
+- Nine connector families (BookStack, Confluence, Zammad, Nextcloud, object stores, Drive Workspace, Web, Jira, Snowflake) now remove items deleted at the source or left out by a narrowed filter ([#3705](https://github.com/pipeshub-ai/pipeshub-ai/pull/3705), [#3709](https://github.com/pipeshub-ai/pipeshub-ai/pull/3709), [#3708](https://github.com/pipeshub-ai/pipeshub-ai/pull/3708))
 
 ### Security
 - The code sandbox reaches Docker only through a policy proxy, its network is off by default, and the app runs as non-root ([#3782](https://github.com/pipeshub-ai/pipeshub-ai/pull/3782), [#3780](https://github.com/pipeshub-ai/pipeshub-ai/pull/3780))
