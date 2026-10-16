@@ -280,7 +280,8 @@ async def _seed(graph: object) -> _Sync:
     # membership still resolves only through the relations a test writes.
     assert await graph.batch_create_edges(
         [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": connector_id,
-          "to_collection": CollectionNames.APPS.value, **stamps}
+          "to_collection": CollectionNames.APPS.value, "syncState": "NOT_STARTED", "lastSyncUpdate": now,
+          **stamps}
          for key in (alice, bob)],
         collection=CollectionNames.USER_APP_RELATION.value,
     )
