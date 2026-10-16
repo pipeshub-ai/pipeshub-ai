@@ -7653,6 +7653,15 @@ components:
         connector:
           type: string
           description: Connector identifier associated with this node
+        extension:
+          type: string
+          description: File extension of a record node, for its icon
+        mimeType:
+          type: string
+          description: MIME type of a record node, for its icon
+        mentioned:
+          type: boolean
+          description: True when the node was picked with an @ mention in the message
 
     AppliedFilters:
       type: object
@@ -31862,17 +31871,7 @@ paths:
                             modelInfo:
                               $ref: '#/components/schemas/ConversationModelInfo'
                             appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
+                              $ref: '#/components/schemas/AppliedFilters'
                             attachments:
                               type: array
                               description: |
