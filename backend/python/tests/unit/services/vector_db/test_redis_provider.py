@@ -1,7 +1,7 @@
 """Unit tests for the Redis vector DB provider."""
 
-import struct
-from unittest.mock import AsyncMock, MagicMock, call, patch
+import contextlib
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -12,11 +12,11 @@ from app.services.vector_db.models import (
     FilterExpression,
     HealthStatus,
     HybridSearchRequest,
+    ScrollWindowExceededError,
     VectorPoint,
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
 from app.services.vector_db.redis.redis_vector import RedisVectorService, _check_version
-
 
 # ---------------------------------------------------------------------------
 # Version check helper
@@ -24,24 +24,24 @@ from app.services.vector_db.redis.redis_vector import RedisVectorService, _check
 
 
 class TestVersionCheck:
-    def test_valid_version_passes(self):
+    def test_valid_version_passes(self) -> None:
         ok, msg = _check_version("8.4.0")
         assert ok is True
 
-    def test_newer_version_passes(self):
+    def test_newer_version_passes(self) -> None:
         ok, msg = _check_version("9.0.0")
         assert ok is True
 
-    def test_old_version_fails(self):
+    def test_old_version_fails(self) -> None:
         ok, msg = _check_version("7.2.0")
         assert ok is False
         assert "8.4" in msg
 
-    def test_boundary_version_fails(self):
+    def test_boundary_version_fails(self) -> None:
         ok, msg = _check_version("8.3.9")
         assert ok is False
 
-    def test_unparseable_version_passes_through(self):
+    def test_unparseable_version_passes_through(self) -> None:
         ok, _ = _check_version("unknown")
         assert ok is True
 
@@ -52,12 +52,12 @@ class TestVersionCheck:
 
 
 @pytest.fixture
-def redis_config():
+def redis_config() -> RedisVectorConfig:
     return RedisVectorConfig(host="localhost", port=6379)
 
 
 @pytest.fixture
-def mock_redis_client():
+def mock_redis_client() -> AsyncMock:
     client = AsyncMock()
     client.ping = AsyncMock(return_value=True)
     client.info = AsyncMock(return_value={"redis_version": "8.4.0"})
@@ -72,7 +72,7 @@ def mock_redis_client():
 
 
 @pytest.fixture
-def service(redis_config, mock_redis_client):
+def service(redis_config: RedisVectorConfig, mock_redis_client: AsyncMock) -> RedisVectorService:
     svc = RedisVectorService(redis_config)
     svc.client = mock_redis_client
     return svc
@@ -85,28 +85,28 @@ def service(redis_config, mock_redis_client):
 
 class TestRedisHealthCheck:
     @pytest.mark.asyncio
-    async def test_healthy_with_recent_version(self, service, mock_redis_client):
+    async def test_healthy_with_recent_version(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(return_value=[])
         result = await service.health_check()
         assert result.status == HealthStatus.HEALTHY
         assert result.server_version == "8.4.0"
 
     @pytest.mark.asyncio
-    async def test_unhealthy_with_old_version(self, service, mock_redis_client):
+    async def test_unhealthy_with_old_version(self, service, mock_redis_client) -> None:
         mock_redis_client.info = AsyncMock(return_value={"redis_version": "7.2.0"})
         result = await service.health_check()
         assert result.status == HealthStatus.UNHEALTHY
         assert "8.4" in result.message
 
     @pytest.mark.asyncio
-    async def test_unhealthy_when_not_connected(self, redis_config):
+    async def test_unhealthy_when_not_connected(self, redis_config) -> None:
         svc = RedisVectorService(redis_config)
         svc.client = None
         result = await svc.health_check()
         assert result.status == HealthStatus.UNHEALTHY
 
     @pytest.mark.asyncio
-    async def test_unhealthy_when_ping_fails(self, service, mock_redis_client):
+    async def test_unhealthy_when_ping_fails(self, service, mock_redis_client) -> None:
         mock_redis_client.ping = AsyncMock(side_effect=Exception("Connection refused"))
         result = await service.health_check()
         assert result.status == HealthStatus.UNHEALTHY
@@ -119,8 +119,8 @@ class TestRedisHealthCheck:
 
 class TestRedisCollectionManagement:
     @pytest.mark.asyncio
-    async def test_create_collection_calls_ft_create(self, service, mock_redis_client):
-        async def cmd_side_effect(*args):
+    async def test_create_collection_calls_ft_create(self, service, mock_redis_client) -> None:
+        async def cmd_side_effect(*args: object) -> str:
             if args[0] == "FT.INFO":
                 raise Exception("Unknown Index name")
             return "OK"
@@ -154,7 +154,7 @@ class TestRedisCollectionManagement:
         assert args[rg_idx + 1] == "TAG"
 
     @pytest.mark.asyncio
-    async def test_create_collection_dimension_mismatch_raises(self, service, mock_redis_client):
+    async def test_create_collection_dimension_mismatch_raises(self, service, mock_redis_client) -> None:
         """Dimension mismatch must not auto-drop the index and delete documents."""
         from app.services.vector_db.models import VectorCollectionInfo
 
@@ -175,7 +175,7 @@ class TestRedisCollectionManagement:
         assert drop_calls == []
 
     @pytest.mark.asyncio
-    async def test_delete_collection_calls_ft_dropindex(self, service, mock_redis_client):
+    async def test_delete_collection_calls_ft_dropindex(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(return_value="OK")
         await service.delete_collection("coll")
 
@@ -185,7 +185,7 @@ class TestRedisCollectionManagement:
         assert "coll_idx" in drop_calls[0].args
 
     @pytest.mark.asyncio
-    async def test_collection_exists_returns_true(self, service, mock_redis_client):
+    async def test_collection_exists_returns_true(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(return_value=[
             b"index_definition", [b"coll_idx"],
         ])
@@ -202,7 +202,7 @@ class TestRedisCollectionManagement:
 
 class TestRedisUpsert:
     @pytest.mark.asyncio
-    async def test_upsert_uses_hset(self, service, mock_redis_client):
+    async def test_upsert_uses_hset(self, service, mock_redis_client) -> None:
         """upsert_points must issue HSET with a binary dense_embedding blob."""
         pipeline = MagicMock()  # pipeline.execute_command is sync (queues commands)
         pipeline.execute = AsyncMock(return_value=[1])  # HSET returns int (fields added)
@@ -243,7 +243,7 @@ class TestRedisUpsert:
         assert json_set_calls == [], "JSON.SET must not be used with ON HASH storage"
 
     @pytest.mark.asyncio
-    async def test_upsert_flattens_metadata_into_hash_fields(self, service, mock_redis_client):
+    async def test_upsert_flattens_metadata_into_hash_fields(self, service, mock_redis_client) -> None:
         """All metadata keys must be stored as individual metadata_* hash fields."""
         pipeline = MagicMock()
         pipeline.execute = AsyncMock(return_value=[3])
@@ -282,7 +282,7 @@ class TestRedisUpsert:
 
 class TestRedisHybridQuery:
     @pytest.mark.asyncio
-    async def test_ft_hybrid_called_with_correct_args(self, service, mock_redis_client):
+    async def test_ft_hybrid_called_with_correct_args(self, service, mock_redis_client) -> None:
         """Verify FT.HYBRID is built with the correct parameter-count convention.
 
         Spec (ON HASH):
@@ -342,7 +342,7 @@ class TestRedisHybridQuery:
         assert args[params_idx + 2] == "vec", "PARAMS name must be bare 'vec'"
 
     @pytest.mark.asyncio
-    async def test_ft_hybrid_hash_reply_parsing(self, service, mock_redis_client):
+    async def test_ft_hybrid_hash_reply_parsing(self, service, mock_redis_client) -> None:
         """Verify parse_ft_hybrid_reply handles the HASH-style FT.HYBRID reply.
 
         With ON HASH + LOAD 2 @__key @__score, results contain only key and
@@ -364,7 +364,7 @@ class TestRedisHybridQuery:
         assert abs(pairs[0][1] - 0.0167) < 1e-6
 
     @pytest.mark.asyncio
-    async def test_ft_hybrid_hgetall_provides_full_payload(self, service, mock_redis_client):
+    async def test_ft_hybrid_hgetall_provides_full_payload(self, service, mock_redis_client) -> None:
         """Full payload must be fetched via HGETALL pipeline after FT.HYBRID key/score."""
         hybrid_reply = [
             b"total_results", 1,
@@ -398,7 +398,7 @@ class TestRedisHybridQuery:
         assert "dense_embedding" not in results[0].payload["metadata"]
 
     @pytest.mark.asyncio
-    async def test_text_only_fallback_when_no_dense(self, service, mock_redis_client):
+    async def test_text_only_fallback_when_no_dense(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(return_value=[0])
 
         req = HybridSearchRequest(
@@ -416,7 +416,7 @@ class TestRedisHybridQuery:
         assert len(search_calls) >= 1
 
     @pytest.mark.asyncio
-    async def test_ft_hybrid_errors_propagate(self, service, mock_redis_client):
+    async def test_ft_hybrid_errors_propagate(self, service, mock_redis_client) -> None:
         """FT.HYBRID errors must NOT be silently swallowed as text-only fallback."""
         from redis.exceptions import ResponseError
         mock_redis_client.execute_command = AsyncMock(
@@ -433,7 +433,7 @@ class TestRedisHybridQuery:
 
 
 class TestRedisFilterTranslation:
-    def test_must_filter_to_redis_query(self):
+    def test_must_filter_to_redis_query(self) -> None:
         from app.services.vector_db.redis.utils import filter_expression_to_redis_query
 
         expr = FilterExpression(
@@ -443,14 +443,14 @@ class TestRedisFilterTranslation:
         assert "metadata_orgId" in query
         assert "org1" in query
 
-    def test_empty_filter_returns_match_all(self):
+    def test_empty_filter_returns_match_all(self) -> None:
         from app.services.vector_db.redis.utils import filter_expression_to_redis_query
 
         expr = FilterExpression()
         query = filter_expression_to_redis_query(expr)
         assert query == "*"
 
-    def test_should_filter_creates_or_clause(self):
+    def test_should_filter_creates_or_clause(self) -> None:
         from app.services.vector_db.redis.utils import filter_expression_to_redis_query
 
         expr = FilterExpression(
@@ -462,7 +462,7 @@ class TestRedisFilterTranslation:
         query = filter_expression_to_redis_query(expr)
         assert "|" in query
 
-    def test_must_not_filter_negation(self):
+    def test_must_not_filter_negation(self) -> None:
         from app.services.vector_db.redis.utils import filter_expression_to_redis_query
 
         expr = FilterExpression(
@@ -471,7 +471,7 @@ class TestRedisFilterTranslation:
         query = filter_expression_to_redis_query(expr)
         assert "-(" in query
 
-    def test_tag_value_with_special_chars_escaped(self):
+    def test_tag_value_with_special_chars_escaped(self) -> None:
         from app.services.vector_db.redis.utils import escape_tag_value
 
         val = escape_tag_value("org-1.2")
@@ -483,10 +483,8 @@ class TestRedisFilterTranslation:
 # Phase 4 regression: Redis provider hardening
 # ===========================================================================
 
-import pytest
 
-
-def _make_redis_service():
+def _make_redis_service() -> RedisVectorService:
     from app.services.vector_db.redis.redis_vector import RedisVectorService
     svc = RedisVectorService.__new__(RedisVectorService)
     svc.config = MagicMock()
@@ -503,7 +501,7 @@ def _make_redis_service():
 
 class TestRedisDeletePointsEmptyFilter:
     @pytest.mark.asyncio
-    async def test_empty_filter_raises(self):
+    async def test_empty_filter_raises(self) -> None:
         """delete_points with an empty filter must raise ValueError."""
         from app.services.vector_db.models import FilterExpression
         svc = _make_redis_service()
@@ -513,7 +511,7 @@ class TestRedisDeletePointsEmptyFilter:
 
 class TestRedisSetPayload:
     @pytest.mark.asyncio
-    async def test_empty_filter_raises(self):
+    async def test_empty_filter_raises(self) -> None:
         from app.services.vector_db.models import FilterExpression
 
         svc = _make_redis_service()
@@ -521,7 +519,7 @@ class TestRedisSetPayload:
             await svc.set_payload("records", {"connectorIds": ["c1"]}, FilterExpression())
 
     @pytest.mark.asyncio
-    async def test_hset_joins_membership_lists_as_tags(self):
+    async def test_hset_joins_membership_lists_as_tags(self) -> None:
         from app.services.vector_db.models import FieldCondition, FilterExpression
 
         svc = _make_redis_service()
@@ -552,19 +550,18 @@ class TestRedisSetPayload:
 
 class TestRedisDeletePointsPaged:
     @pytest.mark.asyncio
-    async def test_paged_delete_never_accumulates_all_keys(self):
+    async def test_paged_delete_never_accumulates_all_keys(self) -> None:
         """Paged delete re-queries from offset 0 after each batch.
 
         We simulate 3 pages of 2 results each (total 6) with the last page
         having 0 results. Each execute_command call after 'FT.SEARCH' should
         return a fresh page from offset 0 (not an incrementing offset).
         """
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+        from app.services.vector_db.models import FieldCondition, FilterExpression
 
         filt = FilterExpression(
             must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
         )
-        page_size = 2
         # Simulate: page 1 → 2 keys, page 2 → 2 keys, page 3 → 0 keys (stop)
         responses = [
             [4, b"records:k1", b"records:k2"],   # page 1 (total=4)
@@ -581,10 +578,9 @@ class TestRedisDeletePointsPaged:
 
         # Actually run: the third side_effect raises StopIteration which pytest
         # wraps; instead ensure delete called per non-empty page
-        try:
+        # The third call returns nothing, which is fine for this test.
+        with contextlib.suppress(StopIteration):
             await svc.delete_points("records", filt)
-        except StopIteration:
-            pass  # third call returned nothing — fine for this test
 
         assert svc.client.delete.await_count >= 1, (
             "client.delete must be called at least once per non-empty page"
@@ -608,22 +604,22 @@ class TestRedisDeletePointsPaged:
 
 
 class TestRedisQueryEscaping:
-    def test_escape_redisearch_text_at_sign(self):
+    def test_escape_redisearch_text_at_sign(self) -> None:
         """'@' is a RediSearch operator character and must be escaped."""
         from app.services.vector_db.redis.utils import escape_redisearch_text
         result = escape_redisearch_text("user@example.com")
         assert "\\@" in result
 
-    def test_escape_redisearch_text_empty(self):
+    def test_escape_redisearch_text_empty(self) -> None:
         from app.services.vector_db.redis.utils import escape_redisearch_text
         assert escape_redisearch_text("") == ""
 
-    def test_escape_redisearch_text_braces(self):
+    def test_escape_redisearch_text_braces(self) -> None:
         from app.services.vector_db.redis.utils import escape_redisearch_text
         result = escape_redisearch_text("{tag}")
         assert "\\{" in result and "\\}" in result
 
-    def test_escape_redisearch_text_dash(self):
+    def test_escape_redisearch_text_dash(self) -> None:
         from app.services.vector_db.redis.utils import escape_redisearch_text
         result = escape_redisearch_text("x-ray")
         assert "\\-" in result
@@ -631,7 +627,7 @@ class TestRedisQueryEscaping:
 
 class TestRedisVersionGate:
     @pytest.mark.asyncio
-    async def test_version_string_from_bytes_decoded_correctly(self):
+    async def test_version_string_from_bytes_decoded_correctly(self) -> None:
         """health_check must handle bytes in redis_version (decode_responses=False)."""
         svc = _make_redis_service()
         svc.client.ping = AsyncMock()
@@ -642,7 +638,7 @@ class TestRedisVersionGate:
         assert health is not None
 
     @pytest.mark.asyncio
-    async def test_version_string_from_str(self):
+    async def test_version_string_from_str(self) -> None:
         """health_check handles str redis_version (decode_responses=True)."""
         svc = _make_redis_service()
         svc.client.ping = AsyncMock()
@@ -654,7 +650,7 @@ class TestRedisVersionGate:
 
 class TestRedisMinShouldMatchRejected:
     @pytest.mark.asyncio
-    async def test_min_should_match_raises(self):
+    async def test_min_should_match_raises(self) -> None:
         """filter_collection with min_should_match must raise NotImplementedError."""
         svc = _make_redis_service()
         with pytest.raises(NotImplementedError, match="min_should_match"):
@@ -663,7 +659,7 @@ class TestRedisMinShouldMatchRejected:
 
 class TestRedisScrollOffset:
     @pytest.mark.asyncio
-    async def test_scroll_first_page_uses_offset_zero(self):
+    async def test_scroll_first_page_uses_offset_zero(self) -> None:
         """First scroll (offset=None) must pass LIMIT 0 <limit>."""
         from app.services.vector_db.models import FilterExpression
 
@@ -678,7 +674,7 @@ class TestRedisScrollOffset:
         assert args[limit_idx + 1] == "0"
 
     @pytest.mark.asyncio
-    async def test_scroll_second_page_uses_correct_offset(self):
+    async def test_scroll_second_page_uses_correct_offset(self) -> None:
         """scroll(offset='10') must pass LIMIT 10 <limit>."""
         from app.services.vector_db.models import FilterExpression
 
@@ -692,7 +688,7 @@ class TestRedisScrollOffset:
         assert args[limit_idx + 1] == "10"
 
     @pytest.mark.asyncio
-    async def test_scroll_next_offset_none_when_last_page(self):
+    async def test_scroll_next_offset_none_when_last_page(self) -> None:
         """next_offset must be None when returned keys == total (last page)."""
         from app.services.vector_db.models import FilterExpression
 
@@ -711,7 +707,7 @@ class TestRedisScrollOffset:
         assert result.next_offset is None
 
     @pytest.mark.asyncio
-    async def test_scroll_next_offset_set_when_more_remain(self):
+    async def test_scroll_next_offset_set_when_more_remain(self) -> None:
         """next_offset must reflect remaining pages when total > returned."""
         from app.services.vector_db.models import FilterExpression
 
@@ -732,7 +728,7 @@ class TestRedisScrollOffset:
         assert result.next_offset == "10"
 
     @pytest.mark.asyncio
-    async def test_scroll_cursor_advances_when_docs_fail_to_parse(self):
+    async def test_scroll_cursor_advances_when_docs_fail_to_parse(self) -> None:
         """Dropped documents must still move LIMIT, or the same page repeats."""
         from app.services.vector_db.models import FilterExpression
 
@@ -757,7 +753,7 @@ class TestRedisScrollOffset:
         assert result.next_offset == "3"
 
     @pytest.mark.asyncio
-    async def test_scroll_no_return_clause_used(self):
+    async def test_scroll_no_return_clause_used(self) -> None:
         """scroll must NOT use RETURN 1 $ (JSONPath is for ON JSON only)."""
         from app.services.vector_db.models import FilterExpression
 
@@ -774,7 +770,7 @@ class TestRedisScrollOffset:
 
 
 class TestHashDocDecoding:
-    def test_decode_hash_doc_skips_dense_embedding(self):
+    def test_decode_hash_doc_skips_dense_embedding(self) -> None:
         """decode_hash_doc must not include the binary dense_embedding field."""
         from app.services.vector_db.redis.utils import decode_hash_doc
 
@@ -789,7 +785,7 @@ class TestHashDocDecoding:
         assert "metadata_orgId" in doc
         assert "dense_embedding" not in doc
 
-    def test_decode_hash_doc_handles_flat_list(self):
+    def test_decode_hash_doc_handles_flat_list(self) -> None:
         """decode_hash_doc must handle RESP2 flat alternating list format."""
         from app.services.vector_db.redis.utils import decode_hash_doc
 
@@ -803,7 +799,7 @@ class TestHashDocDecoding:
         assert doc["metadata_virtualRecordId"] == "vr-1"
         assert "dense_embedding" not in doc
 
-    def test_vector_point_to_hash_fields_binary_blob(self):
+    def test_vector_point_to_hash_fields_binary_blob(self) -> None:
         """vector_point_to_hash_fields must produce binary dense_embedding."""
         from app.services.vector_db.redis.utils import vector_point_to_hash_fields
 
@@ -819,7 +815,7 @@ class TestHashDocDecoding:
         assert fields["page_content"] == "Test"
         assert fields["metadata_orgId"] == "o1"
 
-    def test_vector_point_to_hash_fields_float32(self):
+    def test_vector_point_to_hash_fields_float32(self) -> None:
         """FLOAT32 produces 4 bytes/dim."""
         from app.services.vector_db.redis.utils import vector_point_to_hash_fields
 
@@ -839,7 +835,7 @@ class TestHashDocDecoding:
 
 class TestConnectionLifecycle:
     @pytest.mark.asyncio
-    async def test_connect_success(self, redis_config, mock_redis_client):
+    async def test_connect_success(self, redis_config, mock_redis_client) -> None:
         """connect() establishes connection through the connection provider
         and verifies it with ping."""
         svc = RedisVectorService(redis_config)
@@ -855,7 +851,7 @@ class TestConnectionLifecycle:
         mock_redis_client.ping.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_connect_failure_raises(self, redis_config):
+    async def test_connect_failure_raises(self, redis_config) -> None:
         """connect() raises exception on connection failure."""
         svc = RedisVectorService(redis_config)
         mock_client = AsyncMock()
@@ -871,29 +867,29 @@ class TestConnectionLifecycle:
                 await svc.connect()
 
     @pytest.mark.asyncio
-    async def test_disconnect_with_client(self, service):
+    async def test_disconnect_with_client(self, service) -> None:
         """disconnect() closes client when connected."""
         mock_aclose = AsyncMock()
         service.client.aclose = mock_aclose
-        
+
         await service.disconnect()
-        
+
         mock_aclose.assert_called_once()
         assert service.client is None
 
     @pytest.mark.asyncio
-    async def test_disconnect_without_client(self, redis_config):
+    async def test_disconnect_without_client(self, redis_config) -> None:
         """disconnect() handles None client gracefully."""
         svc = RedisVectorService(redis_config)
         svc.client = None
-        
+
         await svc.disconnect()  # Should not raise
 
     @pytest.mark.asyncio
-    async def test_disconnect_error_logged(self, service):
+    async def test_disconnect_error_logged(self, service) -> None:
         """disconnect() logs error but doesn't raise."""
         service.client.aclose = AsyncMock(side_effect=Exception("Close failed"))
-        
+
         await service.disconnect()  # Should not raise
         assert service.client is None
 
@@ -905,37 +901,37 @@ class TestConnectionLifecycle:
 
 class TestScrollPagination:
     @pytest.mark.asyncio
-    async def test_scroll_pagination_multiple_pages(self, service, mock_redis_client):
+    async def test_scroll_pagination_multiple_pages(self, service, mock_redis_client) -> None:
         """_keys_matching_filter handles pagination across multiple pages."""
         # Mock paginated responses
         mock_redis_client.execute_command = AsyncMock(side_effect=[
             [2000] + [f"key_{i}".encode() for i in range(1000)],  # Page 1: 1000 results
             [2000] + [f"key_{i}".encode() for i in range(1000, 2000)],  # Page 2: 1000 results
-            [2000] + [],  # Page 3: no more results
+            [2000],  # Page 3: no more results
         ])
-        
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+
+        from app.services.vector_db.models import FieldCondition, FilterExpression
         filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
-        
+
         keys = await service._keys_matching_filter("test_collection", filter_expr)
-        
+
         assert len(keys) == 2000
         assert mock_redis_client.execute_command.call_count == 2  # Stops when all results fetched
 
     @pytest.mark.asyncio
-    async def test_scroll_empty_results(self, service, mock_redis_client):
+    async def test_scroll_empty_results(self, service, mock_redis_client) -> None:
         """_keys_matching_filter handles empty results."""
         mock_redis_client.execute_command = AsyncMock(return_value=[0])  # No results
-        
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+
+        from app.services.vector_db.models import FieldCondition, FilterExpression
         filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
-        
+
         keys = await service._keys_matching_filter("test_collection", filter_expr)
-        
+
         assert len(keys) == 0
 
     @pytest.mark.asyncio
-    async def test_keys_matching_filter_raises_on_search_error(self, service, mock_redis_client):
+    async def test_keys_matching_filter_raises_on_search_error(self, service, mock_redis_client) -> None:
         """A partial key list must not be reported as the complete match set.
 
         set_payload writes to exactly these keys, so silently returning fewer
@@ -950,31 +946,31 @@ class TestScrollPagination:
             await service._keys_matching_filter("test_collection", filter_expr)
 
     @pytest.mark.asyncio
-    async def test_scroll_invalid_response_format_breaks(self, service, mock_redis_client):
+    async def test_scroll_invalid_response_format_breaks(self, service, mock_redis_client) -> None:
         """_keys_matching_filter handles invalid response format."""
         mock_redis_client.execute_command = AsyncMock(return_value="invalid")  # Not a list
-        
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+
+        from app.services.vector_db.models import FieldCondition, FilterExpression
         filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
-        
+
         keys = await service._keys_matching_filter("test_collection", filter_expr)
-        
+
         assert len(keys) == 0
 
     @pytest.mark.asyncio
-    async def test_scroll_handles_string_keys(self, service, mock_redis_client):
+    async def test_scroll_handles_string_keys(self, service, mock_redis_client) -> None:
         """_keys_matching_filter converts string keys to bytes."""
         # Mock response with string keys instead of bytes - first page has results, second is empty
         mock_redis_client.execute_command = AsyncMock(side_effect=[
             [2, "key_1", "key_2"],  # First page: total=2, 2 keys
             [2],  # Second page: no more keys
         ])
-        
-        from app.services.vector_db.models import FilterExpression, FieldCondition
+
+        from app.services.vector_db.models import FieldCondition, FilterExpression
         filter_expr = FilterExpression(must=[FieldCondition(key="orgId", value="org1")])
-        
+
         keys = await service._keys_matching_filter("test_collection", filter_expr)
-        
+
         assert len(keys) == 2
         assert all(isinstance(k, bytes) for k in keys)
 
@@ -986,33 +982,33 @@ class TestScrollPagination:
 
 class TestErrorPaths:
     @pytest.mark.asyncio
-    async def test_create_collection_dimension_mismatch_warning(self, service, mock_redis_client):
+    async def test_create_collection_dimension_mismatch_warning(self, service, mock_redis_client) -> None:
         """create_collection logs when dimension mismatch detected."""
         from app.services.vector_db.models import CollectionConfig, VectorCollectionInfo
-        
+
         config = CollectionConfig(embedding_size=512)
-        
+
         # Mock collection info showing different dimension
         existing_info = VectorCollectionInfo(
             name="test", exists=True, dense_dimension=384, points_count=10
         )
         service.get_collection_info = AsyncMock(return_value=existing_info)
-        
+
         # Should raise ValueError for dimension mismatch
         with pytest.raises(ValueError, match="dimension mismatch"):
             await service.create_collection("test", config)
 
     @pytest.mark.asyncio
-    async def test_scroll_with_offset_str(self, service, mock_redis_client):
+    async def test_scroll_with_offset_str(self, service, mock_redis_client) -> None:
         """scroll() handles string offset correctly."""
         mock_redis_client.execute_command = AsyncMock(return_value=[
             100,  # Total count
             b"doc1", {"field": "value"},
         ])
-        
+
         from app.services.vector_db.models import FilterExpression
-        result = await service.scroll("test", FilterExpression(), limit=10, offset="50")
-        
+        await service.scroll("test", FilterExpression(), limit=10, offset="50")
+
         # Should convert string offset to int
         assert mock_redis_client.execute_command.called
         call_args = mock_redis_client.execute_command.call_args[0]
@@ -1020,13 +1016,13 @@ class TestErrorPaths:
         assert "50" in str(call_args) or 50 in call_args
 
     @pytest.mark.asyncio
-    async def test_scroll_with_invalid_offset(self, service, mock_redis_client):
+    async def test_scroll_with_invalid_offset(self, service, mock_redis_client) -> None:
         """scroll() handles invalid offset string."""
         mock_redis_client.execute_command = AsyncMock(return_value=[0])
-        
+
         from app.services.vector_db.models import FilterExpression
         result = await service.scroll("test", FilterExpression(), limit=10, offset="invalid")
-        
+
         # Should default to 0 on parse error
         assert result.points == []
 
@@ -1038,14 +1034,14 @@ class TestRedisFailuresAreLoud:
     @pytest.mark.asyncio
     async def test_paged_delete_raises_instead_of_reporting_success(
         self, service, mock_redis_client
-    ):
+    ) -> None:
         """A silent partial delete lets the caller drop the VRID mapping next,
         leaving the surviving points orphaned and undiscoverable."""
         calls = {"n": 0}
 
         full_page = [f"records:{i}".encode() for i in range(500)]
 
-        async def _search(*args, **kwargs):
+        async def _search(*args: object, **kwargs: object) -> list:
             calls["n"] += 1
             if calls["n"] == 1:
                 # A full page keeps the loop going to a second query.
@@ -1064,7 +1060,7 @@ class TestRedisFailuresAreLoud:
     @pytest.mark.asyncio
     async def test_collection_info_distinguishes_outage_from_missing(
         self, service, mock_redis_client
-    ):
+    ) -> None:
         """An outage reported as exists=False makes callers try to re-create."""
         mock_redis_client.execute_command = AsyncMock(
             side_effect=ConnectionError("Connection refused")
@@ -1084,18 +1080,18 @@ class TestRedisFailuresAreLoud:
     )
     async def test_collection_info_returns_missing_for_unknown_index(
         self, service, mock_redis_client, reply
-    ):
+    ) -> None:
         mock_redis_client.execute_command = AsyncMock(side_effect=Exception(reply))
         info = await service.get_collection_info("records")
         assert info.exists is False
 
     @pytest.mark.asyncio
-    async def test_overwrite_payload_rejects_empty_filter(self, service):
+    async def test_overwrite_payload_rejects_empty_filter(self, service) -> None:
         with pytest.raises(ValueError, match="empty filter"):
             await service.overwrite_payload("records", {"k": "v"}, FilterExpression())
 
     @pytest.mark.asyncio
-    async def test_payload_write_raises_on_failed_hset(self, service, mock_redis_client):
+    async def test_payload_write_raises_on_failed_hset(self, service, mock_redis_client) -> None:
         mock_redis_client.execute_command = AsyncMock(
             return_value=[1, b"records:a"]
         )
@@ -1111,19 +1107,26 @@ class TestRedisFailuresAreLoud:
 
 class TestRedisScrollCeilingAndFanOut:
     @pytest.mark.asyncio
-    async def test_scroll_raises_at_result_ceiling(self, service, mock_redis_client):
-        """Returning next_offset=None at the ceiling is indistinguishable from
-        'last page', so the caller would stop believing it had everything."""
+    async def test_scroll_returns_the_page_that_reaches_the_ceiling(self, service, mock_redis_client) -> None:
+        """Every point inside the window comes back, with a cursor; the call
+        for the offset past it is refused rather than answered with
+        next_offset=None, which the caller would read as the last page."""
         page = []
         for i in range(100):
             page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
         mock_redis_client.execute_command = AsyncMock(return_value=[50000, *page])
 
-        with pytest.raises(RuntimeError, match="ceiling"):
-            await service.scroll("records", FilterExpression(), limit=100, offset="9950")
+        result = await service.scroll("records", FilterExpression(), limit=100, offset="9950")
+        assert len(result.points) == 100
+        assert result.next_offset == "10050"
+
+        mock_redis_client.execute_command.reset_mock()
+        with pytest.raises(ScrollWindowExceededError, match="ceiling"):
+            await service.scroll("records", FilterExpression(), limit=100, offset=result.next_offset)
+        mock_redis_client.execute_command.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client):
+    async def test_scroll_returns_cursor_below_ceiling(self, service, mock_redis_client) -> None:
         page = []
         for i in range(10):
             page.extend([f"records:{i}".encode(), [b"page_content", b"x"]])
@@ -1133,12 +1136,12 @@ class TestRedisScrollCeilingAndFanOut:
         assert result.next_offset == "10"
 
     @pytest.mark.asyncio
-    async def test_query_fan_out_is_bounded(self, service):
+    async def test_query_fan_out_is_bounded(self, service) -> None:
         import asyncio as _asyncio
 
         active = {"n": 0, "max": 0}
 
-        async def _one(idx, col, req):
+        async def _one(idx: object, col: object, req: object) -> list:
             active["n"] += 1
             active["max"] = max(active["max"], active["n"])
             await _asyncio.sleep(0.005)
@@ -1154,7 +1157,7 @@ class TestRedisScrollCeilingAndFanOut:
 
 class TestRedisUpdatePayloadByIds:
     @pytest.mark.asyncio
-    async def test_hsets_only_the_keys_that_exist(self, service, mock_redis_client):
+    async def test_hsets_only_the_keys_that_exist(self, service, mock_redis_client) -> None:
         pipeline = mock_redis_client.pipeline.return_value
         pipeline.execute_command = MagicMock()
         pipeline.execute = AsyncMock(side_effect=[[1, 0], [1]])
@@ -1166,14 +1169,14 @@ class TestRedisUpdatePayloadByIds:
         assert issued[2:] == [("HSET", "entities:p1", "connectorIds", "c1,c2")]
 
     @pytest.mark.asyncio
-    async def test_no_ids_makes_no_call(self, service, mock_redis_client):
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
         await service.update_payload_by_ids("entities", [], {"x": 1})
         mock_redis_client.pipeline.assert_not_called()
 
 
 class TestRedisRetrievePoints:
     @pytest.mark.asyncio
-    async def test_pipelines_hgetall_and_skips_missing_keys(self, service, mock_redis_client):
+    async def test_pipelines_hgetall_and_skips_missing_keys(self, service, mock_redis_client) -> None:
         pipeline = mock_redis_client.pipeline.return_value
         pipeline.execute_command = MagicMock()
         pipeline.execute = AsyncMock(return_value=[
@@ -1193,7 +1196,7 @@ class TestRedisRetrievePoints:
         assert point.payload["connectorIds"] == ["c1", "c2"]
 
     @pytest.mark.asyncio
-    async def test_a_failed_reply_raises(self, service, mock_redis_client):
+    async def test_a_failed_reply_raises(self, service, mock_redis_client) -> None:
         pipeline = mock_redis_client.pipeline.return_value
         pipeline.execute_command = MagicMock()
         pipeline.execute = AsyncMock(return_value=[RuntimeError("WRONGTYPE")])
@@ -1202,7 +1205,7 @@ class TestRedisRetrievePoints:
             await service.retrieve_points("entities", ["p1"])
 
     @pytest.mark.asyncio
-    async def test_no_ids_makes_no_call(self, service, mock_redis_client):
+    async def test_no_ids_makes_no_call(self, service, mock_redis_client) -> None:
         assert await service.retrieve_points("entities", []) == []
         mock_redis_client.pipeline.assert_not_called()
 
@@ -1216,10 +1219,10 @@ class TestRedisScrollOffsetAfterDelete:
         ("2", 5, "0"),
         (None, 3, None),
     ])
-    def test_steps_back_by_the_deleted_count(self, next_offset, deleted, expected):
+    def test_steps_back_by_the_deleted_count(self, next_offset, deleted, expected) -> None:
         assert _make_redis_service().scroll_offset_after_delete(next_offset, deleted) == expected
 
-    def test_key_based_backends_keep_their_cursor(self):
+    def test_key_based_backends_keep_their_cursor(self) -> None:
         from app.services.vector_db.interface.vector_db import IVectorDBService
 
         svc = MagicMock(spec=IVectorDBService)

@@ -1310,3 +1310,18 @@ th code {
   border-top: 1px solid var(--olive-4);
   margin: 1em 0;
 }
+
+/* Inline citation "+N" chip: a 44px tap target on touch screens without
+ * growing the 16px chip. Anchored at the chip's left edge so it never
+ * covers the numbered circle just before it. */
+@media (pointer: coarse) {
+  .citation-overflow-chip::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 0;
+    width: max(100%, 44px);
+    height: 44px;
+    transform: translateY(-50%);
+  }
+}

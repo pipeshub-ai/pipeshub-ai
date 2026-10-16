@@ -20,7 +20,10 @@ from app.modules.named_entities.extractor import (
     NamedEntityRequest,
     indexing_llm,
 )
-from app.modules.named_entities.graph_writer import NamedEntityGraphWriter, PersistRetrySupersededError
+from app.modules.named_entities.graph_writer import (
+    NamedEntityGraphWriter,
+    PersistRetrySupersededError,
+)
 from app.modules.named_entities.normalizers.dates import NormalizationContext
 from app.modules.named_entities.resolution import NamedEntityResolver
 from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
@@ -30,10 +33,20 @@ _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "tim
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.config.configuration_service import ConfigurationService
+    from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+    from app.models.entities import Record
+    from app.modules.transformers.entity_vectorstore import EntityVectorStore
+    from app.modules.transformers.transformer import TransformContext
+    from app.services.extraction.client import ExtractionClient
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
 logger = logging.getLogger(__name__)
 
 
-def _reference_ms(record) -> int | None:
+def _reference_ms(record: Record) -> int | None:
     return getattr(record, "source_updated_at", None) or getattr(record, "source_created_at", None)
 
 
@@ -56,7 +69,12 @@ def needs_reextract(extraction: NamedEntityExtraction) -> bool:
 
 
 async def extract_named_entities(
-    ctx, *, config_service, client=None, enabled: bool, reextract: bool = False,
+    ctx: TransformContext,
+    *,
+    config_service: ConfigurationService,
+    client: ExtractionClient | None = None,
+    enabled: bool,
+    reextract: bool = False,
 ) -> NamedEntityExtraction:
     """``reextract``: the completion of a record's earlier extraction, run locally
     in single calls with ``REEXTRACT_MAX_WINDOWS`` windows."""
@@ -85,7 +103,9 @@ async def extract_named_entities(
     llm = transport = None
     provider = model = "indexing"
     try:
-        llm, transport, provider, model = await indexing_llm(config_service)
+        llm, transport, provider, model = await indexing_llm(
+            config_service, org_id=record.org_id, shard_key=record.record_name or "",
+        )
     except Exception:
         logger.warning("Named-entity model unavailable; keeping deterministic spans")
     request = NamedEntityRequest(
@@ -130,7 +150,7 @@ def extraction_blob_holder(record: object, extraction: NamedEntityExtraction | N
         record.semantic_metadata = None
 
 
-def attach_named_entities(record, extraction: NamedEntityExtraction) -> None:
+def attach_named_entities(record: Record, extraction: NamedEntityExtraction) -> None:
     metadata = getattr(record, "semantic_metadata", None)
     if metadata is None:
         return
@@ -146,14 +166,14 @@ def _model_gave_nothing(extraction: NamedEntityExtraction) -> bool:
 
 
 async def persist_named_entities(
-    ctx,
+    ctx: TransformContext,
     extraction: NamedEntityExtraction,
     *,
-    graph_provider,
-    graph_data_store,
-    entity_vector_store=None,
+    graph_provider: IGraphDBProvider,
+    graph_data_store: GraphDataStore,
+    entity_vector_store: EntityVectorStore | None = None,
     enabled: bool,
-    llm=None,
+    llm: BaseChatModel | None = None,
     retry_due: int | None = None,
 ) -> str:
     """Write the record's entities. Returns ``written``, ``kept`` (the last good
@@ -206,7 +226,7 @@ async def persist_named_entities(
     return result
 
 
-def log_run(record, extraction: NamedEntityExtraction, *, outcome: str, seconds: float) -> None:
+def log_run(record: Record, extraction: NamedEntityExtraction, *, outcome: str, seconds: float) -> None:
     """One line per record. Counts only: no surfaces, names or values."""
     by_kind: dict[str, int] = {}
     for entity in extraction.entities:
@@ -235,5 +255,5 @@ def log_run(record, extraction: NamedEntityExtraction, *, outcome: str, seconds:
     )
 
 
-def normalization_context(record, tz: str) -> NormalizationContext:
+def normalization_context(record: Record, tz: str) -> NormalizationContext:
     return NormalizationContext(reference_time_ms=_reference_ms(record), tz=tz or "UTC")

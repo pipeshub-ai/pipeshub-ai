@@ -688,6 +688,8 @@
       "open": "開啟 {{source}}",
       "openIn": "在 {{source}} 中開啟",
       "openInCollections": "在集合中開啟",
+      "syncedJustNow": "剛剛同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相關度：{{percent}}%"
     },
     "results": "結果",
@@ -792,6 +794,8 @@
     "copiedAsMarkdown": "已複製為 Markdown",
     "copiedAsText": "已複製為純文字",
     "citations": "引用",
+    "showMoreCitations_one": "顯示另外 {{count}} 則引用",
+    "showMoreCitations_other": "顯示另外 {{count}} 則引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "僅純文字（不含引用）",
     "differentModesOfQuery": "不同的查詢模式",

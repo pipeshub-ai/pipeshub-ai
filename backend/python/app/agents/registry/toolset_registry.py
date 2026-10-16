@@ -33,10 +33,6 @@ STANDARD_TOOLSET_MODULES = (
     'app.agents.actions.google.calendar.calendar',
     'app.agents.actions.google.gmail.gmail',
     'app.agents.actions.internal_tools.intrim_tools',
-    # Off, and these do not import: they predate the async @tool and ToolsetCategory.
-    # 'app.agents.actions.google.meet.meet',
-    # 'app.agents.actions.google.slides.slides',
-    # 'app.agents.actions.google.forms.forms',
     # 'app.agents.actions.google.docs.docs',
     # 'app.agents.actions.google.sheets.sheets',
     # Other toolsets

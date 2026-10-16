@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -33,6 +33,16 @@ from app.modules.transformers.entity_vectorstore import (
     EntityPointRef,
     EntityWriteOutcome,
 )
+from tests.support.entity_vector_db import recreate_lock_redis
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
+
 
 APPS = CollectionNames.APPS.value
 ORGS = CollectionNames.ORGS.value

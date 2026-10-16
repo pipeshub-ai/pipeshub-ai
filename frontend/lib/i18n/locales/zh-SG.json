@@ -688,6 +688,8 @@
       "open": "打开 {{source}}",
       "openIn": "在 {{source}} 中打开",
       "openInCollections": "在集合中打开",
+      "syncedJustNow": "刚刚同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相关度：{{percent}}%"
     },
     "results": "结果",
@@ -792,6 +794,8 @@
     "copiedAsMarkdown": "已复制为 Markdown",
     "copiedAsText": "已复制为纯文本",
     "citations": "引用",
+    "showMoreCitations_one": "显示另外 {{count}} 条引用",
+    "showMoreCitations_other": "显示另外 {{count}} 条引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "仅纯文本（不含引用）",
     "differentModesOfQuery": "不同的查询模式",

@@ -46,23 +46,17 @@ class WireEntity(BaseModel):
     text: str = Field(description="Exact surface form copied verbatim from the block. Never paraphrase.")
     block: int = Field(description="n from the [B<n>] tag where the text appears.")
     kind: WireKind
-    normalized: str = Field(
-        description=(
-            "Leave ''. Dates and amounts are read from text, so text must contain the date or amount itself."
-        )
-    )
 
     @model_validator(mode="before")
     @classmethod
     def _lenient(cls, data: object) -> object:
         """The published schema stays strict (structured output needs every field
-        required); reading is lenient, so an omitted hint, a capitalised kind, "B3"
-        for block 3 or an extra key never costs the model an entity."""
+        required); reading is lenient, so a capitalised kind, "B3" for block 3 or
+        an extra key (the "normalized" hint older prompts asked for) never costs
+        the model an entity."""
         if not isinstance(data, dict):
             return data
         item = {key: value for key, value in data.items() if key in cls.model_fields}
-        if item.get("normalized") is None:
-            item["normalized"] = ""
         if isinstance(item.get("kind"), str):
             item["kind"] = item["kind"].strip().casefold()
         block = item.get("block")
@@ -90,7 +84,6 @@ def wire_item_schema() -> dict[str, Any]:
             "text": {"type": "string", "description": fields["text"].description},
             "block": {"type": "integer", "description": fields["block"].description},
             "kind": {"type": "string", "enum": list(get_args(WireKind))},
-            "normalized": {"type": "string", "description": fields["normalized"].description},
         },
         "required": ["text", "block", "kind"],
     }

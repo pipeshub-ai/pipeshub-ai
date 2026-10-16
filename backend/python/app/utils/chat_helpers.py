@@ -3373,6 +3373,7 @@ def get_enhanced_metadata(record:dict[str, Any],block:dict[str, Any]|None,meta:d
                         "origin": origin,
                         "connector": meta.get("connector") or record.get("connector_name", ""),
                         "connectorId": meta.get("connectorId") or record.get("connector_id", ""),
+                        "connectorInstanceName": meta.get("connectorInstanceName") or record.get("connector_instance_name") or "",
                         "blockText": block_text,
                         "blockType": str(block_type),
                         "bounding_box": extract_bounding_boxes(block.get("citation_metadata")) if block else None,
@@ -3436,6 +3437,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["origin"] = graphDb_record.get("origin")
                 record["connector_name"] = graphDb_record.get("connectorName")
                 record["connector_id"] = graphDb_record.get("connectorId")
+                record["connector_instance_name"] = graphDb_record.get("connectorInstanceName")
                 record["weburl"] = graphDb_record.get("webUrl")
                 record["preview_renderable"] = graphDb_record.get("previewRenderable", True)
                 record["hide_weburl"] = graphDb_record.get("hideWeburl", False)
