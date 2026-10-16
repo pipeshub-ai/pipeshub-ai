@@ -679,6 +679,7 @@ async def _execute_search(
                     on_llm_usage=grep_generation_usage_reporter(state),
                     found=grep_found,
                     coverage=grep_coverage,
+                    retrieval_service=retrieval_service,
                 )
             )
 

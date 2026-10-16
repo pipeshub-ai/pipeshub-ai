@@ -34,6 +34,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.utils.env_utils import accuracy_feature_enabled, high_accuracy_mode
+from app.utils.exact_text_index import LexicalSearcher, plan_command, run_index_pattern_match
 from app.utils.llm import get_llm_for_role
 from app.utils.storage_path import build_record_group_prefix_from_chain
 from app.utils.chat_helpers import (
@@ -78,6 +79,8 @@ KEYWORD_SEARCH_BUDGETS = ("short", "full")
 # between first and second place so one command cannot decide the order.
 _RRF_K = 60
 _GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
+# "false" sends every exact-text search back to the file scan.
+_PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
 _MAX_PATTERN_MATCH_RECORDS = 50
 _MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
@@ -107,6 +110,10 @@ class PatternMatchCoverage:
     capped: set[str] = field(default_factory=set)
     # Set when the whole search stopped before it finished.
     stopped: str | None = None
+    # A keyword-index lookup returned its whole limit, so more chunks may match.
+    index_capped: bool = False
+    # Why some commands were scanned file by file instead of looked up.
+    scan_reasons: set[str] = field(default_factory=set)
 
     def stop(self, reason: str) -> None:
         if self.stopped is None:
@@ -114,14 +121,32 @@ class PatternMatchCoverage:
 
     @property
     def complete(self) -> bool:
-        return not (self.timed_out or self.failed or self.capped or self.stopped)
+        return not (self.timed_out or self.failed or self.capped or self.stopped or self.index_capped)
+
+
+_SCAN_NO_WORD = "no_word"
+_SCAN_INDEX_FAILED = "index_failed"
+_SCAN_NOTES = {
+    _SCAN_NO_WORD: (
+        "A pattern with no whole word to look up in the keyword index was matched "
+        "by a time-bounded scan of stored files instead."
+    ),
+    _SCAN_INDEX_FAILED: (
+        "The keyword index could not be searched, so stored files were scanned "
+        "instead, within a time limit."
+    ),
+}
 
 
 def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") -> str:
     """One paragraph for the tool result when exact-text matching was cut
-    short; empty when it covered everything it was asked to."""
-    if coverage is None or coverage.complete:
+    short or fell back to scanning files; empty when it looked everything up
+    in the index and covered all of it."""
+    if coverage is None:
         return ""
+    scan_note = " ".join(_SCAN_NOTES[r] for r in sorted(coverage.scan_reasons) if r in _SCAN_NOTES)
+    if coverage.complete:
+        return f"\n\n{scan_note}" if scan_note else ""
     parts: list[str] = []
     total = len(coverage.sources)
     unreached = coverage.timed_out | coverage.failed
@@ -133,13 +158,19 @@ def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") 
         parts.append(f"{len(coverage.failed - coverage.timed_out)} source(s) could not be searched")
     if coverage.capped:
         parts.append(f"{len(coverage.capped)} source(s) matched more than could be listed")
+    if coverage.index_capped:
+        parts.append(
+            "some of its words are in more passages than the keyword index returns "
+            "in one lookup, and only the best-ranked were checked",
+        )
     if coverage.stopped:
         parts.append(coverage.stopped)
-    return (
+    note = (
         "\n\nExact-text search incomplete: " + "; ".join(parts) + ". "
         "Records it did not reach may still contain the exact words, so a record "
         "missing from the keyword matches is not evidence that the text is absent."
     )
+    return f"{note} {scan_note}" if scan_note else note
 
 
 _STOP_WORDS = frozenset({
@@ -1077,8 +1108,9 @@ async def run_pattern_match_with_llm_grep(
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
     found: dict[str, dict[str, Any]] | None = None,
     coverage: PatternMatchCoverage | None = None,
+    retrieval_service: LexicalSearcher | None = None,
 ) -> list[dict[str, Any]]:
-    """Generate grep commands via LLM, run pipelines in parallel, dedup.
+    """Generate grep commands via LLM, look them up or run them, dedup.
 
     Falls back to a keyword grep derived from *query* when the LLM produces
     no usable command, or when its commands fail or match nothing — an LLM
@@ -1098,6 +1130,10 @@ async def run_pattern_match_with_llm_grep(
 
     *coverage*, when given, records every source that timed out, failed or
     was capped, and whether the total budget ran out.
+
+    With *retrieval_service* and a store that keeps a lexical index, each
+    command is answered from that index (``exact_text_index``), and only a
+    command it cannot express is scanned file by file.
     """
     if found is None:
         found = {}
@@ -1108,6 +1144,7 @@ async def run_pattern_match_with_llm_grep(
                 user_id=user_id, graph_provider=graph_provider, filters=filters,
                 logger_instance=logger_instance, llm=llm, user_query=user_query,
                 found=found, on_llm_usage=on_llm_usage, coverage=coverage,
+                retrieval_service=retrieval_service,
             ),
             timeout=_PATTERN_MATCH_TOTAL_BUDGET,
         )
@@ -1135,11 +1172,17 @@ async def _run_pattern_match_with_llm_grep(
     found: dict[str, dict[str, Any]],
     on_llm_usage: Callable[[BaseMessage], None] | None = None,
     coverage: PatternMatchCoverage | None = None,
+    retrieval_service: LexicalSearcher | None = None,
 ) -> list[dict[str, Any]]:
     """*found* collects the best hit per record as each LLM command finishes,
     so the caller still has them if the total budget cancels this."""
     if not await check_pattern_match_eligible(config_service, logger_instance):
         return []
+    searcher = await _index_searcher(retrieval_service, logger_instance)
+    index_kwargs: dict[str, Any] = {
+        "user_id": user_id, "org_id": org_id, "filters": filters,
+        "found": found, "coverage": coverage, "logger_instance": logger_instance,
+    }
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
         cache_key = (org_id, query.strip(), (user_query or "").strip())
@@ -1164,6 +1207,12 @@ async def _run_pattern_match_with_llm_grep(
         "coverage": coverage,
     }
     if llm_grep_cmds:
+        scan_cmds = (
+            await _match_through_index(llm_grep_cmds, searcher, **index_kwargs)
+            if searcher is not None
+            else llm_grep_cmds
+        )
+
         async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
             try:
                 return cmd, await execute_pattern_match_pipeline(
@@ -1172,7 +1221,7 @@ async def _run_pattern_match_with_llm_grep(
             except Exception as exc:
                 return cmd, exc
 
-        tasks = [asyncio.ensure_future(_pipeline(cmd)) for cmd in llm_grep_cmds]
+        tasks = [asyncio.ensure_future(_pipeline(cmd)) for cmd in scan_cmds]
         try:
             for next_done in asyncio.as_completed(tasks):
                 cmd, result = await next_done
@@ -1192,9 +1241,70 @@ async def _run_pattern_match_with_llm_grep(
             return list(found.values())
         logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
 
+    keyword_cmd = build_grep_command_from_query(query)
+    if (
+        searcher is not None and keyword_cmd
+        and not await _match_through_index([keyword_cmd], searcher, **index_kwargs)
+    ):
+        return list(found.values())
     return await execute_pattern_match_pipeline(
         **common, grep_command=None, skip_grep_validation=False,
     )
+
+
+def _index_enabled() -> bool:
+    return os.getenv(_PATTERN_MATCH_INDEX_ENV_VAR, "true").strip().lower() not in {"0", "false", "no", "off"}
+
+
+async def _index_searcher(
+    retrieval_service: LexicalSearcher | None, logger_instance: logging.Logger,
+) -> LexicalSearcher | None:
+    """*retrieval_service* when exact text can be looked up in its index."""
+    if retrieval_service is None or not _index_enabled():
+        return None
+    try:
+        if await retrieval_service.lexical_search_available():
+            return retrieval_service
+    except Exception:
+        logger_instance.warning("pattern_match: lexical index check failed, scanning files", exc_info=True)
+    return None
+
+
+async def _match_through_index(
+    commands: list[str],
+    searcher: LexicalSearcher,
+    *,
+    user_id: str,
+    org_id: str,
+    filters: dict[str, Any] | None,
+    found: dict[str, dict[str, Any]],
+    coverage: PatternMatchCoverage | None,
+    logger_instance: logging.Logger,
+) -> list[str]:
+    """Answer *commands* from the lexical index into *found*; returns the ones
+    left for the file scan, each recorded in *coverage* with why."""
+    plans = {cmd: plan_command(cmd) for cmd in commands}
+    unplanned = [cmd for cmd, plan in plans.items() if plan is None]
+    planned = [cmd for cmd, plan in plans.items() if plan is not None]
+    if unplanned and coverage is not None:
+        coverage.scan_reasons.add(_SCAN_NO_WORD)
+    if not planned:
+        return unplanned
+    try:
+        outcome = await run_index_pattern_match(
+            [plans[cmd] for cmd in planned], searcher,
+            user_id=user_id, org_id=org_id, filters=filters, logger_instance=logger_instance,
+        )
+    except Exception:
+        logger_instance.warning("pattern_match: lexical index lookup failed, scanning files", exc_info=True)
+        if coverage is not None:
+            coverage.scan_reasons.add(_SCAN_INDEX_FAILED)
+        return commands
+    if coverage is not None and outcome.capped:
+        coverage.index_capped = True
+    for hits in outcome.hits:
+        _merge_command_hits(found, hits)
+    return unplanned
 
 
 def _merge_command_hits(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:
