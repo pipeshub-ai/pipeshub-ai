@@ -753,6 +753,7 @@
     "askAnythingInContext": "\"{{title}}\" में कुछ भी पूछें",
     "expandTable": "तालिका बड़ी करें",
     "fullTableView": "पूर्ण तालिका दृश्य",
+    "downloadCsv": "CSV के रूप में डाउनलोड करें",
     "expandDiagram": "आरेख बड़ा करें",
     "fullDiagramView": "पूर्ण आरेख दृश्य",
     "renderingDiagram": "आरेख रेंडर हो रहा है…",
@@ -954,6 +955,13 @@
     "deleteAgentDescription": "नाम वाला एजेंट",
     "deleteAgentWarning": "Pipeshub से स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाली चैट अपेक्षित रूप से काम नहीं कर सकतीं।",
     "deleteChat": "हटाएं",
+    "export": {
+      "menuItem": "एक्सपोर्ट करें",
+      "exporting": "चैट एक्सपोर्ट हो रही है…",
+      "done": "चैट एक्सपोर्ट हो गई",
+      "failed": "चैट एक्सपोर्ट नहीं की जा सकी",
+      "assistant": "असिस्टेंट"
+    },
     "deleteChatConfirm": "क्या आप सुनिश्चित हैं?",
     "deleteChatDescription": "शीर्षक वाली चैट",
     "deleteChatWarning": "Pipeshub से स्थायी रूप से हटा दी जाएगी। साझा पहुंच वाले सभी उपयोगकर्ता अपनी पहुंच खो देंगे।",

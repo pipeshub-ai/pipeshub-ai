@@ -843,6 +843,13 @@
     "rename": "Rename",
     "archive": "Archive",
     "deleteChat": "Delete",
+    "export": {
+      "menuItem": "Export",
+      "exporting": "Exporting chat…",
+      "done": "Chat exported",
+      "failed": "Could not export the chat",
+      "assistant": "Assistant"
+    },
     "renaming": "Renaming...",
     "archiving": "Archiving...",
     "chatRenamed": "Chat renamed",
@@ -861,6 +868,7 @@
     "askAnythingInContext": "Ask anything in \"{{title}}\"",
     "expandTable": "Expand table",
     "fullTableView": "Full table view",
+    "downloadCsv": "Download as CSV",
     "expandDiagram": "Expand diagram",
     "fullDiagramView": "Full diagram view",
     "renderingDiagram": "Rendering diagram…",

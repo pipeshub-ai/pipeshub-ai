@@ -803,6 +803,7 @@
       "retryMessage": "Ich habe mich erneut bei {{servers}} angemeldet. Bitte versuche es noch einmal."
     },
     "fullTableView": "Vollständige Tabellenansicht",
+    "downloadCsv": "Als CSV herunterladen",
     "toasts": {
       "stopStreamTitle": "Wird gestoppt…",
       "stopStreamDescription": "Die Antwort wird in Kürze gestoppt. Eine bereits erzeugte Teilantwort bleibt erhalten.",
@@ -951,6 +952,13 @@
     "deleteAgentDescription": "Der Agent mit dem Namen",
     "deleteAgentWarning": "wird dauerhaft aus Pipeshub entfernt. Chats, die ihn verwenden, funktionieren möglicherweise nicht mehr wie erwartet.",
     "deleteChat": "Löschen",
+    "export": {
+      "menuItem": "Exportieren",
+      "exporting": "Chat wird exportiert…",
+      "done": "Chat exportiert",
+      "failed": "Der Chat konnte nicht exportiert werden",
+      "assistant": "Assistent"
+    },
     "deleteChatConfirm": "Sind Sie sicher?",
     "deleteChatDescription": "Der Chat mit dem Titel",
     "deleteChatWarning": "wird dauerhaft aus Pipeshub entfernt. Alle Benutzer mit geteiltem Zugriff verlieren ihren Zugang.",

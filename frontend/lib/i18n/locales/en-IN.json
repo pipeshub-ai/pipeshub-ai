@@ -753,6 +753,7 @@
     "askAnythingInContext": "Ask anything in \"{{title}}\"",
     "expandTable": "Expand table",
     "fullTableView": "Full table view",
+    "downloadCsv": "Download as CSV",
     "expandDiagram": "Expand diagram",
     "fullDiagramView": "Full diagram view",
     "renderingDiagram": "Rendering diagram…",
@@ -993,6 +994,13 @@
     "deleteAgentDescription": "The agent named",
     "deleteAgentWarning": "will be permanently removed from Pipeshub. Chats that use it may no longer work as expected.",
     "deleteChat": "Delete",
+    "export": {
+      "menuItem": "Export",
+      "exporting": "Exporting chat…",
+      "done": "Chat exported",
+      "failed": "Could not export the chat",
+      "assistant": "Assistant"
+    },
     "deleteChatConfirm": "Are you sure?",
     "deleteChatDescription": "The chat titled",
     "deleteChatWarning": "will be permanently removed from Pipeshub. All users with shared access will lose their access.",

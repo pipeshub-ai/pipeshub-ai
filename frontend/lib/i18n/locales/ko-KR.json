@@ -844,6 +844,13 @@
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
+    "export": {
+      "menuItem": "내보내기",
+      "exporting": "채팅을 내보내는 중…",
+      "done": "채팅을 내보냈습니다",
+      "failed": "채팅을 내보내지 못했습니다",
+      "assistant": "어시스턴트"
+    },
     "renaming": "이름 변경 중...",
     "archiving": "보관 중...",
     "chatRenamed": "채팅 이름이 변경되었습니다",
@@ -862,6 +869,7 @@
     "askAnythingInContext": "\"{{title}}\"에서 무엇이든 물어보세요",
     "expandTable": "표 확장",
     "fullTableView": "전체 표 보기",
+    "downloadCsv": "CSV로 다운로드",
     "expandDiagram": "다이어그램 확장",
     "fullDiagramView": "전체 다이어그램 보기",
     "renderingDiagram": "다이어그램 렌더링 중…",

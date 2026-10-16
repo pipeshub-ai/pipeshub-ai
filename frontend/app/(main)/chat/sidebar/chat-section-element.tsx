@@ -17,6 +17,8 @@ import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
+import { toast } from '@/lib/store/toast-store';
+import { exportConversation } from '@/chat/utils/export-conversation';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -165,6 +167,30 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
       renameInputRef.current?.blur();
     } else if (e.key === 'Escape') {
       setIsRenaming(false);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      await toast.promise(
+        exportConversation({
+          conversationId: conversation.id,
+          title: conversation.title,
+          agentId,
+          labels: {
+            you: t('common.you'),
+            assistant: t('chat.export.assistant'),
+            sources: t('chat.sources'),
+          },
+        }),
+        {
+          loading: t('chat.export.exporting'),
+          success: t('chat.export.done'),
+          error: t('chat.export.failed'),
+        },
+      );
+    } catch {
+      // error already shown via toast
     }
   };
 
@@ -325,6 +351,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
               isParentHovered={isHovered}
               onOpenChange={setMenuOpen}
               onRename={handleStartRename}
+              onExport={() => void handleExport()}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}

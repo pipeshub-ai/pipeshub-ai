@@ -761,6 +761,7 @@
     "askAnythingInContext": "Pregunta lo que quieras en \"{{title}}\"",
     "expandTable": "Expandir tabla",
     "fullTableView": "Vista completa de la tabla",
+    "downloadCsv": "Descargar como CSV",
     "expandDiagram": "Expandir diagrama",
     "fullDiagramView": "Vista completa del diagrama",
     "renderingDiagram": "Renderizando diagrama…",
@@ -962,6 +963,13 @@
     "deleteAgentDescription": "El agente llamado",
     "deleteAgentWarning": "será eliminado permanentemente de Pipeshub. Los chats que lo utilicen podrían dejar de funcionar como se espera.",
     "deleteChat": "Eliminar",
+    "export": {
+      "menuItem": "Exportar",
+      "exporting": "Exportando el chat…",
+      "done": "Chat exportado",
+      "failed": "No se pudo exportar el chat",
+      "assistant": "Asistente"
+    },
     "deleteChatConfirm": "¿Estás seguro?",
     "deleteChatDescription": "El chat titulado",
     "deleteChatWarning": "será eliminado permanentemente de Pipeshub. Todos los usuarios con acceso compartido perderán su acceso.",

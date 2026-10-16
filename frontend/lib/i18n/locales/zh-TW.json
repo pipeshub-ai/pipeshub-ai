@@ -844,6 +844,13 @@
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
+    "export": {
+      "menuItem": "匯出",
+      "exporting": "正在匯出聊天…",
+      "done": "聊天已匯出",
+      "failed": "無法匯出聊天",
+      "assistant": "助理"
+    },
     "renaming": "重新命名中...",
     "archiving": "封存中...",
     "chatRenamed": "對話已重新命名",
@@ -862,6 +869,7 @@
     "askAnythingInContext": "在「{{title}}」中隨時提問",
     "expandTable": "展開表格",
     "fullTableView": "完整表格檢視",
+    "downloadCsv": "下載為 CSV",
     "expandDiagram": "展開圖表",
     "fullDiagramView": "完整圖表檢視",
     "renderingDiagram": "正在繪製圖表…",
