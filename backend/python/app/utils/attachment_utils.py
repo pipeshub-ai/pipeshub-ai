@@ -8,6 +8,7 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import CollectionNames
 from app.utils.attachment_mime_types import DOC_ATTACHMENT_MIME_TYPES
 from app.utils.chat_helpers import ImageBudget, is_base64_image
 from app.utils.image_admission import (
@@ -30,6 +31,16 @@ _SUPPORTED_IMAGE_PREFIXES: tuple[str, ...] = (
 )
 
 
+def is_chat_attachment(record: dict | None, org_id: str) -> bool:
+    """Whether ``record`` is a file uploaded to a chat of ``org_id``."""
+    return (
+        bool(record)
+        and record.get("orgId") == org_id
+        and record.get("origin") == "UPLOAD"
+        and record.get("connectorId") == f"attachments_{org_id}"
+    )
+
+
 async def keep_accessible_attachments(
     graph_provider: "IGraphDBProvider",
     *,
@@ -44,28 +55,48 @@ async def keep_accessible_attachments(
     user may not access.
 
     They arrive from the client by ``virtualRecordId`` and every resolver reads
-    them from blob storage checking the org only. A service account has no User
-    node to check and keeps that org scoping.
+    them from blob storage checking the org only. Each kept attachment's
+    ``recordId`` is replaced by the record the check found for its
+    ``virtualRecordId``: the client's copy is never trusted, since the tools
+    read an attached ``recordId`` past the turn's scope. A service account has
+    no User node to check, so it keeps only this org's chat attachments.
     """
     history_attachments = [a for conv in previous_conversations or [] for a in conv.get("attachments") or []]
     vrids = {a.get("virtualRecordId") for a in [*(attachments or []), *history_attachments]} - {None, ""}
-    if not vrids or is_service_account:
-        return attachments, previous_conversations
 
-    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-    user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
-    # A failed check raises: answering as if nothing were attached would hide
-    # the outage from the user.
-    allowed = set((await graph_provider.check_access(
-        user_key, org_id, virtual_record_ids=vrids,
-    )).records_by_vrid) if user_key else set()
+    record_by_vrid: dict[str, str] = {}
+    if vrids and is_service_account:
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "virtualRecordId", sorted(vrids),
+            return_fields=["id", "virtualRecordId", "orgId", "origin", "connectorId"],
+            raise_on_error=True,
+        )
+        for row in rows or []:
+            record_id = row.get("id") or row.get("_key")
+            if record_id and is_chat_attachment(row, org_id):
+                record_by_vrid.setdefault(row["virtualRecordId"], record_id)
+    elif vrids:
+        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+        user_key = (user_doc or {}).get("id") or (user_doc or {}).get("_key")
+        # A failed check raises: answering as if nothing were attached would hide
+        # the outage from the user.
+        if user_key:
+            record_by_vrid = dict((await graph_provider.check_access(
+                user_key, org_id, virtual_record_ids=vrids,
+            )).records_by_vrid)
 
     def keep(items: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-        return [a for a in items or [] if not a.get("virtualRecordId") or a["virtualRecordId"] in allowed]
+        return [
+            {**a, "recordId": record_by_vrid[a["virtualRecordId"]]}
+            for a in items or []
+            if a.get("virtualRecordId") in record_by_vrid
+        ]
 
-    if vrids - allowed:
-        logger.warning("Dropped %d attachment(s) the user may not access", len(vrids - allowed))
-    return keep(attachments), [
+    kept = keep(attachments)
+    dropped = len(attachments or []) - len(kept) + len(history_attachments) - len(keep(history_attachments))
+    if dropped:
+        logger.warning("Dropped %d attachment(s) the user may not access", dropped)
+    return kept, [
         {**conv, "attachments": keep(conv["attachments"])} if conv.get("attachments") else conv
         for conv in previous_conversations or []
     ]

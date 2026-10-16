@@ -13,11 +13,7 @@ import logging
 import os
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
-from app.services.graph_db.interface.graph_db_provider import (
-    ALLOWED_FILTER_KEYS,
-    SELECTION_FILTER_KEYS,
-)
+from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -198,23 +194,9 @@ def _not_read_note(
 
 
 async def _ids_outside_scope(context: "AgentContext", record_ids: list[str]) -> list[str]:
-    """The ids the turn may not read: outside the selection below app level,
-    or outside a saved agent's or a project's sources. None for a turn with
-    neither."""
-    filters = (context.tool_state or {}).get("filters") or {}
-    scoped = any(filters.get(key) for key in SELECTION_FILTER_KEYS) or any(
-        key in filters for key in ALLOWED_FILTER_KEYS
+    return await ids_outside_scope(
+        context.tool_state or {}, context.graph_provider, context.user_id, context.org_id, record_ids,
     )
-    if not scoped:
-        return []
-    user = await context.graph_provider.get_user_by_user_id(user_id=context.user_id)
-    user_key = (user or {}).get("_key") or (user or {}).get("id")
-    if not user_key:
-        return list(record_ids)
-    inside = await ids_within_scope(
-        context.tool_state, context.graph_provider, user_key, context.org_id, record_ids,
-    )
-    return [record_id for record_id in record_ids if record_id not in inside]
 
 
 async def execute_fetch_record(

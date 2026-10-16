@@ -302,7 +302,11 @@ class TestChatStreamKnowledge:
         c, _ = make_client(graph)
         _stream(c, "private", "alice")
         (call,) = loop.calls
-        assert call["query_info"]["filters"] == {"apps": ["conn-1"], "kb": ["NO_KB_SELECTED"]}
+        # The agent's sources also bound what a tool may read by id.
+        assert call["query_info"]["filters"] == {
+            "apps": ["conn-1"], "kb": ["NO_KB_SELECTED"],
+            "allowedApps": ["conn-1"], "allowedRecordGroups": [], "allowedRecords": [],
+        }
         assert call["query_info"]["systemPrompt"] == "be brief"
 
     def test_internal_search_switched_off_clears_knowledge(self, graph, loop) -> None:

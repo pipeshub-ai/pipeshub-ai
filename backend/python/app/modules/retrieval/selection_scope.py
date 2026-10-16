@@ -219,7 +219,7 @@ async def resolve_selection_scope(
             org_id, group_ids=group_ids, record_ids=record_ids,
             exact_record_ids=exact_ids, limit=limit,
         )
-    if len(nodes["groups"]) + len(nodes["records"]) > limit:
+    if nodes.get("truncated") or len(nodes["groups"]) + len(nodes["records"]) > limit:
         raise SelectionTooLargeError
 
     scope = SelectionScope(
@@ -294,13 +294,14 @@ async def prepare_turn_scope(
 ) -> dict[str, Any]:
     """A chat turn's filters with the server-set keys in place.
 
-    Without a selection below app level the filters come back unchanged, apart
-    from client-sent copies of the server-set keys, which are always dropped.
-    With one, the selection is resolved once so that a selection that cannot
-    be searched fails the turn before the model runs, the apps it touches are
-    recorded for the tools that work per app, and ``agent_sources`` and
-    ``project_sources`` (each ``apps`` / ``recordGroups`` / ``records``, as
-    stored on a saved agent or a project) bound what a search may cite.
+    Client-sent copies of the server-set keys are always dropped, and
+    ``agent_sources`` (``apps`` / ``recordGroups`` / ``records``, as stored on
+    a saved agent) always bound what the turn may cite or read by id. Without
+    a selection below app level nothing else changes. With one, the selection
+    is resolved once so that a selection that cannot be searched fails the
+    turn before the model runs, the apps it touches are recorded for the tools
+    that work per app, and ``project_sources`` (same shape, a project's) bound
+    it too.
 
     Raises:
         SelectionTooLargeError, SelectionNotReadyError: see ``resolve_selection_scope``
@@ -308,14 +309,20 @@ async def prepare_turn_scope(
         PermissionVerificationUnavailableError: the graph could not answer.
     """
     turn = {key: value for key, value in (filters or {}).items() if key not in SERVER_SET_FILTER_KEYS}
+
+    def bind(keys: Mapping[str, str], sources: Mapping[str, Iterable[str]] | None) -> None:
+        if sources is not None:
+            turn.update({key: sorted(set(sources.get(target) or ())) for key, target in keys.items()})
+
+    # Without a selection a whole-source agent still bounds the tools that
+    # read a record by id, which no search filter narrows.
+    bind(AGENT_BOUND_FILTER_KEYS, agent_sources)
     if not has_selection(turn):
         return turn
     # The selection is the whole scope of the turn: where it leaves a tool
     # with no app to work on, that means nothing, never everything.
     turn[STRICT_SCOPE_FILTER_KEY] = True
-    for keys, sources in ((AGENT_BOUND_FILTER_KEYS, agent_sources), (PROJECT_BOUND_FILTER_KEYS, project_sources)):
-        if sources is not None:
-            turn.update({key: sorted(set(sources.get(target) or ())) for key, target in keys.items()})
+    bind(PROJECT_BOUND_FILTER_KEYS, project_sources)
     user = await graph_provider.get_user_by_user_id(user_id=user_id)
     user_key = (user.get("_key") or user.get("id")) if user else None
     scope = (await resolve_request_scopes(graph_provider, user_key, org_id, turn))[0] if user_key else None
@@ -323,3 +330,39 @@ async def prepare_turn_scope(
         await require_membership_ready(graph_provider, scope)
         turn[SELECTION_APPS_FILTER_KEY] = sorted(scope.connector_ids - scope.app_ids)
     return turn
+
+
+async def unreadable_scope_error(
+    graph_provider: IGraphDBProvider,
+    user_id: str,
+    org_id: str,
+    filters: Mapping[str, Any] | None,
+) -> tuple[str, str] | None:
+    """``(code, message)`` when the user can read nothing the turn's filters
+    admit, so a turn that can only search answers at once rather than
+    searching in vain until its time runs out. None when something may be
+    readable, or when that cannot be told cheaply: the search then says so.
+    Distinct from a search that finds no hits.
+    """
+    if has_selection(filters):
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+        user_key = (user.get("_key") or user.get("id")) if user else None
+        if not user_key:
+            return None
+        # Memoized: prepare_turn_scope resolved the same selection a moment ago.
+        selection = await resolve_selection_scope(graph_provider, user_key, org_id, filters)
+        if selection is not None and selection.is_empty:
+            return "selection_empty", SELECTION_EMPTY_MESSAGE
+        return None
+    from app.modules.retrieval.retrieval_service import (
+        ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
+    )
+
+    # Only the containers: every other filter narrows further, so nothing in
+    # the wider scope means nothing in the turn's.
+    containers = await graph_provider.get_accessible_containers(
+        user_id, org_id, {key: (filters or {})[key] for key in CONTAINER_SCOPE_FILTER_KEYS if key in (filters or {})},
+    )
+    if containers.fallback_reason is None and containers.is_empty:
+        return "accessible_records_not_found", ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE
+    return None

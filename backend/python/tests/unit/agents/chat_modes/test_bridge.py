@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -635,6 +635,67 @@ class TestRunChatStream:
 
         assert events[-1].startswith("event: complete\n")
         assert captured_context.custom_instructions is None
+
+    async def test_a_user_who_can_read_nothing_in_scope_is_answered_at_once(self) -> None:
+        """Bug-bash 002: the loop would retry its search until the time budget ran out."""
+        from app.agents.agent_loop.protocol.stream_collector import (
+            collect_stream_outcome,
+        )
+
+        create = AsyncMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.agents.chat_modes.bridge.unreadable_scope_error",
+                new=AsyncMock(return_value=("selection_empty", "Nothing in your selection is available.")),
+            ),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=create),
+        ):
+            events = [
+                chunk async for chunk in run_chat_stream(
+                    **self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), protocol="agui",
+                )
+            ]
+
+        create.assert_not_called()
+        assert len(events) == 1
+
+        async def _replay() -> AsyncIterator[dict[str, Any]]:
+            for event in events:
+                yield event
+
+        response = (await collect_stream_outcome(_replay(), AsyncMock(return_value=False))).to_response()
+        assert response.status_code == 422
+        assert json.loads(response.body)["message"] == "Nothing in your selection is available."
+
+    async def test_a_user_with_readable_sources_still_runs_the_loop(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        check = AsyncMock(return_value=None)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.unreadable_scope_error", new=check),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        check.assert_awaited_once()
+        assert events[-1].startswith("event: complete\n")
 
     async def test_internal_search_prefetch_merges_into_goal_and_tool_state(self) -> None:
         """`INTERNAL_SEARCH_POLICY.prefetch_retrieval=True` -- a non-empty

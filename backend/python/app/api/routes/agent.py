@@ -936,8 +936,9 @@ async def _resolve_turn_filters(
             agent_id, org_id, caller_user_id, list(scope.dropped_app_ids), dropped_kbs,
         )
     # A turn with internal search switched off never uses the selection, so
-    # one that cannot be searched must not fail it.
-    if has_selection(filters) and searches_knowledge:
+    # one that cannot be searched must not fail it. A saved agent is bound to
+    # its sources even without a selection.
+    if searches_knowledge and (has_selection(filters) or not is_universal_agent):
         agent_sources = None
         if not is_universal_agent:
             # The caller's project collection was admitted above.

@@ -517,6 +517,7 @@ class TestFetchNearbyMessagesImpl:
             channel_id="C-private",
             user_id="u1",
             org_id="org-1",
+            scope_state=None,
         )
 
     async def test_missing_graph_provider(self):
@@ -587,6 +588,23 @@ class TestUserCanReadChannel:
         graph = _graph()
         assert await self._call(graph) is False
         graph.check_access.assert_not_called()
+
+    @pytest.mark.parametrize(("inside", "expected"), [(set(), False), ({"rg-c123"}, True)])
+    @patch("app.utils.fetch_slack_thread.user_can_access_node", new_callable=AsyncMock)
+    @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
+    async def test_a_channel_outside_the_turns_scope_is_denied(self, mock_key, mock_access, inside, expected):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        graph = _graph()
+        graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids),
+            node_ids_in_scope=frozenset(node_ids) & inside if scopes else frozenset(node_ids),
+        ))
+        state = {"filters": {"apps": [], "kb": [], "recordGroups": ["other-channel"]}}
+        assert await fsn._user_can_read_channel(
+            graph, connector_id="conn-1", channel_id="C123", user_id="u1", org_id="org-1", scope_state=state,
+        ) is expected
 
     @patch("app.utils.fetch_slack_thread.resolve_user_key", new_callable=AsyncMock)
     async def test_denied_when_channel_not_indexed(self, mock_key):
