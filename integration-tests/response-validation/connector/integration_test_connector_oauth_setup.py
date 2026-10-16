@@ -39,7 +39,7 @@ from helper.clients.connectors_client import (  # noqa: E402
     ConnectorsClient,
 )
 from openapi_schema_validator import (  # noqa: E402
-    assert_operation_documents_response,
+    _operation_responses,
     assert_error_response_matches_openapi_operation,
     assert_operation_requires_authentication,
     assert_query_params_documented,
@@ -557,8 +557,9 @@ class TestCreateAndDeleteOAuthApp:
             resp = oauth_configs_api.delete_config("Jira", throwaway_jira_app["id"])
             assert resp.status_code == 200, resp.text
             assert_response_strictly_matches_openapi_operation(resp.json(), _DELETE_OAUTH_CONFIG)
-            with pytest.raises(AssertionError):
-                assert_operation_documents_response(_DELETE_OAUTH_CONFIG, "400")
+            # The only documented 400 is the app-wide markup filter, not "still in use".
+            documented = _operation_responses(_DELETE_OAUTH_CONFIG).get("400")
+            assert documented in (None, {"$ref": "#/components/responses/XssRejected"}), documented
         finally:
             connectors_api.delete_instance(connector_id)
 
