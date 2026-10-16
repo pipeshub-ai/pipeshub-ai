@@ -188,30 +188,74 @@ export function createKeyedRateLimiter(
     return `${prefix}:ip:${getClientIpKey(req)}`;
   };
 
+  const reject = (req: Request, res: Response, retryAfter?: string | number | string[]): void => {
+    logger.warn('Rate limit exceeded', {
+      key: keyFor(req),
+      path: req.path,
+      method: req.method,
+      ip: getClientIp(req),
+      retryAfter,
+    });
+    const error = new TooManyRequestsError(message);
+    res.status(429).json({
+      error: {
+        code: error.code,
+        message: error.message,
+        retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
+      },
+    });
+  };
+
+  // express-rate-limit's skipSuccessfulRequests increments on entry and only
+  // decrements after a 2xx finishes, so a burst of in-flight 200s can 429.
+  // Slack deliveries share a few egress IPs; only completed 4xx/5xx count.
+  if (countOnlyFailures) {
+    const windowMs = 60 * 1000;
+    const hits = new Map<string, number[]>();
+    let lastSweepAt = Date.now();
+    return (req: Request, res: Response, next: () => void): void => {
+      const key = keyFor(req);
+      const now = Date.now();
+      // A key that failed once and never returned would otherwise stay forever.
+      if (now - lastSweepAt >= windowMs) {
+        lastSweepAt = now;
+        for (const [k, times] of hits) {
+          if (now - (times.at(-1) ?? 0) >= windowMs) {
+            hits.delete(k);
+          }
+        }
+      }
+      const recent = (hits.get(key) ?? []).filter((t) => now - t < windowMs);
+      if (recent.length > 0) {
+        hits.set(key, recent);
+      } else {
+        hits.delete(key);
+      }
+      if (recent.length >= maxRequestsPerMinute) {
+        reject(req, res, String(Math.ceil(windowMs / 1000)));
+        return;
+      }
+      res.once('finish', () => {
+        if (res.statusCode < 400) {
+          return;
+        }
+        const t = Date.now();
+        const recorded = (hits.get(key) ?? []).filter((x) => t - x < windowMs);
+        recorded.push(t);
+        hits.set(key, recorded);
+      });
+      next();
+    };
+  }
+
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
-    skipSuccessfulRequests: countOnlyFailures,
     keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
-      const retryAfter = res.getHeader('Retry-After');
-      logger.warn('Rate limit exceeded', {
-        key: keyFor(req),
-        path: req.path,
-        method: req.method,
-        ip: getClientIp(req),
-        retryAfter,
-      });
-      const error = new TooManyRequestsError(message);
-      res.status(429).json({
-        error: {
-          code: error.code,
-          message: error.message,
-          retryAfter: retryAfter ? parseInt(retryAfter as string, 10) : null,
-        },
-      });
+      reject(req, res, res.getHeader('Retry-After'));
     },
   };
 
@@ -273,9 +317,9 @@ export function createAuthRateLimiter(
  * it sees every org's traffic from the gateway's address, so a limiter there
  * would be one bucket shared by all orgs.
  *
- * Only responses of 400 or above count. Every org's real deliveries arrive from
- * Slack's few egress addresses, so counting them would let one busy workspace
- * throttle all the others, and a 429 makes Slack redeliver and add more load.
+ * Only completed responses of 400 or above count. In-flight 200s do not occupy
+ * the bucket: Slack's few egress addresses are shared across orgs, so counting
+ * them (or a burst still waiting on the bot) would 429 everyone else.
  * Bad signatures (the bot's 401) still fill the bucket.
  */
 export function createSlackEventsRateLimiter(
