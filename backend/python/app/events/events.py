@@ -474,15 +474,22 @@ class EventProcessor:
             self.logger.info(
                 "⚠️ Empty document for %s — marking EMPTY", record_id
             )
-            await self.update_record_fields(
+            await self._drop_the_previous_vectors_of_an_emptied_record(
+                record_doc, prev_virtual_record_id or virtual_record_id, event_type
+            )
+            self._require_persisted(
+                await self.update_record_fields(
+                    record_doc,
+                    {
+                        # parsingStatus is already COMPLETED from the write above.
+                        "indexingStatus": ProgressStatus.EMPTY.value,
+                        **indexed_copy_fields(ProgressStatus.EMPTY),
+                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        "isDirty": False,
+                    },
+                ),
+                "Failed to persist EMPTY status for record",
                 record_doc,
-                {
-                    # parsingStatus is already COMPLETED from the write above.
-                    "indexingStatus": ProgressStatus.EMPTY.value,
-                    **indexed_copy_fields(ProgressStatus.EMPTY),
-                    "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                    "isDirty": False,
-                },
             )
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
@@ -674,12 +681,11 @@ class EventProcessor:
             return
         pipeline = self._indexing_pipeline()
         if pipeline is None:
-            self.logger.error(
-                "No indexing pipeline available — the previous vectors of emptied record %s "
-                "were not deleted",
-                _record_key(doc),
+            # Completing anyway would leave the old content in the vector store for good.
+            raise IndexingError(
+                "No indexing pipeline to delete the previous vectors of an emptied record",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
             )
-            return
         await pipeline.delete_points_for_virtual_record(
             virtual_record_id, RecordContext.from_graph_document(doc)
         )
