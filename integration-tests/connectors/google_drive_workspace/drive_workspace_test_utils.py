@@ -1,6 +1,6 @@
 # pyright: ignore-file
 
-"""Helpers for Google Drive Workspace folder-filter integration tests."""
+"""Helpers for Google Drive Workspace folder-filter + entity integration tests."""
 
 from __future__ import annotations
 
@@ -8,19 +8,29 @@ import asyncio
 import inspect
 import json
 import logging
+import mimetypes
 import os
 import re
 import time
 import uuid
+from datetime import datetime
 from collections.abc import Awaitable, Callable
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from google.auth.transport import requests as google_auth_requests  # type: ignore[import-not-found]
 from google.oauth2 import service_account  # type: ignore[import-not-found]
 from googleapiclient.discovery import build  # type: ignore[import-not-found]
 from googleapiclient.errors import HttpError  # type: ignore[import-not-found]
 from pymongo import MongoClient  # type: ignore[import-not-found]
 
 from app.config.constants.arangodb import MimeTypes  # type: ignore[import-not-found]
+from app.connectors.sources.google.drive.utils.drive_mime import (  # type: ignore[import-not-found]
+    SHORTCUT_MIME,
+)
+from app.connectors.sources.google.common.drive_file_fields import (  # type: ignore[import-not-found]
+    DRIVE_WORKSPACE_FILE_GET_FIELDS,
+)
 from app.sources.external.google.drive.drive import (  # type: ignore[import-not-found]
     GoogleDriveDataSource,
 )
@@ -36,6 +46,11 @@ logger = logging.getLogger("drive-workspace-test-utils")
 FOLDER_MIME = MimeTypes.GOOGLE_DRIVE_FOLDER.value
 # Full drive scope for fixture create/delete under DWD impersonation.
 FULL_DRIVE_SCOPE = "https://www.googleapis.com/auth/drive"
+DRIVE_UPLOAD_ATTEMPTS = 3
+ADMIN_DIRECTORY_SCOPES = [
+    "https://www.googleapis.com/auth/admin.directory.user.readonly",
+    "https://www.googleapis.com/auth/admin.directory.group.readonly",
+]
 
 ENV_SA_JSON = "GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON"
 ENV_ADMIN_EMAIL = "GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL"
@@ -50,6 +65,32 @@ ENV_SECOND_USER = "GOOGLE_DRIVE_WORKSPACE_SECOND_USER_EMAIL"
 PROPAGATION_TIMEOUT_SEC = float(
     os.getenv("GOOGLE_DRIVE_WORKSPACE_PROPAGATION_TIMEOUT", "300")
 )
+
+
+def connector_filters(
+    *,
+    sync_values: Optional[dict[str, Any]] = None,
+    manual_indexing: bool = True,
+) -> dict[str, Any]:
+    """Connector ``filters`` with ``enable_manual_sync`` set explicitly, plus optional sync values.
+
+    Manual indexing keeps sync-only suites off the extraction/embedding pipeline;
+    pass ``manual_indexing=False`` where records must reach ``COMPLETED``.
+    """
+    filters: dict[str, Any] = {
+        "indexing": {
+            "values": {
+                "enable_manual_sync": {
+                    "operator": "is",
+                    "type": "boolean",
+                    "value": manual_indexing,
+                }
+            }
+        }
+    }
+    if sync_values:
+        filters["sync"] = {"values": sync_values}
+    return filters
 
 
 def require_drive_workspace_env() -> tuple[str, str, str]:
@@ -153,6 +194,100 @@ async def create_drive_text_file(
     return str(file_id)
 
 
+async def create_drive_google_file(
+    drive: GoogleDriveDataSource,
+    name: str,
+    parent_id: str,
+    mime_type: str,
+) -> str:
+    """Create a native Google Doc/Sheet/Slide (empty stub) under parent_id."""
+    created = await drive.files_create(
+        body={"name": name, "mimeType": mime_type, "parents": [parent_id]},
+        supportsAllDrives=True,
+        fields="id,name,mimeType",
+    )
+    file_id = created.get("id")
+    if not file_id:
+        raise RuntimeError(f"files_create returned no id for {name!r}: {created}")
+    return str(file_id)
+
+
+async def create_drive_ids_filter_fixtures(
+    drive: GoogleDriveDataSource,
+    drive_a_id: str,
+    drive_b_id: str,
+) -> dict[str, str]:
+    """Create one root file on Shared Drive A and one on B for pure drive_ids ITs."""
+    file_a_name = "drive-ids-a.txt"
+    file_b_name = "drive-ids-b.txt"
+    file_a_id = await create_drive_text_file(
+        drive,
+        file_a_name,
+        parent_id=drive_a_id,
+        content="pipeshub drive_ids filter it — drive A\n",
+    )
+    file_b_id = await create_drive_text_file(
+        drive,
+        file_b_name,
+        parent_id=drive_b_id,
+        content="pipeshub drive_ids filter it — drive B\n",
+    )
+    fixtures = {
+        "drive_a_id": drive_a_id,
+        "drive_b_id": drive_b_id,
+        "drive_a_file_id": file_a_id,
+        "drive_a_file_name": file_a_name,
+        "drive_b_file_id": file_b_id,
+        "drive_b_file_name": file_b_name,
+    }
+    logger.info("Created drive_ids filter fixtures: %s", fixtures)
+    return fixtures
+
+
+async def create_extension_filter_fixtures(
+    drive: GoogleDriveDataSource,
+) -> dict[str, str]:
+    """Create seed folder with Docs/Sheets/Slides + keep.txt for extension-filter ITs."""
+    root_name = f"pipeshub-it-ext-{uuid.uuid4().hex[:8]}"
+    root_id = await create_drive_folder(drive, root_name)
+    seed_id = await create_drive_folder(drive, "seed", parent_id=root_id)
+
+    doc_name = "ext-doc"
+    sheet_name = "ext-sheet"
+    slide_name = "ext-slide"
+    txt_name = "keep.txt"
+
+    doc_id = await create_drive_google_file(
+        drive, doc_name, seed_id, MimeTypes.GOOGLE_DOCS.value
+    )
+    sheet_id = await create_drive_google_file(
+        drive, sheet_name, seed_id, MimeTypes.GOOGLE_SHEETS.value
+    )
+    slide_id = await create_drive_google_file(
+        drive, slide_name, seed_id, MimeTypes.GOOGLE_SLIDES.value
+    )
+    txt_id = await create_drive_text_file(
+        drive, txt_name, parent_id=seed_id, content="extension filter keep\n"
+    )
+
+    fixtures = {
+        "root_folder_id": root_id,
+        "root_folder_name": root_name,
+        "seed_folder_id": seed_id,
+        "seed_folder_name": "seed",
+        "doc_file_id": doc_id,
+        "doc_file_name": doc_name,
+        "sheet_file_id": sheet_id,
+        "sheet_file_name": sheet_name,
+        "slide_file_id": slide_id,
+        "slide_file_name": slide_name,
+        "txt_file_id": txt_id,
+        "txt_file_name": txt_name,
+    }
+    logger.info("Created extension-filter fixtures: %s", fixtures)
+    return fixtures
+
+
 async def move_drive_item(
     drive: GoogleDriveDataSource,
     file_id: str,
@@ -199,6 +334,127 @@ async def rename_drive_item(
     logger.info("Renamed Drive item %s to %r", file_id, name)
 
 
+async def update_drive_file_content(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    content: str,
+    *,
+    mime_type: str = "text/plain",
+) -> dict[str, Any]:
+    """Overwrite a Drive file's media content; return updated metadata."""
+    import io
+
+    from googleapiclient.http import MediaIoBaseUpload  # type: ignore[import-not-found]
+
+    media = MediaIoBaseUpload(
+        io.BytesIO(content.encode("utf-8")),
+        mimetype=mime_type,
+        resumable=True,
+    )
+    updated = drive.client.files().update(  # type: ignore[attr-defined]
+        fileId=file_id,
+        media_body=media,
+        supportsAllDrives=True,
+        fields="id,name,size,md5Checksum,sha1Checksum,headRevisionId,version,modifiedTime",
+    ).execute()
+    logger.info(
+        "Updated Drive file content %s (revision=%s size=%s)",
+        file_id,
+        updated.get("headRevisionId") or updated.get("version"),
+        updated.get("size"),
+    )
+    return updated if isinstance(updated, dict) else {}
+
+
+async def trash_drive_item(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    *,
+    trashed: bool = True,
+) -> None:
+    """Move a Drive item to the trash, or restore it with ``trashed=False``."""
+    _files_update_with_body(drive, file_id, {"trashed": trashed})
+    logger.info("%s Drive item %s", "Trashed" if trashed else "Restored", file_id)
+
+
+async def delete_drive_item_permanently(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+) -> None:
+    """Delete a Drive item for good, bypassing the trash. Raises on failure."""
+    await drive.files_delete(fileId=file_id, supportsAllDrives=True)
+    logger.info("Permanently deleted Drive item %s", file_id)
+
+
+async def create_drive_shortcut(
+    drive: GoogleDriveDataSource,
+    target_id: str,
+    parent_id: str,
+    name: str,
+) -> str:
+    """Create a shortcut to *target_id* under *parent_id*; return the shortcut's id."""
+    created = drive.client.files().create(  # type: ignore[attr-defined]
+        body={
+            "name": name,
+            "mimeType": SHORTCUT_MIME,
+            "parents": [parent_id],
+            "shortcutDetails": {"targetId": target_id},
+        },
+        supportsAllDrives=True,
+        fields="id",
+    ).execute()
+    shortcut_id = created.get("id")
+    if not shortcut_id:
+        raise RuntimeError(f"files.create returned no id for shortcut to {target_id}: {created}")
+    logger.info("Created shortcut %s -> %s under %s", shortcut_id, target_id, parent_id)
+    return str(shortcut_id)
+
+
+async def upload_drive_file_resumable(
+    drive: GoogleDriveDataSource,
+    local_path: Path,
+    parent_id: str,
+    *,
+    name: Optional[str] = None,
+    mime_type: str = "application/octet-stream",
+    convert_to_mime: Optional[str] = None,
+) -> str:
+    """Upload *local_path* in resumable chunks (large files); return the new file id.
+
+    ``files_create_with_media`` holds the whole body in memory and sends it in one
+    request, which is not how a 200 MB file reaches Drive in practice.
+    """
+    from googleapiclient.http import MediaFileUpload  # type: ignore[import-not-found]
+
+    body: dict[str, Any] = {"name": name or local_path.name, "parents": [parent_id]}
+    if convert_to_mime:
+        body["mimeType"] = convert_to_mime
+
+    def _upload() -> dict[str, Any]:
+        media = MediaFileUpload(
+            str(local_path), mimetype=mime_type, resumable=True, chunksize=16 * 1024 * 1024
+        )
+        request = drive.client.files().create(  # type: ignore[attr-defined]
+            body=body, media_body=media, supportsAllDrives=True, fields="id,size,mimeType"
+        )
+        response = None
+        while response is None:
+            _status, response = request.next_chunk()
+        return response
+
+    created = await _create_upload_once(
+        drive, parent_id, body["name"], lambda: asyncio.to_thread(_upload)
+    )
+    file_id = created.get("id")
+    if not file_id:
+        raise RuntimeError(f"resumable upload returned no id for {local_path}: {created}")
+    logger.info(
+        "Uploaded %s (%s bytes, %s) as Drive file %s under %s",
+        local_path.name, created.get("size"), created.get("mimeType"), file_id, parent_id,
+    )
+    return str(file_id)
+
+
 async def create_shared_drive(drive: GoogleDriveDataSource, name: str) -> str:
     """Create a Shared Drive; return its drive id.
 
@@ -215,6 +471,35 @@ async def create_shared_drive(drive: GoogleDriveDataSource, name: str) -> str:
         raise RuntimeError(f"drives.create returned no id for {name!r}: {created}")
     logger.info("Created Shared Drive %r id=%s", name, drive_id)
     return str(drive_id)
+
+
+async def rename_shared_drive(drive: GoogleDriveDataSource, drive_id: str, name: str) -> None:
+    """Rename a Shared Drive (the caller must be an organizer)."""
+    drive.client.drives().update(driveId=drive_id, body={"name": name}).execute()  # type: ignore[attr-defined]
+    logger.info("Renamed Shared Drive %s to %r", drive_id, name)
+
+
+async def create_shared_drive_lifecycle_fixtures(
+    drive: GoogleDriveDataSource,
+) -> dict[str, str]:
+    """A fresh Shared Drive holding ``sd-folder/sd-file.txt`` and ``group-share.txt``."""
+    suffix = uuid.uuid4().hex[:8]
+    drive_name = f"pipeshub-it-sd-lc-{suffix}"
+    drive_id = await create_shared_drive(drive, drive_name)
+    folder_id = await create_drive_folder(drive, "sd-folder", parent_id=drive_id)
+    fixtures = {
+        "drive_id": drive_id,
+        "drive_name": drive_name,
+        "folder_id": folder_id,
+        "file_id": await create_drive_text_file(
+            drive, "sd-file.txt", parent_id=folder_id, content=f"shared drive lifecycle {suffix}\n"
+        ),
+        "group_file_id": await create_drive_text_file(
+            drive, "group-share.txt", parent_id=drive_id, content=f"group share {suffix}\n"
+        ),
+    }
+    logger.info("Created Shared Drive lifecycle fixtures: %s", fixtures)
+    return fixtures
 
 
 async def list_shared_drive_ids(drive: GoogleDriveDataSource) -> set[str]:
@@ -449,6 +734,51 @@ async def delete_shared_drive(
         logger.warning("Failed to delete Shared Drive %s: %s", drive_id, e)
 
 
+IT_SHARED_DRIVE_PREFIXES = ("phit-", "pipeshub-it-")
+# A CI job running both graph backends takes about 6h, so a younger drive may belong
+# to a run still in progress.
+STALE_SHARED_DRIVE_AGE_SEC = 12 * 3600
+
+
+async def delete_stale_it_shared_drives(
+    admin_drive: GoogleDriveDataSource,
+    *,
+    max_age_sec: float = STALE_SHARED_DRIVE_AGE_SEC,
+) -> list[str]:
+    """Delete IT Shared Drives a killed run never tore down. Best-effort.
+
+    The unfiltered connectors sync the whole tenant, so a leftover drive's items
+    show up in every later run's graph next to the ones that run created.
+    """
+    cutoff = time.time() - max_age_sec
+    stale: list[dict[str, str]] = []
+    page_token: Optional[str] = None
+    while True:
+        resp = await admin_drive.drives_list(
+            pageSize=100,
+            pageToken=page_token,
+            useDomainAdminAccess=True,
+            fields="nextPageToken, drives(id, name, createdTime)",
+        )
+        for entry in resp.get("drives") or []:
+            name = entry.get("name") or ""
+            created = entry.get("createdTime")
+            if (
+                name.startswith(IT_SHARED_DRIVE_PREFIXES)
+                and created
+                and datetime.fromisoformat(created).timestamp() < cutoff
+            ):
+                stale.append(entry)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+
+    for entry in stale:
+        logger.info("Deleting stale IT Shared Drive %r (%s, created %s)", entry["name"], entry["id"], entry["createdTime"])
+        await delete_shared_drive(admin_drive, entry["id"], admin_drive=admin_drive)
+    return [entry["id"] for entry in stale]
+
+
 async def create_folder_filter_fixtures(
     drive: GoogleDriveDataSource,
 ) -> dict[str, str]:
@@ -492,6 +822,63 @@ async def create_folder_filter_fixtures(
         "oos_file_name": "sibling.txt",
     }
     logger.info("Created Drive folder-filter fixtures: %s", fixtures)
+    return fixtures
+
+
+async def create_lifecycle_fixtures(drive: GoogleDriveDataSource) -> dict[str, str]:
+    """Tree for the trash / delete / rename / same-name / outside-share lifecycle ITs.
+
+    root/
+      trash-me.txt
+      doomed/            (deleted for good in one test)
+        doomed-a.txt
+        doomed-sub/
+          doomed-b.txt
+      renamable/         (renamed in one test)
+        renamable-child.txt
+      dup/
+        same-name.txt    (two files with this exact name)
+        same-name.txt
+      share-out.txt      (shared with someone outside the Workspace)
+    """
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"pipeshub-it-drive-lc-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+    doomed_id = await create_drive_folder(drive, "doomed", parent_id=root_id)
+    doomed_sub_id = await create_drive_folder(drive, "doomed-sub", parent_id=doomed_id)
+    renamable_id = await create_drive_folder(drive, "renamable", parent_id=root_id)
+    dup_id = await create_drive_folder(drive, "dup", parent_id=root_id)
+    fixtures = {
+        "root_folder_id": root_id,
+        "root_folder_name": root_name,
+        "trash_file_id": await create_drive_text_file(
+            drive, "trash-me.txt", parent_id=root_id,
+            content=f"Lifecycle trash fixture {suffix}. The quarterly lighthouse audit covers lamp hours.\n",
+        ),
+        "doomed_folder_id": doomed_id,
+        "doomed_a_id": await create_drive_text_file(
+            drive, "doomed-a.txt", parent_id=doomed_id, content=f"doomed a {suffix}\n"
+        ),
+        "doomed_sub_id": doomed_sub_id,
+        "doomed_b_id": await create_drive_text_file(
+            drive, "doomed-b.txt", parent_id=doomed_sub_id, content=f"doomed b {suffix}\n"
+        ),
+        "renamable_folder_id": renamable_id,
+        "renamable_child_id": await create_drive_text_file(
+            drive, "renamable-child.txt", parent_id=renamable_id, content=f"rename child {suffix}\n"
+        ),
+        "dup_folder_id": dup_id,
+        "dup_first_id": await create_drive_text_file(
+            drive, "same-name.txt", parent_id=dup_id, content=f"first twin {suffix}\n"
+        ),
+        "dup_second_id": await create_drive_text_file(
+            drive, "same-name.txt", parent_id=dup_id, content=f"second twin {suffix}\n"
+        ),
+        "share_out_file_id": await create_drive_text_file(
+            drive, "share-out.txt", parent_id=root_id, content=f"outside share {suffix}\n"
+        ),
+    }
+    logger.info("Created lifecycle fixtures: %s", fixtures)
     return fixtures
 
 
@@ -626,6 +1013,23 @@ def share_drive_item_with_domain(
     return permission_id
 
 
+def share_drive_item_with_group(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    group_email: str,
+    role: str = "reader",
+) -> str:
+    """Share with a Google Group, without the notification email; return the permission id."""
+    permission_id = _create_permission(
+        drive,
+        file_id,
+        {"type": "group", "role": role, "emailAddress": group_email},
+        sendNotificationEmail=False,
+    )
+    logger.info("Shared Drive item %s with group %s as %s", file_id, group_email, role)
+    return permission_id
+
+
 async def unshare_drive_item(
     drive: GoogleDriveDataSource,
     file_id: str,
@@ -733,9 +1137,9 @@ def _user_id_from_payload(payload: dict[str, Any]) -> str:
 def find_pipeshub_user_by_email(users_client: Any, email: str) -> Optional[dict[str, Any]]:
     """Return the active (non-soft-deleted) Mongo user doc for email, else None."""
     target = email.strip().lower()
-    # Escape so '.' in emails is matched literally by the API's $regex search.
-    search = re.escape(email.strip())
-    resp = users_client.get_all_users(search=search, limit=100)
+    # Raw: the API escapes the term itself (#3804). Escaping here too searched for a
+    # literal backslash, so no address with a '.' was ever found.
+    resp = users_client.get_all_users(search=email.strip(), limit=100)
     if resp.status_code >= 400:
         raise RuntimeError(
             f"Failed to list users while looking up {email}: "
@@ -985,3 +1389,561 @@ async def sync_until(
             round_kept = True
         else:
             await asyncio.sleep(min(_GRAPH_POLL_INTERVAL_SEC, remaining))
+
+
+def ensure_pipeshub_user_inactive(users_client: Any, email: str) -> Optional[str]:
+    """Soft-delete the Pipeshub user if present so Drive sync skips them.
+
+    Returns the soft-deleted user id, or ``None`` if no active user existed.
+    Callers should wait for graph ``isActive is False`` (or absent) before syncing.
+    """
+    existing = find_pipeshub_user_by_email(users_client, email)
+    if existing is None:
+        logger.info("Pipeshub user %s already inactive/absent", email)
+        return None
+    user_id = _user_id_from_payload(existing if isinstance(existing, dict) else {})
+    if not user_id:
+        raise RuntimeError(f"Could not resolve Pipeshub user id for {email}: {existing}")
+    resp = users_client.delete_user(user_id)
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Failed to soft-delete Pipeshub user {email} ({user_id}): "
+            f"HTTP {resp.status_code}: {resp.text}"
+        )
+    logger.info("Soft-deleted Pipeshub user %s (%s) for inactive share IT", email, user_id)
+    return user_id
+
+
+async def wait_until_user_has_file_permission(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    email: str,
+    *,
+    timeout: float = 60.0,
+    interval: float = 2.0,
+) -> None:
+    """Poll ``permissions.list`` until ``email`` has a direct file grant.
+
+    Shared Drive individual shares can lag after ``permissions.create`` before
+    they appear on ``permissions.list`` with ``permissionDetails.permissionType
+    == "file"``. The Workspace connector only layers Shared-with-Me for those
+    entries, so ITs must wait here before triggering sync.
+    """
+    from helper.graph_provider_utils import async_poll_until  # type: ignore[import-not-found]
+
+    target = email.strip().lower()
+
+    async def _has_file_grant() -> dict[str, Any] | None:
+        listed = await drive.permissions_list(
+            fileId=file_id,
+            supportsAllDrives=True,
+            fields=(
+                "permissions(id,emailAddress,type,role,permissionDetails)"
+            ),
+        )
+        permissions = listed.get("permissions") if isinstance(listed, dict) else None
+        if not isinstance(permissions, list):
+            logger.info(
+                "Waiting for file permission %s on %s; permissions.list empty/invalid",
+                target,
+                file_id,
+            )
+            return None
+        for perm in permissions:
+            if not isinstance(perm, dict):
+                continue
+            if str(perm.get("emailAddress") or "").strip().lower() != target:
+                continue
+            details = perm.get("permissionDetails") or []
+            # Match connector: Shared Drive SWM links only for permissionType == "file".
+            if any(
+                isinstance(d, dict) and d.get("permissionType") == "file"
+                for d in details
+            ):
+                return perm
+        logger.info(
+            "Waiting for file permission %s on %s; not yet visible as file grant",
+            target,
+            file_id,
+        )
+        return None
+
+    await async_poll_until(
+        _has_file_grant,
+        timeout=timeout,
+        interval=interval,
+        description=f"Drive file permission for {target} on {file_id}",
+    )
+    logger.info("Drive file permission visible for %s on %s", target, file_id)
+
+
+async def set_drive_folder_limited_access(
+    drive: GoogleDriveDataSource,
+    folder_id: str,
+    *,
+    limited: bool = True,
+) -> None:
+    """Enable/disable limited access on a folder (My Drive / Shared Drive).
+
+    Sets ``inheritedPermissionsDisabled`` via the raw client (generated
+    ``files_update`` has no body parameter). Drive supports this for folders
+    only — nested files cannot break inheritance this way.
+    """
+    updated = (
+        drive.client.files()
+        .update(
+            fileId=folder_id,
+            body={"inheritedPermissionsDisabled": limited},
+            supportsAllDrives=True,
+            fields="id,inheritedPermissionsDisabled,mimeType",
+        )
+        .execute()
+    )
+    if not isinstance(updated, dict):
+        raise RuntimeError(
+            f"files.update returned unexpected result for limited access on "
+            f"{folder_id!r}: {updated}"
+        )
+    actual = updated.get("inheritedPermissionsDisabled")
+    if bool(actual) != limited:
+        raise RuntimeError(
+            f"Limited access not applied on {folder_id!r}: "
+            f"expected inheritedPermissionsDisabled={limited}, got {actual!r} "
+            f"(mimeType={updated.get('mimeType')!r})"
+        )
+    logger.info(
+        "Set inheritedPermissionsDisabled=%s on folder %s",
+        limited,
+        folder_id,
+    )
+
+
+async def unshare_drive_item_from_user(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+    email: str,
+) -> bool:
+    """Remove the user permission for ``email`` on ``file_id``.
+
+    Returns True if a matching permission was deleted, False if none was found.
+    """
+    target = email.strip().lower()
+    listed = await drive.permissions_list(
+        fileId=file_id,
+        supportsAllDrives=True,
+        fields="permissions(id,emailAddress,type,role)",
+    )
+    permissions = listed.get("permissions") if isinstance(listed, dict) else None
+    if not isinstance(permissions, list):
+        return False
+    deleted = False
+    for perm in permissions:
+        if not isinstance(perm, dict):
+            continue
+        if str(perm.get("emailAddress") or "").strip().lower() != target:
+            continue
+        perm_id = perm.get("id")
+        if not perm_id:
+            continue
+        await drive.permissions_delete(
+            fileId=file_id,
+            permissionId=str(perm_id),
+            supportsAllDrives=True,
+        )
+        deleted = True
+    return deleted
+
+
+# ---------------------------------------------------------------------------
+# Admin Directory + entity IT helpers
+# ---------------------------------------------------------------------------
+
+
+def build_admin_directory_client(sa_json: str, admin_email: str) -> Any:
+    """Build Admin Directory API client via DWD as ``admin_email``."""
+    service_account_info = json.loads(sa_json)
+    if not isinstance(service_account_info, dict):
+        raise ValueError(f"{ENV_SA_JSON} must be a JSON object")
+    credentials = service_account.Credentials.from_service_account_info(
+        service_account_info,
+        scopes=ADMIN_DIRECTORY_SCOPES,
+        subject=admin_email,
+    )
+    return build(
+        "admin",
+        "directory_v1",
+        credentials=credentials,
+        cache_discovery=False,
+    )
+
+
+ADMIN_GROUP_MEMBER_SCOPE = "https://www.googleapis.com/auth/admin.directory.group.member"
+
+
+def build_admin_group_member_client(sa_json: str, admin_email: str) -> Any:
+    """Admin Directory client allowed to add/remove group members.
+
+    Needs ``admin.directory.group.member`` in the service account's domain-wide
+    delegation; the sync itself only needs the read-only scopes, so a tenant set up
+    for the connector alone will not have it. Raises ``RefreshError`` when missing.
+    """
+    credentials = service_account.Credentials.from_service_account_info(
+        json.loads(sa_json), scopes=[ADMIN_GROUP_MEMBER_SCOPE], subject=admin_email
+    )
+    credentials.refresh(google_auth_requests.Request())
+    return build("admin", "directory_v1", credentials=credentials, cache_discovery=False)
+
+
+async def resolve_my_drive_root_id(drive: GoogleDriveDataSource) -> str:
+    """Return the impersonated user's My Drive root folder id."""
+    info = await drive.files_get(
+        fileId="root",
+        supportsAllDrives=True,
+        fields="id",
+    )
+    root_id = info.get("id")
+    if not root_id:
+        raise RuntimeError(f"files.get('root') returned no id: {info}")
+    return str(root_id)
+
+
+async def drive_files_get_workspace(
+    drive: GoogleDriveDataSource,
+    file_id: str,
+) -> dict[str, Any]:
+    """``files.get`` with the same field mask the Workspace connector uses."""
+    meta = await drive.files_get(
+        fileId=file_id,
+        supportsAllDrives=True,
+        fields=DRIVE_WORKSPACE_FILE_GET_FIELDS,
+    )
+    if not isinstance(meta, dict) or not meta.get("id"):
+        raise RuntimeError(f"files.get({file_id!r}) failed: {meta}")
+    return meta
+
+
+def pick_entity_sample_files(sample_data_root: Path, n: int = 2) -> list[Path]:
+    """Return the first *n* sample files (sorted by relative path) under *sample_data_root*."""
+    from sample_data import list_sample_files  # type: ignore[import-not-found]
+
+    entries = sorted(list_sample_files(), key=lambda t: t[0])
+    if len(entries) < n:
+        raise RuntimeError(
+            f"Need at least {n} sample files under {sample_data_root}, found {len(entries)}"
+        )
+    paths: list[Path] = []
+    for rel, _name in entries[:n]:
+        path = sample_data_root / rel
+        if not path.is_file():
+            raise RuntimeError(f"Sample file missing on disk: {path}")
+        paths.append(path)
+    return paths
+
+
+async def _child_by_name(
+    drive: GoogleDriveDataSource, parent_id: str, *names: str
+) -> Optional[dict[str, Any]]:
+    """A non-trashed item directly under *parent_id* called any of *names*, if one exists."""
+    matches = " or ".join(
+        "name = '{}'".format(n.replace("\\", "\\\\").replace("'", "\\'")) for n in names
+    )
+    resp = await drive.files_list(
+        q=f"'{parent_id}' in parents and ({matches}) and trashed = false",
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+        fields="files(id, name, mimeType)",
+    )
+    files = resp.get("files") or []
+    return files[0] if files else None
+
+
+async def _create_upload_once(
+    drive: GoogleDriveDataSource,
+    parent_id: str,
+    file_name: str,
+    upload: Callable[[], Awaitable[dict[str, Any]]],
+) -> dict[str, Any]:
+    """Run *upload*, retrying when Drive never answers, without making a second file.
+
+    A converting upload now and then gets no response: either Drive created the file
+    and the answer was lost, or it never finished. googleapiclient retries the start
+    of a resumable upload on a timeout but not the request carrying the content, so
+    the timeout reaches us. Before each retry the parent is checked for the file,
+    under its own name or the extension-less one Drive gives a converted upload.
+    """
+    attempt = 1
+    while True:
+        try:
+            return await upload()
+        except TimeoutError:
+            existing = await _child_by_name(drive, parent_id, file_name, Path(file_name).stem)
+            if existing:
+                return existing
+            if attempt == DRIVE_UPLOAD_ATTEMPTS:
+                raise
+            logger.warning("Upload of %s timed out; retrying (%d/%d)", file_name, attempt, DRIVE_UPLOAD_ATTEMPTS)
+            attempt += 1
+
+
+async def upload_drive_local_file(
+    drive: GoogleDriveDataSource,
+    local_path: Path,
+    parent_id: str,
+    *,
+    name: Optional[str] = None,
+    convert_to_mime: Optional[str] = None,
+    media_mime: Optional[str] = None,
+) -> str:
+    """Upload a local file into Drive under *parent_id*; return the new file id.
+
+    When *convert_to_mime* is a Google Workspace MIME (Docs/Sheets/Slides), the
+    upload converts Office binary to the native Google type via Drive API
+    (``file_metadata.mimeType`` = target, media MIME = source Office type).
+    """
+    file_name = name or local_path.name
+    mime_type = media_mime
+    if not mime_type:
+        mime_type, _ = mimetypes.guess_type(str(local_path))
+    if not mime_type:
+        mime_type = "application/octet-stream"
+    content = local_path.read_bytes()
+    file_metadata: dict[str, Any] = {"name": file_name, "parents": [parent_id]}
+    if convert_to_mime:
+        file_metadata["mimeType"] = convert_to_mime
+    created = await _create_upload_once(
+        drive,
+        parent_id,
+        file_name,
+        lambda: drive.files_create_with_media(
+            file_metadata=file_metadata,
+            content=content,
+            mime_type=mime_type,
+            supportsAllDrives=True,
+        ),
+    )
+    file_id = created.get("id")
+    if not file_id:
+        raise RuntimeError(
+            f"files_create_with_media returned no id for {file_name!r}: {created}"
+        )
+    result_mime = created.get("mimeType") or convert_to_mime or mime_type
+    logger.info(
+        "Uploaded sample %s (%d bytes, media=%s → %s) as Drive file %s under %s",
+        file_name,
+        len(content),
+        mime_type,
+        result_mime,
+        file_id,
+        parent_id,
+    )
+    return str(file_id)
+
+
+# Blocks-snapshot sample filenames (integration-test repo google-drive-it-files).
+DRIVE_BLOCKS_SAMPLE_SPECS: tuple[dict[str, str], ...] = (
+    {
+        "kind": "newsletter_doc",
+        "local_name": "Newsletter.docx",
+        "convert_to_mime": MimeTypes.GOOGLE_DOCS.value,
+        "media_mime": MimeTypes.DOCX.value,
+    },
+    {
+        "kind": "science_fair_slides",
+        "local_name": "Science fair.pptx",
+        "convert_to_mime": MimeTypes.GOOGLE_SLIDES.value,
+        "media_mime": MimeTypes.PPTX.value,
+    },
+    {
+        "kind": "gantt_chart_sheets",
+        "local_name": "Gantt chart.xlsx",
+        "convert_to_mime": MimeTypes.GOOGLE_SHEETS.value,
+        "media_mime": MimeTypes.XLSX.value,
+    },
+    {
+        "kind": "owasp_pdf",
+        "local_name": "OWASP Test PDF.pdf",
+        "media_mime": MimeTypes.PDF.value,
+    },
+    {
+        "kind": "contributing_md",
+        "local_name": "CONTRIBUTING.md",
+        "media_mime": MimeTypes.MARKDOWN.value,
+    },
+)
+
+
+async def create_drive_blocks_fixtures(
+    drive: GoogleDriveDataSource,
+) -> dict[str, Any]:
+    """Create ``blocks-root/seed/`` and return folder ids for the blocks IT."""
+    suffix = uuid.uuid4().hex[:8]
+    root_name = f"phit-blocks-root-{suffix}"
+    seed_name = f"phit-blocks-seed-{suffix}"
+    root_id = await create_drive_folder(drive, root_name)
+    seed_id = await create_drive_folder(drive, seed_name, parent_id=root_id)
+    return {
+        "root_folder_id": root_id,
+        "root_folder_name": root_name,
+        "seed_folder_id": seed_id,
+        "seed_folder_name": seed_name,
+    }
+
+
+async def upload_drive_blocks_samples(
+    drive: GoogleDriveDataSource,
+    parent_id: str,
+    samples_root: Path,
+) -> list[dict[str, str]]:
+    """Upload the five google-drive-it-files samples; convert Office → Google natives.
+
+    Returns a list of ``{id, name, kind, local_name, target_mime}`` dicts.
+    """
+    uploaded: list[dict[str, str]] = []
+    for spec in DRIVE_BLOCKS_SAMPLE_SPECS:
+        local_name = spec["local_name"]
+        kind = spec["kind"]
+        local_path = samples_root / local_name
+        if not local_path.is_file():
+            raise RuntimeError(
+                f"Drive blocks sample missing: {local_path} (kind={kind})"
+            )
+        convert_to = spec.get("convert_to_mime")
+        file_id = await upload_drive_local_file(
+            drive,
+            local_path,
+            parent_id,
+            name=local_name,
+            convert_to_mime=convert_to,
+            media_mime=spec.get("media_mime"),
+        )
+        meta = await drive_files_get_workspace(drive, file_id)
+        target_mime = str(meta.get("mimeType") or convert_to or "")
+        uploaded.append(
+            {
+                "id": file_id,
+                "name": str(meta.get("name") or local_name),
+                "kind": kind,
+                "local_name": local_name,
+                "target_mime": target_mime,
+            }
+        )
+    return uploaded
+
+
+async def count_drive_directory_users(admin_client: Any) -> int:
+    """Count Directory users with an email (mirrors connector ``_sync_users``)."""
+    total = 0
+    page_token: Optional[str] = None
+    while True:
+        kwargs: dict[str, Any] = {
+            "customer": "my_customer",
+            "projection": "full",
+            "orderBy": "email",
+            "maxResults": 500,
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        result = admin_client.users().list(**kwargs).execute()
+        for user in result.get("users") or []:
+            email = user.get("primaryEmail") or user.get("email") or ""
+            if email:
+                total += 1
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    return total
+
+
+async def get_drive_directory_user(
+    admin_client: Any,
+    email: str,
+) -> dict[str, Any]:
+    """Return Directory user dict for *email* (raises if missing)."""
+    result = admin_client.users().get(userKey=email, projection="full").execute()
+    if not isinstance(result, dict) or not result.get("id"):
+        raise RuntimeError(f"Admin users.get({email!r}) failed: {result}")
+    return result
+
+
+async def list_group_user_member_emails(
+    admin_client: Any,
+    group_email: str,
+) -> list[str]:
+    """USER-type member emails for a group (connector skips GROUP/CUSTOMER)."""
+    emails: list[str] = []
+    page_token: Optional[str] = None
+    while True:
+        kwargs: dict[str, Any] = {"groupKey": group_email, "maxResults": 200}
+        if page_token:
+            kwargs["pageToken"] = page_token
+        result = admin_client.members().list(**kwargs).execute()
+        for member in result.get("members") or []:
+            if member.get("type") != "USER":
+                continue
+            member_email = member.get("email") or ""
+            if member_email:
+                emails.append(str(member_email))
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    return emails
+
+
+async def count_drive_group_user_members(admin_client: Any, group_email: str) -> int:
+    """Count USER members with email for *group_email*."""
+    return len(await list_group_user_member_emails(admin_client, group_email))
+
+
+async def count_drive_directory_groups_with_members(admin_client: Any) -> int:
+    """Count Directory groups that have ≥1 USER member (empty groups are skipped)."""
+    total = 0
+    page_token: Optional[str] = None
+    while True:
+        kwargs: dict[str, Any] = {
+            "customer": "my_customer",
+            "orderBy": "email",
+            "maxResults": 200,
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        result = admin_client.groups().list(**kwargs).execute()
+        for group in result.get("groups") or []:
+            group_email = group.get("email") or ""
+            if not group_email:
+                continue
+            members = await list_group_user_member_emails(admin_client, group_email)
+            if members:
+                total += 1
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    return total
+
+
+async def find_reference_directory_group(
+    admin_client: Any,
+) -> Optional[dict[str, str]]:
+    """Return ``{email, name}`` for the first Directory group with ≥1 USER member."""
+    page_token: Optional[str] = None
+    while True:
+        kwargs: dict[str, Any] = {
+            "customer": "my_customer",
+            "orderBy": "email",
+            "maxResults": 200,
+        }
+        if page_token:
+            kwargs["pageToken"] = page_token
+        result = admin_client.groups().list(**kwargs).execute()
+        for group in result.get("groups") or []:
+            group_email = group.get("email") or ""
+            if not group_email:
+                continue
+            members = await list_group_user_member_emails(admin_client, group_email)
+            if not members:
+                continue
+            name = group.get("name") or group_email
+            return {"email": str(group_email), "name": str(name)}
+        page_token = result.get("nextPageToken")
+        if not page_token:
+            break
+    return None

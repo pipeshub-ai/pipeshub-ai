@@ -80,6 +80,7 @@ from app.connectors.sources.google.drive.utils.drive_filters import (
 )
 from app.connectors.sources.google.drive.utils.drive_full_sync_reconciler import (
     FullSyncLedger,
+    delete_shared_drive_records,
     reconcile_unseen_records,
 )
 from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
@@ -122,7 +123,9 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
+    adopt_shortcut_seed_target,
     probe_can_list_children,
+    seeds_with_new_parent,
     static_data_source_provider,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
@@ -167,6 +170,8 @@ FOLDER_FILTER_SYNC_POINT_KEY = "folder_filter"
 # The sync filters every stored record was last checked against, so a filter change
 # removes what it now leaves out once, not on every run.
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup"
+# Shared drives this connector has synced, kept so a drive deleted from Workspace can be removed.
+SYNCED_SHARED_DRIVES_SYNC_POINT_KEY = "synced_shared_drives"
 FILTER_CLEANUP_PAGE_SIZE = 500
 
 
@@ -1286,6 +1291,8 @@ class GoogleDriveTeamConnector(BaseConnector):
                     )
                     continue
 
+            await self._remove_deleted_shared_drives([d["id"] for d in all_drives if d.get("id")])
+
             # Step 2: Create "My Drive" record groups for each user
             self.logger.info("Creating 'My Drive' record groups for users...")
             for user in self.synced_users:
@@ -1307,6 +1314,57 @@ class GoogleDriveTeamConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Error syncing record groups: {e}", exc_info=True)
             raise
+
+    async def _remove_deleted_shared_drives(self, synced_drive_ids: list[str]) -> None:
+        """Remove the shared drives an earlier run synced that Workspace no longer has.
+
+        A deleted shared drive reaches no change feed: its items are never reported
+        removed, so without this its record group and records stay searchable. A
+        drive missing from the admin ``drives.list`` is removed only once
+        ``drives.get`` confirms it is gone, so a short or empty listing cannot wipe
+        drives that still exist. Drives still listed but now outside the drive filter
+        are not touched here; the filter cleanup owns those. A drive whose removal
+        fails or cannot be confirmed is kept and retried.
+        """
+        stored = await self.drive_delta_sync_point.read_sync_point(SYNCED_SHARED_DRIVES_SYNC_POINT_KEY)
+        raw_ids = stored.get("driveIds") if isinstance(stored, dict) else None
+        known = set(raw_ids) if isinstance(raw_ids, list) else set()
+
+        not_removed: list[str] = []
+        for drive_id in sorted(known - self._listed_shared_drive_ids):
+            if not await self._shared_drive_is_gone(drive_id):
+                not_removed.append(drive_id)
+                continue
+            self.logger.info(f"Shared drive {drive_id} is no longer in Workspace; removing its records")
+            if not await delete_shared_drive_records(
+                self.data_entities_processor, self.connector_id, drive_id, self.logger
+            ):
+                not_removed.append(drive_id)
+                continue
+            for user in self.synced_users:
+                await self.drive_delta_sync_point.delete_sync_point(
+                    generate_record_sync_point_key(
+                        RecordType.DRIVE.value, "drives", f"{user.source_user_id}_{drive_id}"
+                    )
+                )
+
+        await self.drive_delta_sync_point.update_sync_point(
+            SYNCED_SHARED_DRIVES_SYNC_POINT_KEY,
+            # Known drives still listed stay remembered even when the drive filter now
+            # excludes them, so their record group is still removed if they are deleted later.
+            {"driveIds": sorted(set(synced_drive_ids) | set(not_removed) | (known & self._listed_shared_drive_ids))},
+        )
+
+    async def _shared_drive_is_gone(self, drive_id: str) -> bool:
+        try:
+            await self.drive_data_source.drives_get(driveId=drive_id, useDomainAdminAccess=True)
+        except Exception as e:
+            if isinstance(e, HttpError) and e.resp.status == HttpStatusCode.NOT_FOUND.value:
+                return True
+            self.logger.warning(f"Could not confirm shared drive {drive_id} was deleted; keeping it: {e}")
+            return False
+        self.logger.warning(f"Shared drive {drive_id} is missing from the listing but still exists; keeping it")
+        return False
 
     async def _create_personal_record_group(self, user: AppUser) -> None:
         """Create a personal record group for the user's My Drive."""
@@ -1646,10 +1704,12 @@ class GoogleDriveTeamConnector(BaseConnector):
         """Apply a `removed` change from one user's changes feed.
 
         Drive reports `removed` both when a file is deleted and when only this user lost
-        access to it. For a My Drive file the owner can tell the two apart, so the owner
-        is asked: a clean "not found", or a file in the trash, deletes the record, and a
-        file that is still there, or an owner who can't be asked, drops just this user's
-        access. A shared drive file only ever loses this user's access here.
+        access to it. For a My Drive file the owner is asked first: a clean "not found",
+        or a file in the trash, deletes the record. Otherwise the record is kept only while
+        another synced user can still open the file; a record no synced user can open is
+        unreachable in PipesHub, so it is deleted even if its owner (outside the Workspace,
+        or not a PipesHub user) still has the file. A shared drive file only ever loses
+        this user's access here.
         Any failed read or delete raises, so the user's checkpoint stays put and the
         change is read again next sync; ``_apply_removed_change`` bounds how long an
         unrecognised 403 can do that.
@@ -1674,7 +1734,10 @@ class GoogleDriveTeamConnector(BaseConnector):
         elif (
             not drive_id
             and record.external_record_group_id not in self._listed_shared_drive_ids
-            and await self._owner_reports_file_gone(record, owner_sources)
+            and (
+                await self._owner_reports_file_gone(record, owner_sources)
+                or not await self._another_synced_user_can_open(record, user, owner_sources)
+            )
         ):
             await self._delete_record_tree(record)
             return
@@ -2116,11 +2179,15 @@ class GoogleDriveTeamConnector(BaseConnector):
                 self._folders_probed.add(folder_id)
                 if probe is None:
                     continue
+                listed_id = adopt_shortcut_seed_target(
+                    folder_id, probe, self._folder_seed_ids, self._tracked_folder_ids
+                )
+                self._folders_probed.add(listed_id)
                 if not probe.can_list_children:
-                    self._blocked_folder_ids.add(folder_id)
+                    self._blocked_folder_ids.add(listed_id)
                     continue
-                frontier.append(folder_id)
-                drive_id_by_folder[folder_id] = probe.drive_id
+                frontier.append(listed_id)
+                drive_id_by_folder[listed_id] = probe.drive_id
 
             if not frontier:
                 return
@@ -2506,6 +2573,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         if not synced_drive_ids:
             return
 
+        await self._relink_seeds_with_new_parents(
+            user_id, user_email, drive_data_source, personal_drive_id
+        )
         rewrite_real_ancestors = bool(self._folder_seed_ids) and not self._sync_ledger.incremental
         seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
         if rewrite_real_ancestors:
@@ -2517,7 +2587,9 @@ class GoogleDriveTeamConnector(BaseConnector):
         # connector only knows external Drive ids, hence the client-side narrowing.
         seeds_by_drive: Dict[str, List[Record]] = {}
         for seed in seeds:
-            group_id = seed.external_record_group_id
+            # A stub above a shared-with-me item has no record group; it is reached, if at
+            # all, through this user's own view, and _process_drive_item files it correctly.
+            group_id = seed.external_record_group_id or personal_drive_id
             if group_id in synced_drive_ids:
                 seeds_by_drive.setdefault(group_id, []).append(seed)
 
@@ -2531,6 +2603,40 @@ class GoogleDriveTeamConnector(BaseConnector):
                 seeds=group_seeds,
                 rewrite_real_ancestors=rewrite_real_ancestors,
             )
+
+    async def _relink_seeds_with_new_parents(
+        self,
+        user_id: str,
+        user_email: str,
+        drive_data_source: GoogleDriveDataSource,
+        personal_drive_id: str,
+    ) -> None:
+        """Run selected folders whose parent became visible through the normal change path.
+
+        The parent is then recorded as a stub, which the sweep that follows fills in.
+        """
+        if not self._folder_seed_ids:
+            return
+        for metadata in await seeds_with_new_parent(
+            self._folder_seed_ids,
+            self.data_entities_processor,
+            self.connector_id,
+            static_data_source_provider(drive_data_source),
+            DRIVE_WORKSPACE_FILE_GET_FIELDS,
+            self.logger,
+        ):
+            drive_id = metadata.get("driveId")
+            update = await self._process_drive_item(
+                metadata,
+                user_id,
+                user_email,
+                drive_id or personal_drive_id,
+                is_shared_drive=bool(drive_id),
+                drive_data_source=drive_data_source,
+                tracked_folder_ids=self._tracked_folder_ids,
+            )
+            if update:
+                await self._handle_record_updates(update)
 
     async def _out_of_scope_seed_parents(self, synced_drive_ids: set) -> List[Record]:
         """Real records directly above a selected folder in these drives that this run did not list."""

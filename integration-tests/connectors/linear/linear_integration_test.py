@@ -89,6 +89,8 @@ from connectors.linear.linear_test_utils import (  # noqa: E402
     parse_linear_timestamp,
     resolve_issue_by_identifier,
     wait_until_linear_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
     wait_until_record_indexing_completed,
 )
 

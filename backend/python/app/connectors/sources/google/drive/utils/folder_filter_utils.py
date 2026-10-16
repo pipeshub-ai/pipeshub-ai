@@ -8,6 +8,7 @@ in which `fields` mask they request. Both are parameters here.
 """
 
 import asyncio
+from collections.abc import Iterable
 from logging import Logger
 from typing import (
     AsyncGenerator,
@@ -33,6 +34,11 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 from app.connectors.sources.google.common.drive_file_fields import (
     DRIVE_FOLDER_EXPANSION_GET_FIELDS,
     DRIVE_FOLDER_EXPANSION_LIST_FIELDS,
+)
+from app.connectors.sources.google.drive.utils.drive_shortcuts import (
+    MAX_SHORTCUT_DEPTH,
+    is_shortcut_mime,
+    shortcut_target,
 )
 from app.connectors.sources.google.drive.utils.drive_pagination import DrivePageWalk
 from app.models.entities import Record
@@ -257,6 +263,8 @@ class FolderListProbe(NamedTuple):
 
     can_list_children: bool
     drive_id: Optional[str] = None  # set when the folder lives on a shared drive
+    # The folder actually probed: the target when the probed id was a shortcut.
+    folder_id: str | None = None
 
 
 def static_data_source_provider(
@@ -436,31 +444,107 @@ async def probe_can_list_children(
     5xx, a network error) is raised: reading it as "invisible" would drop the
     folder's subtree from this run's scope while the sync still saves its
     checkpoint, so files under it would be skipped for good.
+
+    A shortcut is followed to its target (the folder picker offers shortcuts, and a
+    shortcut itself can never list children); ``folder_id`` on the result names the
+    folder actually probed. A broken, circular or over-deep shortcut chain is invisible.
     """
-    try:
-        data_source = await get_data_source()
-        response = await data_source.files_get(
-            fileId=folder_id,
-            fields=DRIVE_FOLDER_EXPANSION_GET_FIELDS,
-            supportsAllDrives=True,
-        )
-    except HttpError as e:
-        status = e.resp.status
-        if status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
-            logger.debug(
-                f"Folder {folder_id} is not visible to this user (HTTP {status})"
+    probe_id = folder_id
+    followed: set[str] = set()
+    while True:
+        try:
+            data_source = await get_data_source()
+            response = await data_source.files_get(
+                fileId=probe_id,
+                fields=DRIVE_FOLDER_EXPANSION_GET_FIELDS,
+                supportsAllDrives=True,
+            )
+        except HttpError as e:
+            status = e.resp.status
+            if status == HttpStatusCode.NOT_FOUND.value or is_permission_denied_403(e):
+                logger.debug(
+                    f"Folder {probe_id} is not visible to this user (HTTP {status})"
+                )
+                return None
+            logger.warning(f"Failed to probe folder {probe_id} (HTTP {status}): {e}")
+            raise
+
+        response = response or {}
+        if not is_shortcut_mime(response.get("mimeType")):
+            return FolderListProbe(
+                can_list_children=bool(
+                    (response.get("capabilities") or {}).get("canListChildren")
+                ),
+                drive_id=response.get("driveId") or None,
+                folder_id=probe_id,
+            )
+
+        followed.add(probe_id)
+        target_id, _ = shortcut_target(response)
+        if not target_id or target_id in followed or len(followed) > MAX_SHORTCUT_DEPTH:
+            logger.warning(
+                f"Selected folder {folder_id} is a shortcut that does not lead to a folder "
+                f"(stopped at {probe_id})"
             )
             return None
-        logger.warning(f"Failed to probe folder {folder_id} (HTTP {status}): {e}")
-        raise
+        logger.info(f"Selected folder {probe_id} is a shortcut; following it to {target_id}")
+        probe_id = target_id
 
-    response = response or {}
-    return FolderListProbe(
-        can_list_children=bool(
-            (response.get("capabilities") or {}).get("canListChildren")
-        ),
-        drive_id=response.get("driveId") or None,
-    )
+
+async def seeds_with_new_parent(
+    seed_ids: Iterable[str],
+    processor: DataSourceEntitiesProcessor,
+    connector_id: str,
+    get_data_source: DriveDataSourceProvider,
+    fields: str,
+    logger: Logger,
+) -> list[dict]:
+    """Metadata of selected folders stored without a parent that Drive now reports one for.
+
+    Drive omits a parent the user cannot open, so a folder shared on its own is stored at
+    the top. Sharing the parent later only changes the parent, which is outside the folder
+    filter, and nothing re-reads the selected folder, so it would never be linked. A drive
+    root is not a parent here (it is stored as the record group). A folder that cannot be
+    read now is left for the next run.
+    """
+    found: list[dict] = []
+    for seed_id in sorted(seed_ids):
+        record = await processor.get_record_by_external_id(connector_id, seed_id)
+        if record is None or record.parent_external_record_id:
+            continue
+        try:
+            data_source = await get_data_source()
+            metadata = await data_source.files_get(
+                fileId=seed_id, fields=fields, supportsAllDrives=True
+            )
+        except HttpError as e:
+            logger.info(f"Could not re-read selected folder {seed_id} for a new parent: {e}")
+            continue
+        parent_id = ((metadata or {}).get("parents") or [None])[0]
+        if parent_id and parent_id not in (record.external_record_group_id, metadata.get("driveId")):
+            logger.info(f"Selected folder {seed_id} now has a visible parent {parent_id}; relinking it")
+            found.append(metadata)
+    return found
+
+
+def adopt_shortcut_seed_target(
+    probed_id: str,
+    probe: FolderListProbe,
+    *folder_sets: set,
+) -> str:
+    """Make a selected folder that is a shortcut stand for its target from here on.
+
+    Records in scope have the target as their parent, never the shortcut, so every
+    scope set has to hold the target id. Returns the id the caller should continue with.
+    """
+    target_id = probe.folder_id
+    if not target_id or target_id == probed_id:
+        return probed_id
+    for ids in folder_sets:
+        if probed_id in ids:
+            ids.discard(probed_id)
+            ids.add(target_id)
+    return target_id
 
 
 async def build_tracked_folder_ids(

@@ -21,6 +21,7 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
 from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
@@ -237,12 +238,38 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     """
 
 
-def _storage_status_error(status: int, message: str) -> aiohttp.ClientError:
+# Statuses meaning the storage service refused the request's content (too large,
+# unsupported, malformed): every retry gets the same answer.
+_REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+
+
+def _storage_status_error(
+    status: int, message: str, detail: str | None = None
+) -> aiohttp.ClientError:
     if status in _TRANSIENT_STORAGE_STATUSES:
         return TransientStorageError(message)
     if status == HttpStatusCode.NOT_FOUND.value:
         return StorageDocumentNotFoundError(message)
+    if status in _REJECTED_STORAGE_STATUSES:
+        reason = f"{message}: the storage service refused it (HTTP {status})"
+        too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
+        return StorageRequestRejectedError(
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+        )
     return aiohttp.ClientError(message)
+
+
+def _storage_error_detail(body: object) -> str | None:
+    """The human-readable reason in a storage error response, when it has one."""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"]
+        if isinstance(body.get("message"), str):
+            return body["message"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()[:300]
+    return None
 
 
 # Failures that can be retried only when the request is idempotent: the
@@ -1534,14 +1561,16 @@ class BlobStorage(Transformer):
                             raise TransientStorageError("Record upload still in progress")
                         if response.status != HttpStatusCode.SUCCESS.value:
                             try:
-                                error_response = await response.json()
+                                error_body: object = await response.json()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Error: %s",
-                                                response.status, error_response)
+                                                response.status, error_body)
                             except aiohttp.ContentTypeError:
-                                error_text = await response.text()
+                                error_body = await response.text()
                                 self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
-                                                response.status, error_text[:200])
-                            raise _storage_status_error(response.status, "Failed to upload record")
+                                                response.status, error_body[:200])
+                            raise _storage_status_error(
+                                response.status, "Failed to upload record", _storage_error_detail(error_body)
+                            )
 
                         response_data = await response.json()
                         document_id = response_data.get('_id')
