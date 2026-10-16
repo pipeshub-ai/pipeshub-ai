@@ -143,6 +143,28 @@ async def test_the_retry_is_cut_off_at_what_is_left_of_the_budget(monkeypatch) -
     assert loop.time() - started < 5
 
 
+async def test_the_first_attempt_is_not_cut_off_by_the_budget() -> None:
+    """The first attempt runs under the store client's own timeout; a slow
+    search that answers is an answer, whatever the retry budget."""
+    loop = asyncio.get_running_loop()
+    results = [[MagicMock()]]
+
+    async def _slow(**_kwargs: Any) -> list:  # noqa: ANN401
+        answered = loop.create_future()
+        # Not asyncio.sleep: the fixture stubs it out to skip the backoff.
+        loop.call_later(0.2, answered.set_result, results)
+        return await answered
+
+    service = _service(_slow)
+
+    got = await query_nearest_points_with_retry(
+        service, "records", ["req"], logger=_LOGGER, budget_seconds=0.05,
+    )
+
+    assert got is results
+    assert service.query_nearest_points.await_count == 1
+
+
 async def test_builtin_timeout_and_connection_errors_are_transient_for_every_provider() -> None:
     service = MagicMock()
     service.transient_search_error = MagicMock(return_value=None)

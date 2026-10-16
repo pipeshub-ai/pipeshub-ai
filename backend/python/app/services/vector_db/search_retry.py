@@ -8,6 +8,11 @@ The retry is bounded by time, not just by count. A search that failed fast (a
 dropped connection) gets a full second attempt; one that failed after a long
 timeout gets only what is left of the budget, and none at all when too little
 is left, so a retry never takes a search much past ``budget_seconds``.
+
+The budget bounds the retry only. The first attempt runs under the store
+client's own timeout, which the operator configures per backend: cutting it at
+the budget would turn a slow search that would have answered into a failure,
+with no time left to try again.
 """
 
 from __future__ import annotations
@@ -36,8 +41,9 @@ def _budget_from_env() -> float:
         return 60.0
 
 
-# The whole search, first attempt included. Sized to the latency a chat turn
-# already tolerates when a search waits out a store timeout.
+# Counted from the start of the first attempt; the retry must fit in what is
+# left. Sized to the latency a chat turn already tolerates when a search waits
+# out a store timeout.
 SEARCH_RETRY_BUDGET_SECONDS = _budget_from_env()
 # Below this a second attempt against a store that just timed out is not worth
 # the load it adds.
