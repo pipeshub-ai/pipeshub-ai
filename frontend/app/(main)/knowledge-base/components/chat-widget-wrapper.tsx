@@ -91,7 +91,7 @@ export function ChatWidgetWrapper({
 
   const handleSend = useCallback(
     async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
-      if (!message.trim() && (!attachments || attachments.length === 0)) return;
+      if (!message.trim() && (!attachments || attachments.length === 0)) return false;
 
       // @ mentions, then the open node, then the open collection, then the filter bar,
       // then (at the Collections root) every collection.
@@ -107,7 +107,7 @@ export function ChatWidgetWrapper({
         const fromBar = filterBarChatScope(barFilter, barSources ?? []);
         if (fromBar.length > MAX_SELECTED_NODES) {
           toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
-          return;
+          return false;
         }
         if (fromBar.length > 0) selectedNodes = fromBar;
       }
@@ -119,13 +119,18 @@ export function ChatWidgetWrapper({
           all = await allCollectionsChatScope(MAX_SELECTED_NODES);
         } catch {
           toast.error(t('kb.chatCollectionsLoadFailed'));
-          return;
+          return false;
         }
         if (all === null) {
           toast.error(t('kb.chatTooManyCollections', { max: MAX_SELECTED_NODES }));
-          return;
+          return false;
         }
-        if (all.length > 0) selectedNodes = all;
+        // With no collection there is nothing to scope to, and an unscoped question would search everything.
+        if (all.length === 0) {
+          toast.error(t('kb.chatNoCollections'));
+          return false;
+        }
+        selectedNodes = all;
       }
 
       const selectedRecordIds =
@@ -145,6 +150,7 @@ export function ChatWidgetWrapper({
 
       usePendingChatStore.getState().setPending(context);
       router.push('/chat');
+      return true;
     },
     [selectedKbId, currentTitle, selectedSet, scopeNode, barFilter, barSources, isAllRecordsMode, pathname, router, t],
   );

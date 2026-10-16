@@ -99,7 +99,12 @@ interface ChatInputProps {
    * server-assigned refs of files whose upload finished successfully.
    * Chips still uploading or in error are blocked from submit by `canSubmit`.
    */
-  onSend?: (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => void;
+  /** Return `false` (or a promise of it) when the message was not sent: the draft is then kept. */
+  onSend?: (
+    message: string,
+    attachments?: AttachmentRef[],
+    mentions?: MentionNode[],
+  ) => void | boolean | Promise<void | boolean>;
   /** `@` searches node names under this parent. Omitted, search is global. */
   mentionParent?: MentionParent | null;
   /**
@@ -1027,13 +1032,25 @@ export function ChatInput({
           store.setFilters(mergeMentionFilters(store.settings.filters, kept));
         }
       }
-      onSend(stripMentionPads(message, kept), refs.length > 0 ? refs : undefined, sent.length > 0 ? sent : undefined);
-      setMessage('');
-      setMentions([]);
-      setUploadedFiles([]);
-      setShowUploadArea(false);
-      if (textareaRef.current) {
-        textareaRef.current.style.height = 'auto';
+      const clearDraft = () => {
+        setMessage('');
+        setMentions([]);
+        setUploadedFiles([]);
+        setShowUploadArea(false);
+        if (textareaRef.current) {
+          textareaRef.current.style.height = 'auto';
+        }
+      };
+      const sending = onSend(
+        stripMentionPads(message, kept),
+        refs.length > 0 ? refs : undefined,
+        sent.length > 0 ? sent : undefined,
+      );
+      if (sending instanceof Promise) {
+        // The host said why it refused (or failed); the draft stays for another try.
+        void sending.then((ok) => { if (ok !== false) clearDraft(); }, () => {});
+      } else if (sending !== false) {
+        clearDraft();
       }
     }
   };

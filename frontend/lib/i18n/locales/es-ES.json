@@ -605,7 +605,8 @@
     "chatWithSelection": "Chat",
     "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo.",
     "chatTooManyCollections": "El chat puede buscar en hasta {{max}} colecciones a la vez y tienes más. Abre una colección o marca las que quieras consultar.",
-    "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo."
+    "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo.",
+    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar."
   },
   "connectorTypes": {
     "slack": "Slack",

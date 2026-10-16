@@ -2236,6 +2236,20 @@ describe('Knowledge base page — asking from the chat box', () => {
     await waitFor(() => expect(toastTexts().some((text) => text.includes('up to 200 collections'))).toBe(true));
     expect(router.push).not.toHaveBeenCalledWith('/chat');
     expect(usePendingChatStore.getState().pending).toBeNull();
+    // The refused question stays in the box for another try.
+    expect((screen.getByPlaceholderText(/Ask/) as HTMLTextAreaElement).value).toBe('what is in these collections?');
+  });
+
+  it('says there is nothing to ask about, and keeps the question, when there are no collections', async () => {
+    rootPages([[]]);
+    openAt('/knowledge-base');
+    await screen.findByPlaceholderText(/Ask/);
+
+    ask('what is in these collections?');
+
+    await waitFor(() => expect(toastTexts().some((text) => text.includes('no collections'))).toBe(true));
+    expect(router.push).not.toHaveBeenCalledWith('/chat');
+    expect((screen.getByPlaceholderText(/Ask/) as HTMLTextAreaElement).value).toBe('what is in these collections?');
   });
 
   it("gives the chat chip a connector app's connector when asking from inside it", async () => {
