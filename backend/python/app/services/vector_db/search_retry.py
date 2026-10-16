@@ -9,10 +9,11 @@ dropped connection) gets a full second attempt; one that failed after a long
 timeout gets only what is left of the budget, and none at all when too little
 is left, so a retry never takes a search much past ``budget_seconds``.
 
-The budget bounds the retry only. The first attempt runs under the store
-client's own timeout, which the operator configures per backend: cutting it at
-the budget would turn a slow search that would have answered into a failure,
-with no time left to try again.
+The budget bounds the whole search. The store clients' own timeouts default
+to 300 s, which would use up any budget before a retry could start, so the
+first attempt is cut off early enough to leave room for one
+(``_first_attempt_seconds``). A healthy search answers in well under a second;
+one still running near the budget is the store failing, not a slow answer.
 """
 
 from __future__ import annotations
@@ -36,19 +37,26 @@ if TYPE_CHECKING:
 def _budget_from_env() -> float:
     raw = os.getenv("VECTOR_SEARCH_RETRY_BUDGET_SECONDS", "60")
     try:
-        return max(0.0, float(raw))
+        return max(1.0, float(raw))
     except (TypeError, ValueError):
         return 60.0
 
 
-# Counted from the start of the first attempt; the retry must fit in what is
-# left. Sized to the latency a chat turn already tolerates when a search waits
-# out a store timeout.
+# Both attempts together. Sized to the latency a chat turn already tolerates
+# when a search waits out a store timeout; raise it for a store that is slow
+# when healthy.
 SEARCH_RETRY_BUDGET_SECONDS = _budget_from_env()
 # Below this a second attempt against a store that just timed out is not worth
 # the load it adds.
 MIN_RETRY_SECONDS = 5.0
 _RETRY_DELAY_SECONDS = 0.25
+
+
+def _first_attempt_seconds(budget: float) -> float:
+    """How long the first attempt may run: the budget less room for a retry,
+    unless the budget is too small to hold both."""
+    reserve = MIN_RETRY_SECONDS + _RETRY_DELAY_SECONDS
+    return budget - reserve if budget >= 2 * reserve else budget
 
 
 class VectorSearchUnavailableError(Exception):
@@ -88,21 +96,21 @@ async def query_nearest_points_with_retry(
     (or there was no time to ask again); any other error propagates unchanged.
     """
     budget = SEARCH_RETRY_BUDGET_SECONDS if budget_seconds is None else budget_seconds
-    deadline = time.monotonic() + budget
+    started = time.monotonic()
+    deadline = started + budget
     attempts = 0
 
     async def _attempt() -> list[list["SearchResult"]]:
         nonlocal attempts
         attempts += 1
         call = service.query_nearest_points(collection_name=collection_name, requests=requests)
-        if attempts == 1:
-            return await call
-        return await asyncio.wait_for(call, timeout=max(0.0, deadline - time.monotonic()))
+        until = started + _first_attempt_seconds(budget) if attempts == 1 else deadline
+        return await asyncio.wait_for(call, timeout=max(0.0, until - time.monotonic()))
 
     def _should_retry(error: Exception) -> bool:
         if classify_search_error(service, error) is None:
             return False
-        if deadline - time.monotonic() < MIN_RETRY_SECONDS + _RETRY_DELAY_SECONDS:
+        if deadline - time.monotonic() < MIN_RETRY_SECONDS:
             record_search_retry(_provider_name(service), "skipped_budget")
             logger.warning(
                 "Vector search on '%s' failed after %.1fs; no time left in the %.0fs budget to retry",

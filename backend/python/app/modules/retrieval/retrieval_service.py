@@ -202,9 +202,10 @@ _SEARCH_INDEX_FAILURE_MESSAGES = {
     SearchFailureKind.TIMEOUT: SEARCH_INDEX_TIMEOUT_MESSAGE,
     SearchFailureKind.UNAVAILABLE: SEARCH_INDEX_UNREACHABLE_MESSAGE,
 }
-# Some collections answered and some did not: the results stand, with this said.
+# Some collections answered and some failed (timed out, or any other error):
+# the results stand, with this said.
 SEARCH_INCOMPLETE_MESSAGE = (
-    "{failed} of {total} parts of the search index did not respond, so this "
+    "{failed} of {total} parts of the search index could not be searched, so this "
     "search may have missed documents."
 )
 

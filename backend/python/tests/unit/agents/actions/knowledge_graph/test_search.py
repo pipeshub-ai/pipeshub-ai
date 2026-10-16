@@ -888,7 +888,7 @@ class TestSearchThatDidNotCoverEverything:
     """A search that ran on only part of what was asked says so, and an empty
     one is not reported as "nothing found"."""
 
-    _INCOMPLETE = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+    _INCOMPLETE = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
 
     @staticmethod
     async def _render(state: dict[str, Any], **kwargs: Any) -> str:  # noqa: ANN401
@@ -927,7 +927,6 @@ class TestSearchThatDidNotCoverEverything:
 
         result = await self._render(_state(retrieval))
 
-        assert "did not respond" not in result
         assert "could not be searched" not in result
 
     @pytest.mark.asyncio

@@ -300,7 +300,7 @@ class TestSearchFailureNotice:
         assert result.failure_notice is None
 
     async def test_nothing_readable_where_the_search_ran_with_part_of_the_index_down_is_a_failure(self) -> None:
-        notice = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters.return_value = {
             "status": "accessible_records_not_found", "status_code": 404,
@@ -334,7 +334,7 @@ class TestSearchFailureNotice:
         assert result.incomplete_notice is None
 
     async def test_empty_where_the_search_ran_with_part_of_the_index_down_is_a_failure(self) -> None:
-        notice = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters.return_value = {
             "status": "empty_response", "status_code": 200, "searchResults": [],
@@ -348,7 +348,7 @@ class TestSearchFailureNotice:
         assert result.failure_notice == notice
 
     async def test_results_from_part_of_the_index_carry_the_gap(self) -> None:
-        notice = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
         retrieval_service = AsyncMock()
         retrieval_service.search_with_filters.return_value = {
             "status": "success", "status_code": 200, "searchResults": [{"metadata": {"recordId": "r1"}}],

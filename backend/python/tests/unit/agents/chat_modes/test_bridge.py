@@ -742,7 +742,7 @@ class TestRunChatStream:
         assert not any("did not complete" in c for c in constraints)
 
     async def test_a_prefetch_from_part_of_the_index_says_what_is_missing(self) -> None:
-        notice = "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
         constraints = await self._goal_constraints_for(PrefetchResult(
             formatted_context="Refunds are processed within 5 business days.",
             final_results=[{"virtual_record_id": "vr1"}],

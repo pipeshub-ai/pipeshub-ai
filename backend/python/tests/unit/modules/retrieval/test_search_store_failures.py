@@ -148,8 +148,32 @@ async def test_one_collection_failing_keeps_the_others_results_and_says_so(
     assert result["status"] == Status.SUCCESS.value
     assert [r["metadata"]["recordId"] for r in result["searchResults"]] == ["rec1"]
     assert result["searchIncomplete"] == (
-        "1 of 2 parts of the search index did not respond, so this search may have missed documents."
+        "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
     )
+
+
+async def test_a_collection_with_a_non_transient_error_is_not_retried_but_still_noted(
+    service, mock_vector_db_service,
+) -> None:
+    """Retrying a bad request repeats it; dropping it silently would hide that
+    part of the index was never searched."""
+    service.collection_registry.resolve_for_query = AsyncMock(return_value=["records", "slack_records"])
+    calls: list[str] = []
+
+    async def _query(collection_name: str, requests: list) -> list[list]:
+        calls.append(collection_name)
+        if collection_name == "slack_records":
+            raise _rpc_error(grpc.StatusCode.INVALID_ARGUMENT)
+        return [[_point()]]
+
+    mock_vector_db_service.query_nearest_points = AsyncMock(side_effect=_query)
+
+    result = await _search(service)
+
+    assert result["status"] == Status.SUCCESS.value
+    assert [r["metadata"]["recordId"] for r in result["searchResults"]] == ["rec1"]
+    assert calls.count("slack_records") == 1
+    assert result["searchIncomplete"].startswith("1 of 2 parts of the search index could not be searched")
 
 
 async def test_nothing_found_where_the_search_ran_is_not_reported_as_nothing_found(
@@ -167,7 +191,7 @@ async def test_nothing_found_where_the_search_ran_is_not_reported_as_nothing_fou
     result = await _search(service)
 
     assert result["status"] == Status.EMPTY_RESPONSE.value
-    assert result["searchIncomplete"].startswith("1 of 2 parts of the search index did not respond")
+    assert result["searchIncomplete"].startswith("1 of 2 parts of the search index could not be searched")
     assert result["message"].startswith(result["searchIncomplete"])
 
 

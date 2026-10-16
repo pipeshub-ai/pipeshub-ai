@@ -143,22 +143,49 @@ async def test_the_retry_is_cut_off_at_what_is_left_of_the_budget(monkeypatch) -
     assert loop.time() - started < 5
 
 
-async def test_the_first_attempt_is_not_cut_off_by_the_budget() -> None:
-    """The first attempt runs under the store client's own timeout; a slow
-    search that answers is an answer, whatever the retry budget."""
+async def test_a_first_attempt_that_hangs_is_cut_off_with_room_left_to_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The clients wait 300 s by default; waiting that out would leave no
+    budget for the retry, so the first attempt stops early enough for one."""
+    monkeypatch.setattr(search_retry, "MIN_RETRY_SECONDS", 0.2)
+    loop = asyncio.get_running_loop()
+    results = [[MagicMock()]]
+    calls = 0
+
+    async def _hangs_then_answers(**_kwargs: Any) -> list:  # noqa: ANN401
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            # Not asyncio.sleep: the fixture stubs it out to skip the backoff.
+            await asyncio.Event().wait()
+        return results
+
+    service = _service(_hangs_then_answers, name="p-hang")
+    started = loop.time()
+
+    got = await query_nearest_points_with_retry(
+        service, "records", ["req"], logger=_LOGGER, budget_seconds=1.0,
+    )
+
+    assert got is results
+    assert calls == 2
+    # Cut at the budget less the 0.45 s reserve (0.2 s retry + 0.25 s delay).
+    assert 0.4 < loop.time() - started < 1.0
+    assert _retries("p-hang", "recovered") == 1
+
+
+async def test_a_budget_too_small_for_two_attempts_gives_the_first_all_of_it() -> None:
     loop = asyncio.get_running_loop()
     results = [[MagicMock()]]
 
     async def _slow(**_kwargs: Any) -> list:  # noqa: ANN401
         answered = loop.create_future()
-        # Not asyncio.sleep: the fixture stubs it out to skip the backoff.
         loop.call_later(0.2, answered.set_result, results)
         return await answered
 
     service = _service(_slow)
 
     got = await query_nearest_points_with_retry(
-        service, "records", ["req"], logger=_LOGGER, budget_seconds=0.05,
+        service, "records", ["req"], logger=_LOGGER, budget_seconds=1.0,
     )
 
     assert got is results
