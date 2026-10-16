@@ -2,7 +2,6 @@
 oversized downloads, and pages the user's filters exclude.
 """
 
-import base64
 import json
 
 import pytest
@@ -76,19 +75,71 @@ async def test_a_stored_html_page_keeps_its_text_and_drops_scripts_and_navigatio
     assert b"track()" not in stored and b"Menu links" not in stored
 
 
+def _png(width: int, height: int) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    out = BytesIO()
+    Image.new("RGB", (width, height), "white").save(out, format="PNG")
+    return out.getvalue()
+
+
 async def test_page_images_are_embedded_so_the_stored_copy_is_self_contained(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
-    png = base64.b64decode(
-        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
-    )
     site.add(START_URL, Page(body=html_page("Home", body='<img src="/pic.png">')))
-    site.add("http://site.test/pic.png", Page(body=png, content_type="image/png"))
+    site.add("http://site.test/pic.png", Page(body=_png(200, 120), content_type="image/png"))
 
     await (await make_connector(crawl_type="single")).run_sync()
 
     stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
     assert b'src="data:image/png;base64,' in stored
+
+
+async def test_icons_and_spacers_are_dropped_and_not_described(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    """Each embedded image is described by the vision model; one under 64 px a side tells it nothing."""
+    body = '<img src="/photo.png"><img src="/pixel.png"><img src="/icon.svg" width="16" height="16">'
+    site.add(START_URL, Page(body=html_page("Home", body=body)))
+    site.add("http://site.test/photo.png", Page(body=_png(320, 200), content_type="image/png"))
+    site.add("http://site.test/pixel.png", Page(body=_png(1, 1), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b"<img") == 1, "only the photo is kept"
+    assert site.gets("http://site.test/icon.svg") == 0, "an icon sized in the page is never downloaded"
+
+
+async def test_a_page_keeps_its_first_ten_images_and_downloads_no_more(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    images = [f"/shot-{i}.png" for i in range(15)]
+    site.add(START_URL, Page(body=html_page("Home", body="".join(f'<img src="{p}">' for p in images))))
+    for path in images:
+        site.add(f"http://site.test{path}", Page(body=_png(300, 200), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b'src="data:image/png;base64,') == 10
+    assert [site.gets(f"http://site.test{p}") for p in images] == [1] * 10 + [0] * 5
+
+
+async def test_the_cap_counts_only_kept_images_so_tiny_ones_do_not_use_it_up(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    images = [f"/img-{i}.png" for i in range(14)]
+    site.add(START_URL, Page(body=html_page("Home", body="".join(f'<img src="{p}">' for p in images))))
+    for i, path in enumerate(images):  # the first four are tracking pixels
+        site.add(f"http://site.test{path}", Page(body=_png(1, 1) if i < 4 else _png(300, 200), content_type="image/png"))
+
+    await (await make_connector(crawl_type="single")).run_sync()
+
+    stored = site.storage_docs[db.pages()[START_URL].storage_document_id]
+    assert stored.count(b'src="data:image/png;base64,') == 10
 
 
 async def test_with_image_indexing_off_images_are_dropped_not_downloaded(

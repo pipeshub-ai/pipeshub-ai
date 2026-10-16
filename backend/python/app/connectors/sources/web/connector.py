@@ -212,6 +212,10 @@ SHELL_CHECKS_PER_SECTION = 2
 SECTION_PAGES_HELD = 4
 RATE_LIMITED_STATUSES = frozenset({HTTPStatus.TOO_MANY_REQUESTS.value, HTTPStatus.SERVICE_UNAVAILABLE.value})
 MAX_DEPTH_LIMIT = 10
+# Images embedded per page, each described by the vision model at indexing time: smaller ones are
+# icons and spacers, and past the first few a page's images add little to what it says.
+MIN_IMAGE_SIDE_PX = 64
+MAX_IMAGES_PER_PAGE = 10
 MAX_SIZE_MB_LIMIT = 100
 # What a crawl can store, for the file-type filter.
 WEB_FILE_TYPES = [
@@ -4685,18 +4689,58 @@ class WebConnector(BaseConnector):
         headers: dict,
         preferred_strategy: Optional[str] = None
     ) -> None:
-        """Download and convert all images concurrently (up to _IMAGE_DOWNLOAD_CONCURRENCY)."""
-        imgs = soup.find_all('img')
-        if not imgs:
-            return
+        """Embed the page's first MAX_IMAGES_PER_PAGE images of at least MIN_IMAGE_SIDE_PX a side; drop the rest.
 
+        Every embedded image is described by the vision model at indexing time, so icons, spacers and
+        a long tail of screenshots would cost far more than they add. Images are downloaded in page
+        order, a batch at a time, only until the page has its share.
+        """
+        candidates = []
+        for img in soup.find_all('img'):
+            if self._declared_too_small(img):
+                img.decompose()
+            else:
+                candidates.append(img)
         sem = asyncio.Semaphore(self._IMAGE_DOWNLOAD_CONCURRENCY)
 
         async def _bounded(img_tag):
             async with sem:
                 await self._process_single_image(img_tag, soup, base_url, headers, preferred_strategy)
 
-        await asyncio.gather(*(_bounded(img) for img in imgs))
+        kept = 0
+        while candidates and kept < MAX_IMAGES_PER_PAGE:
+            batch, candidates = candidates[:MAX_IMAGES_PER_PAGE - kept], candidates[MAX_IMAGES_PER_PAGE - kept:]
+            await asyncio.gather(*(_bounded(img) for img in batch))
+            for img in batch:
+                if img.parent is None:
+                    continue  # removed while being processed
+                if self._embedded_too_small(img.get('src') or ''):
+                    img.decompose()
+                elif (img.get('src') or '').startswith('data:'):
+                    kept += 1
+        for img in candidates:
+            img.decompose()
+
+    @staticmethod
+    def _declared_too_small(img: Tag) -> bool:
+        """An image whose own width or height attribute says it is an icon; known before downloading it."""
+        for attr in ('width', 'height'):
+            value = str(img.get(attr) or '').strip().removesuffix('px')
+            if value.isdigit() and int(value) < MIN_IMAGE_SIDE_PX:
+                return True
+        return False
+
+    @staticmethod
+    def _embedded_too_small(src: str) -> bool:
+        """A data-URI image under MIN_IMAGE_SIDE_PX on a side; one whose size can't be read is kept."""
+        if not src.startswith('data:') or ',' not in src:
+            return False
+        try:
+            with Image.open(BytesIO(base64.b64decode(src.split(',', 1)[1]))) as image:
+                width, height = image.size
+        except Exception:
+            return False
+        return min(width, height) < MIN_IMAGE_SIDE_PX
 
     async def _process_html_content(
         self,
