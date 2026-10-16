@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution import resolver as resolver_module
 from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
@@ -67,21 +68,24 @@ class TestWinnerCheckErrors:
         assert fake_graph.node_lookup_kwargs
         assert all(kw.get("raise_on_error") is True for kw in fake_graph.node_lookup_kwargs)
 
-    async def test_failed_check_is_an_error_not_stale_winners(
+    async def test_failed_check_is_a_deferral_not_stale_winners(
         self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model,
     ) -> None:
+        from app.modules.entity_resolution import lookup as lookup_module
+
         await _seed_winner(fake_graph, fake_store)
         fake_graph.fail_node_lookup = True
         scripted_model()
-        with patch.object(resolver_module.metrics, "record_fallback") as fallback:
-            resolution = await make_resolver().resolve(
+        with patch.object(resolver_module.metrics, "record_fallback") as fallback, \
+             patch.object(lookup_module.metrics, "record_lookup_error") as lookup_error, \
+             pytest.raises(EntityLookupUnavailableError):
+            await make_resolver().resolve(
                 ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"]))
             )
-        reasons = [c.args[0] for c in fallback.call_args_list]
-        assert "winner_check_error" in reasons
-        assert "stale_winner" not in reasons
-        assert resolution.stats.stale_winners == 0
-        assert resolution.stats.winners_offered == 0
+        assert fallback.call_args_list == []
+        assert [c.args for c in lookup_error.call_args_list] == [
+            ("winner_check", "failed"), ("winner_check", "failed"), ("winner_check", "deferred"),
+        ]
 
 
 class TestModelHandleReset:
