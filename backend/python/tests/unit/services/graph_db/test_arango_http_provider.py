@@ -5432,9 +5432,7 @@ class TestDeleteRecordsAndRelationsWithTransaction:
     async def test_hard_delete_success(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
         )
@@ -11571,9 +11569,7 @@ class TestDeleteRecordsAndRelationsSoftDelete:
     async def test_soft_delete(self, connected_provider):
         connected_provider.http_client.get_document.return_value = {"_key": "r1"}
         connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
-        connected_provider.http_client.execute_aql.return_value = [
-            {"record_removed": True, "file_removed": True, "mail_removed": False}
-        ]
+        connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=False
         )

@@ -9298,7 +9298,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (t:`{label}` {{id: $key}})
             WHERE t.mergedInto IS NULL
               AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
-            OPTIONAL MATCH (a:TaxonomyAlias)-[:ALIAS_OF]->(t)
+            OPTIONAL MATCH (a:{TAXONOMY_ALIAS_LABEL})-[:{TAXONOMY_ALIAS_REL}]->(t)
             DETACH DELETE a, t
             RETURN 1 AS deleted
             """,
@@ -9322,7 +9322,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE t.mergedInto IS NULL
                   AND NOT EXISTS {{ MATCH (:Record)-[:{rel}]->(t) }}
                 WITH t, t.id AS id
-                OPTIONAL MATCH (a:TaxonomyAlias)-[:ALIAS_OF]->(t)
+                OPTIONAL MATCH (a:{TAXONOMY_ALIAS_LABEL})-[:{TAXONOMY_ALIAS_REL}]->(t)
                 DETACH DELETE a, t
                 RETURN id
                 """,

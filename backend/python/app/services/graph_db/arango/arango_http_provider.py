@@ -9900,6 +9900,18 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     def _record_type_collections(self) -> list[str]:
         return sorted(set(RECORD_TYPE_COLLECTION_MAPPING.values()))
 
+    @staticmethod
+    def _isoftype_targets_of(rows: list) -> list[dict]:
+        """Every type target on an inventory row, including the single-target shape."""
+        targets: list[dict] = []
+        for row in rows or []:
+            many = row.get("type_targets")
+            if many:
+                targets.extend(target for target in many if target)
+            elif row.get("type_target"):
+                targets.append(row["type_target"])
+        return targets
+
     async def _collect_isoftype_targets(self, transaction: str | None, connector_id: str) -> tuple[list[dict], bool]:
         """
         Collect isOfType target nodes (files, mails, etc.) BEFORE deleting edges.
@@ -14582,11 +14594,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
                 if within_folder_id and valid_root_keys:
                     await self._abort_if_records_moved_in(valid_root_keys, record_keys, follow_types)
-                type_targets = [
-                    target
-                    for rt in records_with_type
-                    for target in (rt.get("type_targets") or [])
-                ]
+                type_targets = self._isoftype_targets_of(records_with_type)
                 failed_records = [
                     {"record_id": rid, "reason": "Validation failed"}
                     for rid in record_ids if rid not in valid_root_keys
@@ -15335,11 +15343,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 if failed_edges:
                     raise RuntimeError(f"Could not remove the edges of purged records from {failed_edges}")
-                targets = [
-                    target
-                    for row in due
-                    for target in (row.get("type_targets") or [])
-                ]
+                targets = self._isoftype_targets_of(due)
                 if targets:
                     await self._delete_isoftype_targets_from_collected(txn_id, targets, edge_collections)
                 await self._delete_type_docs_matching_record_keys(txn_id, keys)
@@ -15569,11 +15573,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 valid_root_keys = inventory.get("valid_root_keys", [])
                 records_with_type = inventory.get("records_with_type", [])
                 record_keys = [rt["record"]["_key"] for rt in records_with_type]
-                type_targets = [
-                    target
-                    for rt in records_with_type
-                    for target in (rt.get("type_targets") or [])
-                ]
+                type_targets = self._isoftype_targets_of(records_with_type)
                 # Read before the edge sweep below removes them.
                 taxonomy_refs = await deleted_record_taxonomy_refs(
                     self, [rt["record"] for rt in records_with_type], self.logger
