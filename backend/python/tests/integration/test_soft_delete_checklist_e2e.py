@@ -176,7 +176,7 @@ class _World:
             return rows[0]["n"]
         total = 0
         for collection in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                           CollectionNames.RECORD_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
+                           CollectionNames.NODE_RELATIONS.value, CollectionNames.IS_OF_TYPE.value,
                            CollectionNames.INHERIT_PERMISSIONS.value):
             rows = await self.graph.http_client.execute_aql(
                 f"FOR e IN {collection} FILTER e._from == @id OR e._to == @id RETURN 1", {"id": f"{RECORDS}/{node}"}
@@ -283,7 +283,7 @@ async def _add_uploads(w: _World, names: list[str], *, parent: str | None = "doc
         if parent:
             await w.graph.batch_create_edges(
                 [_edge(w.ids[parent], RECORDS, w.ids[n], RECORDS, relationshipType="PARENT_CHILD") for n in chunk],
-                collection=CollectionNames.RECORD_RELATIONS.value,
+                collection=CollectionNames.NODE_RELATIONS.value,
             )
 
 
@@ -350,7 +350,7 @@ async def _remove(graph: IGraphDBProvider, w: _World) -> None:
             f"FOR d IN {collection} FILTER d._key IN @ids REMOVE d IN {collection}", {"ids": ids}
         )
     for edges in (CollectionNames.PERMISSION.value, CollectionNames.BELONGS_TO.value,
-                  CollectionNames.IS_OF_TYPE.value, CollectionNames.RECORD_RELATIONS.value,
+                  CollectionNames.IS_OF_TYPE.value, CollectionNames.NODE_RELATIONS.value,
                   CollectionNames.INHERIT_PERMISSIONS.value, CollectionNames.USER_APP_RELATION.value):
         await graph.http_client.execute_aql(
             f"FOR e IN {edges} FILTER PARSE_IDENTIFIER(e._from).key IN @ids "
@@ -512,7 +512,7 @@ async def _seed_connector(w: _World, case: _ConnectorDelete) -> tuple[str, str]:
     await w.graph.batch_create_edges(
         [_edge(w.ids["parent"], RECORDS, w.ids["item"], RECORDS, relationshipType="PARENT_CHILD"),
          _edge(w.ids["item"], RECORDS, w.ids["attachment"], RECORDS, relationshipType="ATTACHMENT")],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     if case.entry == "listing scan":
         group_id = f"rg-{uuid.uuid4().hex[:12]}"
