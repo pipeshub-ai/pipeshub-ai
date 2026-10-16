@@ -14,22 +14,24 @@ The flag is forced by patching the module constant, not the environment — it i
 read once at import.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
-
 import math
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
-from app.services.vector_db.models import SearchFailureKind
-from app.services.vector_db.search_retry import VectorSearchUnavailableError
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
 )
+from app.services.vector_db.models import SearchFailureKind
+from app.services.vector_db.search_retry import VectorSearchUnavailableError
 
 
 @pytest.fixture(autouse=True)
@@ -783,8 +785,8 @@ class TestRetryNeverRegresses:
         retrieval_service._execute_parallel_searches = AsyncMock(
             side_effect=[good, VectorSearchUnavailableError(SearchFailureKind.TIMEOUT, "records")]
         )
-        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0"}
+        mock_graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0"})
         )
 
         results, accessible, degraded = await retrieval_service._search_and_adjudicate(
