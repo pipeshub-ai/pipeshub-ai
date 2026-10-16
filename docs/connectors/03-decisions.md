@@ -91,7 +91,7 @@ Offer the filters admins need to limit volume and scope: containers (`DYNAMIC` l
 
 ## 12. Real-time updates
 
-Scheduled sync is the supported path. Webhook handlers have no caller in the platform today, and declaring `SyncStrategy.WEBHOOK` (or `with_webhook_config`) changes nothing: the scheduler acts only on `SCHEDULED`. Do not declare it. A webhook-based design needs the human's agreement, and platform work (a route, signature verification, subscription teardown), before you build it.
+Scheduled sync is the supported path. Webhook handlers have no caller in the platform today, and declaring `SyncStrategy.WEBHOOK` (or `with_webhook_config`) changes nothing: the scheduler acts only on `SCHEDULED`. Do not declare it. A webhook-based design needs the human's agreement, and platform work (a route, signature verification, removing what it registered at the source), before you build it.
 
 ## 13. Framework changes
 

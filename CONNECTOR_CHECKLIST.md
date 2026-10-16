@@ -86,7 +86,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 
 ## 9. Connector lifecycle
 
-- [ ] `cleanup()` closes every client and session and releases the thread lease. The connector keeps no state outside the graph, its config and its sync points (no webhook subscriptions or channels it cannot tear down).
+- [ ] `cleanup()` closes every client and session and releases the thread lease. The connector keeps no state outside the graph, its config and its sync points (nothing registered at the source, such as a webhook or a watch channel, that it cannot tear down).
 - [ ] Deleting the connector and adding the same source again gives a clean full sync with no duplicates. (Integration test.)
 - [ ] Disabling stops the sync and keeps the data; re-enabling resumes from the saved checkpoints.
 
