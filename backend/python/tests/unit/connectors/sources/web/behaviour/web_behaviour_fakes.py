@@ -38,7 +38,7 @@ from aiohttp import web
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 
-from app.connectors.sources.web import address_guard, fetch_strategy
+from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
 from app.services.resource_governor.models import ResourceSnapshot
 
 if TYPE_CHECKING:
@@ -362,6 +362,25 @@ async def serve_fake_web(fake: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> Asyn
     finally:
         await runner.cleanup()
         shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+@asynccontextmanager
+async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """crawl4ai's browser renders from ``site``; the shared fetcher starts fresh and is closed after."""
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
+    monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
+    monkeypatch.setattr(crawl4ai_fetcher, "build_probe", FakeMemoryProbe)
+    monkeypatch.setenv("WEB_BROWSER_MAX_PAGES", "5")
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    try:
+        yield site
+    finally:
+        leftover = crawl4ai_fetcher._shared_instance
+        if leftover is not None:
+            await leftover.close()
 
 
 def browser_crawler_class(site: FakeWeb) -> type:

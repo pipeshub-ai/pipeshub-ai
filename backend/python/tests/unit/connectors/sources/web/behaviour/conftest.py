@@ -12,7 +12,6 @@ from web_behaviour_fakes import (
     START_URL,
     FakeCheckpointStore,
     FakeConfigService,
-    FakeMemoryProbe,
     FakeRecordsDb,
     FakeRequestsClient,
     FakeScraper,
@@ -20,13 +19,13 @@ from web_behaviour_fakes import (
     MakeConnector,
     RecordingNotifications,
     VirtualClock,
-    browser_crawler_class,
     isolate_network,
+    serve_fake_browser,
     serve_fake_web,
 )
 
 from app.connectors.sources.web import connector as connector_module
-from app.connectors.sources.web import crawl4ai_fetcher, fetch_strategy
+from app.connectors.sources.web import fetch_strategy
 from app.connectors.sources.web.connector import WebConnector
 
 
@@ -52,20 +51,8 @@ async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
 @pytest.fixture
 async def browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     """crawl4ai's browser renders from the fake websites; the shared fetcher starts fresh."""
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
-    monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
-    monkeypatch.setattr(crawl4ai_fetcher, "build_probe", FakeMemoryProbe)
-    monkeypatch.setenv("WEB_BROWSER_MAX_PAGES", "5")
-    monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
-    monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
-    monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
-    try:
-        yield site
-    finally:
-        leftover = crawl4ai_fetcher._shared_instance
-        if leftover is not None:
-            await leftover.close()
+    async with serve_fake_browser(site, monkeypatch) as fake:
+        yield fake
 
 
 @pytest.fixture

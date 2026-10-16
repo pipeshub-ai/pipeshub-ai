@@ -8,6 +8,7 @@ from app.web.config import DEFAULT_PROVIDER
 from app.web.deadline import Deadline
 from app.web.errors import UnknownProvider
 from app.web.fetch import FETCHERS
+from app.web.fetch.browser import BrowserRenderer
 from app.web.fetch.builtin import BuiltinFetcher
 from app.web.http_client import shared_http_client
 from app.web.models import WebResult
@@ -62,7 +63,7 @@ def fetchers(selection: dict[str, Any]) -> list[ContentFetcher]:
     render JavaScript and get past more bot checks but cost a request to another server."""
     stored = [{"provider": selection.get("provider"), "configuration": selection.get("configuration")}, *_others(selection)]
     remote = [FETCHERS[p["provider"]](p.get("configuration") or {}) for p in stored if p.get("provider") in FETCHERS]
-    return [BuiltinFetcher(), *remote]
+    return [BuiltinFetcher(BrowserRenderer() if BrowserRenderer.available() else None), *remote]
 
 
 def build_web_services(selection: dict[str, Any], gate: WebAccessGate) -> WebServices:

@@ -9,9 +9,15 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "connectors" / "sources" / "web" / "behaviour"))
 
-from web_behaviour_fakes import FakeWeb, isolate_network, serve_fake_web
+from web_behaviour_fakes import (
+    FakeWeb,
+    isolate_network,
+    serve_fake_browser,
+    serve_fake_web,
+)
 
 from app.connectors.sources.web import address_guard
+from app.web.fetch.browser import BrowserRenderer
 
 
 @pytest.fixture(autouse=True)
@@ -25,3 +31,11 @@ async def fake_web(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
     async with serve_fake_web(FakeWeb(), monkeypatch) as site:
         yield site
     address_guard._allowed_hosts.cache_clear()
+
+
+@pytest.fixture
+async def fake_browser(fake_web: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """The headless browser renders from ``fake_web``; chat's reference to it starts empty."""
+    monkeypatch.setattr(BrowserRenderer, "_fetcher", None)
+    async with serve_fake_browser(fake_web, monkeypatch) as site:
+        yield site
