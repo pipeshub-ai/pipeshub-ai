@@ -370,6 +370,22 @@ def _entity_notes(
     return "".join(f"{note}\n\n" for note in notes)
 
 
+def _search_gap_notes(*, failed_sources: int, search_incomplete: str | None) -> str:
+    """Notes for a search that returned results but did not cover everything."""
+    notes: list[str] = []
+    if failed_sources:
+        notes.append(
+            f"Note: {failed_sources} of the sources you named could not be searched; "
+            "these results come from the rest."
+        )
+    if search_incomplete:
+        notes.append(
+            f"Note: {search_incomplete} A document missing here may still exist; "
+            "search again before saying it does not."
+        )
+    return "".join(f"{note}\n\n" for note in notes)
+
+
 def normalize_source_ids(value: Any) -> list[str] | None:
     """Normalize source_ids parameter (a string or list of strings)."""
     if value is None:
@@ -616,6 +632,16 @@ async def _execute_search(
                     "results": [],
                     "result_count": 0,
                 })
+            if search_incomplete:
+                return json.dumps({
+                    "status": "error",
+                    "message": (
+                        f"{search_incomplete} The rest returned nothing, so this does not show "
+                        "the information is missing. Try again."
+                    ),
+                    "results": [],
+                    "result_count": 0,
+                })
             message = "No results found"
             # The model picks sources by name, and a name rarely says what a
             # source holds, so an empty narrowed search says little about
@@ -679,6 +705,8 @@ async def _execute_search(
         fan_out_sources = explicit_ids and (len(resolved_apps) > 1 or len(resolved_kbs) > 1)
         per_source_fan_out = fan_out_sources
         failed_sources = 0
+        # Set when a search that answered could not reach part of the index.
+        search_incomplete: str | None = None
 
         async def _search_one(
             fg: dict[str, list[str]],
@@ -713,7 +741,8 @@ async def _execute_search(
             reset per attempt, so it always describes the attempt whose
             results the caller keeps.
             """
-            nonlocal failed_sources
+            nonlocal failed_sources, search_incomplete
+            search_incomplete = None
             if fan_out_sources:
                 failed_sources = 0
                 tasks: list[Any] = []
@@ -756,6 +785,7 @@ async def _execute_search(
                         error_message = raw.get("message", error_message)
                         continue
                     any_success = True
+                    search_incomplete = search_incomplete or raw.get("searchIncomplete") or None
                     per_source.append(CollectionResults(
                         collection_name=f"source-{len(per_source)}",
                         results=raw.get("searchResults", []),
@@ -783,6 +813,7 @@ async def _execute_search(
                     "status_code": status_code,
                     "message": results.get("message", "Retrieval service unavailable"),
                 })
+            search_incomplete = results.get("searchIncomplete") or None
             return results.get("searchResults", []), results.get("virtual_to_record_map", {}), None
 
         entity_filter_dropped = False
@@ -918,7 +949,9 @@ async def _execute_search(
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:
             return _empty_result()
-        entity_notes = _entity_notes(
+        entity_notes = _search_gap_notes(
+            failed_sources=failed_sources, search_incomplete=search_incomplete,
+        ) + _entity_notes(
             unknown_entity_ids=unknown_entity_ids,
             filter_dropped=entity_filter_dropped,
             record_scope_applied=bool(virtual_record_ids_from_tool),
