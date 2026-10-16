@@ -29,6 +29,11 @@ def escape(line):
     return "".join(out)
 
 
+def github_slug(heading):
+    """Anchor GitHub gives a Markdown heading, which the source notes link to."""
+    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+
+
 def convert(src, out_dir):
     version = src.stem
     lines = src.read_text(encoding="utf-8").split("\n")
@@ -50,6 +55,12 @@ def convert(src, out_dir):
         sys.exit(f"{src}: unknown channel {channel!r} or month {month!r}")
     date = datetime.date(int(year), MONTHS[month], int(day)).isoformat()
 
+    # Mintlify builds heading ids differently and numbers repeats across all versions
+    # on the page, so linked headings get an explicit id that is unique per version.
+    linked = set(re.findall(r"\]\(#([^)\s]+)\)", "\n".join(lines)))
+    suffix = re.sub(r"[^0-9a-z]+", "-", version.lower())
+    ids = {a: re.sub(r"-+", "-", a).strip("-") + "-" + suffix for a in linked}
+
     body, in_fence = [], False
     for line in lines[3:]:
         if line.lstrip().startswith("```"):  # fences may be indented inside list items
@@ -59,7 +70,10 @@ def convert(src, out_dir):
             body.append(line)
         else:
             line = re.sub(r"\]\((\d[\w.\-]*)\.md\)", r"](/changelog/platform?version=\1)", line)
-            body.append(escape(line))
+            line = re.sub(r"\]\(#([^)\s]+)\)", lambda m: f"](#{ids[m.group(1)]})", line)
+            heading = re.match(r"#{2,6} (.+)", line)
+            anchor = heading and github_slug(heading.group(1))
+            body.append(escape(line) + (f" {{#{ids[anchor]}}}" if anchor in ids else ""))
 
     front = ["---", f"title: {json.dumps(version)}", f"version: {json.dumps(version)}",
              f"date: {json.dumps(date)}", f"channel: {json.dumps(channel)}",
