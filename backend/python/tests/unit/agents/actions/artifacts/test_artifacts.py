@@ -385,6 +385,25 @@ class TestGetRecordDownloadUrl:
         assert (body["download_url"], body["url_type"]) == ("https://s3.example/signed", "direct_download")
         blob.get_download_url.assert_awaited_once_with("org-1", "doc-1")
 
+    async def test_record_outside_the_turns_scope_gets_no_signed_url(self) -> None:
+        """Readable by the user, but outside the folder the turn is limited to."""
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        blob = MagicMock()
+        blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")
+        graph = _record_graph(record=_upload_record(), acl_access=True)
+        graph.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"rec-1"})))
+        graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        manager, _ = _make_manager(
+            graph_provider=graph, blob_store=blob, filters={"apps": [], "kb": [], "records": ["folder-a"]},
+        )
+
+        success, payload = await manager.get_record_download_url(record_id="rec-1")
+
+        assert success is False
+        assert "No record found" in json.loads(payload)["error"]
+        blob.get_download_url.assert_not_awaited()
+
     async def test_kb_access_without_direct_edge_gets_signed_url(self) -> None:
         blob = MagicMock()
         blob.get_download_url = AsyncMock(return_value="https://s3.example/signed")

@@ -344,9 +344,10 @@ async def _fetch_thread_records_impl(
     org_id: Optional[str] = None,
     config_service: Optional["ConfigurationService"] = None,
     user_id: str | None = None,
+    scope_state: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     """Resolve the thread RG for the given record and return the records in it
-    the user may access.
+    the user may access and the turn's scope (``scope_state``) admits.
 
     Returned records are built through the same `chat_helpers.get_record` pipeline
     used for first-pass retrieval, so their `block_containers`, `context_metadata`
@@ -442,6 +443,10 @@ async def _fetch_thread_records_impl(
     allowed = await accessible_node_ids(
         graph_provider, thread_ids | {record_id}, user_id or "", effective_org,
     )
+    if scope_state is not None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        allowed &= await ids_within_scope(scope_state, graph_provider, user_key, effective_org, sorted(allowed))
     if record_id not in allowed:
         return not_a_thread
     thread_records = [r for r in thread_records if _record_key(r) in allowed]
@@ -580,6 +585,7 @@ def create_fetch_slack_thread_tool(
                 org_id=org_id,
                 config_service=config_service,
                 user_id=user_id,
+                scope_state=tool_state,
             )
         except Exception as e:
             logger.exception("fetch_slack_thread_tool failed")

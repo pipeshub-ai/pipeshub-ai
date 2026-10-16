@@ -929,6 +929,18 @@ class TestNormalizeBracketRefs:
         text = "Link [label](https://example.com/a) end."
         assert _normalize_bracket_refs(text) == text
 
+    def test_a_copied_context_label_becomes_the_link(self) -> None:
+        """Blocks are labelled ``[12|ref5]`` for the model; a copied label must not
+        leave ``[12|`` and ``]`` around the citation."""
+        assert normalize_malformed_citations("Revenue was 5M [12|ref5].") == "Revenue was 5M [source](ref5)."
+
+    def test_a_list_of_copied_context_labels_becomes_links(self) -> None:
+        out = normalize_malformed_citations("Both [12|ref5, 13|ref6] agree.")
+        assert out == "Both [source](ref5) [source](ref6) agree."
+
+    def test_a_bracketed_pair_of_numbers_is_left_alone(self) -> None:
+        assert normalize_malformed_citations("Seasons [2024|2025] differ.") == "Seasons [2024|2025] differ."
+
     def test_normalize_malformed_avoids_double_brackets(self):
         """[refN] must become [source](refN) without _wrap_bare_refs adding an extra leading [."""
         out = normalize_malformed_citations("Answer per [ref7].")

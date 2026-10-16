@@ -251,7 +251,9 @@ class TestSourceLimitedToSomeNodes:
         )
         filters = query_info["filters"]
         assert (filters["apps"], filters["kb"]) == ([], ["kb-1"])
-        assert not any(key in filters for key in ("recordGroups", "allowedApps", "selectionApps"))
+        assert not any(key in filters for key in ("recordGroups", "selectionApps"))
+        # Still bounded by the agent's sources, for the tools that read by id.
+        assert (filters["allowedApps"], filters["allowedRecordGroups"]) == (["kb-1"], ["proj-a"])
 
 
 class TestLimitThatCannotBeSearched:

@@ -587,6 +587,57 @@ class TestFetchThreadRecordsImplAccess:
         assert kwargs["org_id"] == "org1"
 
 
+    @patch.object(fst, "_fetch_record_by_id", new_callable=AsyncMock)
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    @patch.object(fst, "user_can_access_node", new_callable=AsyncMock)
+    @patch.object(fst, "resolve_user_key", new_callable=AsyncMock)
+    async def test_thread_records_outside_the_turns_scope_are_left_out(
+        self, mock_key, mock_access, mock_resolve, mock_fetch,
+    ):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "org1"}
+        mock_fetch.side_effect = lambda rid, **_: {"id": rid}
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids),
+            node_ids_in_scope=frozenset(node_ids) & {"rid", "inside"} if scopes else frozenset(node_ids),
+        ))
+        graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "inside"}, {"id": "outside"}])
+        state = {"filters": {"apps": [], "kb": [], "records": ["folder-a"]}}
+
+        out = await fst._fetch_thread_records_impl(
+            "rid", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org1",
+            user_id="member", scope_state=state,
+        )
+
+        assert [r["id"] for r in out["records"]] == ["inside"]
+
+    @patch.object(fst, "_resolve_thread_record_group", new_callable=AsyncMock)
+    @patch.object(fst, "user_can_access_node", new_callable=AsyncMock)
+    @patch.object(fst, "resolve_user_key", new_callable=AsyncMock)
+    async def test_a_record_outside_the_turns_scope_is_not_a_thread(self, mock_key, mock_access, mock_resolve):
+        mock_key.return_value = "ukey"
+        mock_access.return_value = True
+        mock_resolve.return_value = {"record_group_id": "trg", "connector_id": "c", "org_id": "org1"}
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        graph.get_selection_nodes = AsyncMock(return_value={"groups": [], "records": []})
+        graph.check_access = AsyncMock(side_effect=lambda user_key, org_id, node_ids=(), scopes=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids), node_ids_in_scope=frozenset() if scopes else frozenset(node_ids),
+        ))
+        graph.get_records_by_record_group = AsyncMock(return_value=[{"id": "rid"}])
+
+        out = await fst._fetch_thread_records_impl(
+            "rid", {}, graph_provider=graph, blob_store=MagicMock(), org_id="org1",
+            user_id="member", scope_state={"filters": {"apps": [], "kb": [], "records": ["folder-a"]}},
+        )
+
+        assert out["ok"] is False and "records" not in out
+
+
 @pytest.mark.asyncio
 class TestFetchThreadRecordsImpl:
     @pytest.fixture(autouse=True)

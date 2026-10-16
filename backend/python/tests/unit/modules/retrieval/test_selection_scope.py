@@ -181,6 +181,13 @@ class TestResolve:
         assert provider.get_selection_nodes.await_args.kwargs["limit"] == 2
 
     @pytest.mark.asyncio
+    async def test_a_walk_that_stopped_before_it_could_tell_is_refused(self) -> None:
+        provider = _provider(readable={"f"}, records=[{"id": "r1", "vrid": "v1", "connectorId": "a"}])
+        provider.get_selection_nodes.return_value["truncated"] = True
+        with pytest.raises(SelectionTooLargeError):
+            await resolve_selection_scope(provider, "u", "o", {"records": ["f"]})
+
+    @pytest.mark.asyncio
     async def test_exactly_the_cap_is_allowed(self, monkeypatch) -> None:
         monkeypatch.setenv("SEARCH_SELECTION_MAX_NODES", "2")
         provider = _provider(
@@ -301,13 +308,17 @@ class TestTurnEntry:
     """`prepare_turn_scope`: what a chat turn's filters become before the model runs."""
 
     @pytest.mark.asyncio
-    async def test_an_app_only_turn_is_left_alone_and_asks_the_graph_nothing(self) -> None:
+    async def test_an_app_only_turn_keeps_the_agent_bound_and_asks_the_graph_nothing(self) -> None:
+        """Without the bound, fetch by id would reach any app the run-as identity reads."""
         provider = _provider()
         provider.get_user_by_user_id = AsyncMock()
         turn = await prepare_turn_scope(
             provider, "u", "o", {"apps": ["a"], "kb": []}, agent_sources={"apps": ["a"]},
+            project_sources={"apps": ["p"]},
         )
-        assert turn == {"apps": ["a"], "kb": []}
+        assert turn == {
+            "apps": ["a"], "kb": [], "allowedApps": ["a"], "allowedRecordGroups": [], "allowedRecords": [],
+        }
         provider.get_user_by_user_id.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -548,3 +559,42 @@ class TestCitingInsideASelection:
         assert must == {"orgId": "o1"}
         assert should == SCOPE.should_clauses({"app-whole", "app-g"})
         assert should[CONNECTOR_IDS_FIELD] == ["app-whole"]
+
+
+class TestUnreadableScope:
+    """A turn whose sources the user cannot read answers at once (bug-bash 002)."""
+
+    @pytest.mark.asyncio
+    async def test_a_selection_the_user_cannot_read_is_reported(self) -> None:
+        provider = _provider(readable=set())
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+        filters = {"apps": [], "kb": [], "records": ["folder-x"]}
+        assert await mod.unreadable_scope_error(provider, "u", "o", filters) == (
+            "selection_empty", mod.SELECTION_EMPTY_MESSAGE,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_readable_selection_is_not(self) -> None:
+        provider = _provider(readable={"folder-x"}, records=[{"id": "r1", "vrid": "v1", "connectorId": "a"}])
+        provider.get_user_by_user_id = AsyncMock(return_value={"_key": "uk"})
+        filters = {"apps": [], "kb": [], "records": ["folder-x"]}
+        assert await mod.unreadable_scope_error(provider, "u", "o", filters) is None
+
+    @pytest.mark.asyncio
+    async def test_apps_the_user_reaches_none_of_are_reported(self) -> None:
+        provider = _provider()
+        provider.get_accessible_containers = AsyncMock(return_value=AccessibleContainers())
+        code, _ = await mod.unreadable_scope_error(provider, "u", "o", {"apps": ["a"], "departments": ["d"]})
+        assert code == "accessible_records_not_found"
+        # Only the containers: other filters narrow and would force the fallback path.
+        assert provider.get_accessible_containers.await_args.args[2] == {"apps": ["a"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("containers", [
+        AccessibleContainers(app_ids=frozenset({"a"})),
+        AccessibleContainers(fallback_reason="query_failed"),
+    ])
+    async def test_reachable_or_unknown_containers_run_the_turn(self, containers) -> None:
+        provider = _provider()
+        provider.get_accessible_containers = AsyncMock(return_value=containers)
+        assert await mod.unreadable_scope_error(provider, "u", "o", {"apps": ["a"]}) is None

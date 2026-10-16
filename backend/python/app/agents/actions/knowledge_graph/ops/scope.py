@@ -231,7 +231,9 @@ async def ids_within_scope(
     filter narrows. A file the user attached to this conversation is always
     readable: it is part of the question, not of the sources.
     """
+    from app.config.constants.arangodb import CollectionNames
     from app.modules.retrieval.selection_scope import resolve_request_scopes
+    from app.utils.attachment_utils import is_chat_attachment
 
     filters = state.get("filters") or {}
     ids = [node_id for node_id in dict.fromkeys(node_ids) if node_id]
@@ -242,10 +244,40 @@ async def ids_within_scope(
         attachment.get("recordId")
         for attachment in state.get("attachments") or []
         if isinstance(attachment, dict)
-    }
+    } & set(ids)
+    if attached:
+        # The client names an attachment's recordId: only a real chat upload of
+        # this org passes the scope as an attachment.
+        rows = await graph_provider.get_nodes_by_field_in(
+            CollectionNames.RECORDS.value, "id", sorted(attached),
+            return_fields=["id", "orgId", "origin", "connectorId"], raise_on_error=True,
+        )
+        attached = {row.get("id") or row.get("_key") for row in rows or [] if is_chat_attachment(row, org_id)}
     _, scopes = await resolve_request_scopes(graph_provider, user_key, org_id, filters)
     access = await graph_provider.check_access(user_key, org_id, node_ids=ids, scopes=scopes)
-    return set(access.node_ids_in_scope) | (attached & set(ids))
+    return set(access.node_ids_in_scope) | attached
+
+
+async def ids_outside_scope(
+    state: "Mapping[str, object]",
+    graph_provider: "IGraphDBProvider",
+    user_id: str,
+    org_id: str,
+    record_ids: Sequence[str],
+) -> list[str]:
+    """Of ``record_ids``, those the turn may not read: outside the selection
+    below app level, or outside a saved agent's or a project's sources. None
+    for a turn with neither, without asking the graph."""
+    filters = state.get("filters") or {}
+    scoped = _has_selection(filters) or any(key in filters for key in ALLOWED_FILTER_KEYS)
+    if not scoped:
+        return []
+    user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    user_key = (user or {}).get("_key") or (user or {}).get("id")
+    if not user_key:
+        return list(record_ids)
+    inside = await ids_within_scope(state, graph_provider, user_key, org_id, record_ids)
+    return [record_id for record_id in record_ids if record_id not in inside]
 
 
 async def resolve_scope(

@@ -536,6 +536,7 @@ class ArtifactManager:
         if record is None:
             return not_found
 
+        from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
         from app.config.constants.arangodb import OriginTypes
         from app.services.record_content import (
             RecordAccessDeniedError,
@@ -554,6 +555,15 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] access check failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        try:
+            outside = await ids_outside_scope(
+                self.chat_state, graph_provider, self.chat_state.get("user_id", ""), org_id, [record_id],
+            )
+        except Exception:
+            logger.exception("[get_record_download_url] scope check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        if outside:
+            return not_found
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:

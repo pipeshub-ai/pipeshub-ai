@@ -70,7 +70,7 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
-from app.utils.attachment_utils import keep_accessible_attachments
+from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
 from app.utils.concurrency import gather_with_concurrency
 from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
@@ -1170,15 +1170,6 @@ async def _attachment_caller(
     return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
 
 
-def _is_chat_attachment(record: dict | None, org_id: str) -> bool:
-    return (
-        bool(record)
-        and record.get("orgId") == org_id
-        and record.get("origin") == "UPLOAD"
-        and record.get("connectorId") == f"attachments_{org_id}"
-    )
-
-
 # The ids come from the client: bound the graph reads they cause.
 _OWNERSHIP_CHECKS_AT_ONCE = 8
 
@@ -1194,7 +1185,7 @@ async def _owned_chat_attachments(
 
     async def owned(record_id: str) -> bool:
         record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-        if not _is_chat_attachment(record, org_id):
+        if not is_chat_attachment(record, org_id):
             return False
         edge = await graph_provider.get_edge(
             from_id=user_key,
@@ -1356,7 +1347,7 @@ async def delete_chat_attachment(
     if (
         not record
         or record.get("connectorName") != Connectors.ATTACHMENTS.value
-        or not _is_chat_attachment(record, org_id)
+        or not is_chat_attachment(record, org_id)
         or not await _owned_chat_attachments(graph_provider, org_id, caller_key, [record_id])
     ):
         raise HTTPException(status_code=404, detail="Attachment not found")

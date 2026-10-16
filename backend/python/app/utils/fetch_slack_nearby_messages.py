@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Literal, Optional, TYPE_CHECKING, Union
+from typing import Any, Literal, Optional, TYPE_CHECKING, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import tool
@@ -438,8 +438,10 @@ async def _user_can_read_channel(
     channel_id: str,
     user_id: str | None,
     org_id: str,
+    scope_state: dict[str, Any] | None = None,
 ) -> bool:
-    """True only if the chat user can access this connector's indexed channel.
+    """True only if the chat user can access this connector's indexed channel,
+    and the channel lies inside what the turn is limited to (``scope_state``).
 
     ``connector_id`` and ``channel_id`` come from the model, and the Slack
     client is built with that connector's token, so the channel must be an
@@ -476,7 +478,13 @@ async def _user_can_read_channel(
         return False
     if not await user_can_access_node(graph_provider, rg_id, user_key, org_id):
         return False
-    return rg_id in await accessible_node_ids(graph_provider, {rg_id}, user_id or "", org_id)
+    if rg_id not in await accessible_node_ids(graph_provider, {rg_id}, user_id or "", org_id):
+        return False
+    if scope_state is None:
+        return True
+    from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+    return rg_id in await ids_within_scope(scope_state, graph_provider, user_key, org_id, [rg_id])
 
 
 async def _fetch_nearby_messages_impl(
@@ -491,6 +499,7 @@ async def _fetch_nearby_messages_impl(
     graph_provider: "IGraphDBProvider | None" = None,
     org_id: str | None = None,
     user_id: str | None = None,
+    scope_state: dict[str, Any] | None = None,
 ) -> FetchSlackNearbyMessagesResult:
     """Core implementation: resolve Slack client and fetch nearby messages."""
     if not config_service:
@@ -529,6 +538,7 @@ async def _fetch_nearby_messages_impl(
         channel_id=channel,
         user_id=user_id,
         org_id=effective_org,
+        scope_state=scope_state,
     ):
         return FetchSlackNearbyMessagesError(
             error=(
@@ -592,11 +602,13 @@ def create_fetch_slack_nearby_messages_tool(
     graph_provider: "IGraphDBProvider | None" = None,
     org_id: str | None = None,
     user_id: str | None = None,
+    tool_state: dict[str, Any] | None = None,
 ) -> Callable:
     """Return a LangChain tool with Slack client dependencies bound.
 
     ``graph_provider``, ``org_id`` and ``user_id`` are required for the
     per-user channel access check; without them every call fails.
+    ``tool_state`` carries the turn's filters, which bound the channels.
     """
 
     @tool("fetch_slack_nearby_messages", args_schema=FetchSlackNearbyMessagesArgs)
@@ -637,6 +649,7 @@ def create_fetch_slack_nearby_messages_tool(
                 graph_provider=graph_provider,
                 org_id=org_id,
                 user_id=user_id,
+                scope_state=tool_state,
             )
         except Exception as e:
             logger.exception("fetch_slack_nearby_messages_tool failed")

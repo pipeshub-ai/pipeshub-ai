@@ -142,7 +142,7 @@ class TestGenerateChatStreamViaAgentLoop:
         assert query_dict["query"] == "what's our refund policy?"
         assert query_dict["chatMode"] == "agent"
         assert query_dict["conversationId"] == "conv-1"
-        assert query_dict["attachments"] == [{"virtualRecordId": "vr1", "mimeType": "application/pdf"}]
+        assert query_dict["attachments"] == [{"virtualRecordId": "vr1", "mimeType": "application/pdf", "recordId": "rec-1"}]
         assert query_dict["filters"] == {"apps": ["confluence"]}
         # Opt-in, disabled by default — see `ChatQuery.enableRecordIdShortening`.
         assert query_dict["enableRecordIdShortening"] is False

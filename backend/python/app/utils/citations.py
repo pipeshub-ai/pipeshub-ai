@@ -277,11 +277,25 @@ def normalize_malformed_citations(text: str) -> str:
     * Bare refN token            ``ref5``                   →  ``[source](ref5)``
     * Bare tiny web-ref URL      ``https://ref5.xyz``       →  ``[source](https://ref5.xyz)``
     """
+    text = _normalize_context_label_refs(text)
     text = _unwrap_ref_link_targets(text)
     text = _expand_multi_ref_links(text)
     text = _normalize_bracket_refs(text)
     text = _wrap_bare_refs(text)
     return text
+
+
+# A context block is shown to the model as ``[12|ref5] text``. A model that cites
+# by copying that label leaves ``[12|`` and ``]`` around the link once the ref is
+# wrapped, so the whole label (or a comma list of them) becomes the links.
+_CONTEXT_LABEL_REFS_RE = re.compile(r'\[(\d+\|ref\d+(?:\s*,\s*\d+\|ref\d+)*)\]')
+
+
+def _normalize_context_label_refs(text: str) -> str:
+    return _CONTEXT_LABEL_REFS_RE.sub(
+        lambda m: " ".join(f"[source]({label.split('|', 1)[1].strip()})" for label in m.group(1).split(",")),
+        text,
+    )
 
 
 def display_url_for_llm(url: str, ref_mapper: "object | None") -> str:

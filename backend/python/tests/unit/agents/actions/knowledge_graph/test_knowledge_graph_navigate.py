@@ -296,6 +296,37 @@ class TestNavigateRecordWithChildren:
         assert "Related:" in text
         assert f"record_id={_short_id_for(state, 'rel1')}" in text
 
+    @pytest.mark.asyncio
+    async def test_a_linked_record_outside_the_agents_sources_is_not_named(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        state = _make_state(filters={
+            "apps": ["conn-jira"], "kb": [],
+            "allowedApps": ["conn-jira"], "allowedRecordGroups": [], "allowedRecords": [],
+        })
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "PA-1787", "nodeType": "record", "subType": "TICKET", "connector": "JIRA",
+        })
+        gp.get_linked_records = AsyncMock(return_value=[
+            {"id": "in-jira", "name": "Jira twin", "recordType": "TICKET", "relationshipType": "LINKED_TO"},
+            {"id": "in-wiki", "name": "Wiki page", "recordType": "CONFLUENCE_PAGE", "relationshipType": "LINKED_TO"},
+        ])
+        gp.check_access = AsyncMock(side_effect=lambda key, org, node_ids=(), scopes=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids) & {"in-jira"},
+        ))
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        mock_resp.breadcrumbs = []
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="rec1")
+
+        assert success
+        assert "Jira twin" in text and "Wiki page" not in text
+
     @staticmethod
     async def _navigate_with_linked_failure(error: Exception) -> tuple[bool, str]:
         state = _make_state()

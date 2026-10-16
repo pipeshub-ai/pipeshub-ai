@@ -244,12 +244,29 @@ class TestReachingARecordByNameOrId:
 
     @pytest.mark.asyncio
     async def test_a_file_attached_to_the_conversation_is_always_readable(self) -> None:
-        graph = _graph(readable={"upload-1"}, inside=set())
+        upload = {"id": "upload-1", "orgId": "o", "origin": "UPLOAD", "connectorId": "attachments_o"}
+        graph = _graph(readable={"upload-1"}, inside=set(), nodes={"records": [upload]})
         state = {
             "filters": {"apps": [], "kb": [], "records": ["folder-a"]},
             "attachments": [{"recordId": "upload-1", "virtualRecordId": "v-up"}],
         }
         assert await ids_within_scope(state, graph, "u", "o", ["upload-1", "b1"]) == {"upload-1"}
+
+    @pytest.mark.asyncio
+    async def test_an_attachment_naming_a_record_outside_the_bound_is_refused(self) -> None:
+        """The client names an attachment's recordId; a connector record it
+        names is not an attachment and stays outside an agent's folder bound."""
+        other = {"id": "secret", "orgId": "o", "origin": "CONNECTOR", "connectorId": "drive-1"}
+        graph = _graph(readable={"secret"}, inside=set(), nodes={"records": [other]})
+        state = {"filters": BOUNDED, "attachments": [{"recordId": "secret", "virtualRecordId": "v-up"}]}
+        assert await ids_within_scope(state, graph, "u", "o", ["secret"]) == set()
+
+    @pytest.mark.asyncio
+    async def test_another_orgs_chat_attachment_is_not_an_attachment_here(self) -> None:
+        theirs = {"id": "up-2", "orgId": "o2", "origin": "UPLOAD", "connectorId": "attachments_o2"}
+        graph = _graph(readable=set(), inside=set(), nodes={"records": [theirs]})
+        state = {"filters": BOUNDED, "attachments": [{"recordId": "up-2", "virtualRecordId": "v"}]}
+        assert await ids_within_scope(state, graph, "u", "o", ["up-2"]) == set()
 
     @pytest.mark.asyncio
     async def test_a_bound_that_lists_nothing_admits_nothing(self) -> None:
@@ -275,6 +292,17 @@ class TestOpeningARecordById:
         graph = _graph()
         assert await _ids_outside_scope(self._context({"apps": ["a"], "kb": []}, graph), ["x"]) == []
         graph.get_user_by_user_id.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_agent_refuses_a_record_of_another_app(self) -> None:
+        """A saved agent on whole apps is bound even when the turn selects nothing."""
+        graph = _graph(readable={"in-a", "in-b"}, inside={"in-a"})
+        context = self._context(
+            {"apps": ["a"], "kb": [], "allowedApps": ["a"], "allowedRecordGroups": [], "allowedRecords": []},
+            graph,
+        )
+        assert await _ids_outside_scope(context, ["in-a", "in-b"]) == ["in-b"]
+        assert [s.app_ids for s in graph.check_access.await_args.kwargs["scopes"]] == [frozenset({"a"})]
 
     @pytest.mark.asyncio
     async def test_an_id_outside_the_users_selection_is_reported(self) -> None:

@@ -491,6 +491,13 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
+            # A linked record is named from any source the user reads, not
+            # only from those the turn is limited to.
+            if view.related:
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
+                )
+                view.related = [row for row in view.related if row.id in inside]
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."

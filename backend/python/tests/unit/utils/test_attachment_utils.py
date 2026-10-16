@@ -860,8 +860,8 @@ class TestKeepAccessibleAttachments:
 
         kept_turn, kept_history = await self._keep(graph, turn, history)
 
-        assert kept_turn == [{"virtualRecordId": "mine"}]
-        assert kept_history[0]["attachments"] == [{"virtualRecordId": "old-mine"}]
+        assert kept_turn == [{"virtualRecordId": "mine", "recordId": "rec-mine"}]
+        assert kept_history[0]["attachments"] == [{"virtualRecordId": "old-mine", "recordId": "rec-old-mine"}]
         assert kept_history[1] == history[1]
         graph.check_access.assert_awaited_once()
         assert set(graph.check_access.await_args.kwargs["virtual_record_ids"]) == {
@@ -884,9 +884,26 @@ class TestKeepAccessibleAttachments:
         assert kept_turn == []
 
     @pytest.mark.asyncio
-    async def test_a_service_account_keeps_its_org_scoping(self) -> None:
+    async def test_the_client_recordid_is_replaced_and_one_without_vrid_dropped(self) -> None:
+        """The tools read an attached recordId past the turn's scope."""
+        graph = self._graph({"mine"})
+        turn = [{"virtualRecordId": "mine", "recordId": "forged"}, {"recordId": "no-vrid"}]
+        kept_turn, _ = await self._keep(graph, turn, [])
+        assert kept_turn == [{"virtualRecordId": "mine", "recordId": "rec-mine"}]
+
+    @pytest.mark.asyncio
+    async def test_a_service_account_keeps_only_this_orgs_chat_attachments(self) -> None:
         graph = self._graph(set())
-        turn = [{"virtualRecordId": "svc-upload"}]
+        graph.get_nodes_by_field_in = AsyncMock(return_value=[
+            {"id": "up-1", "virtualRecordId": "svc-upload", "orgId": "org-1",
+             "origin": "UPLOAD", "connectorId": "attachments_org-1"},
+            {"id": "drive-1", "virtualRecordId": "connector-file", "orgId": "org-1",
+             "origin": "CONNECTOR", "connectorId": "drive"},
+        ])
+        turn = [
+            {"virtualRecordId": "svc-upload", "recordId": "forged"},
+            {"virtualRecordId": "connector-file", "recordId": "drive-1"},
+        ]
         kept_turn, _ = await self._keep(graph, turn, [], service_account=True)
-        assert kept_turn == turn
+        assert kept_turn == [{"virtualRecordId": "svc-upload", "recordId": "up-1"}]
         graph.check_access.assert_not_called()
