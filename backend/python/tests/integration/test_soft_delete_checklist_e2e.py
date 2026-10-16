@@ -68,6 +68,9 @@ from app.connectors.core.registry.folder_scope import remove_records_not_listed
 from app.connectors.services.trash_purge import Outcome, TrashPurger
 from app.connectors.sources.localKB.handlers import kb_service as kb_service_module
 from app.connectors.sources.localKB.handlers.kb_service import KnowledgeBaseService
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
 from app.models.entities import (
     CodeFileRecord,
     FileRecord,
@@ -196,10 +199,11 @@ class _World:
         search = await g.get_accessible_virtual_record_ids(user.user_id, self.org_id, raise_on_error=True)
         permitted = await g.filter_accessible_record_ids([record_id], user.user_id, self.org_id)
         hydrated = await g.get_records_by_record_ids([record_id], self.org_id)
-        listed, _, _ = await g.list_all_records(
-            user.key, self.org_id, 0, 500, None, None, None, None, None, None, None, None,
-            "recordName", "asc", "all",
+        listing = await KnowledgeHubService(logger, g).get_nodes(
+            user_id=user.user_id, org_id=self.org_id, flattened=True, limit=200,
+            sort_by="name", sort_order="asc",
         )
+        assert listing.success, listing.error
         return {
             # Search and chat retrieval: the virtual record ids a user may match.
             "search": search.get(self.vrid(name)) == record_id,
@@ -209,7 +213,7 @@ class _World:
             # The record-content resolver behind citations and agent reads.
             "citation": await self._citation_opens(user, record_id),
             "chat hydrate": record_id in {r.get("_key") or r.get("id") for r in hydrated or []},
-            "All Records": record_id in {r.get("id") for r in listed},
+            "All Records": record_id in {item.id for item in listing.items},
         }
 
     async def _citation_opens(self, user: _User, record_id: str) -> bool:
