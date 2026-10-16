@@ -17,6 +17,7 @@ from app.modules.retrieval.retrieval_service import (
     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
     RetrievalService,
 )
+from app.services.vector_db.search_retry import VectorSearchUnavailableError
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -892,10 +893,12 @@ class TestExecuteParallelSearches:
             side_effect=ConnectionError("vector db down")
         )
 
-        with pytest.raises(ConnectionError):
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock), \
+                pytest.raises(VectorSearchUnavailableError) as raised:
             await retrieval_service._execute_parallel_searches(
                 ["query"], models.Filter(must=[]), 10, "org-1"
             )
+        assert isinstance(raised.value.__cause__, ConnectionError)
 
     @pytest.mark.asyncio
     async def test_one_collection_failing_still_returns_the_others(

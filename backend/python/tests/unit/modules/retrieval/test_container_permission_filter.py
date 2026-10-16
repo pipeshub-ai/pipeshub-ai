@@ -24,6 +24,8 @@ import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.fastapi_responses import Status
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.services.vector_db.models import SearchFailureKind
+from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
     RECORD_GROUP_IDS_FIELD,
@@ -774,6 +776,46 @@ class TestRetryNeverRegresses:
 
         assert accessible == {"v0": "r0"}
         assert len(results) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_second_attempt_the_store_cannot_answer_keeps_the_first(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        """The wider re-query is optional; the store failing it must not cost
+        the answer the first attempt already has."""
+        good = [_hit(f"v{i}") for i in range(60)]
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            side_effect=[good, VectorSearchUnavailableError(SearchFailureKind.TIMEOUT, "records")]
+        )
+        mock_graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
+            return_value={"v0": "r0"}
+        )
+
+        results, accessible, degraded = await retrieval_service._search_and_adjudicate(
+            ["q"], object(), 20, "o1", "u1",
+            _containers(record_group_ids_verify=frozenset({"rg"})),
+            allow_requery=True, scope_connector_ids=None,
+        )
+
+        assert retrieval_service._execute_parallel_searches.await_count == 2
+        assert accessible == {"v0": "r0"}
+        assert len(results) == 1
+        assert degraded is False
+
+    @pytest.mark.asyncio
+    async def test_a_first_attempt_the_store_cannot_answer_still_fails(
+        self, retrieval_service, mock_graph_provider
+    ) -> None:
+        retrieval_service._execute_parallel_searches = AsyncMock(
+            side_effect=VectorSearchUnavailableError(SearchFailureKind.TIMEOUT, "records")
+        )
+
+        with pytest.raises(VectorSearchUnavailableError):
+            await retrieval_service._search_and_adjudicate(
+                ["q"], object(), 20, "o1", "u1",
+                _containers(record_group_ids_verify=frozenset({"rg"})),
+                allow_requery=True, scope_connector_ids=None,
+            )
 
 
 class TestRouting:
