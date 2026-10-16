@@ -1064,12 +1064,12 @@ async def _parents(w: _World, record_id: str) -> list[str]:
     """The record at the other end of each PARENT_CHILD edge into the record."""
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (p)-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
+            "MATCH (p)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(:Record {id: $id}) RETURN p.id AS id",
             parameters={"id": record_id},
         )
         return [row["id"] for row in rows or []]
     return await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
+        "FOR e IN nodeRelations FILTER e._to == @to AND e.relationshipType == 'PARENT_CHILD' "
         "RETURN PARSE_IDENTIFIER(e._from).key",
         {"to": f"records/{record_id}"},
     ) or []
@@ -1156,9 +1156,9 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
             )
         else:
             hold = _arango_hold(
-                w, CollectionNames.RECORD_RELATIONS.value,
-                "FOR e IN recordRelations FILTER e._to == @to "
-                "UPDATE e WITH {updatedAtTimestamp: @now} IN recordRelations RETURN 1",
+                w, CollectionNames.NODE_RELATIONS.value,
+                "FOR e IN nodeRelations FILTER e._to == @to "
+                "UPDATE e WITH {updatedAtTimestamp: @now} IN nodeRelations RETURN 1",
                 {"to": f"records/{kb.reports}", "now": get_epoch_timestamp_in_ms()},
             )
     elif fails_on == "record":
@@ -1187,7 +1187,7 @@ async def test_a_failed_kb_move_leaves_the_item_in_its_old_folder(world: _World,
             w, "MATCH (r:Record {id: $id}) SET r.heldByTest = true RETURN count(r) AS n", {"id": kb.new}
         )
     else:
-        hold = _arango_unique(w, CollectionNames.RECORD_RELATIONS.value, ["_from", "relationshipType"])
+        hold = _arango_unique(w, CollectionNames.NODE_RELATIONS.value, ["_from", "relationshipType"])
         expected = "unique constraint violated"
     async with hold:
         assert expected in await _failed_kb_move(w, kb, target)
@@ -1256,12 +1256,12 @@ async def _children(w: _World, record_id: str) -> set[str]:
     """The record at the other end of each PARENT_CHILD edge out of the record."""
     if w.neo4j:
         rows = await w.graph.client.execute_query(
-            "MATCH (:Record {id: $id})-[:RECORD_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
+            "MATCH (:Record {id: $id})-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(c) RETURN c.id AS id",
             parameters={"id": record_id},
         )
         return {row["id"] for row in rows or []}
     return set(await w.graph.http_client.execute_aql(
-        "FOR e IN recordRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
+        "FOR e IN nodeRelations FILTER e._from == @from AND e.relationshipType == 'PARENT_CHILD' "
         "RETURN PARSE_IDENTIFIER(e._to).key",
         {"from": f"records/{record_id}"},
     ) or [])

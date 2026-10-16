@@ -192,7 +192,7 @@ async def _seed_neo4j(provider: Neo4jProvider, org_id: str) -> None:
         CREATE (rec:Record {id: $gated, orgId: $org, connectorId: $conf, recordName: $gated,
                             recordType: 'FILE', isDeleted: false, indexingStatus: 'COMPLETED',
                             sourceLastModifiedTimestamp: 1})
-        CREATE (rec)-[:BELONGS_TO_TOPIC]->(t)
+        CREATE (rec)-[:BELONGS_TO_TOPIC {extractedName: 'Onboarding'}]->(t)
         CREATE (conf)-[:NODE_RELATION {relationshipType: 'PARENT_CHILD'}]->(open)
         CREATE (open)-[:BELONGS_TO]->(conf)
         CREATE (open)-[:INHERIT_PERMISSIONS]->(conf)
@@ -333,7 +333,8 @@ async def _seed_arango(provider: ArangoHTTPProvider, org_id: str) -> None:
         ).to_arango_base_record(),
     ])
     await _insert(provider, CollectionNames.BELONGS_TO_TOPIC.value, [
-        {"_from": f"records/{keys['gated']}", "_to": f"topics/{keys['gate_topic']}", "createdAtTimestamp": 1},
+        {"_from": f"records/{keys['gated']}", "_to": f"topics/{keys['gate_topic']}", "createdAtTimestamp": 1,
+         "extractedName": "Onboarding"},
     ])
     await _insert(provider, CollectionNames.RECORD_GROUPS.value, [
         {"_key": keys["open"], "orgId": org_id, "groupName": "Open", "groupType": RecordGroupType.KB.value,

@@ -231,8 +231,9 @@ class _Sync:
         }
 
     async def can_read(self, user_key: str, name: str) -> bool:
-        result = await self.graph._check_record_permissions(await self.record_id(name), user_key)
-        return bool((result or {}).get("permission"))
+        record_id = await self.record_id(name)
+        result = await self.graph.check_access(user_key, self.org_id, node_ids=[record_id])
+        return record_id in result.node_ids
 
     async def stats_total(self) -> int:
         result = await self.graph.get_connector_stats(self.org_id, self.connector_id)
@@ -476,7 +477,7 @@ async def test_a_link_to_a_placeholder_survives_the_unlink(sync: _Sync) -> None:
 
     async def links_out() -> int:
         edges = await sync.graph.get_edges_from_node(
-            f"{RECORDS}/{await sync.record_id('t1')}", CollectionNames.RECORD_RELATIONS.value
+            f"{RECORDS}/{await sync.record_id('t1')}", CollectionNames.NODE_RELATIONS.value
         )
         return len(edges or [])
 
