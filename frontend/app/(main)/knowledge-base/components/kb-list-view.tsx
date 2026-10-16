@@ -26,6 +26,8 @@ import { getIndexStatusIcon } from '@/lib/utils/index-status-icon';
 import { isRateLimitPause } from '@/lib/utils/rate-limit-pause';
 import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import {
+  canDeleteKbTableItem,
+  needsCollectionContext,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
@@ -216,9 +218,8 @@ function TableRow({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
-  const canDeleteItem = isKnowledgeHubNode(item)
-    ? (item.permission?.canDelete ?? false)
-    : true;
+  // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
+  const canDeleteItem = canDeleteKbTableItem(item);
   // Root-level collection/app node — has no parent collection to move within.
   const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
 
@@ -712,7 +713,7 @@ function TableRow({
               // Move relocates an item within its collection — a collection itself has nothing to move into.
               onMove && canEditItem && !isCollectionNode && { icon: 'drive_file_move', label: 'Move', onClick: () => onMove(item) },
               // Collections can only be deleted by OWNER
-              onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
+              onDelete && canDeleteItem && { icon: 'delete', label: 'Delete', onClick: () => onDelete(item), color: 'red' as const },
             ]}
           />
         </Box>
@@ -756,6 +757,8 @@ interface KbListViewProps {
   onDownload?: (item: TableItem) => void;
   /** Rows are on their way: hold the header and shimmer the body until they land. */
   loading?: boolean;
+  /** False when no collection is open (a search at the Collections root): see `needsCollectionContext`. */
+  hasCollectionContext?: boolean;
 }
 
 const SKELETON_ROWS = 18;
@@ -785,7 +788,10 @@ export function KbListView({
   onDelete,
   onDownload,
   loading = false,
+  hasCollectionContext = true,
 }: KbListViewProps) {
+  const allows = (item: TableItem, action: 'rename' | 'move' | 'delete') =>
+    hasCollectionContext || !needsCollectionContext(item, action);
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   // After a load the skeleton stays under the rows while they land one by one,
@@ -917,11 +923,11 @@ export function KbListView({
             onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
             onPreview={onPreview}
             onGoToParent={onGoToParent}
-            onRename={onRename}
+            onRename={allows(item, 'rename') ? onRename : undefined}
             onReindex={onReindex}
             onReplace={onReplace}
-            onMove={onMove}
-            onDelete={onDelete}
+            onMove={allows(item, 'move') ? onMove : undefined}
+            onDelete={allows(item, 'delete') ? onDelete : undefined}
             onDownload={onDownload}
           />
         ))}

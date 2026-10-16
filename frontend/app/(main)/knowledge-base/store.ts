@@ -1232,9 +1232,20 @@ export const useKnowledgeBaseStore = create<KnowledgeBaseStore>()(
               title: `Successfully deleted ${successCount} items`,
             });
           } else {
+            // Name what was kept, and say why when the server refused it.
+            const failedNames = items.filter((_, i) => results[i].status === 'rejected').map((item) => item.name);
+            const refused = results.some((r) => {
+              if (r.status !== 'rejected') return false;
+              const err = r.reason as { statusCode?: number; response?: { status?: number } };
+              return (err?.statusCode ?? err?.response?.status) === 403;
+            });
+            const shown = failedNames.slice(0, 3).join(', ') + (failedNames.length > 3 ? ` and ${failedNames.length - 3} more` : '');
             toast.update(toastId, {
-              variant: 'warning',
-              title: `Deleted ${successCount} items, ${failCount} failed`,
+              variant: successCount === 0 ? 'error' : 'warning',
+              title: successCount === 0
+                ? `Could not delete ${failCount} item${failCount === 1 ? '' : 's'}`
+                : `Deleted ${successCount} items, ${failCount} failed`,
+              description: refused ? `You don't have permission to delete: ${shown}` : `Not deleted: ${shown}`,
             });
           }
 

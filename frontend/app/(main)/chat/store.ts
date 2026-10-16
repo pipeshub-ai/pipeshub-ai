@@ -108,6 +108,8 @@ export interface ProjectChatScope {
   connectors: ScopedConnectorRow[];
   knowledgeCollectionRows: ScopedCollectionRow[];
   knowledgeDefaults: ChatKnowledgeFilters;
+  /** The project's hidden Collection for uploads; the server always searches it. */
+  linkedKnowledgeBaseId?: string | null;
   toolGroups: ScopedToolGroupRow[];
   mcpGroups: ScopedToolGroupRow[];
   /** Every selectable tool key (`instanceId:fullName`), across toolsets and MCP. */
@@ -321,6 +323,14 @@ function withoutId(ids: Set<string>, id: string): Set<string> {
 // ── Helper: generate a stable slot ID ───────────────────────────────
 
 let slotCounter = 0;
+function sameKnowledgeFilters(a: ChatKnowledgeFilters, b: ChatKnowledgeFilters): boolean {
+  return (['apps', 'kb', 'recordGroups', 'records', 'recordsExact'] as const).every((key) => {
+    const left = new Set(a[key] ?? []);
+    const right = b[key] ?? [];
+    return left.size === new Set(right).size && right.every((id) => left.has(id));
+  });
+}
+
 function generateSlotId(): string {
   slotCounter += 1;
   return `slot-${Date.now()}-${slotCounter}`;
@@ -437,6 +447,8 @@ interface ChatState {
   projectScope: ProjectChatScope | null;
   /** Per-turn narrowing of `projectScope.knowledgeDefaults`; `null` = whole project scope. */
   projectKnowledgeScope: ChatKnowledgeFilters | null;
+  /** Project whose reopened conversation set `projectKnowledgeScope` before that project's scope loaded. */
+  projectKnowledgeScopeRestoredFor: string | null;
   /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
   projectStreamTools: string[] | null;
 
@@ -636,7 +648,9 @@ interface ChatState {
    * the collection name/meta caches so pills and `appliedFilters` resolve labels.
    */
   setProjectScope: (scope: ProjectChatScope | null) => void;
-  setProjectKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  setProjectKnowledgeScope: (scope: ChatKnowledgeFilters | null) => void;
+  /** A reopened project conversation's last scope; survives that project's first `setProjectScope`. */
+  restoreProjectKnowledgeScope: (projectId: string, scope: ChatKnowledgeFilters) => void;
   setProjectStreamTools: (tools: string[] | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
@@ -804,6 +818,7 @@ const initialState = {
 
   projectScope: null as ProjectChatScope | null,
   projectKnowledgeScope: null as ChatKnowledgeFilters | null,
+  projectKnowledgeScopeRestoredFor: null as string | null,
   projectStreamTools: null as string[] | null,
 
   universalAgentStreamTools: null as string[] | null,
@@ -1229,7 +1244,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProjectScope: (scope) =>
     set((state) => {
       if (!scope) {
-        return { projectScope: null, projectKnowledgeScope: null, projectStreamTools: null };
+        return {
+          projectScope: null,
+          projectKnowledgeScope: null,
+          projectKnowledgeScopeRestoredFor: null,
+          projectStreamTools: null,
+        };
       }
       const names: Record<string, string> = {};
       const meta: Record<string, CollectionMeta> = {};
@@ -1241,17 +1261,28 @@ export const useChatStore = create<ChatState>((set, get) => ({
         names[r.id] = r.name;
         meta[r.id] = { name: r.name, nodeType: r.nodeType ?? 'recordGroup', connector: r.sourceType ?? 'KB' };
       }
-      // Same project re-hydrated (settings saved, catalog arrived): keep the user's per-turn
-      // narrowing, minus anything no longer in the allow-list. A different project starts clean.
+      // Same project re-hydrated (settings saved, catalog arrived, a new chat resolved): keep the
+      // user's per-turn narrowing, minus anything no longer in the allow-list. A different project
+      // starts clean, unless one of its conversations was just reopened.
       const sameProject = state.projectScope?.projectId === scope.projectId;
+      const restored = state.projectKnowledgeScopeRestoredFor === scope.projectId;
       let projectKnowledgeScope: ChatKnowledgeFilters | null = null;
       let projectStreamTools: string[] | null = null;
-      // A turn narrowed below app level may hold nodes under a source that is
-      // gone; it starts again from the project's own scope.
       const narrowedBelowApps =
         Boolean(state.projectKnowledgeScope?.recordGroups?.length) ||
         Boolean(state.projectKnowledgeScope?.records?.length);
-      if (sameProject && state.projectKnowledgeScope && !narrowedBelowApps) {
+      const knowledgeUnchanged =
+        sameProject && sameKnowledgeFilters(state.projectScope!.knowledgeDefaults, scope.knowledgeDefaults);
+      if (restored && state.projectKnowledgeScope) {
+        // The server bounds the nodes to the project; a scope equal to the project's own is no narrowing.
+        projectKnowledgeScope = sameKnowledgeFilters(state.projectKnowledgeScope, scope.knowledgeDefaults)
+          ? null
+          : state.projectKnowledgeScope;
+      } else if (sameProject && state.projectKnowledgeScope && narrowedBelowApps) {
+        // Folders and records may sit under a source the project dropped; the server
+        // bounds them otherwise, so only a changed project scope starts again.
+        projectKnowledgeScope = knowledgeUnchanged ? state.projectKnowledgeScope : null;
+      } else if (sameProject && state.projectKnowledgeScope) {
         const apps = new Set(scope.knowledgeDefaults.apps);
         const kb = new Set(scope.knowledgeDefaults.kb);
         projectKnowledgeScope = {
@@ -1266,6 +1297,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         projectScope: scope,
         projectKnowledgeScope,
+        projectKnowledgeScopeRestoredFor: null,
         projectStreamTools,
         collectionNamesCache: { ...state.collectionNamesCache, ...names },
         collectionMetaCache: { ...state.collectionMetaCache, ...meta },
@@ -1273,6 +1305,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   setProjectKnowledgeScope: (scope) => set({ projectKnowledgeScope: scope }),
+
+  restoreProjectKnowledgeScope: (projectId, scope) =>
+    set((state) => ({
+      projectKnowledgeScope: scope,
+      projectKnowledgeScopeRestoredFor: state.projectScope?.projectId === projectId ? null : projectId,
+    })),
 
   setProjectStreamTools: (tools) => set({ projectStreamTools: tools }),
 

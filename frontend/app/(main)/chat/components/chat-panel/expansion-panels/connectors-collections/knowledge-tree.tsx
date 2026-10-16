@@ -238,6 +238,8 @@ export function useNodeChildren(nodeType: string, nodeId: string) {
           sortBy: 'name',
           sortOrder: 'asc',
           ...(cursor ? { cursor } : {}),
+          // The row shows the failure; a node the user cannot open is not a toast.
+          quiet: true,
         });
         if (currentRef.current !== nodeId) return;
         setState((s) => {
@@ -555,9 +557,21 @@ export function useNodePlaces(nodes: Array<{ id: string; nodeType: string }>): v
           setCollectionMetaCache(update);
         })
         .catch((err: { statusCode?: number }) => {
-          // Not found or not readable any more: it stays where it is, a pill without a place.
+          // Not found or not readable: a pill that says so, never its raw id.
           const status = err?.statusCode ?? 0;
-          if (status >= 400 && status < 500) return;
+          if (status >= 400 && status < 500) {
+            const known = useChatStore.getState().collectionMetaCache[id];
+            setCollectionMetaCache({
+              [id]: {
+                name: known?.name ?? '',
+                nodeType: known?.nodeType || typeHint || 'record',
+                connector: known?.connector ?? '',
+                ancestorIds: known?.ancestorIds ?? [],
+                unavailable: true,
+              },
+            });
+            return;
+          }
           const attempts = (placeAttempts.get(id) ?? 0) + 1;
           placeAttempts.set(id, attempts);
           if (attempts >= MAX_PLACE_ATTEMPTS) return;

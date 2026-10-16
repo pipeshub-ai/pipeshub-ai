@@ -187,8 +187,18 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
           defaultValue: 'Chats in this project search only these connectors.',
         })}
       </Text>
-      {/* Deep rows outgrow the 300px column; only the tree scrolls sideways, not the whole column. */}
-      <Flex direction="column" gap="1" style={{ overflowX: 'auto', paddingBottom: 'var(--space-1)' }}>
+      {/* An expanded tree is long and its rows outgrow the 300px column: the tree keeps a
+          fixed height and scrolls inside it, so the setup panel below stays in place. */}
+      <Flex
+        direction="column"
+        gap="1"
+        style={{
+          minHeight: 160,
+          maxHeight: 360,
+          overflow: 'auto',
+          paddingBottom: 'var(--space-1)',
+        }}
+      >
         {savedNodes.map((node) => (
           <KnowledgeTreeRoot
             key={node.id}

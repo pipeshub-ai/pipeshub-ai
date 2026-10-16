@@ -286,6 +286,8 @@ export interface FilterOption {
   id: string;
   label: string;
   type?: string | null;
+  /** Sources only: the connector type, or the origin (`KB` / `COLLECTION` for a collection). */
+  connectorType?: string | null;
 }
 
 /**

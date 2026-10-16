@@ -596,7 +596,9 @@
     "addFromCollectionsHint": "You can add your company files or folders from the Collections",
     "addFilesHint": "Add your files or folders",
     "chatWithSelection": "Chat",
-    "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again."
+    "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again.",
+    "chatTooManyCollections": "Chat can search up to {{max}} collections at once, and you have more. Open a collection, or tick the ones to ask about.",
+    "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1208,9 +1210,9 @@
     "configuredModels": "Configured Models",
     "reasoningEffort": {
       "label": "Reasoning Effort",
-      "modelDefaultOption": "Model default",
-      "modelDefaultOptionWithLevel": "Model default ({{level}})",
-      "agentDefaultOption": "Agent default ({{level}})",
+      "overrideHint": "Click again to use the default.",
+      "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "modelDefaultHint": "Defaults to {{level}}, this model's own default, when not set.",
       "modelDefaultLabel": "Default ({{level}})",
       "low": "Low",
       "medium": "Medium",
@@ -1274,6 +1276,8 @@
     "mentionNone": "No nodes match",
     "mentionYourApps": "Your apps",
     "mentionCollections": "Collections",
+    "sourceUnavailable": "A source you can't open",
+    "sourceLoading": "Loading…",
     "mentionBack": "Back",
     "mentionRemove": "Remove {{name}}",
     "artifactsPanel": {

@@ -430,13 +430,14 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
   const roots = useHubRoots(level === null);
   const children = useNodeChildren(level?.nodeType ?? '', level?.id ?? '');
   const search = useMentionSearch(searching ? filter : '', level);
+  const searchItems = search.items;
 
   const checkable = Boolean(selection && onSelectionChange);
   useSelectionPlaces(selection ?? { apps: [], kb: [] });
   useNodePlaces(checkable && level && levelPlace === undefined ? [{ id: level.id, nodeType: level.nodeType }] : []);
   useNodePlaces(
     checkable && searching
-      ? search.items.filter((item) => item.nodeType !== 'app').map((item) => ({ id: item.id, nodeType: item.nodeType }))
+      ? searchItems.filter((item) => item.nodeType !== 'app').map((item) => ({ id: item.id, nodeType: item.nodeType }))
       : []
   );
 
@@ -451,7 +452,7 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     sections = [
       {
         key: 'search',
-        rows: search.items.map((item) => {
+        rows: searchItems.map((item) => {
           const ancestorIds = item.nodeType === 'app' ? [] : metaCache[item.id]?.ancestorIds;
           const path = (ancestorIds ?? []).map((id) => metaCache[id]?.name).filter(Boolean);
           const connector = item.connector || (item.origin === 'COLLECTION' ? 'KB' : '');
@@ -508,7 +509,9 @@ export const MentionMenu = forwardRef<MentionMenuHandle, MentionMenuProps>(funct
     retry = roots.retry;
     hasMore = Boolean(roots.nextCursor);
     loadMore = roots.loadMore;
-    const shown = roots.items.filter((root) => root.name && nameMatches(root.name, filter));
+    const shown = roots.items.filter(
+      (root) => root.name && nameMatches(root.name, filter)
+    );
     sections = [
       {
         key: 'apps',

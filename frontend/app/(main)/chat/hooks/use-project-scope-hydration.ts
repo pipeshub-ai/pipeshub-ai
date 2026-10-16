@@ -99,6 +99,7 @@ export function buildProjectChatScope(project: ProjectDetail, catalog: ToolCatal
       ...(project.knowledgeScope?.recordGroups?.length ? { recordGroups: project.knowledgeScope.recordGroups } : {}),
       ...(project.knowledgeScope?.records?.length ? { records: project.knowledgeScope.records } : {}),
     },
+    linkedKnowledgeBaseId: project.linkedKnowledgeBaseId ?? null,
     toolGroups,
     mcpGroups,
     toolCatalogFullNames: [...toolGroups, ...mcpGroups].flatMap((g) => g.fullNames),

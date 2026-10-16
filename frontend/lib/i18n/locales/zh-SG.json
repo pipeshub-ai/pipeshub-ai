@@ -681,7 +681,9 @@
     "addFromCollectionsHint": "您可以从合集中添加公司的文件或文件夹",
     "addFilesHint": "添加您的文件或文件夹",
     "chatWithSelection": "聊天",
-    "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。"
+    "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
+    "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
+    "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1292,9 +1294,9 @@
     "configuredModels": "已配置的模型",
     "reasoningEffort": {
       "label": "推理强度",
-      "modelDefaultOption": "模型默认",
-      "modelDefaultOptionWithLevel": "模型默认（{{level}}）",
-      "agentDefaultOption": "智能体默认（{{level}}）",
+      "overrideHint": "再次点击可使用默认值。",
+      "defaultHintWithLevel": "未设置时默认为{{level}}。",
+      "modelDefaultHint": "未设置时使用此模型自身的默认值：{{level}}。",
       "modelDefaultLabel": "默认（{{level}}）",
       "low": "低",
       "medium": "中",
@@ -1357,6 +1359,8 @@
     "mentionNone": "没有匹配的项目",
     "mentionYourApps": "你的应用",
     "mentionCollections": "收藏集",
+    "sourceUnavailable": "你无法打开的来源",
+    "sourceLoading": "加载中…",
     "mentionBack": "返回",
     "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {

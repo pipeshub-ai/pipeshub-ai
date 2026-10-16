@@ -23,7 +23,7 @@ import { MentionComposerField } from '../mention-composer-field';
 
 const report = { id: 'q3', name: 'Q3 Report', nodeType: 'record', hasChildren: false, connector: 'KB' };
 
-function Composer() {
+function Composer({ mentionsOff = false }: { mentionsOff?: boolean }) {
   const [value, setValue] = useState('');
   const [mentions, setMentions] = useState<MentionNode[]>([]);
   const [selection, setSelection] = useState<ChatKnowledgeFilters>({ apps: [], kb: [] });
@@ -36,6 +36,7 @@ function Composer() {
         onMentionsChange={setMentions}
         selection={selection}
         onSelectionChange={setSelection}
+        mentionsOff={mentionsOff}
         aria-label="composer"
       />
     </Theme>
@@ -73,6 +74,17 @@ afterEach(() => {
 });
 
 describe('@ in the composer', () => {
+  it('opens no menu and searches nothing when mentions are off', async () => {
+    render(<Composer mentionsOff />);
+    const field = screen.getByLabelText('composer') as HTMLTextAreaElement;
+    type(field, '@Q3');
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole('listbox')).toBeNull();
+    expect(screen.queryByRole('option', { name: /Q3 Report/ })).toBeNull();
+    expect(api.searchNodes).not.toHaveBeenCalled();
+    expect(field.value).toBe('@Q3');
+  });
+
   it('after a tick, drops only the ticked @query and keeps the words typed on after it', async () => {
     render(<Composer />);
     const field = screen.getByLabelText('composer') as HTMLTextAreaElement;

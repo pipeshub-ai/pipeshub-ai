@@ -424,20 +424,9 @@ function ChatContent() {
                   custom?: { appliedFilters?: import('./types').AppliedFilters };
                 }
               )?.custom?.appliedFilters;
-              if (af) {
-                freshStore.setAgentKnowledgeScope({
-                  apps: af.apps.map((n) => n.id),
-                  kb: af.kb.map((n) => n.id),
-                });
-                const namesCache: Record<string, string> = {};
-                const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-                for (const node of [...af.apps, ...af.kb]) {
-                  namesCache[node.id] = node.name;
-                  metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-                }
-                freshStore.setCollectionNamesCache(namesCache);
-                freshStore.setCollectionMetaCache(metaCache);
-              }
+              // Every bucket, not only apps and collections: a folder or record
+              // the agent chat was narrowed to stays in its scope.
+              if (af) restoreAppliedFilters(af, true);
             }
           }
         } catch (error) {
@@ -513,6 +502,8 @@ function ChatContent() {
       } else if (store.activeSlotId && activeSlot?.threadAgentId) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'leave-agent-for-main-home' });
         useChatStore.setState({ activeSlotId: null });
+        // The main assistant starts unscoped, not with what was picked before the agent.
+        store.setFilters({ apps: [], kb: [] });
         store.bumpConversationsVersion();
       } else if (
         store.activeSlotId &&
@@ -562,12 +553,13 @@ function ChatContent() {
           const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
-            restoreAppliedFilters(af, Boolean(urlAgentId));
+            restoreAppliedFilters(af, Boolean(urlAgentId), projectId);
           } else {
             if (urlAgentId) {
               store.setAgentKnowledgeScope(null);
             } else {
               store.setFilters({ apps: [], kb: [] });
+              if (projectId) store.setProjectKnowledgeScope(null);
             }
           }
         } else {
@@ -702,6 +694,7 @@ function ChatContent() {
         // Always reset filters so pills from a previously viewed conversation
         // don't persist if this conversation carries no filter history.
         useChatStore.getState().setFilters({ apps: [], kb: [] });
+        if (projectId) useChatStore.getState().setProjectKnowledgeScope(null);
 
         // Restore filter state from the most recent user message that carried filters.
         // This brings back the selected connectors/collections after a hard refresh.
@@ -710,7 +703,7 @@ function ChatContent() {
           .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
 
         if (lastFiltered?.appliedFilters) {
-          restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId));
+          restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId), projectId);
         }
 
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
@@ -755,7 +748,7 @@ function ChatContent() {
       cancelled = true;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, projectId, t]);
 
   // A run that outlived a refresh finishes on the server; reload once it has.
   useRemoteRunPoll(
@@ -869,9 +862,11 @@ function ChatContent() {
 
     const store = useChatStore.getState();
 
-    // Ensure we have a slot for the new chat
+    // A fresh slot unless the active one is an idle, empty new chat: reusing a
+    // running or finished thread would show its Stop button and append there.
     let slotId = store.activeSlotId;
-    if (!slotId) {
+    const activeSlot = slotId ? store.slots[slotId] : undefined;
+    if (!slotId || !activeSlot || activeSlot.isStreaming || activeSlot.stopping || activeSlot.messages.length > 0) {
       slotId = store.createSlot(null);
       store.setActiveSlot(slotId);
     }
@@ -886,14 +881,15 @@ function ChatContent() {
     }
 
     // 1. Set collection filters so they scope the AI query
+    // The handed-over scope replaces whatever an earlier chat left in the
+    // filters; with no scope the question searches everything.
     const collections = pending.pageContext.collections ?? [];
+    const selectedNodes = pending.pageContext.selectedNodes ?? [];
+    if (collections.length === 0 && selectedNodes.length === 0) {
+      store.setFilters({ apps: [], kb: [] });
+    }
     if (collections.length > 0) {
-      const rootIds = collections.map((c) => c.id);
-      store.setFilters({
-        ...store.settings.filters,
-        apps: [...new Set([...(store.settings.filters.apps ?? []), ...rootIds])],
-        kb: [],
-      });
+      store.setFilters({ apps: [...new Set(collections.map((c) => c.id))], kb: [] });
 
       const cache = { ...store.collectionNamesCache };
       collections.forEach((c) => {
@@ -911,7 +907,6 @@ function ChatContent() {
       });
     }
 
-    const selectedNodes = pending.pageContext.selectedNodes ?? [];
     if (selectedNodes.length > 0) {
       restoreAppliedFilters(appliedFiltersFromNodes(selectedNodes), false);
     }

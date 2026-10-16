@@ -681,7 +681,9 @@
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
     "addFilesHint": "新增您的檔案或資料夾",
     "chatWithSelection": "聊天",
-    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。"
+    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
+    "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
+    "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1292,9 +1294,9 @@
     "configuredModels": "已設定的模型",
     "reasoningEffort": {
       "label": "推理強度",
-      "modelDefaultOption": "模型預設",
-      "modelDefaultOptionWithLevel": "模型預設（{{level}}）",
-      "agentDefaultOption": "代理預設（{{level}}）",
+      "overrideHint": "再次點選即可使用預設值。",
+      "defaultHintWithLevel": "未設定時預設為{{level}}。",
+      "modelDefaultHint": "未設定時使用此模型本身的預設值：{{level}}。",
       "modelDefaultLabel": "預設（{{level}}）",
       "low": "低",
       "medium": "中",
@@ -1357,6 +1359,8 @@
     "mentionNone": "沒有相符的項目",
     "mentionYourApps": "你的應用程式",
     "mentionCollections": "集合",
+    "sourceUnavailable": "你無法開啟的來源",
+    "sourceLoading": "載入中…",
     "mentionBack": "返回",
     "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {

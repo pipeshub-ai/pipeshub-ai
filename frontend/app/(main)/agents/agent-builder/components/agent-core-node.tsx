@@ -895,29 +895,25 @@ function DefaultReasoningEffortSelector({
         </Text>
       </Flex>
       <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('agentBuilder.defaultReasoningEffortLabel')}>
-        {[
-          { value: null, label: t('chat.reasoningEffort.modelDefaultOption', 'Model default') },
-          ...REASONING_EFFORT_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey, o.defaultLabel) })),
-        ].map((option) => {
+        {REASONING_EFFORT_OPTIONS.map((option) => {
           const isActive = value === option.value;
           return (
             <Flex
-              key={option.value ?? 'default'}
+              key={option.value}
               align="center"
               justify="center"
               role="radio"
               aria-checked={isActive}
               tabIndex={0}
-              onClick={() => onSelect(option.value)}
+              onClick={() => onSelect(isActive ? null : option.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  onSelect(option.value);
+                  onSelect(isActive ? null : option.value);
                 }
               }}
               style={{
                 padding: '4px 12px',
-                minHeight: 44,
                 borderRadius: 'var(--radius-6)',
                 border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--gray-6)',
                 backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
@@ -929,7 +925,7 @@ function DefaultReasoningEffortSelector({
                 weight={isActive ? 'medium' : 'regular'}
                 style={{ color: isActive ? 'var(--accent-11)' : 'var(--agent-flow-text-muted)' }}
               >
-                {option.label}
+                {t(option.labelKey, option.defaultLabel)}
               </Text>
             </Flex>
           );

@@ -23,6 +23,17 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
+const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+
+vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
+  type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
+  const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
+    mentionField.rendered(props.mentionsOff);
+    return <actual.MentionComposerField {...props} ref={ref} />;
+  });
+  return { ...actual, MentionComposerField: Spy };
+});
 
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 
@@ -747,6 +758,35 @@ describe('ChatInput — agent checks before sending', () => {
   });
 });
 
+describe('ChatInput — @ in agent and project chats', () => {
+  const projectScope = (knowledgeDefaults: { apps: string[]; kb: string[]; records?: string[] }) => ({
+    projectId: 'p1',
+    connectors: [],
+    knowledgeCollectionRows: [],
+    knowledgeDefaults,
+    linkedKnowledgeBaseId: 'kb-uploads',
+    toolGroups: [],
+    mcpGroups: [],
+    toolCatalogFullNames: [],
+  });
+
+  it('turns @ off in a project chat', () => {
+    useChatStore.setState({ projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }) });
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+  });
+
+  it('turns @ off in an agent chat', () => {
+    renderInput({ isAgentChat: true, agentId: 'agent-1' });
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+  });
+
+  it('keeps @ outside agent and project chats', () => {
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
+  });
+});
+
 describe('ChatInput — connectors and collections', () => {
   it('shows the selected collections as pills and removes one when its close button is clicked', () => {
     useChatStore.setState({
@@ -967,13 +1007,16 @@ describe('ChatInput — compact widget', () => {
     expect(document.activeElement).toBe(composer());
   });
 
-  it('offers Stop in the widget while an answer streams', () => {
-    const slotId = startStreamingSlot();
-    renderInput({ variant: 'widget' });
+  it('sends a new question while a chat left on the chat page is still answering', () => {
+    startStreamingSlot();
+    const { onSend } = renderInput({ variant: 'widget' });
+    fireEvent.change(screen.getByPlaceholderText('Ask anything...'), { target: { value: 'Hi' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.click(sendButton());
 
-    expect(streaming.cancelStreamForSlot).toHaveBeenCalledWith(slotId);
+    expect(onSend).toHaveBeenCalledWith('Hi', undefined, undefined);
+    expect(streaming.cancelStreamForSlot).not.toHaveBeenCalled();
   });
 
   it('has a named send button in the widget too', () => {

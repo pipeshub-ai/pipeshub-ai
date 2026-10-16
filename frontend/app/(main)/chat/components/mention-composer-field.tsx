@@ -62,6 +62,8 @@ interface MentionComposerFieldProps {
   multiline?: boolean;
   /** Search under this node. Omitted, `@` searches every node the user can reach. */
   parent?: MentionParent | null;
+  /** `@` is plain text: no menu opens. */
+  mentionsOff?: boolean;
   /** The chat's scope: with it, the menu's checkboxes tick nodes into it. */
   selection?: ChatKnowledgeFilters;
   onSelectionChange?: (next: ChatKnowledgeFilters) => void;
@@ -85,6 +87,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       multiline = false,
       parent,
       selection,
+      mentionsOff,
       onSelectionChange,
       style,
       'aria-label': ariaLabel,
@@ -119,7 +122,7 @@ export const MentionComposerField = forwardRef<HTMLTextAreaElement, MentionCompo
       else if (ref) ref.current = node;
     };
 
-    const active = readOnly ? null : activeMentionQuery(value, caret);
+    const active = readOnly || mentionsOff ? null : activeMentionQuery(value, caret);
     const dismissedIntact =
       dismissed !== null &&
       value.slice(dismissed.start, dismissed.start + dismissed.query.length + 1) === `@${dismissed.query}`;

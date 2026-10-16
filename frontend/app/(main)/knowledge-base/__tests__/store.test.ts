@@ -123,6 +123,16 @@ describe('deleting a selection', () => {
     expect(store().nodeChildrenCache.get('kb-1')?.map((n) => n.id)).toEqual(['r2']);
   });
 
+  it('names what was kept and why when the server refuses every delete', async () => {
+    fakeApi({ [`DELETE ${KB}/record/r1`]: { status: 403 }, [`DELETE ${KB}/record/r2`]: { status: 403 } });
+
+    await store().bulkDeleteSelected(items.slice(0, 2));
+
+    expect(toasts()).toEqual([
+      { variant: 'error', title: 'Could not delete 2 items', description: "You don't have permission to delete: a.pdf, b.pdf" },
+    ]);
+  });
+
   it('reports full success', async () => {
     fakeApi({ [`DELETE ${KB}/record/r1`]: { status: 200 }, [`DELETE ${KB}/record/r2`]: { status: 200 } });
     await store().bulkDeleteSelected(items.slice(0, 2));
