@@ -596,7 +596,9 @@
     "addFromCollectionsHint": "आप अपनी कंपनी की फ़ाइलें या फ़ोल्डर संग्रहों से जोड़ सकते हैं",
     "addFilesHint": "अपनी फ़ाइलें या फ़ोल्डर जोड़ें",
     "chatWithSelection": "चैट",
-    "chatSelectionLimit": "चैट में अधिकतम {{max}} चुने गए आइटम लिए जा सकते हैं। कुछ का चयन हटाएँ और फिर से प्रयास करें।"
+    "chatSelectionLimit": "चैट में अधिकतम {{max}} चुने गए आइटम लिए जा सकते हैं। कुछ का चयन हटाएँ और फिर से प्रयास करें।",
+    "chatTooManyCollections": "चैट एक बार में अधिकतम {{max}} संग्रह खोज सकता है, और आपके पास इससे अधिक हैं। कोई संग्रह खोलें या जिनके बारे में पूछना है उन्हें चुनें।",
+    "chatCollectionsLoadFailed": "चैट के लिए आपके संग्रह लोड नहीं हो सके। फिर से प्रयास करें।"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1209,9 +1211,9 @@
     "configuredModels": "कॉन्फ़िगर किए गए मॉडल",
     "reasoningEffort": {
       "label": "रीज़निंग प्रयास",
-      "modelDefaultOption": "मॉडल डिफ़ॉल्ट",
-      "modelDefaultOptionWithLevel": "मॉडल डिफ़ॉल्ट ({{level}})",
-      "agentDefaultOption": "एजेंट डिफ़ॉल्ट ({{level}})",
+      "overrideHint": "डिफ़ॉल्ट उपयोग करने के लिए फिर से क्लिक करें।",
+      "defaultHintWithLevel": "सेट न होने पर डिफ़ॉल्ट {{level}} रहता है।",
+      "modelDefaultHint": "सेट न होने पर इस मॉडल का अपना डिफ़ॉल्ट, {{level}}, रहता है।",
       "modelDefaultLabel": "डिफ़ॉल्ट ({{level}})",
       "low": "कम",
       "medium": "मध्यम",
@@ -1275,6 +1277,8 @@
     "mentionNone": "कोई आइटम मेल नहीं खाता",
     "mentionYourApps": "आपके ऐप्स",
     "mentionCollections": "संग्रह",
+    "sourceUnavailable": "एक स्रोत जिसे आप नहीं खोल सकते",
+    "sourceLoading": "लोड हो रहा है…",
     "mentionBack": "वापस",
     "mentionRemove": "{{name}} हटाएँ",
     "artifactsPanel": {

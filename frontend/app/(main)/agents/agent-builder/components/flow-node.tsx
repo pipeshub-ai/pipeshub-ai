@@ -323,20 +323,24 @@ export const FlowNode = React.memo(function FlowNode({
                 </Tooltip>
               ) : null}
             </Flex>
-            {!readOnly ? <KnowledgeSourceLimitButton nodeId={id} data={data} /> : null}
-            {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
-              <span className="flow-node-delete" style={{ flexShrink: 0 }}>
-                <IconButton
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={() => onDelete(id)}
-                  aria-label={t('agentBuilder.removeNodeAriaLabel')}
-                >
-                  <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
-                </IconButton>
-              </span>
-            ) : null}
+            {/* Ghost buttons pull in by their padding (-4px each side), so the 8px gap only
+                makes them touch: the icons sit about 7px apart instead of about 17px. */}
+            <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+              {!readOnly ? <KnowledgeSourceLimitButton nodeId={id} data={data} /> : null}
+              {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
+                <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    onClick={() => onDelete(id)}
+                    aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                  >
+                    <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                  </IconButton>
+                </span>
+              ) : null}
+            </Flex>
           </Flex>
         }
       >

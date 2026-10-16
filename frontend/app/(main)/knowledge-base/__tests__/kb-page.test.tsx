@@ -13,7 +13,7 @@ import KnowledgeBasePage from '../page';
 import KnowledgeBaseSidebarSlot from '../../@sidebar/knowledge-base/page';
 import { loadMoreNodeChildrenPage, loadMoreRootAppList } from '../utils/sidebar-paginated-fetch';
 import { mergeChildrenIntoTree } from '../utils/tree-builder';
-import type { EnhancedFolderTreeNode, NodePermissions } from '../types';
+import type { EnhancedFolderTreeNode, KnowledgeHubNode, NodePermissions } from '../types';
 import {
   collection,
   createNavigation,
@@ -1583,6 +1583,81 @@ describe('Knowledge base page — All Records', () => {
     expect(currentUrl()).toContain('view=all-records');
   });
 
+  it('reindexes the rows ticked on every page, as many as the bar counts', async () => {
+    withCollections();
+    const FIRST = hubNode({ id: 'rec-a', name: 'A.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE', parentId: 'rg-drive' });
+    const SECOND = hubNode({ id: 'rec-b', name: 'B.xlsx', origin: 'CONNECTOR', connector: 'GOOGLE_DRIVE', parentId: 'rg-drive' });
+    api.hub.loadFolderData.mockImplementation(pagedByCursor(async (_type: string, _id: string, params: { page: number }) => {
+      const page = folderResponse(
+        { id: 'rg-drive', name: 'Shared Drive', nodeType: 'recordGroup' },
+        [{ id: 'rg-drive', name: 'Shared Drive', nodeType: 'recordGroup' }],
+        [params.page === 1 ? FIRST : SECOND],
+      );
+      page.pagination = {
+        page: params.page,
+        limit: 50,
+        totalItems: 100,
+        totalPages: 2,
+        startIndex: (params.page - 1) * 50 + 1,
+        endIndex: params.page * 50,
+        hasNext: params.page < 2,
+        hasPrev: params.page > 1,
+      };
+      return page;
+    }, 2));
+    api.kb.bulkReindex.mockResolvedValue([
+      { status: 'fulfilled', value: {} },
+      { status: 'fulfilled', value: {} },
+    ]);
+    openAt('/knowledge-base?view=all-records&nodeType=recordGroup&nodeId=rg-drive');
+    await screen.findByRole('row', { name: 'A.xlsx' });
+    // Browsing a source's tree, where the bar offers Re-index.
+    act(() => useKnowledgeBaseStore.setState({ allRecordsSidebarSelection: { type: 'explorer' } }));
+    fireEvent.click(within(row('A.xlsx')).getByRole('checkbox'));
+    fireEvent.click(screen.getByText('Next'));
+    fireEvent.click(within(await screen.findByRole('row', { name: 'B.xlsx' })).getByRole('checkbox'));
+    const bar = (await screen.findByText('2 Items Selected')).parentElement!;
+
+    fireEvent.click(within(bar).getByRole('button', { name: /Re-index/ }));
+
+    await waitFor(() =>
+      expect(api.kb.bulkReindex).toHaveBeenCalledWith([
+        expect.objectContaining({ id: 'rec-a' }),
+        expect.objectContaining({ id: 'rec-b' }),
+      ]),
+    );
+  });
+
+  it('scopes a question from the chat box to the connectors the filter bar picked', async () => {
+    withCollections();
+    api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
+    openAt('/knowledge-base?view=all-records');
+    await screen.findByRole('row', { name: 'Budget.xlsx' });
+    act(() => {
+      useKnowledgeBaseStore.setState((state) => {
+        state.allRecordsFilter = { connectorIds: ['app-drive'], indexingStatus: ['FAILED'] };
+        state.allRecordsTableData!.filters = {
+          applied: {},
+          available: {
+            nodeTypes: [],
+            recordTypes: [],
+            origins: [],
+            indexingStatus: [],
+            connectors: [{ id: 'app-drive', label: 'Drive', connectorType: 'GOOGLE_DRIVE' }],
+          },
+        } as never;
+      });
+    });
+
+    typeInto(screen.getByPlaceholderText(/Ask/), 'what is the budget?');
+    fireEvent.keyDown(screen.getByPlaceholderText(/Ask/), { key: 'Enter' });
+
+    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
+      { id: 'app-drive', name: 'Drive', nodeType: 'app', connector: 'GOOGLE_DRIVE' },
+    ]);
+  });
+
   it('searches across all records', async () => {
     withCollections();
     api.hub.getAllRootItems.mockResolvedValue(hubResponse([CONNECTOR_FILE]));
@@ -2111,5 +2186,75 @@ describe('Knowledge base sidebar — folders stay usable after the collection li
     });
     await waitFor(() => expect(childIdsOf('folder-specs')).toEqual(['folder-drafts']));
     expect(within(sidebar).getByText('Drafts')).toBeTruthy();
+  });
+});
+
+describe('Knowledge base page — asking from the chat box', () => {
+  function ask(question: string) {
+    typeInto(screen.getByPlaceholderText(/Ask/), question);
+    fireEvent.keyDown(screen.getByPlaceholderText(/Ask/), { key: 'Enter' });
+  }
+
+  function rootPages(itemsByPage: KnowledgeHubNode[][]) {
+    api.hub.getNavigationNodes.mockImplementation(async ({ page = 1 }: { page?: number }) =>
+      hubResponse(itemsByPage[page - 1] ?? [], {
+        pagination: {
+          page,
+          limit: 200,
+          totalItems: 0,
+          totalPages: itemsByPage.length,
+          hasNext: page < itemsByPage.length,
+          hasPrev: page > 1,
+        },
+      }),
+    );
+  }
+
+  it('scopes a question at the Collections root to every collection, on every page', async () => {
+    const DRIVE_APP = hubNode({ id: 'app-drive', name: 'Drive', nodeType: 'app', origin: 'CONNECTOR', connector: 'DRIVE' });
+    rootPages([[ENGINEERING, DRIVE_APP], [SALES]]);
+    openAt('/knowledge-base');
+    await screen.findByRole('row', { name: 'Engineering' });
+
+    ask('what is in these collections?');
+
+    await waitFor(() => expect(router.push).toHaveBeenCalledWith('/chat'));
+    expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
+      { id: 'kb-eng', name: 'Engineering', nodeType: 'app', connector: 'KB' },
+      { id: 'kb-sales', name: 'Sales', nodeType: 'app', connector: 'KB' },
+    ]);
+  });
+
+  it('says so, and sends nothing, when there are more collections than chat can take', async () => {
+    const many = Array.from({ length: 201 }, (_, i) => collection(`kb-${i}`, `Collection ${i}`));
+    rootPages([many.slice(0, 120), many.slice(120)]);
+    openAt('/knowledge-base');
+    await screen.findByRole('row', { name: 'Collection 0' });
+
+    ask('what is in these collections?');
+
+    await waitFor(() => expect(toastTexts().some((text) => text.includes('up to 200 collections'))).toBe(true));
+    expect(router.push).not.toHaveBeenCalledWith('/chat');
+    expect(usePendingChatStore.getState().pending).toBeNull();
+  });
+
+  it("gives the chat chip a connector app's connector when asking from inside it", async () => {
+    withCollections();
+    api.hub.loadFolderData.mockResolvedValue(
+      folderResponse(
+        { id: 'app-conf', name: 'QA Confluence', nodeType: 'app', subType: 'Confluence' } as never,
+        [{ id: 'app-conf', name: 'QA Confluence', nodeType: 'app' }],
+        [hubNode({ id: 'rec-page', name: 'Page', origin: 'CONNECTOR', connector: 'CONFLUENCE', parentId: 'app-conf' })],
+      ),
+    );
+    openAt('/knowledge-base?view=all-records&nodeType=app&nodeId=app-conf');
+    await screen.findByRole('row', { name: 'Page' });
+
+    ask('what is here?');
+
+    expect(router.push).toHaveBeenCalledWith('/chat');
+    expect(usePendingChatStore.getState().pending?.pageContext.selectedNodes).toEqual([
+      { id: 'app-conf', name: 'QA Confluence', nodeType: 'app', connector: 'Confluence' },
+    ]);
   });
 });

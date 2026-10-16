@@ -10,6 +10,8 @@ import { LapTimerIcon } from '@/app/components/ui/lap-timer-icon';
 import { formatSize } from '@/lib/utils/formatters';
 import { CARD_ICONS } from './grid-card-icons';
 import {
+  canDeleteKbTableItem,
+  needsCollectionContext,
   runItemMenuOpenFromMenu,
   shouldHideIndexingStatusForHubRecord,
   shouldShowDownloadForTableItem,
@@ -92,9 +94,8 @@ function GridCard({
   const canEditItem = isKnowledgeHubNode(item)
     ? (item.permission?.canEdit ?? false)
     : true;
-  const canDeleteItem = isKnowledgeHubNode(item)
-    ? (item.permission?.canDelete ?? false)
-    : true;
+  // Includes "a collection only by its OWNER", the same rule the bulk bar applies.
+  const canDeleteItem = canDeleteKbTableItem(item);
   // Root-level collection/app node — has no parent collection to move within.
   const isCollectionNode = isKnowledgeHubNode(item) && item.nodeType === 'app';
 
@@ -545,7 +546,7 @@ function GridCard({
                     </DropdownMenu.Item>
                   )}
                   {/* Collections can only be deleted by OWNER */}
-                  {onDelete && canDeleteItem && !(isCollectionNode && item.permission?.role !== 'OWNER') && (
+                  {onDelete && canDeleteItem && (
                       <DropdownMenu.Item onClick={() => onDelete(item)} color="red">
                         <MaterialIcon name="delete" size={16} />
                         Delete
@@ -701,6 +702,8 @@ interface KbGridViewProps {
   onMove?: (item: TableItem) => void;
   onDelete?: (item: TableItem) => void;
   onDownload?: (item: TableItem) => void;
+  /** False when no collection is open (a search at the Collections root): see `needsCollectionContext`. */
+  hasCollectionContext?: boolean;
 }
 
 export function KbGridView({
@@ -719,7 +722,10 @@ export function KbGridView({
   onMove,
   onDelete,
   onDownload,
+  hasCollectionContext = true,
 }: KbGridViewProps) {
+  const allows = (item: TableItem, action: 'rename' | 'move' | 'delete') =>
+    hasCollectionContext || !needsCollectionContext(item, action);
   return (
     <Flex direction="column" style={{ flex: 1, minHeight: 0 }}>
       {/* Grid content area */}
@@ -750,11 +756,11 @@ export function KbGridView({
               onClick={() => onItemClick(item)}
               onOpen={() => runItemMenuOpenFromMenu(item, onItemClick, onPreview)}
               onPreview={onPreview}
-              onRename={onRename}
+              onRename={allows(item, 'rename') ? onRename : undefined}
               onReindex={onReindex}
               onReplace={onReplace}
-              onMove={onMove}
-              onDelete={onDelete}
+              onMove={allows(item, 'move') ? onMove : undefined}
+              onDelete={allows(item, 'delete') ? onDelete : undefined}
               onDownload={onDownload}
             />
           ))}

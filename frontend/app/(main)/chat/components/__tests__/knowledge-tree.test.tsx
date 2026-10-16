@@ -107,6 +107,7 @@ describe('Picker tree — expanding', () => {
       limit: 20,
       sortBy: 'name',
       sortOrder: 'asc',
+      quiet: true,
     });
     expect(screen.queryByRole('button', { name: 'Show what is in root.md' })).toBeNull();
 
@@ -262,6 +263,17 @@ describe('Picker tree — a selection this session did not pick from the tree', 
       name: 'Specs',
       ancestorIds: ['alpha', 'folder-a'],
     });
+  });
+
+  it('marks a source the user cannot open as unavailable instead of naming it by id', async () => {
+    api.getNodeChildren.mockImplementation(async (_type: string, id: string, params: { include?: string }) => {
+      if (params.include === 'breadcrumbs' && id === 'gone-1') throw Object.assign(new Error('Node not found'), { statusCode: 404 });
+      return CHILDREN[id] ?? page([]);
+    });
+    render(<Host initial={{ apps: [], kb: [], records: ['gone-1'] }} />);
+    await screen.findByText('GS-Alpha');
+
+    await waitFor(() => expect(useChatStore.getState().collectionMetaCache['gone-1']?.unavailable).toBe(true));
   });
 
   it('looks a record group up as a record group', async () => {

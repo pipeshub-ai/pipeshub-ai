@@ -596,7 +596,9 @@
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
     "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu",
     "chatWithSelection": "Chat",
-    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut."
+    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
+    "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
+    "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1166,9 +1168,9 @@
     "configuredModels": "Konfigurierte Modelle",
     "reasoningEffort": {
       "label": "Reasoning-Aufwand",
-      "modelDefaultOption": "Modellstandard",
-      "modelDefaultOptionWithLevel": "Modellstandard ({{level}})",
-      "agentDefaultOption": "Agent-Standard ({{level}})",
+      "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
+      "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
+      "modelDefaultHint": "Ohne Auswahl wird {{level}} verwendet, der eigene Standardwert dieses Modells.",
       "modelDefaultLabel": "Standard ({{level}})",
       "low": "Niedrig",
       "medium": "Mittel",
@@ -1275,6 +1277,8 @@
     "mentionNone": "Keine passenden Elemente",
     "mentionYourApps": "Ihre Apps",
     "mentionCollections": "Sammlungen",
+    "sourceUnavailable": "Eine Quelle, die du nicht öffnen kannst",
+    "sourceLoading": "Wird geladen…",
     "mentionBack": "Zurück",
     "mentionRemove": "{{name}} entfernen",
     "artifactsPanel": {

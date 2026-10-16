@@ -307,6 +307,8 @@ export interface CollectionMeta {
   ancestorIds?: string[];
   extension?: string | null;
   mimeType?: string | null;
+  /** The place lookup was refused: deleted, or not readable by this user. */
+  unavailable?: boolean;
 }
 
 export interface AppliedFilterNode {

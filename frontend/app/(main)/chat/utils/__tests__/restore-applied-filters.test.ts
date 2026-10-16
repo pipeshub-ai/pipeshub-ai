@@ -15,6 +15,7 @@ const APPLIED: AppliedFilters = {
 beforeEach(() => {
   useChatStore.getState().setFilters({ apps: [], kb: [] });
   useChatStore.getState().setAgentKnowledgeScope(null);
+  useChatStore.getState().setProjectScope(null);
 });
 
 describe('filtersFromAppliedFilters', () => {
@@ -86,6 +87,18 @@ describe('restoreAppliedFilters', () => {
     restoreAppliedFilters(applied, true);
     const store = useChatStore.getState();
     expect(store.agentKnowledgeScope).toEqual({ apps: ['jira-1'], kb: ['alpha'] });
+    expect(store.settings.filters).toEqual({ apps: [], kb: [] });
+  });
+
+  it('narrows a project chat in its own scope, not the main composer filters', () => {
+    restoreAppliedFilters(APPLIED, false, 'p1');
+    const store = useChatStore.getState();
+    expect(store.projectKnowledgeScope).toEqual({
+      apps: ['jira-1', 'alpha'],
+      kb: [],
+      recordGroups: ['group-1'],
+      records: ['folder-1', 'file-1'],
+    });
     expect(store.settings.filters).toEqual({ apps: [], kb: [] });
   });
 });

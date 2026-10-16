@@ -603,7 +603,9 @@
     "addFromCollectionsHint": "Puede añadir los archivos o las carpetas de su empresa desde Colecciones",
     "addFilesHint": "Añada sus archivos o carpetas",
     "chatWithSelection": "Chat",
-    "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo."
+    "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo.",
+    "chatTooManyCollections": "El chat puede buscar en hasta {{max}} colecciones a la vez y tienes más. Abre una colección o marca las que quieras consultar.",
+    "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -1224,9 +1226,9 @@
     "configuredModels": "Modelos configurados",
     "reasoningEffort": {
       "label": "Esfuerzo de razonamiento",
-      "modelDefaultOption": "Predeterminado del modelo",
-      "modelDefaultOptionWithLevel": "Predeterminado del modelo ({{level}})",
-      "agentDefaultOption": "Predeterminado del agente ({{level}})",
+      "overrideHint": "Vuelva a hacer clic para usar el valor predeterminado.",
+      "defaultHintWithLevel": "Si no se define, se usa {{level}}.",
+      "modelDefaultHint": "Si no se define, se usa {{level}}, el valor predeterminado de este modelo.",
       "modelDefaultLabel": "Predeterminado ({{level}})",
       "low": "Bajo",
       "medium": "Medio",
@@ -1292,6 +1294,8 @@
     "mentionNone": "Ningún elemento coincide",
     "mentionYourApps": "Sus aplicaciones",
     "mentionCollections": "Colecciones",
+    "sourceUnavailable": "Una fuente que no puedes abrir",
+    "sourceLoading": "Cargando…",
     "mentionBack": "Atrás",
     "mentionRemove": "Quitar {{name}}",
     "artifactsPanel": {

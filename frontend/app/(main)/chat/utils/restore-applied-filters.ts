@@ -33,21 +33,27 @@ export function filtersFromAppliedFilters(applied: AppliedFilters): ChatKnowledg
 
 /**
  * Put a stored message's selection back in the composer, with the names its
- * pills need. A saved-agent chat narrows the agent's own apps and collections,
- * which it keeps apart.
+ * pills need. A saved-agent or project chat narrows its own apps and
+ * collections, which it keeps apart.
  */
-export function restoreAppliedFilters(applied: AppliedFilters, forAgentChat: boolean): void {
+export function restoreAppliedFilters(
+  applied: AppliedFilters,
+  forAgentChat: boolean,
+  projectId?: string | null
+): void {
   const store = useChatStore.getState();
   const kept = restorable(applied);
-  if (forAgentChat) {
+  if (forAgentChat || projectId) {
     const ids = (bucket: (typeof BUCKETS)[number]) => (kept[bucket] ?? []).map((node) => node.id);
-    store.setAgentKnowledgeScope({
+    const scope: ChatKnowledgeFilters = {
       apps: ids('apps'),
       kb: ids('kb'),
       ...(ids('recordGroups').length ? { recordGroups: ids('recordGroups') } : {}),
       ...(ids('records').length ? { records: ids('records') } : {}),
       ...(ids('recordsExact').length ? { recordsExact: ids('recordsExact') } : {}),
-    });
+    };
+    if (forAgentChat) store.setAgentKnowledgeScope(scope);
+    else if (projectId) store.restoreProjectKnowledgeScope(projectId, scope);
   } else {
     store.setFilters(filtersFromAppliedFilters(kept));
   }

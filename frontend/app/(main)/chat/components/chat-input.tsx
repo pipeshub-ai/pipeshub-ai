@@ -69,6 +69,7 @@ import type {
 import { CHAT_ATTACHMENT_MAX_BYTES, CHAT_ATTACHMENT_MAX_FILES, buildAssistantApiFilters } from '@/chat/types';
 import type { ChatKnowledgeFilters } from '@/chat/types';
 import { MentionComposerField, type MentionParent } from '@/chat/components/mention-composer-field';
+import { useSelectionPlaces } from '@/chat/components/chat-panel/expansion-panels/connectors-collections/knowledge-tree';
 import {
   mentionMeta,
   mergeMentionFilters,
@@ -405,6 +406,8 @@ export function ChatInput({
   const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
+  // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
+  const mentionsOff = isAgentChat || isProjectChat;
   /**
    * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.
@@ -491,15 +494,16 @@ export function ChatInput({
   // Active slot ID for regenerate/edit flows
   const activeSlotId = useChatStore((s) => s.activeSlotId);
 
-  // Is the active slot currently streaming?
+  // Is the active slot currently streaming? The widget composer starts a new
+  // chat, so a run left going on the chat page is not its run.
   const isStreaming = useChatStore((s) =>
-    s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false
+    variant !== 'widget' && s.activeSlotId ? (s.slots[s.activeSlotId]?.isStreaming ?? false) : false
   );
   // True from the moment Stop is clicked until the run actually ends —
   // disables the stop button so a second click can't fire another cancel
   // POST / restart the grace timer (see `cancelStreamForSlot`).
   const isStopping = useChatStore((s) =>
-    s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
+    variant !== 'widget' && s.activeSlotId ? (s.slots[s.activeSlotId]?.stopping ?? false) : false
   );
 
   const handleStopStream = useCallback(() => {
@@ -597,6 +601,14 @@ export function ChatInput({
     ? activeMessageAction.appliedFilters
     : undefined;
 
+  const pillSource: ChatKnowledgeFilters | null | undefined = isAgentChat
+    ? (agentKnowledgeScope ?? agentKnowledgeDefaults)
+    : isProjectChat
+      ? (projectKnowledgeScope ?? projectScope.knowledgeDefaults)
+      : composerFilters;
+  // The pills name folders and records; nothing else may have looked them up yet.
+  useSelectionPlaces(pillSource ?? { apps: [], kb: [] });
+
   const selectedCollections = useMemo(() => {
     // Regenerate mode: derive pills directly from the original message's appliedFilters nodes
     // (they carry name + connector already, so no cache lookup needed).
@@ -659,7 +671,12 @@ export function ChatInput({
     const belowAppLevel = BELOW_APP_KEYS.flatMap((bucket) =>
       (source?.[bucket] ?? []).map((id) => {
         const meta = collectionMetaCache[id];
-        const name = collectionNamesCache[id] || meta?.name || id;
+        const name =
+          collectionNamesCache[id] ||
+          meta?.name ||
+          (meta?.unavailable
+            ? t('chat.sourceUnavailable', { defaultValue: "A source you can't open" })
+            : t('chat.sourceLoading', { defaultValue: 'Loading…' }));
         return {
           id,
           name: bucket === 'recordsExact' ? t('chat.selectedAlone', { name }) : name,
@@ -871,7 +888,7 @@ export function ChatInput({
 
     if (isListening) stopSpeech();
 
-    const sid = useChatStore.getState().activeSlotId;
+    const sid = variant === 'widget' ? null : useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
     if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
     if (liveSlot?.remoteRunInProgress) {
@@ -1639,6 +1656,7 @@ export function ChatInput({
             placeholder={resolvedWidgetPlaceholder}
             parent={mentionParent}
             selection={mentionSelection}
+            mentionsOff={mentionsOff}
             onSelectionChange={onMentionSelectionChange}
             aria-label={resolvedWidgetPlaceholder}
             style={{
@@ -2205,6 +2223,7 @@ export function ChatInput({
           placeholder={resolvedPlaceholder}
           parent={mentionParent}
           selection={mentionSelection}
+          mentionsOff={mentionsOff}
           onSelectionChange={onMentionSelectionChange}
           multiline
           style={{ ...textareaLayoutStyle, color: 'var(--slate-11)' }}
@@ -2228,6 +2247,7 @@ export function ChatInput({
           readOnly={isRegenerateMode}
           parent={mentionParent}
           selection={mentionSelection}
+          mentionsOff={mentionsOff}
           onSelectionChange={onMentionSelectionChange}
           multiline
           style={{

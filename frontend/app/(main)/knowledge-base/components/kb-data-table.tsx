@@ -71,6 +71,8 @@ interface KbDataTableProps {
   onUpload?: () => void;
   onGoToCollection?: () => void;
   refreshData?: (deletedIds?: string[]) => Promise<void>;
+  /** False when no collection is open (a search at the Collections root): see `needsCollectionContext`. */
+  hasCollectionContext?: boolean;
 }
 
 export function KbDataTable({
@@ -104,6 +106,7 @@ export function KbDataTable({
   onUpload,
   onGoToCollection,
   refreshData,
+  hasCollectionContext = true,
 }: KbDataTableProps) {
   const { t } = useTranslation();
   // Looked up here, not in the list or grid: those unmount behind the loader on
@@ -419,6 +422,7 @@ export function KbDataTable({
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       ) : (
         <KbListView
@@ -445,6 +449,7 @@ export function KbDataTable({
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       )}
 

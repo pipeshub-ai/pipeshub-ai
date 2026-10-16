@@ -3,7 +3,7 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { KbListView } from '../components/kb-list-view';
 import type { KnowledgeHubNode } from '../types';
-import { hubNode, installBrowserShims, renderInTheme, row } from './kb-page-harness';
+import { hubNode, installBrowserShims, openRowMenu, renderInTheme, row } from './kb-page-harness';
 
 vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
 
@@ -78,5 +78,36 @@ describe('list row actions', () => {
   ])('has no preview button for %s', (_label, node) => {
     renderRows([node], { onPreview: vi.fn() });
     expect(screen.queryByRole('button', { name: 'Preview' })).toBeNull();
+  });
+});
+
+describe('row actions with no collection open (a search at the Collections root)', () => {
+  const handlers = { onRename: vi.fn(), onMove: vi.fn(), onDelete: vi.fn(), hasCollectionContext: false };
+  const menuItems = async (name: string) =>
+    within(await openRowMenu(name)).getAllByRole('menuitem').map((item) => item.textContent?.trim());
+
+  it('offers no rename, move or delete for a folder, which all need its collection', async () => {
+    renderRows([hubNode({ id: 'f1', name: 'Docs', nodeType: 'folder', hasChildren: true })], handlers);
+    const items = await menuItems('Docs');
+    expect(items.some((label) => /Rename|Move|Delete/.test(label ?? ''))).toBe(false);
+  });
+
+  it('still renames and deletes a file, but does not move it', async () => {
+    renderRows([hubNode({ id: 'r1', name: 'notes.txt' })], handlers);
+    const items = (await menuItems('notes.txt')).join(' ');
+    expect(items).toMatch(/Rename/);
+    expect(items).toMatch(/Delete/);
+    expect(items).not.toMatch(/Move/);
+  });
+
+  it('keeps every action for a folder inside an open collection', async () => {
+    renderRows([hubNode({ id: 'f1', name: 'Docs', nodeType: 'folder', hasChildren: true })], {
+      ...handlers,
+      hasCollectionContext: true,
+    });
+    const items = (await menuItems('Docs')).join(' ');
+    expect(items).toMatch(/Rename/);
+    expect(items).toMatch(/Move/);
+    expect(items).toMatch(/Delete/);
   });
 });

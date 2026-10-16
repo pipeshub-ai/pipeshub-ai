@@ -73,6 +73,7 @@ import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl, pushKbUrl, replac
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { UPLOAD_BATCH_CONFIG } from './constants/upload-batch.constants';
 import { createSizeBatches } from './utils/batch-files';
+import { canDeleteKbTableItem, needsCollectionContext, type KbTableItem } from './utils/kb-table-item-actions';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import {
@@ -111,7 +112,7 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { useTickedRows } from './hooks/use-ticked-rows';
+import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
@@ -124,6 +125,12 @@ import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 // would otherwise clear the loading flag a newer fetch just set.
 let allRecordsFetchGeneration = 0;
 let collectionsFetchGeneration = 0;
+
+// An app's or record group's subType is its connector name, which picks the chip icon;
+// a record's subType is its record type.
+function connectorOfCurrentNode(node: { nodeType: string; subType?: string }): string {
+  return node.nodeType === 'app' || node.nodeType === 'recordGroup' ? (node.subType ?? '') : '';
+}
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -2773,14 +2780,16 @@ function KnowledgeBasePageContent() {
   // Bulk Selection Actions
   // ========================================
 
-  // Get selected items as array
-  const selectedItemsArray = useMemo(() => {
-    const currentItems = isAllRecordsMode ? allRecordsItems : tableItems;
-    const selectedSet = isAllRecordsMode ? selectedRecords : selectedItems;
-    return currentItems.filter(item => selectedSet.has(item.id));
-  }, [isAllRecordsMode, allRecordsItems, tableItems, selectedRecords, selectedItems]);
-
-  const selectedCount = isAllRecordsMode ? selectedRecords.size : selectedItems.size;
+  // Every bulk action works on the rows ticked on any page, not only the one on screen.
+  const tickedRows = useTickedRows<KbTableItem>(
+    isAllRecordsMode ? allRecordsItems : tableItems,
+    isAllRecordsMode ? selectedRecords : selectedItems
+  );
+  const selectedCount = tickedRows.length;
+  // The bar offers Delete only when every ticked row may be deleted, as each row's menu does.
+  const bulkDeleteDenied = !canDeleteCollection || !tickedRows.every(canDeleteKbTableItem);
+  const bulkDeleteNeedsCollection =
+    !selectedKbId && tickedRows.some((row) => needsCollectionContext(row, 'delete'));
 
   // Handle deselect all
   const handleDeselectAll = useCallback(() => {
@@ -2791,14 +2800,9 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, clearRecordSelection, clearSelection]);
 
-  const tickedRows = useTickedRows(
-    isAllRecordsMode ? allRecordsItems : tableItems,
-    isAllRecordsMode ? selectedRecords : selectedItems
-  );
-
   // Open a new chat scoped to the ticked rows; nothing is sent until the user asks.
   const handleBulkChat = useCallback(() => {
-    const selectedNodes = tickedRows();
+    const selectedNodes = tickedRows.map(toPendingChatNode);
     if (selectedNodes.length === 0) return;
     if (selectedNodes.length > MAX_SELECTED_NODES) {
       toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
@@ -2814,7 +2818,7 @@ function KnowledgeBasePageContent() {
 
   // Handle bulk reindex
   const handleBulkReindex = useCallback(async () => {
-    const items = selectedItemsArray.map(item => {
+    const items = tickedRows.map(item => {
       const hubItem = ('nodeType' in item) ? (item as KnowledgeHubNode) : undefined;
       return {
         id: item.id,
@@ -2825,19 +2829,19 @@ function KnowledgeBasePageContent() {
       };
     });
     await bulkReindexSelected(items, refreshData);
-  }, [selectedItemsArray, bulkReindexSelected, refreshData]);
+  }, [tickedRows, bulkReindexSelected, refreshData]);
 
   // Handle bulk delete click (opens dialog)
   const handleBulkDeleteClick = useCallback(() => {
-    if (!canDeleteCollection) return;
+    if (bulkDeleteDenied) return;
     setIsBulkDeleteDialogOpen(true);
-  }, [canDeleteCollection]);
+  }, [bulkDeleteDenied]);
 
   // Handle bulk delete confirm
   const handleBulkDeleteConfirm = useCallback(async () => {
     setIsBulkDeleting(true);
     try {
-      const items = selectedItemsArray.map(item => {
+      const items = tickedRows.map(item => {
         // Determine node type
         const isKnowledgeHubNodeItem = 'nodeType' in item && 'origin' in item;
         let nodeType: 'kb' | 'app' | 'folder' | 'record' = 'record';
@@ -2862,7 +2866,7 @@ function KnowledgeBasePageContent() {
     } finally {
       setIsBulkDeleting(false);
     }
-  }, [selectedItemsArray, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
+  }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
   // Derive current title based on mode
   const currentTitle = useMemo(() => {
@@ -2904,7 +2908,7 @@ function KnowledgeBasePageContent() {
           id: nodeId,
           name: current.name,
           nodeType: current.nodeType || nodeType,
-          connector: '',
+          connector: connectorOfCurrentNode(current),
         };
       }
       if (allRecordsSidebarSelection.type === 'collection') {
@@ -2927,7 +2931,12 @@ function KnowledgeBasePageContent() {
     }
     const current = tableData?.currentNode;
     if (!current?.id || !current.name) return null;
-    return { id: current.id, name: current.name, nodeType: current.nodeType, connector: '' };
+    return {
+      id: current.id,
+      name: current.name,
+      nodeType: current.nodeType,
+      connector: connectorOfCurrentNode(current),
+    };
   }, [
     isAllRecordsMode,
     searchParams,
@@ -3078,6 +3087,7 @@ function KnowledgeBasePageContent() {
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
+          hasCollectionContext={Boolean(selectedKbId)}
         />
 
         {/* Rows in the All Records "All" and connector views are whole sources: they
@@ -3092,8 +3102,8 @@ function KnowledgeBasePageContent() {
               ? undefined
               : handleBulkReindex
           }
-          onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
-          deletePermissionDenied={!canDeleteCollection}
+          onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
+          deletePermissionDenied={bulkDeleteDenied}
           pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
         />
 
