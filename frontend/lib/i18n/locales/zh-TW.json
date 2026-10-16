@@ -4745,6 +4745,7 @@
     },
     "desktopHandoff": {
       "title": "登入已傳送至 PipesHub",
+      "integrationTitle": "授權已傳送至 PipesHub",
       "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
       "openApp": "開啟 PipesHub"
     }

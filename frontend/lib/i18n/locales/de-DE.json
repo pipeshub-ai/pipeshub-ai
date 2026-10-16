@@ -4674,6 +4674,7 @@
     },
     "desktopHandoff": {
       "title": "Anmeldung an PipesHub gesendet",
+      "integrationTitle": "Autorisierung an PipesHub gesendet",
       "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
       "openApp": "PipesHub öffnen"
     }

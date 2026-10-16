@@ -852,15 +852,11 @@ class TestConstants:
 
     def test_default_constants(self) -> None:
         from app.api.routes.toolsets import (
-            DEFAULT_BASE_URL,
-            DEFAULT_ENDPOINTS_PATH,
             DEFAULT_TOOLSET_INSTANCES_PATH,
             ENCRYPTED_KEY_PARTS_COUNT,
             MAX_AGENT_NAMES_DISPLAY,
             SPLIT_PATH_EXPECTED_PARTS,
         )
-        assert DEFAULT_BASE_URL == "http://localhost:3001"
-        assert DEFAULT_ENDPOINTS_PATH == "/services/endpoints"
         assert DEFAULT_TOOLSET_INSTANCES_PATH == "/services/toolset-instances"
         assert MAX_AGENT_NAMES_DISPLAY == 3
         assert SPLIT_PATH_EXPECTED_PARTS == 2

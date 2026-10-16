@@ -17,7 +17,7 @@ import json
 import logging
 import uuid
 from collections.abc import Awaitable, Callable
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse
 
 from dependency_injector.wiring import Provide, inject
@@ -69,6 +69,8 @@ from app.utils.oauth_config import (
     extract_oauth_error_message,
     get_oauth_config,
 )
+from app.utils.desktop_oauth_state import mark_desktop_oauth_state, strip_desktop_oauth_state
+from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import not_found
@@ -98,8 +100,6 @@ OAUTH_INFRASTRUCTURE_FIELDS = frozenset({
 })
 
 # Default values
-DEFAULT_BASE_URL = "http://localhost:3001"
-DEFAULT_ENDPOINTS_PATH = "/services/endpoints"
 DEFAULT_TOOLSET_INSTANCES_PATH = "/services/toolset-instances"
 
 # ============================================================================
@@ -629,19 +629,8 @@ async def _prepare_toolset_auth_config(
     redirect_uri = ""
 
     if redirect_path:
-        if base_url and base_url.strip():
-            base_url_clean = base_url.strip().rstrip('/')
-            redirect_path_clean = redirect_path.lstrip('/')
-            redirect_uri = f"{base_url_clean}/{redirect_path_clean}"
-        else:
-            try:
-                endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-                fallback_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
-                redirect_path_clean = redirect_path.lstrip('/')
-                redirect_uri = f"{fallback_url.rstrip('/')}/{redirect_path_clean}"
-            except Exception:
-                redirect_path_clean = redirect_path.lstrip('/')
-                redirect_uri = f"http://localhost:3001/{redirect_path_clean}"
+        oauth_base_url = await resolve_oauth_base_url(config_service, base_url)
+        redirect_uri = f"{oauth_base_url}/{redirect_path.lstrip('/')}"
 
     from app.connectors.core.registry.auth_builder import OAuthScopeType
     scopes = oauth_config.scopes.get_scopes_for_type(OAuthScopeType.AGENT)
@@ -681,7 +670,7 @@ async def _build_oauth_config(
     base_url: str | None = None,
     request: Request | None = None
 ) -> dict[str, Any]:
-    """Build OAuth configuration for authorization flow"""
+    """Build OAuth configuration for authorization flow. Callers must pass a validated `base_url`."""
     client_id = auth_config.get("clientId", "").strip()
     client_secret = auth_config.get("clientSecret", "").strip()
 
@@ -1250,21 +1239,7 @@ async def create_toolset_instance(
     # Handle OAuth config creation/selection
     oauth_config_id: str | None = None
     if auth_type == "OAUTH":
-        # Resolve base_url for OAuth redirects
-        if not base_url:
-            try:
-                endpoints = await config_service.get_config(DEFAULT_ENDPOINTS_PATH, use_cache=False)
-                if isinstance(endpoints, dict) and "frontend" in endpoints:
-                    frontend_config = endpoints.get("frontend", {})
-                    if isinstance(frontend_config, dict):
-                        base_url = frontend_config.get("publicEndpoint") or DEFAULT_BASE_URL
-                    else:
-                        base_url = DEFAULT_BASE_URL
-                else:
-                    base_url = DEFAULT_BASE_URL
-            except Exception as e:
-                logger.warning(f"Failed to resolve frontend endpoint from config: {e}. Using default: {DEFAULT_BASE_URL}")
-                base_url = DEFAULT_BASE_URL
+        base_url = await resolve_oauth_base_url(config_service, base_url)
 
         # Case 1: Use existing OAuth config
         if oauth_config_id_from_body:
@@ -1644,22 +1619,7 @@ async def update_toolset_instance(
     oauth_credentials_changed = False
 
     if auth_type == "OAUTH":
-        # Resolve base_url for OAuth redirects
-        base_url = body.get("baseUrl", "").strip() if body.get("baseUrl") else ""
-        if not base_url:
-            try:
-                endpoints = await config_service.get_config(DEFAULT_ENDPOINTS_PATH, use_cache=False)
-                if isinstance(endpoints, dict) and "frontend" in endpoints:
-                    frontend_config = endpoints.get("frontend", {})
-                    if isinstance(frontend_config, dict):
-                        base_url = frontend_config.get("publicEndpoint") or DEFAULT_BASE_URL
-                    else:
-                        base_url = DEFAULT_BASE_URL
-                else:
-                    base_url = DEFAULT_BASE_URL
-            except Exception as e:
-                logger.warning(f"Failed to resolve frontend endpoint: {e}. Using default: {DEFAULT_BASE_URL}")
-                base_url = DEFAULT_BASE_URL
+        base_url = await resolve_oauth_base_url(config_service, body.get("baseUrl"))
 
         # Case 1: Admin explicitly sets a different oauthConfigId (switch to existing config)
         if new_oauth_config_id_from_body and new_oauth_config_id_from_body != instance.get("oauthConfigId"):
@@ -2326,6 +2286,8 @@ async def get_instance_oauth_authorization_url(
     instance_id: str,
     request: Request,
     base_url: str | None = Query(None),
+    *,
+    desktop: Annotated[bool, Query()] = False,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> dict[str, Any]:
     """
@@ -2371,6 +2333,7 @@ async def get_instance_oauth_authorization_url(
     }
 
     registry = _get_registry(request)
+    base_url = await resolve_oauth_base_url(config_service, base_url)
     oauth_flow_config = await _build_oauth_config(auth_config, toolset_type, registry, base_url, request)
 
     # Generate authorization URL using etcd path for token storage
@@ -2400,7 +2363,9 @@ async def get_instance_oauth_authorization_url(
         if not original_state:
             raise OAuthConfigError("OAuth state parameter is missing from authorization URL")
 
-        encoded_state = _encode_state_with_instance(original_state, instance_id, user_id)
+        encoded_state = mark_desktop_oauth_state(
+            _encode_state_with_instance(original_state, instance_id, user_id), desktop=desktop
+        )
         query_params["state"] = [encoded_state]
 
         final_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"
@@ -2514,7 +2479,8 @@ async def handle_toolset_oauth_callback(
     notification_service: Any = Depends(Provide[ConnectorAppContainer.connector_notification_service]),
 ) -> dict[str, Any]:
     """Handle OAuth callback for toolset instance authentication."""
-    base_url = base_url or "http://localhost:3001"
+    base_url = await resolve_oauth_base_url(config_service, base_url)
+    state = strip_desktop_oauth_state(state)
 
     if error and error not in ["null", "undefined", "None", ""]:
         return {"success": False, "error": error, "redirect_url": f"{base_url}/tools?oauth_error={error}"}
@@ -2794,13 +2760,7 @@ async def update_toolset_oauth_config(
     if not cfg:
         raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"OAuth configuration '{oauth_config_id}' not found.")
 
-    base_url = body.get("baseUrl", "").strip()
-    if not base_url:
-        try:
-            endpoints = await config_service.get_config("/services/endpoints", use_cache=False)
-            base_url = endpoints.get("frontend", {}).get("publicEndpoint", "http://localhost:3001")
-        except Exception:
-            base_url = "http://localhost:3001"
+    base_url = await resolve_oauth_base_url(config_service, body.get("baseUrl"))
 
     auth_config = body.get("authConfig", {})
     auth_config["type"] = "OAUTH"
@@ -3527,6 +3487,8 @@ async def get_agent_toolset_oauth_url(
     instance_id: str,
     request: Request,
     base_url: str | None = Query(None),
+    *,
+    desktop: Annotated[bool, Query()] = False,
     config_service: ConfigurationService = Depends(Provide[ConnectorAppContainer.config_service])
 ) -> dict[str, Any]:
     """
@@ -3562,6 +3524,7 @@ async def get_agent_toolset_oauth_url(
 
     auth_config = {"type": "OAUTH", **oauth_cfg.get("config", {})}
     registry = _get_registry(request)
+    base_url = await resolve_oauth_base_url(config_service, base_url)
     oauth_flow_config = await _build_oauth_config(auth_config, toolset_type, registry, base_url, request)
 
     # Use agentKey as the credential owner for agent-scoped OAuth
@@ -3593,7 +3556,9 @@ async def get_agent_toolset_oauth_url(
 
         # Encode agentKey as the "user_id" in state and mark is_agent=True so
         # the callback can distinguish agent flows from regular user flows.
-        encoded_state = _encode_state_with_instance(original_state, instance_id, agent_key, is_agent=True)
+        encoded_state = mark_desktop_oauth_state(
+            _encode_state_with_instance(original_state, instance_id, agent_key, is_agent=True), desktop=desktop
+        )
         query_params["state"] = [encoded_state]
 
         final_url = f"{parsed_url.scheme}://{parsed_url.netloc}{parsed_url.path}?{urlencode(query_params, doseq=True)}"

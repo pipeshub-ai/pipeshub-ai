@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type {
   McpAuthenticatePayload,
   McpCatalogResponse,
@@ -97,7 +98,7 @@ export const McpServersApi = {
   async getOAuthAuthorizationUrl(instanceId: string, baseUrl?: string): Promise<McpOAuthAuthorizationUrlResponse> {
     const { data } = await apiClient.get(
       `${BASE_URL}/instances/${encodeURIComponent(instanceId)}/oauth/authorize`,
-      { params: baseUrl ? { baseUrl } : undefined }
+      { params: { ...(baseUrl ? { baseUrl } : {}), ...desktopAuthorizeParams() } }
     );
     return data;
   },
@@ -222,7 +223,7 @@ export const McpServersApi = {
   ): Promise<McpOAuthAuthorizationUrlResponse> {
     const { data } = await apiClient.get(
       `${BASE_URL}/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/oauth/authorize`,
-      { params: baseUrl ? { baseUrl } : undefined }
+      { params: { ...(baseUrl ? { baseUrl } : {}), ...desktopAuthorizeParams() } }
     );
     return data;
   },

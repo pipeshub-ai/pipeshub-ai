@@ -40,6 +40,8 @@ import {
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
+import { useFrontendPublicUrl } from '@/lib/hooks/use-frontend-public-url';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 
 const NEW_OAUTH_VALUE = '__new__';
 
@@ -185,10 +187,11 @@ export function ActionSetupPanel({
 
   const authConfigSchema = useMemo(() => getToolsetAuthConfigFromSchema(schemaRaw), [schemaRaw]);
 
+  const frontendPublicUrl = useFrontendPublicUrl();
   const toolsetOAuthCallbackUrl = useMemo(() => {
-    if (typeof window === 'undefined' || !toolsetType.trim() || !isOAuthType(authType)) return '';
-    return toolsetRedirectUri(window.location.origin, toolsetType);
-  }, [toolsetType, authType]);
+    if (!frontendPublicUrl || !toolsetType.trim() || !isOAuthType(authType)) return '';
+    return toolsetRedirectUri(frontendPublicUrl, toolsetType);
+  }, [frontendPublicUrl, toolsetType, authType]);
 
   /** Align with connector Authenticate tab: respect schema `displayRedirectUri` unless type is plain `OAUTH`. */
   const showOAuthRedirectUri = useMemo(() => {
@@ -397,7 +400,7 @@ export function ActionSetupPanel({
     }
     const name = instanceName.trim();
     const upper = (authType || 'NONE').toUpperCase();
-    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const origin = browserOAuthBaseUrl();
 
     setSaving(true);
     setError(null);

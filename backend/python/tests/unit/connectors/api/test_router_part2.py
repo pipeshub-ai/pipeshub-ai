@@ -380,6 +380,7 @@ class TestUpdateOAuthInfrastructureFields:
         mock_registry.get_config.return_value = mock_registry_config
 
         config_service = AsyncMock()
+        config_service.get_config.return_value = {"frontend": {"publicEndpoint": "https://example.com"}}
         oauth_config: dict[str, Any] = {}
 
         with patch(

@@ -11,12 +11,17 @@
  * because the callback page that builds the deep link is not running in Electron.
  */
 
-import { getFrontendOrigin, type DesktopOAuthProvider } from '@/lib/auth/desktop-oauth';
+import {
+  getFrontendOrigin,
+  type DesktopIntegrationFamily,
+  type DesktopOAuthProvider,
+} from '@/lib/auth/desktop-oauth';
 import { isElectron } from './is-electron';
 
 /** Matches the payload main sends on `oauth/callback` (see electron/deep-link.ts). */
 export interface OAuthDeepLinkPayload {
-  provider: DesktopOAuthProvider;
+  kind: 'auth' | 'integration';
+  provider: DesktopOAuthProvider | DesktopIntegrationFamily;
   params: Record<string, string>;
   receivedAt: number;
 }
@@ -101,14 +106,37 @@ export function runDesktopOAuth(options: {
   expectedState: string;
   timeoutMs?: number;
 }): DesktopOAuthFlow {
-  const { provider, authUrl, expectedState, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  return awaitOAuthDeepLink({
+    kind: 'auth',
+    provider: options.provider,
+    authUrl: options.authUrl,
+    expectedState: options.expectedState,
+    timeoutMs: options.timeoutMs,
+    activity: 'sign-in',
+  });
+}
+
+/**
+ * Shared by sign-in and integration OAuth: open `authUrl` in the browser and resolve with
+ * the params of the first deep link whose kind, provider and `state` all match.
+ */
+export function awaitOAuthDeepLink(options: {
+  kind: OAuthDeepLinkPayload['kind'];
+  provider: OAuthDeepLinkPayload['provider'];
+  authUrl: string;
+  expectedState: string;
+  timeoutMs?: number;
+  activity: 'sign-in' | 'authorization';
+}): DesktopOAuthFlow {
+  const { kind, provider, authUrl, expectedState, timeoutMs = DEFAULT_TIMEOUT_MS, activity } = options;
+  const Activity = activity === 'sign-in' ? 'Sign-in' : 'Authorization';
 
   let cancel = (): void => {};
 
   const promise = new Promise<Record<string, string>>((resolve, reject) => {
     const bridge = getOAuthBridge();
     if (!bridge) {
-      reject(new DesktopOAuthError('unavailable', 'Desktop sign-in is unavailable in this session.'));
+      reject(new DesktopOAuthError('unavailable', `Desktop ${activity} is unavailable in this session.`));
       return;
     }
 
@@ -126,7 +154,7 @@ export function runDesktopOAuth(options: {
 
     const consider = (raw: unknown): void => {
       const payload = raw as OAuthDeepLinkPayload | null;
-      if (!payload || payload.provider !== provider) return;
+      if (!payload || payload.kind !== kind || payload.provider !== provider) return;
       // Anything whose state is not the one this flow generated is not ours:
       // a stale attempt, or a link replayed by another local app. Ignore it
       // rather than failing, so it cannot be used to kill a real attempt.
@@ -143,9 +171,9 @@ export function runDesktopOAuth(options: {
 
     unsubscribe = bridge.onCallback(consider);
     timer = setTimeout(() => {
-      done(() => reject(new DesktopOAuthError('timeout', 'Timed out waiting for browser sign-in.')));
+      done(() => reject(new DesktopOAuthError('timeout', `Timed out waiting for browser ${activity}.`)));
     }, timeoutMs);
-    cancel = () => done(() => reject(new DesktopOAuthError('cancelled', 'Sign-in cancelled.')));
+    cancel = () => done(() => reject(new DesktopOAuthError('cancelled', `${Activity} cancelled.`)));
 
     // Covers the gap where main delivered the link before this listener
     // attached, which is the normal case on a cold start.
