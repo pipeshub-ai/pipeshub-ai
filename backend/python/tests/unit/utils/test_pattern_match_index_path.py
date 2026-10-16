@@ -446,3 +446,21 @@ async def test_a_small_store_scans_the_keyword_fallback_even_after_its_lookup_hi
 
     # The lookup finds the whole word; the keyword grep adds "precache".
     assert {r["virtual_record_id"] for r in result} == {_TOKEN_RECORD["vrid"], _INSIDE_WORD_RECORD["vrid"]}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scanned", [[], [{"virtual_record_id": _INSIDE_WORD_RECORD["vrid"], "matched_terms": "1"}]])
+async def test_the_keyword_scan_adds_to_its_lookup_hits_and_never_replaces_them(scanned: list) -> None:
+    searcher = InvertedIndexSearcher(
+        [(_TOKEN_RECORD["vrid"], _TOKEN_RECORD["text"]), (_INSIDE_WORD_RECORD["vrid"], _INSIDE_WORD_RECORD["text"])],
+        store_chunks=2,
+    )
+    with _llm_commands('grep -rci "nothing matches this" .'), \
+            patch("app.utils.pattern_match.execute_pattern_match_pipeline", AsyncMock(return_value=scanned)):
+        result = await run_pattern_match_with_llm_grep(
+            **_kwargs(llm=MagicMock(), query="cache"), retrieval_service=searcher,
+        )
+
+    vrids = {r["virtual_record_id"] for r in result}
+    assert _TOKEN_RECORD["vrid"] in vrids
+    assert vrids == {_TOKEN_RECORD["vrid"], *(r["virtual_record_id"] for r in scanned)}

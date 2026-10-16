@@ -1308,9 +1308,12 @@ async def _run_pattern_match_with_llm_grep(
         return list(found.values())
     if llm_grep_cmds:
         logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
-    return await execute_pattern_match_pipeline(
+    # Merged, not returned as is: the keyword lookup may already have filled
+    # *found*, and a grep that failed or capped its records must not drop them.
+    _merge_command_hits(found, await execute_pattern_match_pipeline(
         **common, grep_command=None, skip_grep_validation=False,
-    )
+    ))
+    return list(found.values())
 
 
 def _index_enabled() -> bool:
