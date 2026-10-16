@@ -13,6 +13,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     ProgressStatus,
@@ -41,6 +42,7 @@ from app.models.entities import (
     AppUser,
     AppUserGroup,
     OriginTypes,
+    RecordGroup,
     RecordGroupType,
     RecordType,
     TicketRecord,
@@ -76,6 +78,8 @@ def mock_data_entities_processor(mock_tx_store):
     proc.on_updated_record_permissions = AsyncMock()
     proc.reindex_existing_records = AsyncMock()
     proc.get_records_by_parent = AsyncMock(return_value=[])
+    proc.get_record_group_by_external_id = AsyncMock(return_value=None)
+    proc.get_groups_with_permission_to_node = AsyncMock(return_value=[])
 
     async def _get_record_by_external_id(connector_id, external_record_id):
         return await mock_tx_store.get_record_by_external_id(
@@ -139,6 +143,8 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
             scope="team",
             created_by="test-user",
         )
+    # The admin check has its own tests; run_sync tests assume an admin connection.
+    connector._ensure_admin_account = AsyncMock()
     # Groups sync before tickets, so the cache is populated by then.
     connector._group_id_to_data = {"7": {"id": 7, "name": "Technical Support"}}
     # Tickets and articles each keep their own checkpoint; tests that assert on one
@@ -994,7 +1000,7 @@ class TestTruncatedExportGating:
             return_value=([user], {"1": user}, users_complete)
         )
         connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], memberships_complete)
+            return_value=([(_ticket_folder("group_1"), [])], [(_user_group("group_1"), [])], memberships_complete)
         )
         connector._fetch_organizations = AsyncMock(return_value=([], True))
         connector._sync_tickets = AsyncMock(return_value=3)
@@ -1063,7 +1069,7 @@ class TestUnassignedTickets:
 
         assert record.external_record_group_id == UNASSIGNED_GROUP_ID
         assert record.record_group_type == RecordGroupType.PROJECT
-        assert record.inherit_permissions is True
+        assert record.inherit_permissions is False
         assert [p.external_id for p in permissions if p.external_id] == [
             ALL_TICKETS_GROUP_ID, "role_public_groups",
         ]
@@ -1538,11 +1544,25 @@ class TestDeletedUserGrants:
             "users": [{"id": 5, "email": None, "active": False}], "end_of_stream": True,
         }))
 
-        refresh, checkpoint = await zendesk_connector._users_deleted_since_last_sync()
+        refresh, checkpoint = await zendesk_connector._users_revoked_since_last_sync()
 
         assert refresh is True
         assert checkpoint is not None
         assert ds.incremental_users.await_args.kwargs["start_time"] == 100
+
+    async def test_a_suspended_user_triggers_a_grant_refresh(self, zendesk_connector) -> None:
+        """Suspension leaves the user active and their tickets unchanged."""
+        ds = _ready(zendesk_connector)
+        _stateful_sync_points(zendesk_connector, {"zendesk_users_incremental": {"lastEndTime": 100}})
+        ds.incremental_users = AsyncMock(return_value=_make_response(data={
+            "users": [{"id": 5, "email": "c@customer.com", "active": True, "suspended": True}],
+            "end_of_stream": True,
+        }))
+
+        refresh, checkpoint = await zendesk_connector._users_revoked_since_last_sync()
+
+        assert refresh is True
+        assert checkpoint is not None
 
     async def test_no_deletion_means_no_refresh(self, zendesk_connector) -> None:
         ds = _ready(zendesk_connector)
@@ -1551,20 +1571,20 @@ class TestDeletedUserGrants:
             "users": [{"id": 5, "email": "a@acme.com", "active": True}], "end_of_stream": True,
         }))
 
-        assert (await zendesk_connector._users_deleted_since_last_sync())[0] is False
+        assert (await zendesk_connector._users_revoked_since_last_sync())[0] is False
 
     async def test_failed_check_keeps_the_checkpoint(self, zendesk_connector) -> None:
         _ready(zendesk_connector)
         _stateful_sync_points(zendesk_connector, {"zendesk_users_incremental": {"lastEndTime": 100}})
         zendesk_connector._call_incremental = AsyncMock(return_value=None)
 
-        assert await zendesk_connector._users_deleted_since_last_sync() == (False, None)
+        assert await zendesk_connector._users_revoked_since_last_sync() == (False, None)
 
     async def test_first_run_only_sets_the_checkpoint(self, zendesk_connector) -> None:
         ds = _ready(zendesk_connector)
         _stateful_sync_points(zendesk_connector)
 
-        refresh, checkpoint = await zendesk_connector._users_deleted_since_last_sync()
+        refresh, checkpoint = await zendesk_connector._users_revoked_since_last_sync()
 
         assert refresh is False and checkpoint is not None
         ds.incremental_users.assert_not_awaited()
@@ -1605,7 +1625,7 @@ class TestDeletedUserGrants:
         zendesk_connector.records_sync_point.read_sync_point = AsyncMock(
             side_effect=lambda key: dict(states.get(key, {}))
         )
-        zendesk_connector._users_deleted_since_last_sync = AsyncMock(return_value=(True, 500))
+        zendesk_connector._users_revoked_since_last_sync = AsyncMock(return_value=(True, 500))
 
         async def _incomplete() -> int:
             zendesk_connector._ticket_sync_complete = False
@@ -1972,6 +1992,17 @@ def _user_group(source_user_group_id, name="G"):
     )
 
 
+def _ticket_folder(external_group_id, name="G"):
+    return RecordGroup(
+        org_id="org-zd-1",
+        name=name,
+        external_group_id=external_group_id,
+        connector_name=Connectors.ZENDESK,
+        connector_id="zd-conn-1",
+        group_type=RecordGroupType.PROJECT,
+    )
+
+
 def _ready(connector):
     """Mark the connector initialised so `_get_fresh_datasource` succeeds.
 
@@ -2057,7 +2088,7 @@ class TestRunSync:
         )
         connector._fetch_users = AsyncMock(return_value=([user], {"1": user}, True))
         connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], True)
+            return_value=([(_ticket_folder("group_1"), [])], [(_user_group("group_1"), [])], True)
         )
         connector._fetch_organizations = AsyncMock(
             return_value=([(_user_group("org_9"), [])], True)
@@ -2089,6 +2120,20 @@ class TestRunSync:
 
         assert order[0] == "users"
         assert order.index("user_groups") < order.index("record_groups")
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
+    async def test_folders_are_written_open_to_their_customer_group(
+        self, _filters, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        _ready(zendesk_connector)
+        self._stub_stages(zendesk_connector, _app_user())
+
+        await zendesk_connector.run_sync()
+
+        (folder, grants), = mock_data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert folder.external_group_id == "group_1"
+        assert [p.external_id for p in grants] == ["customers_group_1"]
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
@@ -2129,6 +2174,46 @@ class TestRunSync:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
+    async def test_a_non_admin_connection_fails_the_run_before_any_export(
+        self, _filters, zendesk_connector
+    ) -> None:
+        """Regression: an agent's token got a 403 per export and the run "completed"."""
+        ds = _ready(zendesk_connector)
+        self._stub_stages(zendesk_connector, _app_user())
+        del zendesk_connector._ensure_admin_account
+        zendesk_connector.notify = AsyncMock()
+        ds.show_current_user = AsyncMock(return_value=_make_response(
+            data={"user": {"id": 9, "email": "agent@acme.com", "role": "agent"}}
+        ))
+
+        with pytest.raises(ZendeskAuthError, match="agent@acme.com, whose role is agent"):
+            await zendesk_connector.run_sync()
+
+        zendesk_connector._fetch_users.assert_not_awaited()
+        assert zendesk_connector.notify.await_args.kwargs["type"] == (
+            NotificationType.CONNECTOR_AUTH_ERROR
+        )
+
+    @pytest.mark.parametrize("response, raises", [
+        (_make_response(data={"user": {"id": 1, "email": "a@acme.com", "role": "admin"}}), False),
+        (_make_response(data={"user": {"id": 2, "email": "c@acme.com", "role": "end-user"}}), True),
+        (_make_response(success=False, status_code=503, error="down"), False),
+    ])
+    async def test_admin_check(self, zendesk_connector, response, raises) -> None:
+        """Only a confirmed non-admin stops the run; a failed lookup syncs anyway."""
+        ds = _ready(zendesk_connector)
+        del zendesk_connector._ensure_admin_account
+        zendesk_connector._call_api_with_retry = AsyncMock(return_value=response)
+
+        if raises:
+            with pytest.raises(ZendeskAuthError, match="reconnect it with a Zendesk admin"):
+                await zendesk_connector._ensure_admin_account()
+        else:
+            await zendesk_connector._ensure_admin_account()
+        assert zendesk_connector._call_api_with_retry.await_args.args[0] is ds.show_current_user
+
+    @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
+           new_callable=AsyncMock, return_value=({}, {}))
     async def test_truncated_user_export_skips_membership_sync(
         self, _filters, zendesk_connector, mock_data_entities_processor
     ) -> None:
@@ -2141,14 +2226,15 @@ class TestRunSync:
 
         await zendesk_connector.run_sync()
 
-        # Only the organization write may run: organizations hold customers, while
-        # group membership and the all-tickets group need the whole staff list.
+        # Only the customer writes may run: a folder's customer group and an
+        # organization hold customers, while group membership and the all-tickets
+        # group need the whole staff list.
         written_ids = [
             group.source_user_group_id
             for call in mock_data_entities_processor.on_new_user_groups.await_args_list
             for group, _ in call.args[0]
         ]
-        assert written_ids == ["org_9"]
+        assert written_ids == ["customers_group_1", "org_9"]
         # Record groups are unaffected — only membership rebuilds are destructive.
         mock_data_entities_processor.on_new_record_groups.assert_awaited()
 
@@ -2162,7 +2248,7 @@ class TestRunSync:
         _ready(zendesk_connector)
         self._stub_stages(zendesk_connector, _app_user())
         zendesk_connector._fetch_groups = AsyncMock(
-            return_value=([("g_rg", [])], [(_user_group("group_1"), [])], False)
+            return_value=([(_ticket_folder("group_1"), [])], [(_user_group("group_1"), [])], False)
         )
 
         await zendesk_connector.run_sync()
@@ -4846,7 +4932,22 @@ class TestDeletedTicketGroupFolder:
         mock_data_entities_processor.on_record_group_deleted.assert_awaited_once_with(
             "group_8", "zd-conn-1"
         )
+        mock_data_entities_processor.on_user_group_deleted.assert_awaited_once_with(
+            "customers_group_8", "zd-conn-1"
+        )
         assert states["zendesk_ticket_groups"]["groupIds"] == ["group_7"]
+
+    async def test_help_center_folders_have_no_customer_group(
+        self, zendesk_connector, mock_tx_store, mock_data_entities_processor
+    ) -> None:
+        mock_tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rg-31")
+        )
+
+        await zendesk_connector._delete_empty_record_groups(["section_31"])
+
+        mock_data_entities_processor.on_record_group_deleted.assert_awaited_once()
+        mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
 
     async def test_folder_still_holding_tickets_is_kept_for_next_sync(
         self, zendesk_connector, mock_tx_store, mock_data_entities_processor
@@ -4863,6 +4964,7 @@ class TestDeletedTicketGroupFolder:
         await zendesk_connector._delete_removed_ticket_group_folders()
 
         mock_data_entities_processor.on_record_group_deleted.assert_not_awaited()
+        mock_data_entities_processor.on_user_group_deleted.assert_not_awaited()
         assert states["zendesk_ticket_groups"]["groupIds"] == ["group_8"]
 
     async def test_deselected_folders_are_removed_after_full_sync_wiped_state(
@@ -4931,6 +5033,190 @@ class TestDeletedTicketGroupFolder:
             "group_8", "zd-conn-1"
         )
         assert states["zendesk_ticket_groups"]["groupIds"] == []
+
+
+class TestFolderReaders:
+    """Whoever may read a ticket must be able to open its folder too, or browsing lifts
+    the ticket out of it to the app root. Tickets never inherit from their folder, so
+    opening a folder opens none of the tickets in it."""
+
+    @staticmethod
+    async def _folders(connector, processor, *folder_ids):
+        written = await connector._prepare_ticket_folders([
+            (_ticket_folder(folder_id), [connector._all_tickets_permission()])
+            for folder_id in folder_ids
+        ])
+        processor.on_new_user_groups.reset_mock()
+        return written
+
+    @staticmethod
+    def _page(connector, *, public_comment=True) -> None:
+        datasource = _ready(connector)
+        comments = [{"id": 1, "public": True, "body": "hi"}] if public_comment else []
+        datasource.list_comments = AsyncMock(
+            return_value=_make_response(data={"comments": comments})
+        )
+        connector._user_id_to_data = {
+            "1": {"id": 1, "role": "agent", "email": "agent@acme.com"},
+        }
+        connector._cache_sideloads({"users": [
+            {"id": 900, "email": "end@customer.com", "role": "end-user"},
+            {"id": 901, "email": "cc@customer.com", "role": "end-user"},
+        ]})
+
+    @staticmethod
+    def _ticket(**overrides):
+        return {
+            "id": 5, "subject": "Help", "group_id": 7, "requester_id": 900,
+            "collaborator_ids": [901, 1], "updated_at": "2026-01-01T00:00:00Z",
+            **overrides,
+        }
+
+    async def test_each_folder_is_open_to_its_customer_group(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        written = await zendesk_connector._prepare_ticket_folders([
+            (_ticket_folder("group_7", "Support"), [zendesk_connector._all_tickets_permission()]),
+            (_ticket_folder(UNASSIGNED_GROUP_ID, "Unassigned"), [zendesk_connector._public_groups_permission()]),
+        ])
+
+        assert [[p.external_id for p in grants] for _, grants in written] == [
+            [ALL_TICKETS_GROUP_ID, "customers_group_7"],
+            ["role_public_groups", f"customers_{UNASSIGNED_GROUP_ID}"],
+        ]
+        # Before the folders, or their grant is dropped; additive, as earlier syncs'
+        # tickets filled them.
+        created = mock_data_entities_processor.on_new_user_groups.await_args
+        assert [
+            (group.source_user_group_id, group.name, members)
+            for group, members in created.args[0]
+        ] == [
+            ("customers_group_7", "Zendesk: customers of Support", []),
+            (f"customers_{UNASSIGNED_GROUP_ID}", "Zendesk: customers of Unassigned", []),
+        ]
+        assert created.kwargs == {"replace_members": False}
+
+    async def test_organizations_found_on_earlier_syncs_stay_on_the_folder(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """The write replaces the folder's grants, and only the graph remembers these."""
+        mock_data_entities_processor.get_record_group_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rg-7")
+        )
+        mock_data_entities_processor.get_groups_with_permission_to_node = AsyncMock(
+            return_value=[
+                _user_group(ALL_TICKETS_GROUP_ID),
+                _user_group("customers_group_7"),
+                _user_group("org_22"),
+                _user_group("orgagents_21"),
+                _user_group("org_21"),
+            ]
+        )
+
+        (_, grants), = await self._folders(
+            zendesk_connector, mock_data_entities_processor, "group_7"
+        )
+
+        assert [p.external_id for p in grants] == [
+            ALL_TICKETS_GROUP_ID, "customers_group_7", "org_21", "org_22",
+        ]
+        mock_data_entities_processor.get_groups_with_permission_to_node.assert_awaited_once_with(
+            "rg-7", CollectionNames.RECORD_GROUPS.value, raise_on_error=True
+        )
+
+    async def test_a_new_folder_has_no_organizations_to_keep(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        (_, grants), = await self._folders(
+            zendesk_connector, mock_data_entities_processor, "group_7"
+        )
+
+        assert [p.external_id for p in grants] == [ALL_TICKETS_GROUP_ID, "customers_group_7"]
+        mock_data_entities_processor.get_groups_with_permission_to_node.assert_not_awaited()
+
+    @pytest.mark.parametrize("group_id, customer_group", [
+        (7, "customers_group_7"),
+        (None, f"customers_{UNASSIGNED_GROUP_ID}"),
+    ])
+    async def test_the_customers_a_ticket_grants_join_its_folder_group(
+        self, zendesk_connector, mock_data_entities_processor, group_id, customer_group
+    ) -> None:
+        """The requester and the CC'd customer; the CC'd agent is granted as staff."""
+        await self._folders(
+            zendesk_connector, mock_data_entities_processor, "group_7", UNASSIGNED_GROUP_ID
+        )
+        self._page(zendesk_connector)
+
+        await zendesk_connector._process_ticket_batch([self._ticket(group_id=group_id)])
+
+        call = mock_data_entities_processor.on_new_user_groups.await_args
+        assert [
+            (group.source_user_group_id, [member.email for member in members])
+            for group, members in call.args[0]
+        ] == [(customer_group, ["end@customer.com", "cc@customer.com"])]
+        assert call.kwargs == {"replace_members": False}
+
+    async def test_customers_the_ticket_does_not_grant_stay_out(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """Until a ticket has a public comment Zendesk shows its customers nothing."""
+        await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
+        self._page(zendesk_connector, public_comment=False)
+
+        await zendesk_connector._process_ticket_batch([self._ticket()])
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    async def test_a_ticket_sharing_organization_is_granted_on_the_folder(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
+        await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
+        self._page(zendesk_connector)
+
+        await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
+
+        (folder, grants), = mock_data_entities_processor.on_new_record_groups.await_args.args[0]
+        assert folder.external_group_id == "group_7"
+        assert [p.external_id for p in grants] == [
+            ALL_TICKETS_GROUP_ID, "customers_group_7", "org_21",
+        ]
+
+    async def test_an_organization_that_does_not_share_is_not_granted(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """Its group is emptied every sync, so the grant would only cost a lookup."""
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": False}}
+        await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
+        self._page(zendesk_connector)
+
+        await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
+
+        mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
+
+    async def test_the_folder_is_rewritten_only_when_it_gains_an_organization(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
+        await self._folders(zendesk_connector, mock_data_entities_processor, "group_7")
+        self._page(zendesk_connector)
+
+        await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
+        await zendesk_connector._process_ticket_batch([self._ticket(id=6, organization_id=21)])
+
+        mock_data_entities_processor.on_new_record_groups.assert_awaited_once()
+
+    async def test_tickets_outside_the_folders_this_sync_wrote_change_nothing(
+        self, zendesk_connector, mock_data_entities_processor
+    ) -> None:
+        """Their folder was not written, so there is no grant list to extend."""
+        zendesk_connector._org_id_to_data = {"21": {"id": 21, "shared_tickets": True}}
+        self._page(zendesk_connector)
+
+        await zendesk_connector._process_ticket_batch([self._ticket(organization_id=21)])
+
+        mock_data_entities_processor.on_new_user_groups.assert_not_awaited()
+        mock_data_entities_processor.on_new_record_groups.assert_not_awaited()
 
 
 class TestNarrowedDateFilter:
@@ -5367,7 +5653,7 @@ class TestRunSyncAdditions:
         connector._fetch_users = AsyncMock(return_value=([], {}, True))
         connector._fetch_groups = AsyncMock(return_value=([], [], True))
         connector._fetch_organizations = AsyncMock(return_value=([], True))
-        connector._users_deleted_since_last_sync = AsyncMock(return_value=(False, None))
+        connector._users_revoked_since_last_sync = AsyncMock(return_value=(False, None))
         seen = {}
 
         async def _tickets() -> int:
@@ -5380,18 +5666,16 @@ class TestRunSyncAdditions:
 
     @patch("app.connectors.sources.zendesk.connector.load_connector_filters",
            new_callable=AsyncMock, return_value=({}, {}))
-    async def test_the_workspace_is_linked_to_the_app(
+    async def test_the_workspace_is_not_linked_to_the_app(
         self, _filters, zendesk_connector, mock_data_entities_processor
     ) -> None:
-        """Members with no Zendesk account can only reach public articles through it."""
+        """Only synced Zendesk users reach the app; PipesHub members outside the tenant do not."""
         self._stages(zendesk_connector)
         _stateful_sync_points(zendesk_connector)
 
         await zendesk_connector.run_sync()
 
-        mock_data_entities_processor.ensure_team_app_edge.assert_awaited_once_with(
-            zendesk_connector.connector_id
-        )
+        mock_data_entities_processor.ensure_team_app_edge.assert_not_awaited()
 
     @pytest.mark.parametrize("stored, refreshed", [
         ({"lastEndTime": 100}, True),
