@@ -145,6 +145,14 @@ class TestOnlyPickedToolsLoad:
 
         assert sorted(registry.tools_in_toolset("jira")) == ["jira__create_issue", "jira__search_issues"]
 
+    async def test_entry_without_tools_keeps_every_tool_beside_one_with_picks(self) -> None:
+        registry, _ = await _load([
+            {"name": "jira", "instanceId": "jira-1", "tools": []},
+            {"name": "jira", "instanceId": "jira-2", "tools": _picked("search_issues")},
+        ])
+
+        assert sorted(registry.tools_in_toolset("jira")) == ["jira__create_issue", "jira__search_issues"]
+
     async def test_picks_apply_through_the_long_configured_name(self) -> None:
         registry, _ = await _load([
             {"name": "googledrive", "instanceId": "gd-1", "tools": [{"name": "list_files"}]},

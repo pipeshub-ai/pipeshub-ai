@@ -442,7 +442,7 @@ class PipesHubToolLoader:
     def _selected_tool_names(ts_name: str, agent_toolsets: list[dict]) -> set[str] | None:
         """The tool names picked for toolset *ts_name* — in the agent builder,
         narrowed by the chat composer's picks — across every entry for it (the
-        assistant has one per instance). ``None`` when no entry lists a tool:
+        assistant has one per instance). ``None`` when any entry lists no tool:
         an entry saved without tools has always loaded all of them.
         """
         selected: set[str] = set()
@@ -450,9 +450,13 @@ class PipesHubToolLoader:
             name = _normalized_toolset_name(ts)
             if not name or not configured_name_matches(ts_name, name):
                 continue
-            for picked in ts.get("tools") or []:
-                if isinstance(picked, dict) and isinstance(tool_name := picked.get("name"), str) and tool_name:
-                    selected.add(tool_name)
+            picked = {
+                tool_name for t in ts.get("tools") or []
+                if isinstance(t, dict) and isinstance(tool_name := t.get("name"), str) and tool_name
+            }
+            if not picked:
+                return None
+            selected |= picked
         return selected or None
 
 
