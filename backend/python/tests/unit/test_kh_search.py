@@ -243,6 +243,19 @@ def test_partition_queries_are_capped() -> None:
     assert provider.peak_in_flight <= 4, provider.peak_in_flight
 
 
+def test_partition_queries_are_capped_by_default() -> None:
+    from app.connectors.sources.localKB.handlers.kh_search import (
+        DEFAULT_MAX_CONCURRENCY,
+    )
+
+    provider = FakeProvider({f"rg-{index}": [row(f"a{index}", f"name {index:02d}")]
+                             for index in range(30)})
+    page = asyncio.run(_search(provider, limit=50))
+    assert len(page.rows) == 30
+    assert DEFAULT_MAX_CONCURRENCY == 8
+    assert 1 < provider.peak_in_flight <= DEFAULT_MAX_CONCURRENCY, provider.peak_in_flight
+
+
 def test_an_exhausted_partition_is_not_queried_again() -> None:
     """The cursor's live set is what keeps a finished partition out."""
     provider = FakeProvider({

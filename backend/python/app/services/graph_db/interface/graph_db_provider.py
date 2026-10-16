@@ -6295,6 +6295,17 @@ class IGraphDBProvider(ABC):
         Returns ``{"added": {shape: n}}``; raises if anything is left."""
         raise NotImplementedError
 
+    async def drop_redundant_group_edges(self, batch_size: int = 1000) -> dict:
+        """Delete a nested record's inheritance edge to its own group and the
+        group's hierarchy edge to it, where the record inherits from a parent
+        record of that group. A sync deletes both when it rewrites such a record
+        (``link_record_to_group(inherit=False, browse_root=False)``); an older
+        build left them, so the record kept its group's audience past the parent
+        and was listed under the group as well. Only a non-placeholder, live
+        parent counts, and the record's membership in the group stays.
+        Returns ``{"removed": n}``; raises if anything is left."""
+        raise NotImplementedError
+
     async def normalize_folder_mime_types(self, batch_size: int = 1000) -> dict:
         """Write ``MimeTypes.FOLDER`` on every folder record (its File type node
         says ``isFile = false``) that carries another mimeType. Returns
@@ -6483,7 +6494,8 @@ class IGraphDBProvider(ABC):
         live nodes of ``org_id`` are returned, so an id of another org, of a
         deleted node or of the wrong kind contributes nothing. Each list holds
         at most ``limit + 1`` entries, so the caller can tell a selection that
-        is over the limit from one that is at it.
+        is over the limit from one that is at it. ``truncated`` is true when the
+        walk stopped before it could tell (the caller treats that as over).
         """
         raise NotImplementedError
 

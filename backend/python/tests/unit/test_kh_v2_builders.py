@@ -619,3 +619,15 @@ def test_omitting_the_comparator_changes_nothing_else(
         full = _projection_fields(build())
         base = _projection_fields(build(include_comparator=False))
         assert full - base == {"sortKey", "nullRank"}, sorted(full - base)
+
+
+def test_the_dates_are_the_sources_except_in_a_collection(
+    neo4j: Neo4jProvider, arango: ArangoHTTPProvider
+) -> None:
+    """A connector item shows when it was written at the source, not when it was
+    synced; a collection item shows when it was uploaded. The sort, the date
+    filters and the cursor read the same fields, so they follow."""
+    slim = ArangoHTTPProvider._kh_v3_slim_aql((), "name")
+    for text in (neo4j._kh_v2_projection_cypher(), arango._kh_v2_projection_aql(), slim):
+        assert "sourceCreatedAtTimestamp, " in text and "sourceLastModifiedTimestamp, " in text
+        assert "connectorName" in text

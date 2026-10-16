@@ -33,8 +33,10 @@ from app.utils.kh_cursor import (
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# None means no cap. A caller can still pass a positive limit.
-DEFAULT_MAX_CONCURRENCY = None
+# Connector queries one search page runs at once: a tenant can have hundreds of
+# connectors, and each page would otherwise put all their queries on the graph
+# together. A caller can pass another positive limit, or None for no cap.
+DEFAULT_MAX_CONCURRENCY = 8
 
 
 @dataclass(frozen=True)

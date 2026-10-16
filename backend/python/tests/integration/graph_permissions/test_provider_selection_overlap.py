@@ -82,3 +82,12 @@ async def test_two_nested_roots_at_a_limit_just_above_the_set(overlapping_graph,
 
 async def test_over_the_limit_is_still_signalled_with_nested_roots(overlapping_graph, provider) -> None:
     assert len(await _records(provider, [ROOT, CHILD, GRAND], 10)) == 11
+
+
+@pytest.mark.parametrize("limit", [18, 20])
+async def test_nested_roots_near_the_limit_are_complete_and_not_cut_short(overlapping_graph, provider, limit) -> None:
+    found = await provider.get_selection_nodes(
+        ORG, group_ids=[], record_ids=[GRAND, CHILD, ROOT], exact_record_ids=[], limit=limit,
+    )
+    assert {row["id"] for row in found["records"]} == ALL
+    assert not found.get("truncated")

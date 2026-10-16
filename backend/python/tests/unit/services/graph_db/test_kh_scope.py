@@ -112,12 +112,19 @@ async def page(client: FakeClient, **kwargs: Any) -> dict:  # noqa: ANN401
     (meta(fresh=False), "stale since the last write"),
     (meta(version=1), "stamped by version 1"),
     (meta(eligible=False, reason="a node has several parents"), "ineligible: a node has several parents"),
-    (meta(nullUpdated=2), "2 node(s) without a numeric updatedAt"),
 ])
 async def test_every_fallback_says_why(m, reason) -> None:
     with pytest.raises(ks.Fallback) as err:
-        await page(FakeClient(m), sort_field="updatedAt")
+        await page(FakeClient(m), sort_field="name")
     assert err.value.reason.startswith(reason)
+
+
+@pytest.mark.parametrize("sort_field", ["updatedAt", "createdAt"])
+async def test_a_date_sort_is_the_full_querys(sort_field) -> None:
+    """The listing shows a source date no stamped property holds."""
+    with pytest.raises(ks.Fallback) as err:
+        await page(FakeClient(meta()), sort_field=sort_field)
+    assert err.value.reason == f"sort {sort_field!r} has no scope index"
 
 
 async def test_a_sort_without_an_index_falls_back() -> None:
