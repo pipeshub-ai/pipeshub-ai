@@ -659,8 +659,18 @@ class EventProcessor:
             EventTypes.REINDEX_RECORD.value,
         ):
             return
-        holders = await self.graph_provider.get_records_by_virtual_record_id(virtual_record_id)
-        if len(holders or []) > 1:
+        # An unreadable graph also answers []; raising lets the event retry rather
+        # than reading the failure as "nobody else holds this content".
+        try:
+            holders = await self.graph_provider.get_records_by_virtual_record_id(
+                virtual_record_id, raise_on_error=True
+            )
+        except Exception as e:
+            raise IndexingError(
+                "Could not tell whether another record shares this content",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
+            ) from e
+        if set(holders or []) != {_record_key(doc)}:
             return
         pipeline = self._indexing_pipeline()
         if pipeline is None:
