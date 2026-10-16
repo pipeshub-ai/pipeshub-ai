@@ -224,12 +224,15 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
 
         try:
             from app.edition_services import get_web_access_gate
+            from app.web.budget import WebBudget
             from app.web.container import build_web_services
             from app.web.models import CallerContext
             from app.web.tools.fetch_url import create_fetch_url_tool
             from app.web.tools.web_search import create_web_search_tool
 
-            services = build_web_services(web_search_config, get_web_access_gate())
+            services = build_web_services(
+                web_search_config, get_web_access_gate(), WebBudget.for_answer(deep_research=context.deep_research),
+            )
             caller = CallerContext(org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id)
             web_tools = [
                 create_web_search_tool(services.search, caller),

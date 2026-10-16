@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from typing import Any
 
+from app.web.budget import WebBudget
 from app.web.chain import Cooldowns
 from app.web.config import DEFAULT_PROVIDER
 from app.web.deadline import Deadline
@@ -66,8 +67,9 @@ def fetchers(selection: dict[str, Any]) -> list[ContentFetcher]:
     return [BuiltinFetcher(BrowserRenderer() if BrowserRenderer.available() else None), *remote]
 
 
-def build_web_services(selection: dict[str, Any], gate: WebAccessGate) -> WebServices:
+def build_web_services(selection: dict[str, Any], gate: WebAccessGate, budget: WebBudget | None = None) -> WebServices:
+    """``budget`` is shared by both services: one answer's searches and page reads."""
     return WebServices(
-        search=WebSearchService(search_providers(selection), gate, cooldowns=COOLDOWNS),
-        fetch=WebFetchService(fetchers(selection), gate, cooldowns=COOLDOWNS),
+        search=WebSearchService(search_providers(selection), gate, cooldowns=COOLDOWNS, budget=budget),
+        fetch=WebFetchService(fetchers(selection), gate, cooldowns=COOLDOWNS, budget=budget),
     )

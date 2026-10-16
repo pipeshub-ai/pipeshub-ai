@@ -5,6 +5,7 @@ import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
+from app.web.budget import WebBudget
 from app.web.chain import ChainOutcome, Cooldowns, run_chain
 from app.web.deadline import Deadline
 from app.web.errors import AccessDenied
@@ -27,8 +28,9 @@ class SearchOutcome:
 
 
 class _Guarded:
-    def __init__(self, gate: WebAccessGate) -> None:
+    def __init__(self, gate: WebAccessGate, budget: WebBudget | None) -> None:
         self._gate = gate
+        self._budget = budget
 
     async def _require(self, request: AccessRequest) -> None:
         decision = await self._gate.check(request)
@@ -46,9 +48,10 @@ class WebSearchService(_Guarded):
         gate: WebAccessGate,
         *,
         cooldowns: Cooldowns,
+        budget: WebBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        super().__init__(gate)
+        super().__init__(gate, budget)
         self._providers = tuple(providers)
         self._cooldowns = cooldowns
         self._clock = clock
@@ -57,6 +60,8 @@ class WebSearchService(_Guarded):
         """Results from the first provider that answers, deduplicated by page, without any the
         caller may not open. Raises a ``WebError``."""
         await self._require(AccessRequest("search", query, caller))
+        if self._budget is not None:
+            self._budget.take_search()
         outcome = await run_chain(
             self._providers,
             lambda provider, deadline: provider.search(query, deadline),
@@ -82,9 +87,10 @@ class WebFetchService(_Guarded):
         gate: WebAccessGate,
         *,
         cooldowns: Cooldowns,
+        budget: WebBudget | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        super().__init__(gate)
+        super().__init__(gate, budget)
         self._fetchers = tuple(fetchers)
         self._cooldowns = cooldowns
         self._clock = clock
@@ -93,6 +99,8 @@ class WebFetchService(_Guarded):
         """The page's text, from the first fetcher that reads it. The gate is asked about the URL
         and about every redirect. Raises a ``WebError``."""
         await self._require(AccessRequest("fetch", canonical_url(url), caller))
+        if self._budget is not None:
+            self._budget.take_page()
 
         async def allow_hop(target: str) -> bool:
             return await self._allowed(target, caller)

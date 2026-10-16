@@ -77,6 +77,8 @@ class AgentContext(BaseModel):
     tool_to_toolset_map: dict[str, str] = Field(default_factory=dict)
     toolset_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     web_search_config: dict[str, Any] | None = None
+    # Deep research: the research method in the prompt, more turns and a larger web budget.
+    deep_research: bool = False
 
     # MCP servers — parallel to the toolset fields above. `mcp_servers` is the
     # attached/authenticated instance metadata (from `agent.py`'s chat handler);
@@ -442,6 +444,7 @@ class AgentContext(BaseModel):
             mcp_servers=state.get("mcp_servers") or [],
             mcp_server_configs=state.get("mcp_server_configs") or {},
             web_search_config=state.get("web_search_config"),
+            deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
             has_knowledge=bool(state.get("has_knowledge", False)),
             apps=state.get("apps"),
             kb=state.get("kb"),

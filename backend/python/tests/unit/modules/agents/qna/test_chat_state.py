@@ -66,6 +66,15 @@ class TestBuildInitialState:
         state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
         assert state["keyword_search_budget"] == expected
 
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "deepResearch": True}, True),
+        ({"query": "q", "deepResearch": False}, False),
+        ({"query": "q"}, False),
+    ], ids=["on", "off", "absent"])
+    def test_deep_research_reaches_the_agent(self, mock_deps, minimal_user_info, chat_query, expected) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["deep_research"] is expected
+
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(
             chat_query=minimal_chat_query,

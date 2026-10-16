@@ -1161,7 +1161,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche"
+      "webSearch": "Websuche",
+      "deepResearch": "Tiefenrecherche",
+      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "mobileProfileComingSoon": "Die Profilseite ist bald auch auf Mobilgeräten verfügbar.",

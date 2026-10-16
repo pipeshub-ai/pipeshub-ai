@@ -221,6 +221,7 @@ def _apply_policy_to_chat_state(
     )
     chat_state["has_slack_knowledge"] = policy.has_knowledge and bool(chat_state.get("has_slack_connector"))
     chat_state["web_search_config"] = web_search_config if policy.include_web_search else None
+    chat_state["deep_research"] = policy.deep_research and chat_state["web_search_config"] is not None
     chat_state["chat_mode"] = policy.name
 
 

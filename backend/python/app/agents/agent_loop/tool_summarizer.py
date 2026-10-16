@@ -178,6 +178,7 @@ _WEB_SEARCH_FAILURES = {
     "not_configured": "The search provider has no API key",
     "unknown_provider": "The configured search provider isn't available",
     "access_denied": "Web search isn't allowed here",
+    "budget_exhausted": "The searches for this answer are used up",
 }
 _FETCH_FAILURES = {
     "blocked": "The site refused the request; it may need a sign-in",
@@ -189,6 +190,7 @@ _FETCH_FAILURES = {
     "too_many_redirects": "The page redirects too many times",
     "invalid_url": "That isn't a web address that can be read",
     "access_denied": "Reading this site isn't allowed",
+    "budget_exhausted": "The page reads for this answer are used up",
 }
 
 

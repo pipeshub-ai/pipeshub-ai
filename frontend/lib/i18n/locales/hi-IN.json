@@ -1204,7 +1204,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "इस एजेंट पर कॉन्फ़िगर नहीं है",
       "internalSearch": "आंतरिक खोज",
-      "webSearch": "वेब खोज"
+      "webSearch": "वेब खोज",
+      "deepResearch": "गहन शोध",
+      "deepResearchNeedsWebSearch": "गहन शोध के लिए वेब खोज चालू करें"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
     "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।",

@@ -4207,6 +4207,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "modelKey": model_key,
                     "webSearch": web_search_provider,
                     "webSearchConfig": web_search_tool_config,
+                    "deepResearch": caps.deep_search,
                     "attachments": chat_query.attachments,
                     "enableRecordIdShortening": chat_query.enableRecordIdShortening,
                     "includeRetrievalContext": chat_query.includeRetrievalContext,

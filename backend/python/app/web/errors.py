@@ -121,6 +121,10 @@ class AccessDenied(WebError):
     error_type = "access_denied"
 
 
+class BudgetExhausted(WebError):
+    error_type = "budget_exhausted"
+
+
 def error_for_status(status: int, headers: Mapping[str, str], *, source: str) -> WebError | None:
     """The error a search API's HTTP status means, or None for a success."""
     if status < _HTTP_BAD_REQUEST:

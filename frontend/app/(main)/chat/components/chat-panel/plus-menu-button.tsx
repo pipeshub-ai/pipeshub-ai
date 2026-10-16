@@ -11,10 +11,12 @@ import { DEFAULT_AGENT_CAPABILITIES } from '@/chat/types';
 export function hasNonDefaultSearchCapabilities(
   internalSearch: boolean,
   webSearch: boolean,
+  deepResearch = false,
 ): boolean {
   return (
     internalSearch !== DEFAULT_AGENT_CAPABILITIES.internalSearch ||
-    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch
+    webSearch !== DEFAULT_AGENT_CAPABILITIES.webSearch ||
+    (deepResearch && webSearch)
   );
 }
 
@@ -54,6 +56,9 @@ export interface PlusMenuCapabilities {
   webSearch: boolean;
   onToggleInternalSearch: (enabled: boolean) => void;
   onToggleWebSearch: (enabled: boolean) => void;
+  /** Research thoroughly on the web before answering; needs web search. Off when the toggle is absent. */
+  deepResearch?: boolean;
+  onToggleDeepResearch?: (enabled: boolean) => void;
   /**
    * `false` = the agent wasn't configured with this capability, so the toggle
    * is disabled. `undefined` = universal mode, capability always available.
@@ -149,6 +154,8 @@ export function PlusMenuContent({
   onToggleWebSearch,
   agentHasInternalSearch,
   agentHasWebSearch,
+  deepResearch = false,
+  onToggleDeepResearch,
 }: PlusMenuContentProps) {
   const { t } = useTranslation();
   const notConfiguredLabel = t('chat.agentCapabilities.notConfiguredOnAgent', {
@@ -182,6 +189,17 @@ export function PlusMenuContent({
         disabledTooltip={notConfiguredLabel}
         onCheckedChange={onToggleWebSearch}
       />
+      {onToggleDeepResearch && (
+        <PlusMenuToggleRow
+          label={t('chat.agentCapabilities.deepResearch', { defaultValue: 'Deep research' })}
+          checked={deepResearch}
+          disabled={!webSearch || agentHasWebSearch === false}
+          disabledTooltip={t('chat.agentCapabilities.deepResearchNeedsWebSearch', {
+            defaultValue: 'Turn on web search to use deep research',
+          })}
+          onCheckedChange={onToggleDeepResearch}
+        />
+      )}
     </Flex>
   );
 }
@@ -211,6 +229,7 @@ export function PlusMenuButton({
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
     capabilities.webSearch,
+    capabilities.deepResearch,
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>

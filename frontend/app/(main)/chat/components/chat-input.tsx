@@ -306,6 +306,7 @@ export function ChatInput({
   const agentHasInternalSearch = agentChatConnectors.length > 0 || agentChatKbIds.length > 0;
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
+  const scopedDeepResearch = scopedAgentCapabilities?.deepSearch ?? false;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
   // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
   // `useProjectScopeHydration`; null everywhere else.
@@ -331,6 +332,11 @@ export function ChatInput({
     return {
       internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
       webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
+      deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
+      onToggleDeepResearch: (enabled: boolean) => {
+        if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
+        else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
+      },
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
@@ -351,6 +357,7 @@ export function ChatInput({
     agentId,
     scopedInternalSearch,
     scopedWebSearch,
+    scopedDeepResearch,
     settings.agentCapabilities,
     setScopedAgentCapabilities,
     setAgentCapabilities,
@@ -360,6 +367,7 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
+    plusMenuCapabilities.deepResearch,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All

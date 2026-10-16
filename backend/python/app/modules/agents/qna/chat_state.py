@@ -104,6 +104,7 @@ class ChatState(TypedDict):
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
+    deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -629,6 +630,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "web_search_config": _build_web_search_tool_config(chat_query),
+        # Applies only with web search on; AgentContext.from_chat_state checks that.
+        "deep_research": bool(chat_query.get("deepResearch")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 
