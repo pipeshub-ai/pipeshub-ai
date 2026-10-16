@@ -1,21 +1,40 @@
-# Operations the hand-written tests call, one operationId per line. coverage.py reads this:
-# a hand-written test calls SDK methods, so its operations cannot be read from the code.
+# Operations the hand-written tests call, one operationId per line.
+# A "# test <id>" line names the JUnit case (report.case_id) the following
+# operations belong to, in the order the test calls them. coverage.py reads the
+# operationIds; the report uses each group as that row's label.
+# A hand-written test calls SDK methods, so its operations cannot be read from the code.
+
+# test handwrittenconversationstreams
 streamChat
 addMessageStream
+getConversationById
 regenerateAnswer
 updateMessageFeedback
+deleteConversationById
+
+# test handwrittenagentconversationstreams
+createAgent
 streamAgentConversation
 streamAgentConversationMessage
+getAgentConversationById
 regenerateAgentConversationMessage
 updateAgentConversationMessageFeedback
-getConversationById
-deleteConversationById
+deleteAgent
+
+# test handwrittenconversationlifecycle
+streamChat
 updateConversationTitle
 archiveConversation
 unarchiveConversation
+deleteConversationById
+
+# test handwrittenrecordlifecycle
+createKnowledgeBase
 uploadRecords
 streamRecordBuffer
 updateRecord
+createFolder
 moveRecord
 reindexRecord
 deleteRecord
+deleteKnowledgeBase
