@@ -13,10 +13,13 @@ import pytest
 
 from app.config.constants.arangodb import EventTypes
 from app.exceptions.indexing_exceptions import IndexingError
-from tests.unit.events.test_events_blob_storage_ordering import _collect_events, _make_event_processor
+from tests.unit.events.test_events_blob_storage_ordering import (
+    _collect_events,
+    _make_event_processor,
+)
 
 
-def _empty_parse(ep) -> None:  # noqa: ANN001
+def _empty_parse(ep) -> None:
     container = MagicMock()
     container.blocks = []
     container.block_groups = []
@@ -25,7 +28,7 @@ def _empty_parse(ep) -> None:  # noqa: ANN001
     )
 
 
-def _with_pipeline(ep):  # noqa: ANN001, ANN202
+def _with_pipeline(ep):
     pipeline = MagicMock()
     pipeline.delete_points_for_virtual_record = AsyncMock()
     ep.processor.indexing_pipeline = pipeline
@@ -54,7 +57,7 @@ async def test_a_failed_empty_write_does_not_complete_the_event() -> None:
     _with_pipeline(ep)
     ep.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
 
-    async def update_node(_key, _collection, fields):  # noqa: ANN001, ANN202
+    async def update_node(_key, _collection, fields):
         return fields.get("indexingStatus") != "EMPTY"
 
     ep.graph_provider.update_node = AsyncMock(side_effect=update_node)
