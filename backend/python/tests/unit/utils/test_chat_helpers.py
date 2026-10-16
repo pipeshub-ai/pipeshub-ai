@@ -11,12 +11,12 @@ import aiohttp
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
+from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
+    is_jira_ticket_record,
+)
 from app.exceptions.storage_exceptions import (
     StoredRecordDecodeBusyError,
     StoredRecordTooLargeError,
-)
-from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
-    is_jira_ticket_record,
 )
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
@@ -3027,12 +3027,12 @@ class TestGetFlattenedResults:
         "refusal",
         [StoredRecordTooLargeError("decodes to 300 MiB"), StoredRecordDecodeBusyError("no slot in 5s")],
     )
-    async def test_a_record_refused_by_the_decode_guard_is_skipped(self, refusal):
+    async def test_a_record_refused_by_the_decode_guard_is_skipped(self, refusal: Exception) -> None:
         """A record too large to decode, or stuck behind one that is, drops out of this search."""
         good = _make_record_blob()
         good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
 
-        async def fetch(virtual_record_id, **_kwargs):
+        async def fetch(virtual_record_id: str, **_kwargs: object) -> dict:
             if virtual_record_id == "vr-huge":
                 raise refusal
             return good
