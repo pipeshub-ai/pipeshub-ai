@@ -62,22 +62,45 @@ const slack = toolset({
     { name: 'search', fullName: 'slack.search', description: '' },
   ],
 });
-const jiraTools = [{ name: 'search_issues', fullName: 'jira.search_issues', description: '' }];
+const gmail = toolset({
+  name: 'gmail',
+  toolsetType: 'gmail',
+  instanceId: 'gm',
+  instanceName: 'Gmail',
+  tools: [{ name: 'send_email', fullName: 'gmail.send_email', description: '' }],
+});
 const jiraToConnect = toolset({
   name: 'jira',
   toolsetType: 'jira',
-  displayName: 'Jira',
   instanceId: 'jr',
   instanceName: 'Jira Cloud',
   authType: 'API_TOKEN',
   isAuthenticated: false,
-  tools: jiraTools,
+  tools: [{ name: 'search_issues', fullName: 'jira.search_issues', description: '' }],
 });
-const page = (toolsets: BuilderSidebarToolset[]) => ({ toolsets, hasNext: false });
+const jiraConnected = { ...jiraToConnect, isAuthenticated: true };
+
+/** What the backend holds: connected actions page by page (50 a page in the app), and the rest. */
+let backend: { pages: BuilderSidebarToolset[][]; toConnect: BuilderSidebarToolset[]; holdPage2?: Promise<void> };
+// Each test starts past the tab's 5-minute cache, so it loads again.
+const realNow = Date.now.bind(Date);
+let clockOffset = 0;
 
 beforeEach(() => {
   installBrowserShims();
+  clockOffset += 10 * 60 * 1000;
+  vi.spyOn(Date, 'now').mockImplementation(() => realNow() + clockOffset);
   useFeatureFlagsStore.setState({ flags: { ENABLE_ACTIONS: true, ENABLE_MCP: false } });
+  const store = useChatStore.getState();
+  store.hydrateUniversalAgentResources(null);
+  store.setUniversalAgentToolsLoading(false);
+  store.setUniversalAgentToolsError(null);
+  backend = { pages: [[slack]], toConnect: [jiraToConnect] };
+  api.getMyToolsets.mockImplementation(async ({ page }: { page: number }) => {
+    if (page === 2 && backend.holdPage2) await backend.holdPage2;
+    return { toolsets: backend.pages[page - 1] ?? [], hasNext: page < backend.pages.length };
+  });
+  api.getAllMyToolsets.mockImplementation(async () => ({ toolsets: backend.toConnect }));
 });
 
 afterEach(() => {
@@ -89,25 +112,27 @@ afterEach(() => {
 async function openActionsTab() {
   renderInTheme(<UniversalAgentResourcesPanel />);
   fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
+  return screen.findByTestId('toolset-connect-row');
+}
+
+/** Connect Jira through the dialog; the backend then lists it as connected. */
+function connectJira(row: HTMLElement) {
+  fireEvent.click(within(row).getByRole('button', { name: 'Connect' }));
+  backend.pages[0] = [...backend.pages[0]!, jiraConnected];
+  backend.toConnect = [];
+  fireEvent.click(within(screen.getByRole('dialog', { name: 'Sign in to Jira Cloud' })).getByRole('button', { name: 'Save' }));
 }
 
 describe('the chat’s Actions tab', () => {
   it('lists actions to connect, and a connected one joins with its tools on', async () => {
-    api.getMyToolsets.mockResolvedValueOnce(page([slack]));
-    api.getAllMyToolsets.mockResolvedValueOnce({ toolsets: [jiraToConnect] });
     // Picked by hand: one of Slack's two tools is on.
     useChatStore.getState().setUniversalAgentStreamTools(['sl:slack.send_message']);
 
-    await openActionsTab();
-
-    const row = await screen.findByTestId('toolset-connect-row');
+    const row = await openActionsTab();
     expect(within(row).getByText('Jira Cloud')).toBeTruthy();
     expect(api.getAllMyToolsets).toHaveBeenCalledWith(expect.objectContaining({ authStatus: 'not-authenticated' }));
 
-    api.getMyToolsets.mockResolvedValueOnce(page([slack, { ...jiraToConnect, isAuthenticated: true }]));
-    api.getAllMyToolsets.mockResolvedValueOnce({ toolsets: [] });
-    fireEvent.click(within(row).getByRole('button', { name: 'Connect' }));
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'Sign in to Jira Cloud' })).getByRole('button', { name: 'Save' }));
+    connectJira(row);
 
     await waitFor(() =>
       expect(useChatStore.getState().universalAgentStreamTools).toEqual(['sl:slack.send_message', 'jr:jira.search_issues'])
@@ -118,16 +143,53 @@ describe('the chat’s Actions tab', () => {
   });
 
   it('still lists the connected actions when the ones to connect cannot be loaded', async () => {
-    // Past the tab's cache from the test above, so it loads again.
-    const later = Date.now() + 10 * 60 * 1000;
-    vi.spyOn(Date, 'now').mockReturnValue(later);
     vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    api.getMyToolsets.mockResolvedValueOnce(page([slack]));
-    api.getAllMyToolsets.mockRejectedValueOnce(new Error('down'));
+    api.getAllMyToolsets.mockRejectedValue(new Error('down'));
 
-    await openActionsTab();
+    renderInTheme(<UniversalAgentResourcesPanel />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Actions' }));
 
     expect(await screen.findByText('Slack')).toBeTruthy();
     expect(screen.queryByTestId('toolset-connect-row')).toBeNull();
+  });
+
+  it('keeps the pages already loaded with Load more after a connect', async () => {
+    backend.pages = [[slack], [gmail]];
+    const row = await openActionsTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Gmail')).toBeTruthy();
+
+    connectJira(row);
+
+    await waitFor(() => expect(screen.queryByTestId('toolset-connect-row')).toBeNull());
+    expect(screen.getByText('Jira Cloud')).toBeTruthy();
+    expect(screen.getByText('Gmail')).toBeTruthy();
+  });
+
+  it('keeps showing the actions when the refresh after a connect fails', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const row = await openActionsTab();
+    api.getMyToolsets.mockRejectedValue(new Error('down'));
+
+    connectJira(row);
+
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('Failed to load available actions.'));
+    expect(screen.getByText('Slack')).toBeTruthy();
+    expect(screen.queryByText('Failed to load available actions.')).toBeNull();
+  });
+
+  it('refreshes after a Load more that was still running when the sign-in finished', async () => {
+    backend.pages = [[slack], [gmail]];
+    let releasePage2: () => void = () => undefined;
+    backend.holdPage2 = new Promise((resolve) => (releasePage2 = resolve));
+    const row = await openActionsTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+
+    connectJira(row);
+    releasePage2();
+
+    await waitFor(() => expect(screen.queryByTestId('toolset-connect-row')).toBeNull());
+    expect(screen.getByText('Jira Cloud')).toBeTruthy();
+    expect(screen.getByText('Gmail')).toBeTruthy();
   });
 });

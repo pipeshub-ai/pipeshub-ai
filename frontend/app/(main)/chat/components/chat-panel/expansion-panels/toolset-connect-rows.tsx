@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button, Flex, Text } from '@radix-ui/themes';
 import { toast } from '@/lib/store/toast-store';
@@ -76,13 +76,15 @@ export function ToolsetConnectRows({ toolsets, rowStyle, renderIcon, onConnected
   const onIncomplete = useCallback(() => toast.error(t('agentBuilder.oauthSignInIncomplete')), [t]);
   const onOAuthPopupError = useCallback((message: string) => toast.error(message), []);
 
-  const { authenticating, beginOAuth } = useToolsetOauthPopupFlow({
+  const { authenticating, beginOAuth, stopOAuthUi } = useToolsetOauthPopupFlow({
     t,
     verifyAuthenticated,
     onVerified,
     onIncomplete,
     onOAuthPopupError,
   });
+  // Leaving the tab mid sign-in closes the popup: nothing here would hear it finish.
+  useEffect(() => stopOAuthUi, [stopOAuthUi]);
   // Every way a sign-in ends clears `authenticating`, including a popup closed before it loaded.
   const activeId = authenticating ? busyId : null;
 

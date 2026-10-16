@@ -10,6 +10,7 @@ type BeginHandlers = { onTimeout: () => void; onOpenError: (e: unknown) => void 
 
 const popup = vi.hoisted(() => ({
   begin: vi.fn(),
+  stop: vi.fn(),
   authenticating: false,
   options: null as null | PopupOptions,
 }));
@@ -24,7 +25,7 @@ vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: api }));
 vi.mock('@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow', () => ({
   useToolsetOauthPopupFlow: (options: PopupOptions) => {
     popup.options = options;
-    return { authenticating: popup.authenticating, beginOAuth: popup.begin };
+    return { authenticating: popup.authenticating, beginOAuth: popup.begin, stopOAuthUi: popup.stop };
   },
 }));
 // The real dialog posts the credentials; here "Save" stands for credentials that were accepted.
@@ -90,12 +91,12 @@ describe('actionsToConnect', () => {
 describe('ToolsetConnectRows', () => {
   function renderRows(toolsets: BuilderSidebarToolset[]) {
     const onConnected = vi.fn();
-    renderInTheme(
+    const view = renderInTheme(
       <ToolsetConnectRows toolsets={toolsets} rowStyle={{}} renderIcon={() => null} onConnected={onConnected} />,
     );
     const row = (name: string) =>
       screen.getAllByTestId('toolset-connect-row').find((r) => r.textContent?.includes(name)) as HTMLElement;
-    return { onConnected, row };
+    return { onConnected, row, view };
   }
 
   it('offers Connect for each action not signed in to', () => {
@@ -153,6 +154,16 @@ describe('ToolsetConnectRows', () => {
     fireEvent.click(within(screen.getByRole('dialog', { name: 'Sign in to Jira Cloud' })).getByRole('button', { name: 'Save' }));
     expect(onConnected).toHaveBeenCalledWith('jr');
     expect(toast.success).toHaveBeenCalledWith('Jira Cloud is connected');
+  });
+
+  it('closes the sign-in popup when the person leaves the tab mid sign-in', () => {
+    const { row, view } = renderRows([gmail]);
+    fireEvent.click(within(row('Team Gmail')).getByRole('button', { name: 'Connect' }));
+    expect(popup.stop).not.toHaveBeenCalled();
+
+    view.unmount();
+
+    expect(popup.stop).toHaveBeenCalled();
   });
 
   it('shows nothing when every action is connected', () => {

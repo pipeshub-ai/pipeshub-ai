@@ -35,6 +35,7 @@ import {
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
 import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
@@ -366,8 +367,8 @@ export function UniversalAgentResourcesPanel({
 
   /**
    * Load a single page and append it to the module-level cache then rebuild groups. Page 1 also
-   * reloads the actions still to connect. `quiet`: refresh in place (after a sign-in) instead of
-   * showing the loading state.
+   * reloads the actions still to connect. `quiet` (after a sign-in): refresh in place, reloading
+   * every page already shown, and keep what is shown if the refresh fails.
    */
   const loadPage = useCallback(
     async (page: number, { quiet = false }: { quiet?: boolean } = {}) => {
@@ -383,19 +384,25 @@ export function UniversalAgentResourcesPanel({
         setIsLoadingMore(true);
       }
 
+      const lastPage = quiet ? Math.max(page, _actionsPageCache.page) : page;
       try {
-        const [result, toConnect] = await Promise.all([
-          ToolsetsApi.getMyToolsets({
-            page,
-            limit: ACTIONS_PAGE_SIZE,
-            authStatus: 'authenticated',
-          }),
+        const [results, toConnect] = await Promise.all([
+          Promise.all(
+            Array.from({ length: lastPage - page + 1 }, (_, i) =>
+              ToolsetsApi.getMyToolsets({
+                page: page + i,
+                limit: ACTIONS_PAGE_SIZE,
+                authStatus: 'authenticated',
+              })
+            )
+          ),
           page === 1 ? loadActionsToConnect() : Promise.resolve(_actionsPageCache.toConnect),
         ]);
+        const result = results[results.length - 1]!;
 
         _actionsPageCache = {
-          toolsets: [...(page === 1 ? [] : _actionsPageCache.toolsets), ...result.toolsets],
-          page,
+          toolsets: [...(page === 1 ? [] : _actionsPageCache.toolsets), ...results.flatMap((r) => r.toolsets)],
+          page: lastPage,
           hasMore: result.hasNext,
           lastFetchedAt: page === 1 ? Date.now() : _actionsPageCache.lastFetchedAt,
           toConnect,
@@ -410,7 +417,9 @@ export function UniversalAgentResourcesPanel({
         return groups;
       } catch (err) {
         console.error('[UniversalAgentResourcesPanel] Failed to load my-toolsets page', page, err);
-        if (page === 1) {
+        if (quiet) {
+          toast.error(t('chat.universalAgent.toolsLoadError', { defaultValue: 'Failed to load available actions.' }));
+        } else if (page === 1) {
           // Mark cache so the initial-load effect does not retry in a tight loop on failure.
           _actionsPageCache = { ..._actionsPageCache, lastFetchedAt: Date.now() };
           setToolsError(
@@ -665,8 +674,8 @@ export function UniversalAgentResourcesPanel({
 
   const handleActionConnected = useCallback(
     async (instanceId: string) => {
-      // shortcut: reloads page 1 only, so past 50 connected actions the new one's tools may stay
-      // off for someone who picked tools by hand; page through to it if that ever matters.
+      // A Load more still running would turn this refresh away.
+      while (isFetchingPageRef.current) await new Promise((resolve) => setTimeout(resolve, 100));
       const groups = await loadPage(1, { quiet: true });
       const connected = groups?.find((g) => g.instanceId === instanceId);
       // Someone who picked tools by hand gets the new action's on; "all tools" already has them.
