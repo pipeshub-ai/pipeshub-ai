@@ -41,14 +41,12 @@ async def resolve_web_search(
     logger: Logger,
     *,
     provider: str | None = None,
-    provider_key: str | None = None,
     use_cache: bool = False,
 ) -> dict[str, Any] | None:
     """``{"provider", "configuration"}`` for a run, or None when web search can't be set up.
 
-    With ``provider`` (an agent's own attachment), that provider's stored configuration (the entry
-    with ``provider_key`` when the agent names one, else the first of that type), or an empty one
-    when it isn't stored or the store can't be read. Without it, the org default, or
+    With ``provider`` (an agent's own attachment, stored as a provider name), the first stored
+    configuration of that type, or an empty one when it isn't stored or the store can't be read. Without it, the org default, or
     DuckDuckGo when none is marked default; None when the store can't be read. The provider name
     is passed through even when unknown, so the tool reports it instead of quietly using another.
     """
@@ -65,9 +63,7 @@ async def resolve_web_search(
     entries = [p for p in providers if isinstance(p, dict)] if isinstance(providers, list) else []
 
     if wanted:
-        of_type = [p for p in entries if _normalized(p.get("provider")) == wanted]
-        keyed = next((p for p in of_type if provider_key and p.get("providerKey") == provider_key), None)
-        return _selection(wanted, keyed or next(iter(of_type), None), entries)
+        return _selection(wanted, next((p for p in entries if _normalized(p.get("provider")) == wanted), None), entries)
 
     default = next((p for p in entries if p.get("isDefault")), None)
     if default is None:

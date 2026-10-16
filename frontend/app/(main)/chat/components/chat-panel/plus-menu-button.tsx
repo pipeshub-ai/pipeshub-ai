@@ -229,7 +229,7 @@ export function PlusMenuButton({
   const showFilterBadge = hasNonDefaultSearchCapabilities(
     capabilities.internalSearch,
     capabilities.webSearch,
-    capabilities.deepResearch,
+    capabilities.onToggleDeepResearch ? capabilities.deepResearch : false,
   );
   return (
     <Popover.Root open={open} onOpenChange={onOpenChange}>

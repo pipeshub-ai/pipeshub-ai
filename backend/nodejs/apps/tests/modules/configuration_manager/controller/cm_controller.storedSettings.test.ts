@@ -459,6 +459,27 @@ describe('Configuration manager stored settings', () => {
       expect(stored().providers).to.deep.equal([{ ...tavily, isDefault: true }]);
     });
 
+    it('hands the default past a page reader to the next search provider', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader, tavily] }));
+
+      await run(deleteWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-serper' } });
+
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+        ['crawl4ai', false],
+        ['tavily', true],
+      ]);
+    });
+
+    it('leaves DuckDuckGo as the default when only a page reader is left', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader] }));
+
+      await run(deleteWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-serper' } });
+
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([['crawl4ai', false]]);
+    });
+
     it('still deletes when the agent-usage check cannot be reached', async () => {
       kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
       agentsUsing = new Error('ai service down');

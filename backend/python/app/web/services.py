@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from app.web.budget import WebBudget
 from app.web.chain import ChainOutcome, Cooldowns, run_chain
 from app.web.deadline import Deadline
-from app.web.errors import AccessDenied
+from app.web.errors import AccessDenied, InvalidUrl
 from app.web.models import Attempt, CallerContext, WebPage, WebResult
 from app.web.ports import AccessRequest, ContentFetcher, SearchProvider, WebAccessGate
 from app.web.url import canonical_url
@@ -27,6 +27,13 @@ class SearchOutcome:
     attempts: tuple[Attempt, ...]
 
 
+def _canonical_or_none(url: str) -> str | None:
+    try:
+        return canonical_url(url)
+    except ValueError:
+        return None
+
+
 class _Guarded:
     def __init__(self, gate: WebAccessGate, budget: WebBudget | None) -> None:
         self._gate = gate
@@ -38,7 +45,8 @@ class _Guarded:
             raise AccessDenied(decision.reason or "Web access to this is not allowed", source="gate")
 
     async def _allowed(self, url: str, caller: CallerContext) -> bool:
-        return (await self._gate.check(AccessRequest("fetch", canonical_url(url), caller))).allowed
+        target = _canonical_or_none(url)
+        return target is not None and (await self._gate.check(AccessRequest("fetch", target, caller))).allowed
 
 
 class WebSearchService(_Guarded):
@@ -74,8 +82,10 @@ class WebSearchService(_Guarded):
     async def _visible(self, results: Sequence[WebResult], caller: CallerContext) -> tuple[WebResult, ...]:
         unique: dict[str, WebResult] = {}
         for result in results:
-            if result.url.startswith(("http://", "https://")):
-                unique.setdefault(canonical_url(result.url), result)
+            # One malformed link (a bad port, a broken IPv6 literal) costs that result, not the search.
+            key = _canonical_or_none(result.url) if result.url.lower().startswith(("http://", "https://")) else None
+            if key is not None:
+                unique.setdefault(key, result)
         allowed = await asyncio.gather(*(self._allowed(url, caller) for url in unique))
         return tuple(result for result, ok in zip(unique.values(), allowed, strict=True) if ok)
 
@@ -98,7 +108,10 @@ class WebFetchService(_Guarded):
     async def fetch(self, url: str, caller: CallerContext) -> ChainOutcome[WebPage]:
         """The page's text, from the first fetcher that reads it. The gate is asked about the URL
         and about every redirect. Raises a ``WebError``."""
-        await self._require(AccessRequest("fetch", canonical_url(url), caller))
+        target = _canonical_or_none(url)
+        if target is None:
+            raise InvalidUrl(f"{url!r} is not a valid web address", source="gate")
+        await self._require(AccessRequest("fetch", target, caller))
         if self._budget is not None:
             self._budget.take_page()
 

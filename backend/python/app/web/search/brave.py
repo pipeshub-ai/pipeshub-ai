@@ -1,6 +1,7 @@
 from app.web.deadline import Deadline
 from app.web.models import WebResult
 from app.web.search._api import KeyedProvider
+from app.web.search._parse import collect, field, web_result
 
 MAX_RESULTS = 10
 
@@ -16,14 +17,6 @@ class BraveSearch(KeyedProvider):
             params={"q": query, "count": MAX_RESULTS},
             deadline=deadline,
         )
-        web = data.get("web") if isinstance(data.get("web"), dict) else {}
-        return [
-            WebResult(
-                url=item.get("url", ""),
-                title=item.get("title", ""),
-                snippet=item.get("description", ""),
-                source=self.id,
-                published=item.get("page_age") or item.get("age"),
-            )
-            for item in web.get("results", [])[:MAX_RESULTS]
-        ]
+        return collect(self.id, field(data.get("web")).get("results", []), MAX_RESULTS, lambda item: web_result(
+            self.id, item.get("url"), item.get("title"), item.get("description"), item.get("page_age") or item.get("age"),
+        ))

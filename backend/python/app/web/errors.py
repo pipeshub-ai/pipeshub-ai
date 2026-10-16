@@ -35,6 +35,9 @@ class WebError(Exception):
         self.source = source
         self.status = status
         self.retry_after_s = retry_after_s
+        # About one page (the site refused it, rate limited it), not about the source that read it:
+        # such a failure never makes the source sit out other pages.
+        self.page_level = False
 
     @property
     def retryable(self) -> bool:

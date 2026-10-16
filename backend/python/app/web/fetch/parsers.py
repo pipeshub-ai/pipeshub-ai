@@ -5,6 +5,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from email.message import Message
+from email.utils import collapse_rfc2231_value
 
 import pypdfium2 as pdfium
 from bs4 import BeautifulSoup
@@ -33,14 +34,16 @@ def _media_type(content_type: str | None) -> tuple[str, str | None]:
     message = Message()
     message["content-type"] = content_type or ""
     media = message.get_content_type() if content_type else ""
-    return media.lower(), message.get_param("charset")  # type: ignore[return-value]
+    charset = message.get_param("charset")
+    # ``charset*=`` (RFC 2231) comes back as a (charset, language, value) tuple.
+    return media.lower(), collapse_rfc2231_value(charset) if charset else None
 
 
 def _decode(body: bytes, charset: str | None) -> str:
     if charset:
         try:
             return body.decode(charset, errors="replace")
-        except LookupError:
+        except (LookupError, TypeError):
             pass
     try:
         return body.decode("utf-8")

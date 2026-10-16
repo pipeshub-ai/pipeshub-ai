@@ -174,7 +174,8 @@ class TestDdgs:
     async def test_maps_results(self) -> None:
         with self.stub([{"href": "https://a.com", "title": "A", "body": "about a"}, {"title": "no link"}]):
             results = await DdgsSearch().search("q", deadline())
-        assert [(r.url, r.title, r.snippet, r.source) for r in results] == [("https://a.com", "A", "about a", "ddgs")]
+        # The entry without a link is kept here and dropped by the service, like any other bad link.
+        assert [(r.url, r.title, r.snippet, r.source) for r in results] == [("https://a.com", "A", "about a", "ddgs"), ("", "no link", "", "ddgs")]
 
     async def test_no_results_is_empty(self) -> None:
         with self.stub(DDGSException("No results found.")):

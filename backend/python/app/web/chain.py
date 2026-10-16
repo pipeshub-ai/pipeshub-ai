@@ -5,6 +5,7 @@ rejected or used up, or a rate limit is remembered for a while, so later calls s
 instead of waiting on it again.
 """
 
+import logging
 import time
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
@@ -17,10 +18,13 @@ from app.web.errors import (
     QuotaExceeded,
     RateLimited,
     TimedOut,
+    UpstreamError,
     WebError,
 )
 from app.web.models import Attempt
 from app.web.ports import Source
+
+logger = logging.getLogger(__name__)
 
 S = TypeVar("S", bound=Source)
 T = TypeVar("T")
@@ -46,6 +50,8 @@ class Cooldowns:
         return self._until.get(key, 0.0) > self._clock()
 
     def failed(self, key: str, error: WebError) -> None:
+        if error.page_level:
+            return
         seconds = _COOLDOWN_S.get(type(error))
         if isinstance(error, RateLimited) and error.retry_after_s:
             seconds = min(error.retry_after_s, _MAX_RETRY_AFTER_S)
@@ -102,7 +108,15 @@ async def run_chain(
         step = deadline if last else Deadline(min(deadline.expires_at, clock() + attempt_s), clock)
         started = clock()
         try:
-            value = await call(source, step)
+            try:
+                value = await call(source, step)
+            except WebError:
+                raise
+            except Exception as e:
+                # A source's bug (an answer shaped unlike anything it expects) costs that source,
+                # not the whole search: the next one is still tried.
+                logger.warning("Web source %s failed unexpectedly", source.id, exc_info=True)
+                raise UpstreamError(f"{source.id} failed unexpectedly", source=source.id) from e
         except WebError as e:
             cooldowns.failed(source.cooldown_key, e)
             attempts.append(Attempt(source.id, e.error_type, clock() - started))

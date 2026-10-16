@@ -55,3 +55,9 @@ def test_ordinary_links_are_kept(normalizer) -> None:
     text, _ = normalize(normalizer, "See [the docs](https://docs.example.com/) and [ref](https://ref.example.xyz/a).", [web_record()])
     assert "[the docs](https://docs.example.com/)" in text
     assert "[ref](https://ref.example.xyz/a)" in text
+
+
+@pytest.mark.parametrize("normalizer", NORMALIZERS)
+def test_an_invented_link_keeps_descriptive_text(normalizer) -> None:
+    text, _ = normalize(normalizer, "See [India – Wikipedia](https://ref42.xyz) and [source](https://ref43.xyz) and [7](https://ref44.xyz).", [web_record()])
+    assert text == "See India – Wikipedia and  and ."

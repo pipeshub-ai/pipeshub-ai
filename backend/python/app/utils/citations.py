@@ -412,10 +412,15 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-# Any ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Only ``ref<digits>`` targets can ever resolve
+# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
 # (``_MD_LINK_PATTERN``), and those that did were already rewritten to
 # ``[N](url)`` by the time this runs, so whatever still matches is dead.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\((?:' + _ANY_REF_TARGET + r'|https?://ref\d+\.xyz/?)\)')
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
+# A ``[text](https://refN.xyz)`` web-citation alias that matched no read page, usually one the
+# model made up. The link goes; descriptive text ("India – Wikipedia") stays in the sentence, a
+# bare citation label ("source", "3") goes with it.
+_UNRESOLVED_WEB_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(https?://ref\d+\.xyz/?\)')
+_CITATION_LABEL_RE = re.compile(r'^\s*(?:sources?|refs?|links?|citations?|\d+)?\s*$', re.IGNORECASE)
 
 
 def _renumber_citation_links(
@@ -454,6 +459,9 @@ def _strip_unresolved_ref_citations(text: str) -> str:
     which no mapper ever mints.  Leaving them renders as broken
     ``[source](ref209)`` links in the UI.
     """
+    text = _UNRESOLVED_WEB_REF_LINK_RE.sub(
+        lambda m: '' if _CITATION_LABEL_RE.match(m.group(1)) else m.group(1), text,
+    )
     return _UNRESOLVED_REF_LINK_RE.sub('', text)
 
 

@@ -4892,9 +4892,15 @@ export const deleteWebSearchProvider =
       // Remove the provider from the configuration
       webSearchConfig.providers.splice(providerIndex, 1);
 
-      // If the deleted provider was default, set the first remaining provider as default
-      if (wasDefault && webSearchConfig.providers.length > 0) {
-        webSearchConfig.providers[0].isDefault = true;
+      // If the deleted provider was default, the first remaining one that can search takes over;
+      // with none, DuckDuckGo is the default again.
+      if (wasDefault) {
+        const next = (webSearchConfig as WebSearchConfig).providers.find((p) =>
+          canSearch(p.provider),
+        );
+        if (next) {
+          next.isDefault = true;
+        }
       }
 
       // Encrypt and save the updated configuration

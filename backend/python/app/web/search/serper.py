@@ -1,6 +1,7 @@
 from app.web.deadline import Deadline
 from app.web.models import WebResult
 from app.web.search._api import KeyedProvider
+from app.web.search._parse import collect, web_result
 
 MAX_RESULTS = 10
 
@@ -16,13 +17,6 @@ class SerperSearch(KeyedProvider):
             payload={"q": query},
             deadline=deadline,
         )
-        return [
-            WebResult(
-                url=item.get("link", ""),
-                title=item.get("title", ""),
-                snippet=item.get("snippet", ""),
-                source=self.id,
-                published=item.get("date"),
-            )
-            for item in data.get("organic", [])[:MAX_RESULTS]
-        ]
+        return collect(self.id, data.get("organic", []), MAX_RESULTS, lambda item: web_result(
+            self.id, item.get("link"), item.get("title"), item.get("snippet"), item.get("date"),
+        ))

@@ -8,6 +8,7 @@ from app.web.deadline import Deadline
 from app.web.endpoint import Endpoint
 from app.web.errors import AuthFailed, NotConfigured
 from app.web.models import WebResult
+from app.web.search._parse import collect, web_result
 
 MAX_RESULTS = 10
 _HTTP_FORBIDDEN = 403
@@ -21,7 +22,7 @@ class SearxngSearch:
         self._endpoint = Endpoint(
             str(configuration.get("baseUrl") or ""), str(configuration.get("apiKey") or ""), source=self.id, name=self.name,
         )
-        self.cooldown_key = f"searxng:{self._endpoint.base_url}"
+        self.cooldown_key = self._endpoint.cooldown_key("searxng")
 
     async def search(self, query: str, deadline: Deadline) -> list[WebResult]:
         try:
@@ -31,14 +32,6 @@ class SearxngSearch:
                 raise
             # SearXNG answers 403 to format=json unless its settings.yml lists json under search.formats.
             raise NotConfigured("SearXNG refused to answer in JSON: add json to search.formats in its settings.yml", source=self.id) from e
-        return [
-            WebResult(
-                url=item.get("url", ""),
-                title=item.get("title", ""),
-                snippet=item.get("content", ""),
-                source=self.id,
-                published=item.get("publishedDate"),
-            )
-            for item in data.get("results", [])[:MAX_RESULTS]
-            if isinstance(item, dict)
-        ]
+        return collect(self.id, data.get("results", []), MAX_RESULTS, lambda item: web_result(
+            self.id, item.get("url"), item.get("title"), item.get("content"), item.get("publishedDate"),
+        ))

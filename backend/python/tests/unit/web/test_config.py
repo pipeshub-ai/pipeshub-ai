@@ -82,23 +82,3 @@ class TestNamedProvider:
     async def test_store_failure_keeps_the_provider(self) -> None:
         result = await resolve_web_search(_store(error=RuntimeError("down")), MagicMock(), provider="serper")
         assert result == {"provider": "serper", "configuration": {}, "providers": []}
-
-
-class TestProviderKey:
-    STORED = {"providers": [
-        {"provider": "serper", "providerKey": "k1", "configuration": {"apiKey": "first"}},
-        {"provider": "serper", "providerKey": "k2", "configuration": {"apiKey": "second"}},
-    ]}
-
-    async def test_the_agents_own_entry_is_used(self) -> None:
-        result = await resolve_web_search(_store(self.STORED), MagicMock(), provider="serper", provider_key="k2")
-        assert result["configuration"] == {"apiKey": "second"}
-
-    async def test_an_unknown_key_falls_back_to_the_first_of_that_type(self) -> None:
-        result = await resolve_web_search(_store(self.STORED), MagicMock(), provider="serper", provider_key="gone")
-        assert result["configuration"] == {"apiKey": "first"}
-
-    async def test_a_key_of_another_type_is_ignored(self) -> None:
-        stored = {"providers": [*self.STORED["providers"], {"provider": "exa", "providerKey": "k3", "configuration": {"apiKey": "e"}}]}
-        result = await resolve_web_search(_store(stored), MagicMock(), provider="serper", provider_key="k3")
-        assert result["configuration"] == {"apiKey": "first"}

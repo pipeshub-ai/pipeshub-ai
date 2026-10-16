@@ -1,5 +1,6 @@
 """Calls to the web services a provider speaks JSON with: hosted APIs and admin-run servers."""
 
+import hashlib
 from typing import Any
 
 import httpx
@@ -13,6 +14,11 @@ from app.web.errors import (
     UpstreamError,
     error_for_status,
 )
+
+
+def fingerprint(secret: str) -> str:
+    """A short, one-way tag for a credential, to tell keys apart without keeping them."""
+    return hashlib.sha256(secret.encode()).hexdigest()[:12]
 
 
 async def request_json(
@@ -62,6 +68,11 @@ class Endpoint:
         self._token = token
         self._source = source
         self._name = name
+
+    def cooldown_key(self, role: str) -> str:
+        """Failures are remembered per server, credential and role: one org's bad token, or a
+        server that can't search, doesn't make the same server sit out for others."""
+        return f"{role}:{self.base_url}:{fingerprint(self._token)}"
 
     def headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._token}"} if self._token else {}

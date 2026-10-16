@@ -1,5 +1,6 @@
 """One way to name a web page, shared by deduplication, citations and access checks."""
 
+import contextlib
 from urllib.parse import urlsplit, urlunsplit
 
 from app.connectors.sources.web.url_identity import clean_url
@@ -24,6 +25,12 @@ def canonical_url(url: str) -> str:
 
 def display_domain(url: str) -> str:
     """The host a person would recognise: lowercase, without ``www.``. Internationalised names
-    stay in their ``xn--`` form so a lookalike can't pass for the real site."""
-    host = (urlsplit(url).hostname or "").lower()
+    are shown in their ``xn--`` form so a lookalike (``аpple.com`` with a Cyrillic а) can't pass
+    for the real site."""
+    try:
+        host = (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+    with contextlib.suppress(UnicodeError):  # not a valid IDN: shown as it is
+        host = host.encode("idna").decode("ascii")
     return host.removeprefix("www.")

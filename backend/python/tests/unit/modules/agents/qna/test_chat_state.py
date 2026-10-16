@@ -75,6 +75,16 @@ class TestBuildInitialState:
         state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
         assert state["deep_research"] is expected
 
+    def test_the_resolved_web_config_keeps_every_stored_provider(self, mock_deps, minimal_user_info) -> None:
+        """The agent route resolves the fallbacks and page readers; they must reach the tools."""
+        others = [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}, "junk"]
+        chat_query = {"query": "q", "webSearchConfig": {"provider": "serper", "configuration": {"apiKey": "k"}, "providers": others}}
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_config"] == {
+            "provider": "serper", "configuration": {"apiKey": "k"},
+            "providers": [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}],
+        }
+
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(
             chat_query=minimal_chat_query,

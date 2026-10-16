@@ -823,6 +823,7 @@ async def fetch_url_with_fallback(
     allow_hop: Callable[[str], Awaitable[bool]] | None = None,
     validators_for: Callable[[str], Awaitable[dict | None]] | None = None,
     browser_like: bool = True,
+    rate_limit_wait_s: float = RATE_LIMIT_WAIT_BUDGET,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -866,6 +867,8 @@ async def fetch_url_with_fallback(
         browser_like:              Look like a browser: its headers, the impersonating strategies, and
                                    another try past a 403. False sends PipesHub's own headers through
                                    aiohttp only, and takes a 403 as the site's answer.
+        rate_limit_wait_s:         How long this fetch may wait out 429/503s and bot blocks in total;
+                                   past it the last answer is returned for the caller to handle.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
@@ -942,7 +945,7 @@ async def fetch_url_with_fallback(
     # decide whether to queue the URL for a post-crawl retry.
     last_failed_result: FetchResponse | None = None
     pool_busy = False
-    wait_left = RATE_LIMIT_WAIT_BUDGET
+    wait_left = rate_limit_wait_s
 
     for strategy_name, strategy_fn in strategies:
         if pool_busy and strategy_name in _POOLED_STRATEGIES:

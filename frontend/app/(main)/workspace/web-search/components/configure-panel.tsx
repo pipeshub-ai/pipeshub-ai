@@ -338,8 +338,8 @@ export function ConfigurePanel({
                 Danger zone
               </Text>
               <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 300 }}>
-                Remove this provider&apos;s configuration. If it is the default, DuckDuckGo will
-                be used instead.
+                Remove this provider&apos;s configuration. If it is the default, the next search
+                provider you added becomes the default, or DuckDuckGo if there is none.
               </Text>
               <Flex>
                 <Button

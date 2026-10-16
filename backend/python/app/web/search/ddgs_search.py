@@ -11,6 +11,7 @@ from ddgs.exceptions import DDGSException, RatelimitException, TimeoutException
 from app.web.deadline import Deadline
 from app.web.errors import RateLimited, TimedOut, UpstreamError
 from app.web.models import WebResult
+from app.web.search._parse import collect, web_result
 
 MAX_RESULTS = 10
 _NO_RESULTS = "No results found."
@@ -28,7 +29,7 @@ class DdgsSearch:
         try:
             async with asyncio.timeout(deadline.remaining()):
                 # The library is synchronous; its own timeout bounds the thread after we stop waiting.
-                items = await asyncio.to_thread(self._text, query, timeout_s)
+                found = await asyncio.to_thread(self._text, query, timeout_s)
         except TimeoutError as e:
             raise TimedOut("The search engines did not answer in time", source=self.id) from e
         except RatelimitException as e:
@@ -39,11 +40,9 @@ class DdgsSearch:
             if str(e) == _NO_RESULTS:
                 return []
             raise UpstreamError(f"The search engines failed: {e}", source=self.id) from e
-        return [
-            WebResult(url=item.get("href", ""), title=item.get("title", ""), snippet=item.get("body", ""), source=self.id)
-            for item in items
-            if item.get("href")
-        ]
+        return collect(self.id, found, MAX_RESULTS, lambda item: web_result(
+            self.id, item.get("href"), item.get("title"), item.get("body"),
+        ))
 
     @staticmethod
     def _text(query: str, timeout_s: int) -> list[dict[str, Any]]:

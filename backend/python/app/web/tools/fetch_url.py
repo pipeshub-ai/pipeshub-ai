@@ -51,11 +51,19 @@ def checked_url(url: str) -> str:
     """``url`` if it can be fetched at all; raises ``InvalidUrl`` otherwise."""
     if extract_tiny_ref(url):
         raise InvalidUrl("That reference doesn't match any result from this conversation; use a URL from the results")
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
+    try:
+        parsed = urlparse(url)
+        parsed.port  # noqa: B018 - raises for a port that isn't a number or is out of range
+    except ValueError as e:
+        raise InvalidUrl(f"Invalid URL: {e}.") from e
+    if parsed.scheme.lower() not in ("http", "https"):
         raise InvalidUrl(f"Invalid URL scheme: {parsed.scheme}. Only HTTP/HTTPS supported.")
-    if not parsed.netloc:
+    if not parsed.netloc or not parsed.hostname:
         raise InvalidUrl("Invalid URL: no domain specified.")
+    try:
+        parsed.hostname.encode("idna")
+    except UnicodeError as e:  # an empty label (a..b) or an over-long one
+        raise InvalidUrl(f"Invalid URL: {parsed.hostname!r} is not a valid host name.") from e
     return url
 
 

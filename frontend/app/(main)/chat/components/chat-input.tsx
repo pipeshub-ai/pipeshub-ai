@@ -333,10 +333,13 @@ export function ChatInput({
       internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
       webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
       deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
-      onToggleDeepResearch: (enabled: boolean) => {
-        if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
-        else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
-      },
+      // Capabilities reach the backend only in agent mode, so the toggle is offered only there.
+      onToggleDeepResearch: isAgentChat || settings.queryMode === 'agent'
+        ? (enabled: boolean) => {
+            if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
+            else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
+          }
+        : undefined,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
@@ -359,6 +362,7 @@ export function ChatInput({
     scopedWebSearch,
     scopedDeepResearch,
     settings.agentCapabilities,
+    settings.queryMode,
     setScopedAgentCapabilities,
     setAgentCapabilities,
     agentHasInternalSearch,
@@ -367,7 +371,7 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
-    plusMenuCapabilities.deepResearch,
+    plusMenuCapabilities.onToggleDeepResearch ? plusMenuCapabilities.deepResearch : false,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All

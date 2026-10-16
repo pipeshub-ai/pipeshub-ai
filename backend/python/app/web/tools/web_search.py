@@ -65,6 +65,9 @@ def create_web_search_tool(service: WebSearchService, caller: CallerContext) -> 
             _record(attempts)
             logger.warning("Web search failed: %s (%s)", e.error_type, e.message)
             return json.dumps({**e.to_tool_payload(), "attempts": _attempts(attempts)})
+        except Exception as e:
+            logger.exception("Unexpected error in web search")
+            return json.dumps({"ok": False, "error_type": "upstream_error", "error": str(e), "retryable": False, "attempts": []})
         _record(outcome.attempts)
         logger.info("Got %d web search results from %s", len(outcome.results), outcome.served_by)
         return json.dumps({

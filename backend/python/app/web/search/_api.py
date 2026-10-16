@@ -1,12 +1,11 @@
 """What the providers behind a JSON API have in common."""
 
-import hashlib
 from typing import Any, ClassVar
 
 import httpx
 
 from app.web.deadline import Deadline
-from app.web.endpoint import request_json
+from app.web.endpoint import fingerprint, request_json
 from app.web.errors import NotConfigured
 
 
@@ -23,7 +22,7 @@ class KeyedProvider:
     @property
     def cooldown_key(self) -> str:
         # A rejected or exhausted key is remembered per key, never the key itself.
-        return f"{self.id}:{hashlib.sha256(self._api_key.encode()).hexdigest()[:12]}"
+        return f"{self.id}:{fingerprint(self._api_key)}"
 
     def api_key(self) -> str:
         if not self._api_key:

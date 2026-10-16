@@ -381,9 +381,12 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         provider = str(resolved_config.get("provider", "")).strip().lower()
         configuration = resolved_config.get("configuration", {})
         if provider:
+            others = resolved_config.get("providers")
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
+                # The other stored providers: search fallbacks and page readers (`app.web.config`).
+                "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
             }
 
 

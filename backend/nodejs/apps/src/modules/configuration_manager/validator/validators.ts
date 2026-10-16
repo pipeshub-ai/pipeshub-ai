@@ -719,10 +719,36 @@ const PAGE_READER_DEFAULT_MESSAGE = {
   path: ['isDefault'],
 };
 
+const isServerAddress = (value: unknown): boolean => {
+  if (typeof value !== 'string' || value.length > 2048) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
+
 export const webSearchConfigurationSchema = z
   .record(z.any())
+  .refine(
+    (configuration) =>
+      configuration.baseUrl === undefined ||
+      isServerAddress(configuration.baseUrl),
+    {
+      message:
+        'baseUrl must be an http(s) address of at most 2048 characters, without a user name or password',
+      path: ['baseUrl'],
+    },
+  )
   .describe(
-    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+    'Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)',
   );
 
 export const webSearchProviderConfigSchema = z.object({

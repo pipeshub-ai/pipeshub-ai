@@ -61,9 +61,9 @@ When every source fails, the reported `error_type` is the last one's, and `attem
 - Providers: `ddgs` and DuckDuckGo (free, no key); Serper, Tavily, Exa and Brave (API key);
   SearXNG (self-hosted); Firecrawl (cloud or self-hosted, searches and reads pages)
   (`app/web/search/`).
-- A run tries, in order: the chosen provider (an agent's own attachment, matched by its
-  `providerKey`, else the org default), then every other stored provider that searches, in the
-  order they were added, then `ddgs`, then DuckDuckGo's results page.
+- A run tries, in order: the chosen provider (an agent's own attachment, else the org default),
+  then every other stored provider that searches, in the order they were added, then `ddgs`, then
+  DuckDuckGo's results page.
   `ddgs` goes first because it spreads a query over several engines, so one engine blocking the
   server doesn't end the search.
 - Falling back is the retry. A source that was `blocked` is skipped for 5 minutes, a rejected or
@@ -181,6 +181,35 @@ real HTTP over a Unix socket), and time against fake clocks. Run:
 cd backend/python && pytest tests/unit/web tests/unit/api/routes/test_health_extended.py \
   tests/unit/utils/test_tool_handlers.py tests/unit/test_edition_hook_defaults.py
 ```
+
+### The test engine (`tests/unit/web/qa/`)
+
+`WebLab` runs the whole platform end to end with no network. A scenario scripts the outside world
+and then calls the tools exactly as the agent loop does:
+
+```python
+async def test_a_site_that_refuses_plain_clients_is_read_by_crawl4ai(lab: WebLab) -> None:
+    lab.site.add("http://guarded.test/doc", Page(status=403, body=b"no bots"))   # a website
+    lab.engines.crawl4ai("crawl4ai", {"http://guarded.test/doc": "# Doc\n\nThe real content."})
+    agent = lab.agent("serper", {"apiKey": "k"}, others=[{"provider": "crawl4ai", "configuration": {...}}])
+    call = await agent.fetch("http://guarded.test/doc")      # the real fetch_url tool
+    assert "The real content." in call.text                   # what the model reads
+    assert call.view["fields"][0]["value"] == "Doc"           # what the step card shows
+```
+
+- Real: the tool loader, tools, services, fallback chain, every provider and fetcher, the guarded
+  download (HTTP over a Unix socket), parsers, what the model reads, step-card views, citations.
+- Fake: search APIs and self-hosted servers (`lab.engines.serper/tavily/brave/searxng/crawl4ai/
+  firecrawl`, routed by host), the `ddgs` library and DuckDuckGo's page (`set_ddgs`,
+  `set_duckduckgo`), websites (`lab.site`, the web connector's `FakeWeb`) and the browser.
+- `agent.search(q)`, `agent.fetch(url)` return a `Call` with `text` (what the model reads),
+  `view` (the step card), `output.sources`, and `payload` for a failure. `agent.ref_for(url)`
+  gives the `refN.xyz` alias the model saw; `agent.cite(answer)` runs the citation pass.
+
+Scenario files: `test_search_scenarios.py` (provider choice, fallback, cooldowns, what the model
+reads, junk from providers), `test_fetch_scenarios.py` (formats, safety, fallback readers,
+rendering, budgets), `test_regressions.py` (one test per bug the QA pass found). Every web test
+runs behind a socket guard; a test that reaches the network fails.
 
 Manual checks on a running instance (chat with web search on):
 

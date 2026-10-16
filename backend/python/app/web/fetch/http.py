@@ -28,6 +28,7 @@ from app.utils.url_redaction import redact_url
 from app.web.deadline import Deadline
 from app.web.errors import (
     Blocked,
+    InvalidUrl,
     RateLimited,
     TimedOut,
     TooLarge,
@@ -72,13 +73,16 @@ async def check_public(url: str) -> None:
         raise Unreachable(f"Could not resolve the host of {redact_url(url)}") from e
     except FetchError as e:
         raise UnsafeUrl(f"{redact_url(url)} is not a public address") from e
+    except (UnicodeError, ValueError) as e:
+        # A host name that can't be encoded (``a..com``) or a port out of range.
+        raise InvalidUrl(f"{redact_url(url)} is not a valid web address") from e
 
 
 def _public_hops(allow_hop: HopCheck | None) -> HopCheck:
     async def allowed(url: str) -> bool:
         try:
             await check_public(url)
-        except UnsafeUrl:
+        except (UnsafeUrl, InvalidUrl):
             return False
         except Unreachable:
             pass  # the request itself fails and says so
@@ -113,6 +117,9 @@ async def fetch_public(
                     timeout=max(1, math.ceil(deadline.remaining())),
                     max_retries_per_strategy=1,
                     max_size_mb=MAX_PAGE_MB,
+                    # A 429 is answered at once as rate_limited; waiting it out is the crawl's way,
+                    # and would spend the whole fetch deadline.
+                    rate_limit_wait_s=0,
                     allow_hop=_public_hops(allow_hop),
                 )
     except TimeoutError as e:
@@ -137,7 +144,10 @@ def check_page_status(body: FetchedBody) -> None:
         return
     url = redact_url(body.url)
     if body.status in _HTTP_REFUSED:
-        raise Blocked(f"{url} refused the request (HTTP {body.status}); it may need a sign-in", status=body.status)
-    if body.status == _HTTP_TOO_MANY_REQUESTS:
-        raise RateLimited(f"{url} is rate limiting requests (HTTP {body.status})", status=body.status)
-    raise UpstreamError(f"{url} returned HTTP {body.status}", status=body.status)
+        error: WebError = Blocked(f"{url} refused the request (HTTP {body.status}); it may need a sign-in", status=body.status)
+    elif body.status == _HTTP_TOO_MANY_REQUESTS:
+        error = RateLimited(f"{url} is rate limiting requests (HTTP {body.status})", status=body.status)
+    else:
+        error = UpstreamError(f"{url} returned HTTP {body.status}", status=body.status)
+    error.page_level = True
+    raise error

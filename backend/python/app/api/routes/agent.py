@@ -4135,10 +4135,8 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 ]
                 web_search_provider = _parse_web_search(agent.get("webSearch"))
                 if web_search_provider:
-                    attachment = agent.get("webSearch")
                     web_search_coro = resolve_web_search(
                         config_service, logger, provider=web_search_provider,
-                        provider_key=attachment.get("providerKey") if isinstance(attachment, dict) else None,
                     )
                 elif agent_id == "agentIdPlaceholder":
                     web_search_coro = resolve_web_search(config_service, logger)

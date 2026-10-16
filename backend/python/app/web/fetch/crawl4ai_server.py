@@ -33,7 +33,7 @@ class Crawl4AIServerFetcher:
         self._endpoint = Endpoint(
             str(configuration.get("baseUrl") or ""), str(configuration.get("apiKey") or ""), source=self.id, name=NAME,
         )
-        self.cooldown_key = f"crawl4ai:{self._endpoint.base_url}"
+        self.cooldown_key = self._endpoint.cooldown_key("crawl4ai")
 
     async def fetch(self, url: str, deadline: Deadline, *, allow_hop: HopCheck | None = None) -> WebPage:
         await check_public(url)

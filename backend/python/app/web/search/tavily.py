@@ -1,6 +1,7 @@
 from app.web.deadline import Deadline
 from app.web.models import WebResult
 from app.web.search._api import KeyedProvider
+from app.web.search._parse import collect, web_result
 
 MAX_RESULTS = 10
 
@@ -17,13 +18,6 @@ class TavilySearch(KeyedProvider):
             payload={"api_key": self.api_key(), "query": query, "max_results": MAX_RESULTS, "search_depth": "basic"},
             deadline=deadline,
         )
-        return [
-            WebResult(
-                url=item.get("url", ""),
-                title=item.get("title", ""),
-                snippet=item.get("content", ""),
-                source=self.id,
-                published=item.get("published_date"),
-            )
-            for item in data.get("results", [])[:MAX_RESULTS]
-        ]
+        return collect(self.id, data.get("results", []), MAX_RESULTS, lambda item: web_result(
+            self.id, item.get("url"), item.get("title"), item.get("content"), item.get("published_date"),
+        ))
