@@ -29,10 +29,12 @@ from app.agent_loop_lib.tools.base import ToolOutput
 from app.agents.actions.util.tool_summaries import parse_json_maybe
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter
 from app.utils.tool_handlers import ToolHandlerRegistry
+from app.web.tools.views import web_view
 
 if TYPE_CHECKING:
     from langchain_core.tools import StructuredTool
 
+    from app.agent_loop_lib.core.types import ToolResult
     from app.agents.agent_loop.context import AgentContext
 
 logger = logging.getLogger(__name__)
@@ -106,6 +108,13 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
     ) -> None:
         super().__init__(structured_tool, app_name, tool_name)
         self._context = context
+        # The card's view of each call, by the text the call returned: by the time the loop asks
+        # for a view, the result holds the text sent to the model, not the tool's payload.
+        self._views: dict[str, dict[str, Any]] = {}
+
+    def result_view(self, args: dict[str, Any], result: "ToolResult") -> dict[str, Any] | None:
+        content = result.content
+        return self._views.pop(content, None) if isinstance(content, str) else None
 
     @property
     def short_description(self) -> str:
@@ -154,4 +163,8 @@ class WebToolAdapter(PipesHubStructuredToolAdapter):
             return output
 
         sources = [Source(url=rec.get("url"), title=rec.get("title")) for rec in records if rec.get("url")]
-        return ToolOutput(success=True, data="\n".join(text_parts), sources=sources)
+        text = "\n".join(text_parts)
+        view = web_view(payload)
+        if view is not None:
+            self._views[text] = view
+        return ToolOutput(success=True, data=text, sources=sources)
