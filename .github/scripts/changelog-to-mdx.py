@@ -43,6 +43,8 @@ def convert(src, out_dir):
     month, day, year, channel, tag, url = meta.groups()
     if tag.removeprefix("v") != version:
         sys.exit(f"{src}: tag {tag!r} does not match version {version!r}")
+    if url != f"https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/{tag}":
+        sys.exit(f"{src}: release URL {url!r} is not the release page of tag {tag!r}")
     channel = channel.strip()
     if channel not in CHANNELS or month not in MONTHS:
         sys.exit(f"{src}: unknown channel {channel!r} or month {month!r}")
