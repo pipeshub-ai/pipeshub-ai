@@ -266,7 +266,7 @@ async def _seed(graph: object) -> _Sync:
     org_id, connector_id = f"org-{run}", f"slack-{run}"
     stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
     assert await graph.batch_upsert_nodes(
-        [{"id": connector_id, "name": "Slack", "type": Connectors.SLACK_WORKSPACE.value,
+        [{"id": connector_id, "orgId": org_id, "name": "Slack", "type": Connectors.SLACK_WORKSPACE.value,
           "appGroup": "Slack", "scope": "team", "isActive": True, **stamps}],
         collection=CollectionNames.APPS.value,
     )
@@ -275,6 +275,14 @@ async def _seed(graph: object) -> _Sync:
         [{"id": key, "userId": key, "orgId": org_id, "email": f"{key}@example.com", "isActive": True, **stamps}
          for key in (alice, bob)],
         collection=CollectionNames.USERS.value,
+    )
+    # The connector gate, which check_access requires; no sourceUserId, so a
+    # membership still resolves only through the relations a test writes.
+    assert await graph.batch_create_edges(
+        [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": connector_id,
+          "to_collection": CollectionNames.APPS.value, **stamps}
+         for key in (alice, bob)],
+        collection=CollectionNames.USER_APP_RELATION.value,
     )
     processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
     processor.org_id = org_id
