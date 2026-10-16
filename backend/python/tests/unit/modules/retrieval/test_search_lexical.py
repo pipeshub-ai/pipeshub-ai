@@ -267,3 +267,12 @@ class TestStoreSize:
         svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
 
         assert await svc.lexical_store_chunks("o1", "u1") == 150
+
+    @pytest.mark.asyncio
+    async def test_a_collection_with_no_count_makes_the_size_unknown(self) -> None:
+        db = _vector_db(sparse=False, text=True, batches=[])
+        db.get_collection_info = AsyncMock(side_effect=[MagicMock(points_count=120), MagicMock(points_count=None)])
+        svc = _service(db, _graph(), containers_on=False)
+        svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
+
+        assert await svc.lexical_store_chunks("o1", "u1") is None

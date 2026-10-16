@@ -1516,13 +1516,17 @@ class RetrievalService:
 
     async def lexical_store_chunks(self, org_id: str, user_id: str) -> int | None:
         """Chunks held by the collections this org's search reads, or None
-        when a collection cannot say. A collection shared with other orgs
-        counts all of its chunks, so this never under-counts."""
+        when a collection reports no count. A collection shared with other
+        orgs counts all of its chunks, so this never under-counts. A provider
+        that cannot be asked raises."""
         collections = await self._resolve_search_collections(org_id, user_id)
         infos = await asyncio.gather(
             *(self.vector_db_service.get_collection_info(name) for name in collections),
         )
-        return sum(info.points_count for info in infos)
+        counts = [getattr(info, "points_count", None) for info in infos]
+        if not all(isinstance(count, int) for count in counts):
+            return None
+        return sum(counts)
 
     async def search_lexical(
         self,
