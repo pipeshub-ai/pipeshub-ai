@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["WebToolAdapter", "accumulate_web_records", "is_web_payload"]
 
-# `result_type` values `web_search_tool.py`/`fetch_url_tool.py` stamp onto a
+# `result_type` values the tools in `app/web/tools/` stamp onto a
 # successful envelope — see `ToolResultType` in `app/utils/tool_handlers.py`.
 WEB_RESULT_TYPES: frozenset[str] = frozenset({"web_search", "url_content"})
 
@@ -51,7 +51,7 @@ def is_web_payload(payload: object) -> bool:
     `ContentHandler` and `str()`-ing an `{"ok": false, "error": ...}`
     payload (or some unrelated dynamic tool's JSON) into the prompt — a
     failed web call should reach the model as the plain error text
-    `fetch_url_tool.py`/`web_search_tool.py` already produce, not a
+    the tools in `app/web/tools/` already produce, not a
     reformatted "Blocks of content from the URL:" wrapper around it.
     """
     if not isinstance(payload, dict):

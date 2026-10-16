@@ -1,22 +1,14 @@
 """Fixtures for the Web connector behaviour tests (fakes live in web_behaviour_fakes)."""
 
 import logging
-import shutil
-import socket
 import sys
-import tempfile
 from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any
 
-import aiohttp
 import pytest
-from aiohttp import web
 from web_behaviour_fakes import (
     CONNECTOR_ID,
-    INTRANET_ADDRESS,
-    INTRANET_HOST,
-    SITE_ADDRESS,
     START_URL,
     FakeCheckpointStore,
     FakeConfigService,
@@ -29,42 +21,18 @@ from web_behaviour_fakes import (
     RecordingNotifications,
     VirtualClock,
     browser_crawler_class,
+    isolate_network,
+    serve_fake_web,
 )
 
-from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
 from app.connectors.sources.web import connector as connector_module
+from app.connectors.sources.web import crawl4ai_fetcher, fetch_strategy
 from app.connectors.sources.web.connector import WebConnector
 
 
 @pytest.fixture(autouse=True)
 def no_real_network(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Only Unix sockets (the fake websites) may be connected to."""
-    real_connect = socket.socket.connect
-    real_connect_ex = socket.socket.connect_ex
-
-    def _guard(sock: socket.socket, address: object) -> None:
-        if sock.family != socket.AF_UNIX:
-            raise AssertionError(f"test tried to reach the network: {address!r}")
-
-    def connect(sock: socket.socket, address: object) -> None:
-        _guard(sock, address)
-        return real_connect(sock, address)
-
-    def connect_ex(sock: socket.socket, address: object) -> int:
-        _guard(sock, address)
-        return real_connect_ex(sock, address)
-
-    monkeypatch.setattr(socket.socket, "connect", connect)
-    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
-
-    def resolve_to_fake_site(host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
-        address = INTRANET_ADDRESS if host == INTRANET_HOST else SITE_ADDRESS
-        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))]
-
-    monkeypatch.setattr(socket, "getaddrinfo", resolve_to_fake_site)
-    # As if curl_cffi and cloudscraper were not installed: the aiohttp strategy serves every fetch.
-    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", [])
-    monkeypatch.setitem(sys.modules, "cloudscraper", None)
+    isolate_network(monkeypatch)
 
 
 @pytest.fixture
@@ -77,34 +45,8 @@ def clock(monkeypatch: pytest.MonkeyPatch) -> VirtualClock:
 
 @pytest.fixture
 async def site(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
-    fake = FakeWeb()
-    app = web.Application()
-    app.router.add_route("*", "/{tail:.*}", fake.handle)
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    sock_dir = tempfile.mkdtemp(prefix="webfake-")
-    sock_path = f"{sock_dir}/site.sock"
-    await web.UnixSite(runner, sock_path).start()
-
-    real_session = aiohttp.ClientSession
-
-    async def resolve_as_guarded(request: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
-        await address_guard.resolve_target(str(request.url))
-        return await handler(request)
-
-    def session_on_fake_web(*args: object, **kwargs: object) -> aiohttp.ClientSession:
-        if isinstance(kwargs.get("connector"), aiohttp.TCPConnector):
-            # The Unix socket skips the guarded session's resolver, so make its check here.
-            kwargs["middlewares"] = (*kwargs.get("middlewares", ()), resolve_as_guarded)
-        kwargs["connector"] = aiohttp.UnixConnector(path=sock_path)
-        return real_session(*args, **kwargs)  # type: ignore[arg-type]
-
-    monkeypatch.setattr(aiohttp, "ClientSession", session_on_fake_web)
-    try:
+    async with serve_fake_web(FakeWeb(), monkeypatch) as fake:
         yield fake
-    finally:
-        await runner.cleanup()
-        shutil.rmtree(sock_dir, ignore_errors=True)
 
 
 @pytest.fixture

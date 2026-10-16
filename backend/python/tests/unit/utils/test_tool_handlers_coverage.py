@@ -2,7 +2,6 @@
 Additional coverage tests for app.utils.tool_handlers
 
 Targets:
-- normalize_web_search_image_settings (all branches)
 - ToolResultType enum
 - ContentHandler
 - RecordsHandler
@@ -11,9 +10,7 @@ Targets:
 """
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 from app.utils.tool_handlers import (
     ContentHandler,
@@ -22,84 +19,11 @@ from app.utils.tool_handlers import (
     WebSearchHandler,
     _block_attr,
     _block_citation_url,
-    normalize_web_search_image_settings,
-    DEFAULT_WEB_SEARCH_INCLUDE_IMAGES,
-    DEFAULT_WEB_SEARCH_MAX_IMAGES,
-    MAX_WEB_SEARCH_IMAGES,
 )
 
 
 def _run(coro):
     return asyncio.run(coro)
-
-
-# ---------------------------------------------------------------------------
-# normalize_web_search_image_settings
-# ---------------------------------------------------------------------------
-
-class TestNormalizeWebSearchImageSettings:
-    def test_none_returns_defaults(self):
-        include, max_img = normalize_web_search_image_settings(None)
-        assert include is DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_empty_dict_returns_defaults(self):
-        include, max_img = normalize_web_search_image_settings({})
-        assert include is DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_include_images_true(self):
-        include, _ = normalize_web_search_image_settings({"includeImages": True})
-        assert include is True
-
-    def test_include_images_false(self):
-        include, _ = normalize_web_search_image_settings({"includeImages": False})
-        assert include is False
-
-    def test_include_images_non_bool_ignored(self):
-        include, _ = normalize_web_search_image_settings({"includeImages": "yes"})
-        assert include is DEFAULT_WEB_SEARCH_INCLUDE_IMAGES
-
-    def test_max_images_int(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": 10})
-        assert max_img == 10
-
-    def test_max_images_string_parseable(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": "5"})
-        assert max_img == 5
-
-    def test_max_images_string_non_parseable(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": "abc"})
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_max_images_below_range(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": 0})
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_max_images_above_range(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": 9999})
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_max_images_at_boundary_1(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": 1})
-        assert max_img == 1
-
-    def test_max_images_at_boundary_max(self):
-        _, max_img = normalize_web_search_image_settings({"maxImages": MAX_WEB_SEARCH_IMAGES})
-        assert max_img == MAX_WEB_SEARCH_IMAGES
-
-    def test_bool_true_not_treated_as_int(self):
-        # In Python, bool is subclass of int. True == 1. Ensure it's excluded.
-        _, max_img = normalize_web_search_image_settings({"maxImages": True})
-        assert max_img == DEFAULT_WEB_SEARCH_MAX_IMAGES
-
-    def test_combined_settings(self):
-        include, max_img = normalize_web_search_image_settings({
-            "includeImages": True,
-            "maxImages": 7,
-        })
-        assert include is True
-        assert max_img == 7
 
 
 # ---------------------------------------------------------------------------
@@ -212,8 +136,8 @@ class TestWebSearchHandler:
         handler = WebSearchHandler()
         tool_result = {"query": "q", "web_results": "not a list"}
         result = _run(handler.format_message(tool_result, {"ref_mapper": None}))
-        # Should only have the header block
-        assert len(result) == 1
+        # Only the header and the closing fence
+        assert len(result) == 2
 
     def test_format_message_invalid_items_skipped(self):
         handler = WebSearchHandler()
@@ -222,7 +146,7 @@ class TestWebSearchHandler:
             "web_results": ["not a dict", None, {"title": "Good", "link": "http://x.com", "snippet": "s"}],
         }
         result = _run(handler.format_message(tool_result, {"ref_mapper": None}))
-        assert len(result) == 2  # header + one valid result
+        assert len(result) == 3  # header + one valid result + closing fence
 
     def test_extract_records(self):
         handler = WebSearchHandler()
@@ -283,18 +207,3 @@ class TestBlockCitationUrl:
         block = {"type": "text", "content": "important text"}
         result = _block_citation_url("https://example.com", block)
         assert "example.com" in result
-
-    def test_image_block_with_http_url(self):
-        block = {"type": "image", "url": "https://cdn.com/img.png"}
-        result = _block_citation_url("https://page.com", block)
-        assert result == "https://cdn.com/img.png"
-
-    def test_image_block_without_http_url(self):
-        block = {"type": "image", "url": "data:image/png;base64,abc"}
-        result = _block_citation_url("https://page.com", block)
-        assert result == "https://page.com"
-
-    def test_image_block_empty_url(self):
-        block = {"type": "image", "url": ""}
-        result = _block_citation_url("https://page.com", block)
-        assert result == "https://page.com"

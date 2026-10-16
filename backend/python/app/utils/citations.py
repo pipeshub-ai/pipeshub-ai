@@ -13,6 +13,7 @@ from app.utils.chat_helpers import (
 )
 from app.utils.logger import create_logger
 from app.utils.text_fragments import SourceFormat, split_fragment_directive
+from app.web.url import display_domain
 
 # Initialize logger
 logger = create_logger(__name__)
@@ -411,10 +412,10 @@ def _resolve_ref(target: str, ref_to_url: dict[str, str] | None) -> str:
         return ref_to_url[inner_ref]
     return target
 
-# Any ``[text](ref…)`` link.  Only ``ref<digits>`` targets can ever resolve
+# Any ``[text](ref…)`` or ``[text](https://refN.xyz)`` link.  Only ``ref<digits>`` targets can ever resolve
 # (``_MD_LINK_PATTERN``), and those that did were already rewritten to
 # ``[N](url)`` by the time this runs, so whatever still matches is dead.
-_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\(' + _ANY_REF_TARGET + r'\)')
+_UNRESOLVED_REF_LINK_RE = re.compile(r'\[([^\]]*?)\]\((?:' + _ANY_REF_TARGET + r'|https?://ref\d+\.xyz/?)\)')
 
 
 def _renumber_citation_links(
@@ -621,13 +622,15 @@ def _try_append_web_citation(
     web_content = web_rec.get("content", "")
     if not web_content:
         return True, citation_num
+    page = _page_of(url)
     new_citations.append({
         "content": _safe_stringify_content(value=web_content),
         "chunkIndex": citation_num,
         "metadata": {
-            "recordId": _page_of(url),
+            "recordId": page,
             "mimeType": "text/html",
-            "recordName": _page_of(url),
+            # The page's title, else its site: the URL itself is what the UI showed before.
+            "recordName": web_rec.get("title") or display_domain(page) or page,
             "webUrl": url,
             "origin": "WEB_SEARCH",
             "orgId": web_rec.get("org_id", ""),

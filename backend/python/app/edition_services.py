@@ -84,6 +84,7 @@ if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.agents.registry.toolset_registry import ToolsetRegistry
+    from app.web.ports import WebAccessGate
 
 
 def register_extra_toolsets(registry: "ToolsetRegistry") -> None:
@@ -104,6 +105,14 @@ def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, 
 def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
     """Wrap an embeddings client with edition extras. OSS: none."""
     return embeddings
+
+
+def get_web_access_gate() -> "WebAccessGate":
+    """Decides which web searches and fetches may happen. OSS: any search, and any http(s) URL
+    whose address is public (checked again for every redirect when it is fetched)."""
+    from app.web.gate import DefaultWebAccessGate
+
+    return DefaultWebAccessGate()
 
 
 

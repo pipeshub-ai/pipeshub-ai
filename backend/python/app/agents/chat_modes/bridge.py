@@ -72,7 +72,6 @@ from app.agents.chat_modes.policy import (
     resolve_chat_mode_policy,
 )
 from app.agents.chat_modes.prefetch import filter_notice_constraint, prefetch_retrieval
-from app.config.constants.service import config_node_constants
 from app.modules.demo_data.chat import (
     demo_exclusions_for_run,
     exclude_from_query,
@@ -85,6 +84,7 @@ from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
     from langchain_core.language_models.chat_models import BaseChatModel
@@ -154,37 +154,6 @@ def _apply_mode_instructions(chat_state: dict[str, Any], policy: ChatModePolicy)
         entity_tools=bool(chat_state.get("entity_vector_store")),
     )
     chat_state[READ_RECORDS_IN_FULL_STATE_KEY] = thorough
-
-
-async def _resolve_web_search_config(config_service: Any, logger: logging.Logger) -> dict[str, Any] | None:
-    """Mirrors `_generate_web_search_stream()`'s provider lookup: the org's
-    default web-search provider, falling back to DuckDuckGo when none is
-    explicitly configured.
-
-    The Node.js config API (`cm_controller.ts::getWebSearchProviders`) never
-    persists a DuckDuckGo entry into the stored config -- it treats
-    DuckDuckGo as the implicit default whenever no stored provider carries
-    `isDefault: true` (including a brand-new org with an empty/absent
-    `providers` list). Reading the raw stored config here without the same
-    fallback would silently disable `web_search`/`fetch_url` for every org
-    that hasn't explicitly configured a paid provider, even though the UI
-    tells the user DuckDuckGo is already active (see the identical fallback
-    in `agent.py::_resolve_default_web_search_config`)."""
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value, default={}, use_cache=True,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("run_chat_stream: failed to load web search config: %s", exc)
-        return None
-    providers = (web_search_config or {}).get("providers") or []
-    default_provider = next((p for p in providers if p.get("isDefault")), None)
-    if not default_provider:
-        return {"provider": "duckduckgo", "configuration": {}}
-    return {
-        "provider": default_provider.get("provider"),
-        "configuration": default_provider.get("configuration", {}),
-    }
 
 
 async def _none() -> None:
@@ -440,7 +409,7 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 fetch_user_connector_instances(
                     graph_provider, user_info["userId"], user_info["orgId"], log,
                 ),
-                _resolve_web_search_config(config_service, log) if policy.include_web_search else _none(),
+                resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
                     query_info.get("attachments"), blob_store=blob_store,
                     org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,

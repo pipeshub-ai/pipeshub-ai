@@ -76,6 +76,8 @@ from app.utils.stage_timer import StageTimer
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_org_or_503, get_user_or_503
 from app.utils.user_messages import action_failed
+from app.web.config import resolve_web_search
+from app.web.search import PROVIDERS as WEB_SEARCH_PROVIDERS
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
@@ -566,7 +568,7 @@ def _parse_default_reasoning_effort(raw_value: Any) -> str | None:
     return value
 
 
-_SUPPORTED_WEB_SEARCH_PROVIDERS = {"duckduckgo", "serper", "tavily", "exa"}
+_SUPPORTED_WEB_SEARCH_PROVIDERS = frozenset(WEB_SEARCH_PROVIDERS)
 
 
 def _parse_web_search(raw_web_search: Any) -> str | None:
@@ -623,110 +625,6 @@ def _is_web_search_enabled(selected_tools: list[str] | None) -> bool:
         if tool_name == "web_search" or tool_name.startswith("web_search."):
             return True
     return False
-
-
-async def _resolve_default_web_search_config(
-    config_service: ConfigurationService,
-    logger: Logger,
-) -> dict[str, Any] | None:
-    """Auto-detect the default web search provider from org-level config.
-
-    Used by the assistant agent (agentIdPlaceholder) which doesn't have an
-    explicit webSearch attachment but should still offer the tool when the
-    org has a provider configured.
-    """
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning("Failed to load web search configuration for auto-detect: %s", e)
-        return None
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    default_provider = next(
-        (p for p in providers if isinstance(p, dict) and p.get("isDefault")),
-        None,
-    )
-
-    # Whenever no provider carries isDefault=true -- whether the org has never
-    # configured any provider (empty/absent `providers`) or has configured one
-    # without marking it default -- the Node.js layer treats DuckDuckGo as the
-    # active default (it clears all isDefault flags rather than inserting a
-    # DuckDuckGo entry into the array; see `cm_controller.ts::getWebSearchProviders`).
-    if not default_provider:
-        logger.debug("No explicit default web search provider; falling back to duckduckgo")
-        return {"provider": "duckduckgo", "configuration": {}}
-
-    provider = str(default_provider.get("provider", "")).strip().lower()
-    if not provider or provider not in _SUPPORTED_WEB_SEARCH_PROVIDERS:
-        return None
-
-    configuration = default_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
-
-
-async def _resolve_web_search_tool_config(
-    provider: str | None,
-    config_service: ConfigurationService,
-    logger: Logger,
-) -> dict[str, Any] | None:
-    """Resolve provider-specific config for the web_search tool at runtime."""
-    if not provider:
-        return None
-
-    try:
-        web_search_config = await config_service.get_config(
-            config_node_constants.WEB_SEARCH.value,
-            default={},
-            use_cache=False,
-        )
-    except Exception as e:
-        logger.warning(
-            "Failed to load web search configuration for provider '%s': %s",
-            provider,
-            str(e),
-        )
-        return {"provider": provider, "configuration": {}}
-
-    providers = (
-        web_search_config.get("providers", [])
-        if isinstance(web_search_config, dict)
-        else []
-    )
-    if not isinstance(providers, list):
-        providers = []
-
-    selected_provider = next(
-        (
-            entry
-            for entry in providers
-            if isinstance(entry, dict)
-            and str(entry.get("provider", "")).strip().lower() == provider
-        ),
-        None,
-    )
-
-    if not selected_provider:
-        return {"provider": provider, "configuration": {}}
-
-    configuration = selected_provider.get("configuration", {})
-    if not isinstance(configuration, dict):
-        configuration = {}
-
-    return {"provider": provider, "configuration": configuration}
 
 
 def _parse_toolsets(raw_toolsets: list[Any]) -> dict[str, dict[str, Any]]:
@@ -4237,16 +4135,11 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 ]
                 web_search_provider = _parse_web_search(agent.get("webSearch"))
                 if web_search_provider:
-                    web_search_coro = _resolve_web_search_tool_config(
-                        web_search_provider,
-                        config_service,
-                        logger,
+                    web_search_coro = resolve_web_search(
+                        config_service, logger, provider=web_search_provider,
                     )
                 elif agent_id == "agentIdPlaceholder":
-                    web_search_coro = _resolve_default_web_search_config(
-                        config_service,
-                        logger,
-                    )
+                    web_search_coro = resolve_web_search(config_service, logger)
                 else:
                     web_search_coro = None
 

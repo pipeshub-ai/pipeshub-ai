@@ -4,11 +4,22 @@
 - perform_stt_health_check (lines 1040-1186)
 """
 
-import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
+from fastapi.responses import JSONResponse
+
+from app.web.errors import (
+    AuthFailed,
+    Blocked,
+    NotConfigured,
+    QuotaExceeded,
+    RateLimited,
+    TimedOut,
+    Unreachable,
+    UpstreamError,
+)
+from app.web.fetch.http import FetchedBody
 
 MODULE = "app.api.routes.health"
 
@@ -30,193 +41,73 @@ def mock_request():
 
 
 class TestWebSearchHealthCheck:
-    @pytest.mark.asyncio
-    async def test_success_duckduckgo(self, mock_request):
-        mock_search = AsyncMock(return_value=[{"title": "result"}])
-        with patch(
-            f"{MODULE}._search_with_duckduckgo",
-            create=True,
-        ), patch(
-            "app.utils.web_search_tool._search_with_duckduckgo",
-            mock_search,
-            create=True,
-        ), patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            return_value=[{"title": "result"}],
-        ):
-            from app.api.routes.health import web_search_health_check
+    """The check runs one search with the provider alone; its network answer is stubbed."""
 
-            resp = await web_search_health_check(
-                mock_request, {"provider": "duckduckgo", "configuration": {}}
-            )
+    @staticmethod
+    async def _check(mock_request, provider_config: dict, outcome: object = None) -> tuple[JSONResponse, MagicMock]:
+        from app.api.routes.health import web_search_health_check
+
+        spec_for = MagicMock()
+        searcher = spec_for.return_value.build.return_value
+        searcher.search = AsyncMock(side_effect=outcome) if isinstance(outcome, BaseException) else AsyncMock(return_value=outcome or [])
+        with patch(f"{MODULE}.spec_for", spec_for):
+            resp = await web_search_health_check(mock_request, provider_config)
+        return resp, spec_for
+
+    @pytest.mark.asyncio
+    async def test_success(self, mock_request):
+        resp, spec_for = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}, [{"title": "r"}])
         assert resp.status_code == 200
-        body = resp.body.decode()
-        assert "healthy" in body
-        assert "duckduckgo" in body
+        assert "serper" in resp.body.decode()
+        spec_for.assert_called_once_with("serper")
+        assert spec_for.return_value.build.call_args.args[0] == {"apiKey": "k"}
+
+    @pytest.mark.asyncio
+    async def test_default_provider_is_duckduckgo(self, mock_request):
+        resp, spec_for = await self._check(mock_request, {"configuration": {}})
+        assert resp.status_code == 200
+        spec_for.assert_called_once_with("duckduckgo")
 
     @pytest.mark.asyncio
     async def test_unknown_provider_returns_400(self, mock_request):
         from app.api.routes.health import web_search_health_check
 
-        resp = await web_search_health_check(
-            mock_request, {"provider": "unknown_engine", "configuration": {}}
-        )
+        resp = await web_search_health_check(mock_request, {"provider": "unknown_engine", "configuration": {}})
         assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "Unknown web search provider" in body
+        assert "Unknown web search provider" in resp.body.decode()
 
     @pytest.mark.asyncio
-    async def test_timeout_returns_408(self, mock_request):
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=asyncio.TimeoutError,
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}
-            )
-        assert resp.status_code == 408
+    @pytest.mark.parametrize(
+        ("error", "status", "text"),
+        [
+            (TimedOut("t"), 408, "didn't answer in time"),
+            (NotConfigured("Serper API key is required"), 400, "Serper API key is required"),
+            (AuthFailed("x", status=401), 400, "didn't accept the API key"),
+            (RateLimited("x", status=429), 400, "limiting requests"),
+            (QuotaExceeded("x", status=402), 400, "credits are used up"),
+            (Blocked("x"), 400, "blocked the test search"),
+            (UpstreamError("x", status=500), 400, "returned an error (500)"),
+            (Unreachable("x"), 500, "Couldn't reach"),
+            (RuntimeError("boom"), 500, "Couldn't reach"),
+        ],
+    )
+    async def test_failures(self, mock_request, error, status, text):
+        resp, _ = await self._check(mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}, error)
+        assert resp.status_code == status
         body = resp.body.decode()
-        assert "didn't answer in time" in body
+        assert text in body
+        assert "boom" not in body  # exception text never reaches the response
 
     @pytest.mark.asyncio
-    async def test_value_error_returns_400(self, mock_request):
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=ValueError("Missing API key"),
-        ):
-            from app.api.routes.health import web_search_health_check
+    async def test_blocked_duckduckgo_is_not_reported_healthy(self, mock_request):
+        """A blocked DuckDuckGo used to look healthy because it returned no results."""
+        from app.api.routes.health import web_search_health_check
 
-            resp = await web_search_health_check(
-                mock_request, {"provider": "tavily", "configuration": {}}
-            )
+        blocked = FetchedBody("https://html.duckduckgo.com/html/", 202, "text/html", b"<div class=anomaly-modal></div>")
+        with patch("app.web.search.duckduckgo_html.fetch_public", AsyncMock(return_value=blocked)):
+            resp = await web_search_health_check(mock_request, {"provider": "duckduckgo", "configuration": {}})
         assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "Missing API key" in body
-
-    @pytest.mark.asyncio
-    async def test_http_status_401_returns_invalid_api_key(self, mock_request):
-        mock_response = MagicMock()
-        mock_response.status_code = 401
-        mock_response.request = MagicMock()
-        error = httpx.HTTPStatusError(
-            "auth error", request=mock_response.request, response=mock_response
-        )
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=error,
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "serper", "configuration": {"apiKey": "bad"}}
-            )
-        assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "didn't accept the API key" in body
-
-    @pytest.mark.asyncio
-    async def test_http_status_403_returns_invalid_api_key(self, mock_request):
-        mock_response = MagicMock()
-        mock_response.status_code = 403
-        mock_response.request = MagicMock()
-        error = httpx.HTTPStatusError(
-            "forbidden", request=mock_response.request, response=mock_response
-        )
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=error,
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "exa", "configuration": {"apiKey": "bad"}}
-            )
-        assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "didn't accept the API key" in body
-
-    @pytest.mark.asyncio
-    async def test_http_status_429_returns_rate_limit(self, mock_request):
-        mock_response = MagicMock()
-        mock_response.status_code = 429
-        mock_response.request = MagicMock()
-        error = httpx.HTTPStatusError(
-            "rate limit", request=mock_response.request, response=mock_response
-        )
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=error,
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "serper", "configuration": {"apiKey": "k"}}
-            )
-        assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "limiting requests right now" in body
-
-    @pytest.mark.asyncio
-    async def test_http_status_500_returns_generic_http_message(self, mock_request):
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.request = MagicMock()
-        error = httpx.HTTPStatusError(
-            "server error", request=mock_response.request, response=mock_response
-        )
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=error,
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "tavily", "configuration": {"apiKey": "k"}}
-            )
-        assert resp.status_code == 400
-        body = resp.body.decode()
-        assert "returned an error (500)" in body
-
-    @pytest.mark.asyncio
-    async def test_generic_exception_returns_500(self, mock_request):
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("unexpected"),
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"provider": "duckduckgo", "configuration": {}}
-            )
-        assert resp.status_code == 500
-        body = resp.body.decode()
-        assert "for web search. Check its API key" in body
-
-    @pytest.mark.asyncio
-    async def test_default_provider_is_duckduckgo(self, mock_request):
-        with patch(
-            "asyncio.wait_for",
-            new_callable=AsyncMock,
-            return_value=[],
-        ):
-            from app.api.routes.health import web_search_health_check
-
-            resp = await web_search_health_check(
-                mock_request, {"configuration": {}}
-            )
-        assert resp.status_code == 200
-        body = resp.body.decode()
-        assert "duckduckgo" in body
+        assert "blocked" in resp.body.decode()
 
 
 # ============================================================================

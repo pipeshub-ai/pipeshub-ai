@@ -31,7 +31,7 @@ so a section can never reference a tool the model cannot call.
 Facts that are true regardless of which other tools exist this turn (what
 a tool returns, what it cannot reach) live in that tool's own
 function-calling schema instead of here — see `coding_sandbox.py`'s
-`set_web_tool_names()`, `web_search_tool.py`'s docstring, and
+`set_web_tool_names()`, `app/web/tools/web_search.py`'s docstring, and
 `hooks/citations.py`'s `_FETCH_FULL_RECORD_DESCRIPTION`. Only arbitration
 BETWEEN tools — which depends on the granted surface set, invisible to any
 one schema — stays here.

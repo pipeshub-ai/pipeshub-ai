@@ -24,7 +24,6 @@ from app.agents.chat_modes.bridge import (
     _apply_policy_to_chat_state,
     _fetch_available_connectors,
     _resolve_custom_instructions,
-    _resolve_web_search_config,
     _with_mode_instructions,
     run_chat_stream,
 )
@@ -332,48 +331,6 @@ class TestResolveCustomInstructions:
         assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) == "Be concise."
 
 
-class TestResolveWebSearchConfig:
-    async def test_falls_back_to_duckduckgo_when_no_default_provider(self) -> None:
-        """Configured providers exist but none is marked default -- the
-        Node.js layer treats DuckDuckGo as the active default in that case
-        (see `cm_controller.ts::getWebSearchProviders`), so this must not
-        disable web_search/fetch_url entirely."""
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {"providers": [{"provider": "tavily", "isDefault": False}]}
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    async def test_falls_back_to_duckduckgo_when_no_providers_configured(self) -> None:
-        """Brand-new org that has never touched web search settings --
-        `providers` is empty/absent. Must still default to DuckDuckGo, not
-        silently disable the tool."""
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {"providers": []}
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    async def test_returns_default_provider_configuration(self) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {
-            "providers": [
-                {"provider": "tavily", "isDefault": False},
-                {"provider": "serper", "isDefault": True, "configuration": {"apiKey": "x"}},
-            ]
-        }
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "serper", "configuration": {"apiKey": "x"}}
-
-    async def test_config_lookup_failure_returns_none(self) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.side_effect = RuntimeError("etcd unavailable")
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result is None
-
-
 class TestRunChatStream:
     @staticmethod
     def _base_kwargs(policy=None) -> dict[str, Any]:
@@ -381,7 +338,7 @@ class TestRunChatStream:
         # `config_service.get_config` is itself an `AsyncMock` attribute
         # (child attrs of an `AsyncMock` propagate async-ness), so its
         # return value must be a concrete dict, not the default child
-        # mock -- otherwise `_resolve_web_search_config`'s `.get("providers")`
+        # mock -- otherwise `resolve_web_search`'s `.get("providers")`
         # silently returns an unawaited coroutine instead of a list.
         config_service.get_config.return_value = {"providers": []}
         return {
