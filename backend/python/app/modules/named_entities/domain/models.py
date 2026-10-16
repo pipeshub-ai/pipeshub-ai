@@ -8,8 +8,12 @@ from typing import Annotated, Any, Literal, Union, get_args, get_origin
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.modules.named_entities.domain.kinds import EntityKind
-from app.modules.named_entities.domain.values import TypedValue
+from app.modules.named_entities.domain.kinds import (
+    EntityKind,  # noqa: TC001  # pydantic field type
+)
+from app.modules.named_entities.domain.values import (
+    TypedValue,  # noqa: TC001  # pydantic field type
+)
 from app.modules.named_entities.keys import KEY_SCHEME
 
 SCHEMA_VERSION = 1
@@ -65,6 +69,7 @@ class NamedEntity(BaseModel):
     display_name: str
     norm_key: str
     value: TypedValue | None = None
+    # No longer filled; kept so extractions stored with it still validate.
     normalized_raw: str = ""
     mentions: list[Mention] = Field(default_factory=list)
 
@@ -118,7 +123,7 @@ def _model_for(candidates: list[type[BaseModel]], data: dict) -> type[BaseModel]
     return None
 
 
-def _prune_value(annotation: Any, value: Any) -> Any:
+def _prune_value(annotation: object, value: object) -> object:
     origin = get_origin(annotation)
     if origin is Annotated:
         return _prune_value(get_args(annotation)[0], value)
@@ -145,7 +150,7 @@ def _prune(model: type[BaseModel], data: dict) -> dict:
     }
 
 
-def read_stored_extraction(payload: Any) -> NamedEntityExtraction | None:
+def read_stored_extraction(payload: object) -> NamedEntityExtraction | None:
     """Parse an extraction written by this or a newer build: a blob, or the
     extraction service's reply. The write models reject what they do not know, so
     a newer build's field, kind, status or termination reason would make the whole

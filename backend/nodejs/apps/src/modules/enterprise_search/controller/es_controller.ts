@@ -3399,6 +3399,8 @@ async function regenerateAnswersInternal(
       reasoningEffort: req.body.reasoningEffort || null,
       chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
+      // A new id per press, so the answer on screen is the newest id of the question.
+      regenerationId: new Types.ObjectId().toString(),
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
       runId: req.body.runId || null,

@@ -342,7 +342,23 @@
       "DATA_FILE": "資料檔",
       "CODE": "程式碼",
       "CODE_OUTPUT": "程式碼輸出"
-    }
+    },
+    "tabs": {
+      "all": "所有產物",
+      "mine": "我的",
+      "shared": "與我分享"
+    },
+    "tabsShort": {
+      "all": "全部",
+      "mine": "我的",
+      "shared": "分享"
+    },
+    "share": {
+      "title": "分享產物"
+    },
+    "emptyShared": "尚無與你分享的內容",
+    "emptySharedHint": "隊友與你分享的產物會顯示在這裡。",
+    "notAvailable": "此產物已無法使用"
   },
   "notifications": {
     "title": "通知",
@@ -672,6 +688,8 @@
       "open": "開啟 {{source}}",
       "openIn": "在 {{source}} 中開啟",
       "openInCollections": "在集合中開啟",
+      "syncedJustNow": "剛剛同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相關度：{{percent}}%"
     },
     "results": "結果",
@@ -776,6 +794,8 @@
     "copiedAsMarkdown": "已複製為 Markdown",
     "copiedAsText": "已複製為純文字",
     "citations": "引用",
+    "showMoreCitations_one": "顯示另外 {{count}} 則引用",
+    "showMoreCitations_other": "顯示另外 {{count}} 則引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "僅純文字（不含引用）",
     "differentModesOfQuery": "不同的查詢模式",
@@ -4384,6 +4404,7 @@
     "missingRecordId": "缺少記錄 ID"
   },
   "oauthConsent": {
+    "workspace": "工作區：{{name}}",
     "loading": "正在載入授權請求…",
     "missingParams": "缺少必要的 OAuth 參數（client_id、redirect_uri）。",
     "noData": "沒有可用的授權資料。",

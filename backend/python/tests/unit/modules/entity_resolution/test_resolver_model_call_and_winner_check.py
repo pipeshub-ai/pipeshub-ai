@@ -95,7 +95,7 @@ class TestModelHandleReset:
              patch.object(resolver_module, "get_llm_for_role", get_llm):
             resolver = make_resolver()
             await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"])))
-            assert resolver._llm is None
+            assert not resolver._llms
             await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["Bug bash day"])))
         assert get_llm.await_count == 2
 
@@ -114,6 +114,6 @@ class TestModelHandleReset:
             resolver = make_resolver()
             first = await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash session"])))
             assert first.stats.model_failures == 1
-            assert resolver._llm is None
+            assert not resolver._llms
             await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["Bug bash day"])))
         assert get_llm.await_count == 2

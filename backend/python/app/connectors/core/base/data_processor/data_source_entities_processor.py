@@ -22,6 +22,7 @@ from app.connectors.core.base.data_store.data_store import (
     DataStoreProvider,
     TransactionStore,
 )
+from app.connectors.core.sync.run_context import get_run_sync_id
 from app.connectors.core.base.data_store.graph_data_store import retry_on_deadlock
 from app.connectors.core.sync.full_sync_coverage import (
     GROUP_MEMBERS_UNSURE,
@@ -387,7 +388,19 @@ class DataSourceEntitiesProcessor:
                         left_behind.append([moves[j][0], j_old, moves[j][2], moves[j][3]])
             moves.extend(left_behind)
 
-    async def initialize(self, org_id: Optional[str] = None) -> None:
+    def _record_event_payload(self, record: Record) -> dict[str, Any]:
+        """Record-event payload stamped with the current sync run id (None when
+        not inside a sync run, e.g. reindex) so downstream processing can be
+        correlated with the sync that produced the record."""
+        payload = record.to_kafka_record()
+        payload["runSyncId"] = get_run_sync_id()
+        return payload
+
+    # A deployment where several orgs share the graph turns this off, so a
+    # caller that forgets the org fails instead of writing into another org.
+    allow_first_org_fallback: bool = True
+
+    async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
             self.config_service, "connectors"
         )
@@ -401,8 +414,11 @@ class DataSourceEntitiesProcessor:
             self.org_id = org_id
             return
 
-        if self.org_id:
+        if self.org_id or org_agnostic:
             return
+
+        if not self.allow_first_org_fallback:
+            raise ValueError("DataSourceEntitiesProcessor needs an org_id")
 
         async with self.data_store_provider.transaction() as tx_store:
             orgs = await tx_store.get_all_orgs()
@@ -2342,7 +2358,7 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "newRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._record_event_payload(record),
                             },
                         )
                         for record in publishable
@@ -2384,7 +2400,7 @@ class DataSourceEntitiesProcessor:
         if should_publish:
             await self.messaging_producer.send_message(
                 "record-events",
-                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": processed_record.to_kafka_record()},
+                {"eventType": "updateRecord", "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed_record)},
                 key=record.id
             )
             await self._mark_queued_after_publish([record.id])
@@ -2813,7 +2829,7 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "newRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._record_event_payload(record),
                             },
                         )
                         for record in new_batch
@@ -2839,7 +2855,7 @@ class DataSourceEntitiesProcessor:
                             {
                                 "eventType": "updateRecord",
                                 "timestamp": get_epoch_timestamp_in_ms(),
-                                "payload": record.to_kafka_record(),
+                                "payload": self._record_event_payload(record),
                             },
                         )
                         for record in reindex_batch

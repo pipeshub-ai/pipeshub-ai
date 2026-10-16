@@ -616,7 +616,7 @@ class _TeamGraph:
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
-    async def get_team_with_users(self, team_id: str, user_key: str) -> dict:
+    async def get_team_with_users(self, team_id: str, org_id: str, user_key: str) -> dict:
         self.read_back.append(team_id)
         return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
 
@@ -633,6 +633,19 @@ class TestGetTeam:
         assert resp.status_code == 200
         content = json.loads(resp.body.decode())
         assert content["team"]["name"] == "T1"
+
+    @pytest.mark.asyncio
+    async def test_scopes_lookup_to_callers_org(self) -> None:
+        # Security: the team lookup must be scoped to the caller's org so a team
+        # id from another org cannot be read.
+        req = _make_request()
+        gp = _graph_provider(req)
+        gp.get_user_by_user_id.return_value = {"_key": "uk"}
+        gp.get_team_with_users.return_value = {"name": "T1", "users": []}
+
+        await get_team(req, "all_other-org")
+
+        assert gp.get_team_with_users.await_args.kwargs["org_id"] == req.state.user["orgId"]
 
     @pytest.mark.asyncio
     async def test_user_not_found(self):

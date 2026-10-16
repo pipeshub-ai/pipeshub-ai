@@ -12,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import {
@@ -4816,6 +4817,24 @@ describe('UserController', () => {
       expect(notice.templateData.newEmail).to.equal('alice@new.example');
       // The notice carries no link: nothing in it can be used to complete or undo the change.
       expect(notice.templateData.link).to.be.undefined;
+    });
+
+    it('names the configured product in both subjects', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      setBrandResolver(() => ({ ...DEFAULT_BRAND, productName: 'Acme Search' }));
+      try {
+        await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+      } finally {
+        setBrandResolver(() => DEFAULT_BRAND);
+      }
+
+      const subjects = mockMailService.sendMail.args.map(
+        (a: [{ subject: string }, ...unknown[]]) => a[0].subject,
+      );
+      expect(subjects).to.deep.equal([
+        'Acme Search | Verify your email !',
+        'Acme Search | Your email address is being changed',
+      ]);
     });
 
     it('still succeeds when the notice to the current address cannot be sent', async () => {

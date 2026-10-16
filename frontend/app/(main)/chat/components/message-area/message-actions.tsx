@@ -12,6 +12,7 @@ import {
 import type { ModelInfo, AppliedFilters } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
+import { ChatMessageExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
 import { ChatApi, type FeedbackPayload } from '../../api';
@@ -752,6 +753,8 @@ export function MessageActions({
            a lone item to the start of its row), which reads cleanly under the
            action buttons. ── */}
       <Flex align="center" style={{ flexShrink: 0 }}>
+        <ChatMessageExtras messageId={messageId} />
+
         {/* Chat mode label */}
         {chatModeLabel && (
           <Flex

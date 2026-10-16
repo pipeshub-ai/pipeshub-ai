@@ -6,6 +6,7 @@ import {
   GatewayTimeoutError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnauthorizedError,
@@ -241,6 +242,10 @@ export const handleBackendError = (
       return new BadRequestError(errorDetail);
     case 401:
       return new UnauthorizedError(errorDetail);
+    case 402:
+      return new PaymentRequiredError(
+        asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+      );
     case 403:
       return new ForbiddenError(errorDetail);
     case 404:

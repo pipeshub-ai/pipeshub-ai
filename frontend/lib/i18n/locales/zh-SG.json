@@ -342,7 +342,23 @@
       "DATA_FILE": "数据文件",
       "CODE": "代码",
       "CODE_OUTPUT": "代码输出"
-    }
+    },
+    "tabs": {
+      "all": "所有产物",
+      "mine": "我的",
+      "shared": "与我共享"
+    },
+    "tabsShort": {
+      "all": "全部",
+      "mine": "我的",
+      "shared": "共享"
+    },
+    "share": {
+      "title": "分享产物"
+    },
+    "emptyShared": "暂无与你共享的内容",
+    "emptySharedHint": "队友与你共享的产物会显示在这里。",
+    "notAvailable": "该产物已不可用"
   },
   "notifications": {
     "title": "通知",
@@ -672,6 +688,8 @@
       "open": "打开 {{source}}",
       "openIn": "在 {{source}} 中打开",
       "openInCollections": "在集合中打开",
+      "syncedJustNow": "刚刚同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相关度：{{percent}}%"
     },
     "results": "结果",
@@ -776,6 +794,8 @@
     "copiedAsMarkdown": "已复制为 Markdown",
     "copiedAsText": "已复制为纯文本",
     "citations": "引用",
+    "showMoreCitations_one": "显示另外 {{count}} 条引用",
+    "showMoreCitations_other": "显示另外 {{count}} 条引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "仅纯文本（不含引用）",
     "differentModesOfQuery": "不同的查询模式",
@@ -4384,6 +4404,7 @@
     "missingRecordId": "缺少记录 ID"
   },
   "oauthConsent": {
+    "workspace": "工作区：{{name}}",
     "loading": "正在加载授权请求…",
     "missingParams": "缺少必需的 OAuth 参数（client_id、redirect_uri）。",
     "noData": "没有可用的授权数据。",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import app.schema.arango.documents as documents
 import pytest
-from jsonschema import Draft4Validator
+from jsonschema import Draft4Validator, ValidationError
 
 from app.config.constants.arangodb import CollectionNames
 from app.schema.node_schema_registry import adapt_schema
@@ -209,6 +209,30 @@ class TestRequiredFields:
     def test_user_schema_disallows_extra_properties(self):
         rule = documents.user_schema["rule"]
         assert rule.get("additionalProperties") is False
+
+
+def _valid_record_doc(**extra: object) -> dict[str, object]:
+    doc = {
+        "recordName": "upload.pdf",
+        "externalRecordId": "document-1",
+        "recordType": "FILE",
+        "origin": "UPLOAD",
+        "createdAtTimestamp": 1,
+        "connectorId": "kb-1",
+    }
+    doc.update(extra)
+    return doc
+
+
+class TestRecordUploaderField:
+    def test_accepts_uploaded_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        validator.validate(_valid_record_doc(uploadedBy="user-1"))
+
+    def test_rejects_created_by(self) -> None:
+        validator = Draft4Validator(adapt_schema(documents.record_schema))
+        with pytest.raises(ValidationError):
+            validator.validate(_valid_record_doc(createdBy="user-1"))
 
 
 def _valid_app_doc(**extra):

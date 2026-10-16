@@ -1,10 +1,15 @@
 import { injectable, inject } from 'inversify'
 import { Request, Response, NextFunction } from 'express'
 import { Logger } from '../../../libs/services/logger.service'
-import { OAuthAppService } from '../services/oauth.app.service'
-import { OAuthTokenService } from '../services/oauth_token.service'
-import { AuthorizationCodeService } from '../services/authorization_code.service'
-import { ScopeValidatorService } from '../services/scope.validator.service'
+import {
+  OAuthAppService,
+  APP_WORKSPACE_MISMATCH_MESSAGE,
+  getWorkspaceMismatchDetails,
+  isAppUsableInOrg,
+} from '../services/oauth.app.service';
+import { OAuthTokenService } from '../services/oauth_token.service';
+import { AuthorizationCodeService } from '../services/authorization_code.service';
+import { ScopeValidatorService } from '../services/scope.validator.service';
 import {
   InvalidGrantError,
   InvalidClientError,
@@ -75,6 +80,16 @@ export class OAuthProviderController {
       // Validate redirect URI - MUST be done before any error redirect
       this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri)
       validatedRedirectUri = query.redirect_uri
+
+      // Answered here, not by redirect, so the person reads it on the consent page.
+      if (!req.user || !isAppUsableInOrg(app, req.user.orgId)) {
+        res.status(403).json({
+          error: 'access_denied',
+          error_description: APP_WORKSPACE_MISMATCH_MESSAGE,
+          ...getWorkspaceMismatchDetails(app),
+        });
+        return;
+      }
     } catch (error) {
       // RFC 6749 Section 4.1.2.1: If redirect_uri is invalid/missing or client_id is invalid,
       // MUST NOT redirect. Display error directly to user.
@@ -117,13 +132,18 @@ export class OAuthProviderController {
       }
 
       // Build consent data
-      const user = req.user!
+      const user = req.user
       const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
         this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
           name: s.name,
           description: s.description,
           category: s.category,
         }))
+      const org = await Org.findOne({ _id: user.orgId, isDeleted: false })
+        .select('registeredName shortName')
+        .lean()
+        .exec();
+      const workspaceName = org?.shortName || org?.registeredName;
 
       const consentData: ConsentData = {
         app: {
@@ -140,6 +160,7 @@ export class OAuthProviderController {
           email: user.email,
           name: user.fullName,
         },
+        workspace: workspaceName ? { name: workspaceName } : undefined,
         redirectUri: query.redirect_uri,
         state: query.state,
       }
@@ -196,6 +217,14 @@ export class OAuthProviderController {
       // Validate redirect URI
       this.oauthAppService.validateRedirectUriForApp(app, redirect_uri)
 
+      if (!req.user || !isAppUsableInOrg(app, req.user.orgId)) {
+        res.status(403).json({
+          error: 'access_denied',
+          error_description: APP_WORKSPACE_MISMATCH_MESSAGE,
+        });
+        return;
+      }
+
       // Check consent
       if (consent !== 'granted') {
         const redirectUrl = new URL(redirect_uri)
@@ -209,7 +238,7 @@ export class OAuthProviderController {
         return
       }
 
-      const user = req.user!
+      const user = req.user
 
       // The GET step already rejects this, but the POST is what issues the
       // code, so a caller that skips the GET must be stopped here too.
@@ -576,6 +605,10 @@ export class OAuthProviderController {
       request.code_verifier,
       app.isConfidential,
     )
+
+    if (!isAppUsableInOrg(app, codeResult.orgId)) {
+      throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
+    }
 
     // Look up user details to embed in token
     let fullName: string | undefined

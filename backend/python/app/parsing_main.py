@@ -23,6 +23,7 @@ from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
@@ -323,6 +324,7 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "parsing")
 
 # Trace context — outermost, so log lines correlate with the caller's request.
 app.add_middleware(RequestContextMiddleware)

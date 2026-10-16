@@ -1904,6 +1904,7 @@ class AzureFilesConnector(BaseConnector):
         **kwargs: object,
     ) -> "AzureFilesConnector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         # Get account name from config for entities processor
         config = await config_service.get_config(
             f"/services/connectors/{connector_id}/config"
@@ -1921,7 +1922,7 @@ class AzureFilesConnector(BaseConnector):
         data_entities_processor = AzureFilesDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service, account_name=account_name
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         return cls(
             logger,

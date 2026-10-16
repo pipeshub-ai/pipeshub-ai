@@ -694,6 +694,32 @@ class TestOnEventEdgeCases:
         assert len(events) == 3
 
     @pytest.mark.asyncio
+    async def test_a_reprocessed_record_loses_its_previous_failure_reason(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)),              patch.object(ep, "update_record_fields", new_callable=AsyncMock) as update:
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        assert any(c.args[1] == {"reason": None} for c in update.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reason_clear_fails_the_attempt(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        gp.update_node = AsyncMock(return_value=False)
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(IndexingError, match="reason"):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+    @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
         """If virtualRecordId not in payload, it's taken from the DB record."""
         ep, _, processor, gp = _make_event_processor()

@@ -176,6 +176,9 @@ fields:
   updated_at:
     required: false
     type: integer
+  uploaded_by:
+    required: false
+    type: string
   version:
     required: true
     type: integer

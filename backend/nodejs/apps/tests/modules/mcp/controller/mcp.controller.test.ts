@@ -10,7 +10,11 @@ import { requestContextMiddleware } from '../../../../src/libs/middlewares/reque
 // The controller is imported AFTER mock-mcp-global.ts has patched require.cache
 // for @pipeshub-ai/mcp/* and @modelcontextprotocol/sdk, so all ESM deps resolve
 // to our fakes.
-import { handleMCPRequest } from '../../../../src/modules/mcp/controller/mcp.controller'
+// Load a fresh copy: a parallel worker may already hold one built while another
+// file had Logger.getInstance stubbed, and its logger would bypass Logger.prototype.
+const CONTROLLER_PATH = require.resolve('../../../../src/modules/mcp/controller/mcp.controller')
+delete require.cache[CONTROLLER_PATH]
+const { handleMCPRequest } = require(CONTROLLER_PATH) as typeof import('../../../../src/modules/mcp/controller/mcp.controller')
 
 // Cached module references — we mutate these exports per-test so the controller
 // picks up our stubs (it destructures from the same object on every request).

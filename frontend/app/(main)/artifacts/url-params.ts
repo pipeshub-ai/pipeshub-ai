@@ -1,4 +1,4 @@
-import type { ArtifactsSortField, ArtifactsViewMode } from './types';
+import type { ArtifactsOwnership, ArtifactsSortField, ArtifactsViewMode } from './types';
 
 export interface ArtifactsUrlState {
   search: string;
@@ -9,6 +9,7 @@ export interface ArtifactsUrlState {
   sortOrder: 'asc' | 'desc';
   page: number;
   viewMode: ArtifactsViewMode;
+  ownership: ArtifactsOwnership;
 }
 
 const DEFAULT_STATE: ArtifactsUrlState = {
@@ -18,6 +19,7 @@ const DEFAULT_STATE: ArtifactsUrlState = {
   sortOrder: 'desc',
   page: 1,
   viewMode: 'list',
+  ownership: 'all',
 };
 
 function parsePositiveInt(value: string | null, fallback: number): number {
@@ -36,6 +38,7 @@ export function parseArtifactsParams(searchParams: URLSearchParams): ArtifactsUr
   const sortBy = searchParams.get('sortBy');
   const sortOrder = searchParams.get('sortOrder');
   const view = searchParams.get('view');
+  const tab = searchParams.get('tab');
   return {
     search: searchParams.get('q') || '',
     artifactTypes: types,
@@ -51,6 +54,7 @@ export function parseArtifactsParams(searchParams: URLSearchParams): ArtifactsUr
     sortOrder: sortOrder === 'asc' ? 'asc' : 'desc',
     page: parsePositiveInt(searchParams.get('page'), 1),
     viewMode: view === 'grid' ? 'grid' : 'list',
+    ownership: tab === 'mine' || tab === 'shared' ? tab : DEFAULT_STATE.ownership,
   };
 }
 
@@ -64,5 +68,6 @@ export function serializeArtifactsParams(state: ArtifactsUrlState): string {
   if (state.sortOrder !== DEFAULT_STATE.sortOrder) params.set('sortOrder', state.sortOrder);
   if (state.page > 1) params.set('page', String(state.page));
   if (state.viewMode !== DEFAULT_STATE.viewMode) params.set('view', state.viewMode);
+  if (state.ownership !== DEFAULT_STATE.ownership) params.set('tab', state.ownership);
   return params.toString();
 }

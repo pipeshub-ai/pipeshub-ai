@@ -41,6 +41,9 @@ secretManagement:
       neo4jPassword: ""
       arangoPassword: ""
       qdrantApiKey: ""
+    # More keys for the same secret, by name: { <secret key>: <remote path> }.
+    # Empty paths are skipped. Pair with extraSecretData.
+    extraRemoteRefs: {}
 
   # Existing Kubernetes secret references
   # Use this if you pre-create secrets manually or via another tool
@@ -109,8 +112,13 @@ monitoring:
     interval: 30s
     scrapeTimeout: 10s
 
-# Telemetry configuration (OpenTelemetry)
+# Telemetry configuration
 telemetry:
+  # Product metrics/event collection (TELEMETRY_COLLECTION_FLAG). Empty keeps the
+  # services' default, on; false turns all telemetry code off.
+  collection:
+    enabled: ""
+  # OpenTelemetry (OTLP) exporter wiring
   enabled: false
   otlp:
     endpoint: ""  # OTLP endpoint URL (e.g., "http://otel-collector:4317")
@@ -176,8 +184,14 @@ extraVolumes: []
 #     mountPath: /app/public/branding
 extraVolumeMounts: []
 
+# Extra keys for the app secret this chart creates: { <secret key>: <value> }.
+# Empty values are skipped. Read them back with extraEnv and a secretKeyRef to
+# {{ include "pipeshub-ai.secretName" . }}.
+extraSecretData: {}
+
 # Extra env entries for the app container. Use a secretKeyRef for values that
-# must not sit in the release, such as E2B_API_KEY.
+# must not sit in the release, such as E2B_API_KEY. Entries are rendered as
+# templates, so a secretKeyRef can name {{ include "pipeshub-ai.secretName" . }}.
 # extraEnv:
 #   - name: E2B_API_KEY
 #     valueFrom:
@@ -304,6 +318,9 @@ persistence:
 config:
   nodeEnv: "production"
   logLevel: "info"
+  # Mask stored secrets in admin config API responses (HIDE_SECRET_CONFIG).
+  # false matches the docker-compose default: one org's admins see what they stored.
+  hideSecretConfig: false
   # NOTE: with the Kafka broker, per-partition ordering means only one
   # message per partition is processed at a time — actual concurrency is
   # also capped by the record-events topic's partition count, regardless

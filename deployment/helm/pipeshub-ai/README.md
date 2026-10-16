@@ -291,6 +291,7 @@ image.
 - Optional service account creation
 - Optional PDB, NetworkPolicy, ServiceMonitor
 - Optional OTLP telemetry env wiring
+- Product telemetry switch: `telemetry.collection.enabled: false` sets `TELEMETRY_COLLECTION_FLAG=false`
 
 ## Validation
 

@@ -116,7 +116,7 @@ export class MailConsumer {
   }
 
   private async deliver(payload: MailEventPayload): Promise<void> {
-    const smtpConfig = this.sender.getSmtpConfig();
+    const smtpConfig = await this.sender.getSmtpConfig(payload.orgId);
     if (!smtpConfig) {
       // Not retryable until an admin configures SMTP.
       this.logger.error('Mail event dropped: SMTP configuration not set');

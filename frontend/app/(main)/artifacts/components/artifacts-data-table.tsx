@@ -3,13 +3,14 @@
 import { Flex, Text } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
-import type { ArtifactListItem, ArtifactsSortField, ArtifactsViewMode } from '../types';
+import type { ArtifactListItem, ArtifactsOwnership, ArtifactsSortField, ArtifactsViewMode } from '../types';
 import { ArtifactsListView } from './artifacts-list-view';
 import { ArtifactsGridView } from './artifacts-grid-view';
 
 interface ArtifactsDataTableProps {
   items: ArtifactListItem[];
   viewMode: ArtifactsViewMode;
+  ownership: ArtifactsOwnership;
   isLoading: boolean;
   error: string | null;
   sortBy: ArtifactsSortField;
@@ -18,6 +19,7 @@ interface ArtifactsDataTableProps {
   onPreview: (item: ArtifactListItem) => void;
   onDownload: (item: ArtifactListItem) => void;
   onOpenChat: (item: ArtifactListItem) => void;
+  onShare: (item: ArtifactListItem) => void;
   pagination: { page: number; limit: number; totalCount: number; totalPages: number };
   onPageChange: (page: number) => void;
 }
@@ -25,6 +27,7 @@ interface ArtifactsDataTableProps {
 export function ArtifactsDataTable({
   items,
   viewMode,
+  ownership,
   isLoading,
   error,
   sortBy,
@@ -33,6 +36,7 @@ export function ArtifactsDataTable({
   onPreview,
   onDownload,
   onOpenChat,
+  onShare,
   pagination,
   onPageChange,
 }: ArtifactsDataTableProps) {
@@ -60,9 +64,13 @@ export function ArtifactsDataTable({
     return (
       <Flex direction="column" align="center" justify="center" gap="3" style={{ flex: 1 }}>
         <EmptyIcon />
-        <Text size="3" weight="medium">{t('artifacts.empty', { defaultValue: 'No artifacts yet' })}</Text>
+        <Text size="3" weight="medium">
+          {ownership === 'shared' ? t('artifacts.emptyShared') : t('artifacts.empty', { defaultValue: 'No artifacts yet' })}
+        </Text>
         <Text size="2" style={{ color: 'var(--slate-10)' }}>
-          {t('artifacts.emptyHint', { defaultValue: 'Files your agents create in chat will show up here.' })}
+          {ownership === 'shared'
+            ? t('artifacts.emptySharedHint')
+            : t('artifacts.emptyHint', { defaultValue: 'Files your agents create in chat will show up here.' })}
         </Text>
       </Flex>
     );
@@ -75,6 +83,7 @@ export function ArtifactsDataTable({
         onPreview={onPreview}
         onDownload={onDownload}
         onOpenChat={onOpenChat}
+        onShare={onShare}
         pagination={pagination}
         onPageChange={onPageChange}
       />
@@ -90,6 +99,7 @@ export function ArtifactsDataTable({
       onPreview={onPreview}
       onDownload={onDownload}
       onOpenChat={onOpenChat}
+      onShare={onShare}
       pagination={pagination}
       onPageChange={onPageChange}
     />

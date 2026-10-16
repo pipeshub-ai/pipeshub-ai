@@ -560,11 +560,16 @@ class GitLabDataSource:
         ``data`` is a dict with a ``changes`` list; each entry has
         ``new_path``, ``old_path``, ``diff``, ``new_file``, ``deleted_file``,
         ``too_large``, and ``generated_file`` fields.
+
+        ``access_raw_diffs`` asks for every patch under GitLab's hard limit.
+        Without it, GitLab collapses (empties) any patch of 10% of that limit
+        or more on a merge request that changes more than one file, so a
+        medium-sized edit would arrive with no diff.
         """
         try:
             p = self._sdk.projects.get(project_id, lazy=True)
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
-            return GitLabResponse(success=True, data=mr.changes(get_all=True))
+            return GitLabResponse(success=True, data=mr.changes(get_all=True, access_raw_diffs="true"))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 

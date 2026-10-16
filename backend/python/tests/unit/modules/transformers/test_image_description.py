@@ -187,7 +187,7 @@ class TestBudget:
         container = _container(_image_block(0), _image_block(1), _image_block(2))
         stalled_uri = container.blocks[1].data["uri"]
 
-        async def respond(messages: list) -> MagicMock:
+        async def respond(messages: list, **_invoke_kwargs: object) -> MagicMock:
             if messages[0].content[1]["image_url"]["url"] == stalled_uri:
                 await asyncio.sleep(30)
             return MagicMock(content="A bar chart of Q3 revenue")

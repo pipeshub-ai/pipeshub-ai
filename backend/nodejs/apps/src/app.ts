@@ -28,6 +28,10 @@ import { loadConfigurationManagerConfig } from './modules/configuration_manager/
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { startTelemetry } from './libs/services/telemetry/telemetry.service';
+import {
+  isTelemetryEnabled,
+  TELEMETRY_COLLECTION_FLAG,
+} from './libs/services/telemetry/flag';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {
@@ -61,7 +65,9 @@ import {
   createRequestRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
+  editionBoot,
 } from './config';
+import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { MailConsumer } from './modules/mail/services/mail.consumer';
@@ -78,7 +84,11 @@ import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/deskto
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
 import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
-import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
+import {
+  createGlobalRateLimiter,
+  createSlackEventsRateLimiter,
+  slackEventsRateLimitPerMinute,
+} from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -202,7 +212,10 @@ export class Application {
       try {
         this.logger.info('Ensuring message broker topics exist...');
         const brokerConfig = resolveMessageBrokerConfig(appConfig);
-        await ensureMessageTopicsExist(brokerConfig, this.logger, REQUIRED_TOPICS);
+        await ensureMessageTopicsExist(brokerConfig, this.logger, [
+          ...REQUIRED_TOPICS,
+          ...editionBoot.topics,
+        ]);
         this.logger.info('Message broker topics check completed');
       } catch (brokerError: any) {
         this.logger.warn(
@@ -242,6 +255,8 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+
+      await editionBoot.initialize(configurationManagerConfig, appConfig);
 
       this.mailServiceContainer =
         await MailServiceContainer.initialize(appConfig, configurationManagerConfig);
@@ -295,6 +310,7 @@ export class Application {
       // Slack events proxy must be mounted before body-parsing middleware
       // so the raw request body is forwarded intact for signature verification
       this.setupSlackEventsProxy();
+      editionBoot.mountRawRoutes(this.app);
 
       // Configure Express
       this.configureMiddleware(appConfig);
@@ -302,10 +318,16 @@ export class Application {
       this.setupApiDocs();
       this.configureErrorHandling();
 
-      startTelemetry(
-        KeyValueStoreService.getInstance(configurationManagerConfig),
-      );
-      startOrgMetricsRefresh(this.logger);
+      if (isTelemetryEnabled()) {
+        startTelemetry(
+          KeyValueStoreService.getInstance(configurationManagerConfig),
+        );
+        startOrgMetricsRefresh(this.logger);
+      } else {
+        this.logger.info(
+          `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`,
+        );
+      }
 
       // Domain events are written to the outbox by whoever makes the change;
       // this is what actually delivers them. Without it running, events queue
@@ -327,6 +349,7 @@ export class Application {
 
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
+      editionBoot.startWorkers(this.logger);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -433,39 +456,43 @@ export class Application {
           // Login with microsoft urls
           'https://login.microsoftonline.com',
           'https://graph.microsoft.com',
+          ...editionBoot.cspSources.connectSrc,
           ...envConnectSrcs,
           appConfig.connectorPublicUrl,
         ]),
       ].filter(Boolean);
 
-      this.app.use(helmet({
-        crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-        contentSecurityPolicy: {
-          directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: [
-              "'self'",
-              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-                "https://cdnjs.cloudflare.com",
-                "https://login.microsoftonline.com",
-                "https://graph.microsoft.com",
-                "https://accounts.google.com",
-                "https://challenges.cloudflare.com",
-                "https://api.iconify.design",
-                "https://api.simplesvg.com"
-              ]),
-            ],
-            connectSrc: connectSrc,
-            objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-            frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-            workerSrc: ["'self'", "blob:"], // PDF.js workers
-            childSrc: ["'self'", "blob:"], // PDF rendering
-            imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-            fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-            mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
-          }
-        }
-      }));
+      this.app.use(
+        helmet({
+          crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
+          contentSecurityPolicy: {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: [
+                "'self'",
+                ...editionBoot.cspSources.scriptSrc,
+                ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                  'https://cdnjs.cloudflare.com',
+                  'https://login.microsoftonline.com',
+                  'https://graph.microsoft.com',
+                  'https://accounts.google.com',
+                  'https://challenges.cloudflare.com',
+                  'https://api.iconify.design',
+                  'https://api.simplesvg.com',
+                ]),
+              ],
+              connectSrc: connectSrc,
+              objectSrc: ["'self'", 'data:', 'blob:'], // PDF rendering
+              frameSrc: ["'self'", 'blob:', ...editionBoot.cspSources.frameSrc], // PDF rendering in frames
+              workerSrc: ["'self'", 'blob:'], // PDF.js workers
+              childSrc: ["'self'", 'blob:'], // PDF rendering
+              imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
+              fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
+              mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+            },
+          },
+        }),
+      );
     }
 
     // Request context middleware
@@ -523,7 +550,9 @@ export class Application {
         appConfig.scopedJwtSecret,
       ),
     );
-    this.app.use(metricsMiddleware());
+    if (isTelemetryEnabled()) {
+      this.app.use(metricsMiddleware());
+    }
   }
 
   private configureRoutes(): void {
@@ -639,6 +668,8 @@ export class Application {
       '/api/v1/knowledgeBase',
       createKnowledgeBaseRouter(this.knowledgeBaseContainer),
     );
+
+    editionBoot.mountRoutes(this.app, this.editionContainers());
 
     this.app.use(
       '/api/v1/artifacts',
@@ -830,6 +861,7 @@ export class Application {
       if (this.authServiceContainer) {
         await this.updateSamlStrategies();
       }
+      await editionBoot.afterListen(this.logger, this.editionContainers());
 
     } catch (error) {
       this.logger.error('Failed to start server', {
@@ -881,6 +913,13 @@ export class Application {
     }
   }
 
+  private editionContainers(): EditionContainers {
+    return {
+      entityManager: this.entityManagerContainer,
+      auth: this.authServiceContainer,
+    };
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
@@ -889,6 +928,13 @@ export class Application {
       // mid-request on closed clients. Socket.IO connections are closed by
       // the gateway shutdowns below, so they don't hold the drain open.
       const drained = this.closeHttpServer();
+      try {
+        await editionBoot.stop(this.logger, this.editionContainers());
+      } catch (err) {
+        this.logger.warn('Edition services did not stop cleanly', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -946,6 +992,7 @@ export class Application {
       await EnterpriseSearchAgentContainer.dispose();
       await TokenManagerContainer.dispose();
       await KnowledgeBaseContainer.dispose();
+      await editionBoot.dispose();
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
@@ -1063,32 +1110,39 @@ export class Application {
   private setupSlackEventsProxy(): void {
     const slackBotPort = parseInt(process.env.SLACK_BOT_PORT || '3020', 10);
 
-    this.app.use('/slack/events', (req, res) => {
-      const proxyReq = http.request(
-        {
-          hostname: 'localhost',
-          port: slackBotPort,
-          path: '/slack/events',
-          method: req.method,
-          headers: req.headers,
-        },
-        (proxyRes) => {
-          res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
-          proxyRes.pipe(res);
-        },
-      );
+    this.app.use(
+      '/slack/events',
+      createSlackEventsRateLimiter(
+        this.logger,
+        slackEventsRateLimitPerMinute(),
+      ),
+      (req, res) => {
+        const proxyReq = http.request(
+          {
+            hostname: 'localhost',
+            port: slackBotPort,
+            path: '/slack/events',
+            method: req.method,
+            headers: req.headers,
+          },
+          (proxyRes) => {
+            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            proxyRes.pipe(res);
+          },
+        );
 
-      proxyReq.on('error', (err) => {
-        this.logger.error('Slack events proxy error', {
-          error: err instanceof Error ? err.message : String(err),
+        proxyReq.on('error', (err) => {
+          this.logger.error('Slack events proxy error', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (!res.headersSent) {
+            res.status(502).json({ error: 'Slack bot service unavailable' });
+          }
         });
-        if (!res.headersSent) {
-          res.status(502).json({ error: 'Slack bot service unavailable' });
-        }
-      });
 
-      req.pipe(proxyReq);
-    });
+        req.pipe(proxyReq);
+      },
+    );
   }
 
   async addOAuthServicesToAuthMiddleware(): Promise<void> {

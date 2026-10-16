@@ -8446,7 +8446,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -8551,7 +8551,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return
 
             # 3. Check if team has any existing members to determine role
-            team_with_users = await self.get_team_with_users(team_id=team_key, user_key=None)
+            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
             existing_member_count = len((team_with_users or {}).get("members", []))
             role = "OWNER" if existing_member_count == 0 else "READER"
 
@@ -16056,12 +16056,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         date_to: int | None,
         sort_by: str,
         sort_order: str,
-    ) -> tuple[list[dict], int]:
+        ownership: str = "all",
+    ) -> tuple[list[dict], dict[str, int]]:
         """Permission-first gallery listing. ``user_id`` is the graph user key."""
         try:
             extra_filter, filter_bind = self._artifact_gallery_filters(
                 search, artifact_types, conversation_id, date_from, date_to,
             )
+            ownership_filter = {
+                "mine": '\n                FILTER permissionEdge.role == "OWNER"',
+                "shared": '\n                FILTER permissionEdge.role != "OWNER"',
+            }.get(ownership, "")
             sort_expr = self._artifact_gallery_sort_expr(sort_by)
             sort_dir = "ASC" if (sort_order or "").lower() == "asc" else "DESC"
             walk = self._artifact_gallery_walk_aql(extra_filter)
@@ -16074,21 +16079,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
             main_query = (
                 walk
+                + ownership_filter
                 + f"""
                 SORT {sort_expr} {sort_dir}, record._key
                 LIMIT @skip, @limit
                 RETURN {self._artifact_gallery_return_aql()}
                 """
             )
-            count_query = "RETURN LENGTH(" + walk + " RETURN 1)"
+            # Counted without the ownership filter so every tab's count comes from one query.
+            count_query = (
+                walk
+                + """
+                COLLECT owned = permissionEdge.role == "OWNER" WITH COUNT INTO total
+                RETURN { owned, total }
+                """
+            )
             records = await self.execute_query(
                 main_query, bind_vars={**bind, "skip": skip, "limit": limit}
             )
             count_results = await self.execute_query(count_query, bind_vars=bind)
-            total = count_results[0] if count_results else 0
-            if isinstance(total, dict):
-                total = next(iter(total.values()), 0)
-            return records or [], int(total or 0)
+            counts = {"mine": 0, "shared": 0}
+            for row in count_results or []:
+                counts["mine" if row.get("owned") else "shared"] += int(row.get("total") or 0)
+            return records or [], counts
         except Exception as e:
             self.logger.error("❌ Failed to list accessible artifacts: %s", str(e))
             raise
@@ -24846,6 +24859,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def get_team_with_users(
         self,
         team_id: str,
+        org_id: str,
         user_key: str,
         transaction: str | None = None
     ) -> dict | None:
@@ -24855,7 +24869,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         try:
             team_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
-            FILTER team._key == @teamId
+            FILTER team._key == @teamId AND team.orgId == @orgId
             LET current_user_permission = (
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._from == @currentUserId AND permission._to == team._id
@@ -24897,6 +24911,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 team_query,
                 bind_vars={
                     "teamId": team_id,
+                    "orgId": org_id,
                     "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
                 },
                 transaction=transaction

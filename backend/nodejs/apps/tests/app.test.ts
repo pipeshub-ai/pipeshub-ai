@@ -1,3 +1,4 @@
+import { editionBoot } from '../src/config';
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
@@ -369,6 +370,24 @@ describe('Application', () => {
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
     });
 
+    it('runs the edition boot hooks while initializing', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const initialize = sandbox.stub(editionBoot, 'initialize').resolves();
+      const mountRawRoutes = sandbox.stub(editionBoot, 'mountRawRoutes');
+      const mountRoutes = sandbox.stub(editionBoot, 'mountRoutes');
+      const startWorkers = sandbox.stub(editionBoot, 'startWorkers');
+
+      await app.initialize();
+
+      expect(initialize.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledBefore(mountRoutes)).to.be.true;
+      expect(mountRoutes.calledOnce).to.be.true;
+      expect(startWorkers.calledOnce).to.be.true;
+    });
+
     it('should initialize all containers and configure the app', async () => {
       const app = new Application();
       const { containers, mockNotificationService } = stubAllContainers(sandbox);
@@ -509,6 +528,27 @@ describe('Application', () => {
         (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).calledOnce,
         'startOrgMetricsRefresh should be called once during initialize',
       ).to.be.true;
+    });
+
+    it('should not start telemetry when TELEMETRY_COLLECTION_FLAG is off', async () => {
+      const previous = process.env.TELEMETRY_COLLECTION_FLAG;
+      process.env.TELEMETRY_COLLECTION_FLAG = 'false';
+      try {
+        const app = new Application();
+        stubAllContainers(sandbox);
+        sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+
+        await app.initialize();
+
+        expect((telemetryModule.startTelemetry as sinon.SinonStub).called).to.be
+          .false;
+        expect(
+          (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).called,
+        ).to.be.false;
+      } finally {
+        if (previous === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG;
+        else process.env.TELEMETRY_COLLECTION_FLAG = previous;
+      }
     });
 
     it('should bind MigrationService to configuration manager container', async () => {
@@ -862,6 +902,16 @@ describe('Application', () => {
       expect((MailServiceContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
       expect((CrawlingManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
       expect((ApiDocsContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+      expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
+    it('still disposes every container when the edition fails to stop', async () => {
+      (app as any).notificationContainer = new Container();
+      sandbox.stub(editionBoot, 'stop').rejects(new Error('worker did not stop'));
+
+      await app.stop();
+
+      expect((TokenManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
       expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
     });
 

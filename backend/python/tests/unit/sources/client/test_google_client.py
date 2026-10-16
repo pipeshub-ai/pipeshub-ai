@@ -977,18 +977,6 @@ class TestToolsetRefreshScopes:
             ("gmail", "v1", ("app.agents.actions.google.gmail.gmail", "Gmail")),
             ("drive", "v3", ("app.agents.actions.google.drive.drive", "GoogleDrive")),
             ("calendar", "v3", ("app.agents.actions.google.calendar.calendar", "GoogleCalendar")),
-            # The Meet toolset module does not import today (it names a ToolCategory
-            # that tool_builder no longer has), so its consent list is spelled out.
-            (
-                "meet",
-                "v2",
-                [
-                    "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.events",
-                    "https://www.googleapis.com/auth/meetings.space.created",
-                    "https://www.googleapis.com/auth/meetings.space.readonly",
-                ],
-            ),
         ],
     )
     @patch("app.sources.client.google.google.build")
@@ -1054,22 +1042,6 @@ class TestToolsetRefreshScopes:
         )
         assert gmail_send not in consented
         assert gmail_send not in refresh_scopes
-
-    @pytest.mark.asyncio
-    @patch("app.sources.client.google.google.build")
-    @patch("app.sources.client.google.google.Credentials")
-    async def test_meet_asks_for_and_refreshes_with_the_conference_record_scope(
-        self, mock_credentials_cls, mock_build, logger, mock_config_service
-    ) -> None:
-        from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
-
-        readonly = "https://www.googleapis.com/auth/meetings.space.readonly"
-        refresh_scopes = await self._refresh_scopes(
-            "meet", "v2", mock_credentials_cls, logger, mock_config_service
-        )
-        # The Meet toolset's consent screen is built from this list (meet.py), but the module does not import today.
-        assert readonly in GOOGLE_TOOLSET_SCOPES["meet"]
-        assert readonly in refresh_scopes
 
 
 class TestBuildFromToolsetEdgeCases:

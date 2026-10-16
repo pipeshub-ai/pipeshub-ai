@@ -11,7 +11,7 @@ from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 def provider():
     p = ArangoHTTPProvider(logger=AsyncMock(), config_service=AsyncMock())
     p.http_client = AsyncMock()
-    p.execute_query = AsyncMock(side_effect=[[{"id": "a1"}], [1]])
+    p.execute_query = AsyncMock(side_effect=[[{"id": "a1"}], [{"owned": True, "total": 1}]])
     return p
 
 
@@ -51,7 +51,7 @@ class TestArangoListAccessibleArtifactsQueryShape:
         count_bind = provider.execute_query.await_args_list[1].kwargs["bind_vars"]
         assert "skip" not in count_bind
         assert "limit" not in count_bind
-        assert "LENGTH(" in count_query
+        assert 'COLLECT owned = permissionEdge.role == "OWNER" WITH COUNT INTO total' in count_query
         assert "LIMIT @skip, @limit" not in count_query
 
     @pytest.mark.asyncio
@@ -91,6 +91,55 @@ class TestArangoListAccessibleArtifactsQueryShape:
         assert count_bind["date_to"] == 2
         assert "skip" not in count_bind
         assert "limit" not in count_bind
+
+
+class TestArangoGalleryOwnership:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("ownership", "clause"),
+        [("mine", 'FILTER permissionEdge.role == "OWNER"'), ("shared", 'FILTER permissionEdge.role != "OWNER"')],
+    )
+    async def test_a_tab_filters_the_page_but_not_the_counts(self, provider, ownership, clause) -> None:
+        provider.execute_query = AsyncMock(
+            side_effect=[[{"id": "a1"}], [{"owned": True, "total": 4}, {"owned": False, "total": 7}]]
+        )
+        rows, counts = await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+            ownership=ownership,
+        )
+        list_query, count_query = _captured_queries(provider)
+        assert clause in list_query
+        assert clause not in count_query
+        assert rows == [{"id": "a1"}]
+        assert counts == {"mine": 4, "shared": 7}
+
+    @pytest.mark.asyncio
+    async def test_all_adds_no_role_filter(self, provider) -> None:
+        await provider.list_accessible_artifacts(
+            user_id="user-key",
+            org_id="org-1",
+            skip=0,
+            limit=50,
+            search=None,
+            artifact_types=None,
+            conversation_id=None,
+            date_from=None,
+            date_to=None,
+            sort_by="createdAtTimestamp",
+            sort_order="desc",
+        )
+        list_query, _ = _captured_queries(provider)
+        assert "permissionEdge.role" not in list_query.split("RETURN {")[0]
 
 
 class TestArangoGetArtifactDetailQueryShape:

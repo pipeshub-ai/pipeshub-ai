@@ -419,6 +419,28 @@ def _stringify(payload: Any) -> str:  # noqa: ANN401
         return str(payload)
 
 
+_MAX_DERIVED_SHORT_DESCRIPTION_CHARS = 160
+
+
+def _derive_short_description(description: str, fallback: str) -> str:
+    """Best-effort one-liner from a full LangChain tool docstring: the
+    first paragraph (up to the first blank line — the convention every
+    docstring in `app/utils/*_tool.py` already follows), whitespace-
+    collapsed and capped so a verbose opening paragraph still can't
+    balloon the system prompt the way the full multi-paragraph docstring
+    would. Callers that know a better one-liner pass `short_description`."""
+    text = (description or "").strip()
+    if not text:
+        return fallback
+    first_paragraph = text.split("\n\n", 1)[0]
+    one_line = " ".join(first_paragraph.split())
+    if not one_line:
+        return fallback
+    if len(one_line) > _MAX_DERIVED_SHORT_DESCRIPTION_CHARS:
+        one_line = one_line[: _MAX_DERIVED_SHORT_DESCRIPTION_CHARS - 1].rstrip() + "…"
+    return one_line
+
+
 class PipesHubStructuredToolAdapter(Tool):
     """Wraps a per-request dynamic LangChain `StructuredTool` (built by the
     factory functions in `tool_system.py`/`app/utils/*_tool.py`) as an
@@ -426,10 +448,18 @@ class PipesHubStructuredToolAdapter(Tool):
     identity/description/parameters come from the `StructuredTool` object
     itself rather than a `RegistryTool`."""
 
-    def __init__(self, structured_tool: StructuredTool, app_name: str, tool_name: str) -> None:
+    def __init__(
+        self,
+        structured_tool: StructuredTool,
+        app_name: str,
+        tool_name: str,
+        *,
+        short_description: str | None = None,
+    ) -> None:
         self._structured_tool = structured_tool
         self._app_name = app_name
         self._tool_name = tool_name
+        self._short_description = short_description
 
     @property
     def app_name(self) -> str:
@@ -441,7 +471,9 @@ class PipesHubStructuredToolAdapter(Tool):
 
     @property
     def short_description(self) -> str:
-        return self._structured_tool.description or self.name
+        if self._short_description:
+            return self._short_description
+        return _derive_short_description(self._structured_tool.description, self.name)
 
     @property
     def description(self) -> str:

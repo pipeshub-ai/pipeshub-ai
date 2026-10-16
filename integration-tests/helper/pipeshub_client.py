@@ -749,12 +749,13 @@ class PipeshubClient:
     # --------------------------------------------------------------------- #
     # Public API - Stream Content
     # --------------------------------------------------------------------- #
-    def stream_record(self, record_id: str) -> requests.Response:
+    def stream_record(self, record_id: str, timeout: float | None = None) -> requests.Response:
         """
         Stream record content (for testing streaming responses).
         
         Args:
             record_id: Internal record ID (_key)
+            timeout: Seconds to wait for the response; defaults to ``timeout_seconds``.
             
         Returns:
             Response object (caller can iterate over response.iter_content())
@@ -765,7 +766,7 @@ class PipeshubClient:
             resp = requests.get(
                 url,
                 headers=self._headers(),
-                timeout=self.timeout_seconds,
+                timeout=timeout or self.timeout_seconds,
                 stream=True,
             )
             if resp.status_code == 401 and attempt == 0:

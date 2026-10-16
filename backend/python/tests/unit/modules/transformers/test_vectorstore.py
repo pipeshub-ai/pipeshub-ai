@@ -1069,6 +1069,25 @@ class TestIndexDocuments:
             await vs.index_documents(container, "org-1", "rec-1", "vr-1")
 
     @pytest.mark.asyncio
+    async def test_create_embeddings_keeps_non_retryable_error(self) -> None:
+        """A NonRetryableError from the text path is not wrapped in VectorStoreError."""
+        from langchain_core.documents import Document
+
+        from app.exceptions.non_retryable import NonRetryableError
+
+        class _Blocked(NonRetryableError):
+            pass
+
+        vs = _make_vectorstore()
+        vs.delete_embeddings = AsyncMock()
+        vs._process_document_chunks = AsyncMock(side_effect=_Blocked("blocked"))
+
+        with pytest.raises(_Blocked):
+            await vs._create_embeddings(
+                [Document(page_content="hi", metadata={})], "rec-1", "vr-1", "coll"
+            )
+
+    @pytest.mark.asyncio
     async def test_paragraph_blocks_processed_as_text(self):
         """Paragraph blocks are processed as text."""
         from app.models.blocks import Block, BlocksContainer

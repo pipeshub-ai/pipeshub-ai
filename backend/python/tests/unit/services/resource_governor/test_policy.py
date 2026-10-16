@@ -409,6 +409,92 @@ class TestHeavyMemoryCap:
         assert policy_mod.heavy_memory_cap(snap) == 1
 
 
+class TestMemoryCapsAcrossWorkerProcesses:
+    """Every worker process samples the same cgroup and sees the same free
+    memory, so a cap that hands each of them all of it lets N workers commit
+    N times what is free. Each worker's cap is its share, so the workers
+    together are held to what one process would be."""
+
+    # 32 CPUs split over 8 workers, the per-worker ceilings of a 768-record
+    # budget raised 8x; 24 GiB free, at 62.5% pressure (under MEM_SOFT).
+    CEILINGS = Ceilings(heavy=4, light=32, index_heavy=64, index_light=512)
+    SNAP = _snapshot(
+        cpu_quota=32.0,
+        mem_limit_bytes=64 * 1024 ** 3,
+        mem_working_set_bytes=40 * 1024 ** 3,
+    )
+
+    def _settle(self, worker_count: int) -> Limits:
+        limits = Limits(values={
+            Pool.HEAVY_PARSE: self.CEILINGS.heavy,
+            Pool.LIGHT_PARSE: self.CEILINGS.light,
+            Pool.INDEX_HEAVY: self.CEILINGS.index_heavy,
+            Pool.INDEX_LIGHT: self.CEILINGS.index_light,
+        })
+        state = ControllerState.initial()
+        for sample in range(20):
+            limits, state = next_limits(
+                limits, self.SNAP, self.CEILINGS, state, _no_demand(),
+                now=float(sample) * INTERVAL, interval=INTERVAL,
+                worker_count=worker_count,
+            )
+        return limits
+
+    def test_one_worker_is_held_only_by_its_own_ceilings(self) -> None:
+        limits = self._settle(1)
+        assert limits.get(Pool.HEAVY_PARSE) == 4  # free memory holds 16
+        assert limits.get(Pool.INDEX_HEAVY) == 64  # holds 160
+        assert limits.get(Pool.INDEX_LIGHT) == 512  # holds 1200
+
+    def test_eight_workers_together_hold_what_one_process_may(self) -> None:
+        limits = self._settle(8)
+        assert 8 * limits.get(Pool.HEAVY_PARSE) <= policy_mod.heavy_memory_cap(self.SNAP)
+        for pool in (Pool.INDEX_HEAVY, Pool.INDEX_LIGHT):
+            assert 8 * limits.get(pool) <= policy_mod.index_memory_cap(self.SNAP, pool)
+        assert limits.get(Pool.HEAVY_PARSE) == 2
+        assert limits.get(Pool.INDEX_HEAVY) == 20
+        assert limits.get(Pool.INDEX_LIGHT) == 150
+
+    def test_exhausted_memory_leaves_each_worker_one(self) -> None:
+        """The cgroup's floor is split, not repeated: one index record or heavy
+        parse per worker, the least a worker's gate admits anyway."""
+        nearly_full = _snapshot(
+            mem_limit_bytes=4 * 1024 ** 3, mem_working_set_raw_bytes=4 * 1024 ** 3,
+        )
+        assert policy_mod.heavy_memory_cap(nearly_full, worker_count=8) == 1
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT, worker_count=8) == 1
+        assert policy_mod.index_memory_cap(nearly_full, Pool.INDEX_LIGHT) == policy_mod.COUNT_POOL_FLOOR
+
+    def test_braked_workers_together_stay_within_one_processes_floors(self) -> None:
+        """8 GiB free at 80% pressure: the hard brake takes every index pool
+        to its pressure floor. One process floors at 15 light and 2 heavy records;
+        eight workers must not floor at eight times that."""
+        ceilings_one = Ceilings(heavy=32, light=256, index_heavy=64, index_light=512)
+        snap = _snapshot(
+            cpu_quota=32.0,
+            mem_limit_bytes=40 * 1024 ** 3,
+            mem_working_set_bytes=32 * 1024 ** 3,
+        )
+
+        def settle(ceilings: Ceilings, workers: int) -> Limits:
+            limits = warm_start_limits(ceilings)
+            state = ControllerState.initial()
+            for sample in range(40):
+                limits, state = next_limits(
+                    limits, snap, ceilings, state, _no_demand(),
+                    now=float(sample) * 100.0, interval=INTERVAL, worker_count=workers,
+                )
+            return limits
+
+        one = settle(ceilings_one, 1)
+        each = settle(policy_mod.split_ceilings(ceilings_one, 8), 8)
+        assert one.get(Pool.INDEX_LIGHT) == 15
+        assert one.get(Pool.INDEX_HEAVY) == 2
+        assert 8 * each.get(Pool.INDEX_LIGHT) <= one.get(Pool.INDEX_LIGHT)
+        # One record per worker is the least a worker's gate admits.
+        assert each.get(Pool.INDEX_HEAVY) == 1
+
+
 class TestFloorFor:
     def test_count_pool_floor_is_two_unless_ceiling_smaller(self) -> None:
         assert floor_for(Pool.HEAVY_PARSE, 12) == 2

@@ -18,6 +18,8 @@ from prometheus_client import (
     generate_latest,
 )
 
+from app.telemetry.flag import telemetry_enabled
+
 
 class CounterHandle(Protocol):
     def inc(self, *labels: str, value: float = 1.0) -> None: ...
@@ -121,5 +123,46 @@ class PrometheusBackend(MetricsBackend):
                 metric.clear()
 
 
-# One backend per process, owned by the telemetry layer.
-METRICS_BACKEND: MetricsBackend = PrometheusBackend()
+class _NoopCounter:
+    def inc(self, *labels: str, value: float = 1.0) -> None:
+        pass
+
+
+class _NoopGauge:
+    def set(self, *labels: str, value: float) -> None:
+        pass
+
+    def clear(self) -> None:
+        pass
+
+
+class _NoopHistogram:
+    def observe(self, *labels: str, value: float) -> None:
+        pass
+
+
+class NoopBackend(MetricsBackend):
+    """Backend used when telemetry is switched off: instruments accept every
+    call and record nothing, so call sites need no flag checks of their own."""
+
+    def counter(self, name: str, help: str, labels: Sequence[str]) -> CounterHandle:  # noqa: A002 - the MetricsBackend interface names it
+        return _NoopCounter()
+
+    def gauge(self, name: str, help: str, labels: Sequence[str]) -> GaugeHandle:  # noqa: A002 - the MetricsBackend interface names it
+        return _NoopGauge()
+
+    def histogram(
+        self, name: str, help: str, labels: Sequence[str], buckets: Sequence[float]  # noqa: A002
+    ) -> HistogramHandle:
+        return _NoopHistogram()
+
+    def serialize(self) -> str:
+        return ""
+
+    def reset(self) -> None:
+        pass
+
+
+# One backend per process, owned by the telemetry layer. Chosen at import because
+# every metric module creates its instruments at import.
+METRICS_BACKEND: MetricsBackend = PrometheusBackend() if telemetry_enabled() else NoopBackend()

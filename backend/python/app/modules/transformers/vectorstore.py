@@ -33,6 +33,7 @@ from app.exceptions.indexing_exceptions import (
     IndexingError,
     VectorStoreError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
 from app.modules.parsers.link_text import anchor_text_only
@@ -1645,6 +1646,8 @@ class VectorStore(Transformer):
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
+                except NonRetryableError:
+                    raise
                 except Exception as e:
                     raise VectorStoreError(
                         f"Failed to store batch {idx}",
@@ -1661,6 +1664,8 @@ class VectorStore(Transformer):
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
             for idx, result in enumerate(results):
+                if isinstance(result, NonRetryableError):
+                    raise result
                 if isinstance(result, Exception):
                     raise VectorStoreError(
                         f"Failed to store batch {idx}",
@@ -1708,6 +1713,8 @@ class VectorStore(Transformer):
         if langchain_docs:
             try:
                 await self._process_document_chunks(langchain_docs, record_id, collection_name)
+            except NonRetryableError:
+                raise
             except Exception as e:
                 raise VectorStoreError(
                     "Failed to store documents in vector store",
@@ -2116,7 +2123,7 @@ class VectorStore(Transformer):
                 await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
-        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):
+        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError):
             raise
         except Exception as e:
             raise IndexingError(

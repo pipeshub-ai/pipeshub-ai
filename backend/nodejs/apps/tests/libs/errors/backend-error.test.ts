@@ -9,6 +9,7 @@ import {
   GatewayTimeoutError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnprocessableEntityError,
@@ -32,6 +33,17 @@ describe('handleBackendError', () => {
       )
       expect(result).to.be.instanceOf(ForbiddenError)
       expect(result.message).to.equal('You can only edit collections you own.')
+    })
+
+    it('passes a 402 through with only its message', () => {
+      const message = 'Payment required by the upstream service'
+      const result = handleBackendError(
+        { response: { status: 402, data: { detail: { code: 'PAYMENT_REQUIRED', message } } } },
+        'Chat Stream',
+      )
+      expect(result).to.be.instanceOf(PaymentRequiredError)
+      expect((result as PaymentRequiredError).statusCode).to.equal(402)
+      expect(result.message).to.equal(message)
     })
 
     it('reads an axios-shaped 404', () => {

@@ -120,8 +120,12 @@ def test_service_builds_the_same_content_from_the_trimmed_request(
 
     request_blocks = classify_request_blocks(container.blocks, client_ceiling)
 
-    full = extractor._prepare_content(container.blocks, multimodal, service_context)
-    trimmed = extractor._prepare_content(_as_received(request_blocks), multimodal, service_context)
+    full = extractor._prepare_content(
+        container.blocks, is_multimodal_llm=multimodal, context_length=service_context,
+    )
+    trimmed = extractor._prepare_content(
+        _as_received(request_blocks), is_multimodal_llm=multimodal, context_length=service_context,
+    )
     assert trimmed == full
     if client_ceiling == 2000:
         # The bound has to engage for this to say anything about trimming.

@@ -13686,27 +13686,31 @@ class TestGetTeamWithUsers:
         connected_provider.execute_query = AsyncMock(
             return_value=[{"id": "t1", "name": "Team", "members": []}]
         )
-        result = await connected_provider.get_team_with_users("t1", "uk1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "uk1")
         assert result is not None
         assert result["id"] == "t1"
+        # Security: the lookup must be scoped to the caller's org.
+        query = connected_provider.execute_query.call_args.args[0]
+        assert "team.orgId == @orgId" in query
+        assert connected_provider.execute_query.call_args.kwargs["bind_vars"]["orgId"] == "org1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.get_team_with_users("t999", "uk1")
+        result = await connected_provider.get_team_with_users("t999", "org1", "uk1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_team_with_users("t1", "uk1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "uk1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_members_exclude_inactive_users(self, connected_provider) -> None:
         """Removed users (isActive == false) must not be listed as team members."""
         connected_provider.execute_query = AsyncMock(return_value=[{"id": "t1", "members": []}])
-        await connected_provider.get_team_with_users("t1", "uk1")
+        await connected_provider.get_team_with_users("t1", "org1", "uk1")
         query = connected_provider.execute_query.call_args.args[0]
         assert "FILTER user != null AND user.isActive == true" in query
 

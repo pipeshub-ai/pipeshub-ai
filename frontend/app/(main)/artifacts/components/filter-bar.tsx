@@ -1,9 +1,10 @@
 'use client';
 
-import { Flex } from '@radix-ui/themes';
+import { Box, Flex, SegmentedControl } from '@radix-ui/themes';
 import { FilterDropdown, DateRangePicker, type DateFilterType } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
-import { GALLERY_ARTIFACT_TYPES } from '../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { ARTIFACTS_OWNERSHIP_TABS, GALLERY_ARTIFACT_TYPES, type ArtifactsOwnership } from '../types';
 import { useArtifactsStore } from '../store';
 
 const TYPE_ICONS: Record<string, string> = {
@@ -37,11 +38,15 @@ function isoToEpochEnd(iso: string): number {
 
 export function ArtifactsFilterBar() {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const artifactTypes = useArtifactsStore((s) => s.artifactTypes);
   const dateFrom = useArtifactsStore((s) => s.dateFrom);
   const dateTo = useArtifactsStore((s) => s.dateTo);
+  const ownership = useArtifactsStore((s) => s.ownership);
+  const counts = useArtifactsStore((s) => s.counts);
   const setArtifactTypes = useArtifactsStore((s) => s.setArtifactTypes);
   const setDateRange = useArtifactsStore((s) => s.setDateRange);
+  const setOwnership = useArtifactsStore((s) => s.setOwnership);
 
   const typeOptions = GALLERY_ARTIFACT_TYPES.map((value) => ({
     value,
@@ -75,6 +80,20 @@ export function ArtifactsFilterBar() {
       wrap="wrap"
       style={{ padding: 'var(--space-2) var(--space-4)', flexShrink: 0 }}
     >
+      {/* Radix gives every segment the widest label's width, so phones get short labels. */}
+      <Box className="no-scrollbar" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+        <SegmentedControl.Root
+          value={ownership}
+          onValueChange={(value) => setOwnership(value as ArtifactsOwnership)}
+          size={{ initial: '1', sm: '2' }}
+        >
+          {ARTIFACTS_OWNERSHIP_TABS.map((tab) => (
+            <SegmentedControl.Item key={tab} value={tab}>
+              {t(isMobile ? `artifacts.tabsShort.${tab}` : `artifacts.tabs.${tab}`)} ({counts[tab]})
+            </SegmentedControl.Item>
+          ))}
+        </SegmentedControl.Root>
+      </Box>
       <FilterDropdown
         label={t('filter.type')}
         icon="category"

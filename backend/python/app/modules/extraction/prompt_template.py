@@ -28,10 +28,7 @@ You are processing a document of an individual or an enterprise. Your task is to
 Instructions must be strictly followed.
 
 # File Metadata:
-File name: {record_name}
-File type: {record_type}
-
-Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.pdf" or a type of "spreadsheet" can help disambiguate an otherwise ambiguous category or department. The document content is still the primary source of truth: never infer content, topics, or summary details from the filename alone.
+The file name and type are given with the document content. Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.pdf" or a type of "spreadsheet" can help disambiguate an otherwise ambiguous category or department. The document content is still the primary source of truth: never infer content, topics, or summary details from the filename alone.
 
 # Analysis Guidelines:
 1. **Departments**:
@@ -83,4 +80,11 @@ Use the file metadata as supporting evidence — a name like "invoice_2024_ACME.
 
 # Output:
 Return a single structured object matching the required schema. Do not include any additional commentary outside the schema fields.
+"""
+
+# Sent after the instructions above, so they are the same bytes for every
+# record of an org and a provider can cache them.
+document_extraction_record_header = """# File Metadata:
+File name: {record_name}
+File type: {record_type}
 """

@@ -134,10 +134,12 @@ describe('TeamsController', () => {
 
   describe('getTeam', () => {
     it('should get a team by id', async () => {
-      const mockTeam = { id: 'team1', name: 'Engineering' };
+      // The entity service wraps the team as { team: {...} } — the real shape.
+      const team = { id: 'team1', name: 'Engineering', orgId: '507f1f77bcf86cd799439012' };
+      const payload = { status: 'success', team };
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: mockTeam,
+        data: payload,
       });
 
       req.params.teamId = 'team1';
@@ -145,7 +147,25 @@ describe('TeamsController', () => {
       await controller.getTeam(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockTeam)).to.be.true;
+      expect(res.json.calledWith(payload)).to.be.true;
+    });
+
+    it('reports a team from another org as not found', async () => {
+      // Even if the service returned a foreign team (wrapped shape), the
+      // controller must not relay it. Mimics requesting all_<otherOrgId>.
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'success', team: { id: 'all_507f1f77bcf86cd799439099', name: 'All', orgId: '507f1f77bcf86cd799439099' } },
+      });
+
+      req.params.teamId = 'all_507f1f77bcf86cd799439099';
+
+      await controller.getTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.false;
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('Team not found');
     });
 
     it('should enrich createdByUser.profilePicture when getting team', async () => {
@@ -155,6 +175,7 @@ describe('TeamsController', () => {
         data: {
           id: 'team1',
           name: 'Engineering',
+          orgId: '507f1f77bcf86cd799439012',
           createdByUser: { id: 'graph-creator-key', userId: creatorId, name: 'Alice', email: 'alice@test.com' },
         },
       });

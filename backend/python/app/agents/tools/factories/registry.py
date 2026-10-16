@@ -86,7 +86,6 @@ class ClientFactoryRegistry:
             "gmail": ("gmail", "v1"),
             "calendar": ("calendar", "v3"),
             "drive": ("drive", "v3"),
-            "meet": ("meet", "v2"),
         }
         for subdir, (service_name, version) in _google_services.items():
             factory = GoogleClientFactory(service_name, version)

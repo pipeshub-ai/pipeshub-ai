@@ -7,22 +7,27 @@ import { ValidationMiddleware } from '../../../libs/middlewares/validation.middl
 import { AppConfig } from '../../tokens_manager/config/config';
 import {
   artifactIdParamsSchema,
+  artifactShareSchema,
   listArtifactsSchema,
 } from '../validators/artifacts.validators';
 import {
   getArtifact,
+  listArtifactMembers,
   listArtifactVersions,
   listArtifacts,
+  shareArtifact,
+  unshareArtifact,
 } from '../controllers/artifacts.controller';
 
 export function createArtifactsRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
+  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
   const appConfig = container.get<AppConfig>('AppConfig');
 
   router.get(
     '/',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(listArtifactsSchema),
     listArtifacts(appConfig),
@@ -30,15 +35,39 @@ export function createArtifactsRouter(container: Container): Router {
 
   router.get(
     '/:artifactId/versions',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(artifactIdParamsSchema),
     listArtifactVersions(appConfig),
   );
 
   router.get(
+    '/:artifactId/permissions',
+    authenticate,
+    requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
+    ValidationMiddleware.validate(artifactIdParamsSchema),
+    listArtifactMembers(appConfig),
+  );
+
+  router.post(
+    '/:artifactId/share',
+    authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE, OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(artifactShareSchema),
+    shareArtifact(appConfig),
+  );
+
+  router.post(
+    '/:artifactId/unshare',
+    authenticate,
+    requireScopes(OAuthScopeNames.KB_WRITE, OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(artifactShareSchema),
+    unshareArtifact(appConfig),
+  );
+
+  router.get(
     '/:artifactId',
-    authMiddleware.authenticate,
+    authenticate,
     requireScopes(OAuthScopeNames.KB_READ, OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(artifactIdParamsSchema),
     getArtifact(appConfig),

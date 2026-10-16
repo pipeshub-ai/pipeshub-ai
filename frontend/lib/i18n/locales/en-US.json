@@ -342,7 +342,23 @@
       "DATA_FILE": "Data file",
       "CODE": "Code",
       "CODE_OUTPUT": "Code output"
-    }
+    },
+    "tabs": {
+      "all": "All artifacts",
+      "mine": "Mine",
+      "shared": "Shared with me"
+    },
+    "tabsShort": {
+      "all": "All",
+      "mine": "Mine",
+      "shared": "Shared"
+    },
+    "share": {
+      "title": "Share artifact"
+    },
+    "emptyShared": "Nothing shared with you yet",
+    "emptySharedHint": "Artifacts your teammates share with you will show up here.",
+    "notAvailable": "This artifact is no longer available"
   },
   "notifications": {
     "title": "Notifications",
@@ -672,6 +688,8 @@
       "open": "Open {{source}}",
       "openIn": "Open in {{source}}",
       "openInCollections": "Open in Collections",
+      "syncedJustNow": "Synced just now",
+      "syncedAgo": "Synced {{age}} ago",
       "relevance": "Relevance: {{percent}}%"
     },
     "results": "Results",
@@ -775,6 +793,8 @@
     "copiedAsMarkdown": "Copied as Markdown",
     "copiedAsText": "Copied as text",
     "citations": "Citations",
+    "showMoreCitations_one": "Show {{count}} more citation",
+    "showMoreCitations_other": "Show {{count}} more citations",
     "markdownWithCitations": "Markdown with citations",
     "onlyTextWithoutCitations": "Only text without citations",
     "differentModesOfQuery": "Different Modes of Query",
@@ -4397,6 +4417,7 @@
     "missingRecordId": "Missing record id"
   },
   "oauthConsent": {
+    "workspace": "Workspace: {{name}}",
     "loading": "Loading authorization request…",
     "missingParams": "Missing required OAuth parameters (client_id, redirect_uri).",
     "noData": "No authorization data available.",

@@ -17,6 +17,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
@@ -119,7 +120,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
 
 
 async def _transform_query(
-    chain: "Runnable", query: str, step: str, logger: "Logger"
+    chain: "Runnable", query: str, step: str, logger: "Logger", config: dict | None = None
 ) -> str | None:
     """The model's output for one query-transformation step, or None if it failed.
 
@@ -127,7 +128,8 @@ async def _transform_query(
     (provider down, content filter, timeout) must not cost the whole search.
     """
     try:
-        return await asyncio.wait_for(chain.ainvoke(query), timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
+        call = chain.ainvoke(query, config=config) if config else chain.ainvoke(query)
+        return await asyncio.wait_for(call, timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
     except HTTPException:
         raise
     except Exception as exc:
@@ -180,10 +182,14 @@ async def search(
         # Setup query transformation
         rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
+        # OpikTracer is invoke-config only (not a constructor callback); without
+        # this, rewrite/expand LLM calls never appear in Opik.
+        invoke_config = get_llm_invoke_config(llm)
+
         # Run query transformations in parallel
         rewritten_query, expanded_queries = await asyncio.gather(
-            _transform_query(rewrite_chain, body.query, "rewrite", logger),
-            _transform_query(expansion_chain, body.query, "expansion", logger),
+            _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
+            _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
         )
 
         logger.debug(f"Rewritten query: {rewritten_query}")

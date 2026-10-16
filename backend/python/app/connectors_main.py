@@ -65,6 +65,7 @@ from app.containers.connector import initialize_container
 from app.edition_containers import ConnectorAppContainer
 from app.edition_services import (
     build_sync_dispatcher,
+    configure_app,
     create_coordinator,
     get_connector_registry_cls,
     get_data_entities_processor_cls,
@@ -83,6 +84,7 @@ from app.services.messaging.config import ConsumerType, MessageBrokerType, Topic
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.telemetry.flag import telemetry_enabled  # noqa: E402 - like the imports around it, after set_service_suffix()
 from app.telemetry.modules.connector_metrics import set_connector_active
 from app.telemetry.setup import setup_telemetry
 from app.utils.process_hardening import mark_process_non_dumpable
@@ -806,9 +808,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
 
-    app.state.connector_metrics_task = asyncio.create_task(
-        refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
-    )
+    if telemetry_enabled():
+        app.state.connector_metrics_task = asyncio.create_task(
+            refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
+        )
 
     # Every connector's blocking vendor-SDK calls run here, each through a capped
     # lease. Created before _post_startup so resume_sync_services and the event
@@ -1019,6 +1022,7 @@ app = FastAPI(
     lifespan=lifespan,
     dependencies=_app_dependencies,
 )
+configure_app(app, "connectors")
 
 # List of paths to exclude from authentication (public endpoints)
 # All other paths will require authentication by default

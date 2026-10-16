@@ -19,6 +19,21 @@ export type ArtifactsSortField =
 
 export type ArtifactsViewMode = 'list' | 'grid';
 
+export const ARTIFACTS_OWNERSHIP_TABS = ['all', 'mine', 'shared'] as const;
+
+/** Gallery tab: every artifact the user can read, the ones they own, or the ones shared with them. */
+export type ArtifactsOwnership = (typeof ARTIFACTS_OWNERSHIP_TABS)[number];
+
+export type ArtifactsOwnershipCounts = Record<ArtifactsOwnership, number>;
+
+export type ArtifactRole = 'OWNER' | 'READER';
+
+export interface ArtifactMember {
+  /** Auth user id */
+  userId: string;
+  role: ArtifactRole;
+}
+
 export interface ArtifactGalleryVersion {
   version: number;
   sizeBytes: number;
@@ -39,6 +54,8 @@ export interface ArtifactListItem {
   conversationTitle?: string;
   createdAt?: number | null;
   updatedAt?: number | null;
+  /** The viewer's permission: OWNER for their own artifacts, READER for ones shared with them. */
+  role?: ArtifactRole | null;
 }
 
 export interface ArtifactDetail extends ArtifactListItem {
@@ -55,6 +72,7 @@ export interface ArtifactListResponse {
     totalCount: number;
     totalPages: number;
   };
+  counts?: ArtifactsOwnershipCounts;
 }
 
 export interface ArtifactListParams {
@@ -67,4 +85,5 @@ export interface ArtifactListParams {
   dateTo?: number;
   sortBy?: ArtifactsSortField;
   sortOrder?: 'asc' | 'desc';
+  ownership?: ArtifactsOwnership;
 }

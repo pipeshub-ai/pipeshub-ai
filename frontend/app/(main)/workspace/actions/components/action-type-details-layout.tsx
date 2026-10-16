@@ -9,6 +9,7 @@ import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { RegistryToolsetRow } from '@/app/(main)/toolsets/api';
 import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
+import { useBrand } from '@/lib/branding';
 import { ToolsetInstanceRowCard } from './toolset-instance-row-card';
 
 export type ActionInstanceAuthTab = 'all' | 'authenticated' | 'not_authenticated';
@@ -70,6 +71,7 @@ export function ActionTypeDetailsLayout({
   pagination = null,
 }: ActionTypeDetailsLayoutProps) {
   const { t } = useTranslation();
+  const brand = useBrand();
   const scopeBackLabel =
     scope === 'team' ? t('workspace.actions.typeDetail.scopeTeam') : t('workspace.actions.typeDetail.scopePersonal');
   const title = registryRow?.displayName || registryRow?.name || '';
@@ -218,6 +220,7 @@ export function ActionTypeDetailsLayout({
               }
               const url =
                 primaryHttpDocumentationUrl(registryRow?.documentationLinks) ||
+                brand.docsHref() ||
                 EXTERNAL_LINKS.documentation;
               window.open(url, '_blank', 'noopener,noreferrer');
             }}

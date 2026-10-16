@@ -5284,7 +5284,7 @@ class TestTeamQueriesExcludeInactiveUsers:
     @pytest.mark.asyncio
     async def test_get_team_with_users_filters_inactive(self, neo4j_provider: Neo4jProvider) -> None:
         neo4j_provider.client.execute_query = AsyncMock(return_value=[])
-        await neo4j_provider.get_team_with_users("t1", "uk1")
+        await neo4j_provider.get_team_with_users("t1", "org1", "uk1")
         self._assert_guarded(self._member_query(neo4j_provider))
 
     @pytest.mark.asyncio

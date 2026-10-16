@@ -218,6 +218,11 @@ export function logoutFromWorkspaceMenu(): void {
   logoutAndRedirect();
 }
 
+/** One workspace per sign-in in this edition, so there is nothing to switch to. */
+export function switchToSignedInWorkspace(_orgId: string): boolean {
+  return false;
+}
+
 // Selectors for common access patterns
 export const selectAccessToken = (state: AuthStore) => state.accessToken;
 export const selectRefreshToken = (state: AuthStore) => state.refreshToken;

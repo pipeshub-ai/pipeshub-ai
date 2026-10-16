@@ -2,7 +2,7 @@
 
 import React from 'react';
 import { Flex, Box, Text, Avatar } from '@radix-ui/themes';
-import { PipesHubIcon } from '@/app/components/ui';
+import { BrandMark } from '@/config';
 
 interface OnboardingHeaderProps {
   // User info (right side)
@@ -75,7 +75,7 @@ export function OnboardingHeader({
 
       {/* Center — PipesHub Logo */}
       <Flex align="center" justify="center">
-        <PipesHubIcon size={32} color="var(--accent-8)" />
+        <BrandMark size={32} color="var(--accent-8)" />
       </Flex>
 
       {/* Right — User Avatar + Name */}

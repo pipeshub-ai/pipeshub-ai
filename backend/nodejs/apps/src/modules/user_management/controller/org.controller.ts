@@ -14,6 +14,7 @@ import {
 } from '../../../libs/utils/image.utils';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   AuthMethodType,
   OrgAuthConfig,
@@ -321,7 +322,7 @@ export class OrgController {
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
           templateData: {
-            invitee: 'PipesHub',
+            invitee: getBrandConfig().productName,
             name: 'User',
             orgName: org.registeredName,
             link: `${this.config.frontendUrl}`,

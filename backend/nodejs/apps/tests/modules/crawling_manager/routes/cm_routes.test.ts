@@ -4,7 +4,7 @@ import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createCrawlingManagerRouter } from '../../../../src/modules/crawling_manager/routes/cm_routes'
 import { CrawlingSchedulerService } from '../../../../src/modules/crawling_manager/services/crawling_service'
-import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import { AuthMiddleware } from '../../../../src/config'
 import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 
 describe('Crawling Manager Routes', () => {

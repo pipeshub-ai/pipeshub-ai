@@ -15,7 +15,7 @@ from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.utils.encryption.encryption_service import EncryptionService
 from app.utils.logger import create_logger
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 logger = create_logger("etcd")
 

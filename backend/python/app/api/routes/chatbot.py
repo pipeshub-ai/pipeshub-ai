@@ -57,6 +57,7 @@ from app.modules.transformers.transformer import (
     IMAGE_DESCRIPTION_BUDGET_S,
     TransformContext,
 )
+from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -579,12 +580,15 @@ async def _rollback_attachment_records(
             )
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.post(
     "/chat/attachments/upload",
     dependencies=[
         Depends(
             require_scopes(
                 OAuthScopes.CONVERSATION_CHAT,
+                OAuthScopes.AGENT_EXECUTE,
                 service_scopes=(TokenScopes.CONVERSATION_CREATE,),
             )
         )
@@ -1010,19 +1014,28 @@ async def _grant_reader_permissions(
     record_ids: list[str],
 ) -> int:
     """Create READER edges for pairs with no permission edge yet, on records the
-    grantor owns. Existing edges are left alone: `batch_create_edges` overwrites
+    grantor owns. Other edges are left alone: `batch_create_edges` overwrites
     every property, so re-granting would downgrade an OWNER edge and rewrite edges
-    on every shared conversation view."""
+    on every shared conversation view. The exception is an artifact the owner also
+    shared directly: its edge records the conversation grant once, so taking the
+    direct share away later leaves the chat's access."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
-    if not missing:
+    direct_only = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and not edge.get("chatGranted")
+    ]
+    if not missing and not direct_only:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in missing))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in missing] + [rid for (_, rid), _ in direct_only])),
     )
     ts = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = [
@@ -1039,6 +1052,11 @@ async def _grant_reader_permissions(
         for user_key, record_id in missing
         if record_id in owned
     ]
+    edges += [
+        reader_edge(user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in direct_only
+        if record_id in owned
+    ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
     return len(edges)
@@ -1052,20 +1070,38 @@ async def _revoke_reader_permissions(
 ) -> int:
     """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
     `(_from, _to)` regardless of role, so without the READER filter an unshare that
-    names the owner would delete the owner's own OWNER edges."""
+    names the owner would delete the owner's own OWNER edges. An artifact the
+    owner also shared directly keeps its edge and only loses the chat's grant."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     readers = [
-        pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
+        pair
+        for pair, edge in zip(pairs, existing)
+        if edge and edge.get("role") == "READER" and not is_direct_share(edge)
     ]
-    if not readers:
+    also_direct = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and edge.get("chatGranted")
+    ]
+    if not readers and not also_direct:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in readers))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in readers] + [rid for (_, rid), _ in also_direct])),
     )
+    ts = get_epoch_timestamp_in_ms()
+    direct_kept = [
+        reader_edge(user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in also_direct
+        if record_id in owned
+    ]
+    if direct_kept:
+        await graph_provider.batch_create_edges(direct_kept, CollectionNames.PERMISSION.value)
     edges: list[dict[str, Any]] = [
         {
             "from_id": user_key,
@@ -1078,7 +1114,7 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-    return len(edges)
+    return len(edges) + len(direct_kept)
 
 
 async def _get_artifact_record_ids_for_conversation(
@@ -1189,10 +1225,12 @@ async def revoke_artifact_permissions(
     return {"revoked": revoked}
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))],
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
 async def delete_chat_attachment(
@@ -1263,14 +1301,16 @@ async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) ->
     return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
 
 
-async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
+async def load_entity_vector_store(
+    container: Any, logger_: Any, org_id: str | None,  # noqa: ANN401
+) -> Any | None:  # noqa: ANN401
     """The entity store backing the knowledge-graph entity tools, or None.
 
     None hides the tools and their prompt paragraph: when the provider is
-    missing or fails, and when the entities collection does not exist yet, so
-    a deployment with nothing indexed does not pay for tools that can only
-    come back empty. Never raises; chat must not fail over an optional
-    dependency.
+    missing or fails, and when *org_id*'s entities collection does not
+    exist yet, so a deployment with nothing indexed does not pay for tools
+    that can only come back empty. Never raises; chat must not fail over an
+    optional dependency.
     """
     provider = getattr(container, "entity_vector_store", None)
     if provider is None:
@@ -1279,7 +1319,7 @@ async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None: 
         store = provider()
         if inspect.isawaitable(store):
             store = await store
-        if store is None or not await store.collection_exists():
+        if store is None or not await store.collection_exists(org_id):
             return None
         return store
     except Exception as exc:
@@ -1294,7 +1334,7 @@ async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # 
     would create one, and chat hides the tools until there is one. Never
     raises; a failed load is retried after the store's back-off, as a failed
     first search would be."""
-    store = await load_entity_vector_store(container, logger_)
+    store = await load_entity_vector_store(container, logger_, None)
     if store is None:
         return
     try:
@@ -1374,7 +1414,7 @@ async def _generate_chat_stream_via_agent_loop(
     # find_records_by_entity tools. When unavailable those tools are simply
     # not granted, rather than blocking chat.
     entity_vector_store_task = asyncio.ensure_future(
-        load_entity_vector_store(container, logger_)
+        load_entity_vector_store(container, logger_, org_id)
     )
     background_tasks = [
         prompts_task, user_doc_task, org_doc_task,
@@ -1619,7 +1659,12 @@ async def askAIStream(
     )
 
 
-@router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
+@router.post(
+    "/chat/cancel",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
+)
 async def cancel_chat_stream(
     request: Request,
     cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),

@@ -11,11 +11,15 @@ import {
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
 import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema'
 import {
+  InvalidGrantError,
   InvalidTokenError,
   ExpiredTokenError,
-  InvalidGrantError,
   InvalidScopeError,
 } from '../../../libs/errors/oauth.errors'
+import {
+  APP_WORKSPACE_MISMATCH_MESSAGE,
+  isAppUsableInOrg,
+} from './oauth.app.service';
 import {
   OAuthTokenPayload,
   GeneratedTokens,
@@ -341,6 +345,11 @@ export class OAuthTokenService {
     requestedScopes?: string[],
   ): Promise<GeneratedTokens> {
     const payload = await this.verifyRefreshToken(refreshToken)
+
+    // Ends refresh tokens that an app got for another workspace before the check existed.
+    if (!isAppUsableInOrg(app, payload.orgId)) {
+      throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
+    }
 
     // Get stored refresh token
     const tokenHash = this.hashToken(refreshToken)
