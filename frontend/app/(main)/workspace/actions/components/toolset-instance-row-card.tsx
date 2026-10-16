@@ -95,7 +95,8 @@ export function ToolsetInstanceRowCard({
         overflow: 'hidden',
       }}
     >
-      <Flex align="center" gap="3" style={{ padding: 16, minWidth: 0 }}>
+      {/* Wraps on a narrow screen: the status and buttons move under the name instead of squeezing it out. */}
+      <Flex align="center" gap="3" wrap="wrap" style={{ padding: 16, minWidth: 0, rowGap: 'var(--space-3)' }}>
         <Flex
           align="center"
           justify="center"
@@ -114,7 +115,7 @@ export function ToolsetInstanceRowCard({
             <MaterialIcon name="bolt" size={20} color="var(--gray-11)" />
           )}
         </Flex>
-        <Flex direction="column" gap="1" style={{ flex: 1, minWidth: 0 }}>
+        <Flex direction="column" gap="1" style={{ flex: '1 1 10rem', minWidth: 0 }}>
           <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }} truncate>
             {primaryTitle}
           </Text>
@@ -129,7 +130,7 @@ export function ToolsetInstanceRowCard({
           gap="3"
           wrap="wrap"
           justify="end"
-          style={{ flexShrink: 0, rowGap: 'var(--space-2)' }}
+          style={{ marginLeft: 'auto', maxWidth: '100%', rowGap: 'var(--space-2)' }}
         >
           {showUserAuthFlow ? (
             <Badge size="3" color="amber" variant="soft">
