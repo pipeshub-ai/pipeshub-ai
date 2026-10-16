@@ -8,8 +8,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
 

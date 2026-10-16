@@ -280,7 +280,7 @@ async def test_a_persist_failure_is_logged_as_failed_with_counts_only(caplog):
     assert _SECRET_NAME not in caplog.text
 
 
-async def test_a_lookup_that_cannot_run_writes_nothing_and_fails_the_persist(caplog, monkeypatch):
+async def test_a_lookup_that_cannot_run_writes_nothing_and_fails_the_persist(caplog, monkeypatch) -> None:
     monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
     caplog.set_level(logging.INFO)
     graph = MagicMock(
@@ -297,7 +297,7 @@ async def test_a_lookup_that_cannot_run_writes_nothing_and_fails_the_persist(cap
     assert _SECRET_NAME not in caplog.text
 
 
-async def test_a_lookup_that_cannot_run_is_queued_and_the_retry_links_the_survivor(monkeypatch):
+async def test_a_lookup_that_cannot_run_is_queued_and_the_retry_links_the_survivor(monkeypatch) -> None:
     """The first write defers instead of linking the merged-away node; the
     retry, once the graph answers, links the node it was merged into."""
     monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)

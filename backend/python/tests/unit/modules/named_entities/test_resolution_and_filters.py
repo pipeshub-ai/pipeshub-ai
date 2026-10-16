@@ -111,12 +111,12 @@ async def test_a_name_whose_node_was_merged_links_to_the_survivor_in_every_mode(
 
 
 @pytest.fixture
-def _no_lookup_retry_delay(monkeypatch):
+def _no_lookup_retry_delay(monkeypatch) -> None:
     monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
 
 
 @pytest.mark.parametrize("mode", list(ResolutionMode))
-async def test_a_failed_redirect_lookup_raises_instead_of_linking_the_merged_node(mode, _no_lookup_retry_delay):
+async def test_a_failed_redirect_lookup_raises_instead_of_linking_the_merged_node(mode, _no_lookup_retry_delay) -> None:
     own = named_entity_key("org", "organization", "name:organization:acme")
     graph = _Merged(
         [{"normKey": "name:organization:acme", "_key": own, "orgId": "org", "kind": "organization", "mergedInto": "winner"}],
@@ -127,18 +127,18 @@ async def test_a_failed_redirect_lookup_raises_instead_of_linking_the_merged_nod
 
 
 class _Flaky(_Graph):
-    def __init__(self, rows, failures):
+    def __init__(self, rows, failures) -> None:
         super().__init__(rows)
         self.failures = failures
 
-    async def find_named_entities(self, org_id, kind, keys):
+    async def find_named_entities(self, org_id, kind, keys) -> list[dict]:
         if self.failures:
             self.failures -= 1
             raise TimeoutError("graph timed out")
         return await super().find_named_entities(org_id, kind, keys)
 
 
-async def test_a_failed_entity_lookup_raises_instead_of_minting_the_own_key(_no_lookup_retry_delay):
+async def test_a_failed_entity_lookup_raises_instead_of_minting_the_own_key(_no_lookup_retry_delay) -> None:
     alias_owner = {"normKey": "name:organization:acme inc", "_key": "owner", "orgId": "org",
                    "kind": "organization", "normalizedAliases": ["name:organization:acme"]}
     graph = _Flaky([alias_owner], failures=2)
@@ -149,7 +149,7 @@ async def test_a_failed_entity_lookup_raises_instead_of_minting_the_own_key(_no_
     assert (resolved.graph_key, resolved.merged_into) == ("owner", "owner")
 
 
-async def test_one_failed_entity_lookup_is_retried(_no_lookup_retry_delay):
+async def test_one_failed_entity_lookup_is_retried(_no_lookup_retry_delay) -> None:
     alias_owner = {"normKey": "name:organization:acme inc", "_key": "owner", "orgId": "org",
                    "kind": "organization", "normalizedAliases": ["name:organization:acme"]}
     graph = _Flaky([alias_owner], failures=1)
@@ -157,8 +157,8 @@ async def test_one_failed_entity_lookup_is_retried(_no_lookup_retry_delay):
     assert resolved.graph_key == "owner"
 
 
-async def test_a_failed_candidate_search_raises_instead_of_minting_the_own_key(_no_lookup_retry_delay):
-    async def search(org_id, kind, name):
+async def test_a_failed_candidate_search_raises_instead_of_minting_the_own_key(_no_lookup_retry_delay) -> None:
+    async def search(org_id, kind, name) -> list[dict]:
         raise TimeoutError("vector store timed out")
 
     with pytest.raises(EntityLookupUnavailableError):
@@ -167,7 +167,7 @@ async def test_a_failed_candidate_search_raises_instead_of_minting_the_own_key(_
         ).resolve("org", [_org("Acme")])
 
 
-async def test_a_lookup_that_finds_nothing_keeps_the_own_key():
+async def test_a_lookup_that_finds_nothing_keeps_the_own_key() -> None:
     (resolved,) = await NamedEntityResolver(_Graph([]), mode=ResolutionMode.APPLY).resolve("org", [_org("Acme")])
     assert resolved.graph_key == named_entity_key("org", "organization", "name:organization:acme")
 

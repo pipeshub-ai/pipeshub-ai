@@ -446,7 +446,7 @@ class TestEntityLookupUnavailableClassification:
     answered: the record's content is fine."""
 
     @pytest.mark.parametrize("status_code", [400, 404, 503])
-    def test_deferred_lookup_is_transient_whatever_the_root(self, status_code):
+    def test_deferred_lookup_is_transient_whatever_the_root(self, status_code) -> None:
         from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 
         class _StoreError(Exception):
@@ -458,7 +458,7 @@ class TestEntityLookupUnavailableClassification:
         exc.__cause__ = _StoreError()
         assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT
 
-    def test_a_deliberate_stop_still_wins(self):
+    def test_a_deliberate_stop_still_wins(self) -> None:
         from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
         from app.exceptions.non_retryable import NonRetryableError
 
