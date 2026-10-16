@@ -107,11 +107,14 @@ def _jira_factory(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ClientFactoryRegistry, "_initialized", True)
 
 
-async def _load(*, internal: bool = False) -> tuple[AgentContext, Any]:
+async def _load(*, internal: bool = False, picked: list[str] | None = None) -> tuple[AgentContext, Any]:
+    toolset: dict[str, Any] = {"name": "jira", "instanceId": "inst-j", "instanceName": "Jira (Engineering)"}
+    if picked is not None:
+        toolset["tools"] = [{"name": name} for name in picked]
     context = AgentContext(
         org_id="org-1", user_id="user-1", user_email="u@example.com", logger=MagicMock(),
         retrieval_service=MagicMock(config_service=MagicMock()),
-        agent_toolsets=[{"name": "jira", "instanceId": "inst-j", "instanceName": "Jira (Engineering)"}],
+        agent_toolsets=[toolset],
         toolset_configs={"inst-j": {"auth": {}}},
     )
     catalogue = MagicMock()
@@ -136,6 +139,12 @@ class TestTheLoader:
         assert {path.rsplit("/", 1)[-1]: t.kind for path, t in recorded.items()} == {
             "search_issues": "read", "create_issue": "write", "delete_issue": "destructive",
         }
+
+    async def test_only_the_tools_picked_for_the_agent_are_recorded(self) -> None:
+        context, registry = await _load(picked=["create_issue"])
+
+        assert list(context.tool_state[approvals.TOOLSET_TOOLS_BY_PATH]) == ["/tools/jira/create_issue"]
+        assert not registry.has("jira__delete_issue")
 
     async def test_an_internal_toolsets_tools_arent_checked(self) -> None:
         context, registry = await _load(internal=True)
