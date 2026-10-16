@@ -554,7 +554,7 @@ class TestBuildAuthStatusSection:
         assert "Your actions" in combined
         assert "Settings >" not in combined
 
-    def test_a_service_account_agent_is_sent_to_the_agent_builder(self):
+    def test_a_service_account_agent_is_sent_to_the_agent_builder(self) -> None:
         parts = []
         _build_auth_status_section(
             state={"is_service_account": True, "toolset_load_failures": {"slack": "not_authenticated"}},
