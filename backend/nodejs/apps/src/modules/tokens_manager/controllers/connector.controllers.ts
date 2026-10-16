@@ -2109,7 +2109,9 @@ export const resyncConnectorRecords =
       // The read above can be wider than who may sync: a personal connector is
       // its creator's to sync.
       if (instance.scope === 'personal' && instance.createdBy !== userId) {
-        throw new ForbiddenError('Only the person who created this connector can sync it');
+        throw new ForbiddenError(
+          'Only the person who created this connector can sync it',
+        );
       }
       // Lock first: "already running" must win over "desktop offline".
       assertConnectorNotLocked(instance);
