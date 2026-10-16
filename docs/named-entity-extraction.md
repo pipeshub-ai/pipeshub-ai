@@ -203,6 +203,12 @@ whose own node was merged links to the survivor, and an `entityIds` filter on a
 merged id also matches the survivor's records. Redirects are followed up to 16
 hops within the org and stop at a cycle.
 
+A lookup the resolver could not run (the entity, redirect or candidate search)
+is retried once and then fails the write rather than reading as "no match",
+which would link the mention to a merged-away node or mint a new one. The
+record keeps its last good entities and the write goes to the persist retry
+above.
+
 ## Retrieval
 
 Search accepts `filters.entityFilters` (kinds, name, entity ids, a date
