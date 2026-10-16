@@ -21,7 +21,7 @@ DATABASE_UNREACHABLE = "We couldn't reach PipesHub's database just now. Please t
 
 
 
-def where_to_authenticate(is_service_account: bool) -> str:
+def where_to_authenticate(*, is_service_account: bool) -> str:
     """Where a toolset's sign-in is fixed: a service-account agent signs in once, on the agent."""
     if is_service_account:
         return "this agent's settings in the agent builder (someone who can edit the agent has to do it)"

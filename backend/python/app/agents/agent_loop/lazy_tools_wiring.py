@@ -307,7 +307,7 @@ class PipesHubGlobalCatalogFallback:
                     description=(
                         f"{description} — configured but not authenticated; "
                         "tell the user to authenticate this toolset under "
-                        f"{where_to_authenticate(getattr(self._context, 'is_service_account', False))}."
+                        f"{where_to_authenticate(is_service_account=getattr(self._context, 'is_service_account', False))}."
                         if reason == "not_authenticated" else description
                     ),
                     reason=reason,

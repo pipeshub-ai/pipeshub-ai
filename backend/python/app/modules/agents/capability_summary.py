@@ -248,7 +248,7 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
     if not unauthenticated:
         return
 
-    where = where_to_authenticate(bool(state.get("is_service_account")))
+    where = where_to_authenticate(is_service_account=bool(state.get("is_service_account")))
     parts.append("### Needs Authentication")
     parts.append(
         "The following toolsets are configured for this agent but are NOT "
