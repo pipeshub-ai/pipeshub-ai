@@ -393,3 +393,42 @@ class TestWhatOnlyGrepFinds:
         searcher = InvertedIndexSearcher([], store_chunks=size)
 
         assert await _is_small_store(searcher, _ORG, "u1", logging.getLogger("test")) is small
+
+
+class TestLookupsBeforeScans:
+    """A scan of a missed command can take the rest of the budget, so the
+    keyword lookup must not wait behind it."""
+
+    @staticmethod
+    async def _blocking_scan(**_kwargs: object) -> list:
+        await asyncio.sleep(30)
+        return []
+
+    @pytest.mark.asyncio
+    async def test_the_keyword_lookup_answers_before_a_slow_scan_under_the_budget(self) -> None:
+        searcher = InvertedIndexSearcher([("vr-1", "notes on ERR_GATEWAY_7731")])
+        coverage = PatternMatchCoverage()
+        with _llm_commands('grep -rci "nothing matches this" .'), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=self._blocking_scan), \
+                patch("app.utils.pattern_match._PATTERN_MATCH_TOTAL_BUDGET", 0.5):
+            result = await run_pattern_match_with_llm_grep(
+                **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
+            )
+
+        assert [r["virtual_record_id"] for r in result] == ["vr-1"]
+        assert "time limit" in render_pattern_match_coverage_note(coverage)
+
+    @pytest.mark.asyncio
+    async def test_the_keyword_lookup_answers_before_a_slow_scan_under_a_short_wait(self) -> None:
+        from app.utils.pattern_match import await_pattern_match
+
+        searcher = InvertedIndexSearcher([("vr-1", "notes on ERR_GATEWAY_7731")])
+        found: dict = {}
+        with _llm_commands('grep -rci "nothing matches this" .'), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", side_effect=self._blocking_scan):
+            task = asyncio.create_task(run_pattern_match_with_llm_grep(
+                **_kwargs(llm=MagicMock()), retrieval_service=searcher, found=found,
+            ))
+            result = await await_pattern_match(task, MagicMock(), wait_budget=0.5, found_so_far=found)
+
+        assert [r["virtual_record_id"] for r in result] == ["vr-1"]

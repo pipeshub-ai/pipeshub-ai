@@ -1259,13 +1259,18 @@ async def _run_pattern_match_with_llm_grep(
         "logger_instance": logger_instance,
         "coverage": coverage,
     }
-    if llm_grep_cmds:
-        scan_cmds = (
-            await _match_through_index(llm_grep_cmds, searcher, **index_kwargs)
-            if searcher is not None
-            else llm_grep_cmds
-        )
+    keyword_cmd = build_grep_command_from_query(query)
+    scan_cmds = list(llm_grep_cmds or [])
+    scan_keyword = True
+    if searcher is not None:
+        # Every lookup runs before any scan: a scan can take what is left of
+        # the budget, and a lookup answers in milliseconds.
+        if scan_cmds:
+            scan_cmds = await _match_through_index(scan_cmds, searcher, **index_kwargs)
+        if not found and keyword_cmd:
+            scan_keyword = bool(await _match_through_index([keyword_cmd], searcher, **index_kwargs))
 
+    if scan_cmds:
         async def _pipeline(cmd: str) -> tuple[str, list[dict[str, Any]] | BaseException]:
             try:
                 return cmd, await execute_pattern_match_pipeline(
@@ -1290,16 +1295,10 @@ async def _run_pattern_match_with_llm_grep(
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-        if found:
-            return list(found.values())
-        logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
-
-    keyword_cmd = build_grep_command_from_query(query)
-    if (
-        searcher is not None and keyword_cmd
-        and not await _match_through_index([keyword_cmd], searcher, **index_kwargs)
-    ):
+    if found or not scan_keyword:
         return list(found.values())
+    if llm_grep_cmds:
+        logger_instance.info("pattern_match: LLM grep found nothing, retrying with keyword grep")
     return await execute_pattern_match_pipeline(
         **common, grep_command=None, skip_grep_validation=False,
     )
