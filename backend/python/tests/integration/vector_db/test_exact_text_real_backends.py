@@ -161,6 +161,11 @@ class _ExactTextContract:
 
         assert hits == ["vr-and"]
 
+    async def test_the_store_size_counts_its_chunks(self, filled_collection, vector_service) -> None:
+        retrieval = _retrieval(vector_service, filled_collection, containers_on=False)
+
+        assert await retrieval.lexical_store_chunks(ORG, "u1") >= len(_corpus())
+
     async def test_a_phrase_is_verified_exactly(self, filled_collection, vector_service) -> None:
         retrieval = _retrieval(vector_service, filled_collection, containers_on=False)
 

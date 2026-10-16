@@ -252,3 +252,18 @@ class TestSeveralCollections:
 
         with pytest.raises(RuntimeError):
             await self._svc(db).search_lexical(["p99"], "u1", "o1")
+
+
+class TestStoreSize:
+    @pytest.mark.asyncio
+    async def test_counts_every_collection_the_search_reads(self) -> None:
+        from app.services.vector_db.models import VectorCollectionInfo
+
+        db = _vector_db(sparse=False, text=True, batches=[])
+        db.get_collection_info = AsyncMock(side_effect=lambda name: VectorCollectionInfo(
+            name=name, exists=True, points_count={"col-1": 120, "col-2": 30}[name],
+        ))
+        svc = _service(db, _graph(), containers_on=False)
+        svc.collection_registry.resolve_for_query = AsyncMock(return_value=["col-1", "col-2"])
+
+        assert await svc.lexical_store_chunks("o1", "u1") == 150

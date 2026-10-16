@@ -120,7 +120,7 @@ class TestLargeStore:
         assert [r["virtual_record_id"] for r in looked_up] == [needle_vrid]
         assert index_seconds < _BUDGET_SECONDS
         assert index_coverage.complete
-        assert render_pattern_match_coverage_note(index_coverage) == ""
+        assert "incomplete" not in render_pattern_match_coverage_note(index_coverage)
 
 
 def _llm_commands(*commands: str) -> AbstractContextManager[AsyncMock]:
@@ -144,7 +144,9 @@ class TestIndexOrScan:
 
         assert [r["virtual_record_id"] for r in result] == ["vr-1"]
         scan.assert_not_awaited()
-        assert render_pattern_match_coverage_note(coverage) == ""
+        # Answered by the index alone on a large store: the note says what it cannot see.
+        note = render_pattern_match_coverage_note(coverage)
+        assert "incomplete" not in note and "title or metadata" in note
 
     @pytest.mark.asyncio
     async def test_a_regex_with_no_word_is_scanned_and_marked(self) -> None:
@@ -187,7 +189,8 @@ class TestIndexOrScan:
             result = await run_pattern_match_with_llm_grep(**_kwargs(llm=MagicMock()), retrieval_service=searcher)
 
         assert [r["virtual_record_id"] for r in result] == ["vr-1"]
-        scan.assert_not_awaited()
+        # Only the command the index found nothing for was scanned.
+        assert [c.kwargs["grep_command"] for c in scan.await_args_list] == ['grep -rci "nothing matches this" .']
         assert searcher.calls[-1]["queries"] == ["err_gateway_7731 rollback"]
 
     @pytest.mark.asyncio
@@ -259,35 +262,24 @@ class TestIndexNotes:
         assert "more records matched than are listed" in render_pattern_match_coverage_note(coverage)
 
     @pytest.mark.asyncio
-    async def test_a_lookup_that_found_nothing_says_words_are_whole(self) -> None:
-        searcher = InvertedIndexSearcher([("vr-1", "the subscription renews monthly")])
+    async def test_a_slow_check_keeps_the_verified_hits_and_says_so(self) -> None:
+        from app.utils import exact_text_index
+
+        searcher = InvertedIndexSearcher([("vr-fast", "p99 latency"), ("vr-slow", "p99 latency slow")])
         scan = AsyncMock(return_value=[])
         coverage = PatternMatchCoverage()
-        with _llm_commands('grep -rci "subscri" .'), \
-                patch("app.utils.pattern_match.execute_pattern_match_pipeline", scan):
-            await run_pattern_match_with_llm_grep(
-                **_kwargs(llm=MagicMock(), query="subscri"), coverage=coverage, retrieval_service=searcher,
-            )
-
-        note = render_pattern_match_coverage_note(coverage)
-        assert "looked up as whole words" in note
-        assert "incomplete" not in note
-
-    @pytest.mark.asyncio
-    async def test_a_candidate_too_slow_to_check_sends_the_command_to_the_scan(self) -> None:
-        searcher = InvertedIndexSearcher([("vr-1", "p99 latency")])
-        scan = AsyncMock(return_value=[{"virtual_record_id": "vr-1"}])
-        coverage = PatternMatchCoverage()
+        real = exact_text_index._stage_matches
         with _llm_commands('grep -rci "p99 latency" .'), \
                 patch("app.utils.pattern_match.execute_pattern_match_pipeline", scan), \
-                patch("app.utils.exact_text_index._VERIFY_TIMEOUT_SECS", 0):
+                patch.object(exact_text_index, "_stage_matches",
+                             lambda stage, text: None if "slow" in text else real(stage, text)):
             result = await run_pattern_match_with_llm_grep(
                 **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
             )
 
-        assert [r["virtual_record_id"] for r in result] == ["vr-1"]
-        scan.assert_awaited_once()
-        assert "keyword index could not be searched" in render_pattern_match_coverage_note(coverage)
+        assert [r["virtual_record_id"] for r in result] == ["vr-fast"]
+        scan.assert_not_awaited()
+        assert "took too long to check" in render_pattern_match_coverage_note(coverage)
 
     @pytest.mark.asyncio
     async def test_collections_the_index_could_not_search_are_said(self) -> None:
@@ -307,3 +299,97 @@ class TestIndexNotes:
             )
 
         assert "could not search 1 of its 3 collections" in render_pattern_match_coverage_note(coverage)
+
+
+def _store(tmp_path, records: list[dict]) -> list[tuple[str, str]]:
+    """Write *records* ({vrid, name, text}) as stored record files; return their chunks."""
+    connector_dir = tmp_path / _ORG / "PipesHub" / "records" / _CONNECTOR
+    chunks = []
+    for i, rec in enumerate(records):
+        d = connector_dir / f"d{i}"
+        d.mkdir(parents=True)
+        body = {"record": {"record_name": rec["name"], "block_containers": {"blocks": [{"data": rec["text"]}]}}}
+        (d / f"record_{rec['vrid']}.json").write_text(json.dumps(body))
+        chunks.append((rec["vrid"], rec["text"]))
+    return chunks
+
+
+_SUBSTRING_RECORD = {
+    "vrid": "aaaaaaaa-0000-0000-0000-000000000001", "name": "gateway notes",
+    "text": "the proxy logged ERR_CONN_RESET twice",
+}
+_TITLE_RECORD = {
+    "vrid": "aaaaaaaa-0000-0000-0000-000000000002", "name": "Quokkaflux rollout plan",
+    "text": "steps for the migration window",
+}
+_TOKEN_RECORD = {
+    "vrid": "aaaaaaaa-0000-0000-0000-000000000003", "name": "cache notes",
+    "text": "warm the cache before the release",
+}
+_INSIDE_WORD_RECORD = {
+    "vrid": "aaaaaaaa-0000-0000-0000-000000000004", "name": "layer notes",
+    "text": "the precache layer fills at boot",
+}
+
+
+class TestWhatOnlyGrepFinds:
+    """grep matched substrings of the whole stored file; the index matches
+    whole words of passage text. What only grep finds must not disappear."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("command", "expected"), [
+        ('grep -rci "CONN_RESET" .', _SUBSTRING_RECORD["vrid"]),  # inside a longer token
+        ('grep -rci "quokkaflux" .', _TITLE_RECORD["vrid"]),  # only in the record's title
+    ])
+    async def test_an_index_miss_is_scanned_on_a_large_store(self, tmp_path, command: str, expected: str) -> None:
+        chunks = _store(tmp_path, [_SUBSTRING_RECORD, _TITLE_RECORD, _TOKEN_RECORD])
+        searcher = InvertedIndexSearcher(chunks, store_chunks=10_000_000)
+        coverage = PatternMatchCoverage()
+        with patch("app.agents.actions.storage_search.storage_search._resolve_mount_root", return_value=str(tmp_path)), \
+                _llm_commands(command):
+            result = await run_pattern_match_with_llm_grep(
+                **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
+            )
+
+        assert [r["virtual_record_id"] for r in result] == [expected]
+        assert "run again as a time-bounded scan" in render_pattern_match_coverage_note(coverage)
+
+    @pytest.mark.asyncio
+    async def test_a_small_store_scans_every_command_too(self, tmp_path) -> None:
+        chunks = _store(tmp_path, [_TOKEN_RECORD, _INSIDE_WORD_RECORD])
+        searcher = InvertedIndexSearcher(chunks, store_chunks=len(chunks))
+        coverage = PatternMatchCoverage()
+        with patch("app.agents.actions.storage_search.storage_search._resolve_mount_root", return_value=str(tmp_path)), \
+                _llm_commands('grep -rci "cache" .'):
+            result = await run_pattern_match_with_llm_grep(
+                **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
+            )
+
+        # The index finds the whole word; the scan adds "precache", as grep did.
+        assert {r["virtual_record_id"] for r in result} == {_TOKEN_RECORD["vrid"], _INSIDE_WORD_RECORD["vrid"]}
+        assert render_pattern_match_coverage_note(coverage) == ""
+
+    @pytest.mark.asyncio
+    async def test_a_large_store_answered_by_the_index_says_what_it_cannot_see(self, tmp_path) -> None:
+        chunks = _store(tmp_path, [_TOKEN_RECORD, _INSIDE_WORD_RECORD])
+        searcher = InvertedIndexSearcher(chunks, store_chunks=10_000_000)
+        scan = AsyncMock(return_value=[])
+        coverage = PatternMatchCoverage()
+        with _llm_commands('grep -rci "cache" .'), \
+                patch("app.utils.pattern_match.execute_pattern_match_pipeline", scan):
+            result = await run_pattern_match_with_llm_grep(
+                **_kwargs(llm=MagicMock()), coverage=coverage, retrieval_service=searcher,
+            )
+
+        assert [r["virtual_record_id"] for r in result] == [_TOKEN_RECORD["vrid"]]
+        scan.assert_not_awaited()
+        assert "text inside a longer word" in render_pattern_match_coverage_note(coverage)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("size", "small"), [(None, False), (200_000, True), (200_001, False)])
+    async def test_the_store_size_rule(self, size: int | None, small: bool) -> None:
+        from app.utils.pattern_match import _is_small_store
+
+        searcher = InvertedIndexSearcher([], store_chunks=size)
+
+        assert await _is_small_store(searcher, _ORG, "u1", logging.getLogger("test")) is small

@@ -1514,6 +1514,16 @@ class RetrievalService:
             self.logger.warning("lexical search: sparse embedder unavailable", exc_info=True)
             return False
 
+    async def lexical_store_chunks(self, org_id: str, user_id: str) -> int | None:
+        """Chunks held by the collections this org's search reads, or None
+        when a collection cannot say. A collection shared with other orgs
+        counts all of its chunks, so this never under-counts."""
+        collections = await self._resolve_search_collections(org_id, user_id)
+        infos = await asyncio.gather(
+            *(self.vector_db_service.get_collection_info(name) for name in collections),
+        )
+        return sum(info.points_count for info in infos)
+
     async def search_lexical(
         self,
         queries: list[str],

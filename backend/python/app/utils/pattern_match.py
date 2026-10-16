@@ -85,6 +85,13 @@ _RRF_K = 60
 _GREP_RANK_FUSION_ENV_VAR = "GREP_RANK_FUSION"
 # "false" sends every exact-text search back to the file scan.
 _PATTERN_MATCH_INDEX_ENV_VAR = "PATTERN_MATCH_INDEX"
+# At or under this many indexed chunks, every command is also scanned: a full
+# grep then takes well under a second warm (about 0.3 s per 100k chunks
+# measured), so it is complete within its budget and matches what the index
+# cannot (substrings, titles, metadata). Above it, a scan is kept only for a
+# command the index cannot express or found nothing for.
+_SCAN_BELOW_CHUNKS_ENV_VAR = "PATTERN_MATCH_SCAN_BELOW_CHUNKS"
+_DEFAULT_SCAN_BELOW_CHUNKS = 200_000
 _MAX_PATTERN_MATCH_RECORDS = 50
 _MAX_RECORDS_PER_CONNECTOR = 10
 # Fallback budget when a caller has no per-request limit to pass (e.g. limit=None).
@@ -119,8 +126,12 @@ class PatternMatchCoverage:
     # More records matched than are listed: one command past its own cap, or
     # all commands together past the merge's.
     records_truncated: bool = False
-    # A command looked up in the index found nothing.
-    index_missed: bool = False
+    # Some command was answered by the index alone, with no file scan behind it.
+    index_only: bool = False
+    # Some candidate took too long to check against its pattern and was left out.
+    index_unverified: bool = False
+    # A lookup after the first failed; the stages it served count as cut.
+    index_lookup_failed: bool = False
     # (collections the index could not search, collections asked), when any failed.
     index_unsearched: tuple[int, int] | None = None
     # Why some commands were scanned file by file instead of looked up.
@@ -135,12 +146,19 @@ class PatternMatchCoverage:
         return not (
             self.timed_out or self.failed or self.capped or self.stopped
             or self.index_capped or self.records_truncated or self.index_unsearched
+            or self.index_unverified or self.index_lookup_failed
         )
 
 
 _SCAN_NO_WORD = "no_word"
 _SCAN_INDEX_FAILED = "index_failed"
+_SCAN_INDEX_MISS = "index_miss"
 _SCAN_NOTES = {
+    _SCAN_INDEX_MISS: (
+        "A keyword search the index found nothing for was run again as a "
+        "time-bounded scan of stored files, which matches inside words and "
+        "reads record titles and metadata."
+    ),
     _SCAN_NO_WORD: (
         "A pattern with no whole word to look up in the keyword index was matched "
         "by a time-bounded scan of stored files instead."
@@ -153,8 +171,9 @@ _SCAN_NOTES = {
 
 
 _WHOLE_WORD_NOTE = (
-    "Keyword words are looked up as whole words and their inflections, so text "
-    "inside a longer word (a cut-off stem, part of an identifier) is not matched."
+    "Keyword matches came from the passage-text index, which matches whole words "
+    "and their inflections: text inside a longer word (part of an identifier, a "
+    "cut-off stem), or only in a record's title or metadata, can be missed there."
 )
 
 def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") -> str:
@@ -164,7 +183,7 @@ def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") 
     if coverage is None:
         return ""
     notes = [_SCAN_NOTES[r] for r in sorted(coverage.scan_reasons) if r in _SCAN_NOTES]
-    if coverage.index_missed:
+    if coverage.index_only:
         notes.append(_WHOLE_WORD_NOTE)
     scan_note = " ".join(notes)
     if coverage.complete:
@@ -180,6 +199,10 @@ def render_pattern_match_coverage_note(coverage: "PatternMatchCoverage | None") 
         parts.append(f"{len(coverage.failed - coverage.timed_out)} source(s) could not be searched")
     if coverage.capped:
         parts.append(f"{len(coverage.capped)} source(s) matched more than could be listed")
+    if coverage.index_unverified:
+        parts.append("some candidates took too long to check against the pattern and were left out")
+    if coverage.index_lookup_failed:
+        parts.append("a keyword index lookup failed part-way")
     if coverage.index_unsearched:
         failed, asked = coverage.index_unsearched
         parts.append(f"the keyword index could not search {failed} of its {asked} collections")
@@ -1211,6 +1234,7 @@ async def _run_pattern_match_with_llm_grep(
     index_kwargs: dict[str, Any] = {
         "user_id": user_id, "org_id": org_id, "filters": filters,
         "found": found, "coverage": coverage, "logger_instance": logger_instance,
+        "small_store": searcher is not None and await _is_small_store(searcher, org_id, user_id, logger_instance),
     }
     llm_grep_cmds: list[str] | None = None
     if llm is not None:
@@ -1309,13 +1333,21 @@ async def _match_through_index(
     found: dict[str, dict[str, Any]],
     coverage: PatternMatchCoverage | None,
     logger_instance: logging.Logger,
+    small_store: bool,
 ) -> list[str]:
     """Answer *commands* from the lexical index into *found*; returns the ones
-    left for the file scan, each recorded in *coverage* with why."""
+    left for the file scan, each recorded in *coverage* with why.
+
+    The index matches whole words in passage text; grep matches substrings in
+    the whole stored file, titles and metadata included. So the scan still
+    runs where it is cheap or where the index had nothing: on a small store
+    every command is scanned too (grep is complete there), and on a large one
+    each command the index found nothing for is.
+    """
     plans = {cmd: plan_command(cmd) for cmd in commands}
     unplanned = [cmd for cmd, plan in plans.items() if plan is None]
     planned = [cmd for cmd, plan in plans.items() if plan is not None]
-    if unplanned and coverage is not None:
+    if unplanned and coverage is not None and not small_store:
         coverage.scan_reasons.add(_SCAN_NO_WORD)
     if not planned:
         return unplanned
@@ -1325,19 +1357,49 @@ async def _match_through_index(
             user_id=user_id, org_id=org_id, filters=filters, logger_instance=logger_instance,
         )
     except Exception:
+        # The first lookup failed, so nothing was found yet; nothing is lost.
         logger_instance.warning("pattern_match: lexical index lookup failed, scanning files", exc_info=True)
         if coverage is not None:
             coverage.scan_reasons.add(_SCAN_INDEX_FAILED)
         return commands
+    for hits in outcome.hits:
+        _merge_command_hits(found, hits)
+    if small_store:
+        return commands
+    missed = [cmd for cmd, hits in zip(planned, outcome.hits) if not hits]
     if coverage is not None:
         coverage.index_capped = coverage.index_capped or outcome.capped
         coverage.records_truncated = coverage.records_truncated or outcome.truncated
-        coverage.index_missed = coverage.index_missed or any(not hits for hits in outcome.hits)
+        coverage.index_unverified = coverage.index_unverified or any(outcome.unverified)
+        coverage.index_lookup_failed = coverage.index_lookup_failed or outcome.lookup_failed
         if outcome.failed_collections:
             coverage.index_unsearched = (outcome.failed_collections, outcome.searched_collections)
-    for hits in outcome.hits:
-        _merge_command_hits(found, hits)
-    return unplanned
+        if missed:
+            coverage.scan_reasons.add(_SCAN_INDEX_MISS)
+        coverage.index_only = coverage.index_only or len(missed) < len(planned)
+    return unplanned + missed
+
+
+async def _is_small_store(
+    searcher: LexicalSearcher, org_id: str, user_id: str, logger_instance: logging.Logger,
+) -> bool:
+    """Whether the store is small enough that a full file scan finishes well
+    inside its budget. Unknown counts as large: the scan is then kept for
+    what the index cannot answer."""
+    try:
+        chunks = await searcher.lexical_store_chunks(org_id, user_id)
+    except Exception:
+        logger_instance.warning("pattern_match: store size unreadable, treating it as large", exc_info=True)
+        return False
+    return chunks is not None and chunks <= _small_store_chunks()
+
+
+def _small_store_chunks() -> int:
+    raw = os.getenv(_SCAN_BELOW_CHUNKS_ENV_VAR, "")
+    try:
+        return max(0, int(raw)) if raw.strip() else _DEFAULT_SCAN_BELOW_CHUNKS
+    except ValueError:
+        return _DEFAULT_SCAN_BELOW_CHUNKS
 
 
 def _merge_command_hits(found: dict[str, dict[str, Any]], records: list[dict[str, Any]]) -> None:

@@ -19,8 +19,12 @@ class InvertedIndexSearcher:
     word, as in a real lexical index.
     """
 
-    def __init__(self, chunks: list[tuple[str, str]], readable: dict[str, set[str]] | None = None) -> None:
+    def __init__(
+        self, chunks: list[tuple[str, str]], readable: dict[str, set[str]] | None = None,
+        *, store_chunks: int | None = 10_000_000,
+    ) -> None:
         self.readable = readable
+        self.store_chunks = store_chunks
         self.calls: list[dict] = []
         self._postings: dict[str, list[int]] = defaultdict(list)
         self._chunks = chunks
@@ -30,6 +34,9 @@ class InvertedIndexSearcher:
 
     async def lexical_search_available(self) -> bool:
         return True
+
+    async def lexical_store_chunks(self, org_id: str, user_id: str) -> int | None:
+        return self.store_chunks
 
     async def search_lexical(
         self, queries, user_id, org_id, filter_groups=None,
