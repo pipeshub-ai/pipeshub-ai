@@ -61,6 +61,7 @@ from app.agent_loop_lib.tools.builtin.lazy_toolsets import (
 )
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
 from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+from app.utils.user_messages import where_to_authenticate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -305,8 +306,8 @@ class PipesHubGlobalCatalogFallback:
                     toolset=group_name,
                     description=(
                         f"{description} — configured but not authenticated; "
-                        "tell the user to authenticate this toolset "
-                        "under Your actions."
+                        "tell the user to authenticate this toolset under "
+                        f"{where_to_authenticate(getattr(self._context, 'is_service_account', False))}."
                         if reason == "not_authenticated" else description
                     ),
                     reason=reason,

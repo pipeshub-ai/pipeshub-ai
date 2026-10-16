@@ -487,6 +487,26 @@ class TestPipesHubGlobalCatalogFallback:
 
         assert hits[0].reason == "not_authenticated"
         assert "authenticate" in hits[0].description.lower()
+        assert "Your actions" in hits[0].description
+
+    async def test_a_service_account_agent_is_sent_to_the_agent_builder(self, monkeypatch) -> None:
+        fake_registry = _FakeToolsetRegistry({
+            "jira": _toolset_meta(tools=[
+                {"name": "create_issue", "description": "Create a Jira issue"},
+            ]),
+        })
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry", lambda: fake_registry,
+        )
+        context = SimpleNamespace(
+            toolset_load_failures={"jira": "not_authenticated"},
+            mcp_tool_load_failures=[], mcp_servers=[], is_service_account=True,
+        )
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira issue", limit=5)
+
+        assert "agent builder" in hits[0].description
+        assert "Your actions" not in hits[0].description
 
     async def test_search_defaults_to_not_attached_without_context(self, monkeypatch) -> None:
         fake_registry = _FakeToolsetRegistry({

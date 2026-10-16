@@ -17,6 +17,7 @@ import asyncio
 from typing import Any
 
 from app.modules.agents.tool_domain import derive_tool_domain
+from app.utils.user_messages import where_to_authenticate
 
 
 # ---------------------------------------------------------------------------
@@ -247,12 +248,7 @@ def _build_auth_status_section(state: dict[str, Any], *, parts: list[str]) -> No
     if not unauthenticated:
         return
 
-    # A service-account agent signs in once for everyone, on the agent itself.
-    where = (
-        "this agent's settings in the agent builder (someone who can edit the agent has to do it)"
-        if state.get("is_service_account")
-        else "Your actions"
-    )
+    where = where_to_authenticate(bool(state.get("is_service_account")))
     parts.append("### Needs Authentication")
     parts.append(
         "The following toolsets are configured for this agent but are NOT "
