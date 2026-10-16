@@ -636,6 +636,7 @@ export interface CitationApiResponse {
       connector: string;
       /** Connector instance the record came from; absent on older saved answers */
       connectorId?: string;
+      connectorInstanceName?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -648,6 +649,8 @@ export interface CitationApiResponse {
       topics?: string[];
       languages?: string[];
       departments?: string[];
+      /** When the cited record was last updated at its source */
+      updatedAt?: string;
     };
     citationType: string;
     createdAt: string;
@@ -1209,6 +1212,7 @@ export interface SearchResultMetadata {
   connector: string;
   /** Connector instance the record came from; marks demo records. */
   connectorId?: string;
+  connectorInstanceName?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

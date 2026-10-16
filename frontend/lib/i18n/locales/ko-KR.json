@@ -688,6 +688,8 @@
       "open": "{{source}} 열기",
       "openIn": "{{source}}에서 열기",
       "openInCollections": "컬렉션에서 열기",
+      "syncedJustNow": "방금 동기화됨",
+      "syncedAgo": "{{age}} 전 동기화됨",
       "relevance": "관련도: {{percent}}%"
     },
     "results": "결과",
@@ -792,6 +794,8 @@
     "copiedAsMarkdown": "Markdown으로 복사됨",
     "copiedAsText": "텍스트로 복사됨",
     "citations": "인용",
+    "showMoreCitations_one": "인용 {{count}}개 더 보기",
+    "showMoreCitations_other": "인용 {{count}}개 더 보기",
     "markdownWithCitations": "인용 포함 Markdown",
     "onlyTextWithoutCitations": "인용 없이 텍스트만",
     "differentModesOfQuery": "다양한 질의 모드",

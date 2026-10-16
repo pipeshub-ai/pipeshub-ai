@@ -603,6 +603,8 @@
       "open": "{{source}} öffnen",
       "openIn": "In {{source}} öffnen",
       "openInCollections": "In Sammlungen öffnen",
+      "syncedJustNow": "Gerade synchronisiert",
+      "syncedAgo": "Vor {{age}} synchronisiert",
       "relevance": "Relevanz: {{percent}} %"
     },
     "results": "Ergebnisse",
@@ -706,6 +708,8 @@
     "copiedAsMarkdown": "Als Markdown kopiert",
     "copiedAsText": "Als Text kopiert",
     "citations": "Zitate",
+    "showMoreCitations_one": "{{count}} weiteres Zitat anzeigen",
+    "showMoreCitations_other": "{{count}} weitere Zitate anzeigen",
     "markdownWithCitations": "Markdown mit Zitaten",
     "onlyTextWithoutCitations": "Nur Text ohne Zitate",
     "differentModesOfQuery": "Verschiedene Abfragemodi",

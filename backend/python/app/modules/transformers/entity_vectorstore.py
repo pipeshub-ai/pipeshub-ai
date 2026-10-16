@@ -68,8 +68,13 @@ from app.services.vector_db.const.const import (
 from app.services.vector_db.models import (
     CollectionConfig,
     FilterExpression,
+    ScrollWindowExceededError,
     SearchResult,
     VectorPoint,
+)
+from app.services.vector_db.rebuild_state import (
+    RebuildJobLock,
+    redis_from_config_service,
 )
 from app.services.vector_db.sparse_embeddings import (
     SparseEmbedder,
@@ -88,7 +93,7 @@ if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
     from app.models.entities import EntityRecord
     from app.services.vector_db.interface.vector_db import IVectorDBService
-    from app.services.vector_db.models import VectorCollectionInfo
+    from app.services.vector_db.models import ScrollResult, VectorCollectionInfo
 
 # (entity refs) -> {(type, id): {"connectorIds": [...], "recordGroupIds": [...]}},
 # from the graph; see IGraphDBProvider.get_taxonomy_entity_membership.
@@ -178,6 +183,21 @@ EMBEDDING_MODEL_FIELD = "embeddingModel"
 _STAMP_POINT_ID = str(uuid.uuid5(uuid.UUID("6ba7b810-9dad-11d1-80b4-00c04fd430c8"), "entity-index-stamp"))
 _STAMP_FIELD = "indexStamp"
 
+# Every drop and re-create of a collection, by any replica, runs under a
+# Redis lock: the vector stores delete by name only, so a replica acting on a
+# stale read would otherwise drop a collection another had just recreated and
+# written to. Long enough for one drop and create; a holder that dies frees it.
+_RECREATE_LOCK_SECONDS = 120
+# Finding the model a collection was written with pages past points that
+# predate the field, which scroll first on OpenSearch and Redis.
+_MODEL_PROBE_PAGE = 500
+
+
+def _recreate_lock_key(collection: str) -> str:
+    """One lock per collection, so recreating one org's never blocks another's."""
+    return f"entity_collection:recreate:{collection}"
+
+
 _STRING_METADATA_FIELDS = (
     "entityId", "entityType", "orgId", "name", "canonicalName", "domain", "typeCategory", "level",
     "kind",
@@ -260,6 +280,11 @@ def _interleave(groups: list[list[dict[str, Any]]]) -> list[dict[str, Any]]:
     return merged
 
 
+class _ConfigMovedError(Exception):
+    """The stored embedding config is not the one this store is initialising
+    for: this process's cached copy is stale, so it must not drop anything."""
+
+
 class EntityVectorStore:
     """Manages embedding and retrieval of knowledge-graph entities in the
     dedicated ``entities`` vector collection.
@@ -284,8 +309,8 @@ class EntityVectorStore:
         self.collection_name = collection_name
         # Only the indexing service sets this: it runs the rebuild that
         # repopulates the collection (app.modules.indexing.entity_index_rebuild).
-        # Even there, a collection that does not match the model is dropped
-        # only on the rebuild leader's request; see ``_ensure_initialized``.
+        # Even there, a mismatched collection that holds entities is dropped
+        # only on the rebuild leader's request; see ``_recreate_mismatched``.
         self.recreate_on_dimension_mismatch = recreate_on_dimension_mismatch
         self._model_id = ""
         self._embedding_size = 0
@@ -312,6 +337,10 @@ class EntityVectorStore:
         # against the model on first use (``_ensure_collection``).
         self._shared_collection: str | None = collection_name
         self._ready_collections: set[str] = set()
+        # When each collection's "only the leader recreates it" error was last
+        # logged. A per-org collection is checked on every call until the
+        # leader recreates it, so the error is rate-limited per collection.
+        self._mismatch_reported_at: dict[str, float] = {}
 
         # Per-entity locks guarding the membership read-merge-write below; see
         # ``_entity_lock``. Weakly held so the map does not grow with every
@@ -334,10 +363,11 @@ class EntityVectorStore:
         config that cannot be read keeps the current model.
 
         ``recreate`` lets a store built with ``recreate_on_dimension_mismatch``
-        drop a collection another model wrote. Only the rebuild leader passes
-        it (``EntityIndexRebuilder.tick``): two replicas dropping in turn would
-        lose the points the first refilled. It also skips the retry window,
-        since the leader is the one that clears the mismatch."""
+        drop a collection another model wrote, entities and all. Only the
+        rebuild leader passes it (``EntityIndexRebuilder.tick``). It also
+        skips the retry window, since the leader is the one that clears the
+        mismatch. Without it such a store drops only a collection holding no
+        entities (``_recreate_mismatched``)."""
         read = await self._read_embedding_config()
         if self._is_current(read):
             return
@@ -374,7 +404,14 @@ class EntityVectorStore:
                 if self._shared_collection is not None:
                     await self._init_collection(
                         self._shared_collection, recreate=recreate and self.recreate_on_dimension_mismatch,
+                        config_hash=config_hash,
                     )
+            except _ConfigMovedError:
+                raise VectorStoreError(
+                    "The embedding model config changed while the entity store was initialising; "
+                    "it re-reads the config on the next call",
+                    details={"collection": self.collection_name},
+                ) from None
             except Exception:
                 self._init_failed_at = time.monotonic()
                 self._init_failed_hash = config_hash
@@ -526,16 +563,27 @@ class EntityVectorStore:
         Nothing to do for a store with a collection per org."""
         if self._shared_collection is None:
             return
-        await self._ensure_initialized(recreate=True)
-        async with self._init_lock:
-            if not self._initialized:
-                raise VectorStoreError(
-                    "Entity vector store is re-initialising; the collection is set up when it has",
-                    details={"collection": self.collection_name},
-                )
-            await self._init_collection(
-                self._shared_collection, recreate=self.recreate_on_dimension_mismatch,
-            )
+        for _ in range(2):
+            await self._ensure_initialized(recreate=True)
+            async with self._init_lock:
+                if not self._initialized:
+                    raise VectorStoreError(
+                        "Entity vector store is re-initialising; the collection is set up when it has",
+                        details={"collection": self.collection_name},
+                    )
+                try:
+                    await self._init_collection(
+                        self._shared_collection, recreate=self.recreate_on_dimension_mismatch,
+                        config_hash=self._config_hash,
+                    )
+                    return
+                except _ConfigMovedError:
+                    # This process held a stale model; take the stored one and decide again.
+                    self._invalidate()
+        raise VectorStoreError(
+            "The embedding model config keeps changing; the entity collection is set up on a later call",
+            details={"collection": self.collection_name},
+        )
 
     async def _existing_collection(self, org_id: str) -> str | None:
         """*org_id*'s collection, or None when it does not exist. For the
@@ -571,9 +619,18 @@ class EntityVectorStore:
                 # collection at that model's dimension nor drop one already
                 # recreated for the new model.
                 await self._raise_if_config_moved(self._config_hash)
-            if not await self._init_collection(
-                name, recreate=recreate and self.recreate_on_dimension_mismatch, create=create,
-            ):
+            try:
+                ready = await self._init_collection(
+                    name, recreate=recreate and self.recreate_on_dimension_mismatch, create=create,
+                    config_hash=self._config_hash,
+                )
+            except _ConfigMovedError:
+                raise VectorStoreError(
+                    "The embedding model config changed while preparing the entity collection; "
+                    "it re-reads the config on the next call",
+                    details={"collection": name},
+                ) from None
+            if not ready:
                 return False
             self._ready_collections.add(name)
             return True
@@ -624,9 +681,12 @@ class EntityVectorStore:
 
     async def _init_collection(
         self, name: str | None = None, *, recreate: bool = False, create: bool = True,
+        config_hash: str | None = None,
     ) -> bool:
         """False, with nothing done, when ``name`` is missing and ``create``
-        is off. A collection dropped here is always created again."""
+        is off. A collection dropped here is always created again.
+        ``config_hash`` is the config the model was built from; a drop is
+        refused when the stored config has moved on (``_ConfigMovedError``)."""
         name = name or self.collection_name
         info = await self.vector_db_service.get_collection_info(name)
         if info.exists:
@@ -638,20 +698,104 @@ class EntityVectorStore:
             await self._ensure_payload_indexes(name)
         mismatch = await self._collection_mismatch(name, info)
         if mismatch:
-            if not recreate:
+            await self._recreate_mismatched(name, mismatch, leader=recreate, config_hash=config_hash)
+        elif not info.exists:
+            if not create:
+                return False
+            await self._create_collection(name)
+        return True
+
+    async def _recreate_mismatched(
+        self, name: str, mismatch: str, *, leader: bool, config_hash: str | None,
+    ) -> None:
+        """Drop and re-create a collection that cannot serve the configured model.
+
+        One that holds entities is dropped only on the rebuild leader's
+        request (``leader``), which then refills it from the graph. One that
+        holds none, such as a fresh install's, created with the default model
+        before an admin configured one, any indexing replica drops: nothing
+        is lost, and writes need not wait for the leader. "Holds" is what a
+        filtered scroll sees, so on OpenSearch a point written since the last
+        refresh does not count; such a point has the old dimension, which the
+        new model cannot use, and the rebuild refills the new collection."""
+        # A store that never drops (query, connectors) need not read it.
+        holds_entities = not self.recreate_on_dimension_mismatch or await self._holds_entities(name)
+        if not (leader or (self.recreate_on_dimension_mismatch and not holds_entities)):
+            if self.recreate_on_dimension_mismatch and self._mismatch_report_due(name):
+                self.logger.error(
+                    "Entity collection '%s' does not match the embedding model (%s) and holds "
+                    "entities, so only the entity index rebuild leader recreates and refills it; "
+                    "entity writes fail until it has. Expected for a few seconds after a model "
+                    "change; if it persists, look for entity_index_rebuild in the indexing log.",
+                    name, mismatch,
+                )
+            raise VectorStoreError(
+                f"Entity collection does not match the embedding model: {mismatch}. "
+                "The indexing service recreates it.",
+                details={"collection": name},
+            )
+        redis = await redis_from_config_service(self.config_service)
+        try:
+            lock = RebuildJobLock(redis, key=_recreate_lock_key(name), ttl_seconds=_RECREATE_LOCK_SECONDS)
+            if not await lock.try_acquire():
                 raise VectorStoreError(
-                    f"Entity collection does not match the embedding model: {mismatch}. "
-                    "The indexing service recreates it.",
+                    "Entity collection is being recreated by another replica; retrying later",
                     details={"collection": name},
                 )
-            # The collection is a projection of the graph; the rebuild's
-            # marker includes the model, so every pass re-runs and refills it.
-            self.logger.warning("Recreating entity collection '%s': %s", name, mismatch)
+            try:
+                await self._drop_and_create_under_lock(
+                    name, mismatch, leader=leader, holds_entities=holds_entities, config_hash=config_hash,
+                )
+            finally:
+                try:
+                    await lock.release()
+                except Exception as exc:
+                    self.logger.warning("Entity collection recreate lock not released (it expires): %s", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await redis.aclose()
+
+    def _mismatch_report_due(self, name: str) -> bool:
+        now = time.monotonic()
+        last = self._mismatch_reported_at.get(name)
+        if last is not None and now - last < _INIT_RETRY_SECONDS:
+            return False
+        self._mismatch_reported_at[name] = now
+        return True
+
+    async def _drop_and_create_under_lock(
+        self, name: str, mismatch: str, *, leader: bool, holds_entities: bool, config_hash: str | None,
+    ) -> None:
+        # The mismatch is judged against this process's model, read from its
+        # config cache. A stale cache (a missed change notification) would
+        # drop the collection another replica recreated for the new model.
+        if await self._stored_config_hash() != config_hash:
+            self._config_read_at = None
+            raise _ConfigMovedError
+        # Read again under the lock: another replica may have recreated it for
+        # this model since the read that found the mismatch.
+        current = await self.vector_db_service.get_collection_info(name)
+        if current.exists and not await self._collection_mismatch(name, current):
+            return
+        if not leader and current.exists and await self._holds_entities(name):
+            raise VectorStoreError(
+                "Entity collection received entities while it was being recreated; "
+                "the indexing service recreates it",
+                details={"collection": name},
+            )
+        # The collection is a projection of the graph; the rebuild's marker
+        # includes the model and the collection's stamp, so every pass re-runs
+        # and refills it.
+        self.logger.warning(
+            "Recreating entity collection '%s': %s%s", name, mismatch,
+            "" if holds_entities else " (it holds no entities)",
+        )
+        if current.exists:
             await self.vector_db_service.delete_collection(name)
-            info = None
-        if info is None or not info.exists:
-            if info is not None and not create:
-                return False
+        await self._create_collection(name)
+
+    async def _create_collection(self, name: str) -> None:
+        try:
             await self.vector_db_service.create_collection(
                 collection_name=name,
                 config=CollectionConfig(
@@ -659,9 +803,14 @@ class EntityVectorStore:
                     enable_sparse=self._capabilities.supports_sparse_vectors,
                 ),
             )
+        except Exception:
+            # Another replica created it first: fine at this dimension.
+            info = await self.vector_db_service.get_collection_info(name)
+            if not (info.exists and info.dense_dimension == self._embedding_size):
+                raise
+        else:
             self.logger.info("Created entity vector collection '%s'", name)
-            await self._ensure_payload_indexes(name)
-        return True
+        await self._ensure_payload_indexes(name)
 
     async def _ensure_payload_indexes(self, name: str) -> None:
         """create_index is idempotent on every provider. connectorIds and
@@ -707,22 +856,50 @@ class EntityVectorStore:
         whenever the model changes, and writes embedded with a model the
         stored config no longer names are refused (``_raise_if_config_moved``),
         so apart from points that predate the field a collection holds one
-        model's points."""
+        model's points. Points that predate the field are paged past until
+        one records a model or the scroll ends. Where the provider cannot page
+        further (``ScrollWindowExceededError``, Redis's result window) the
+        model is unknown, as when no point records one: initialisation must
+        not fail on a collection it accepted before. Any other failed read
+        raises."""
+        collection = collection or self.collection_name
+        page = await self._entity_page(collection, _MODEL_PROBE_PAGE)
+        seen = 0
+        while True:
+            for point in page.points:
+                stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
+                if stored:
+                    return stored
+            seen += len(page.points)
+            if not page.points or not page.next_offset:
+                return None
+            try:
+                page = await self._entity_page(collection, _MODEL_PROBE_PAGE, page.next_offset)
+            except ScrollWindowExceededError as exc:
+                self.logger.warning(
+                    "Read %d entity points of '%s' without finding a recorded embedding model "
+                    "and cannot read further (%s); treating the collection as written by the "
+                    "current one", seen, collection, exc,
+                )
+                return None
+
+    async def _holds_entities(self, collection: str) -> bool:
+        """Whether the collection holds an entity point (the stamp point is
+        not one). Raises when the read fails."""
+        return bool((await self._entity_page(collection, 1)).points)
+
+    async def _entity_page(self, collection: str, limit: int, offset: str | None = None) -> ScrollResult:
         from app.models.entities import EntityType
 
-        page = await self.vector_db_service.scroll(
-            collection_name=collection or self.collection_name,
+        return await self.vector_db_service.scroll(
+            collection_name=collection,
             scroll_filter=await self.vector_db_service.filter_collection(
                 must={"metadata.entityType": [t.value for t in EntityType]},
             ),
-            limit=1,
+            limit=limit,
+            offset=offset,
             with_payload=[f"metadata.{EMBEDDING_MODEL_FIELD}"],
         )
-        for point in page.points:
-            stored = _entity_metadata(point.payload).get(EMBEDDING_MODEL_FIELD)
-            if stored:
-                return stored
-        return None
 
     async def embedding_config_version(self) -> str | None:
         """``embedding_config_hash`` of the configured models, None when the
@@ -1010,17 +1187,22 @@ class EntityVectorStore:
         process cannot tell whether the collection now belongs to another
         model. The batch is counted failed and the rebuild writes it again."""
         try:
-            embedding_configs = await self._load_embedding_configs(use_cache=False)
+            stored = await self._stored_config_hash()
         except Exception as exc:
             raise VectorStoreError(
                 "Cannot confirm the embedding model before an entity write",
                 details={"collection": self.collection_name, "error": str(exc)},
             ) from exc
-        if embedding_config_hash(embedding_configs) != config_hash:
+        if stored != config_hash:
             raise VectorStoreError(
                 "Embedding model config changed since this entity write was embedded",
                 details={"collection": self.collection_name},
             )
+
+    async def _stored_config_hash(self) -> str:
+        """``embedding_config_hash`` of the config in the key-value store, not
+        this process's cache. Raises when it cannot be read."""
+        return embedding_config_hash(await self._load_embedding_configs(use_cache=False))
 
     def _report(self, outcome: EntityWriteOutcome, failed_keys: list[str]) -> None:
         for name in ("written", "membership_only", "unchanged", "skipped", "failed"):

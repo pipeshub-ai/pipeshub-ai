@@ -34,18 +34,27 @@ function filterValidNumbers(values?: unknown): number[] | undefined {
   return filtered.length > 0 ? filtered : undefined;
 }
 
-/** Resolve connector key → display config. */
-export function getConnectorConfig(connector: string): ConnectorConfig {
+/** "SHAREPOINT ONLINE" → "Sharepoint Online" */
+function titleCaseConnectorKey(connector: string): string {
+  return connector.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+/**
+ * Resolve connector key → display config. `instanceName` is the connector's own
+ * name, stamped on citations by the backend; older citations lack it.
+ */
+export function getConnectorConfig(connector: string, instanceName?: string): ConnectorConfig {
   const resolved = resolveConnectorType(connector);
   const iconConfig = getConnectorIconConfig(connector);
   const isCollections =
     resolved === 'kb' || resolved === 'knowledge-base';
   const isLocalFs = resolved === 'local-fs' || resolved === 'localfs';
-  let label = connector || i18n.t('filter.source');
+  let label = connector ? titleCaseConnectorKey(connector) : i18n.t('filter.source');
   if (isCollections) label = i18n.t('nav.collections');
   if (isLocalFs) label = i18n.t('connectorTypes.localFs');
   return {
     label,
+    sourceLabel: (!isCollections && instanceName) || label,
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',
   };
 }
@@ -78,6 +87,7 @@ export function buildCitationMapsFromApi(
       recordName: metadata.recordName || 'Untitled Document',
       connector: metadata.connector || '',
       connectorId: metadata.connectorId || undefined,
+      connectorInstanceName: metadata.connectorInstanceName || undefined,
       recordType: metadata.recordType || '',
       webUrl: metadata.webUrl,
       mimeType: metadata.mimeType || '',
@@ -89,7 +99,8 @@ export function buildCitationMapsFromApi(
       citationType: data.citationType || '',
       origin: (metadata as Record<string, unknown>).origin as CitationOrigin | undefined,
       boundingBox: (metadata as Record<string, unknown>).bounding_box as Array<{ x: number; y: number }> | undefined,
-      updatedAt: (metadata as Record<string, unknown>).updatedAt as string | undefined ?? data.updatedAt,
+      // Not data.updatedAt: that is when the answer was saved, not when the record last synced.
+      updatedAt: metadata.updatedAt || undefined,
     };
 
     citations[citationId] = normalized;
@@ -129,6 +140,7 @@ export function buildCitationMapsFromStreaming(
       recordName: metadata.recordName || 'Untitled Document',
       connector: metadata.connector || '',
       connectorId: metadata.connectorId || undefined,
+      connectorInstanceName: metadata.connectorInstanceName || undefined,
       recordType: metadata.recordType || '',
       webUrl: metadata.webUrl,
       mimeType: metadata.mimeType || '',
@@ -140,7 +152,7 @@ export function buildCitationMapsFromStreaming(
       citationType: raw.citationType || '',
       origin: metadata.origin,
       boundingBox: metadata.bounding_box,
-      updatedAt: undefined, // not available during streaming
+      updatedAt: metadata.updatedAt || undefined,
     };
 
     citations[tempId] = normalized;
@@ -188,20 +200,23 @@ export function getCitationCopyHref(citation: CitationData): string | undefined 
  */
 export function formatSyncLabel(isoDate?: string): string | undefined {
   if (!isoDate) return undefined;
-  const diff = Date.now() - new Date(isoDate).getTime();
-  if (diff < 0) return 'Synced just now';
+  const time = new Date(isoDate).getTime();
+  if (Number.isNaN(time)) return undefined;
+  const diff = Date.now() - time;
+  const synced = (age: string) => i18n.t('chat.recordActions.syncedAgo', { age });
+  if (diff < 0) return i18n.t('chat.recordActions.syncedJustNow');
   const seconds = Math.floor(diff / 1000);
-  if (seconds < 60) return 'Synced just now';
+  if (seconds < 60) return i18n.t('chat.recordActions.syncedJustNow');
   const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `Synced ${minutes}m ago`;
+  if (minutes < 60) return synced(`${minutes}m`);
   const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `Synced ${hours}h ago`;
+  if (hours < 24) return synced(`${hours}h`);
   const days = Math.floor(hours / 24);
-  if (days < 30) return `Synced ${days}d ago`;
+  if (days < 30) return synced(`${days}d`);
   const months = Math.floor(days / 30);
-  if (months < 12) return `Synced ${months}mo ago`;
+  if (months < 12) return synced(`${months}mo`);
   const years = Math.floor(months / 12);
-  return `Synced ${years}y ago`;
+  return synced(`${years}y`);
 }
 
 /**

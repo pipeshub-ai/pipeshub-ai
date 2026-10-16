@@ -1,5 +1,8 @@
 """EntityResolver tiers: name collection, exact match, winner lookup, model call."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -7,6 +10,10 @@ import pytest
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import ResolutionMode
+
+if TYPE_CHECKING:
+    from app.modules.entity_resolution.models import EntityResolution
+
 
 TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
@@ -219,8 +226,11 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["matches"] == [{"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}]
+        (match,) = items[0]["matches"]
+        assert match["name"] == "Bug bash testing" and match["aliases"] == ["bbt"]
+        assert match["id"] != "k-bug" and len(match["id"]) == 8
         assert resolution.stats.winners_offered == 1
+        assert resolution.get("topics", "Bug bash testing session").key == "k-bug"
 
     async def test_store_failure_falls_back_to_new_without_raising(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, scripted_model
@@ -422,7 +432,7 @@ class TestWinnerCheckedAgainstTheGraph:
             EntityRecord(entity_id=entity_id, entity_type=EntityType.TOPIC, name=name, org_id=org),
         ])
 
-    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic):
+    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic) -> EntityResolution | None:
         return await make_resolver().resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=[topic]))
         )

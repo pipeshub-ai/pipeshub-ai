@@ -10,6 +10,8 @@ import { ArtifactsGridView } from '../artifacts-grid-view';
 
 vi.mock('@/app/components/ui', () => ({ FileIcon: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
 
 const PAGINATION = { page: 1, limit: 50, totalCount: 2, totalPages: 1 };
 
@@ -39,7 +41,10 @@ function openChatButtons() {
   return screen.queryAllByRole('button', { name: 'Open in chat' });
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  viewport.isMobile = false;
+});
 
 describe('Open in chat', () => {
   it('is offered in the list only for a chat the caller can see', () => {
@@ -67,5 +72,30 @@ describe('Open in chat', () => {
     );
 
     expect(openChatButtons()).toHaveLength(1);
+  });
+});
+
+describe('Artifacts list on a phone', () => {
+  it('keeps the name and actions and drops the fixed-width columns', () => {
+    viewport.isMobile = true;
+    render(
+      <Theme>
+        <ArtifactsListView
+          items={[{ ...visibleChat, role: 'OWNER' }]}
+          sortBy="createdAtTimestamp"
+          sortOrder="desc"
+          onSort={vi.fn()}
+          pagination={PAGINATION}
+          {...handlers}
+        />
+      </Theme>,
+    );
+
+    expect(screen.getByText('visible.csv')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Download' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Share' })).toBeTruthy();
+    expect(screen.queryByText('DATA_FILE')).toBeNull();
+    expect(screen.queryByText('Q3 plan')).toBeNull();
+    expect(screen.queryByText('Conversation')).toBeNull();
   });
 });

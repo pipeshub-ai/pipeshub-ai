@@ -276,9 +276,23 @@ def _free_memory_gb(snap: ResourceSnapshot) -> float | None:
     return max(0.0, (snap.mem_limit_bytes - resident) / (1024 ** 3))
 
 
-def heavy_memory_cap(snap: ResourceSnapshot) -> int | None:
-    """How many heavy parses the *currently free* memory can hold, or
-    ``None`` when the cgroup limit is unknown.
+def _worker_share(total: int, worker_count: int) -> int:
+    """One worker process's share of a count resolved for all of them.
+
+    The count is floored once, for the whole cgroup, and only then split, so
+    the shares add up to it rather than to N floors. Each share is floored at
+    1 because a worker's gate admits into an empty pool whatever its limit;
+    with more workers than the count, what holds them together to it is a
+    counter they share (the cluster leases, or ``SharedSlots`` for heavy
+    parses), not this.
+    """
+    workers = max(1, worker_count)
+    return total if workers == 1 else max(1, total // workers)
+
+
+def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+    """How many heavy parses this process's share of the *currently free*
+    memory can hold, or ``None`` when the cgroup limit is unknown.
 
     The heavy ceiling is sized off CPU alone (``resolve_ceilings``), which
     is the right steady-state number but says nothing about whether the
@@ -292,12 +306,27 @@ def heavy_memory_cap(snap: ResourceSnapshot) -> int | None:
     free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB))
+    return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
 
 
-def index_memory_cap(snap: ResourceSnapshot, pool: Pool) -> int | None:
-    """How many in-flight records of *pool*'s tier the currently free memory
-    can hold, or ``None`` when the cgroup limit is unknown.
+def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
+    """Heavy parses the whole cgroup may run at once: the heavy budget for all
+    of its worker processes, held to what free memory holds.
+
+    The same target one process's heavy gate walks toward (``_target_for``):
+    a parse already running is not counted back into free memory, and a
+    smaller value never revokes one.
+    """
+    mem_cap = heavy_memory_cap(snap)
+    return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
+
+
+def index_memory_cap(
+    snap: ResourceSnapshot, pool: Pool, worker_count: int = 1
+) -> int | None:
+    """How many in-flight records of *pool*'s tier this process's share of
+    the currently free memory can hold, or ``None`` when the cgroup limit is
+    unknown.
 
     The index ceilings are parse-derived (``resolve_ceilings``), which says
     nothing about whether the memory to hold that many downloaded buffers
@@ -318,7 +347,7 @@ def index_memory_cap(snap: ResourceSnapshot, pool: Pool) -> int | None:
         if pool is Pool.INDEX_HEAVY
         else INDEX_LIGHT_WORKING_SET_GB
     )
-    return max(COUNT_POOL_FLOOR, int(free_gb / working_set))
+    return _worker_share(max(COUNT_POOL_FLOOR, int(free_gb / working_set)), worker_count)
 
 
 # ---------------------------------------------------------------------------
@@ -377,10 +406,10 @@ def resolve_ceilings(
     they hold below these ceilings exactly as long as the memory isn't there
     and no longer.
 
-    ``worker_count > 1`` divides the result, since each worker process runs
-    its own governor against the same cgroup.
+    ``worker_count > 1`` returns one worker process's share
+    (``split_ceilings``), since each runs its own governor against the same
+    cgroup.
     """
-    workers = max(1, worker_count)
     cpus = max(0.0, snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
@@ -446,21 +475,32 @@ def resolve_ceilings(
         max(1, min(light_parse_ceiling, index_light_ceiling)) if index_light_ceiling else 1
     )
 
-    if workers > 1:
-        heavy_parse_ceiling = max(1, heavy_parse_ceiling // workers)
-        light_parse_ceiling = max(1, light_parse_ceiling // workers)
-        index_heavy_ceiling = max(1, index_heavy_ceiling // workers)
-        # Floor at 1 only if the tier exists at all; a collapsed light tier
-        # must stay collapsed, not be resurrected to 1 by the division.
-        index_light_ceiling = (
-            max(1, index_light_ceiling // workers) if index_light_ceiling else 0
-        )
+    return split_ceilings(
+        Ceilings(
+            heavy=heavy_parse_ceiling,
+            light=light_parse_ceiling,
+            index_heavy=index_heavy_ceiling,
+            index_light=index_light_ceiling,
+        ),
+        worker_count,
+    )
 
+
+def split_ceilings(total: Ceilings, worker_count: int) -> Ceilings:
+    """One worker process's share of ceilings resolved for all of them.
+
+    Every share is floored at 1, so with more workers than slots the shares
+    add up to more than ``total``; the cluster-wide leases, which are sized
+    from ``total``, are what hold every worker together to it.
+    """
     return Ceilings(
-        heavy=heavy_parse_ceiling,
-        light=light_parse_ceiling,
-        index_heavy=index_heavy_ceiling,
-        index_light=index_light_ceiling,
+        heavy=_worker_share(total.heavy, worker_count),
+        light=_worker_share(total.light, worker_count),
+        index_heavy=_worker_share(total.index_heavy, worker_count),
+        # A collapsed light tier must stay collapsed, not be resurrected to 1.
+        index_light=(
+            _worker_share(total.index_light, worker_count) if total.index_light else 0
+        ),
     )
 
 
@@ -522,7 +562,7 @@ def _index_pressure_floor(pool: Pool) -> int:
     return max(COUNT_POOL_FLOOR, int(budget_gb / working_set))
 
 
-def pressure_floor(pool: Pool, ceiling: int) -> int:
+def pressure_floor(pool: Pool, ceiling: int, worker_count: int = 1) -> int:
     """Lowest limit a memory or CPU brake may shrink *pool* to.
 
     Distinct from ``floor_for``, which is a *warm-start* width — where the
@@ -541,14 +581,18 @@ def pressure_floor(pool: Pool, ceiling: int) -> int:
     order of magnitude of throughput while saving no memory at all. Both tiers
     now floor at whatever number of *their own* records fits the same budget,
     so a memory-starved node still turns over a useful number of the cheap
-    ones while heavy is held to a couple.
+    ones while heavy is held to a couple. That budget is the cgroup's, so with
+    ``worker_count`` workers each one floors at its share of it.
     """
     if _is_index_pool(pool):
         # Never above the warm-start width: brakes only ever reduce a limit, so
         # a floor above where the pool starts would let one *raise* it. On a
         # ceiling small enough for that to bind, the two coincide and the pool
         # simply has no room to shrink.
-        return min(_index_pressure_floor(pool), floor_for(pool, ceiling))
+        return min(
+            _worker_share(_index_pressure_floor(pool), worker_count),
+            floor_for(pool, ceiling),
+        )
     return floor_for(pool, ceiling)
 
 
@@ -585,11 +629,13 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
     }[pool]
 
 
-def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
+def _target_for(
+    pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings, worker_count: int = 1
+) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
     if pool is Pool.HEAVY_PARSE:
-        mem_cap = heavy_memory_cap(snap)
+        mem_cap = heavy_memory_cap(snap, worker_count)
         bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
         # Clamped to 1, not to floor_for: the memory gate must be able to
         # hold heavy *below* its warm-start floor when the cgroup genuinely
@@ -612,9 +658,9 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
         # paths disagree about how far down is too far and the walk-down
         # quietly undercuts the brake.
         ceiling = _ceiling_for(pool, ceilings)
-        mem_cap = index_memory_cap(snap, pool)
+        mem_cap = index_memory_cap(snap, pool, worker_count)
         bound = ceiling if mem_cap is None else min(ceiling, mem_cap)
-        return int(_clamp(bound, pressure_floor(pool, ceiling), ceiling))
+        return int(_clamp(bound, pressure_floor(pool, ceiling, worker_count), ceiling))
 
     raise AssertionError(f"unhandled pool {pool!r}")  # exhaustive over Pool StrEnum
 
@@ -835,11 +881,12 @@ def _next_pool_limit(
     now: float,
     interval: float,
     feedback: FeedbackWindow | None = None,
+    worker_count: int = 1,
 ) -> tuple[int, PoolState]:
     ceiling = _ceiling_for(pool, ceilings)
-    floor = pressure_floor(pool, ceiling)
+    floor = pressure_floor(pool, ceiling, worker_count)
     shrink_step = COUNT_POOL_STEP
-    target = _target_for(pool, snap, ceilings)
+    target = _target_for(pool, snap, ceilings, worker_count)
     pressure = snap.mem_pressure
     # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on
     # the baseline-credited reading. Braking on the credited reading pushes
@@ -960,14 +1007,17 @@ def next_limits(
     now: float,
     interval: float = SAMPLE_INTERVAL_SECONDS,
     feedback: FeedbackWindow | None = None,
+    worker_count: int = 1,
 ) -> tuple[Limits, ControllerState]:
     """Advance every pool's limit by at most one step toward its target.
 
     ``feedback`` is what downstream services reported since the last sample
     (``DownstreamFeedback.drain``); it only ever shrinks or holds the index
-    pools. Pure and deterministic given its inputs — the caller supplies
-    ``now`` and the sampled ``demand`` so this can be exercised in tests
-    without a clock or a running event loop.
+    pools. ``worker_count`` is how many processes share the cgroup's free
+    memory, and ``ceilings`` must be one process's share of the budget. Pure
+    and deterministic given its inputs — the caller supplies ``now`` and the
+    sampled ``demand`` so this can be exercised in tests without a clock or
+    a running event loop.
     """
     new_values: dict[Pool, int] = {}
     new_states: dict[Pool, PoolState] = {}
@@ -975,7 +1025,7 @@ def next_limits(
         pool_demand = demand.get(pool, PoolDemand.empty())
         new_limit, new_state = _next_pool_limit(
             pool, current.get(pool), snap, ceilings, state.get(pool), pool_demand, now, interval,
-            feedback=feedback,
+            feedback=feedback, worker_count=worker_count,
         )
         new_values[pool] = new_limit
         new_states[pool] = new_state
