@@ -68,9 +68,9 @@ DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
 # the decode each hold their whole download while they wait.
 LARGE_DECODE_BYTES = 20 * 1024 * 1024
 LARGE_DECODE_SLOTS = 1
-# Measured on decoded (msgpack) bytes, which is what costs pod memory, not on
-# the stored size the upload limit applies to.
-MAX_DECODED_BYTES_DEFAULT = 256 * 1024 * 1024
+# Optional hard cap on one record's decoded (msgpack) bytes, for a deployment
+# whose pods can't afford a single huge decode. Off by default: a refused record
+# drops out of every answer and re-index without telling anyone.
 _MAX_DECODED_BYTES_ENV = "PIPESHUB_RECORD_MAX_DECODED_BYTES"
 
 
@@ -205,15 +205,13 @@ def compression_threshold_bytes() -> int:
         return COMPRESSION_THRESHOLD_BYTES_DEFAULT
 
 
-def max_decoded_record_bytes() -> int:
-    """Largest record (msgpack bytes) a reader will decode; bigger ones are skipped."""
-    raw = os.getenv(_MAX_DECODED_BYTES_ENV)
+def max_decoded_record_bytes() -> int | None:
+    """Largest record (msgpack bytes) a reader will decode, or None for no limit (the default)."""
     try:
-        value = int(raw) if raw is not None else MAX_DECODED_BYTES_DEFAULT
+        value = int(os.getenv(_MAX_DECODED_BYTES_ENV) or 0)
     except ValueError:
-        return MAX_DECODED_BYTES_DEFAULT
-    # 0 would refuse every large record rather than lift the limit; treat it as unset.
-    return value if value > 0 else MAX_DECODED_BYTES_DEFAULT
+        return None
+    return value if value > 0 else None
 
 
 _SIGNED_URL_CACHE_ENV = "PIPESHUB_SIGNED_URL_CACHE_SECONDS"
@@ -935,7 +933,7 @@ class BlobStorage(Transformer):
             return self._process_downloaded_record(data)
         # Unknown size (a streamed frame) still takes the gate, but has no size to check.
         ceiling = max_decoded_record_bytes()
-        if size != zstd.CONTENTSIZE_UNKNOWN and size > ceiling:
+        if ceiling is not None and size != zstd.CONTENTSIZE_UNKNOWN and size > ceiling:
             raise StoredRecordTooLargeError(
                 f"record decodes to {size} bytes, over the {ceiling}-byte limit ({_MAX_DECODED_BYTES_ENV})"
             )

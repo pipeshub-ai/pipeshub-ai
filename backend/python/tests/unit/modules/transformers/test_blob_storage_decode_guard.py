@@ -28,7 +28,6 @@ from app.exceptions.storage_exceptions import (
 )
 from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import (
-    MAX_DECODED_BYTES_DEFAULT,
     BlobStorage,
     _compressed_content_size,
     _decode_slot_for,
@@ -134,8 +133,9 @@ class TestContentSizeProbe:
 
 
 class TestCeilingConfig:
-    def test_default(self) -> None:
-        assert max_decoded_record_bytes() == MAX_DECODED_BYTES_DEFAULT == 256 * 1024 * 1024
+    def test_off_by_default(self) -> None:
+        """A refused record drops out of every answer silently, so nothing is refused unless asked."""
+        assert max_decoded_record_bytes() is None
 
     def test_env_override_is_read_per_call(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, "1048576")
@@ -144,12 +144,12 @@ class TestCeilingConfig:
         assert max_decoded_record_bytes() == 2048
 
     @pytest.mark.parametrize("raw", ["", "lots", "1.5e9", "0", "-1"])
-    def test_invalid_or_non_positive_falls_back_to_default(
+    def test_invalid_or_non_positive_means_no_limit(
         self, monkeypatch: pytest.MonkeyPatch, raw: str
     ) -> None:
-        """0 would refuse every large record; it is not a way to lift the limit."""
+        """A bad value must never turn the limit on."""
         monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, raw)
-        assert max_decoded_record_bytes() == MAX_DECODED_BYTES_DEFAULT
+        assert max_decoded_record_bytes() is None
 
 
 class TestInlinePath:
@@ -255,6 +255,17 @@ class TestUnchangedErrors:
 
 
 class TestCeiling:
+    async def test_no_limit_by_default_even_for_a_record_claiming_3_gib(self) -> None:
+        packed = msgspec.msgpack.encode(_record(100_000))
+        frame = bytearray(zstd.ZstdCompressor().compress(packed))
+        at = bytes(frame).find(struct.pack("<I", len(packed)))
+        frame[at:at + 4] = struct.pack("<I", 3 * 1024**3)
+        data = {"isCompressed": True, "record": base64.b64encode(bytes(frame)).decode()}
+        assert _compressed_content_size(data) == 3 * 1024**3
+        # Not refused: it reaches the decode, which then fails on the forged size.
+        with pytest.raises(Exception, match="Decompression failed"):
+            await _bs()._decode_record(data)
+
     async def test_over_the_ceiling_is_refused_before_any_decode(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
