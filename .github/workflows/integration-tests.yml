@@ -160,6 +160,7 @@ jobs:
     concurrency:
       group: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk' && format('zendesk-live-{0}', github.repository) || format('integration-job-{0}-{1}-{2}', github.run_id, matrix.graph_db, matrix.shard) }}
       cancel-in-progress: false
+      queue: max
 
     strategy:
       fail-fast: false
