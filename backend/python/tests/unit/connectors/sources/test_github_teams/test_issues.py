@@ -101,6 +101,7 @@ def _issue(
         ),
         created_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
         updated_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+        closed_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if state == "closed" else None,
         pull_request=SimpleNamespace() if is_pr else None,
     )
 
@@ -250,6 +251,17 @@ class TestProcessIssueToTicket:
         assert ru.record.labels == ["bug"]
         assert ru.record.assignee_source_id == ["801"]
         assert ru.record.status == "OPEN"
+
+    async def test_a_closed_issue_keeps_its_close_date(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=42)
+        sync = IssuesSync(c)
+
+        closed = await sync._process_issue_to_ticket(repo, _issue(number=7, state="closed", state_reason="completed"))
+        still_open = await sync._process_issue_to_ticket(repo, _issue(number=8))
+
+        assert closed.record.resolved_at == int(datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp() * 1000)
+        assert still_open.record.resolved_at is None
 
     async def test_populates_people_and_type_fields(self) -> None:
         """These all exist on TicketRecord and were being left empty, so a

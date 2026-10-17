@@ -19,6 +19,7 @@ from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
     collection_map,
     create_record_instance_from_dict,
+    enrich_read_records_with_address_links,
     get_record,
     live_record_ids,
 )
@@ -436,6 +437,11 @@ async def _fetch_multiple_records_impl(
     result["ok"] = False
 
     if found_records:
+        # What names each record and what it names, with their status: read by
+        # id, a record does not pass through the search pipeline that adds them.
+        await enrich_read_records_with_address_links(
+            found_records, graph_provider, org_id, user_id=user_id,
+        )
         result["ok"] = True
         result["records"] = found_records
         result["record_count"] = len(found_records)
