@@ -18,6 +18,7 @@ import {
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { forkConversation, forkAgentConversation, deleteConversationById } from '../../../../src/modules/enterprise_search/controller/es_controller'
 
+const APP_CONFIG = { connectorBackend: 'http://connectors.test' } as never
 const URI = process.env.FORK_TEST_MONGO_URI
 const useTransactions = process.env.REPLICA_SET_AVAILABLE === 'true'
 const oid = () => new mongoose.Types.ObjectId()
@@ -225,11 +226,11 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
       const { source, messages, citationId } = await seedChat(6)
       const messageId = String(messages[3]!._id)
 
-      const denied = await run(forkConversation as never, stranger, { conversationId: String(source._id), messageId })
+      const denied = await run(forkConversation(APP_CONFIG) as never, stranger, { conversationId: String(source._id), messageId })
       expect(denied.error?.statusCode).to.equal(404)
       expect(denied.status).to.equal(undefined)
 
-      const ok = await run(forkConversation as never, owner, { conversationId: String(source._id), messageId })
+      const ok = await run(forkConversation(APP_CONFIG) as never, owner, { conversationId: String(source._id), messageId })
       expect(ok.error).to.equal(undefined)
       expect(ok.status).to.equal(201)
       expect(ok.body!.messageCount).to.equal(4)
@@ -271,11 +272,11 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
       const params = { conversationId: String(source._id), messageId: String(messages[1]!._id) }
       const before = await ChatSession.countDocuments({})
 
-      const asRecipient = await run(forkConversation as never, recipient, params)
-      const asMember = await run(forkConversation as never, projectMember, params)
+      const asRecipient = await run(forkConversation(APP_CONFIG) as never, recipient, params)
+      const asMember = await run(forkConversation(APP_CONFIG) as never, projectMember, params)
       const asOtherOrg = await (async () => {
         const out: { error?: { statusCode?: number } } = {}
-        await (forkConversation as never as (...a: unknown[]) => Promise<unknown>)(
+        await (forkConversation(APP_CONFIG) as never as (...a: unknown[]) => Promise<unknown>)(
           { params, body: {}, query: {}, headers: {}, user: { userId: String(owner), orgId: String(oid()) }, context: { requestId: 'r' } },
           { status: () => ({ json: () => undefined }) },
           (e: { statusCode?: number }) => { out.error = e },
@@ -321,7 +322,7 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
 
       it('forks an agent chat as an agent chat of the same agent, with its tool calls', async () => {
         const x = await seedAgentChat()
-        const ok = await run(forkAgentConversation as never, owner, agentParams(x))
+        const ok = await run(forkAgentConversation(APP_CONFIG) as never, owner, agentParams(x))
         expect(ok.error).to.equal(undefined)
         expect(ok.status).to.equal(201)
         expect(ok.body!.messageCount).to.equal(2)
@@ -358,13 +359,13 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
         const x = await seedAgentChat({ projectId: project._id, projectVisibility: 'project' })
         const before = await ChatSession.countDocuments({})
 
-        const wrongAgent = await run(forkAgentConversation as never, owner, agentParams(x, 'agent-OTHER'))
-        const plainRoute = await run(forkConversation as never, owner, {
+        const wrongAgent = await run(forkAgentConversation(APP_CONFIG) as never, owner, agentParams(x, 'agent-OTHER'))
+        const plainRoute = await run(forkConversation(APP_CONFIG) as never, owner, {
           conversationId: String(x.source._id),
           messageId: String(x.messages[1]!._id),
         })
-        const asStranger = await run(forkAgentConversation as never, stranger, agentParams(x))
-        const asMember = await run(forkAgentConversation as never, projectMember, agentParams(x))
+        const asStranger = await run(forkAgentConversation(APP_CONFIG) as never, stranger, agentParams(x))
+        const asMember = await run(forkAgentConversation(APP_CONFIG) as never, projectMember, agentParams(x))
 
         for (const out of [wrongAgent, plainRoute, asStranger, asMember]) {
           expect(out.error?.statusCode).to.equal(404)
@@ -374,14 +375,14 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
 
       it('does not fork an assistant chat through the agent route', async () => {
         const x = await seedChat(2)
-        const out = await run(forkAgentConversation as never, owner, agentParams(x))
+        const out = await run(forkAgentConversation(APP_CONFIG) as never, owner, agentParams(x))
         expect(out.error?.statusCode).to.equal(404)
       })
     })
 
     ;(useTransactions ? it.skip : it)('deleting the fork leaves the original chat and its citations alone', async () => {
       const { source, messages, citationId } = await seedChat(4)
-      const forked = await run(forkConversation as never, owner, {
+      const forked = await run(forkConversation(APP_CONFIG) as never, owner, {
         conversationId: String(source._id),
         messageId: String(messages[3]!._id),
       })

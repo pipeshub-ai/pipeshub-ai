@@ -1,6 +1,7 @@
 import mongoose, { ClientSession } from 'mongoose';
 import {
   ForbiddenError,
+  InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { ProjectService } from '../../projects/services/project.service';
@@ -13,6 +14,12 @@ import {
   IMessage,
   IMessagePart,
 } from '../types/conversation.interfaces';
+import {
+  ArtifactCopier,
+  ArtifactCopyMap,
+  collectArtifactRefs,
+  pointMessageAtCopies,
+} from './fork-artifacts';
 import { appendMessages } from './utils';
 
 export const FORK_TITLE_MAX_LENGTH = 200;
@@ -140,11 +147,57 @@ export async function resolveForkProjectId(
 }
 
 /**
+ * Gives the fork its own copy of every artifact the copied messages show.
+ * An artifact that is gone or no longer readable is left as it is: its card
+ * could not be opened from the original either. Any other failure aborts the
+ * fork, because carrying on would leave the fork editing the original's
+ * artifact.
+ */
+async function copyForkArtifacts(
+  copyArtifacts: ArtifactCopier,
+  sourceId: mongoose.Types.ObjectId,
+  lastSeq: number,
+  forkId: mongoose.Types.ObjectId,
+  sessionOption: { session: ClientSession } | undefined,
+): Promise<ArtifactCopyMap> {
+  const withMarkers = await ChatSessionMessage.find(
+    {
+      sessionId: sourceId,
+      seq: { $lte: lastSeq },
+      content: { $regex: '::artifact\\[' },
+    },
+    { content: 1 },
+    sessionOption,
+  ).lean();
+  const refs = collectArtifactRefs(
+    withMarkers.map((row) => {
+      const { content } = row as { content?: unknown };
+      return typeof content === 'string' ? content : '';
+    }),
+  );
+  if (refs.length === 0) {
+    return new ArtifactCopyMap([]);
+  }
+
+  const outcome = await copyArtifacts(String(forkId), refs);
+  const broken = outcome.failed.filter((f) => f.reason === 'error');
+  if (broken.length > 0) {
+    throw new InternalServerError(
+      `Could not copy ${String(broken.length)} artifact(s) into the fork`,
+    );
+  }
+  return new ArtifactCopyMap(outcome.copies);
+}
+
+/**
  * Copy a chat session and every message up to `messageId` (inclusive) into a
  * new session owned by `userId`. The source is left unchanged. Share state is
  * not copied — the fork is private to the caller. Messages are copied in
  * batches so a long thread is never held in memory whole. Without a
  * transaction, a failed copy removes what it already wrote.
+ *
+ * With `copyArtifacts`, the fork gets its own artifacts and its messages point
+ * at them, so editing in one chat never changes the other.
  */
 export async function copySessionUpToMessage(
   source: IChatSessionDocument,
@@ -153,6 +206,7 @@ export async function copySessionUpToMessage(
   orgId: string,
   fields: ForkSessionFields,
   mongoSession?: ClientSession | null,
+  copyArtifacts?: ArtifactCopier,
 ): Promise<ForkChatSessionResult> {
   const sourceId = source._id;
   const sessionOption = mongoSession ? { session: mongoSession } : undefined;
@@ -201,6 +255,15 @@ export async function copySessionUpToMessage(
 
   let messageCount = 0;
   try {
+    const copies = copyArtifacts
+      ? await copyForkArtifacts(
+          copyArtifacts,
+          sourceId,
+          forkPoint.seq,
+          forkId,
+          sessionOption,
+        )
+      : new ArtifactCopyMap([]);
     let nextSeq = 0;
     for (;;) {
       const batch = await ChatSessionMessage.find(
@@ -218,8 +281,11 @@ export async function copySessionUpToMessage(
         forkId,
         conversation.orgId,
         batch.map((row) =>
-          withExpiredApprovals(
-            stripMessageForCopy(row as Record<string, unknown>),
+          pointMessageAtCopies(
+            withExpiredApprovals(
+              stripMessageForCopy(row as Record<string, unknown>),
+            ),
+            copies,
           ),
         ),
         mongoSession,
