@@ -2119,7 +2119,11 @@ class TestSaveConnectorInstanceFilters:
         with caplog.at_level(logging.WARNING, logger="test"), pytest.raises(HTTPException):
             await save_connector_instance_filters("c1", req, graph_provider=AsyncMock())
 
-        assert any("Deprecated POST /api/v1/connectors/c1/filters" in r.getMessage() for r in caplog.records)
+        assert any(
+            "Deprecated POST /api/v1/connectors/c1/filters" in r.getMessage()
+            and "/api/v1/connectors/c1/config/filters-sync" in r.getMessage()
+            for r in caplog.records
+        )
 
     async def test_no_filters_raises_400(self):
         from app.connectors.api.router import save_connector_instance_filters

@@ -924,7 +924,7 @@ describe('tokens_manager/controllers/connector.controllers', () => {
       await handler(req, res, next)
 
       expect(res.status.calledWith(200)).to.be.true
-      expect(warn.calledWithMatch(sinon.match('Deprecated POST /connectors/c1/filters'))).to.be.true
+      expect(warn.calledWithMatch(sinon.match('Deprecated POST /api/v1/connectors/c1/filters'))).to.be.true
     })
 
     it('should return an async handler function', () => {

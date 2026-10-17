@@ -39529,7 +39529,7 @@ paths:
     post:
       deprecated: true
       x-speakeasy-deprecation-message: >-
-        Use PUT /connectors/{connectorId}/config/filters-sync instead.
+        Use PUT /connectors/{connectorId}/config/filters-sync instead, with a body of {sync?, filters?: {sync, indexing}} (the flat filters map this route takes is not accepted there), and only while the connector is disabled.
         This endpoint will be removed in a future release.
       tags:
         - Connector Filters
@@ -39537,11 +39537,13 @@ paths:
       description: |
         <b>Deprecated.</b> Save filters with
         <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
-        PipesHub app uses. This endpoint will be removed in a future release.<br><br>
+        PipesHub app uses. That route takes <code>{sync?, filters?: {sync, indexing}}</code>, not the
+        flat <code>filters</code> map this one takes, and refuses while the connector is active, so disable it first.
+        This endpoint will be removed in a future release.<br><br>
+        What this endpoint saves goes to <code>filters.values</code>, which sync does not read:
+        sync reads <code>filters.sync</code> and <code>filters.indexing</code>.<br><br>
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
-        After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.<br><br>
         <b>Request:</b><br>
         <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
         refused with <code>400</code>. The server stores whatever it is given under the

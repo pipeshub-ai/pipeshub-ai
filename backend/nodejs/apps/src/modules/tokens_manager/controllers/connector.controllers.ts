@@ -1339,7 +1339,7 @@ export const saveConnectorInstanceFilterOptions =
       }
 
       logger.warn(
-        `Deprecated POST /connectors/${connectorId}/filters was called; use PUT /connectors/:connectorId/config/filters-sync instead. This endpoint will be removed in a future release.`,
+        `Deprecated POST /api/v1/connectors/${connectorId}/filters was called; use PUT /api/v1/connectors/${connectorId}/config/filters-sync with {sync?, filters?: {sync, indexing}} while the connector is disabled. This endpoint will be removed in a future release.`,
       );
 
       const headers = buildProxyHeaders(req);

@@ -7618,7 +7618,9 @@ async def save_connector_instance_filters(
     Save filter selections for a connector instance.
 
     Deprecated: the app saves filters through
-    ``PUT /api/v1/connectors/{connector_id}/config/filters-sync``. Removed in a later release.
+    ``PUT /api/v1/connectors/{connector_id}/config/filters-sync``, which takes
+    ``{sync?, filters?: {sync, indexing}}`` and refuses while the connector is active.
+    What this route saves lands in ``filters.values``, which sync doesn't read. Removed in a later release.
 
     Args:
         connector_id: Unique instance key
@@ -7636,7 +7638,9 @@ async def save_connector_instance_filters(
     connector_registry = request.app.state.connector_registry
     logger.warning(
         "Deprecated POST /api/v1/connectors/%s/filters was called; use PUT "
-        "/api/v1/connectors/{connector_id}/config/filters-sync instead",
+        "/api/v1/connectors/%s/config/filters-sync with {sync?, filters?: {sync, indexing}} "
+        "while the connector is disabled",
+        connector_id,
         connector_id,
     )
 
