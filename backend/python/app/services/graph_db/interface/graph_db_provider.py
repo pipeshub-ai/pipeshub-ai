@@ -1123,6 +1123,13 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def delete_taxonomy_node_if_unlinked(self, collection: str, key: str) -> bool:
+        """Remove one taxonomy node only while no live record links it.
+
+        A merge loser (``mergedInto`` set) is left so the redirect still resolves.
+        """
+        raise NotImplementedError
+
     @abstractmethod
     async def update_edge(
         self,

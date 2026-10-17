@@ -24,7 +24,7 @@ from app.modules.entity_resolution.models import (
 from app.modules.entity_resolution.normalizer import display_form, normalize_name
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.graph_db.taxonomy import edge_spellings
+from app.services.graph_db.taxonomy import TAXONOMY_EDGE_COLLECTIONS, edge_spellings
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 # Fields an edge read returns that are not edge properties to write back.
@@ -494,17 +494,51 @@ class GraphDBTransformer(Transformer):
         The caller uses these to sync entities to the vector store.
         """
         self.logger.debug("🚀 Saving metadata to graph database")
-        if resolution is not None:
-            await self._write_canonical_nodes(resolution)
-            await self._write_hierarchy_edges(metadata, resolution)
-        # Records sharing taxonomy nodes collide on them (Neo4j deadlocks,
-        # ArangoDB errorNum 1200); the write below re-reads the record's edges
-        # and writes only the difference, so it is safe to run again.
-        return await self.graph_data_store.execute_idempotent_in_transaction(
-            self._write_record_metadata,
-            record_id, metadata, virtual_record_id,
-            is_vlm_ocr_processed=is_vlm_ocr_processed, resolution=resolution,
-        )
+        try:
+            if resolution is not None:
+                await self._write_canonical_nodes(resolution)
+                await self._write_hierarchy_edges(metadata, resolution)
+            return await self.graph_data_store.execute_idempotent_in_transaction(
+                self._write_record_metadata,
+                record_id, metadata, virtual_record_id,
+                is_vlm_ocr_processed=is_vlm_ocr_processed, resolution=resolution,
+            )
+        except Exception:
+            # Nodes are written before the record transaction. A delete that
+            # already removed the record, or a failed edge write, must not
+            # leave a label this call just created and nothing links.
+            if resolution is not None:
+                await self._drop_unlinked_nodes_this_call_created(resolution)
+            raise
+
+    async def _drop_unlinked_nodes_this_call_created(self, resolution: EntityResolution) -> None:
+        provider = self.graph_data_store.graph_provider
+        for entity in resolution.entries.values():
+            if not entity.is_new:
+                continue
+            edge_collection = TAXONOMY_EDGE_COLLECTIONS.get(entity.kind.collection)
+            if edge_collection is None:
+                continue
+            node_id = f"{entity.kind.collection}/{entity.key}"
+            try:
+                links = await provider.get_edges_to_node(
+                    node_id, edge_collection, raise_on_error=True
+                )
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not check links for %s after a failed enrichment: %s",
+                    node_id, exc,
+                )
+                continue
+            if links:
+                continue
+            try:
+                await provider.delete_taxonomy_node_if_unlinked(entity.kind.collection, entity.key)
+            except Exception as exc:
+                self.logger.warning(
+                    "Could not remove unlinked %s created by a failed enrichment: %s",
+                    node_id, exc,
+                )
 
     async def _write_record_metadata(
         self,
