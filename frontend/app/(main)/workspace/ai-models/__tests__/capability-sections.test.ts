@@ -14,9 +14,9 @@ describe('capability sections', () => {
     expect(modelTypesForSection('decision')).toEqual(['decision']);
   });
 
-  it('has a decision tab whose models open the decision schema', () => {
-    expect(CAPABILITY_SECTION_ORDER).toContain('decision');
+  it('keeps the decision tab hidden while decision models stay schema-ready', () => {
+    expect(CAPABILITY_SECTION_ORDER).not.toContain('decision');
+    expect(isRegistryBadgeCapability('decision')).toBe(false);
     expect(registryCapabilityForModelType('decision')).toBe('decision');
-    expect(isRegistryBadgeCapability('decision')).toBe(true);
   });
 });

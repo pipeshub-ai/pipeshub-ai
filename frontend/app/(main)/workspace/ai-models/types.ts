@@ -203,7 +203,8 @@ export const CAPABILITY_SECTION_ORDER: CapabilitySection[] = [
   'image_generation',
   'tts',
   'stt',
-  'decision',
+  // Hidden until a feature uses decision models; uncomment to show the For Decisions tab.
+  // 'decision',
 ];
 
 /** Model API buckets shown under the "For LLMs" tab. */
@@ -233,7 +234,8 @@ export const REGISTRY_BADGE_CAPABILITY_KEYS = [
   'embedding',
   'tts',
   'stt',
-  'decision',
+  // Hidden with the For Decisions tab; uncomment together with it.
+  // 'decision',
 ] as const;
 
 export type RegistryBadgeCapabilityKey = (typeof REGISTRY_BADGE_CAPABILITY_KEYS)[number];
