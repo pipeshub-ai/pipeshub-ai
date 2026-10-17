@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, fireEvent } from '@testing-library/react';
 
 const toastError = vi.fn(() => 'critical-toast');
 const toastUpdate = vi.fn();
@@ -31,7 +31,16 @@ vi.mock('@/lib/store/user-store', () => ({
 }));
 
 let shouldPoll = true;
-vi.mock('@/config', () => ({ useShouldPollServiceHealth: () => shouldPoll }));
+const logoutAndRedirect = vi.fn();
+const logoutFromWorkspaceMenu = vi.fn();
+vi.mock('@/config', () => ({
+  useShouldPollServiceHealth: () => shouldPoll,
+  logoutAndRedirect: () => logoutAndRedirect(),
+  logoutFromWorkspaceMenu: () => logoutFromWorkspaceMenu(),
+}));
+
+let electron = false;
+vi.mock('@/lib/electron', () => ({ isElectron: () => electron }));
 
 // The component reads plain selectors and store methods from the same hook.
 const healthState = {
@@ -39,10 +48,15 @@ const healthState = {
   stopBackgroundPolling: vi.fn(),
   retryServerConnection: vi.fn(),
 };
+let apiServerReachable = true;
+const setHealthState = vi.fn();
 
 vi.mock('@/lib/store/services-health-store', () => ({
-  useServicesHealthStore: (selector: (s: unknown) => unknown) => selector(healthState),
-  selectApiServerReachable: () => true,
+  useServicesHealthStore: Object.assign(
+    (selector: (s: unknown) => unknown) => selector(healthState),
+    { setState: (...args: unknown[]) => setHealthState(...args) },
+  ),
+  selectApiServerReachable: () => apiServerReachable,
   selectBackgroundCheckFailed: () => true,
   selectAppServices: () => ({ query: 'unhealthy' }),
   selectInfraServices: () => ({}),
@@ -65,6 +79,45 @@ afterEach(() => {
   cleanup();
   isAdmin = null;
   shouldPoll = true;
+  electron = false;
+  apiServerReachable = true;
+  logoutAndRedirect.mockClear();
+  logoutFromWorkspaceMenu.mockClear();
+  setHealthState.mockClear();
+});
+
+describe('the unreachable-server screen', () => {
+  it('lets a web user log out instead of waiting forever', () => {
+    apiServerReachable = false;
+    const view = render(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+
+    fireEvent.click(view.getByRole('button', { name: 'workspaceMenu.logOut' }));
+
+    expect(logoutAndRedirect).toHaveBeenCalledTimes(1);
+    expect(logoutFromWorkspaceMenu).not.toHaveBeenCalled();
+    expect(setHealthState).toHaveBeenCalledWith({ apiServerReachable: true });
+  });
+
+  it('lets a desktop user pick another server', () => {
+    apiServerReachable = false;
+    electron = true;
+    const view = render(
+      <HealthGate>
+        <div>body</div>
+      </HealthGate>,
+    );
+
+    fireEvent.click(
+      view.getByRole('button', { name: 'electron.serverUrlSetup.changeServer' }),
+    );
+
+    expect(logoutFromWorkspaceMenu).toHaveBeenCalledTimes(1);
+    expect(logoutAndRedirect).not.toHaveBeenCalled();
+  });
 });
 
 describe('service health polling', () => {

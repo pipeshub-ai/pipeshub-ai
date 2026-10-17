@@ -491,7 +491,9 @@ class TestOAuthMetadataRedirectUriWithBaseUrl:
     """7. OAuth metadata with redirect URI + base_url provided."""
 
     async def test_redirect_uri_uses_provided_base_url(self):
-        config_service = _make_config_service()
+        config_service = _make_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://custom.example.com"}},
+        )
         registry = _make_connector_registry()
         container = _make_container(config_service)
 
@@ -520,6 +522,40 @@ class TestOAuthMetadataRedirectUriWithBaseUrl:
         assert result["success"] is True
         auth = result["config"]["auth"]
         assert auth["redirectUri"] == "https://custom.example.com/oauth/callback"
+        assert auth["scopes"] == ["read", "write"]
+        assert auth["authorizeUrl"] == "https://auth.example.com/authorize"
+        assert auth["tokenUrl"] == "https://auth.example.com/token"
+
+    async def test_redirect_uri_ignores_base_url_not_matching_configured_frontend(self) -> None:
+        config_service = _make_config_service()
+        registry = _make_connector_registry()
+        container = _make_container(config_service)
+
+        body = {
+            "auth": {"oauthConfigId": "oauth-1"},
+            "baseUrl": "app://.",
+        }
+        request = _make_request(
+            is_admin=True,
+            body=body,
+            container=container,
+            connector_registry=registry,
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
+
+        with (
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
+            patch(_PATCH_TIMESTAMP, return_value=1234567890),
+        ):
+            result = await update_connector_instance_auth_config(
+                "conn1", request, graph_provider
+            )
+
+        assert result["success"] is True
+        auth = result["config"]["auth"]
+        assert auth["redirectUri"] == "https://app.example.com/oauth/callback"
         assert auth["scopes"] == ["read", "write"]
         assert auth["authorizeUrl"] == "https://auth.example.com/authorize"
         assert auth["tokenUrl"] == "https://auth.example.com/token"

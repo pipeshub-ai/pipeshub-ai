@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
@@ -17,6 +18,7 @@ import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 import { isDesktopOfflineError } from './utils/local-fs-helpers';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -305,13 +307,13 @@ export const ConnectorsApi = {
   async getOAuthAuthorizationUrl(
     connectorId: string
   ): Promise<{ authorizationUrl: string; state: string }> {
-    const baseUrl = window.location.origin;
+    const baseUrl = browserOAuthBaseUrl();
     const { data } = await apiClient.get<{
       authorizationUrl: string;
       state: string;
     }>(
       `${BASE_URL}/${connectorId}/oauth/authorize`,
-      { params: { baseUrl } }
+      { params: { baseUrl, ...desktopAuthorizeParams() } }
     );
     return data;
   },

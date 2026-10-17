@@ -1,5 +1,6 @@
 import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
 import type { McpToolRules } from '@/app/(main)/workspace/mcp-servers/types';
@@ -648,7 +649,7 @@ export const ToolsetsApi = {
   ): Promise<{ authorizationUrl?: string; success?: boolean }> {
     const { data } = await apiClient.get<{ authorizationUrl?: string; success?: boolean }>(
       `/api/v1/toolsets/agents/${agentKey}/instances/${instanceId}/oauth/authorize`,
-      { params: baseUrl ? { base_url: baseUrl } : undefined }
+      { params: { ...(baseUrl ? { base_url: baseUrl } : {}), ...desktopAuthorizeParams() } }
     );
     return data ?? {};
   },
@@ -660,7 +661,7 @@ export const ToolsetsApi = {
   ): Promise<{ authorizationUrl?: string; success?: boolean }> {
     const { data } = await apiClient.get<{ authorizationUrl?: string; success?: boolean }>(
       `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/oauth/authorize`,
-      { params: baseUrl ? { base_url: baseUrl } : undefined }
+      { params: { ...(baseUrl ? { base_url: baseUrl } : {}), ...desktopAuthorizeParams() } }
     );
     return data ?? {};
   },
