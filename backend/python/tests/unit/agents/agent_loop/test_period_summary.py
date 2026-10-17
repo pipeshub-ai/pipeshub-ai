@@ -38,6 +38,14 @@ ABOUT_A_SPAN = [
     "Between last March and May, what happened?",
     "What happened between 2026-03-01 and 2026-05-31?",
     "What happened between March 1 and May 31?",
+    "List the changes between last March 1 and May 31",
+    "List the changes from last March 2026 to May",
+    "List the changes between this March 15 and June 2",
+    "Since March, what was decided?",
+    "Since May 31, what was decided?",
+    "Since May 31st, what was decided?",
+    "Since 2026-03-01, what was decided?",
+    "What was decided over the summer?",
 ]
 
 NOT_ABOUT_A_SPAN = [
@@ -54,6 +62,11 @@ NOT_ABOUT_A_SPAN = [
     "What happened after the fall of the old auth service?",
     "Catch me up before the spring launch",
     "What problems came up so we may 1) fix auth",
+    "How did we go from June to market?",
+    "Notes from June 3 to market",
+    "What changed between March 1 and maybe the release?",
+    "Who moved from March 1 to Jane?",
+    "What changed between March and the fallback?",
     "What problems came up with the export, and what was decided?",
     "",
     "   ",

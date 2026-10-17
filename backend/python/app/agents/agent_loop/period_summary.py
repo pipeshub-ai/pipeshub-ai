@@ -59,9 +59,10 @@ _POINT_PREFIX = r"(?:(?:early|mid|late|the end of|the start of)[- ]?\s*)?"
 # One end of a span: "March", "mid-May 2026", "March 1", "2026-03-01", "Q2",
 # "last March", "the summer". Only used after between/from/since, which make
 # a month name a date.
+_DAY_YEAR = rf"(?:\s+\d{{1,2}}(?:st|nd|rd|th)?\b)?(?:,?\s+{_YEAR})?"
 _POINT = (
-    rf"{_POINT_PREFIX}(?:\d{{4}}-\d{{2}}-\d{{2}}|{_NEAR_MONTH}"
-    rf"|{_MONTH}(?:\s+\d{{1,2}}(?:st|nd|rd|th)?\b)?(?:,?\s+{_YEAR})?|{_PLAIN_POINT}|{_SEASON})"
+    rf"{_POINT_PREFIX}(?:\d{{4}}-\d{{2}}-\d{{2}}|{_NEAR_MONTH}{_DAY_YEAR}"
+    rf"|{_MONTH}{_DAY_YEAR}|{_PLAIN_POINT}|{_SEASON})\b"
 )
 # A month name only where it is a date: after a preposition, with a year, or
 # with an ordinal day. "so we may 1) fix" is not one.
