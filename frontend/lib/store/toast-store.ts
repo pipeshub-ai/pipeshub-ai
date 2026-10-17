@@ -185,12 +185,15 @@ export const useToastStore = create<ToastStore>()(
           if (toast) {
             Object.assign(toast, toastUpdates);
 
-            // If variant changed and no explicit duration provided, set up auto-dismiss
-            if (toastUpdates.variant && toastUpdates.duration === undefined) {
+            // A changed variant (e.g. loading -> error) gets the new variant's close button and
+            // auto-dismiss, with an explicit duration taking precedence over the default.
+            if (toastUpdates.variant) {
               // Toasts with action buttons persist until user interaction
-              const newDuration = toastUpdates.action || toast.action
-                ? null
-                : DEFAULT_DURATIONS[toastUpdates.variant];
+              const newDuration = toastUpdates.duration !== undefined
+                ? toastUpdates.duration
+                : toastUpdates.action || toast.action
+                  ? null
+                  : DEFAULT_DURATIONS[toastUpdates.variant];
               toast.duration = newDuration;
               toast.showCloseButton = toastUpdates.showCloseButton ?? (toastUpdates.variant !== 'loading');
 
