@@ -824,6 +824,8 @@
     "like": "有幫助",
     "dislike": "沒有幫助",
     "copy": "複製",
+    "fork": "分叉對話",
+    "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
@@ -951,7 +953,9 @@
       "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",
       "openAgentBuilder": "開啟代理建構器",
-      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。"
+      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。",
+      "forkSuccess": "已從此處開始新對話",
+      "forkError": "無法分叉此對話，請重試。"
     },
     "queryModes": {
       "chat": {

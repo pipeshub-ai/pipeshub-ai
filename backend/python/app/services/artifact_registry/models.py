@@ -53,6 +53,21 @@ class ArtifactVersion(BaseModel):
     deduplicated: bool = False
 
 
+class ArtifactCopy(BaseModel):
+    """The independent copy `ArtifactRegistryService.copy_to_conversation`
+    made, plus how the source's version numbers line up with it.
+
+    `versions` maps a source version to its version in the copy. The two can
+    drift when the source has identical content in two versions (the copy
+    dedups it) or when an old version's bytes are gone."""
+
+    source_artifact_id: str
+    source_document_id: str | None = None
+    artifact_id: str
+    document_id: str | None = None
+    versions: dict[int, int] = Field(default_factory=dict)
+
+
 class ArtifactLineage(BaseModel):
     """One `DERIVED_FROM` edge, auto-captured by the harness — never
     model-asserted. See `lineage.py`."""

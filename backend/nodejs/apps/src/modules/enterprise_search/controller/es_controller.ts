@@ -130,6 +130,15 @@ import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
 } from '../utils/chat-error-messages';
+import {
+  copyArtifactsForFork,
+  copySessionUpToMessage,
+  ForkChatSessionResult,
+  ForkSessionFields,
+  resolveForkProjectId,
+} from '../utils/fork-conversation';
+import { ArtifactCopier, ArtifactCopyOutcome } from '../utils/fork-artifacts';
+import { executeConnectorCommand } from '../../tokens_manager/utils/connector.utils';
 import { ProjectService } from '../../projects/services/project.service';
 import {
   assignAgentCapabilitiesToPayload,
@@ -3970,6 +3979,265 @@ export const updateTitle = async (
     }
   }
 };
+
+interface ForkConversationBody {
+  id: string;
+  title: string | undefined;
+  projectId: string | undefined;
+  forkedFrom: { conversationId: string; messageId: string };
+  messageCount: number;
+  meta: { requestId: string | undefined; timestamp: string; duration: number };
+}
+
+const forkConversationResponse = (
+  { conversation, messageCount }: ForkChatSessionResult,
+  conversationId: string,
+  messageId: string,
+  requestId: string | undefined,
+  startTime: number,
+): ForkConversationBody => ({
+  id: String(conversation._id),
+  title: conversation.title,
+  projectId: conversation.projectId
+    ? String(conversation.projectId)
+    : undefined,
+  forkedFrom: { conversationId, messageId },
+  messageCount,
+  meta: {
+    requestId,
+    timestamp: new Date().toISOString(),
+    duration: Date.now() - startTime,
+  },
+});
+
+interface ForkTarget {
+  /** Names the kind of chat in the error log. */
+  label: string;
+  fields: Omit<ForkSessionFields, 'projectId'>;
+  findSource: (
+    orgId: string,
+    userId: string,
+    conversationId: string,
+  ) => Promise<IChatSessionDocument | null>;
+  copyArtifacts: ArtifactCopier;
+  /** Removes the artifacts copied under a fork that could not be created. */
+  discardArtifacts: (forkId: string) => Promise<void>;
+}
+
+const FORK_ARTIFACT_COPY_BATCH = 50;
+// Copying re-uploads every version's bytes, so allow far longer than a lookup.
+const FORK_ARTIFACT_COPY_TIMEOUT_MS = 180_000;
+
+/**
+ * Asks the connectors service to copy artifacts as the caller. One attempt
+ * only (`retries` counts attempts): a repeat after a timeout would leave a
+ * second, unused copy.
+ */
+export const forkArtifactCopier =
+  (appConfig: AppConfig, req: AuthenticatedUserRequest): ArtifactCopier =>
+  async (conversationId, refs) => {
+    const outcome: ArtifactCopyOutcome = { copies: [], failed: [] };
+    for (let i = 0; i < refs.length; i += FORK_ARTIFACT_COPY_BATCH) {
+      const response = await executeConnectorCommand<ArtifactCopyOutcome>(
+        `${appConfig.connectorBackend}/api/v1/artifacts/copy`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        {
+          conversationId,
+          artifacts: refs.slice(i, i + FORK_ARTIFACT_COPY_BATCH),
+        },
+        { retries: 1, timeoutMs: FORK_ARTIFACT_COPY_TIMEOUT_MS },
+      );
+      if (
+        response.statusCode < 200 ||
+        response.statusCode >= 300 ||
+        !response.data
+      ) {
+        throw handleBackendError(response, 'copy artifacts for fork');
+      }
+      outcome.copies.push(...response.data.copies);
+      outcome.failed.push(...response.data.failed);
+    }
+    return outcome;
+  };
+
+const runFork = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+  target: ForkTarget,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  let session: ClientSession | null = null;
+  const conversationId = req.params.conversationId ?? '';
+  const messageId = req.params.messageId ?? '';
+  // Allocated up front: the artifacts are copied under this id before the chat
+  // exists, and a retried transaction must reuse them, not copy again.
+  const forkId = new mongoose.Types.ObjectId();
+  const copy = { started: false };
+  try {
+    const userId = req.user?.userId as string | undefined;
+    const orgId = req.user?.orgId as string | undefined;
+    if (!conversationId || !messageId) {
+      throw new BadRequestError('conversationId and messageId are required');
+    }
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+
+    const source = await target.findSource(orgId, userId, conversationId);
+    if (!source) {
+      throw new NotFoundError('Conversation not found');
+    }
+
+    const fields: ForkSessionFields = {
+      ...target.fields,
+      projectId: await resolveForkProjectId(source, orgId, userId),
+    };
+    // Outside the transaction: this call can take minutes, longer than MongoDB
+    // lets a transaction live.
+    const artifacts = await copyArtifactsForFork(
+      source,
+      messageId,
+      forkId,
+      (id, refs) => {
+        copy.started = true;
+        return target.copyArtifacts(id, refs);
+      },
+    );
+    const performFork = (
+      txnSession: ClientSession | null,
+    ): Promise<ForkChatSessionResult> =>
+      copySessionUpToMessage(
+        source,
+        messageId,
+        userId,
+        orgId,
+        fields,
+        txnSession,
+        artifacts,
+      );
+
+    let result: ForkChatSessionResult;
+    if (rsAvailable) {
+      session = await mongoose.startSession();
+      result = await session.withTransaction(() => performFork(session));
+    } else {
+      result = await performFork(null);
+    }
+
+    res
+      .status(HTTP_STATUS.CREATED)
+      .json(
+        forkConversationResponse(
+          result,
+          conversationId,
+          messageId,
+          requestId,
+          startTime,
+        ),
+      );
+  } catch (error) {
+    const failure = error instanceof Error ? error : new Error(String(error));
+    logger.error(`Error forking ${target.label}`, {
+      requestId,
+      conversationId,
+      messageId,
+      error: failure.message,
+      stack: failure.stack,
+      duration: Date.now() - startTime,
+    });
+    if (copy.started) {
+      // The artifacts live outside MongoDB, so no rollback reaches them.
+      try {
+        await target.discardArtifacts(String(forkId));
+      } catch (cleanupError) {
+        logger.warn('Could not remove the artifacts of a failed fork', {
+          requestId,
+          forkId: String(forkId),
+          error:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+        });
+      }
+    }
+    next(error);
+  } finally {
+    if (session) {
+      await session.endSession();
+      session = null;
+    }
+  }
+};
+
+/**
+ * Copy a conversation into a new private chat owned by the caller, including
+ * every message up to and including `messageId`. The original is unchanged.
+ *
+ * Owner only: a shared recipient's access to the original's attachments and
+ * artifacts is revoked on unshare, which would leave a fork pointing at files
+ * it can no longer open.
+ */
+export const forkConversation =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    runFork(req, res, next, {
+      label: 'conversation',
+      fields: { sessionType: 'chat' },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne({
+          ...(buildFilter(
+            req,
+            orgId,
+            userId,
+            conversationId,
+            true,
+            false,
+          ) as FilterQuery<IChatSessionDocument>),
+          ...EXCLUDE_AGENT,
+        }),
+    });
+
+/** Owner only, for the same reason as `forkConversation`. */
+export const forkAgentConversation =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const agentKey = req.params.agentKey ?? '';
+    if (!agentKey) {
+      next(new BadRequestError('agentKey is required'));
+      return;
+    }
+    await runFork(req, res, next, {
+      label: 'agent conversation',
+      fields: { sessionType: 'agent', agentKey },
+      copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
+      findSource: (orgId, userId, conversationId) =>
+        ChatSession.findOne(
+          buildAgentConversationFilter(
+            req,
+            orgId,
+            userId,
+            agentKey,
+            conversationId,
+          ) as FilterQuery<IChatSessionDocument>,
+        ),
+    });
+  };
 
 async function performFeedbackUpdate(params: {
   query: Record<string, any>;

@@ -41,6 +41,17 @@ export interface FeedbackPayload {
   };
 }
 
+export interface ForkConversationResult {
+  id: string;
+  title: string;
+  projectId?: string;
+  forkedFrom: {
+    conversationId: string;
+    messageId: string;
+  };
+  messageCount: number;
+}
+
 export interface StreamMessageCallbacks {
   onConnected?: (data: SSEConnectedEvent) => void;
   onStatus?: (data: SSEStatusEvent) => void;
@@ -537,6 +548,20 @@ export const ChatApi = {
   // Rename a conversation
   async renameConversation(conversationId: string, title: string): Promise<void> {
     await apiClient.patch(`/api/v1/conversations/${conversationId}/title`, { title });
+  },
+
+  /**
+   * Copy a conversation into a new chat, including every message up to `messageId`.
+   * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/fork
+   */
+  async forkConversation(
+    conversationId: string,
+    messageId: string,
+  ): Promise<ForkConversationResult> {
+    const { data } = await apiClient.post<ForkConversationResult>(
+      `/api/v1/conversations/${conversationId}/message/${messageId}/fork`,
+    );
+    return data;
   },
 
   // Delete a conversation

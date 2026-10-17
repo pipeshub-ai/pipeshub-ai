@@ -739,6 +739,8 @@
     "like": "Helpful",
     "dislike": "Not helpful",
     "copy": "Copy",
+    "fork": "Fork chat",
+    "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
@@ -835,7 +837,9 @@
       "editComingSoonDescription": "We're building out support for edit",
       "deprecatedTools": "This agent has tools that are no longer available. Open the Agent Builder to remove them.",
       "openAgentBuilder": "Open Agent Builder",
-      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again."
+      "loadConversationFailed": "We couldn't open this conversation. Refresh the page to try again.",
+      "forkSuccess": "Started a new chat from this point",
+      "forkError": "Couldn't fork this chat. Try again."
     },
     "queryModes": {
       "chat": {

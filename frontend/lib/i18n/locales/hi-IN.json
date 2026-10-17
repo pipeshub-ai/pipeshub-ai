@@ -739,6 +739,8 @@
     "like": "सहायक",
     "dislike": "सहायक नहीं",
     "copy": "कॉपी करें",
+    "fork": "चैट फोर्क करें",
+    "forkFromHere": "यहाँ से फोर्क करें",
     "regenerate": "पुनः उत्पन्न करें",
     "readAloud": "ज़ोर से पढ़ें",
     "stopReading": "पढ़ना बंद करें",
@@ -835,7 +837,9 @@
       "editComingSoonDescription": "हम एडिट के लिए सपोर्ट तैयार कर रहे हैं",
       "deprecatedTools": "इस एजेंट के कुछ टूल अब उपलब्ध नहीं हैं। उन्हें हटाने के लिए Agent Builder खोलें।",
       "openAgentBuilder": "Agent Builder खोलें",
-      "loadConversationFailed": "हम यह बातचीत नहीं खोल सके। फिर से कोशिश करने के लिए पेज रीफ़्रेश करें।"
+      "loadConversationFailed": "हम यह बातचीत नहीं खोल सके। फिर से कोशिश करने के लिए पेज रीफ़्रेश करें।",
+      "forkSuccess": "इस बिंदु से एक नई चैट शुरू हुई",
+      "forkError": "इस चैट को फोर्क नहीं किया जा सका। फिर से कोशिश करें।"
     },
     "queryModes": {
       "chat": {

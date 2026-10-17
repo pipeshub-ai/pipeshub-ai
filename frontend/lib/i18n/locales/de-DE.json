@@ -738,6 +738,8 @@
     "like": "Hilfreich",
     "dislike": "Nicht hilfreich",
     "copy": "Kopieren",
+    "fork": "Chat abzweigen",
+    "forkFromHere": "Ab hier abzweigen",
     "regenerate": "Neu generieren",
     "readAloud": "Vorlesen",
     "stopReading": "Vorlesen beenden",
@@ -834,7 +836,9 @@
       "editComingSoonDescription": "Die Bearbeitungsfunktion wird gerade entwickelt",
       "deprecatedTools": "Dieser Agent hat Tools, die nicht mehr verfügbar sind. Öffnen Sie den Agent Builder, um sie zu entfernen.",
       "openAgentBuilder": "Agent Builder öffnen",
-      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen."
+      "loadConversationFailed": "Diese Unterhaltung konnte nicht geöffnet werden. Laden Sie die Seite neu, um es erneut zu versuchen.",
+      "forkSuccess": "Neuer Chat ab diesem Punkt gestartet",
+      "forkError": "Der Chat konnte nicht abgezweigt werden. Bitte erneut versuchen."
     },
     "queryModes": {
       "chat": {

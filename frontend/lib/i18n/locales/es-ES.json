@@ -746,6 +746,8 @@
     "like": "Útil",
     "dislike": "No útil",
     "copy": "Copiar",
+    "fork": "Bifurcar chat",
+    "forkFromHere": "Bifurcar desde aquí",
     "regenerate": "Regenerar",
     "readAloud": "Leer en voz alta",
     "stopReading": "Dejar de leer",
@@ -843,7 +845,9 @@
       "editComingSoonDescription": "Estamos desarrollando soporte para editar",
       "deprecatedTools": "Este agente tiene herramientas que ya no están disponibles. Abre el Agent Builder para eliminarlas.",
       "openAgentBuilder": "Abrir Agent Builder",
-      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo."
+      "loadConversationFailed": "No pudimos abrir esta conversación. Recarga la página para intentarlo de nuevo.",
+      "forkSuccess": "Se inició un chat nuevo desde este punto",
+      "forkError": "No se pudo bifurcar este chat. Inténtelo de nuevo."
     },
     "queryModes": {
       "chat": {

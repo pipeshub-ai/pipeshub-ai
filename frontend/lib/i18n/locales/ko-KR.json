@@ -824,6 +824,8 @@
     "like": "도움이 됨",
     "dislike": "도움이 안 됨",
     "copy": "복사",
+    "fork": "채팅 분기",
+    "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
@@ -951,7 +953,9 @@
       "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
-      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요."
+      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
+      "forkSuccess": "이 지점부터 새 채팅을 시작했습니다",
+      "forkError": "채팅을 분기하지 못했습니다. 다시 시도하세요."
     },
     "queryModes": {
       "chat": {

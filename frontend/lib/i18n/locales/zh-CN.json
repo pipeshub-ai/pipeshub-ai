@@ -824,6 +824,8 @@
     "like": "有帮助",
     "dislike": "没帮助",
     "copy": "复制",
+    "fork": "分叉对话",
+    "forkFromHere": "从此处分叉",
     "regenerate": "重新生成",
     "readAloud": "朗读",
     "stopReading": "停止朗读",
@@ -951,7 +953,9 @@
       "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",
       "openAgentBuilder": "打开智能体构建器",
-      "loadConversationFailed": "无法打开此对话。请刷新页面后重试。"
+      "loadConversationFailed": "无法打开此对话。请刷新页面后重试。",
+      "forkSuccess": "已从此处开始新对话",
+      "forkError": "无法分叉此对话，请重试。"
     },
     "queryModes": {
       "chat": {
