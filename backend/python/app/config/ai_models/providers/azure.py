@@ -113,7 +113,7 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.DECISION) \
     .add_field(API_KEY, ModelCapability.DECISION) \
-    .add_field(model_field("e.g., gpt-6-luna"), ModelCapability.DECISION) \
+    .add_field(model_field("e.g., Microsoft-Decision-1"), ModelCapability.DECISION) \
     .add_field(DEPLOYMENT_NAME, ModelCapability.DECISION) \
     .add_field(FRIENDLY_NAME, ModelCapability.DECISION) \
     .build_decorator()

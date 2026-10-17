@@ -88,10 +88,10 @@ A decision model answers typed questions about an input with calibrated probabil
 | Provider | Models | Endpoint |
 | --- | --- | --- |
 | OpenAI | `gpt-6-luna` | `POST {base}/decisions` (default base `https://api.openai.com/v1`) |
-| Azure OpenAI | a deployment of a decision model | `POST {endpoint}/openai/v1/decisions`, `api-key` header |
+| Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
 | TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
 
-Saving a model runs one yes/no question against it. The model list offers TypeSafe's Jev models and `gpt-6-luna` on OpenAI and Azure OpenAI; other Azure deployments are typed in by name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+Saving a model runs one yes/no question against it. The model list offers TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI (which then no longer shows as a chat model); other deployments are typed in by name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
 
 ```python
 from app.services.ai_models.decision import ChoiceQuestion, DecisionOption

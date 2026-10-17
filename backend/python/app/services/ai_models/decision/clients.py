@@ -1,4 +1,4 @@
-"""Decision model clients: OpenAI Decisions API, Azure OpenAI and TypeSafe (Jev).
+"""Decision model clients: OpenAI Decisions API, TypeSafe (Jev) and Microsoft Foundry.
 
 Each client turns the shared question types into its provider's wire format and
 the provider's answers back into ``DecisionResult``.
@@ -203,18 +203,6 @@ class OpenAIDecisionModel(DecisionModel):
         )
 
 
-class AzureOpenAIDecisionModel(OpenAIDecisionModel):
-    """Azure OpenAI deployment of a decision model, OpenAI wire format on ``/openai/v1``."""
-
-    provider = "azureOpenAI"
-
-    def __init__(self, model_name: str, api_key: str, endpoint: str) -> None:
-        super().__init__(model_name, api_key, base_url=f"{endpoint.rstrip('/')}/openai/v1")
-
-    def _headers(self) -> dict[str, str]:
-        return {"api-key": self._api_key}
-
-
 class TypeSafeDecisionModel(DecisionModel):
     """TypeSafe System One models (Jev): ``POST /v1/systemone``."""
 
@@ -250,6 +238,34 @@ class TypeSafeDecisionModel(DecisionModel):
             answers=_fill_missing(answers, questions),
             usage=_usage(payload.get("usage")),
         )
+
+
+class AzureOpenAIDecisionModel(TypeSafeDecisionModel):
+    """A Microsoft Foundry deployment of a decision model (Microsoft-Decision-1).
+
+    Foundry serves it in the System One format on the resource root, addressed by
+    deployment name: ``POST {endpoint}/providers/microsoft/v1/systemone``.
+    """
+
+    provider = "azureOpenAI"
+
+    def __init__(self, model_name: str, api_key: str, endpoint: str) -> None:
+        super().__init__(model_name, api_key, base_url=_azure_resource_root(endpoint))
+
+    def _url(self) -> str:
+        return f"{self._base_url}/providers/microsoft/v1/systemone"
+
+    def _headers(self) -> dict[str, str]:
+        return {"api-key": self._api_key}
+
+
+def _azure_resource_root(endpoint: str) -> str:
+    # Admins often paste the ".../openai/v1/" URL other Azure screens show.
+    root = endpoint.strip().rstrip("/")
+    for suffix in ("/openai/v1", "/openai"):
+        if root.lower().endswith(suffix):
+            return root[: -len(suffix)]
+    return root
 
 
 def _openai_question(question: DecisionQuestion) -> dict[str, Any]:

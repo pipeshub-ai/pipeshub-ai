@@ -134,27 +134,31 @@ async def test_openai_custom_base_url() -> None:
     assert str(seen[0].url) == "https://gateway.example.com/v1/decisions"
 
 
-async def test_azure_uses_deployment_api_key_header_and_v1_path() -> None:
+async def test_azure_calls_the_foundry_system_one_path_by_deployment_name() -> None:
     seen: list[httpx.Request] = []
     model = get_decision_model(
         "azureOpenAI",
         {
             "configuration": {
-                "model": "gpt-6-luna",
-                "deploymentName": "luna-decisions",
+                "model": "Microsoft-Decision-1",
+                "deploymentName": "decision-prod",
                 "apiKey": "az-key",
-                "endpoint": "https://res.openai.azure.com/",
+                "endpoint": "https://res.openai.azure.com/openai/v1/",
             },
             "isDefault": True,
         },
     )
     assert isinstance(model, AzureOpenAIDecisionModel)
-    with _mock([httpx.Response(200, json=OPENAI_RESPONSE)], seen):
-        await model.decide("x", QUESTIONS)
-    assert str(seen[0].url) == "https://res.openai.azure.com/openai/v1/decisions"
+    payload = {"model": "microsoft-decision-1", "answers": {"urgent": {"type": "noul", "noul": 0.7}}}
+    with _mock([httpx.Response(200, json=payload)], seen):
+        result = await model.decide("x", QUESTIONS[:1])
+    assert str(seen[0].url) == "https://res.openai.azure.com/providers/microsoft/v1/systemone"
     assert seen[0].headers["api-key"] == "az-key"
     assert "authorization" not in seen[0].headers
-    assert json.loads(seen[0].content)["model"] == "luna-decisions"
+    body = json.loads(seen[0].content)
+    assert body["model"] == "decision-prod"
+    assert body["questions"]["urgent"] == {"type": "noul", "instructions": "Is this urgent?"}
+    assert result.answers["urgent"].probability == 0.7
 
 
 async def test_typesafe_sends_system_one_format_and_parses_answers() -> None:

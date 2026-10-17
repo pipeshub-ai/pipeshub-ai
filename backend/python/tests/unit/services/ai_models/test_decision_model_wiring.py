@@ -56,8 +56,10 @@ def test_openai_luna_is_both_a_chat_and_a_decision_model() -> None:
     assert "decision" in model.capabilities
     other = classify("openAI", RawModel(id="gpt-6-sol"))
     assert "decision" not in other.capabilities
-    dated = classify("azureOpenAI", RawModel(id="gpt-6-luna-2026-10-06", capabilities=["llm"]))
+    dated = classify("openAI", RawModel(id="gpt-6-luna-2026-10-06", capabilities=["llm"]))
     assert dated.capabilities == ["llm", "decision"]
+    foundry = classify("azureOpenAI", RawModel(id="Microsoft-Decision-1", capabilities=["llm"]))
+    assert foundry.capabilities == ["decision"]
 
 
 def test_decision_tab_drops_unclassified_models() -> None:

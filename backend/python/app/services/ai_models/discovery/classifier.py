@@ -15,12 +15,15 @@ from app.services.ai_models.discovery.types import DiscoveredModel, RawModel
 
 _EXCLUDE = re.compile(r"(moderation|guard|realtime|\bre-?rank\b|search)", re.IGNORECASE)
 
-# Chat models these providers also serve on their decision endpoint. The ids match
-# the chat model's, so neither the catalog nor an ID rule can tell. Dated snapshots
-# ("gpt-6-luna-2026-10-06") match by prefix.
-_DECISION_MODEL_PREFIXES: dict[str, tuple[str, ...]] = {
+# Chat models a provider also serves on its decision endpoint: their ids match the
+# chat model's, so neither the catalog nor an ID rule can tell. Matched by prefix so
+# dated snapshots ("gpt-6-luna-2026-10-06") count.
+_ALSO_DECISION_PREFIXES: dict[str, tuple[str, ...]] = {
     "openAI": ("gpt-6-luna",),
-    "azureOpenAI": ("gpt-6-luna",),
+}
+# Models that only answer decisions; they must not be offered as chat models.
+_DECISION_ONLY_PREFIXES: dict[str, tuple[str, ...]] = {
+    "azureOpenAI": ("microsoft-decision",),
 }
 
 
@@ -86,7 +89,10 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         source = "heuristic"
     if not capabilities:
         return None
-    if raw.id.lower().startswith(_DECISION_MODEL_PREFIXES.get(provider_id, ())) and "decision" not in capabilities:
+    lowered_id = raw.id.lower()
+    if lowered_id.startswith(_DECISION_ONLY_PREFIXES.get(provider_id, ())):
+        capabilities = ["decision"]
+    elif lowered_id.startswith(_ALSO_DECISION_PREFIXES.get(provider_id, ())) and "decision" not in capabilities:
         capabilities = [*capabilities, "decision"]
 
     context_length = raw.context_length
