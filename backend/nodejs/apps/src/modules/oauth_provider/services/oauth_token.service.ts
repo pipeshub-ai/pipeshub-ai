@@ -1,30 +1,30 @@
-import { injectable, inject } from 'inversify'
-import jwt, { Algorithm, Secret } from 'jsonwebtoken'
-import crypto from 'crypto'
-import { randomUUID } from 'crypto'
-import { Types } from 'mongoose'
-import { Logger } from '../../../libs/services/logger.service'
+import { injectable, inject } from 'inversify';
+import jwt, { Algorithm, Secret } from 'jsonwebtoken';
+import crypto from 'crypto';
+import { randomUUID } from 'crypto';
+import { Types } from 'mongoose';
+import { Logger } from '../../../libs/services/logger.service';
 import {
   OAuthAccessToken,
   IOAuthAccessToken,
-} from '../schema/oauth.access_token.schema'
-import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
-import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema'
+} from '../schema/oauth.access_token.schema';
+import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema';
+import { IOAuthApp, OAuthApp } from '../schema/oauth.app.schema';
 import {
   InvalidTokenError,
   ExpiredTokenError,
   InvalidGrantError,
   InvalidScopeError,
-} from '../../../libs/errors/oauth.errors'
+} from '../../../libs/errors/oauth.errors';
 import {
   OAuthTokenPayload,
   GeneratedTokens,
   GenerateTokensOptions,
   IntrospectResponse,
   TokenListItem,
-} from '../types/oauth.types'
-import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig'
-import { stripTokenDisplayPrefix } from '../constants/constants'
+} from '../types/oauth.types';
+import { JwtConfig, getJwtKeyFromConfig } from '../../../libs/utils/jwtConfig';
+import { stripTokenDisplayPrefix } from '../constants/constants';
 import { parseScopeString } from './scope.validator.service';
 
 /**
@@ -42,39 +42,38 @@ export function isGrantCoveredBy(
   return scopes.every((scope) => allowedScopes.includes(scope));
 }
 
-
 /** What the personal-token views show; callers that need more pass their own. */
-const DEFAULT_TOKEN_LIST_LIMIT = 100
+const DEFAULT_TOKEN_LIST_LIMIT = 100;
 
 @injectable()
 export class OAuthTokenService {
-  private algorithm: Algorithm
-  private signingKey: Secret
-  private verifyKey: Secret
-  private keyId?: string
+  private algorithm: Algorithm;
+  private signingKey: Secret;
+  private verifyKey: Secret;
+  private keyId?: string;
 
   constructor(
     @inject('Logger') private logger: Logger,
     @inject('JwtConfig') private jwtConfig: JwtConfig,
     @inject('OAUTH_ISSUER') private issuer: string,
   ) {
-    const keyConfig = getJwtKeyFromConfig(jwtConfig)
-    this.algorithm = keyConfig.algorithm
-    this.signingKey = keyConfig.signingKey
-    this.verifyKey = keyConfig.verifyKey
-    this.keyId = keyConfig.keyId
+    const keyConfig = getJwtKeyFromConfig(jwtConfig);
+    this.algorithm = keyConfig.algorithm;
+    this.signingKey = keyConfig.signingKey;
+    this.verifyKey = keyConfig.verifyKey;
+    this.keyId = keyConfig.keyId;
   }
 
   getAlgorithm(): Algorithm {
-    return this.algorithm
+    return this.algorithm;
   }
 
   getKeyId(): string | undefined {
-    return this.keyId
+    return this.keyId;
   }
 
   getPublicKey(): string | undefined {
-    return this.jwtConfig.publicKey
+    return this.jwtConfig.publicKey;
   }
 
   /**
@@ -94,10 +93,10 @@ export class OAuthTokenService {
       throw new InvalidScopeError('A token must carry at least one scope');
     }
 
-    const jti = randomUUID()
-    const now = Math.floor(Date.now() / 1000)
+    const jti = randomUUID();
+    const now = Math.floor(Date.now() / 1000);
     const accessTokenLifetime =
-      opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime
+      opts?.accessTokenLifetimeOverrideSeconds ?? app.accessTokenLifetime;
 
     // Generate access token
     const accessTokenPayload: OAuthTokenPayload = {
@@ -123,7 +122,7 @@ export class OAuthTokenService {
       // Changing an app's identity revokes its outstanding tokens, so none
       // minted under the previous answer survives to be honoured.
       createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
-    }
+    };
 
     // A delegated token speaks as the person named in `userId`, so every
     // claim that answers "who is this" has to agree on that person. Only
@@ -138,18 +137,22 @@ export class OAuthTokenService {
     // token that acts as a member would make that guard the only thing
     // standing between delegation and silent privilege escalation.
     if (opts?.actorUserId !== undefined) {
-      accessTokenPayload.act = { sub: opts.actorUserId }
-      accessTokenPayload.createdBy = opts.actorUserId
+      accessTokenPayload.act = { sub: opts.actorUserId };
+      accessTokenPayload.createdBy = opts.actorUserId;
     }
 
-    const signOptions: jwt.SignOptions = { algorithm: this.algorithm }
+    const signOptions: jwt.SignOptions = { algorithm: this.algorithm };
     if (this.keyId) {
-      signOptions.keyid = this.keyId
+      signOptions.keyid = this.keyId;
     }
-    const accessToken = jwt.sign(accessTokenPayload, this.signingKey, signOptions)
+    const accessToken = jwt.sign(
+      accessTokenPayload,
+      this.signingKey,
+      signOptions,
+    );
 
     // Store access token hash for revocation lookup
-    const accessTokenHash = this.hashToken(accessToken)
+    const accessTokenHash = this.hashToken(accessToken);
     const storedAccessToken = await OAuthAccessToken.create({
       tokenHash: accessTokenHash,
       clientId: app.clientId,
@@ -162,16 +165,16 @@ export class OAuthTokenService {
         opts?.actorUserId === undefined
           ? undefined
           : new Types.ObjectId(opts.actorUserId),
-    })
+    });
 
     const result: GeneratedTokens = {
       accessToken,
       jti,
-      accessTokenId: (storedAccessToken._id as Types.ObjectId).toString(),
+      accessTokenId: storedAccessToken._id.toString(),
       tokenType: 'Bearer',
       expiresIn: accessTokenLifetime,
       scope: scopes.join(' '),
-    }
+    };
 
     // Generate refresh token if requested and user is present.
     //
@@ -186,7 +189,7 @@ export class OAuthTokenService {
       opts?.actorUserId === undefined &&
       scopes.includes('offline_access')
     ) {
-      const refreshJti = randomUUID()
+      const refreshJti = randomUUID();
       const refreshTokenPayload: OAuthTokenPayload = {
         userId: userId,
         orgId,
@@ -202,12 +205,16 @@ export class OAuthTokenService {
         accountType,
         // Same resolved identity as the access token above.
         createdBy: (app.tokenIdentityUserId ?? app.createdBy)?.toString(),
-      }
+      };
 
-      const refreshToken = jwt.sign(refreshTokenPayload, this.signingKey, signOptions)
+      const refreshToken = jwt.sign(
+        refreshTokenPayload,
+        this.signingKey,
+        signOptions,
+      );
 
       // Store refresh token
-      const refreshTokenHash = this.hashToken(refreshToken)
+      const refreshTokenHash = this.hashToken(refreshToken);
       await OAuthRefreshToken.create({
         tokenHash: refreshTokenHash,
         clientId: app.clientId,
@@ -215,13 +222,13 @@ export class OAuthTokenService {
         orgId: new Types.ObjectId(orgId),
         scopes,
         expiresAt: new Date((now + app.refreshTokenLifetime) * 1000),
-      })
+      });
 
-      result.refreshToken = refreshToken
+      result.refreshToken = refreshToken;
     }
 
     if (opts?.recheckAppScopes) {
-      await this.revokeIfScopesWithdrawn(app.clientId, scopes, result)
+      await this.revokeIfScopesWithdrawn(app.clientId, scopes, result);
     }
 
     this.logger.info('OAuth tokens generated', {
@@ -229,9 +236,9 @@ export class OAuthTokenService {
       userId,
       scopes,
       hasRefreshToken: !!result.refreshToken,
-    })
+    });
 
-    return result
+    return result;
   }
 
   /**
@@ -253,12 +260,12 @@ export class OAuthTokenService {
     })
       .select('allowedScopes')
       .lean()
-      .exec()
+      .exec();
     if (current && isGrantCoveredBy(scopes, current.allowedScopes)) {
-      return
+      return;
     }
 
-    const revoked = { isRevoked: true, revokedAt: new Date() }
+    const revoked = { isRevoked: true, revokedAt: new Date() };
     await Promise.all([
       OAuthAccessToken.updateOne(
         { tokenHash: { $eq: this.hashToken(tokens.accessToken) } },
@@ -270,10 +277,10 @@ export class OAuthTokenService {
             revoked,
           )
         : Promise.resolve(),
-    ])
+    ]);
     throw new InvalidGrantError(
       "The application's permissions changed during sign-in. Sign in again.",
-    )
+    );
   }
 
   /**
@@ -305,8 +312,8 @@ export class OAuthTokenService {
             : { revokedBy: new Types.ObjectId(revokedBy) }),
         },
       },
-    )
-    return result.modifiedCount
+    );
+    return result.modifiedCount;
   }
 
   async verifyAccessToken(token: string): Promise<OAuthTokenPayload> {
@@ -315,14 +322,14 @@ export class OAuthTokenService {
       // prefix ahead of the underlying JWT so they're grep-able in
       // logs/files. Strip it before verifying/hashing — every other token
       // type never has a prefix, so this is a no-op for them.
-      const rawToken = stripTokenDisplayPrefix(token)
+      const rawToken = stripTokenDisplayPrefix(token);
 
       const payload = jwt.verify(rawToken, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
+      }) as OAuthTokenPayload;
 
       if (payload.isRefreshToken) {
-        throw new InvalidTokenError('Invalid token type')
+        throw new InvalidTokenError('Invalid token type');
       }
 
       if (parseScopeString(payload.scope).length === 0) {
@@ -330,14 +337,14 @@ export class OAuthTokenService {
       }
 
       // Check if token is revoked
-      const tokenHash = this.hashToken(rawToken)
+      const tokenHash = this.hashToken(rawToken);
       const storedToken = await OAuthAccessToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },
-      })
+      });
 
       if (!storedToken) {
-        throw new InvalidTokenError('Token has been revoked')
+        throw new InvalidTokenError('Token has been revoked');
       }
 
       // Best-effort recency tracking for the token list UI — never blocks
@@ -345,18 +352,18 @@ export class OAuthTokenService {
       this.touchLastUsed(storedToken).catch((err: unknown) => {
         this.logger.warn('Failed to update token lastUsedAt', {
           error: err instanceof Error ? err.message : 'Unknown error',
-        })
-      })
+        });
+      });
 
-      return payload
+      return payload;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
-        throw new ExpiredTokenError('Access token has expired')
+        throw new ExpiredTokenError('Access token has expired');
       }
       if (error instanceof jwt.JsonWebTokenError) {
-        throw new InvalidTokenError('Invalid access token')
+        throw new InvalidTokenError('Invalid access token');
       }
-      throw error
+      throw error;
     }
   }
 
@@ -367,31 +374,31 @@ export class OAuthTokenService {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
+      }) as OAuthTokenPayload;
 
       if (!payload.isRefreshToken) {
-        throw new InvalidTokenError('Invalid token type')
+        throw new InvalidTokenError('Invalid token type');
       }
 
-      const tokenHash = this.hashToken(token)
+      const tokenHash = this.hashToken(token);
       const storedToken = await OAuthRefreshToken.findOne({
         tokenHash: { $eq: tokenHash },
         isRevoked: { $eq: false },
-      })
+      });
 
       if (!storedToken) {
-        throw new InvalidTokenError('Refresh token has been revoked')
+        throw new InvalidTokenError('Refresh token has been revoked');
       }
 
-      return payload
+      return payload;
     } catch (error) {
       if (error instanceof jwt.TokenExpiredError) {
-        throw new ExpiredTokenError('Refresh token has expired')
+        throw new ExpiredTokenError('Refresh token has expired');
       }
       if (error instanceof jwt.JsonWebTokenError) {
-        throw new InvalidTokenError('Invalid refresh token')
+        throw new InvalidTokenError('Invalid refresh token');
       }
-      throw error
+      throw error;
     }
   }
 
@@ -403,14 +410,16 @@ export class OAuthTokenService {
     refreshToken: string,
     requestedScopes?: string[],
   ): Promise<GeneratedTokens> {
-    const payload = await this.verifyRefreshToken(refreshToken)
+    const payload = await this.verifyRefreshToken(refreshToken);
 
     // Get stored refresh token
-    const tokenHash = this.hashToken(refreshToken)
-    const storedToken = await OAuthRefreshToken.findOne({ tokenHash: { $eq: tokenHash } })
+    const tokenHash = this.hashToken(refreshToken);
+    const storedToken = await OAuthRefreshToken.findOne({
+      tokenHash: { $eq: tokenHash },
+    });
 
     if (!storedToken) {
-      throw new InvalidTokenError('Refresh token not found')
+      throw new InvalidTokenError('Refresh token not found');
     }
 
     if (storedToken.clientId !== app.clientId) {
@@ -421,17 +430,17 @@ export class OAuthTokenService {
       });
       throw new InvalidGrantError(
         'Refresh token was not issued to this client',
-      )
+      );
     }
 
     // Determine scopes - can only be reduced, not expanded
-    let scopes = storedToken.scopes
+    let scopes = storedToken.scopes;
     if (requestedScopes && requestedScopes.length > 0) {
       // Filter to only include scopes that were in the original grant
-      scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s))
+      scopes = requestedScopes.filter((s) => storedToken.scopes.includes(s));
     }
     // Nor beyond what the app allows now; it may have lost scopes since the grant.
-    scopes = scopes.filter((s) => app.allowedScopes.includes(s))
+    scopes = scopes.filter((s) => app.allowedScopes.includes(s));
     if (scopes.length === 0) {
       // Before rotation: a refresh that no longer overlaps the app must not
       // burn the client's still-valid refresh token.
@@ -441,9 +450,9 @@ export class OAuthTokenService {
     }
 
     // Revoke old refresh token (rotation)
-    storedToken.isRevoked = true
-    storedToken.revokedAt = new Date()
-    await storedToken.save()
+    storedToken.isRevoked = true;
+    storedToken.revokedAt = new Date();
+    await storedToken.save();
 
     // Generate new tokens
     const newTokens = await this.generateTokens(
@@ -455,15 +464,15 @@ export class OAuthTokenService {
       payload.fullName,
       payload.accountType,
       { recheckAppScopes: true },
-    )
+    );
 
     this.logger.info('Tokens refreshed', {
       clientId: app.clientId,
       userId: payload.userId,
       rotationCount: storedToken.rotationCount + 1,
-    })
+    });
 
-    return newTokens
+    return newTokens;
   }
 
   /**
@@ -478,7 +487,7 @@ export class OAuthTokenService {
     clientId: string,
     tokenType?: 'access_token' | 'refresh_token',
   ): Promise<boolean> {
-    const tokenHash = this.hashToken(token)
+    const tokenHash = this.hashToken(token);
 
     // RFC 7009: The authorization server validates...that the token was issued to the client
     // We include clientId in the query to ensure the token belongs to this client
@@ -491,10 +500,10 @@ export class OAuthTokenService {
           isRevoked: { $eq: false },
         },
         { isRevoked: true, revokedAt: new Date() },
-      )
+      );
       if (result.modifiedCount > 0) {
-        this.logger.info('Access token revoked', { clientId })
-        return true
+        this.logger.info('Access token revoked', { clientId });
+        return true;
       }
     }
 
@@ -506,14 +515,14 @@ export class OAuthTokenService {
           isRevoked: { $eq: false },
         },
         { isRevoked: true, revokedAt: new Date() },
-      )
+      );
       if (result.modifiedCount > 0) {
-        this.logger.info('Refresh token revoked', { clientId })
-        return true
+        this.logger.info('Refresh token revoked', { clientId });
+        return true;
       }
     }
 
-    return false
+    return false;
   }
 
   /**
@@ -529,9 +538,9 @@ export class OAuthTokenService {
         { clientId: { $eq: clientId }, isRevoked: { $eq: false } },
         { isRevoked: true, revokedAt: new Date() },
       ),
-    ])
+    ]);
 
-    this.logger.info('All tokens revoked for app', { clientId })
+    this.logger.info('All tokens revoked for app', { clientId });
   }
 
   /**
@@ -545,7 +554,7 @@ export class OAuthTokenService {
    * because it was issued by a different client would defeat the point.
    */
   async revokeEveryTokenForUser(userId: string): Promise<void> {
-    const userObjId = new Types.ObjectId(userId)
+    const userObjId = new Types.ObjectId(userId);
     await Promise.all([
       OAuthAccessToken.updateMany(
         { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
@@ -555,14 +564,14 @@ export class OAuthTokenService {
         { userId: { $eq: userObjId }, isRevoked: { $eq: false } },
         { isRevoked: true, revokedAt: new Date() },
       ),
-    ])
+    ]);
   }
 
   async revokeAllTokensForUser(
     clientId: string,
     userId: string,
   ): Promise<void> {
-    const userObjId = new Types.ObjectId(userId)
+    const userObjId = new Types.ObjectId(userId);
     await Promise.all([
       OAuthAccessToken.updateMany(
         {
@@ -580,9 +589,12 @@ export class OAuthTokenService {
         },
         { isRevoked: true, revokedAt: new Date() },
       ),
-    ])
+    ]);
 
-    this.logger.info('All tokens revoked for user in app', { clientId, userId })
+    this.logger.info('All tokens revoked for user in app', {
+      clientId,
+      userId,
+    });
   }
 
   /**
@@ -591,38 +603,40 @@ export class OAuthTokenService {
    * @param token The token to introspect
    * @param clientId The client_id making the request (for ownership verification)
    */
-  async introspectToken(token: string, clientId: string): Promise<IntrospectResponse> {
+  async introspectToken(
+    token: string,
+    clientId: string,
+  ): Promise<IntrospectResponse> {
     try {
       const payload = jwt.verify(token, this.verifyKey, {
         algorithms: [this.algorithm],
-      }) as OAuthTokenPayload
+      }) as OAuthTokenPayload;
       if (parseScopeString(payload.scope).length === 0) {
         return { active: false };
       }
-      const tokenHash = this.hashToken(token)
+      const tokenHash = this.hashToken(token);
 
       // RFC 7662: Validate that the token was issued to the requesting client
       // Or the requesting client is authorized to introspect tokens (resource server)
       // For now, we only allow the token's client to introspect it
       if (payload.client_id !== clientId) {
         // Return inactive rather than error to prevent information disclosure
-        return { active: false }
+        return { active: false };
       }
 
       // Check revocation
-      const storedToken =
-        !payload.isRefreshToken
-          ? await OAuthAccessToken.findOne({
-              tokenHash: { $eq: tokenHash },
-              isRevoked: { $eq: false },
-            })
-          : await OAuthRefreshToken.findOne({
-              tokenHash: { $eq: tokenHash },
-              isRevoked: { $eq: false },
-            })
+      const storedToken = !payload.isRefreshToken
+        ? await OAuthAccessToken.findOne({
+            tokenHash: { $eq: tokenHash },
+            isRevoked: { $eq: false },
+          })
+        : await OAuthRefreshToken.findOne({
+            tokenHash: { $eq: tokenHash },
+            isRevoked: { $eq: false },
+          });
 
       if (!storedToken) {
-        return { active: false }
+        return { active: false };
       }
 
       // Build introspection response per RFC 7662
@@ -636,16 +650,16 @@ export class OAuthTokenService {
         user_id: payload.userId,
         iss: payload.iss,
         jti: payload.jti,
-      }
+      };
 
       // RFC 7662: Add username if available (for user tokens)
       if (storedToken.userId) {
-        response.username = storedToken.userId.toString()
+        response.username = storedToken.userId.toString();
       }
 
-      return response
+      return response;
     } catch {
-      return { active: false }
+      return { active: false };
     }
   }
 
@@ -670,11 +684,11 @@ export class OAuthTokenService {
         .sort({ createdAt: -1 })
         .limit(100)
         .exec(),
-    ])
+    ]);
 
     const tokens: TokenListItem[] = [
       ...accessTokens.map((t) => ({
-        id: (t._id as Types.ObjectId).toString(),
+        id: t._id.toString(),
         tokenType: 'access' as const,
         userId: t.userId?.toString(),
         scopes: t.scopes,
@@ -685,7 +699,7 @@ export class OAuthTokenService {
         lastUsedAt: t.lastUsedAt,
       })),
       ...refreshTokens.map((t) => ({
-        id: (t._id as Types.ObjectId).toString(),
+        id: t._id.toString(),
         tokenType: 'refresh' as const,
         userId: t.userId.toString(),
         scopes: t.scopes,
@@ -693,11 +707,9 @@ export class OAuthTokenService {
         expiresAt: t.expiresAt,
         isRevoked: t.isRevoked,
       })),
-    ]
+    ];
 
-    return tokens.sort(
-      (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
-    )
+    return tokens.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
   }
 
   /**
@@ -721,7 +733,7 @@ export class OAuthTokenService {
       userId: { $eq: new Types.ObjectId(userId) },
       isRevoked: { $eq: false },
       expiresAt: { $gt: new Date() },
-    }).exec()
+    }).exec();
   }
 
   async listAccessTokensForUser(
@@ -737,7 +749,7 @@ export class OAuthTokenService {
     })
       .sort({ createdAt: -1 })
       .limit(limit)
-      .exec()
+      .exec();
 
     // A caller that hits the ceiling is being shown less than it asked for,
     // and for a revocation screen that means credentials nobody can see to
@@ -746,11 +758,11 @@ export class OAuthTokenService {
       this.logger.warn(
         'Token list reached its limit; older tokens are not shown',
         { clientId, userId, limit },
-      )
+      );
     }
 
     return tokens.map((t) => ({
-      id: (t._id as Types.ObjectId).toString(),
+      id: t._id.toString(),
       tokenType: 'access' as const,
       userId: t.userId?.toString(),
       scopes: t.scopes,
@@ -759,7 +771,7 @@ export class OAuthTokenService {
       isRevoked: t.isRevoked,
       name: t.name,
       lastUsedAt: t.lastUsedAt,
-    }))
+    }));
   }
 
   /**
@@ -777,7 +789,7 @@ export class OAuthTokenService {
       clientId: { $eq: clientId },
       isRevoked: { $eq: false },
       expiresAt: { $gt: new Date() },
-    }
+    };
     const [tokens, total] = await Promise.all([
       OAuthAccessToken.find(filter)
         .sort({ createdAt: -1 })
@@ -785,11 +797,11 @@ export class OAuthTokenService {
         .limit(limit)
         .exec(),
       OAuthAccessToken.countDocuments(filter),
-    ])
+    ]);
 
     return {
       tokens: tokens.map((t) => ({
-        id: (t._id as Types.ObjectId).toString(),
+        id: t._id.toString(),
         tokenType: 'access' as const,
         userId: t.userId?.toString(),
         scopes: t.scopes,
@@ -800,7 +812,7 @@ export class OAuthTokenService {
         lastUsedAt: t.lastUsedAt,
       })),
       total,
-    }
+    };
   }
 
   /**
@@ -819,7 +831,7 @@ export class OAuthTokenService {
     // BSONError out of `new Types.ObjectId(id)` — treat it the same as
     // "not found" rather than letting that leak as an unhandled 500.
     if (!Types.ObjectId.isValid(id)) {
-      return false
+      return false;
     }
     const result = await OAuthAccessToken.updateOne(
       {
@@ -834,13 +846,13 @@ export class OAuthTokenService {
         revokedBy: new Types.ObjectId(revokedBy),
         revokedReason: reason,
       },
-    )
+    );
 
     if (result.modifiedCount > 0) {
-      this.logger.info('Access token revoked by id', { id, clientId, userId })
-      return true
+      this.logger.info('Access token revoked by id', { id, clientId, userId });
+      return true;
     }
-    return false
+    return false;
   }
 
   /**
@@ -856,7 +868,7 @@ export class OAuthTokenService {
     reason?: string,
   ): Promise<boolean> {
     if (!Types.ObjectId.isValid(id)) {
-      return false
+      return false;
     }
     const result = await OAuthAccessToken.updateOne(
       {
@@ -870,17 +882,17 @@ export class OAuthTokenService {
         revokedBy: new Types.ObjectId(revokedBy),
         revokedReason: reason,
       },
-    )
+    );
 
     if (result.modifiedCount > 0) {
       this.logger.info('Access token revoked by id (admin)', {
         id,
         clientId,
         revokedBy,
-      })
-      return true
+      });
+      return true;
     }
-    return false
+    return false;
   }
 
   /**
@@ -889,17 +901,17 @@ export class OAuthTokenService {
    * write on every authenticated request.
    */
   private async touchLastUsed(token: IOAuthAccessToken): Promise<void> {
-    const staleThresholdMs = 5 * 60 * 1000
+    const staleThresholdMs = 5 * 60 * 1000;
     if (
       token.lastUsedAt &&
       Date.now() - token.lastUsedAt.getTime() < staleThresholdMs
     ) {
-      return
+      return;
     }
     await OAuthAccessToken.updateOne(
       { _id: token._id },
       { lastUsedAt: new Date() },
-    )
+    );
   }
 
   /**
@@ -907,9 +919,9 @@ export class OAuthTokenService {
    */
   decodeToken(token: string): OAuthTokenPayload | null {
     try {
-      return jwt.decode(token) as OAuthTokenPayload | null
+      return jwt.decode(token) as OAuthTokenPayload | null;
     } catch {
-      return null
+      return null;
     }
   }
 
@@ -917,6 +929,6 @@ export class OAuthTokenService {
    * Hash token for storage
    */
   private hashToken(token: string): string {
-    return crypto.createHash('sha256').update(token).digest('hex')
+    return crypto.createHash('sha256').update(token).digest('hex');
   }
 }
