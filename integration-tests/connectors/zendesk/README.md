@@ -12,9 +12,12 @@ Prepare a small, dedicated Zendesk test tenant with:
   public-only stream assertion stronger, but is optional.
 - One published, unrestricted Help Center article with a non-empty body in a
   section. Avoid editing the ticket or article while the suite is running.
-- An OAuth access token for an account that can read tickets, users, groups,
-  comments, and Help Center articles. The token must have at least the `read`
-  scope. No write scope is needed.
+- A **confidential** OAuth client (Admin Center > Apps and integrations > APIs >
+  OAuth clients > Add OAuth client, client kind *Confidential*). Zendesk shows
+  its secret only once, on save. Its tokens act as the admin who created it, so
+  that admin must be able to read tickets, users, groups, comments, and Help
+  Center articles; the tokens stop working if that admin loses the role. The
+  suite requests only the `read` scope.
 
 Set these Zendesk variables in `integration-tests/.env.local` or `.env.prod`
 (or as environment variables):
@@ -50,11 +53,7 @@ article. They are fixed test records, so their IDs live in source control
 instead of GitHub secrets. The suite fails with a setup message until both IDs
 are set.
 
-Put `ZENDESK_TEST_REFRESH_TOKEN=your-current-refresh-token` in
-`integration-tests/.env.refresh_tokens`. That ignored file is updated after
-each successful exchange.
-
-After a fresh OAuth login, prepare a token before running pytest:
+Mint a token before running pytest:
 
 ```bash
 cd integration-tests
@@ -62,25 +61,17 @@ python connectors/zendesk/prepare_token.py
 pytest -m zendesk connectors/zendesk/zendesk_integration_test.py
 ```
 
-The preparation step requests a 24-hour access token, writes it to the file
-named by `ZENDESK_TEST_ACCESS_TOKEN_FILE`, and replaces the refresh token in
-`integration-tests/.env.refresh_tokens`. Keep that file outside version control
-and do not run two local Zendesk suites using the same refresh token at once.
-The tests also accept `ZENDESK_TEST_ACCESS_TOKEN` for a one-off local run; this
-value expires and is not used by CI.
+The preparation step mints a 6-hour access token with the `client_credentials`
+grant and writes it to the file named by `ZENDESK_TEST_ACCESS_TOKEN_FILE`.
+Zendesk issues no refresh token for this grant, so nothing rotates: runs may
+overlap, and nothing is saved between them. The tests also accept
+`ZENDESK_TEST_ACCESS_TOKEN` for a one-off local run; this value expires and is
+not used by CI.
 
 The GitHub Actions **Integration Tests** workflow offers `zendesk` as a manual
-dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID`,
-`ZENDESK_TEST_CLIENT_SECRET`, `ZENDESK_TEST_REFRESH_TOKEN`,
-`ZENDESK_TEST_SECRETS_WRITE_TOKEN` in the protected `integration-test-dev`
-environment. Use a fine-grained GitHub token scoped to this repository with
-`Environments: write` permission for the write token. Each run refreshes the
-Zendesk token, saves the newly rotated refresh
-token back to that environment, and then runs the tests. It fails before testing
-if refresh or persistence fails. Zendesk dispatch jobs are serialized across
-runs; a `both` graph selection uses one job with sequential backends.
-
-An initial Zendesk OAuth login is required to obtain a valid refresh token.
-After that, the CI job maintains the rotating token. Zendesk remains outside automatic CI
-shards until these environment secrets have been provisioned. Ordinary local
-runs skip when credentials are absent.
+dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID` (the
+client's unique identifier, not its numeric ID), and
+`ZENDESK_TEST_CLIENT_SECRET` in the protected `integration-test-dev`
+environment. Each run mints its own token and fails before testing if Zendesk
+refuses it. Zendesk stays outside the automatic CI shards and runs only when
+dispatched. Ordinary local runs skip when credentials are absent.

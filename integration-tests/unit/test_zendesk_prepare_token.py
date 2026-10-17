@@ -1,7 +1,9 @@
-"""Token rotation checks that do not contact Zendesk or GitHub."""
+"""Token minting checks that do not contact Zendesk."""
 
 from __future__ import annotations
 
+import stat
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -9,72 +11,66 @@ import pytest
 from connectors.zendesk import prepare_token
 
 
-def test_exchange_requests_fresh_access_and_rotated_refresh(
+def _response(status: int, payload: object) -> SimpleNamespace:
+    return SimpleNamespace(
+        status_code=status, is_success=200 <= status < 300, json=lambda: payload
+    )
+
+
+def test_mint_uses_the_client_credentials_grant(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls = []
 
     def fake_post(url: str, **kwargs: object) -> SimpleNamespace:
         calls.append((url, kwargs))
-        return SimpleNamespace(
-            is_success=True,
-            json=lambda: {"access_token": "new-access", "refresh_token": "new-refresh"},
-        )
+        return _response(200, {"access_token": "new-access", "token_type": "bearer"})
 
     monkeypatch.setattr(prepare_token.httpx, "post", fake_post)
-    assert prepare_token.exchange_token(
-        "inai-90216", "client", "secret", "old-refresh"
-    ) == (
-        "new-access",
-        "new-refresh",
-    )
+    assert prepare_token.mint_token("inai-90216", "client", "secret") == "new-access"
     assert calls[0][0] == "https://inai-90216.zendesk.com/oauth/tokens"
     assert calls[0][1]["json"] == {
-        "grant_type": "refresh_token",
+        "grant_type": "client_credentials",
         "client_id": "client",
         "client_secret": "secret",
-        "refresh_token": "old-refresh",
-        "expires_in": 86400,
+        "scope": "read",
+        "expires_in": 21600,
     }
 
 
-def test_exchange_requires_a_new_refresh_token(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_mint_reports_the_oauth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         prepare_token.httpx,
         "post",
-        lambda *_args, **_kwargs: SimpleNamespace(
-            is_success=True,
-            json=lambda: {"access_token": "new-access"},
-        ),
+        lambda *_args, **_kwargs: _response(400, {"error": "unauthorized_client"}),
     )
-    with pytest.raises(RuntimeError, match="both rotated tokens"):
-        prepare_token.exchange_token("inai-90216", "client", "secret", "old-refresh")
+    with pytest.raises(RuntimeError, match=r"HTTP 400 \(unauthorized_client\)"):
+        prepare_token.mint_token("inai-90216", "client", "secret")
 
 
-def test_ci_saves_rotated_token_to_protected_environment(
-    monkeypatch: pytest.MonkeyPatch,
+def test_mint_requires_an_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        prepare_token.httpx, "post", lambda *_args, **_kwargs: _response(200, {})
+    )
+    with pytest.raises(RuntimeError, match="no access token"):
+        prepare_token.mint_token("inai-90216", "client", "secret")
+
+
+def test_mint_refuses_a_host_as_subdomain() -> None:
+    with pytest.raises(ValueError, match="Invalid Zendesk subdomain"):
+        prepare_token.mint_token("evil.example/x", "client", "secret")
+
+
+def test_main_writes_an_owner_only_token_file(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    token_file = tmp_path / "zendesk-access-token"
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
-    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
-    monkeypatch.setenv("ZENDESK_TEST_SECRET_ENVIRONMENT", "integration-test-dev")
-    monkeypatch.setenv("GH_TOKEN", "writer")
-    calls = []
-
-    def fake_run(args: list[str], **kwargs: object) -> SimpleNamespace:
-        calls.append((args, kwargs))
-        return SimpleNamespace(returncode=0)
-
-    monkeypatch.setattr(prepare_token.subprocess, "run", fake_run)
-    prepare_token.persist_refresh_token("new-refresh")
-    assert calls[0][0] == [
-        "gh",
-        "secret",
-        "set",
-        "ZENDESK_TEST_REFRESH_TOKEN",
-        "--env",
-        "integration-test-dev",
-        "--repo",
-        "owner/repo",
-    ]
-    assert calls[0][1]["input"] == "new-refresh"
-    assert calls[0][1]["capture_output"] is True
+    monkeypatch.setenv("ZENDESK_TEST_SUBDOMAIN", "inai-90216")
+    monkeypatch.setenv("ZENDESK_TEST_CLIENT_ID", "client")
+    monkeypatch.setenv("ZENDESK_TEST_CLIENT_SECRET", "secret")
+    monkeypatch.setenv("ZENDESK_TEST_ACCESS_TOKEN_FILE", str(token_file))
+    monkeypatch.setattr(prepare_token, "mint_token", lambda *_args: "new-access")
+    assert prepare_token.main() == 0
+    assert token_file.read_text() == "new-access"
+    assert stat.S_IMODE(token_file.stat().st_mode) == 0o600
