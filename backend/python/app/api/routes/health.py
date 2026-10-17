@@ -2083,13 +2083,9 @@ async def perform_decision_health_check(model_config: dict, logger: Logger) -> J
     configuration = model_config.get("configuration") or {}
     model_names = iter_model_names(configuration)
     if not model_names:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": "No valid model names found in configuration",
-                "details": {"provider": provider, "model": configuration.get("model", "")},
-            },
+        return _config_error(
+            "Enter the decision model's name, then try again.",
+            model_config, "", error_code="invalid_request",
         )
 
     checked: JSONResponse | None = None

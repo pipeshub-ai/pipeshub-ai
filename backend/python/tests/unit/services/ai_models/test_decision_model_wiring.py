@@ -123,7 +123,8 @@ async def test_health_check_fails_when_the_response_has_no_answer() -> None:
 
 async def test_health_check_without_model_name_fails() -> None:
     response = await perform_decision_health_check(_entry(configuration={"apiKey": "k"}), MagicMock())
-    assert response.status_code == 500
+    assert response.status_code == 400
+    assert json.loads(response.body)["details"]["error_code"] == "invalid_request"
 
 
 async def test_config_lookup_prefers_the_default_decision_model() -> None:

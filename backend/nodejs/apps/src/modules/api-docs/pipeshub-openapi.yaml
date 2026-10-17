@@ -608,7 +608,7 @@ components:
           description: Provider id that owns this model.
         task:
           type: string
-          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition]
+          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition, decision]
         root:
           type: string
         parent:
