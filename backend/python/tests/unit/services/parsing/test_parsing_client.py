@@ -5,8 +5,8 @@ import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
-import pytest
 import jwt
+import pytest
 
 from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer

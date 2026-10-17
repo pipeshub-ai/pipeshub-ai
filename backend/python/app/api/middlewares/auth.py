@@ -3,9 +3,9 @@ from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+import jwt
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
-import jwt
 from jwt import PyJWTError
 
 from app.api.middlewares.caller_role import (
