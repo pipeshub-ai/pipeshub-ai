@@ -1,6 +1,7 @@
 """Zammad Connector Implementation"""
 import asyncio
 import base64
+import os
 import re
 from dataclasses import dataclass, field
 from collections import defaultdict
@@ -142,7 +143,10 @@ GRAPH_RECORDS_PAGE_SIZE = 500
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
 # A Zammad before 6.5 can't count tickets, so finding deleted ones means listing every
 # held ticket. That runs at most this often per group; 6.5 and later check every sync.
-FULL_TICKET_LISTING_INTERVAL_MS = 24 * 60 * 60 * 1000
+# The integration stack sets 0 so a delete lands on the next sync.
+FULL_TICKET_LISTING_INTERVAL_MS = int(
+    os.getenv("ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS", str(24 * 60 * 60 * 1000))
+)
 # Attachment records are "<ticket>_<article>_<attachment>".
 TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
 
