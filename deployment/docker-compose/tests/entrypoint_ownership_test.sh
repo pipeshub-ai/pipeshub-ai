@@ -14,7 +14,8 @@
 #     command run as 1000 with no capabilities and no_new_privs;
 #   - the next start skips the full pass;
 #   - a pass killed part-way leaves no marker, and the next start finishes it;
-#   - a pass that fails does not block startup and is retried;
+#   - a pass that fails does not block startup and is retried, and a real
+#     failure (a read-only mount) is logged with the entry and the reason;
 #   - root-owned files after the marker: a volume restored as root (found by
 #     the top-level check), the docker-compose.yml fallback for older images
 #     and process_monitor.sh run as root (both drop the markers);
@@ -104,6 +105,22 @@ PROBE
   }
   markers_absent() { local v; for v in "${VOLUMES[@]}"; do [[ ! -e "$v/$MARKER" ]] || return 1; done; }
   started_as_app() { grep -qE '^Uid:\s+1000\s' /tmp/probe.out 2>/dev/null; }
+  finish() {
+    echo
+    if (( FAILS )); then echo "$FAILS check(s) failed"; exit 1; fi
+    echo "all checks passed"; exit 0
+  }
+
+  if [[ "${2:-}" == readonly ]]; then
+    echo "volume with a read-only mount whose root cannot be chowned"
+    mkdir -p /root/.local/PipesHub && echo d >/root/.local/PipesHub/f && chown -R 0:0 /root/.local
+    start
+    check "startup is not blocked" 'started_as_app'
+    check "log names the entry and the reason" 'grep -qF "/root/.cache/huggingface: ownership pass did not finish at /root/.cache/huggingface/ro (" /tmp/entrypoint.err && grep -qi "read-only file system" /tmp/entrypoint.err'
+    check "no marker on that volume" '[[ ! -e /root/.cache/huggingface/$MARKER ]]'
+    check "the other volumes are migrated" '[[ -f /root/.local/$MARKER && -z "$(/usr/bin/find /root/.local \( ! -uid 1000 -o ! -gid 1000 \) -print)" ]]'
+    finish
+  fi
 
   echo "fresh volume left by a root-running release"
   seed_root_owned
@@ -179,10 +196,7 @@ PROBE
   check "command runs" 'started_as_app'
   check "nothing scanned or changed" '[[ ! -s "$CALLS" ]] && [[ "$(stat -c %u /root/.local/PipesHub)" == 0 ]] && markers_absent'
 
-  echo
-  if (( FAILS )); then echo "$FAILS check(s) failed"; exit 1; fi
-  echo "all checks passed"
-  exit 0
+  finish
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -231,5 +245,9 @@ docker run --rm --name "$NAME" --network none --memory 256m --cpus 1 --pids-limi
   -v "$TMP_ROOT:$INSIDE_DIR:ro" \
   "$IMAGE" bash "$INSIDE_DIR/test.sh" --inside
 status=$?
+docker run --rm --name "$NAME" --network none --memory 256m --cpus 1 --pids-limit 256 \
+  --mount type=volume,dst=/root/.cache/huggingface/ro,readonly \
+  -v "$TMP_ROOT:$INSIDE_DIR:ro" \
+  "$IMAGE" bash "$INSIDE_DIR/test.sh" --inside readonly || status=1
 (( STATIC_FAILS )) && exit 1
 exit "$status"

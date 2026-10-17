@@ -46,7 +46,17 @@ take_ownership() {
         fi
         log "$dir: gave ${#changed} entries to $APP_UID:$APP_GID in $(($(date +%s) - started))s"
     else
-        log "$dir: ownership pass did not finish; the next start retries it"
+        # Its stderr can be a line per file (a read-only volume), so retry
+        # just the first entry still unowned to report where and why.
+        first=$(find "$dir" -xdev \( ! -uid "$APP_UID" -o ! -gid "$APP_GID" \) \
+            -print -quit 2>/dev/null) || true
+        err=""
+        if [ -n "$first" ] && ! err=$(chown -h "$APP_UID:$APP_GID" "$first" 2>&1); then
+            err=" ($err)"
+        else
+            err=""
+        fi
+        log "$dir: ownership pass did not finish${first:+ at $first}$err; the next start retries it"
     fi
 }
 
