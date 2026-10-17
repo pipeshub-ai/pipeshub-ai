@@ -11,7 +11,11 @@ logger = logging.getLogger(__name__)
 ENDPOINTS_CONFIG_PATH = "/services/endpoints"
 
 
-async def get_configured_frontend_base_url(config_service: ConfigurationService) -> str:
+DEFAULT_FRONTEND_BASE_URL = DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
+
+
+async def _read_configured_frontend_base_url(config_service: ConfigurationService) -> str | None:
+    """The admin-configured public frontend endpoint, or None when none is set."""
     try:
         endpoints = await config_service.get_config(ENDPOINTS_CONFIG_PATH, use_cache=False)
         if isinstance(endpoints, dict):
@@ -20,7 +24,21 @@ async def get_configured_frontend_base_url(config_service: ConfigurationService)
                 return frontend_url.rstrip("/")
     except Exception as e:
         logger.debug(f"Could not resolve configured frontend endpoint: {e}")
-    return DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
+    return None
+
+
+async def get_configured_frontend_base_url(config_service: ConfigurationService) -> str:
+    return await _read_configured_frontend_base_url(config_service) or DEFAULT_FRONTEND_BASE_URL
+
+
+def _web_base_url_or_none(url: str | None) -> str | None:
+    if not url:
+        return None
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return None
+    return url.rstrip("/") if parsed.scheme in ("http", "https") and parsed.netloc else None
 
 
 def resolve_validated_base_url(requested_base_url: str | None, configured_base_url: str) -> str:
@@ -50,5 +68,13 @@ def resolve_validated_base_url(requested_base_url: str | None, configured_base_u
 async def resolve_oauth_base_url(
     config_service: ConfigurationService, requested_base_url: str | None
 ) -> str:
-    configured = await get_configured_frontend_base_url(config_service)
-    return resolve_validated_base_url(requested_base_url, configured)
+    """Base URL for OAuth redirect URIs.
+
+    The configured public frontend endpoint wins when one is set. Without one, a deployment
+    has nothing better than the browser's own http(s) origin, so that is used, as before;
+    a non-web origin such as the desktop app's `app://` falls back to the default.
+    """
+    configured = await _read_configured_frontend_base_url(config_service)
+    if configured:
+        return resolve_validated_base_url(requested_base_url, configured)
+    return _web_base_url_or_none(requested_base_url) or DEFAULT_FRONTEND_BASE_URL

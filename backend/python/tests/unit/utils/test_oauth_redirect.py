@@ -82,3 +82,20 @@ class TestResolveOauthBaseUrl:
     async def test_matching_origin_is_kept(self) -> None:
         svc = _config_service({"frontend": {"publicEndpoint": CONFIGURED}})
         assert await resolve_oauth_base_url(svc, "https://app.example.com/") == CONFIGURED
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_uses_the_browser_origin(self) -> None:
+        # No public endpoint set: the browser's origin beats the localhost default.
+        svc = _config_service({"frontend": None})
+        assert await resolve_oauth_base_url(svc, "https://pipeshub.example/") == "https://pipeshub.example"
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_desktop_origin_uses_default(self) -> None:
+        svc = _config_service({"frontend": None})
+        assert await resolve_oauth_base_url(svc, "app://.") == DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
+
+    @pytest.mark.asyncio
+    async def test_unconfigured_without_client_url_uses_default(self) -> None:
+        svc = _config_service(side_effect=RuntimeError("boom"))
+        assert await resolve_oauth_base_url(svc, None) == DefaultEndpoints.FRONTEND_ENDPOINT.value.rstrip("/")
+
