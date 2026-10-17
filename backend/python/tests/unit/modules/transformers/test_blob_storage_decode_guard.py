@@ -135,6 +135,10 @@ class TestContentSizeProbe:
 
 
 class TestCeilingConfig:
+    def test_a_reader_waits_up_to_30s_for_a_slot(self) -> None:
+        """Waiting long enough that a record is only left out of an answer under a real pile-up."""
+        assert bs_mod.DECODE_WAIT_SECONDS == 30
+
     def test_default(self) -> None:
         assert max_decoded_record_bytes() == MAX_DECODED_BYTES_DEFAULT == 256 * 1024 * 1024
 
@@ -195,7 +199,9 @@ class TestInlinePath:
             assert compressed
             envelopes.append({"isCompressed": True, "record": payload})
 
-        with patch.object(bs_mod.asyncio, "to_thread", side_effect=AssertionError("went to a thread")):
+        executor = MagicMock()
+        executor.submit.side_effect = AssertionError("went to a thread")
+        with patch.object(bs_mod, "_DECODE_EXECUTOR", executor):
             decoded = await asyncio.gather(*(storage._decode_record(e) for e in envelopes))
 
         assert decoded == records
@@ -275,6 +281,22 @@ class TestCeiling:
 
 
 class TestGate:
+    async def test_large_decodes_share_one_dedicated_thread(self) -> None:
+        """Default-executor threads each keep a malloc arena; one thread keeps one."""
+        storage = _bs()
+        names: set[str] = set()
+        real = storage._process_downloaded_record
+
+        def spy(data: dict) -> dict:
+            names.add(threading.current_thread().name)
+            return real(data)
+
+        with patch.object(storage, "_process_downloaded_record", side_effect=spy):
+            for _ in range(5):
+                await storage._decode_record(_envelope(_record(5000)))
+        assert len(names) == 1
+        assert next(iter(names)).startswith("record-decode")
+
     async def test_large_record_round_trips_through_a_thread(self) -> None:
         record = _record(50_000)
         main_thread = threading.get_ident()
@@ -411,30 +433,28 @@ class TestGate:
 
 
 class TestPerLoopSlots:
-    def test_each_event_loop_gets_its_own_slot(self) -> None:
-        """One semaphore shared by two loops would park a waiter forever."""
-        both_inside = threading.Barrier(2, timeout=5)
-        storage = _bs()
-
-        def decode(data: dict) -> dict:
-            both_inside.wait()
-            return {"ok": True}
-
+    def test_each_event_loop_gets_its_own_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """One semaphore shared by two loops would park the second loop's waiter forever."""
+        monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 2)
+        storage, fake = _bs(), _Blocking()
         results: list[object] = []
 
-        def run_loop() -> None:
-            try:
-                results.append(asyncio.run(storage._decode_record(_envelope(_record(5000)))))
-            except BaseException as e:  # surfaced through results below
-                results.append(e)
+        def first_loop() -> None:
+            results.append(asyncio.run(storage._decode_record(_envelope(_record(5000)))))
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=decode):
-            threads = [threading.Thread(target=run_loop) for _ in range(2)]
-            for t in threads:
-                t.start()
-            for t in threads:
-                t.join(10)
-        assert results == [{"ok": True}, {"ok": True}]
+        async def take_a_slot_on_another_loop() -> bool:
+            slot = await bs_mod._acquire_decode_slot("a test record")
+            slot.release()
+            return True
+
+        with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+            holder = threading.Thread(target=first_loop)
+            holder.start()
+            assert fake.entered.wait(5)
+            assert asyncio.run(take_a_slot_on_another_loop())
+            fake.release.set()
+            holder.join(10)
+        assert results == [fake.result]
 
     def test_closed_loops_are_evicted(self) -> None:
         old = asyncio.new_event_loop()
@@ -528,3 +548,130 @@ class TestGetRecordFromStorage:
         storage.logger.exception.assert_not_called()
         (args, _), = storage.logger.warning.call_args_list
         assert "vr-big" in args
+
+
+class TestStoredSizeGatesTheDownload:
+    """A record already known to be large downloads inside the slot, so queued readers hold nothing."""
+
+    async def _hold_slot(self) -> asyncio.Semaphore:
+        slot = _decode_slot_for(asyncio.get_running_loop())
+        await slot.acquire()
+        return slot
+
+    async def test_large_stored_record_waits_for_the_slot_before_downloading(self) -> None:
+        record = _record(5000)
+        storage = _reader(_bs(), envelope=_envelope(record))
+        slot = await self._hold_slot()
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()):
+            task = asyncio.create_task(
+                storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+            )
+            await asyncio.sleep(0.05)
+            storage._fetch_record_envelope.assert_not_awaited()
+            slot.release()
+            assert await task == record
+        storage._fetch_record_envelope.assert_awaited_once()
+        await _until(lambda: slot._value == bs_mod.LARGE_DECODE_SLOTS)
+
+    @pytest.mark.parametrize("stored", [None, LARGE, 10])
+    async def test_small_or_unknown_stored_size_downloads_without_waiting(self, stored: int | None) -> None:
+        storage = _reader(_bs(), envelope={"record": {"a": 1}})
+        slot = await self._hold_slot()
+        try:
+            with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()):
+                got = await asyncio.wait_for(
+                    storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": stored}),
+                    1,
+                )
+            assert got == {"a": 1}
+        finally:
+            slot.release()
+
+    async def test_the_held_slot_is_used_for_the_decode_and_released_after(self) -> None:
+        """Downloading inside the slot must not then queue for a second one (that would deadlock)."""
+        record = _record(5000)
+        storage = _reader(_bs(), envelope=_envelope(record))
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()):
+            got = await asyncio.wait_for(
+                storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1}),
+                2,
+            )
+        assert got == record
+        slot = _decode_slot_for(asyncio.get_running_loop())
+        await _until(lambda: slot._value == bs_mod.LARGE_DECODE_SLOTS)
+
+    @pytest.mark.parametrize(
+        "envelope, error",
+        [
+            ({}, Exception),  # nothing to decode
+            ({"isCompressed": True, "record": "!!not base64!!"}, Exception),  # inline decode fails
+        ],
+    )
+    async def test_slot_is_released_when_the_fetch_fails_without_a_decode_thread(
+        self, envelope: dict, error: type[Exception]
+    ) -> None:
+        storage = _reader(_bs(), envelope=envelope)
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), pytest.raises(error):
+            await storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+        assert _decode_slot_for(asyncio.get_running_loop())._value == bs_mod.LARGE_DECODE_SLOTS
+
+    async def test_slot_is_released_when_the_ceiling_refuses_the_record(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(bs_mod._MAX_DECODED_BYTES_ENV, "600")
+        storage = _reader(_bs(), envelope=_envelope(_record(5000)))
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), pytest.raises(
+            StoredRecordTooLargeError
+        ):
+            await storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+        assert _decode_slot_for(asyncio.get_running_loop())._value == bs_mod.LARGE_DECODE_SLOTS
+
+    async def test_slot_is_released_when_the_caller_is_cancelled_mid_download(self) -> None:
+        storage = _reader(_bs())
+        started = asyncio.Event()
+
+        async def slow_download(*_args: object) -> dict:
+            started.set()
+            await asyncio.sleep(10)
+            return {}
+
+        storage._fetch_record_envelope = AsyncMock(side_effect=slow_download)
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()):
+            task = asyncio.create_task(
+                storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+            )
+            await started.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert _decode_slot_for(asyncio.get_running_loop())._value == bs_mod.LARGE_DECODE_SLOTS
+
+    async def test_cancelled_mid_decode_keeps_the_slot_until_the_thread_finishes(self) -> None:
+        storage, fake = _reader(_bs(), envelope=_envelope(_record(5000))), _Blocking()
+        with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), patch.object(
+            storage, "_process_downloaded_record", side_effect=fake
+        ):
+            task = asyncio.create_task(
+                storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+            )
+            await _until(fake.entered.is_set)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            slot = _decode_slot_for(asyncio.get_running_loop())
+            assert slot._value == 0, "slot freed while the decode thread still runs"
+            fake.release.set()
+            await _until(lambda: slot._value == bs_mod.LARGE_DECODE_SLOTS)
+
+    async def test_busy_slot_refuses_before_downloading(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 0.05)
+        storage = _reader(_bs(), envelope=_envelope(_record(5000)))
+        slot = await self._hold_slot()
+        try:
+            with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), pytest.raises(
+                StoredRecordDecodeBusyError
+            ):
+                await storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
+        finally:
+            slot.release()
+        storage._fetch_record_envelope.assert_not_awaited()

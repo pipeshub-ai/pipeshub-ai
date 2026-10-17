@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import concurrent.futures
 import contextlib
 import errno
 import json
@@ -63,10 +64,12 @@ DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
 # LARGE_DECODE_BYTES (msgpack, read from the zstd header) decode in a thread,
 # LARGE_DECODE_SLOTS at a time per event loop. Independent of the compression
 # threshold: that is a JSON size that steers writes, and at 0 it would send
-# every record of a chat turn through the one slot.
+# every record of a chat turn through the one slot. A record whose *stored*
+# size is over it also downloads inside the slot: otherwise readers queued for
+# the decode each hold their whole download while they wait.
 LARGE_DECODE_BYTES = 20 * 1024 * 1024
 LARGE_DECODE_SLOTS = 1
-DECODE_WAIT_SECONDS = 5
+DECODE_WAIT_SECONDS = 30
 # Measured on decoded (msgpack) bytes, which is what costs pod memory, not on
 # the stored size the upload limit applies to.
 MAX_DECODED_BYTES_DEFAULT = 256 * 1024 * 1024
@@ -476,6 +479,43 @@ def _decode_slot_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Semaphore:
         return slot
 
 
+# One thread for every large decode in the process, not the default executor's
+# many: glibc gives each thread its own malloc arena, which the rest of the
+# process can't reuse, so decodes spread over N threads kept N arenas' worth of
+# record memory (+40% peak on a text-heavy record, and growing with N).
+_DECODE_EXECUTOR = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="record-decode")
+
+
+class _DecodeSlotLease:
+    """A held decode slot. Its holder releases it, unless a decode thread was started
+    on it: then the thread releases it when it finishes, even if the holder is cancelled."""
+
+    def __init__(self, slot: asyncio.Semaphore) -> None:
+        self._slot = slot
+        self.handed_off = False
+
+    def hand_off(self) -> asyncio.Semaphore:
+        self.handed_off = True
+        return self._slot
+
+    def release(self) -> None:
+        if not self.handed_off:
+            self.handed_off = True
+            self._slot.release()
+
+
+async def _acquire_decode_slot(what: str) -> asyncio.Semaphore:
+    slot = _decode_slot_for(asyncio.get_running_loop())
+    try:
+        async with asyncio.timeout(DECODE_WAIT_SECONDS):
+            await slot.acquire()
+    except TimeoutError:
+        raise StoredRecordDecodeBusyError(
+            f"no large-record slot free within {DECODE_WAIT_SECONDS}s for {what}"
+        ) from None
+    return slot
+
+
 def _compressed_content_size(data: dict[str, Any]) -> int | None:
     """Decoded size from the zstd frame header; None if not compressed or unreadable."""
     encoded: object = data.get("record")
@@ -641,6 +681,7 @@ class BlobStorage(Transformer):
         signed_url: str,
         file_size_bytes: int | None,
         virtual_record_id: str,
+        lease: _DecodeSlotLease | None = None,
     ) -> dict | None:
         """Download and decode a record from an already-signed storage URL.
 
@@ -684,7 +725,7 @@ class BlobStorage(Transformer):
 
         if not data.get("record"):
             return None
-        record = await self._decode_record(data)
+        record = await self._decode_record(data, lease)
         self.logger.debug(
             "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
             record.get("record_name"), virtual_record_id,
@@ -881,8 +922,14 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
 
-    async def _decode_record(self, data: dict[str, Any]) -> dict[str, Any]:
-        """``_process_downloaded_record`` with large records gated and taken off the event loop."""
+    async def _decode_record(
+        self, data: dict[str, Any], lease: _DecodeSlotLease | None = None
+    ) -> dict[str, Any]:
+        """``_process_downloaded_record`` with large records gated and taken off the event loop.
+
+        *lease* is a slot the caller already holds for this record; a large decode uses
+        it instead of queueing for another.
+        """
         size = _compressed_content_size(data)
         if size is None or size <= LARGE_DECODE_BYTES:
             return self._process_downloaded_record(data)
@@ -892,16 +939,12 @@ class BlobStorage(Transformer):
             raise StoredRecordTooLargeError(
                 f"record decodes to {size} bytes, over the {ceiling}-byte limit ({_MAX_DECODED_BYTES_ENV})"
             )
-        slot = _decode_slot_for(asyncio.get_running_loop())
-        try:
-            async with asyncio.timeout(DECODE_WAIT_SECONDS):
-                await slot.acquire()
-        except TimeoutError:
-            raise StoredRecordDecodeBusyError(
-                f"no large-record decode slot free within {DECODE_WAIT_SECONDS}s for a {size}-byte record"
-            ) from None
-        work: asyncio.Future[dict[str, Any]] = asyncio.ensure_future(
-            asyncio.to_thread(self._process_downloaded_record, data)
+        if lease is not None and not lease.handed_off:
+            slot = lease.hand_off()
+        else:
+            slot = await _acquire_decode_slot(f"a {size}-byte record")
+        work = asyncio.get_running_loop().run_in_executor(
+            _DECODE_EXECUTOR, self._process_downloaded_record, data
         )
         # Release on thread completion: a cancelled caller must not free the slot mid-decode.
         work.add_done_callback(lambda _: slot.release())
@@ -2235,45 +2278,54 @@ class BlobStorage(Transformer):
             download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             session = get_shared_session()
 
-            # A cached signed URL skips the gateway hop entirely. On any failure
-            # reading it back, fall through to the gateway and re-sign.
-            cached_url = await self._cached_signed_url(org_id, document_id)
-            if cached_url:
-                try:
+            lease = (
+                _DecodeSlotLease(await _acquire_decode_slot(f"a {file_size_bytes}-byte stored record"))
+                if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
+                else None
+            )
+            try:
+                # A cached signed URL skips the gateway hop entirely. On any failure
+                # reading it back, fall through to the gateway and re-sign.
+                cached_url = await self._cached_signed_url(org_id, document_id)
+                if cached_url:
+                    try:
+                        record = await self._record_from_signed_url(
+                            session, cached_url, file_size_bytes, virtual_record_id, lease
+                        )
+                        if record is not None:
+                            return record
+                    except (StoredRecordTooLargeError, StoredRecordDecodeBusyError):
+                        # Refused after the download, not because of the URL: re-signing
+                        # would only download the same record again.
+                        raise
+                    except Exception as e:
+                        self.logger.debug(
+                            "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
+                        )
+
+                data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+                if data.get("signedUrl"):
+                    await self._store_signed_url(org_id, document_id, data["signedUrl"])
+
+                if data.get("record"):
+                    record = await self._decode_record(data, lease)
+                    record_name = record.get("record_name")
+                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                    return record
+                elif data.get("signedUrl"):
                     record = await self._record_from_signed_url(
-                        session, cached_url, file_size_bytes, virtual_record_id
+                        session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
                     )
                     if record is not None:
                         return record
-                except (StoredRecordTooLargeError, StoredRecordDecodeBusyError):
-                    # Refused after the download, not because of the URL: re-signing
-                    # would only download the same record again.
-                    raise
-                except Exception as e:
-                    self.logger.debug(
-                        "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
-                    )
-
-            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-            if data.get("signedUrl"):
-                await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-            if data.get("record"):
-                record = await self._decode_record(data)
-                record_name = record.get("record_name")
-                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                return record
-            elif data.get("signedUrl"):
-                record = await self._record_from_signed_url(
-                    session, data["signedUrl"], file_size_bytes, virtual_record_id
-                )
-                if record is not None:
-                    return record
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
-            else:
-                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                raise Exception("No record found for virtual_record_id")
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+                else:
+                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                    raise Exception("No record found for virtual_record_id")
+            finally:
+                if lease is not None:
+                    lease.release()
         except StorageDocumentNotFoundError:
             self.logger.warning(
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
