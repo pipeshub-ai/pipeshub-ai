@@ -4732,8 +4732,15 @@ export const search =
         recordsArray.forEach((record) => {
           // Use either _id or _key as the unique key for each record
           const key = record._id || record._key;
+          // `linkedRecords` was filtered for the user who ran this search. A
+          // saved search can be shared, and its records are returned as
+          // stored, so the links are kept out of what is saved.
+          const stored: Record<string, unknown> = {
+            ...(record as Record<string, unknown>),
+          };
+          delete stored.linkedRecords;
           // Convert the record object to a string since your schema expects Map<string, string>
-          recordsMap.set(key, JSON.stringify(record));
+          recordsMap.set(key, JSON.stringify(stored));
         });
       }
       // Save the entire search operation as a single document
