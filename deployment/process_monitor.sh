@@ -3,6 +3,14 @@
 # Process monitor script with parent-child process management
 set -e
 
+# Root here means docker-entrypoint.sh was bypassed (a compose file from before
+# it existed), so services may create root-owned files in the data volumes.
+# Dropping its markers makes the entrypoint's next start re-run the full pass.
+if [ "$(id -u)" = "0" ]; then
+    rm -f /data/pipeshub/.pipeshub-ownership-v1 /root/.local/.pipeshub-ownership-v1 \
+        /root/.cache/huggingface/.pipeshub-ownership-v1 || true
+fi
+
 LOG_FILE="/app/process_monitor.log"
 CHECK_INTERVAL=${CHECK_INTERVAL:-20}
 NODEJS_PORT=${NODEJS_PORT:-3000}

@@ -86,7 +86,9 @@ services:
     # is absent (slim uses its built-in default; new Python sizes from CPU).
     # A numeric value in .env is kept as an operator cap.
     # Then hand over to the image entrypoint, which drops to the unprivileged
-    # user; images from earlier releases have none and start as before.
+    # user; images from earlier releases have none and start as before, as
+    # root. Those can leave root-owned files, so drop the markers that let the
+    # entrypoint skip its full ownership pass.
     entrypoint:
       - /bin/sh
       - -c
@@ -99,7 +101,10 @@ services:
         done;
         if [ -x /usr/local/bin/docker-entrypoint.sh ];
         then exec /usr/local/bin/docker-entrypoint.sh /app/process_monitor.sh;
-        else exec /app/process_monitor.sh; fi
+        else rm -f /data/pipeshub/.pipeshub-ownership-v1
+        /root/.local/.pipeshub-ownership-v1
+        /root/.cache/huggingface/.pipeshub-ownership-v1;
+        exec /app/process_monitor.sh; fi
     logging:
       driver: local
       options:
