@@ -32,9 +32,9 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
 
-# Connector suites kept out of the nightly shards: CIFS is not registered yet, and
-# Zendesk runs only when dispatched. A shard must not select them, and the core job
-# must exclude them, or their tests fall into core.
+# Connector suites deliberately excluded from automatic runs. CIFS is not
+# registered yet; Zendesk needs a rotating token in the protected test environment.
+# Core must exclude both so they only run when explicitly dispatched.
 HELD_OUT_CONNECTORS = frozenset({"cifs", "zendesk"})
 
 # Suites with a job of their own, named after their marker. "demo" must start on
@@ -337,14 +337,12 @@ def check(
 
     problems.extend(_solo_shard_problems(workflow_text, core_expressions))
 
-    # New connector suites go on the last shard; the earlier ones are full.
-    newest = max(int(shard.rsplit("-", 1)[-1]) for shard in shards)
     for name in sorted(connectors - set(seen) - held):
         problems.append(
             f"Connector marker '{name}' is in no shard. Its tests are marked "
             f"`integration`, so they fall into `core` instead of their own shard, making "
-            f"`core` slower and the split uneven. Add it to CONN_SHARD_{newest} "
-            f"in {WORKFLOW.name}, where new connector suites go."
+            f"`core` slower and the split uneven. Add it to a CONN_SHARD_* line in "
+            f"{WORKFLOW.name}."
         )
 
     unmeasured = sorted(set(seen) - set(durations))

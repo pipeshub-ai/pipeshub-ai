@@ -6,6 +6,7 @@ import logging
 import os
 import uuid
 from collections.abc import AsyncIterator
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -20,11 +21,24 @@ from pipeshub_client import PipeshubClient
 logger = logging.getLogger("zendesk-live-it")
 REQUIRED_ENV = (
     "ZENDESK_TEST_SUBDOMAIN",
-    "ZENDESK_TEST_ACCESS_TOKEN",
     "ZENDESK_TEST_TICKET_ID",
     "ZENDESK_TEST_ARTICLE_ID",
     "SECRET_KEY",
 )
+
+
+def _access_token() -> str:
+    token_file = os.getenv("ZENDESK_TEST_ACCESS_TOKEN_FILE")
+    if token_file:
+        token = Path(token_file).read_text().strip()
+    else:
+        token = os.getenv("ZENDESK_TEST_ACCESS_TOKEN", "").strip()
+    if not token:
+        source_unavailable(
+            "A Zendesk access token has not been prepared.",
+            secrets=["ZENDESK_TEST_ACCESS_TOKEN_FILE or ZENDESK_TEST_ACCESS_TOKEN"],
+        )
+    return token
 
 
 async def _get(client: httpx.AsyncClient, path: str, key: str) -> dict[str, Any]:
@@ -43,6 +57,7 @@ async def zendesk_source() -> dict[str, Any]:
             "The live Zendesk tenant is not configured.",
             secrets=missing,
         )
+    token = _access_token()
 
     subdomain = os.environ["ZENDESK_TEST_SUBDOMAIN"].strip()
     assert subdomain and all(c.isalnum() or c == "-" for c in subdomain), (
@@ -56,7 +71,7 @@ async def zendesk_source() -> dict[str, Any]:
 
     async with httpx.AsyncClient(
         base_url=f"https://{subdomain}.zendesk.com",
-        headers={"Authorization": f"Bearer {os.environ['ZENDESK_TEST_ACCESS_TOKEN']}"},
+        headers={"Authorization": f"Bearer {token}"},
         timeout=30,
     ) as client:
         current_user = await _get(client, "/api/v2/users/me.json", "user")
@@ -148,7 +163,7 @@ async def zendesk_connector(
     connector_id = instance.connector_id
     assert connector_id, "PipesHub did not return a Zendesk connector ID"
     try:
-        inject_access_token(connector_id, os.environ["ZENDESK_TEST_ACCESS_TOKEN"])
+        inject_access_token(connector_id, _access_token())
         pipeshub_client.toggle_sync(connector_id, enable=True)
         await wait_for_sync_completion(
             pipeshub_client,

@@ -7,6 +7,9 @@ PipesHub connector. See README.md for the required source fixture contract.
 
 from __future__ import annotations
 
+import asyncio
+import time
+import uuid
 from datetime import datetime
 from typing import Any
 
@@ -16,7 +19,8 @@ from app.models.entities import RecordType
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.indexing_wait import wait_until_record_indexing_completed
-from pipeshub_client import PipeshubClient
+from helper.oauth_token_helper import inject_access_token
+from pipeshub_client import PipeshubClient, PipeshubClientError
 
 pytestmark = [
     pytest.mark.integration,
@@ -308,3 +312,40 @@ class TestZendeskLive:
         )
         assert after_ticket is not None and after_ticket.id == before_ticket.id
         assert after_article is not None and after_article.id == before_article.id
+
+    async def test_20_invalid_oauth_token_fails_connection(
+        self,
+        zendesk_source: dict[str, Any],
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        instance = pipeshub_client.create_connector(
+            connector_type="Zendesk",
+            instance_name=f"zendesk-invalid-oauth-{uuid.uuid4().hex[:8]}",
+            scope="team",
+            auth_type="OAUTH",
+            config={"auth": {"subdomain": zendesk_source["subdomain"]}},
+        )
+        connector_id = instance.connector_id
+        assert connector_id
+        try:
+            inject_access_token(connector_id, "invalid-zendesk-oauth-test-token")
+            toggle_error = False
+            try:
+                pipeshub_client.toggle_sync(connector_id, enable=True)
+            except PipeshubClientError:
+                toggle_error = True
+
+            deadline = time.monotonic() + 30
+            connector = pipeshub_client.get_connector(connector_id)
+            while not toggle_error and time.monotonic() < deadline:
+                if connector.get("isAuthenticated") is False:
+                    break
+                await asyncio.sleep(2)
+                connector = pipeshub_client.get_connector(connector_id)
+            assert toggle_error or connector.get("isAuthenticated") is False
+        finally:
+            try:
+                pipeshub_client.toggle_sync(connector_id, enable=False)
+            except PipeshubClientError:
+                pass
+            pipeshub_client.delete_connector(connector_id)
