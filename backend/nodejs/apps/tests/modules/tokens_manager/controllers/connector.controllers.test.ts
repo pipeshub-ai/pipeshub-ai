@@ -38,6 +38,7 @@ import {
   getActiveAgentInstances,
 } from '../../../../src/modules/tokens_manager/controllers/connector.controllers'
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 describe('tokens_manager/controllers/connector.controllers', () => {
   let mockAppConfig: any
@@ -907,6 +908,25 @@ describe('tokens_manager/controllers/connector.controllers', () => {
   // saveConnectorInstanceFilterOptions
   // =========================================================================
   describe('saveConnectorInstanceFilterOptions', () => {
+    it('logs a deprecation warning when it saves', async () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
+      req.params = { connectorId: 'c1' }
+      req.body = { filters: { mimetype: ['pdf'] } }
+      sinon.stub(UserGroups, 'find').returns({
+        select: sinon.stub().resolves([{ type: 'admin' }]),
+      } as any)
+      sinon.stub(connectorUtils, 'executeConnectorCommand').resolves({
+        statusCode: 200,
+        data: { message: 'Filters saved' },
+      })
+
+      await handler(req, res, next)
+
+      expect(res.status.calledWith(200)).to.be.true
+      expect(warn.calledWithMatch(sinon.match('Deprecated POST /api/v1/connectors/c1/filters'))).to.be.true
+    })
+
     it('should return an async handler function', () => {
       const handler = saveConnectorInstanceFilterOptions(mockAppConfig)
       expect(handler).to.be.a('function')

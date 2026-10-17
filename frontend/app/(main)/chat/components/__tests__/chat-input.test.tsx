@@ -122,6 +122,10 @@ import { ChatInput } from '../chat-input';
 import { useChatStore } from '@/chat/store';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useAuthStore } from '@/lib/store/auth-store';
+import { DRAFT_SAVE_DEBOUNCE_MS } from '@/chat/hooks/use-composer-draft';
+import { loadDraft, saveDraft } from '@/chat/utils/composer-draft';
+import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import type { AttachmentRef } from '@/chat/types';
 
 const initialChatState = useChatStore.getState();
@@ -994,5 +998,358 @@ describe('ChatInput — on a phone', () => {
     fireEvent.click(screen.getByText('more_horiz').closest('button') as HTMLButtonElement);
 
     expect(screen.getByText('Query options')).toBeTruthy();
+  });
+});
+
+describe('ChatInput — keeping an unsent message', () => {
+  const KEY_CONV_1 = 'pipeshub-chat-draft:u1:-:conv-1';
+  const KEY_CONV_2 = 'pipeshub-chat-draft:u1:-:conv-2';
+  const KEY_NEW = 'pipeshub-chat-draft:u1:-:new';
+
+  function openConversation(convId: string) {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot(convId);
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    return slotId;
+  }
+
+  const pause = () => act(() => void vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS + 50));
+
+  beforeEach(() => {
+    window.localStorage.clear();
+    allowChatDraftWrites();
+    useAuthStore.setState({ user: { id: 'u1' } });
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    useAuthStore.setState({ user: null, accessToken: null });
+    window.localStorage.clear();
+  });
+
+  function fakeJwt(userId: string): string {
+    const encode = (value: object) =>
+      btoa(JSON.stringify(value)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    return `${encode({ alg: 'none' })}.${encode({ userId })}.sig`;
+  }
+
+  it('knows the user from the login token alone, as after a page reload', () => {
+    useAuthStore.setState({ user: null, accessToken: fakeJwt('u1') });
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Written before the reload');
+
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('Written before the reload');
+  });
+
+  it('saves a draft when only the login token identifies the user', () => {
+    useAuthStore.setState({ user: null, accessToken: fakeJwt('u1') });
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+
+    type('Typed after a reload');
+    pause();
+
+    expect(loadDraft(KEY_CONV_1)).toBe('Typed after a reload');
+  });
+
+  it('keeps drafts when the login token is refreshed', () => {
+    useAuthStore.setState({ user: null, accessToken: fakeJwt('u1') });
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('Typed before a token refresh');
+
+    act(() => useAuthStore.setState({ accessToken: fakeJwt('u1') + '' }));
+    pause();
+
+    expect(composer().value).toBe('Typed before a token refresh');
+    expect(loadDraft(KEY_CONV_1)).toBe('Typed before a token refresh');
+  });
+
+  it('puts back what was typed in this conversation before the page was left', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Which vendors renew in Q4?');
+
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('Which vendors renew in Q4?');
+    expect(sendButton().disabled).toBe(false);
+  });
+
+  it('saves what is typed once the user pauses', () => {
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+
+    type('Which vendors renew in Q4?');
+    expect(loadDraft(KEY_CONV_1)).toBe('');
+    pause();
+
+    expect(loadDraft(KEY_CONV_1)).toBe('Which vendors renew in Q4?');
+  });
+
+  it('keeps the message across a reload of the page', () => {
+    openConversation('conv-1');
+    const first = renderInput({ persistDraft: true });
+    type('Which vendors renew in Q4?');
+    first.unmount();
+
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('Which vendors renew in Q4?');
+  });
+
+  it('keeps a draft in a new chat that has no conversation yet', () => {
+    const first = renderInput({ persistDraft: true });
+    type('A question for a new chat');
+    first.unmount();
+
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('A question for a new chat');
+    expect(loadDraft(KEY_NEW)).toBe('A question for a new chat');
+  });
+
+  it('forgets the draft once the message is sent', () => {
+    const { onSend } = renderInput({ persistDraft: true });
+    type('Which vendors renew in Q4?');
+    pause();
+    expect(loadDraft(KEY_NEW)).not.toBe('');
+
+    fireEvent.click(sendButton());
+    pause();
+
+    expect(onSend).toHaveBeenCalledWith('Which vendors renew in Q4?', undefined);
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('forgets the draft when the page is left right after sending', () => {
+    const { unmount } = renderInput({ persistDraft: true });
+    type('Which vendors renew in Q4?');
+    pause();
+
+    fireEvent.click(sendButton());
+    unmount();
+
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('keeps a separate draft for each conversation', () => {
+    const first = openConversation('conv-1');
+    saveDraft(KEY_CONV_2, 'Draft waiting in the second chat');
+    renderInput({ persistDraft: true });
+    type('Typed in the first chat');
+
+    const second = openConversation('conv-2');
+    act(() => useChatStore.getState().setActiveSlot(second));
+    expect(composer().value).toBe('Draft waiting in the second chat');
+
+    act(() => useChatStore.getState().setActiveSlot(first));
+    expect(composer().value).toBe('Typed in the first chat');
+  });
+
+  it('does not carry text into another conversation that has no draft', () => {
+    const first = openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('Typed in the first chat');
+
+    const second = openConversation('conv-2');
+    act(() => useChatStore.getState().setActiveSlot(second));
+
+    expect(composer().value).toBe('');
+    pause();
+    expect(window.localStorage.getItem(KEY_CONV_2)).toBeNull();
+    expect(useChatStore.getState().activeSlotId).not.toBe(first);
+  });
+
+  it('does not bring a sent message back when a new chat becomes a conversation', () => {
+    renderInput({ persistDraft: true });
+    type('My first question');
+    pause();
+
+    fireEvent.click(sendButton());
+    act(() => {
+      const store = useChatStore.getState();
+      const slotId = store.createSlot(null);
+      store.setActiveSlot(slotId);
+      store.resolveSlotConvId(slotId, 'conv-9');
+    });
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('keeps text typed while a new chat is still answering', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot(null);
+    store.setActiveSlot(slotId);
+    renderInput({ persistDraft: true });
+    type('A follow-up typed during the answer');
+
+    act(() => useChatStore.getState().resolveSlotConvId(slotId, 'conv-9'));
+    pause();
+
+    expect(composer().value).toBe('A follow-up typed during the answer');
+    expect(loadDraft('pipeshub-chat-draft:u1:-:conv-9')).toBe('A follow-up typed during the answer');
+  });
+
+  it('does not store the question being edited as a draft', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'My own draft');
+    renderInput({ persistDraft: true });
+
+    act(() => {
+      useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
+    });
+    pause();
+
+    expect(composer().value).toBe('Original question');
+    expect(loadDraft(KEY_CONV_1)).toBe('My own draft');
+  });
+
+  it('does not touch the draft of a conversation when the reader leaves while regenerating', () => {
+    const first = openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'My own draft');
+    renderInput({ persistDraft: true });
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Old question' });
+    });
+    const second = openConversation('conv-2');
+
+    act(() => useChatStore.getState().setActiveSlot(second));
+    pause();
+
+    expect(loadDraft(KEY_CONV_1)).toBe('My own draft');
+    expect(useChatStore.getState().activeSlotId).not.toBe(first);
+  });
+
+  it('leaves no draft behind when the user signs out while text is still in the box', () => {
+    openConversation('conv-1');
+    const { unmount } = renderInput({ persistDraft: true });
+    type('Confidential, not sent yet');
+    pause();
+    expect(loadDraft(KEY_CONV_1)).toBe('Confidential, not sent yet');
+
+    discardAllChatDrafts();
+    type('Confidential, typed during sign-out');
+    window.dispatchEvent(new Event('pagehide'));
+    unmount();
+    pause();
+
+    expect(window.localStorage.getItem(KEY_CONV_1)).toBeNull();
+  });
+
+  it('starts keeping drafts again after the next sign-in', () => {
+    openConversation('conv-1');
+    discardAllChatDrafts();
+    allowChatDraftWrites();
+    renderInput({ persistDraft: true });
+
+    type('Back again');
+    pause();
+
+    expect(loadDraft(KEY_CONV_1)).toBe('Back again');
+  });
+
+  it('keeps an agent chat draft apart from the same conversation id outside the agent', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Plain chat draft');
+    saveDraft('pipeshub-chat-draft:u1:agent-7:conv-1', 'Agent chat draft');
+
+    const { unmount } = renderInput({ persistDraft: true, agentId: 'agent-7' });
+    expect(composer().value).toBe('Agent chat draft');
+    unmount();
+
+    renderInput({ persistDraft: true });
+    expect(composer().value).toBe('Plain chat draft');
+  });
+
+  it('keeps each agent’s new-chat draft apart', () => {
+    saveDraft('pipeshub-chat-draft:u1:agent-7:new', 'For agent seven');
+
+    const { unmount } = renderInput({ persistDraft: true, agentId: 'agent-8' });
+    expect(composer().value).toBe('');
+    unmount();
+
+    renderInput({ persistDraft: true, agentId: 'agent-7' });
+    expect(composer().value).toBe('For agent seven');
+  });
+
+  it('does not hand text left in the box to the next user when another tab signs in as someone else', () => {
+    openConversation('conv-1');
+    renderInput({ persistDraft: true });
+    type('Private to the first user');
+    pause();
+
+    act(() => useAuthStore.setState({ user: { id: 'u2' } }));
+    pause();
+
+    expect(composer().value).toBe('');
+    expect(window.localStorage.getItem('pipeshub-chat-draft:u2:-:conv-1')).toBeNull();
+    expect(loadDraft(KEY_CONV_1)).toBe('Private to the first user');
+  });
+
+  it('does not keep anything for a signed-out visitor', () => {
+    useAuthStore.setState({ user: null });
+    renderInput({ persistDraft: true });
+
+    type('Should not be stored');
+    pause();
+
+    expect(window.localStorage.length).toBe(0);
+  });
+
+  it('keeps one person’s draft away from another person on the same browser', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Private to the first person');
+    useAuthStore.setState({ user: { id: 'u2' } });
+
+    renderInput({ persistDraft: true });
+
+    expect(composer().value).toBe('');
+  });
+
+  it('leaves the composer alone where drafts are not asked for', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Should not appear');
+    const { unmount } = renderInput();
+
+    expect(composer().value).toBe('');
+    type('Typed in the widget');
+    pause();
+    unmount();
+
+    expect(loadDraft(KEY_CONV_1)).toBe('Should not appear');
+    expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
+  });
+
+  it('still lets the user type and send when the browser blocks storage', () => {
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new DOMException('quota', 'QuotaExceededError');
+    });
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const { onSend } = renderInput({ persistDraft: true });
+
+    type('Still works');
+    pause();
+    fireEvent.click(sendButton());
+
+    expect(onSend).toHaveBeenCalledWith('Still works', undefined);
+    vi.restoreAllMocks();
+  });
+
+  it('does not overwrite a suggestion chosen as the box opens', () => {
+    openConversation('conv-1');
+    saveDraft(KEY_CONV_1, 'Old draft');
+
+    renderInput({ persistDraft: true, prefill: { text: 'Summarise the handbook', key: 1 } });
+
+    expect(composer().value).toBe('Summarise the handbook');
   });
 });

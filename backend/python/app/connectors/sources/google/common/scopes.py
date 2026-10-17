@@ -161,6 +161,10 @@ GOOGLE_TOOLSET_SCOPES = {
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
     ],
+    # Each Google toolset has its own OAuth sign-in, so these are asked for only when
+    # someone connects Docs or Sheets; a Drive, Gmail or Calendar connection is untouched.
+    "docs": ["https://www.googleapis.com/auth/documents"],
+    "sheets": ["https://www.googleapis.com/auth/spreadsheets"],
 }
 
 # What the Gmail Workspace connector's service account asks for when it impersonates a

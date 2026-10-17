@@ -1839,6 +1839,27 @@ components:
           description: >-
             Tool name → rule, the person's own, applied in all their chats. A tool without one
             starts from its kind: `read` at allow, `write` at ask, `destructive` at block.
+    ToolsetToolRulesUpdate:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [allow, ask, block]
+          description: >-
+            Tool name → rule, for everyone in the organization. Each name must be a tool of the
+            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
+            at ask, `destructive` at block.
+    ToolsetToolRules:
+      allOf:
+        - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
+        - type: object
+          properties:
+            canEdit:
+              type: boolean
+              description: Whether the caller may change the rules (an admin).
     McpToolInfo:
       type: object
       properties:
@@ -39506,14 +39527,24 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     post:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use PUT /connectors/{connectorId}/config/filters-sync instead, with a body of {sync?, filters?: {sync, indexing}} (the flat filters map this route takes is ignored there: the call returns 200 and saves none of it), and only while the connector is disabled.
+        This endpoint will be removed in a future release.
       tags:
         - Connector Filters
-      summary: Save filter selections
+      summary: Save filter selections (deprecated)
       description: |
+        <b>Deprecated.</b> Save filters with
+        <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
+        PipesHub app uses. That route takes <code>{sync?, filters?: {sync, indexing}}</code>. It ignores the
+        flat <code>filters</code> map this one takes: the call still returns 200, but nothing is saved.
+        It also refuses while the connector is active, so disable it first.
+        This endpoint will be removed in a future release.<br><br>
+        What this endpoint saves goes to <code>filters.values</code>, which sync does not read:
+        sync reads <code>filters.sync</code> and <code>filters.indexing</code>.<br><br>
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
-        After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.<br><br>
         <b>Request:</b><br>
         <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
         refused with <code>400</code>. The server stores whatever it is given under the
@@ -39913,7 +39944,9 @@ paths:
       tags:
         - Toolset Registry
       summary: Get toolset schema
-      description: Get configuration schema for a specific toolset type
+      description: >-
+        Get configuration schema for a specific toolset type. Each of its `tools` carries a `kind`
+        (`read`, `write` or `destructive`), which sets the tool's starting approval rule.
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
@@ -41196,6 +41229,71 @@ paths:
           description: Status retrieved successfully
         '401':
           description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/tool-rules:
+    get:
+      tags:
+        - Toolset Instances
+      summary: Get a toolset instance's tool approval rules
+      description: >-
+        Which of the instance's tools run, ask for approval, or never run, for everyone in the
+        organization. Every member can read them; `canEdit` says whether the caller may change them.
+      operationId: getToolsetToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolsetToolRules'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+    put:
+      tags:
+        - Toolset Instances
+      summary: Set a toolset instance's tool approval rules (admin only)
+      description: Replaces the instance's rules. They apply to everyone in the organization.
+      operationId: updateToolsetToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: The rules, replacing the ones saved
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolsetToolRulesUpdate'
+      responses:
+        '200':
+          description: The rules saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolsetToolRules'
+        '400':
+          description: A rule names a tool the toolset doesn't have
+        '401':
+          description: Unauthorized
+        '403':
+          description: Only administrators can change them
         '404':
           description: Instance not found
 

@@ -3,9 +3,10 @@ from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+import jwt
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
-from jose import JWTError, jwt
+from jwt import PyJWTError
 
 from app.api.middlewares.caller_role import (
     CallerRole,
@@ -201,7 +202,7 @@ async def isJwtTokenValid(request: Request) -> dict:
             payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
             logger.debug("✅ Validated token using regular JWT secret")
             return _normalize_regular_payload(payload, token)
-        except JWTError as regular_jwt_error:
+        except PyJWTError as regular_jwt_error:
             regular_error_name = type(regular_jwt_error).__name__
 
         if not scoped_jwt_secret:
@@ -210,7 +211,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
         try:
             payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
-        except JWTError as scoped_jwt_error:
+        except PyJWTError as scoped_jwt_error:
             logger.warning(
                 f"Token validation failed with both secrets. "
                 f"Regular JWT error: {regular_error_name}, "

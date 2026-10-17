@@ -96,6 +96,16 @@ describe('ToolApprovalCard', () => {
     );
   });
 
+  it("has no \"Don't ask again\" on a toolset's card: an admin sets its rules", () => {
+    renderInTheme(<ToolApprovalCard approval={approval({ serverName: 'Jira (Engineering)', canRemember: false })} isLatest rowId="row-1" />);
+
+    expect(screen.queryByRole('checkbox')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow' }));
+    expect(chat.buildStreamChatRequestForSlot).toHaveBeenCalledWith(
+      'slot-1', 'Tool approval: allow', undefined, { approvalId: 'ap-1', decision: 'allow' },
+    );
+  });
+
   it('sends nothing while the chat is already answering', () => {
     chat.state.slots['slot-1'].isStreaming = true;
     renderInTheme(<ToolApprovalCard approval={approval()} isLatest rowId="row-1" />);

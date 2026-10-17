@@ -155,9 +155,12 @@ from app.services.graph_db.common.full_sync_unlink import (
     unseen_node_keys,
 )
 from app.services.graph_db.common.record_visibility import (
+    HAS_INDEXED_COPY,
     RecordVisibility,
     aql_live_record,
     aql_record_visibility,
+    aql_searchable_record,
+    indexed_copy_fields,
     is_live_record,
 )
 from app.services.graph_db.common.utils import (
@@ -7869,6 +7872,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 dup_update = {
                     "id": record_key,
                     "indexingStatus": new_indexing_status,
+                    **indexed_copy_fields(new_indexing_status),
                     "lastIndexTimestamp": current_timestamp,
                     "isDirty": False,
                     "virtualRecordId": virtual_record_id,
@@ -18514,7 +18518,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER record.virtualRecordId == vid
                            AND record.orgId == @org_id
                            AND record.isDeleted != true
-                           AND record.indexingStatus == @completed
+                           AND {aql_searchable_record("record", "completed")}
                            AND (record.origin != @connector_origin
                                 OR record.connectorId IN reachable_apps)
                            // Scope is re-checked per record, not trusted from
@@ -19014,7 +19018,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER STARTS_WITH(edge._from, "{records}/")
                         LET rec = DOCUMENT(edge._from)
                         FILTER rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                        FILTER rec.indexingStatus == @completed
+                        FILTER {aql_searchable_record("rec", "completed")}
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
                         LIMIT @scan_cap
@@ -19046,7 +19050,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             FOR ref IN @refs
                 LET rec = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET ok = rec != null AND rec.orgId == @org_id AND rec.isDeleted != true
-                    AND rec.indexingStatus == @completed
+                    AND {aql_searchable_record("rec", "completed")}
                     AND rec.connectorId IN ref.connectorIds
                     {record_type_check}
                 RETURN {{id: ref.id, rows: (ok AND @offset == 0) ? [{projection}] : []}}
@@ -19088,7 +19092,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             window = f"""
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
-                    AND one.isDeleted != true AND one.indexingStatus == @completed
+                    AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
                     AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
                 LET capped = false"""
         else:
@@ -23425,6 +23429,35 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             return f"{metadata_filter_clause}\n                    {time_filter_clause}"
         return time_filter_clause
 
+    async def records_accept_indexed_copy(self) -> bool:
+        schema = await self.http_client.get_collection_schema(CollectionNames.RECORDS.value)
+        rule = (schema or {}).get("rule") or {}
+        return (
+            not schema
+            or HAS_INDEXED_COPY in (rule.get("properties") or {})
+            or rule.get("additionalProperties") is not False
+        )
+
+    async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
+        query = f"""
+        FOR record IN @@records
+            FILTER record.indexingStatus == @completedStatus AND record.{HAS_INDEXED_COPY} == null
+            LIMIT @batchSize
+            UPDATE record WITH {{{HAS_INDEXED_COPY}: true}} IN @@records
+            RETURN 1
+        """
+        bind_vars = {
+            "@records": CollectionNames.RECORDS.value,
+            "completedStatus": ProgressStatus.COMPLETED.value,
+            "batchSize": batch_size,
+        }
+        total = 0
+        while True:
+            marked = len(await self.execute_query(query, bind_vars=bind_vars) or [])
+            total += marked
+            if marked < batch_size:
+                return total
+
     async def _get_virtual_ids_for_connector(
         self,
         user_id: str,
@@ -23560,7 +23593,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR record IN 1..1 ANY principal_id {CollectionNames.PERMISSION.value}
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.connectorId == @connectorId
-                    FILTER record.indexingStatus == @completedStatus
+                    FILTER {aql_searchable_record("record")}
                     FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23574,7 +23607,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
+                        FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23586,7 +23619,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR record IN 1..1 ANY group._id {CollectionNames.PERMISSION.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
+                        FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23599,7 +23632,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER orgPerm.type IN @org_share_types
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
+                        FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23614,7 +23647,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FOR record IN 0..2 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
                             FILTER record.connectorId == @connectorId
-                            FILTER record.indexingStatus == @completedStatus
+                            FILTER {aql_searchable_record("record")}
                             FILTER {live_record}
                             {metadata_filter_clause}
                             RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23628,7 +23661,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                             FILTER IS_SAME_COLLECTION("records", record)
                             FILTER record.connectorId == @connectorId
-                            FILTER record.indexingStatus == @completedStatus
+                            FILTER {aql_searchable_record("record")}
                             FILTER {live_record}
                             {metadata_filter_clause}
                             RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23641,7 +23674,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FOR record IN 0..5 INBOUND recordGroup._id {CollectionNames.INHERIT_PERMISSIONS.value}
                         FILTER IS_SAME_COLLECTION("records", record)
                         FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
+                        FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23825,7 +23858,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.origin == "UPLOAD"
-                    FILTER record.indexingStatus == @completedStatus
+                    FILTER {aql_searchable_record("record")}
                     FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -23843,7 +23876,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR record IN 1..1 ANY kb._id {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION("records", record)
                     FILTER record.origin == "UPLOAD"
-                    FILTER record.indexingStatus == @completedStatus
+                    FILTER {aql_searchable_record("record")}
                     FILTER {live_record}
                     {metadata_filter_clause}
                     RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
@@ -24168,7 +24201,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     // direct-grant budget and could tip a tenant into an
                     // unnecessary fallback.
                     FILTER rec.isDeleted != true
-                    FILTER rec.indexingStatus == @completed
+                    FILTER {aql_searchable_record("rec", "completed")}
                     FILTER rec.connectorId NOT IN covered_app_ids
                     // The verifier's reachability gate, applied early: a grant
                     // that outlived the user's access to its connector would

@@ -33,6 +33,11 @@ from app.modules.retrieval.entity_filters import (
     EntityFilterResolver,
     EntityFilterUnavailableError,
 )
+from app.modules.retrieval.lexical_search import (
+    LexicalHit,
+    LexicalSearchResult,
+    LexicalSearchUnavailableError,
+)
 from app.modules.retrieval.record_cut import (
     RecordCut,
     active_record_cut,
@@ -231,6 +236,25 @@ def _record_cut_for(scope_virtual_ids: list[str] | None) -> RecordCut | None:
     if all(vid == first for vid in scope_virtual_ids):
         return None
     return record_cut
+
+
+def _graph_filters(filter_groups: dict[str, Any] | None) -> dict[str, Any]:
+    """``filter_groups`` in the shape ``get_accessible_virtual_record_ids`` expects."""
+    filters: dict[str, Any] = {}
+    for key, values in (filter_groups or {}).items():
+        # Lowercased it would become a metadata term the graph does not understand.
+        if key == "entityFilters":
+            continue
+        # strictScope is a control flag, not a metadata filter
+        # key — lowercasing it to "strictscope" would silently
+        # break the empty-project-scope short-circuit in
+        # get_accessible_virtual_record_ids.
+        if key == "strictScope":
+            filters[key] = values
+            continue
+        # Convert key to match collection naming
+        filters[key.lower()] = values  # e.g., 'departments', 'categories', etc.
+    return filters
 
 
 def _narrow_virtual_ids(current: list[str] | None, allowed: list[str]) -> list[str]:
@@ -552,23 +576,7 @@ class RetrievalService:
             # Extract KB IDs for response metadata
             kb_ids = filter_groups.get('kb', None) if filter_groups else None
 
-            # Convert filter_groups to format expected by get_accessible_virtual_record_ids
-            filters = {}
-            if filter_groups:  # Only process if filter_groups is not empty
-                for key, values in filter_groups.items():
-                    # Lowercased it would become a metadata term the graph does not understand.
-                    if key == "entityFilters":
-                        continue
-                    # strictScope is a control flag, not a metadata filter
-                    # key — lowercasing it to "strictscope" would silently
-                    # break the empty-project-scope short-circuit in
-                    # get_accessible_virtual_record_ids.
-                    if key == "strictScope":
-                        filters[key] = values
-                        continue
-                    # Convert key to match collection naming
-                    metadata_key = key.lower()  # e.g., 'departments', 'categories', etc.
-                    filters[metadata_key] = values
+            filters = _graph_filters(filter_groups)
 
             try:
                 containers, accessible_virtual_id_to_record_id, user = (
@@ -631,39 +639,12 @@ class RetrievalService:
             # Graph key for KH permission_role checks (Location trails).
             user_key = (user.get("_key") or user.get("id")) if user else None
 
-            # The virtual record ids the search is confined to; None when the
-            # containers decide and any number of records may match.
-            scope_virtual_ids: list[str] | None
-            if use_containers:
-                clauses = self._build_container_clauses(
-                    org_id, containers, virtual_record_ids_from_tool
-                )
-                if clauses is None:
-                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-                must, should = clauses
-                filter = await self.vector_db_service.filter_collection(
-                    must=must, should=should
-                )
-                scope_virtual_ids = virtual_record_ids_from_tool or None
-            elif virtual_record_ids_from_tool:
-                # Intersect before the vector query: rows outside the
-                # accessible set are dropped afterwards anyway, and letting
-                # them into the top-k crowds out the ones that survive.
-                scoped_virtual_ids = [
-                    vid for vid in dict.fromkeys(virtual_record_ids_from_tool)
-                    if vid in accessible_virtual_id_to_record_id
-                ]
-                if not scoped_virtual_ids:
-                    return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
-                filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
-                    )
-                scope_virtual_ids = scoped_virtual_ids
-            else:
-                scope_virtual_ids = list(accessible_virtual_id_to_record_id.keys())
-                filter = await self.vector_db_service.filter_collection(
-                        must={"orgId": org_id, "virtualRecordId": scope_virtual_ids}
-                    )
+            permission_filter = await self._permission_filter(
+                org_id, containers, accessible_virtual_id_to_record_id, virtual_record_ids_from_tool
+            )
+            if permission_filter is None:
+                return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+            filter, scope_virtual_ids = permission_filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
             if use_containers:
@@ -1269,6 +1250,44 @@ class RetrievalService:
             return None, await _legacy(), user
         return containers, {}, user
 
+    async def _permission_filter(
+        self,
+        org_id: str,
+        containers: "AccessibleContainers | None",
+        accessible_virtual_id_to_record_id: dict[str, str],
+        virtual_record_ids: list[str] | None,
+    ) -> tuple[Any, list[str] | None] | None:
+        """The vector filter confining a search to what this user may reach, and
+        the virtual record ids it is confined to (None when the containers decide
+        and any number of records may match). None when nothing is reachable.
+        """
+        if containers is not None:
+            clauses = self._build_container_clauses(org_id, containers, virtual_record_ids)
+            if clauses is None:
+                return None
+            must, should = clauses
+            vector_filter = await self.vector_db_service.filter_collection(must=must, should=should)
+            return vector_filter, virtual_record_ids or None
+        if virtual_record_ids:
+            # Intersect before the vector query: rows outside the
+            # accessible set are dropped afterwards anyway, and letting
+            # them into the top-k crowds out the ones that survive.
+            scoped_virtual_ids = [
+                vid for vid in dict.fromkeys(virtual_record_ids)
+                if vid in accessible_virtual_id_to_record_id
+            ]
+            if not scoped_virtual_ids:
+                return None
+            vector_filter = await self.vector_db_service.filter_collection(
+                must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
+            )
+            return vector_filter, scoped_virtual_ids
+        scope_virtual_ids = list(accessible_virtual_id_to_record_id.keys())
+        vector_filter = await self.vector_db_service.filter_collection(
+            must={"orgId": org_id, "virtualRecordId": scope_virtual_ids}
+        )
+        return vector_filter, scope_virtual_ids
+
     def _build_container_clauses(
         self,
         org_id: str,
@@ -1554,6 +1573,174 @@ class RetrievalService:
         if record_cut is not None:
             return record_cut.cut(admitted, budget, hit_record_id), best_accessible, best_degraded
         return admitted[:budget], best_accessible, best_degraded
+
+    async def lexical_search_available(self) -> bool:
+        """Whether this store can look terms up in a lexical index of chunk text."""
+        if self._capabilities.supports_server_side_text_search:
+            return True
+        if not self._capabilities.supports_sparse_vectors:
+            return False
+        try:
+            return await self._ensure_sparse_embedder() is not None
+        except Exception:
+            self.logger.warning("lexical search: sparse embedder unavailable", exc_info=True)
+            return False
+
+    async def lexical_store_chunks(self, org_id: str, user_id: str) -> int | None:
+        """Chunks held by the collections this org's search reads, or None
+        when a collection reports no count. A collection shared with other
+        orgs counts all of its chunks, so this never under-counts. A provider
+        that cannot be asked raises."""
+        collections = await self._resolve_search_collections(org_id, user_id)
+        infos = await asyncio.gather(
+            *(self.vector_db_service.get_collection_info(name) for name in collections),
+        )
+        counts = [getattr(info, "points_count", None) for info in infos]
+        if not all(isinstance(count, int) for count in counts):
+            return None
+        return sum(counts)
+
+    async def search_lexical(
+        self,
+        queries: list[str],
+        user_id: str,
+        org_id: str,
+        filter_groups: dict[str, Any] | None = None,
+        limit: int = 100,
+        virtual_record_ids: list[str] | None = None,
+    ) -> LexicalSearchResult:
+        """Chunks holding any of each query's terms, ranked by the store's own
+        keyword scoring, among the records this user may read.
+
+        The same scope and permission filter as ``search_with_filters``: the
+        graph decides the accessible set or containers, the filter is applied
+        inside the vector query, and container hits are adjudicated per record.
+        ``virtual_record_ids`` narrows within that scope, never widens it.
+
+        Raises ``LexicalSearchUnavailableError`` when the store has no lexical
+        index, and ``PermissionVerificationUnavailableError`` when the graph
+        cannot say what the user may read.
+        """
+        if not queries:
+            return LexicalSearchResult.nothing(0)
+        requests_legs = await self._lexical_legs(queries)
+        filters = _graph_filters(filter_groups)
+        containers, accessible, _user = await self._resolve_search_scope(user_id, org_id, filters, None)
+        if (containers is not None and containers.is_empty) or (containers is None and not accessible):
+            return LexicalSearchResult.nothing(len(queries))
+        permission_filter = await self._permission_filter(org_id, containers, accessible, virtual_record_ids)
+        if permission_filter is None:
+            return LexicalSearchResult.nothing(len(queries))
+        vector_filter, _scope = permission_filter
+
+        # A request with neither leg would be a filter-only query: arbitrary chunks.
+        sent = [i for i, (sparse, text) in enumerate(requests_legs) if sparse is not None or text is not None]
+        requests = [
+            HybridSearchRequest(
+                dense_query=None,
+                sparse_query=requests_legs[i][0],
+                text_query=requests_legs[i][1],
+                filter=vector_filter,
+                limit=limit,
+                fusion_method=FusionMethod.RRF,
+            )
+            for i in sent
+        ]
+        batches: list[list] = [[] for _ in queries]
+        capped = [False] * len(queries)
+        failed_collections = searched_collections = 0
+        if requests:
+            per_collection, failed_collections = await self._lexical_fan_out(
+                await self._resolve_search_collections(org_id, user_id), requests, limit,
+            )
+            searched_collections = len(per_collection) + failed_collections
+            for j, i in enumerate(sent):
+                # Judged per collection: merging dedupes chunks across them, and
+                # a merged list shorter than the limit can hide one that was full.
+                capped[i] = any(len(results[j]) >= limit for _name, results in per_collection)
+                batches[i] = merge_collection_results(
+                    [CollectionResults(collection_name=name, results=results[j]) for name, results in per_collection],
+                    limit,
+                    self._result_merger,
+                )
+
+        if containers is not None:
+            returned = {
+                vid
+                for batch in batches
+                for point in batch
+                if (vid := (point.payload.get("metadata") or {}).get("virtualRecordId"))
+            }
+            accessible = (
+                await self.graph_provider.filter_accessible_virtual_record_ids(
+                    list(returned),
+                    user_id,
+                    org_id,
+                    trusted_app_ids=containers.app_ids_trusted,
+                    trusted_group_ids=containers.record_group_ids_trusted,
+                    scope_connector_ids=containers.scope_connector_ids,
+                )
+                if returned
+                else {}
+            ) or {}
+
+        hits: list[list[LexicalHit]] = []
+        for batch in batches:
+            admitted: list[LexicalHit] = []
+            for point in batch:
+                vid = (point.payload.get("metadata") or {}).get("virtualRecordId")
+                if vid in accessible:
+                    admitted.append(LexicalHit(
+                        virtual_record_id=vid,
+                        text=point.payload.get("page_content") or "",
+                        score=float(point.score or 0.0),
+                    ))
+            hits.append(admitted)
+        return LexicalSearchResult(
+            hits=hits,
+            capped=capped,
+            empty_query=[sparse is None and text is None for sparse, text in requests_legs],
+            failed_collections=failed_collections,
+            searched_collections=searched_collections,
+        )
+
+    async def _lexical_fan_out(
+        self, collections: list[str], requests: list[HybridSearchRequest], limit: int,
+    ) -> tuple[list[tuple[str, list[list]]], int]:
+        """Each collection's own per-request results, and how many collections
+        could not be searched. Raises when none could."""
+        semaphore = asyncio.Semaphore(SEARCH_FANOUT_CONCURRENCY)
+
+        async def _one(name: str) -> list[list]:
+            async with semaphore:
+                return await self._fan_out_searches([name], requests, limit)
+
+        outcomes = await asyncio.gather(*(_one(name) for name in collections), return_exceptions=True)
+        answered = [(name, out) for name, out in zip(collections, outcomes) if not isinstance(out, BaseException)]
+        failures = [out for out in outcomes if isinstance(out, BaseException)]
+        if failures and not answered:
+            raise failures[0]
+        return answered, len(failures)
+
+    async def _lexical_legs(self, queries: list[str]) -> list[tuple[Any, str | None]]:
+        """Per query, the (sparse vector, text query) of a lexical-only request.
+
+        Both None for a query with no term the index keeps (stop words only);
+        sending it would match nothing and read as "no match".
+        """
+        supports_text = self._capabilities.supports_server_side_text_search
+        if supports_text:
+            return [(None, query if query.strip() else None) for query in queries]
+        if not await self.lexical_search_available():
+            raise LexicalSearchUnavailableError(
+                f"{self.vector_db_service.get_service_name()} has no lexical index to search"
+            )
+        embedder = await self._ensure_sparse_embedder()
+        sparse = await asyncio.gather(*(embedder.embed_query(query) for query in queries))
+        return [
+            ((vector if getattr(vector, "indices", None) is not None and len(vector.indices) else None), None)
+            for vector in sparse
+        ]
 
     async def _get_accessible_virtual_ids_task(
         self,

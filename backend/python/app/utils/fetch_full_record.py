@@ -10,10 +10,11 @@ from pydantic import BaseModel, Field
 
 from app.modules.demo_data.access import excluded_demo_connector_ids
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.models.entities import Record, RecordType, TicketRecord
 from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.chat_helpers import (
     collection_map,
@@ -259,7 +260,7 @@ class _RecordResolver:
         # Search leaves switched-off demo data out; opening it by id must too.
         if graph_record.get("connectorId") in await self._excluded_apps():
             return record_id, None, UNAVAILABLE
-        if graph_record.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+        if not is_searchable_record(graph_record):
             # Past the access check, so describing it reveals nothing.
             self.not_indexed[record_id] = {
                 "status": graph_record.get("indexingStatus") or "unknown",

@@ -60,12 +60,14 @@ from app.utils.chat_helpers import (
 )
 from app.utils.image_admission import admission_from_state
 from app.utils.pattern_match import (
+    PatternMatchCoverage,
     await_pattern_match,
     cancel_task_if_running,
     grep_hits_on_loaded_records,
     grep_hits_within,
     merge_pattern_match_results,
     pattern_match_wait_budget,
+    render_pattern_match_coverage_note,
     render_pattern_match_hint,
     run_pattern_match_with_llm_grep,
 )
@@ -505,6 +507,7 @@ async def _execute_search(
 
     # Declared outside the try so the finally can always cancel it.
     pattern_match_task: asyncio.Task[list[dict[str, Any]]] | None = None
+    grep_coverage = PatternMatchCoverage()
     try:
         logger_instance = state.get("logger", logger)
         logger_instance.info("knowledgegraph__search: query_chars=%d", len(query))
@@ -658,6 +661,9 @@ async def _execute_search(
             )
             if notes:
                 message = f"{message}\n\n{notes.strip()}"
+            coverage_note = render_pattern_match_coverage_note(grep_coverage)
+            if coverage_note:
+                message = f"{message}{coverage_note}"
             return json.dumps({
                 "status": "success",
                 "message": message,
@@ -698,6 +704,8 @@ async def _execute_search(
                     user_query=state.get("query"),
                     on_llm_usage=grep_generation_usage_reporter(state),
                     found=grep_found,
+                    coverage=grep_coverage,
+                    retrieval_service=retrieval_service,
                 )
             )
 
@@ -854,6 +862,7 @@ async def _execute_search(
                 pattern_match_task, logger_instance, run_timer=state.get("_run_timer"),
                 wait_budget=pattern_match_wait_budget(state.get("keyword_search_budget")),
                 found_so_far=grep_found,
+                coverage=grep_coverage,
             )
             if raw_pattern_records:
                 logger_instance.info(
@@ -902,6 +911,7 @@ async def _execute_search(
                     time_range=time_range,
                     filters=grep_filters,
                     config_service=config_service,
+                    coverage=grep_coverage,
                 )
                 if pm_record_entries:
                     logger_instance.info(
@@ -925,6 +935,7 @@ async def _execute_search(
             A grep hit on a record the fit left out is named too, or nothing
             in the result would point at it.
             """
+            coverage_note = render_pattern_match_coverage_note(grep_coverage)
             shown = {unit.get("virtual_record_id") for unit in selection.ranked}
             dropped = [hit for hit in loaded_grep_hits if hit["virtual_record_id"] not in shown]
             entries = [
@@ -943,8 +954,8 @@ async def _execute_search(
             except Exception as exc:
                 # The semantic answer above is complete without the hint.
                 logger_instance.warning("Pattern match hint failed, omitting it: %s", exc)
-                return [], ""
-            return (entries if hint else []), hint
+                return [], coverage_note
+            return (entries if hint else []), hint + coverage_note
 
         pm_shown, pm_hint = keyword_hint(Selection(ranked=knowledge.ranked))
         if not has_semantic_blocks and not pm_shown:

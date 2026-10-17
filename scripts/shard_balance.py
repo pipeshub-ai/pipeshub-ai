@@ -337,12 +337,14 @@ def check(
 
     problems.extend(_solo_shard_problems(workflow_text, core_expressions))
 
+    # New connector suites go on the last shard; the earlier ones are full.
+    newest = max(int(shard.rsplit("-", 1)[-1]) for shard in shards)
     for name in sorted(connectors - set(seen) - held):
         problems.append(
             f"Connector marker '{name}' is in no shard. Its tests are marked "
             f"`integration`, so they fall into `core` instead of their own shard, making "
-            f"`core` slower and the split uneven. Add it to a CONN_SHARD_* line in "
-            f"{WORKFLOW.name}."
+            f"`core` slower and the split uneven. Add it to CONN_SHARD_{newest} "
+            f"in {WORKFLOW.name}, where new connector suites go."
         )
 
     unmeasured = sorted(set(seen) - set(durations))

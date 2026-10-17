@@ -27,6 +27,7 @@ from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.exceptions.indexing_exceptions import IndexingError
@@ -483,6 +484,7 @@ class SinkOrchestrator(Transformer):
             "id": record.id,
             "virtualRecordId": record.virtual_record_id,
             "indexingStatus": ProgressStatus.COMPLETED.value,
+            **indexed_copy_fields(ProgressStatus.COMPLETED),
             "lastIndexTimestamp": timestamp,
             "isDirty": False,
         }
