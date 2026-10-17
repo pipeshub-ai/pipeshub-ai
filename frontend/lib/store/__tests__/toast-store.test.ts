@@ -31,6 +31,13 @@ describe('toast updates', () => {
     expect(find(id)?.duration).toBeGreaterThan(0);
   });
 
+  it('a timed toast switched back to loading is not removed by its old timer', () => {
+    const id = toast.error('Check failed', { duration: 6000 });
+    toast.update(id, { variant: 'loading', title: 'Retrying…' });
+    vi.advanceTimersByTime(60_000);
+    expect(find(id)?.title).toBe('Retrying…');
+  });
+
   it('a title-only update keeps a loading toast open', () => {
     const id = toast.loading('Checking 1 of 3');
     toast.update(id, { title: 'Checking 2 of 3' });
