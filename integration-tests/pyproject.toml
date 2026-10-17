@@ -108,7 +108,7 @@ dependencies = [
   "python-dotenv==1.2.2",
   "pyyaml>=6.0",
   "redshift_connector==2.1.8",
-  "python-jose==3.5.0",
+  "PyJWT==2.15.0",
   "python-multipart==0.0.31",
   "pysbd==0.3.4",
   "lingua-language-detector==2.2.0",

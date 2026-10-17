@@ -298,7 +298,7 @@ dependencies = [
     # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
     "PyJWT==2.15.0",
     "pyyaml>=6.0",
-    "redshift_connector==2.1.14",
+    "redshift_connector==2.1.8",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI

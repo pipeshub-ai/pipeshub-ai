@@ -17,7 +17,7 @@ import time
 from pathlib import Path
 
 import pytest
-from jose import jwt
+import jwt
 
 _IT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_IT / "storage"))
