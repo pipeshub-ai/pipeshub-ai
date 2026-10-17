@@ -3,13 +3,12 @@
 import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
-import { Flex, IconButton, Text } from '@radix-ui/themes';
+import { Flex, IconButton } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { useToastStore } from '@/lib/store/toast-store';
-import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import {
   useFeatureFlagsStore,
   selectActionsEnabled,
@@ -19,20 +18,44 @@ import { primaryHttpDocumentationUrl } from '@/app/(main)/agents/agent-builder/c
 import {
   ToolsetsApi,
   MAX_TOOLSETS_LIST_LIMIT,
+  isPersonalToolset,
   type BuilderSidebarToolset,
   type RegistryToolsetRow,
 } from '@/app/(main)/toolsets/api';
+import { isNoneAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { useWorkspaceToolsetListRefresh } from '../hooks/use-workspace-toolset-list-refresh';
 import { useToolsetTypeInstanceList } from '../hooks/use-toolset-type-instance-list';
 import { UserToolsetConfigDialog } from '@/app/(main)/agents/agent-builder/components/user-toolset-config-dialog';
-import { ActionsCatalogLayout, ActionTypeDetailsLayout, type ActionInstanceAuthTab } from '../components';
 import {
+  ActionSetupPanel,
+  ActionsCatalogLayout,
+  ActionTypeDetailsLayout,
+  type ActionInstanceAuthTab,
+} from '../components';
+import {
+  actionCatalogItemToRegistryRow,
   mergedMyToolsetsCatalogFromIncludeRegistry,
   type ActionCatalogItem,
   type MyActionsTab,
 } from '../types';
 import type { ActionCardCta } from '../components/action-card';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
+
+/** The setup panel's registry row for editing a personal action. */
+function registryRowForInstance(inst: BuilderSidebarToolset): RegistryToolsetRow {
+  const type = inst.toolsetType || inst.normalized_name || inst.name;
+  return {
+    name: type,
+    displayName: inst.displayName || type,
+    description: inst.description || '',
+    category: inst.category || 'app',
+    appGroup: '',
+    iconPath: inst.iconPath || '',
+    supportedAuthTypes: [String(inst.authType || 'NONE').toUpperCase()],
+    toolCount: inst.toolCount ?? 0,
+    ...(inst.documentationLinks?.length ? { documentationLinks: inst.documentationLinks } : {}),
+  };
+}
 
 const PERSONAL_CATALOG_TABS: { value: MyActionsTab; labelKey: string }[] = [
   { value: 'all', labelKey: 'workspace.actions.tabs.all' },
@@ -45,7 +68,6 @@ function PersonalActionsPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const addToast = useToastStore((s) => s.addToast);
-  const isAdmin = useUserStore(selectIsAdmin);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const flagsLoaded = useFeatureFlagsStore(selectFeatureFlagsLoaded);
   const toolsetTypeParam = searchParams.get('toolsetType');
@@ -74,6 +96,10 @@ function PersonalActionsPageContent() {
   const [debouncedCatalogSearch, setDebouncedCatalogSearch] = useState('');
   const [isLoading, setIsLoading] = useState(true);
   const [configureToolset, setConfigureToolset] = useState<BuilderSidebarToolset | null>(null);
+  /** Adding a personal action of this type. */
+  const [setupRow, setSetupRow] = useState<RegistryToolsetRow | null>(null);
+  /** Editing this personal action. */
+  const [editAction, setEditAction] = useState<BuilderSidebarToolset | null>(null);
   const { refreshKey, bumpRefreshKey, refreshToolsetLists } = useWorkspaceToolsetListRefresh();
   const {
     instanceSearch,
@@ -196,6 +222,8 @@ function PersonalActionsPageContent() {
       const name =
         primary.toolsetType || primary.normalized_name || primary.name || toolsetTypeParam;
       const authUpper = primary.authType ? String(primary.authType).toUpperCase() : '';
+      // Every auth type the toolset offers, for adding one of your own.
+      const offered = primary.supportedAuthTypes?.map((a) => String(a).toUpperCase()) ?? [];
       return {
         name,
         displayName: primary.displayName || name,
@@ -203,7 +231,7 @@ function PersonalActionsPageContent() {
         category: primary.category || 'app',
         appGroup: '',
         iconPath: primary.iconPath || '',
-        supportedAuthTypes: authUpper ? [authUpper] : ['NONE'],
+        supportedAuthTypes: offered.length ? offered : authUpper ? [authUpper] : ['NONE'],
         toolCount: primary.toolCount ?? 0,
         ...(primary.documentationLinks?.length ? { documentationLinks: primary.documentationLinks } : {}),
       };
@@ -283,22 +311,14 @@ function PersonalActionsPageContent() {
   const resolveCta = useCallback(
     (item: ActionCatalogItem): { cta: ActionCardCta; label: string } => {
       if (!item.hasOrgInstance) {
-        if (isAdmin) {
-          return { cta: 'setup', label: t('workspace.actions.cta.setup') };
-        }
-        return {
-          cta: 'setup',
-          label: t('workspace.actions.cta.adminSetupRequired', {
-            defaultValue: 'Admin setup required',
-          }),
-        };
+        return { cta: 'setup', label: t('workspace.actions.cta.add') };
       }
       if (!item.isUserAuthenticated) {
         return { cta: 'authenticate', label: t('workspace.actions.cta.authenticate') };
       }
       return { cta: 'configure', label: t('workspace.actions.cta.configure') };
     },
-    [t, isAdmin]
+    [t]
   );
 
   const pushTypeDetail = useCallback(
@@ -315,27 +335,14 @@ function PersonalActionsPageContent() {
 
   const handleCta = useCallback(
     (item: ActionCatalogItem) => {
-      if (!item.hasOrgInstance) {
-        if (isAdmin) {
-          router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
-        } else {
-          addToast({
-            variant: 'info',
-            title: t('workspace.actions.adminRequiredToast', {
-              defaultValue: 'Only admins can add new actions. Ask your admin to configure this action first.',
-            }),
-          });
-        }
-        return;
-      }
-      if (item.rowKind === 'byToolsetType' && item.hasOrgInstance) {
-        pushTypeDetail(item);
+      if (!item.hasOrgInstance || item.rowKind === 'byToolsetType') {
+        setSetupRow(actionCatalogItemToRegistryRow(item));
         return;
       }
       if (!item.primaryInstance?.instanceId) return;
       setConfigureToolset(item.primaryInstance);
     },
-    [pushTypeDetail, isAdmin, router, addToast, t]
+    []
   );
 
   const handleCardClick = useCallback(
@@ -345,18 +352,41 @@ function PersonalActionsPageContent() {
         pushTypeDetail(item);
         return;
       }
-      if (isAdmin) {
-        router.push(`/workspace/actions/team/?toolsetType=${encodeURIComponent(item.toolsetType)}`);
-      } else {
-        addToast({
-          variant: 'info',
-          title: t('workspace.actions.adminRequiredToast', {
-            defaultValue: 'Only admins can add new actions. Ask your admin to configure this action first.',
-          }),
-        });
-      }
+      setSetupRow(actionCatalogItemToRegistryRow(item));
     },
-    [pushTypeDetail, isAdmin, router, addToast, t]
+    [pushTypeDetail]
+  );
+
+  /** A new action is signed in to next, unless there's nothing to sign in to. */
+  const handleAdded = useCallback(
+    (created?: Record<string, unknown>) => {
+      refreshToolsetLists();
+      const id = typeof created?._id === 'string' ? created._id : '';
+      if (!id || isNoneAuthType(String(created?.authType ?? ''))) return;
+      ToolsetsApi.findMyToolsetByInstanceId(id)
+        .then((row) => {
+          if (row) setConfigureToolset(row);
+        })
+        .catch(() => undefined);
+    },
+    [refreshToolsetLists]
+  );
+
+  const setupPanel = (
+    <ActionSetupPanel
+      open={Boolean(setupRow || editAction)}
+      scope="personal"
+      registryRow={editAction ? registryRowForInstance(editAction) : setupRow}
+      editInstance={editAction}
+      onOpenChange={(o) => {
+        if (o) return;
+        setSetupRow(null);
+        setEditAction(null);
+      }}
+      onCreated={(created) => (editAction ? refreshToolsetLists() : handleAdded(created))}
+      onDeleted={refreshToolsetLists}
+      onNotify={(msg) => addToast({ variant: 'success', title: msg })}
+    />
   );
 
   const handleBackFromType = useCallback(() => {
@@ -383,9 +413,14 @@ function PersonalActionsPageContent() {
           onBack={handleBackFromType}
           onAuthenticateInstance={(inst) => setConfigureToolset(inst)}
           onConfigureInstance={(inst) => setConfigureToolset(inst)}
+          onAddInstance={typeRegistryRow ? () => setSetupRow(typeRegistryRow) : undefined}
+          addInstanceLabel={t('workspace.actions.personal.addOwn')}
+          onManageInstance={(inst) => setEditAction(inst)}
+          canManageInstance={isPersonalToolset}
           instanceFilter={typeInstanceFilter}
           pagination={typeDetailPagination}
         />
+        {setupPanel}
         {configureToolset?.instanceId ? (
           <WorkspaceRightPanel
             open
@@ -463,15 +498,7 @@ function PersonalActionsPageContent() {
         emptyLabel={t('workspace.actions.empty')}
       />
 
-      {!isAdmin ? (
-        <Flex px="9" pt="2">
-          <Text size="1" color="gray">
-            {t('workspace.actions.personalNonAdminHint', {
-              defaultValue: 'Actions marked "Not configured" need to be set up by an admin before you can use them.',
-            })}
-          </Text>
-        </Flex>
-      ) : null}
+      {setupPanel}
 
       {configureToolset?.instanceId ? (
         <WorkspaceRightPanel

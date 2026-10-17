@@ -2146,7 +2146,7 @@
       "title": "操作",
       "subtitle": "配置自动化操作，例如创建记录、更新字段或触发工作流。每个应用都有针对其支持功能定制的操作。",
       "yourActionsTitle": "您的操作",
-      "yourActionsSubtitle": "对管理员为您的账户开放的操作进行身份验证和管理。",
+      "yourActionsSubtitle": "登录管理员为您开放的操作，或添加您自己的操作。",
       "tabs": {
         "all": "全部",
         "configured": "已配置",
@@ -2166,7 +2166,7 @@
         "manage": "管理",
         "unavailable": "不可用",
         "notConfigured": "未配置",
-        "adminSetupRequired": "需要管理员设置"
+        "add": "添加"
       },
       "trailingYourActions": "您的操作",
       "loading": "正在加载操作…",
@@ -2226,7 +2226,7 @@
         "refreshingList": "正在更新列表…",
         "searchInstances": "搜索实例…",
         "teamInstanceInfo": "对您所在组织的操作实例进行身份验证。已验证的操作可添加到您的智能体中。",
-        "personalInstanceInfo": "对您所在组织的操作实例进行身份验证。验证完成后，您即可在智能体中使用这些操作。",
+        "personalInstanceInfo": "登录组织的操作或添加您自己的操作。登录后即可在智能体中使用。",
         "instanceTabs": {
           "all": "全部（{{count}}）",
           "authenticated": "已验证（{{count}}）",
@@ -2290,14 +2290,26 @@
         "numberMin": "请输入不小于 {{min, number}} 的整数。",
         "numberMax": "请输入不大于 {{max, number}} 的整数。"
       },
-      "adminRequiredToast": "只有管理员可以添加新操作。请让管理员先配置此操作。",
-      "personalNonAdminHint": "标记为「未配置」的操作需要管理员先完成设置，您才能使用。",
       "toolRules": {
         "open": "工具审批",
         "title": "工具审批：{{name}}",
         "description": "当助手或智能体想使用这些工具时会发生什么。这些规则对您组织中的每个人都相同。",
         "readOnly": "只有管理员可以更改这些规则。",
         "toolsError": "无法加载此工具集的工具。"
+      },
+      "personal": {
+        "setupCallout": "只有您可以查看和使用此操作，且不能添加到与组织共享的智能体中。添加后请登录。",
+        "yours": "我的",
+        "addOwn": "添加我的",
+        "added": "操作已添加。",
+        "delete": "删除操作",
+        "deleteTitle": "删除 {{name}}？",
+        "deleteBody": "您对该操作的登录信息和工具审批也会一并删除。删除后无法恢复。",
+        "deleted": "操作已删除。"
+      },
+      "enterprise": {
+        "userActionsTitle": "成员自己的操作",
+        "userActionsDescription": "查看并移除组织成员为自己添加的操作。"
       }
     },
     "rightPanel": {
@@ -4559,7 +4571,8 @@
     "mcpAgentApprovals": "按智能体设置工具审批",
     "limitSource": "选择 {{name}} 的搜索范围",
     "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
-    "limitSourceCount": "仅限所选的 {{count}} 项"
+    "limitSourceCount": "仅限所选的 {{count}} 项",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。"
   },
   "recordView": {
     "sections": {

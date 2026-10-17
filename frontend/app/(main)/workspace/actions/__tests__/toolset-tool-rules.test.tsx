@@ -11,7 +11,10 @@ const toolsets = vi.hoisted(() => ({
   updateToolRules: vi.fn(),
 }));
 const toasts = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn() }));
-vi.mock('@/app/(main)/toolsets/api', () => ({ ToolsetsApi: toolsets }));
+vi.mock('@/app/(main)/toolsets/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/app/(main)/toolsets/api')>()),
+  ToolsetsApi: toolsets,
+}));
 vi.mock('@/app/(main)/workspace/mcp-servers/api', () => ({ McpServersApi: {} }));
 vi.mock('@/lib/store/toast-store', () => ({ toast: toasts }));
 vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn(() => new Promise(() => {})) }, isProcessedError: () => false }));
@@ -149,6 +152,18 @@ describe('ToolsetInstanceRowCard', () => {
 
     expect(await screen.findByText('Tool approvals: Jira (Engineering)')).toBeTruthy();
     expect(toolsets.getToolRules).toHaveBeenCalledWith('inst-j');
+    expect(screen.getByText(/The same rules apply to everyone in your organization/)).toBeTruthy();
+  });
+
+  it("says a personal action's rules are the owner's own", async () => {
+    renderInTheme(
+      <ToolsetInstanceRowCard scope="personal" instance={{ ...instance, scope: 'personal' }} onAuthenticate={vi.fn()} onConfigure={vi.fn()} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Tool approvals/ }));
+
+    expect(await screen.findByText(/in your chats/)).toBeTruthy();
+    expect(screen.queryByText(/The same rules apply to everyone/)).toBeNull();
   });
 
   it("leaves them to Manage on the admins' page", () => {

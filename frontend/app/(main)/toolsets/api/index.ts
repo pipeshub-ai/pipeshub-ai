@@ -8,7 +8,7 @@ const PAGE_SIZE = 20;
 
 /** A toolset instance's tool approval rules, the same for everyone in the organization. */
 export interface ToolsetToolRules extends McpToolRules {
-  /** Whether the caller may change them (an admin). */
+  /** Whether the caller may change them: an admin, or a personal action's owner. */
   canEdit: boolean;
 }
 
@@ -42,8 +42,10 @@ export interface BuilderSidebarToolset {
   authType?: string;
   /** Existing auth values (non-OAuth) for hydrate form. */
   auth?: Record<string, unknown>;
-  /** Org instance creator (admin list). */
+  /** Org instance creator (admin list); a personal instance's owner. */
   createdBy?: string;
+  /** `personal`: the user's own instance, which only they see and use. */
+  scope?: ToolsetInstanceScope;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
   oauthConfigId?: string;
@@ -51,6 +53,12 @@ export interface BuilderSidebarToolset {
   supportedAuthTypes?: string[];
   /** From merged list / registry metadata (toolset type docs). */
   documentationLinks?: DocumentationLink[];
+}
+
+export type ToolsetInstanceScope = 'org' | 'personal';
+
+export function isPersonalToolset(row: Pick<BuilderSidebarToolset, 'scope'>): boolean {
+  return row.scope === 'personal';
 }
 
 /** Mirrors Python list responses `pagination` object. */
@@ -206,6 +214,7 @@ function mapToSidebar(inst: Record<string, unknown>): BuilderSidebarToolset {
       ? { auth: inst.auth as Record<string, unknown> }
       : {}),
     createdBy: inst.createdBy as string | undefined,
+    ...(inst.scope === 'personal' || inst.scope === 'org' ? { scope: inst.scope } : {}),
     createdAtTimestamp: inst.createdAtTimestamp as number | undefined,
     updatedAtTimestamp: inst.updatedAtTimestamp as number | undefined,
     oauthConfigId:
@@ -305,6 +314,8 @@ export const ToolsetsApi = {
     includeRegistry?: boolean;
     limitPerPage?: number;
     authStatus?: 'authenticated' | 'not-authenticated';
+    /** `org`: the organization's instances only, without the caller's personal ones. */
+    scope?: 'org';
   }): Promise<{ toolsets: BuilderSidebarToolset[]; filterCounts?: ToolsetsFilterCounts }> {
     const limit = params?.limitPerPage ?? PAGE_SIZE;
     return fetchAllToolsetPages((page) =>
@@ -314,6 +325,7 @@ export const ToolsetsApi = {
         search: params?.search,
         includeRegistry: params?.includeRegistry ?? false,
         authStatus: params?.authStatus,
+        scope: params?.scope,
       })
     );
   },
@@ -343,6 +355,8 @@ export const ToolsetsApi = {
     authStatus?: 'authenticated' | 'not-authenticated';
     /** Scope list to one toolset type (instances for that type only). */
     toolsetType?: string;
+    /** `org`: the organization's instances only, without the caller's personal ones. */
+    scope?: 'org';
   }): Promise<ToolsetsPageResponse> {
     const limit = Math.min(params.limit ?? PAGE_SIZE, MAX_TOOLSETS_LIST_LIMIT);
     const { data } = await apiClient.get<{
@@ -364,6 +378,7 @@ export const ToolsetsApi = {
         includeRegistry: params.includeRegistry ?? false,
         authStatus: params.authStatus,
         toolsetType: params.toolsetType?.trim() || undefined,
+        scope: params.scope,
       },
     });
     const rows = data?.toolsets ?? [];
@@ -468,7 +483,7 @@ export const ToolsetsApi = {
     return data;
   },
 
-  /** GET /api/v1/toolsets/instances/:instanceId/tool-rules — set by an admin, read by everyone. */
+  /** GET /api/v1/toolsets/instances/:instanceId/tool-rules — set by an admin (a personal action's by its owner), read by everyone. */
   async getToolRules(instanceId: string): Promise<ToolsetToolRules> {
     const { data } = await apiClient.get<ToolsetToolRules>(
       `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`
@@ -476,7 +491,7 @@ export const ToolsetsApi = {
     return data;
   },
 
-  /** PUT /api/v1/toolsets/instances/:instanceId/tool-rules — admins only. */
+  /** PUT /api/v1/toolsets/instances/:instanceId/tool-rules — admins, or a personal action's owner. */
   async updateToolRules(instanceId: string, rules: McpToolRules): Promise<ToolsetToolRules> {
     const { data } = await apiClient.put<ToolsetToolRules>(
       `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`,
@@ -558,7 +573,7 @@ export const ToolsetsApi = {
     return {};
   },
 
-  /** Admin: POST /api/v1/toolsets/instances */
+  /** POST /api/v1/toolsets/instances — an admin's is the org's unless `scope` is personal; anyone else's is personal. */
   async createToolsetInstance(body: {
     instanceName: string;
     toolsetType: string;
@@ -567,6 +582,7 @@ export const ToolsetsApi = {
     authConfig?: Record<string, unknown>;
     oauthConfigId?: string;
     oauthInstanceName?: string;
+    scope?: ToolsetInstanceScope;
   }): Promise<Record<string, unknown>> {
     const { data } = await apiClient.post<{ instance?: Record<string, unknown> }>(
       '/api/v1/toolsets/instances',
@@ -575,7 +591,7 @@ export const ToolsetsApi = {
     return data?.instance ?? {};
   },
 
-  /** Admin: PUT /api/v1/toolsets/instances/:id — rename instance and/or update OAuth app credentials. */
+  /** PUT /api/v1/toolsets/instances/:id — rename and/or update credentials: an admin's org action or the owner's personal one. */
   async updateToolsetInstance(
     instanceId: string,
     body: {
@@ -599,7 +615,7 @@ export const ToolsetsApi = {
     return data ?? {};
   },
 
-  /** Admin: DELETE /api/v1/toolsets/instances/:id */
+  /** DELETE /api/v1/toolsets/instances/:id — an admin's org action or the owner's personal one. */
   async deleteToolsetInstance(instanceId: string): Promise<{
     status?: string;
     message?: string;

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -103,6 +104,7 @@ function TeamActionsPageContent() {
     instanceFilterTab,
     refreshKey,
     enabled: Boolean(isAdmin && toolsetTypeParam),
+    scope: 'org',
   });
 
   useEffect(() => {
@@ -164,6 +166,7 @@ function TeamActionsPageContent() {
         includeRegistry: true,
         limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
         search: debouncedCatalogSearch || undefined,
+        scope: 'org',
       });
       setCatalogRows(toolsets);
     } catch {
@@ -475,6 +478,12 @@ function TeamActionsPageContent() {
         tabCountsOverride={tabCountsOverride}
         trailingAction={
           <NavigateButton label={t('workspace.actions.trailingYourActions')} onClick={() => router.push('/workspace/actions/personal/')} />
+        }
+        footer={
+          <EnterpriseFeatureNotice
+            title={t('workspace.actions.enterprise.userActionsTitle')}
+            description={t('workspace.actions.enterprise.userActionsDescription')}
+          />
         }
         items={tabFilteredCatalog}
         resolveCta={resolveCta}

@@ -2156,7 +2156,7 @@
       "title": "Actions",
       "subtitle": "Configure automated actions like creating records, updating fields, or triggering workflows. Each app has an action tailored to its supported functions.",
       "yourActionsTitle": "Your actions",
-      "yourActionsSubtitle": "Authenticate and manage actions your administrator has made available for your account.",
+      "yourActionsSubtitle": "Sign in to the actions your administrator made available, or add your own.",
       "tabs": {
         "all": "All",
         "configured": "Configured",
@@ -2176,7 +2176,7 @@
         "manage": "Manage",
         "unavailable": "Not available",
         "notConfigured": "Not configured",
-        "adminSetupRequired": "Admin setup required"
+        "add": "Add"
       },
       "trailingYourActions": "Your actions",
       "loading": "Loading actions…",
@@ -2236,7 +2236,7 @@
         "refreshingList": "Updating list…",
         "searchInstances": "Search instances…",
         "teamInstanceInfo": "Authenticate against your organization’s action instances. Authenticated actions can be added to your agents.",
-        "personalInstanceInfo": "Authenticate against your organization’s action instances. Once authenticated, you can use these actions in your agents.",
+        "personalInstanceInfo": "Sign in to your organization's actions or add your own. Once signed in, you can use them in your agents.",
         "instanceTabs": {
           "all": "All ({{count}})",
           "authenticated": "Authenticated ({{count}})",
@@ -2300,14 +2300,26 @@
         "numberMin": "Enter a whole number of at least {{min, number}}.",
         "numberMax": "Enter a whole number no larger than {{max, number}}."
       },
-      "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
-      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them.",
       "toolRules": {
         "open": "Tool approvals",
         "title": "Tool approvals: {{name}}",
         "description": "What happens when an assistant or agent wants to use one of these tools. The same rules apply to everyone in your organization.",
         "readOnly": "Only an admin can change these.",
         "toolsError": "Couldn't load this toolset's tools."
+      },
+      "personal": {
+        "setupCallout": "Only you can see and use this action, and it can't be added to agents shared with your organization. Sign in to it once it's added.",
+        "yours": "Yours",
+        "addOwn": "Add your own",
+        "added": "Action added.",
+        "delete": "Delete action",
+        "deleteTitle": "Delete {{name}}?",
+        "deleteBody": "Your sign-in and tool approvals for it are deleted too. This can't be undone.",
+        "deleted": "Action deleted."
+      },
+      "enterprise": {
+        "userActionsTitle": "People's own actions",
+        "userActionsDescription": "Review and remove the actions people in your organization add for themselves."
       }
     },
     "rightPanel": {
@@ -4573,7 +4585,8 @@
     "mcpAgentApprovals": "Tool approvals per agent",
     "limitSource": "Choose what {{name}} searches",
     "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
-    "limitSourceCount": "Limited to {{count}} selected"
+    "limitSourceCount": "Limited to {{count}} selected",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account."
   },
   "recordView": {
     "sections": {

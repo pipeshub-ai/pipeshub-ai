@@ -2030,7 +2030,7 @@
       "title": "Acciones",
       "subtitle": "Configure acciones automatizadas como crear registros, actualizar campos o activar flujos de trabajo. Cada aplicación tiene una acción adaptada a sus funciones admitidas.",
       "yourActionsTitle": "Sus acciones",
-      "yourActionsSubtitle": "Autentique y gestione las acciones que su administrador ha puesto a disposición de su cuenta.",
+      "yourActionsSubtitle": "Inicie sesión en las acciones que su administrador ha puesto a su disposición o añada las suyas.",
       "tabs": {
         "all": "Todas",
         "configured": "Configuradas",
@@ -2050,7 +2050,7 @@
         "manage": "Gestionar",
         "unavailable": "No disponible",
         "notConfigured": "No configurada",
-        "adminSetupRequired": "Requiere configuración del administrador"
+        "add": "Añadir"
       },
       "trailingYourActions": "Sus acciones",
       "loading": "Cargando acciones…",
@@ -2110,7 +2110,7 @@
         "refreshingList": "Actualizando lista…",
         "searchInstances": "Buscar instancias…",
         "teamInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Las acciones autenticadas pueden añadirse a sus agentes.",
-        "personalInstanceInfo": "Autentíquese contra las instancias de acción de su organización. Una vez autenticado, puede usar estas acciones en sus agentes.",
+        "personalInstanceInfo": "Inicie sesión en las acciones de su organización o añada las suyas. Una vez iniciada la sesión, puede usarlas en sus agentes.",
         "instanceTabs": {
           "all": "Todas ({{count}})",
           "authenticated": "Autenticadas ({{count}})",
@@ -2174,14 +2174,26 @@
         "numberMin": "Introduce un número entero de al menos {{min, number}}.",
         "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
-      "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
       "toolRules": {
         "open": "Aprobaciones de herramientas",
         "title": "Aprobaciones de herramientas: {{name}}",
         "description": "Qué ocurre cuando un asistente o agente quiere usar una de estas herramientas. Las mismas reglas se aplican a todos en tu organización.",
         "readOnly": "Solo un administrador puede cambiarlas.",
         "toolsError": "No se pudieron cargar las herramientas de este conjunto."
+      },
+      "personal": {
+        "setupCallout": "Solo usted puede ver y usar esta acción, y no se puede añadir a agentes compartidos con su organización. Inicie sesión en ella después de añadirla.",
+        "yours": "Suya",
+        "addOwn": "Añadir la suya",
+        "added": "Acción añadida.",
+        "delete": "Eliminar acción",
+        "deleteTitle": "¿Eliminar {{name}}?",
+        "deleteBody": "También se eliminan su inicio de sesión y las aprobaciones de herramientas de esta acción. No se puede deshacer.",
+        "deleted": "Acción eliminada."
+      },
+      "enterprise": {
+        "userActionsTitle": "Acciones propias de las personas",
+        "userActionsDescription": "Revise y elimine las acciones que las personas de su organización añaden para sí mismas."
       }
     },
     "rightPanel": {
@@ -4524,7 +4536,8 @@
     "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
     "limitSource": "Elegir qué busca {{name}}",
     "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
-    "limitSourceCount": "Limitado a {{count}} seleccionados"
+    "limitSourceCount": "Limitado a {{count}} seleccionados",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio."
   },
   "recordView": {
     "sections": {

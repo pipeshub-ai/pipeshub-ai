@@ -2010,7 +2010,7 @@
       "title": "Aktionen",
       "subtitle": "Konfigurieren Sie automatisierte Aktionen wie das Erstellen von Datensätzen, Aktualisieren von Feldern oder Auslösen von Workflows. Jede App bietet eine Aktion, die auf ihre unterstützten Funktionen zugeschnitten ist.",
       "yourActionsTitle": "Ihre Aktionen",
-      "yourActionsSubtitle": "Authentifizieren und verwalten Sie Aktionen, die Ihr Administrator für Ihr Konto bereitgestellt hat.",
+      "yourActionsSubtitle": "Melden Sie sich bei den Aktionen an, die Ihr Administrator bereitgestellt hat, oder fügen Sie eigene hinzu.",
       "tabs": {
         "all": "Alle",
         "configured": "Konfiguriert",
@@ -2030,7 +2030,7 @@
         "unavailable": "Nicht verfügbar",
         "notConfigured": "Nicht konfiguriert",
         "manage": "Verwalten",
-        "adminSetupRequired": "Einrichtung durch einen Administrator erforderlich"
+        "add": "Hinzufügen"
       },
       "trailingYourActions": "Ihre Aktionen",
       "loading": "Aktionen werden geladen…",
@@ -2090,7 +2090,7 @@
         "refreshingList": "Liste wird aktualisiert…",
         "searchInstances": "Instanzen suchen…",
         "teamInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Authentifizierte Aktionen können Ihren Agenten hinzugefügt werden.",
-        "personalInstanceInfo": "Authentifizieren Sie sich gegen die Aktionsinstanzen Ihrer Organisation. Nach der Authentifizierung können Sie diese Aktionen in Ihren Agenten verwenden.",
+        "personalInstanceInfo": "Melden Sie sich bei den Aktionen Ihrer Organisation an oder fügen Sie eigene hinzu. Nach der Anmeldung können Sie sie in Ihren Agenten verwenden.",
         "instanceTabs": {
           "all": "Alle ({{count}})",
           "authenticated": "Authentifiziert ({{count}})",
@@ -2154,14 +2154,26 @@
         "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
         "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
-      "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können.",
       "toolRules": {
         "open": "Tool-Freigaben",
         "title": "Tool-Freigaben: {{name}}",
         "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
         "readOnly": "Nur ein Administrator kann diese ändern.",
         "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden."
+      },
+      "personal": {
+        "setupCallout": "Nur Sie können diese Aktion sehen und verwenden, und sie kann nicht zu Agenten hinzugefügt werden, die mit Ihrer Organisation geteilt sind. Melden Sie sich nach dem Hinzufügen bei ihr an.",
+        "yours": "Ihre",
+        "addOwn": "Eigene hinzufügen",
+        "added": "Aktion hinzugefügt.",
+        "delete": "Aktion löschen",
+        "deleteTitle": "{{name}} löschen?",
+        "deleteBody": "Ihre Anmeldung und die Tool-Freigaben dafür werden ebenfalls gelöscht. Dies kann nicht rückgängig gemacht werden.",
+        "deleted": "Aktion gelöscht."
+      },
+      "enterprise": {
+        "userActionsTitle": "Eigene Aktionen der Mitglieder",
+        "userActionsDescription": "Prüfen und entfernen Sie die Aktionen, die Mitglieder Ihrer Organisation für sich selbst hinzufügen."
       }
     },
     "rightPanel": {
@@ -4488,7 +4500,8 @@
     "mcpAgentApprovals": "Tool-Freigaben pro Agent",
     "limitSource": "Auswählen, was {{name}} durchsucht",
     "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
-    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt"
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
   },
   "recordView": {
     "sections": {

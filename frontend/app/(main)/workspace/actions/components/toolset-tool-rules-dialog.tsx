@@ -13,7 +13,7 @@ import {
 import type { McpRuleTool } from '@/app/(main)/workspace/mcp-servers/tool-rules';
 import { ruleToolsFromSchema } from '../utils/tool-names-from-schema';
 
-/** A toolset instance's rules: set by an admin, the same for everyone in the organization. */
+/** A toolset instance's rules: an org action's are set by an admin, a personal one's by its owner. */
 const TOOLSET_RULES_API: ToolRulesApi = {
   get: (instanceId) => ToolsetsApi.getToolRules(instanceId),
   save: (instanceId, rules) => ToolsetsApi.updateToolRules(instanceId, rules),
@@ -25,18 +25,21 @@ interface ToolsetToolRulesDialogProps {
   instanceId: string;
   instanceName: string;
   toolsetType: string;
+  /** The caller's own action, whose rules are theirs alone. */
+  personal?: boolean;
   /** Portal host, to stack above a workspace drawer (`useWorkspaceDrawerNestedModalHost`). */
   container?: HTMLElement | null;
 }
 
 /** What happens when an assistant or agent wants to use one of a toolset's tools: Pre-approved,
- * Allow on approval or Deny. An admin changes it; everyone else sees it. */
+ * Allow on approval or Deny. An admin changes an org action's, the owner a personal one's; everyone else sees them. */
 export function ToolsetToolRulesDialog({
   open,
   onOpenChange,
   instanceId,
   instanceName,
   toolsetType,
+  personal = false,
   container,
 }: ToolsetToolRulesDialogProps) {
   const { t } = useTranslation();
@@ -84,7 +87,7 @@ export function ToolsetToolRulesDialog({
           {t('workspace.actions.toolRules.title', { name: instanceName })}
         </Dialog.Title>
         <Dialog.Description size="2" style={{ color: 'var(--slate-11)', marginTop: 4 }}>
-          {t('workspace.actions.toolRules.description')}
+          {t(personal ? 'workspace.mcpServers.toolRules.description.personal' : 'workspace.actions.toolRules.description')}
         </Dialog.Description>
         {ready && !editor.canEdit && (
           <Text as="p" size="2" mt="2" style={{ color: 'var(--slate-11)' }}>

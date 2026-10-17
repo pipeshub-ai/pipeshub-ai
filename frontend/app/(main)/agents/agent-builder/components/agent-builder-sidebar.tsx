@@ -500,6 +500,7 @@ export function AgentBuilderSidebar(props: {
                     orgCredentialUiLocked={toolsetsOrgCredentialLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                     webSearchAttached={webSearchAttached}
+                    agentShared={isServiceAccount || shareWithOrg}
                   />
                 </Box>
               ) : null}
