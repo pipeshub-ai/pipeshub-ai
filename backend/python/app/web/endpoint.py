@@ -1,6 +1,7 @@
 """Calls to the web services a provider speaks JSON with: hosted APIs and admin-run servers."""
 
 import hashlib
+from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -16,9 +17,11 @@ from app.web.errors import (
 )
 
 
+@lru_cache(maxsize=256)
 def fingerprint(secret: str) -> str:
     """A short, one-way tag for a credential, to tell keys apart without keeping them."""
-    return hashlib.sha256(secret.encode()).hexdigest()[:12]
+    # A key derivation function, not a bare hash: the tag must not make a short key easy to guess.
+    return hashlib.pbkdf2_hmac("sha256", secret.encode(), b"pipeshub-web-cooldown", 10_000).hex()[:12]
 
 
 async def request_json(
@@ -87,7 +90,9 @@ class Endpoint:
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         if not self.base_url.startswith(("http://", "https://")):
-            raise NotConfigured(f"{self._name} needs the http(s) address of its server", source=self._source)
+            raise NotConfigured(
+                f"{self._name} needs the http(s) address of its server", source=self._source, reason="base_url",
+            )
         async with guarded_async_client(self.base_url, timeout=max(deadline.remaining(), 0.001)) as client:
             return await request_json(
                 client, method, f"{self.base_url}{path}",

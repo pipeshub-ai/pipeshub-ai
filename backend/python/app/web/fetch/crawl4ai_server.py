@@ -51,4 +51,5 @@ class Crawl4AIServerFetcher:
                 f"{NAME} {'.'.join(map(str, MIN_VERSION))} or later is required (this server reports "
                 f"{health.get('version') or 'no version'}); older versions are unsafe to expose",
                 source=self.id,
+                reason="server_version",
             )

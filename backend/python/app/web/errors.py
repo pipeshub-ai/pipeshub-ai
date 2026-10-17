@@ -91,6 +91,12 @@ class UpstreamError(WebError):
 class NotConfigured(WebError):
     error_type = "not_configured"
 
+    def __init__(self, message: str, *, source: str | None = None, reason: str = "api_key") -> None:
+        super().__init__(message, source=source)
+        # What is missing, as a fixed code: callers that answer people outside the agent (the
+        # settings health check) word it themselves instead of echoing the message.
+        self.reason = reason
+
 
 class UnknownProvider(WebError):
     error_type = "unknown_provider"

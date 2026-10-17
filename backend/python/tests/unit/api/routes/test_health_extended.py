@@ -71,14 +71,17 @@ class TestWebSearchHealthCheck:
 
         resp = await web_search_health_check(mock_request, {"provider": "unknown_engine", "configuration": {}})
         assert resp.status_code == 400
-        assert "Unknown web search provider" in resp.body.decode()
+        assert "isn't a web search provider" in resp.body.decode()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
         ("error", "status", "text"),
         [
             (TimedOut("t"), 408, "didn't answer in time"),
-            (NotConfigured("Serper API key is required"), 400, "Serper API key is required"),
+            (NotConfigured("boom"), 400, "Serper needs an API key"),
+            (NotConfigured("boom", reason="base_url"), 400, "needs the http(s) address"),
+            (NotConfigured("boom", reason="searxng_json"), 400, "add json to search.formats"),
+            (NotConfigured("boom", reason="server_version"), 400, "0.8.8 or later is required"),
             (AuthFailed("x", status=401), 400, "didn't accept the API key"),
             (RateLimited("x", status=429), 400, "limiting requests"),
             (QuotaExceeded("x", status=402), 400, "credits are used up"),

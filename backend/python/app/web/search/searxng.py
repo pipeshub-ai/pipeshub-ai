@@ -31,7 +31,11 @@ class SearxngSearch:
             if e.status != _HTTP_FORBIDDEN:
                 raise
             # SearXNG answers 403 to format=json unless its settings.yml lists json under search.formats.
-            raise NotConfigured("SearXNG refused to answer in JSON: add json to search.formats in its settings.yml", source=self.id) from e
+            raise NotConfigured(
+                "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml",
+                source=self.id,
+                reason="searxng_json",
+            ) from e
         return collect(self.id, data.get("results", []), MAX_RESULTS, lambda item: web_result(
             self.id, item.get("url"), item.get("title"), item.get("content"), item.get("publishedDate"),
         ))

@@ -282,7 +282,9 @@ export function maskWebSearchProvider<T extends Record<string, unknown>>(configu
  * since a self-hosted server's URL names an internal host. Members only list providers (the agent
  * builder does); every write is admin-only, so a masked address is never sent back to be saved.
  */
-export function maskWebSearchProviderForMember<T extends Record<string, unknown>>(configuration: T): T {
+export function maskWebSearchProviderForMember<
+  T extends Record<string, unknown>,
+>(configuration: T): T {
   return maskKeys(configuration, [...WEB_SEARCH_SECRET_KEYS, 'baseUrl']);
 }
 

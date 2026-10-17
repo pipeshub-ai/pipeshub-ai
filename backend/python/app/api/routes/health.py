@@ -497,12 +497,24 @@ def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
     )
 
 
+_NOT_CONFIGURED_HINTS = {
+    "api_key": "{name} needs an API key. Add it in the web search settings, then try again.",
+    "base_url": "{name} needs the http(s) address of its server.",
+    "searxng_json": "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml.",
+    "server_version": "{name} 0.8.8 or later is required; older versions are unsafe to expose.",
+}
+
+
 def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
     name = provider_name(provider)
     if isinstance(error, TimedOut):
         return _web_search_unhealthy(408, f"{name} didn't answer in time. Check your network, then try again.")
-    if isinstance(error, (NotConfigured, UnknownProvider)):
-        return _web_search_unhealthy(400, error.message)
+    if isinstance(error, UnknownProvider):
+        return _web_search_unhealthy(400, f"{name} isn't a web search provider this server knows.")
+    if isinstance(error, NotConfigured):
+        # Fixed wording per reason: the error's own message can quote what a remote server said.
+        hint = _NOT_CONFIGURED_HINTS.get(error.reason, _NOT_CONFIGURED_HINTS["api_key"])
+        return _web_search_unhealthy(400, hint.format(name=name))
     if isinstance(error, AuthFailed):
         return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
     if isinstance(error, RateLimited):
