@@ -165,7 +165,7 @@ from app.utils.oauth_config import (
     get_oauth_config,
 )
 from app.telemetry.modules.soft_delete_metrics import record_soft_deleted
-from app.utils.desktop_oauth_state import mark_desktop_oauth_state, strip_desktop_oauth_state
+from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.retry import retry_async
 from app.utils.streaming import create_stream_record_response, start_streaming_response
@@ -6598,7 +6598,7 @@ async def get_oauth_authorization_url(
             if not original_state:
                 raise ValueError("No state parameter in authorization URL")
 
-            encoded_state = mark_desktop_oauth_state(
+            encoded_state = mark_desktop_state(
                 _encode_state_with_instance(original_state, connector_id), desktop=desktop
             )
             query_params["state"] = [encoded_state]
@@ -6659,7 +6659,7 @@ async def handle_oauth_callback(
     base_url = await resolve_oauth_base_url(
         resolve_config_service(container, request.state.user.get("orgId")), base_url
     )
-    state = strip_desktop_oauth_state(state)
+    state = strip_desktop_state(state)
 
     try:
         # ============================================================

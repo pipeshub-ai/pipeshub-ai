@@ -76,9 +76,9 @@ from app.edition_config import (
     resolve_instance_owner_config_service,
     resolve_mcp_instances_with_inheritance,
 )
-from app.utils.desktop_oauth_state import (
-    mark_desktop_oauth_state,
-    strip_desktop_oauth_state,
+from app.utils.desktop_state import (
+    mark_desktop_state,
+    strip_desktop_state,
 )
 from app.utils.env_utils import env_int
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1289,7 +1289,7 @@ async def _build_oauth_authorization_url(
             authorization_url=authorization_url,
             client_id=client_id,
             redirect_uri=redirect_uri,
-            state=mark_desktop_oauth_state(state, desktop=desktop),
+            state=mark_desktop_state(state, desktop=desktop),
             scopes=scopes,
             code_challenge=code_challenge,
             extra_params=template.authorization_params if template else None,
@@ -1493,7 +1493,7 @@ async def handle_oauth_callback(
     # caller identity"), matching every other error branch below.
     caller_user = getattr(request.state, "user", {}) or {}
     caller_id = caller_user.get("userId")
-    state = strip_desktop_oauth_state(state)
+    state = strip_desktop_state(state)
 
     if error:
         await _note_a_refused_client_document(config_service, state, error, caller_id)

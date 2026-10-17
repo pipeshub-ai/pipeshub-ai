@@ -69,7 +69,7 @@ from app.utils.oauth_config import (
     extract_oauth_error_message,
     get_oauth_config,
 )
-from app.utils.desktop_oauth_state import mark_desktop_oauth_state, strip_desktop_oauth_state
+from app.utils.desktop_state import mark_desktop_state, strip_desktop_state
 from app.utils.oauth_redirect import resolve_oauth_base_url
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
@@ -2363,7 +2363,7 @@ async def get_instance_oauth_authorization_url(
         if not original_state:
             raise OAuthConfigError("OAuth state parameter is missing from authorization URL")
 
-        encoded_state = mark_desktop_oauth_state(
+        encoded_state = mark_desktop_state(
             _encode_state_with_instance(original_state, instance_id, user_id), desktop=desktop
         )
         query_params["state"] = [encoded_state]
@@ -2480,7 +2480,7 @@ async def handle_toolset_oauth_callback(
 ) -> dict[str, Any]:
     """Handle OAuth callback for toolset instance authentication."""
     base_url = await resolve_oauth_base_url(config_service, base_url)
-    state = strip_desktop_oauth_state(state)
+    state = strip_desktop_state(state)
 
     if error and error not in ["null", "undefined", "None", ""]:
         return {"success": False, "error": error, "redirect_url": f"{base_url}/tools?oauth_error={error}"}
@@ -3556,7 +3556,7 @@ async def get_agent_toolset_oauth_url(
 
         # Encode agentKey as the "user_id" in state and mark is_agent=True so
         # the callback can distinguish agent flows from regular user flows.
-        encoded_state = mark_desktop_oauth_state(
+        encoded_state = mark_desktop_state(
             _encode_state_with_instance(original_state, instance_id, agent_key, is_agent=True), desktop=desktop
         )
         query_params["state"] = [encoded_state]
