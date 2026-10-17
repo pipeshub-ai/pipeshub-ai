@@ -539,6 +539,21 @@ class TestEntityFilters:
         assert any("departments" not in c["filter_groups"] for c in corpus.calls)
 
     @pytest.mark.asyncio
+    async def test_a_project_scoped_chat_with_a_matching_entity_filter_keeps_both(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        state = _state(
+            corpus,
+            filters={"apps": ["slack-1"], "kb": [], "strictScope": True},
+            **{ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}},
+        )
+        text = await _run(corpus, state, start="2026-03-01", end="2026-05-31", entity_ids=["dept-1"])
+
+        assert "apr yyy" in text.split("### April 2026", 1)[1]
+        assert all(c["filter_groups"]["strictScope"] is True for c in corpus.calls)
+        assert all(c["filter_groups"]["departments"] == ["Engineering"] for c in corpus.calls)
+        assert "NOT limited" not in text
+
+    @pytest.mark.asyncio
     async def test_a_matching_entity_filter_is_kept(self) -> None:
         corpus = _Corpus(_THREE_MONTHS)
         state = _state(corpus, **{ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}})
@@ -568,3 +583,24 @@ async def test_status_lines_are_inside_the_size_and_the_footer_survives() -> Non
     assert len(text) <= 7_000
     assert text.count("No matching records.") == 4
     assert text.rstrip().endswith("created_after/created_before.")
+
+
+@pytest.mark.asyncio
+async def test_a_period_searched_over_part_of_the_index_is_not_called_empty() -> None:
+    notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+    corpus = _Corpus({"mar": "2026-03-03", "may": "2026-05-06"})
+    real = corpus.search_with_filters
+
+    async def partial_april(**kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        time_range = kwargs.get("time_range") or {}
+        if time_range.get("source_created_after_ms") == _ms("2026-04-01"):
+            corpus.calls.append(kwargs)
+            return {"status_code": 200, "searchResults": [], "searchIncomplete": notice}
+        return await real(**kwargs)
+
+    corpus.search_with_filters = partial_april  # type: ignore[method-assign]
+    text = await _run(corpus, start="2026-03-01", end="2026-05-31")
+
+    april = text.split("### April 2026", 1)[1].split("###", 1)[0]
+    assert "No matching records." not in april
+    assert notice in april and "Search it again" in april

@@ -29,6 +29,8 @@ ABOUT_A_SPAN = [
     "Which accounts went quiet between July and mid-September?",
     "What did we commit to after the meetings in late July?",
     "Since January, what was decided about the on-call rotation?",
+    "What problems came up with the export in May 2026?",
+    "What was decided about pricing since then?",
 ]
 
 NOT_ABOUT_A_SPAN = [
@@ -39,6 +41,9 @@ NOT_ABOUT_A_SPAN = [
     "Summarize this document",
     "What problems does the S3 connector have with keys containing %25?",
     "When did the role dropdown fix merge?",
+    "What problems came up so I may share it with the team?",
+    "What was decided since I missed the call?",
+    "What problems came up with the export, and what was decided?",
     "",
     "   ",
 ]

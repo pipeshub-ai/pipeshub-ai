@@ -323,6 +323,9 @@ class _PeriodHits:
     results: list[dict[str, Any]]
     records: dict[str, Any]
     failed: bool = False
+    incomplete: str | None = None
+    """The retrieval's notice when this period's search reached only part of
+    the index: an empty period then does not show nothing exists."""
     weight: int = 0
     """Records of the whole-span search filed here: where the matches are
     densest, the period gets more of the result."""
@@ -440,7 +443,8 @@ async def _collect(
     hits = [
         _PeriodHits(period, [], {}, failed=True) if _failed(result, log)
         else _PeriodHits(period, list(result.get("searchResults") or []),
-                         dict(result.get("virtual_to_record_map") or {}))
+                         dict(result.get("virtual_to_record_map") or {}),
+                         incomplete=result.get("searchIncomplete") or None)
         for period, result in zip(periods, per_period)
     ]
     undated = _PeriodHits(None, [], {})
@@ -524,8 +528,11 @@ async def execute_timeline_search(
             return collected
         if not any(h.results for h in collected.hits):
             message = "No results found in any period."
-            if any(h.failed for h in collected.hits):
-                message += " Some periods could not be searched, so this does not show the information is missing."
+            if any(h.failed or h.incomplete for h in collected.hits):
+                message += (
+                    " Some periods could not be searched in full, so this does not show the "
+                    "information is missing."
+                )
             message += (
                 " Before concluding it does not exist, search with knowledgegraph__search and no "
                 "date filters: a record's source date may fall outside this span."
@@ -611,9 +618,16 @@ def _status_line(period_hits: _PeriodHits, has_matches: bool) -> str:  # noqa: F
     if not has_matches:
         if period_hits.failed:
             return f"{_NOT_SEARCHED} Search it again before drawing conclusions about it.\n"
+        if period_hits.incomplete:
+            return (
+                f"No matches, but {period_hits.incomplete} Search it again before drawing "
+                "conclusions about it.\n"
+            )
         return "No matching records.\n"
     if period_hits.failed:
         return f"{_NOT_SEARCHED} These are its matches from the search of the whole span.\n"
+    if period_hits.incomplete:
+        return f"Note: {period_hits.incomplete} A record missing here may still exist.\n"
     return ""
 
 

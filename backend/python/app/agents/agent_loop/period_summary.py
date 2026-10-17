@@ -50,11 +50,18 @@ _MONTH = (
     r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
 )
 _YEAR = r"(?:19|20)\d{2}"
-# One end of a span: "March", "mid-May 2026", "Q2", "2025", "last quarter".
-_POINT = (
-    rf"(?:(?:early|mid|late|the end of|the start of)[- ]?\s*)?"
-    rf"(?:{_MONTH}(?:\s+{_YEAR})?|q[1-4](?:\s+{_YEAR})?|{_YEAR}"
+# A point in time that is not a month name: "Q2", "2025", "last quarter".
+_NON_MONTH_POINT = (
+    rf"(?:q[1-4](?:\s+{_YEAR})?|{_YEAR}"
     r"|last (?:week|month|quarter|year)|the (?:summer|spring|autumn|fall|winter))"
+)
+_POINT_PREFIX = r"(?:(?:early|mid|late|the end of|the start of)[- ]?\s*)?"
+# One end of a span: "March", "mid-May 2026", "Q2", "2025", "last quarter".
+_POINT = rf"{_POINT_PREFIX}(?:{_MONTH}(?:\s+{_YEAR})?|{_NON_MONTH_POINT})"
+# A month name only where it is a date: "may" alone is as often a verb.
+_DATED_MONTH = (
+    rf"(?:(?:in|on|during|since|until|by|from|before|after|through|early|mid|late)[- ]+(?:the\s+)?{_MONTH}"
+    rf"|{_MONTH}\s+(?:{_YEAR}|\d{{1,2}}(?:st|nd|rd|th)?\b))"
 )
 _STRETCH = (
     r"the\s+(?:past|last)\s+(?:few\s+|several\s+|couple of\s+|\d+\s+|two\s+|three\s+|six\s+)?"
@@ -89,8 +96,8 @@ _RECAP_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:went|gone|go) quiet\b",
 ))
 _TIME_CUE = re.compile(
-    rf"\b(?:{_MONTH}|q[1-4]|{_YEAR}|recent(?:ly)?|lately|so far|since"
-    r"|this (?:year|quarter|month)|last (?:year|quarter|month|week)|past (?:few )?(?:weeks|months|year))\b",
+    rf"\b(?:{_DATED_MONTH}|{_NON_MONTH_POINT}|since\s+(?:then|{_POINT})|recent(?:ly)?|lately|so far"
+    r"|this (?:year|quarter|month)|past (?:few )?(?:weeks|months|year))\b",
     re.IGNORECASE,
 )
 
