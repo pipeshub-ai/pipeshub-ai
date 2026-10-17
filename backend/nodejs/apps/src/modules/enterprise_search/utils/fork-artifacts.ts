@@ -106,7 +106,9 @@ export class ArtifactCopyMap {
 }
 
 function replaceAll(text: string, from: string, to: string): string {
-  return from && from !== to && text.includes(from) ? text.split(from).join(to) : text;
+  return from && from !== to && text.includes(from)
+    ? text.split(from).join(to)
+    : text;
 }
 
 function swapIds(text: string, copies: ArtifactCopyMap): string {
