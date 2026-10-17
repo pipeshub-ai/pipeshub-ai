@@ -83,7 +83,10 @@ class TestCatchesMistakes(unittest.TestCase):
         workflow = MATRIX + '      CONN_SHARD_1: "alpha"\n      CONN_SHARD_2: "gamma"\n'
         problems, _ = run(workflow=workflow)
         self.assertTrue(
-            any("'beta' is in no shard" in p and "Add it to CONN_SHARD_2" in p for p in problems),
+            any(
+                "'beta' is in no shard" in p and "Add it to CONN_SHARD_2" in p
+                for p in problems
+            ),
             problems,
         )
 
