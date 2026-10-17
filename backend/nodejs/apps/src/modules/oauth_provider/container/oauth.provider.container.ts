@@ -199,7 +199,7 @@ export class OAuthProviderContainer {
       // that needs to know reads it from here.
       container
         .bind<boolean>('DelegationAvailable')
-        .toConstantValue(DELEGATION_AVAILABLE)
+        .toConstantValue(DELEGATION_AVAILABLE);
 
       const tokenExchangeService = new TokenExchangeService(
         logger,
@@ -281,6 +281,7 @@ export class OAuthProviderContainer {
             scopeValidatorService,
             appConfig,
             firstPartyDeviceAppService,
+            DELEGATION_AVAILABLE,
           );
         });
 
