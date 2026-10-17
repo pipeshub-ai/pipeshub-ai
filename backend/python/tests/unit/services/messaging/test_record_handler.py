@@ -5803,7 +5803,9 @@ def _refused(too_large: bool) -> Exception:
 class TestRejectedTooLargeCounter:
     """pipeshub_record_storage_rejected_too_large_total counts records, not attempts or look-alikes."""
 
-    async def _fail(self, error: Exception, *, final: bool) -> tuple[MagicMock, dict | None]:
+    async def _fail(
+        self, error: Exception, *, final: bool, counter_error: Exception | None = None
+    ) -> tuple[MagicMock, dict | None]:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
         record = {"_key": "r1", "virtualRecordId": "vr1",
@@ -5821,7 +5823,7 @@ class TestRejectedTooLargeCounter:
         with patch.object(record_module, "generate_jwt", new_callable=AsyncMock, return_value="token"), \
              patch.object(record_module, "make_api_call", new_callable=AsyncMock, return_value={"data": b"%PDF"}), \
              patch.object(record_module.MessageErrorClassifier, "classify_by_exception", return_value=kind), \
-             patch.object(record_module, "record_rejected_too_large") as counter:
+             patch.object(record_module, "record_rejected_too_large", side_effect=counter_error) as counter:
             handler.config_service.get_config = AsyncMock(
                 return_value={"connectors": {"endpoint": "http://localhost:8088"}}
             )
@@ -5850,4 +5852,13 @@ class TestRejectedTooLargeCounter:
     async def test_out_of_memory_reads_too_large_but_is_not_counted(self) -> None:
         counter, updates = await self._fail(MemoryError(), final=True)
         counter.assert_not_called()
+        assert updates["reason"] == user_errors.FILE_TOO_LARGE
+
+    @pytest.mark.asyncio
+    async def test_a_failing_counter_still_marks_the_record_failed(self) -> None:
+        counter, updates = await self._fail(
+            _refused(too_large=True), final=True, counter_error=ValueError("metrics broken")
+        )
+        counter.assert_called_once_with(400)
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
         assert updates["reason"] == user_errors.FILE_TOO_LARGE

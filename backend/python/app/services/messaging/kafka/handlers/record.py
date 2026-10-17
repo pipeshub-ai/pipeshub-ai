@@ -1,4 +1,5 @@
 import asyncio
+import contextlib
 import os
 import time
 from collections.abc import AsyncGenerator
@@ -2142,7 +2143,9 @@ class RecordEventHandler(BaseEventService):
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception)
                     if (refusal := too_large_refusal(last_exception)) is not None:
-                        record_rejected_too_large(refusal.status)
+                        # A metrics fault must not stop the record being marked FAILED.
+                        with contextlib.suppress(Exception):
+                            record_rejected_too_large(refusal.status)
                     self.logger.error(
                         f"Final failure for record {record_id}: {error_msg}",
                         exc_info=last_exception,
