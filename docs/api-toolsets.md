@@ -122,7 +122,6 @@ private address (in the integration compose stack it is the `openapi-fixture` se
 - No admin screen yet to change the approval rule of one operation.
 - Deleting a toolset doesn't detach it from agents; the missing toolset is skipped at chat time.
 - A chat's tool picker doesn't filter API toolset tools.
-- Credentials of deleted users are not removed yet.
 - Swagger 2.0, form and multipart bodies, file uploads, OpenID Connect and mutual TLS are not
   supported.
 
