@@ -905,19 +905,21 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search, includeRegistry, page, limit, authStatus, toolsetType } = req.query as {
+      const { search, includeRegistry, page, limit, authStatus, toolsetType, scope } = req.query as {
         search?: string;
         includeRegistry?: boolean | string;
         page?: number | string;
         limit?: number | string;
         authStatus?: string;
         toolsetType?: string;
+        scope?: string;
       };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
       if (page !== undefined && page !== null) queryParams.append('page', String(page));
       if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
       if (authStatus) queryParams.append('authStatus', String(authStatus));
+      if (scope) queryParams.append('scope', scope);
       if (toolsetType && String(toolsetType).trim()) {
         queryParams.append('toolsetType', String(toolsetType).trim());
       }

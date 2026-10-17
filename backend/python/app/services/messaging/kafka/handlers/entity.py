@@ -230,6 +230,7 @@ class EntityEventService(BaseEventService):
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
             await self._remove_mcp_data("org", payload["orgId"])
+            await self._remove_personal_toolsets("org", payload["orgId"])
             return True
 
         except Exception as e:
@@ -411,6 +412,7 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
             if payload.get("userId"):
                 await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
+                await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
             return True
 
         except Exception as e:
@@ -431,6 +433,21 @@ class EntityEventService(BaseEventService):
             self.logger.info(f"Removed {len(removed)} MCP keys for deleted {owner_kind} {user_id or org_id}")
         except Exception as e:
             self.logger.error(f"Could not remove MCP data for deleted {owner_kind} {user_id or org_id}: {e}")
+
+    async def _remove_personal_toolsets(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
+        """Personal toolset instances, with their sign-ins and tool rules, go with their user or org,
+        so nothing keeps refreshing their tokens. Logged, not raised, as for MCP data."""
+        from app.agents import toolset_store
+
+        try:
+            config_service = self.app_container.config_service()
+            if owner_kind == "org":
+                removed = await toolset_store.remove_org_personal_instances(config_service, org_id)
+            else:
+                removed = await toolset_store.remove_user_personal_instances(config_service, org_id, user_id or "")
+            self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
+        except Exception as e:
+            self.logger.error(f"Could not remove personal toolset instances for deleted {owner_kind} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:

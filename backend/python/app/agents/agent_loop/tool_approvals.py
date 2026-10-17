@@ -4,7 +4,8 @@ which never run.
 Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Block ("Deny"). For an
 MCP tool the rule is the person's own, set for their MCP servers, and it applies in every chat they
 have, agent chats included. For a toolset tool (Jira, Slack, ...) it is the toolset instance's, set
-by an admin for everyone in the organization. Without one, a tool starts from what it does to data
+by an admin for everyone in the organization, or by its owner for a personal instance, one a user
+added for themselves. Without one, a tool starts from what it does to data
 (`mcp/tool_kind.py`): a read-only tool at Allow, one that changes data at Ask, one that deletes
 data at Block.
 
@@ -14,8 +15,8 @@ data at Block.
   with `toolApproval`, like the ask-user card's `User selections:`): the saved call runs, on the
   server, with the arguments it was asked with, and its result becomes the result of the call the
   model made. The model carries on from there in the same reply; it never re-creates the call.
-  "Don't ask again" also saves the answer as the person's rule for an MCP tool; a toolset's rules
-  change only in its rules editor.
+  "Don't ask again" also saves the answer as the person's rule for an MCP tool or a personal
+  toolset; an org toolset's rules change only in its rules editor.
 - Nobody can answer a card outside the PipesHub web app (Slack, the API, the MCP gateway, a
   service account): there, Ask is Block. Only a pre-approved tool runs there.
 
@@ -119,6 +120,8 @@ class PendingCall(MCPCamelModel):
     conversation_id: str
     # Calls saved before toolsets were checked are all MCP calls.
     source: Source = "mcp"
+    # A personal toolset instance's rules are its owner's, so an answer may set them.
+    personal: bool = False
     instance_id: str
     server_name: str
     tool_name: str
@@ -167,6 +170,12 @@ class ApprovalTarget:
     kind: ToolKind
     tool: Tool
     title: Optional[str] = None
+    # A personal toolset instance: its rules are the person's own, as an MCP server's are.
+    personal: bool = False
+
+    @property
+    def own_rules(self) -> bool:
+        return self.source == "mcp" or self.personal
 
 
 def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
@@ -352,13 +361,14 @@ async def _rules_for(context: "AgentContext", source: Source, instance_id: str) 
 
 def _blocked_message(reason: str, target: ApprovalTarget) -> str:
     tool, owner = target.tool_name, target.owner
-    # An MCP tool's rules are the person's own; a toolset's are the organization's, set by an admin.
-    whose, who = ("the user's", "they") if target.source == "mcp" else ("the organization's", "an admin")
+    # An MCP tool's and a personal toolset's rules are the person's own; an org toolset's are the
+    # organization's, set by an admin.
+    whose, who = ("the user's", "they") if target.own_rules else ("the organization's", "an admin")
     if reason == "unattended":
         return (
             f"{tool} on {owner} needs someone to approve it in the PipesHub app, so it wasn't run here. "
             "Tell the user what you wanted to do"
-            + ("." if target.source == "mcp" else ", and that an admin can pre-approve it.")
+            + ("." if target.own_rules else ", and that an admin can pre-approve it.")
         )
     if reason == "default":
         return (
@@ -421,7 +431,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
     call = getattr(ctx.scope, "call", None)
     pending = PendingCall(
         approval_id=uuid.uuid4().hex, org_id=context.org_id, user_id=context.user_id,
-        conversation_id=context.conversation_id or "", source=target.source, instance_id=target.instance_id,
+        conversation_id=context.conversation_id or "", source=target.source, personal=target.personal,
+        instance_id=target.instance_id,
         server_name=server, tool_name=tool_name, arguments=dict(ctx.tool_input), tool_call_id=getattr(call, "id", None) or "",
         created_at=now, expires_at=now + APPROVAL_TTL_SECONDS,
     )
@@ -447,8 +458,8 @@ async def _ask(context: "AgentContext", ctx: "ToolCallContext", target: Approval
         details={
             "approvalId": pending.approval_id, "instanceId": target.instance_id, "serverName": server,
             "toolName": tool_name, "toolTitle": target.title, "readOnly": target.kind == "read", "kind": target.kind,
-            # "Don't ask again" sets the person's own rule; a toolset's rules are the admin's.
-            "canRemember": target.source == "mcp",
+            # "Don't ask again" sets the person's own rule; an org toolset's rules are the admin's.
+            "canRemember": target.own_rules,
             "expiresAt": int(pending.expires_at * 1000), **_card_arguments(pending.arguments),
         },
     ))
@@ -600,9 +611,10 @@ async def _settle(context: "AgentContext", run: "RunScope", answer: ToolApproval
 
 async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
     """ "Don't ask again for this tool": the answer becomes the person's rule for it. A Deny set
-    since the card was shown stands over an Allow. A toolset's rules are the admin's: an answer
+    since the card was shown stands over an Allow. An org toolset's rules are the admin's: an answer
     never changes them, whatever the request says."""
     if pending.source != "mcp":
+        await _remember_for_personal_toolset(context, pending, rule)
         return
     rules = await _rules_for(context, "mcp", pending.instance_id)
     if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
@@ -610,6 +622,30 @@ async def _remember(context: "AgentContext", pending: PendingCall, rule: Rule) -
     rules.rules.tools[pending.tool_name] = rule
     try:
         await save_own_rules(context.config_service, rules.rules, user_id=context.user_id, instance_id=pending.instance_id)
+    except Exception as e:
+        logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
+
+
+async def _remember_for_personal_toolset(context: "AgentContext", pending: PendingCall, rule: Rule) -> None:
+    """A personal toolset instance's rules are its owner's: the answer is saved there, once the
+    instance is confirmed to be this person's own (the saved call alone doesn't prove it)."""
+    if not pending.personal:
+        return
+    from app.agents.toolset_store import get_personal_instance
+
+    try:
+        own = await get_personal_instance(context.config_service, context.org_id, context.user_id, pending.instance_id)
+    except Exception as e:
+        logger.warning(f"Couldn't check the toolset instance of {pending.tool_name}: {e}")
+        return
+    if own is None:
+        return
+    rules = await _rules_for(context, "toolset", pending.instance_id)
+    if rules.unavailable or (rule == "allow" and rules.rules.tools.get(pending.tool_name) == "block"):
+        return
+    rules.rules.tools[pending.tool_name] = rule
+    try:
+        await save_instance_rules(context.config_service, rules.rules, instance_id=pending.instance_id)
     except Exception as e:
         logger.warning(f"Couldn't save the rule for {pending.tool_name}: {e}")
 

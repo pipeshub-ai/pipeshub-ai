@@ -41046,6 +41046,15 @@ paths:
           schema:
             type: string
             enum: [authenticated, not-authenticated]
+        - name: scope
+          in: query
+          required: false
+          description: >-
+            `org` lists the organization's instances only, leaving out the caller's own personal
+            ones (the admin catalog). Omitted, both are listed; each item's `scope` says which it is.
+          schema:
+            type: string
+            enum: [org]
         - name: search
           in: query
           required: false
@@ -41637,7 +41646,13 @@ paths:
       tags:
         - Toolset Instances
       summary: Create toolset instance
-      description: Create a new toolset instance (admin only).
+      description: >-
+        Create a toolset instance. An administrator's is the organization's unless `scope` is
+        `personal`; anyone else's is always personal: kept for its owner only, who alone sees it,
+        signs in to it, uses it and sets its tool approvals. A personal instance stores only its
+        toolset's setup fields (for OAuth, the owner's own client ID and secret), every address in
+        it must be public, and each user can have a limited number
+        (`TOOLSET_MAX_PERSONAL_INSTANCES`, 25 by default).
       operationId: createToolsetInstance
       security:
         - bearerAuth: []
@@ -41668,22 +41683,35 @@ paths:
                   type: string
                 oauthInstanceName:
                   type: string
+                scope:
+                  type: string
+                  enum: [org, personal]
+                  description: >-
+                    `personal` for the caller's own instance. Omitted, an administrator's instance
+                    is the organization's and anyone else's is personal.
       responses:
         '201':
           description: Instance created successfully
         '400':
-          description: Invalid request
+          description: >-
+            Invalid request, including a personal instance's undeclared setting, missing OAuth
+            client, or non-public address
         '401':
           description: Unauthorized
-        '403':
-          description: Forbidden
+        '409':
+          description: A name already in use, or the caller's limit of personal instances reached
+        '503':
+          description: The caller's role couldn't be confirmed, so nothing was created
 
   /toolsets/instances/{instanceId}:
     get:
       tags:
         - Toolset Instances
       summary: Get toolset instance
-      description: Retrieve a single toolset instance by its identifier.
+      description: >-
+        Retrieve a single toolset instance: an organization one, or the caller's own personal one
+        (anyone else's personal instance is not found, for administrators too). Its `scope` is
+        `org` or `personal`.
       operationId: getToolsetInstance
       security:
         - bearerAuth: []
@@ -41705,7 +41733,10 @@ paths:
       tags:
         - Toolset Instances
       summary: Update toolset instance
-      description: Update an existing toolset instance's configuration (admin only).
+      description: >-
+        Update a toolset instance: an organization one by an administrator, a personal one by its
+        owner only. A personal instance's new OAuth client signs its owner out of it; its scope
+        never changes.
       operationId: updateToolsetInstance
       security:
         - bearerAuth: []
@@ -41736,7 +41767,9 @@ paths:
       tags:
         - Toolset Instances
       summary: Delete toolset instance
-      description: Delete a toolset instance and its associated configuration (admin only).
+      description: >-
+        Delete a toolset instance, every sign-in to it and its tool approval rules: an organization
+        one by an administrator, a personal one by its owner only. Refused while an agent uses it.
       operationId: deleteToolsetInstance
       security:
         - bearerAuth: []
@@ -41936,8 +41969,10 @@ paths:
         - Toolset Instances
       summary: Get a toolset instance's tool approval rules
       description: >-
-        Which of the instance's tools run, ask for approval, or never run, for everyone in the
-        organization. Every member can read them; `canEdit` says whether the caller may change them.
+        Which of the instance's tools run, ask for approval, or never run. An organization
+        instance's apply to everyone in the organization and every member can read them; a
+        personal instance's are its owner's, and nobody else finds them. `canEdit` says whether
+        the caller may change them.
       operationId: getToolsetToolRules
       security:
         - bearerAuth: []
@@ -41961,8 +41996,10 @@ paths:
     put:
       tags:
         - Toolset Instances
-      summary: Set a toolset instance's tool approval rules (admin only)
-      description: Replaces the instance's rules. They apply to everyone in the organization.
+      summary: Set a toolset instance's tool approval rules
+      description: >-
+        Replaces the instance's rules: an organization instance's by administrators only (they
+        apply to everyone in the organization), a personal instance's by its owner.
       operationId: updateToolsetToolRules
       security:
         - bearerAuth: []
