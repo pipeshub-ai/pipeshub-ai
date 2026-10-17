@@ -22,36 +22,26 @@ it that way:
 
 Mirrors ``app.config.providers.redis.redis_store.RedisKeyValueStore._get_client``,
 which already solved the loop-affinity half of this for the KV store.
+
+Both now delegate client construction to :class:`IRedisConnectionProvider`
+(``app.services.redis``) instead of building ``redis.asyncio.Redis``
+directly: on ``REDIS_MODE=cluster`` (or an EE MemoryDB mode), the provider
+hands back a cluster-aware client with no change needed here. This registry
+keeps its own per-loop cache on top of the provider because each call site
+(``DistributedConcurrencyManager``, ``RetryManager``) sizes its own
+connection pool independently.
 """
 from __future__ import annotations
 
-import asyncio
-import threading
 from typing import TYPE_CHECKING
 
-from redis.asyncio import BlockingConnectionPool, Redis
-from redis.asyncio.retry import Retry
-from redis.backoff import ExponentialBackoff
-from redis.exceptions import ConnectionError as RedisConnectionError
-from redis.exceptions import TimeoutError as RedisTimeoutError
+from app.services.redis.loop_clients import LoopBoundClients
 
 if TYPE_CHECKING:
     from logging import Logger
 
     from app.services.messaging.config import RedisConfig
-
-# Matches redis_store's schedule so both clients back off identically.
-_RETRY_BASE_DELAY = 0.5
-_RETRY_MAX_DELAY = 30.0
-_RETRY_ATTEMPTS = 3
-
-# How long a caller waits for a *pooled connection* once all of them are
-# busy. Distinct from the socket timeout: hitting this means this process is
-# issuing more concurrent Redis commands than the pool allows, which is a
-# queueing problem, not a Redis problem.
-_POOL_WAIT_SECONDS = 5
-
-_HEALTH_CHECK_INTERVAL_SECONDS = 30
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 
 class RedisClientRegistry:
@@ -70,82 +60,42 @@ class RedisClientRegistry:
         socket_timeout_seconds: float,
         decode_responses: bool = True,
     ) -> None:
+        from app.services.redis.config import ClientOptions, RedisConnectionConfig
+        from app.services.redis.connection_provider_factory import get_redis_provider
+
         self._logger = logger
         self._config = config
         self._max_connections = max(1, max_connections)
         self._socket_timeout = max(0.1, socket_timeout_seconds)
-        self._decode_responses = decode_responses
-        self._lock = threading.Lock()
-        # Keyed by thread, with the bound loop stored alongside so a client
-        # left over from a closed loop (a worker thread restarted between a
-        # stop() and a start()) is discarded rather than raising
-        # "attached to a different loop" on first use.
-        self._clients: dict[int, tuple[Redis, asyncio.AbstractEventLoop | None]] = {}
+        self._options = ClientOptions(
+            decode_responses=decode_responses,
+            max_connections=self._max_connections,
+            socket_timeout_seconds=self._socket_timeout,
+            socket_connect_timeout_seconds=self._socket_timeout,
+            blocking=True,
+        )
+        self._provider: "IRedisConnectionProvider" = get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
+        self._clients: LoopBoundClients["RedisClient"] = LoopBoundClients(
+            lambda: self._provider.create_client(self._options)
+        )
 
     @property
     def max_connections(self) -> int:
         return self._max_connections
 
-    def client(self) -> Redis:
+    @property
+    def provider(self) -> "IRedisConnectionProvider":
+        """The underlying connection provider, for callers that need
+        provider-level operations (``load_script``, ``key_slot``) rather
+        than just a client (see ``DistributedConcurrencyManager``, R6)."""
+        return self._provider
+
+    def client(self) -> "RedisClient":
         """The client bound to the currently running loop, created on first use."""
-        thread_id = threading.get_ident()
-        try:
-            current_loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
-        except RuntimeError:
-            current_loop = None
-
-        with self._lock:
-            existing = self._clients.get(thread_id)
-            if existing is not None:
-                client, bound_loop = existing
-                stale = bound_loop is not None and (
-                    bound_loop.is_closed()
-                    or (current_loop is not None and current_loop is not bound_loop)
-                )
-                if stale:
-                    self._logger.debug(
-                        "Discarding stale Redis client for thread %s", thread_id
-                    )
-                    del self._clients[thread_id]
-                else:
-                    return client
-
-            client = self._build_client()
-            self._clients[thread_id] = (client, current_loop)
-            return client
-
-    def _build_client(self) -> Redis:
-        return Redis(
-            connection_pool=BlockingConnectionPool(
-                host=self._config.host,
-                port=self._config.port,
-                password=self._config.password,
-                db=self._config.db,
-                decode_responses=self._decode_responses,
-                socket_timeout=self._socket_timeout,
-                socket_connect_timeout=self._socket_timeout,
-                health_check_interval=_HEALTH_CHECK_INTERVAL_SECONDS,
-                retry=Retry(
-                    ExponentialBackoff(cap=_RETRY_MAX_DELAY, base=_RETRY_BASE_DELAY),
-                    retries=_RETRY_ATTEMPTS,
-                ),
-                retry_on_error=[RedisConnectionError, RedisTimeoutError, OSError],
-                max_connections=self._max_connections,
-                timeout=_POOL_WAIT_SECONDS,
-            )
-        )
+        return self._clients.get()
 
     async def aclose(self) -> None:
-        """Close every client this registry handed out.
-
-        Best-effort per client: a client bound to an already-closed loop
-        cannot be awaited, and one failing to close must not strand the rest.
-        """
-        with self._lock:
-            clients = [client for client, _ in self._clients.values()]
-            self._clients.clear()
-        for client in clients:
-            try:
-                await client.aclose()
-            except Exception as exc:
-                self._logger.debug("Error closing Redis client: %s", exc)
+        """Close every client this registry handed out."""
+        await self._clients.aclose()

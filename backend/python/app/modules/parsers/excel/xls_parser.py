@@ -7,7 +7,10 @@ from app.modules.parsers.excel.excel_parser import ExcelParser
 from app.services.parsing.interface import ParseResult
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.libreoffice_convert import convert_with_libreoffice
+from app.utils.libreoffice_convert import (
+    convert_with_libreoffice,
+    unreadable_file_as_parse_error,
+)
 
 
 class XLSParser:
@@ -30,7 +33,8 @@ class XLSParser:
         parsing service). See :func:`DocParser.convert_doc_to_docx_async` for
         rationale.
         """
-        return await convert_with_libreoffice(binary, "xls", "xlsx")
+        with unreadable_file_as_parse_error("xls"):
+            return await convert_with_libreoffice(binary, "xls", "xlsx")
 
     def convert_xls_to_xlsx(self, binary: bytes) -> bytes:
         """

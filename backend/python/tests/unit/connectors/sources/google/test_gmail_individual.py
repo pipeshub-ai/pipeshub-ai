@@ -7,11 +7,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.connectors.sources.google.common.connector_google_exceptions import GoogleAuthError
+
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.models.entities import MailRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
-from app.config.constants.arangodb import Connectors
 from app.connectors.core.registry.filters import (
     DatetimeOperator,
     Filter,
@@ -24,21 +25,14 @@ from app.connectors.sources.google.common.gmail_received_date_query import (
 )
 from app.models.entities import (
     AppUser,
-    MailRecord,
     Record,
     RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
 import os
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import PropertyMock
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 from app.config.constants.arangodb import (
-    Connectors,
-    MimeTypes,
-    OriginTypes,
-    ProgressStatus,
     RecordRelations,
     RecordTypes,
 )
@@ -46,10 +40,8 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.google.common.connector_google_exceptions import GoogleMailError
 from app.models.entities import (
     FileRecord,
-    MailRecord,
-    RecordGroupType,
-    RecordType,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +316,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_recipient_gets_read_permission(self, connector):
         message = _make_gmail_message(from_email="other@example.com")
@@ -332,7 +324,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     async def test_returns_none_for_no_message_id(self, connector):
         message = {"threadId": "t1", "payload": {"headers": []}}
@@ -379,7 +371,7 @@ class TestProcessGmailMessage:
             user_email="user@example.com", message=message,
             thread_id="thread-1", previous_message_id=None,
         )
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     async def test_existing_message_detected(self, connector):
         existing = MagicMock()
@@ -605,7 +597,7 @@ class TestProcessGmailAttachment:
             attachment_info=attachment_info, parent_mail_permissions=parent_perms,
             external_record_group_id="user@example.com:OTHERS",
         )
-        assert result.new_permissions == parent_perms
+        assert result.new_permissions == []
 
     async def test_unnamed_attachment_gets_default_name(self, connector):
         attachment_info = {
@@ -1032,6 +1024,89 @@ class TestIndividualDriveAttachmentFallback:
             )
         assert result is not None
         assert result.record.record_name == "fallback.bin"
+
+    @staticmethod
+    def _drive_refusing_metadata(reason: str) -> MagicMock:
+        import json
+
+        import httplib2
+
+        content = json.dumps({"error": {
+            "code": 403,
+            "message": "Request had insufficient authentication scopes.",
+            "status": "PERMISSION_DENIED",
+            "details": [{"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": reason}],
+        }}).encode()
+        drive_service = MagicMock()
+        drive_service.files.return_value.get.return_value.execute.side_effect = HttpError(
+            httplib2.Response({"status": 403}), content
+        )
+        client = MagicMock()
+        client.get_client.return_value = drive_service
+        return client
+
+    async def test_drive_file_is_skipped_when_the_token_has_no_drive_scope(self, connector, caplog) -> None:
+        attachment_info = {
+            "attachmentId": None, "driveFileId": "drive-linked",
+            "stableAttachmentId": "drive-linked", "filename": None,
+            "mimeType": "application/vnd.google-apps.file", "size": 0, "isDriveFile": True,
+        }
+        with patch(
+            "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
+            new_callable=AsyncMock,
+            return_value=self._drive_refusing_metadata("ACCESS_TOKEN_SCOPE_INSUFFICIENT"),
+        ), caplog.at_level(logging.INFO, logger="test_gmail_individual"):
+            result = await connector._process_gmail_attachment(
+                user_email="user@example.com", message_id="msg-1",
+                attachment_info=attachment_info, parent_mail_permissions=[],
+                external_record_group_id="user@example.com:INBOX",
+            )
+
+        assert result is None
+        assert "allowed to read mail but not Google Drive" in caplog.text
+
+    async def test_drive_file_the_user_cannot_open_is_still_recorded(self, connector) -> None:
+        attachment_info = {
+            "attachmentId": None, "driveFileId": "drive-unshared",
+            "stableAttachmentId": "drive-unshared", "filename": "plan.pdf",
+            "mimeType": "application/pdf", "size": 10, "isDriveFile": True,
+        }
+        with patch(
+            "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
+            new_callable=AsyncMock,
+            return_value=self._drive_refusing_metadata("insufficientFilePermissions"),
+        ):
+            result = await connector._process_gmail_attachment(
+                user_email="user@example.com", message_id="msg-1",
+                attachment_info=attachment_info, parent_mail_permissions=[],
+                external_record_group_id="user@example.com:INBOX",
+            )
+
+        assert result is not None
+        assert result.record.record_name == "plan.pdf"
+
+    async def test_full_sync_indexes_the_message_without_its_drive_file(self, connector) -> None:
+        connector.gmail_data_source = AsyncMock()
+        connector.gmail_data_source.users_get_profile = AsyncMock(return_value={"historyId": "hist-1"})
+        connector.gmail_data_source.users_threads_list = AsyncMock(
+            return_value={"threads": [{"id": "thread-1"}]}
+        )
+        connector.gmail_data_source.users_threads_get = AsyncMock(
+            return_value={"messages": [_make_gmail_message(has_drive_attachment=True)]}
+        )
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock), patch(
+            "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
+            new_callable=AsyncMock,
+            return_value=self._drive_refusing_metadata("ACCESS_TOKEN_SCOPE_INSUFFICIENT"),
+        ):
+            await connector._run_full_sync("user@example.com", "test-key")
+
+        indexed = [
+            record
+            for call in connector.data_entities_processor.on_new_records.call_args_list
+            for record, _ in call.args[0]
+        ]
+        assert [r.record_type for r in indexed] == [RecordType.MAIL]
 
     async def test_unnamed_attachment_default_name(self, connector):
         attachment_info = {
@@ -1563,8 +1638,7 @@ class TestProcessGmailMessageCoverage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_sender_is_not_user_gets_read_permission(self):
@@ -1583,8 +1657,7 @@ class TestProcessGmailMessageCoverage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_existing_record_no_change(self):
@@ -2198,8 +2271,8 @@ class TestInit:
             "auth": {},
             "credentials": {},
         })
-        result = await connector_fullcov.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector_fullcov.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector_fullcov):
@@ -2550,7 +2623,8 @@ class TestStreamFromDrive:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_with_pdf_conversion(self, connector_fullcov):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_stream_from_drive_with_pdf_conversion(self, connector_fullcov, file_name):
         mock_drive_client = MagicMock()
         mock_service = MagicMock()
         mock_drive_client.get_client.return_value = mock_service
@@ -2579,10 +2653,12 @@ class TestStreamFromDrive:
         ) as mock_stream:
             mock_stream.return_value = MagicMock()
             result = await connector_fullcov._stream_from_drive(
-                "drive-id", record, "file.docx", "application/msword",
+                "drive-id", record, file_name, "application/msword",
                 convertTo=MimeTypes.PDF.value,
             )
             mock_stream.assert_called_once()
+            path, temp_dir = connector_fullcov._convert_to_pdf.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_client_failure_no_credentials(self, connector_fullcov):
@@ -2617,7 +2693,7 @@ class TestStreamFromDrive:
                 )
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_client_failure_with_service_account(self, connector_fullcov):
+    async def test_stream_from_drive_client_failure_is_reported_not_retried_as_service_account(self, connector_fullcov):
         connector_fullcov.config = {"credentials": {"auth": {"type": "service_account"}}}
         record = MagicMock()
         record.id = "rec-1"
@@ -2625,21 +2701,17 @@ class TestStreamFromDrive:
         with patch(
             "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
             new_callable=AsyncMock,
-            side_effect=Exception("auth fail"),
+            side_effect=GoogleAuthError("auth fail"),
         ), patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.build",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
-        ) as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await connector_fullcov._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-            mock_stream.assert_called_once()
+        ) as from_info:
+            with pytest.raises(HTTPException) as exc:
+                await connector_fullcov._stream_from_drive(
+                    "drive-id", record, "file.txt", "text/plain"
+                )
+        assert exc.value.status_code == 409
+        assert "Reconnect the Gmail connector" in exc.value.detail
+        from_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_no_service_account_creds(self, connector_fullcov):
@@ -2703,7 +2775,19 @@ class TestStreamMailRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector_fullcov._stream_mail_record(gmail_service, "msg-1", record)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    @pytest.mark.asyncio
+    async def test_stream_mail_http_error_401_maps_to_reconnect(self, connector_fullcov):
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.side_effect = _make_http_error(401, "Unauthorized")
+        record = MagicMock()
+        record.id = "rec-1"
+        record.record_name = "Test"
+
+        with pytest.raises(HTTPException) as exc_info:
+            await connector_fullcov._stream_mail_record(gmail_service, "msg-1", record)
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_stream_mail_general_exception(self, connector_fullcov):
@@ -2785,7 +2869,8 @@ class TestStreamAttachmentRecord:
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
-    async def test_gmail_attachment_failure_fallback_to_drive(self, connector_fullcov):
+    async def test_gmail_attachment_failure_does_not_fall_back_to_drive(self, connector_fullcov):
+        """Drive cannot resolve a `messageId~partId` id, so Gmail's status stands."""
         gmail_service = MagicMock()
         gmail_service.users().messages().attachments().get().execute.side_effect = _make_http_error(403)
         gmail_service.users().messages().get().execute.return_value = {
@@ -2809,10 +2894,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_gmail_and_drive_both_fail(self, connector_fullcov):
@@ -2863,13 +2950,17 @@ class TestStreamAttachmentRecord:
 
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
-        ):
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
-            )
+        ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_attachment_with_pdf_conversion(self, connector_fullcov):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_attachment_with_pdf_conversion(self, connector_fullcov, file_name):
         gmail_service = MagicMock()
         file_data = base64.urlsafe_b64encode(b"file content").decode()
         gmail_service.users().messages().attachments().get().execute.return_value = {
@@ -2902,10 +2993,12 @@ class TestStreamAttachmentRecord:
         ) as mock_stream:
             mock_stream.return_value = MagicMock()
             await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.docx", "application/msword",
+                gmail_service, "msg-1~1", record, file_name, "application/msword",
                 convertTo=MimeTypes.PDF.value,
             )
             mock_stream.assert_called()
+            path, temp_dir = connector_fullcov._convert_to_pdf.await_args.args
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_message_id_mismatch_warning(self, connector_fullcov):
@@ -2942,6 +3035,7 @@ class TestStreamAttachmentRecord:
 
     @pytest.mark.asyncio
     async def test_message_not_found_during_part_lookup(self, connector_fullcov):
+        """A deleted message is a 404, not a fall-through to a Drive lookup that cannot work."""
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.side_effect = _make_http_error(404)
 
@@ -2958,10 +3052,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_part_id_not_found(self, connector_fullcov):
@@ -2987,10 +3083,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector_fullcov, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector_fullcov._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector_fullcov._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
 
 class TestStreamRecord:

@@ -3,11 +3,15 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from app.exceptions.indexing_exceptions import BlockContainerValidationError
 from app.models.blocks import BlockType, BlocksContainer, DataFormat, GroupType, IndexRange
 import base64
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
  
 # ── image magic signatures ──────────────────────────────────────────
 # Each entry: (prefix_bytes, secondary_bytes_at_offset_8_or_None)
@@ -63,6 +67,55 @@ _RAW_B64_RE = re.compile(
 )
  
  
+# Docs, tickets and chats quote truncated examples
+# ("data:image/png;base64,iVBORw0KGgo...") whose prefix decodes to a valid PNG
+# signature; rejecting them failed whole records over a few harmless characters.
+# 64 bytes is under the smallest real PNG (67) and over the header of every
+# supported format; a smaller image left in a text block costs only a few dozen
+# characters, which is all this check exists to prevent.
+_MIN_IMAGE_PAYLOAD_BYTES = 64
+_MIN_IMAGE_PAYLOAD_CHARS = (_MIN_IMAGE_PAYLOAD_BYTES * 4 + 2) // 3
+# Wrapped base64 breaks lines at 64 (PEM) or 76 (MIME) characters. A run of
+# full lines may be led by one short line (the rest of a "data:image/...;base64,"
+# line) and closed by one padded short line. An unpadded short line after a full
+# one ends the run uncounted, so a prose word after a quoted fragment cannot push
+# it over the minimum.
+_MIN_WRAPPED_LINE_CHARS = 60
+_SEGMENT_RE = re.compile(r"\S+")
+
+
+def _image_payload_prefixes(raw: str) -> Iterator[str]:
+    """Yield the start of each base64 run in *raw* long enough to be an image.
+
+    A run led by a short segment yields twice: from the short segment and from
+    the first full line, because the short one may be a prose word.
+    """
+    lead = ""
+    run: list[str] = []
+    length = 0
+    for m in _SEGMENT_RE.finditer(raw):
+        segment = m.group()
+        chars = len(segment.rstrip("="))
+        full = chars >= _MIN_WRAPPED_LINE_CHARS
+        # Padding only ever ends an encoding, so a padded short line is the
+        # last line of a wrap rather than prose.
+        tail = not full and segment.endswith("=") and bool(run or lead)
+        if full or tail:
+            if not run:
+                run = [lead + segment] if lead else []
+                if full:
+                    run.append(segment)
+                length = len(lead.rstrip("="))
+            before, length = length, length + chars
+            if before < _MIN_IMAGE_PAYLOAD_CHARS <= length:
+                yield from run
+            if full:
+                lead = ""
+                continue
+        run, length = [], 0
+        lead = "" if segment.endswith("=") else segment
+
+
 def _decode_b64_prefix(raw: str, decoded_bytes_needed: int = 32) -> Optional[bytes]:
     """Decode just enough of a base64 string to check magic bytes.
  
@@ -128,18 +181,20 @@ def contains_base64_image(text: str) -> bool:
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
-        decoded = _decode_b64_prefix(m.group(1))
-        if decoded and _is_image_data(decoded):
-            return True
+        for prefix in _image_payload_prefixes(m.group(1)):
+            decoded = _decode_b64_prefix(prefix)
+            if decoded and _is_image_data(decoded):
+                return True
  
     # ── pass 2: raw base64 ───────────────────────────────────────
     for m in _RAW_B64_RE.finditer(text):
         if tried >= _MAX_CANDIDATES:
             break
         tried += 1
-        decoded = _decode_b64_prefix(m.group())
-        if decoded and _is_image_data(decoded):
-            return True
+        for prefix in _image_payload_prefixes(m.group()):
+            decoded = _decode_b64_prefix(prefix)
+            if decoded and _is_image_data(decoded):
+                return True
  
     return False
 

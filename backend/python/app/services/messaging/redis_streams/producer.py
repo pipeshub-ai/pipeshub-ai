@@ -1,24 +1,38 @@
 import asyncio
 import json
 from logging import Logger
-from typing import override
+from typing import TYPE_CHECKING, override
 
 from pydantic import JsonValue
-from redis.asyncio import Redis
 
 from app.services.messaging.config import RedisStreamsConfig
 from app.services.messaging.interface.producer import IMessagingProducer
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
+from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 
 class RedisStreamsProducer(IMessagingProducer):
     """Redis Streams implementation of messaging producer"""
 
-    def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
+    def __init__(
+        self, logger: Logger, config: RedisStreamsConfig, provider: "IRedisConnectionProvider | None" = None
+    ) -> None:
         self.logger = logger
         self.config = config
-        self.redis: Redis | None = None
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
+        self.redis: "RedisClient | None" = None
+        # The loop `self.redis` was connected on. The indexing service sends
+        # from its worker loop too, and a connection opened on one loop fails
+        # with "attached to a different loop" when another borrows it.
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._lock = asyncio.Lock()
 
     @override
@@ -31,14 +45,12 @@ class RedisStreamsProducer(IMessagingProducer):
                 return
 
             try:
-                self.redis = Redis(
-                    host=self.config.host,
-                    port=self.config.port,
-                    password=self.config.password,
-                    db=self.config.db,
-                    decode_responses=True,
-                )
+                # A caller-owned client, not the shared get_client(): this
+                # producer closes its own connection on cleanup(), which
+                # would strand every other user of a shared client.
+                self.redis = self._provider.create_client(ClientOptions(decode_responses=True))
                 await self.redis.ping()
+                self._owner_loop = asyncio.get_running_loop()
                 self.logger.info(
                     "Redis Streams producer initialized at %s:%s",
                     self.config.host,
@@ -46,6 +58,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 )
             except Exception as e:
                 self.redis = None
+                self._owner_loop = None
                 self.logger.error("Failed to initialize Redis Streams producer: %s", e)
                 raise
 
@@ -56,6 +69,7 @@ class RedisStreamsProducer(IMessagingProducer):
                 try:
                     await self.redis.aclose()
                     self.redis = None
+                    self._owner_loop = None
                     self.logger.info("Redis Streams producer stopped successfully")
                 except Exception as e:
                     self.logger.error("Error stopping Redis Streams producer: %s", e)
@@ -76,11 +90,21 @@ class RedisStreamsProducer(IMessagingProducer):
         message: dict[str, JsonValue],
         key: str | None = None,
     ) -> bool:
+        # Stamped before the hop: the owner loop's context has no request id.
+        return await run_on_loop(
+            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+        )
+
+    async def _send_message(
+        self,
+        topic: str,
+        message: dict[str, JsonValue],
+        key: str | None,
+    ) -> bool:
         try:
             if self.redis is None:
                 await self.initialize()
 
-            message = inject_envelope(message)
             fields: dict[str, str] = {
                 "value": json.dumps(message),
             }
@@ -115,15 +139,27 @@ class RedisStreamsProducer(IMessagingProducer):
         """
         if not messages:
             return []
+        stamped = [(key, inject_envelope(dict(message))) for key, message in messages]
+        try:
+            return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
+        except Exception as e:
+            self.logger.error(
+                "Failed to publish %d message(s) to Redis stream %s: %s", len(messages), topic, e
+            )
+            return [False] * len(messages)
+
+    async def _send_messages(
+        self,
+        topic: str,
+        messages: list[tuple[str | None, dict[str, JsonValue]]],
+    ) -> list[bool]:
         try:
             if self.redis is None:
                 await self.initialize()
 
             pipeline = self.redis.pipeline(transaction=False)  # type: ignore
             for key, message in messages:
-                fields: dict[str, str] = {
-                    "value": json.dumps(inject_envelope(dict(message)))
-                }
+                fields: dict[str, str] = {"value": json.dumps(message)}
                 if key:
                     fields["key"] = key
                 pipeline.xadd(

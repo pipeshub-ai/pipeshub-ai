@@ -263,7 +263,7 @@ class ArangoQueryHelper(QueryHelper):
             CollectionNames.USER_APP_RELATION.value,
             CollectionNames.BELONGS_TO_RECORD_GROUP.value,
             CollectionNames.PERMISSION.value,
-            CollectionNames.RECORD_RELATIONS.value,
+            CollectionNames.NODE_RELATIONS.value,
             CollectionNames.IS_OF_TYPE.value,
             CollectionNames.INHERIT_PERMISSIONS.value,
             CollectionNames.BELONGS_TO_DEPARTMENT.value,
@@ -634,7 +634,7 @@ def _build_connector_data(connector_id: str, connector_label: str) -> Dict[str, 
         ]
     )
 
-    # recordRelations: parent-child (rec1->rec2, rec3->rec4)
+    # nodeRelations: parent-child (rec1->rec2, rec3->rec4)
     for parent, child in [(record_ids[0], record_ids[1]), (record_ids[2], record_ids[3])]:
         edges.append({
             "edge": {
@@ -644,7 +644,7 @@ def _build_connector_data(connector_id: str, connector_label: str) -> Dict[str, 
                 "to_id": child, "to_collection": CollectionNames.RECORDS.value,
                 "relationType": "PARENT_CHILD", "createdAtTimestamp": ts,
             },
-            "collection": CollectionNames.RECORD_RELATIONS.value,
+            "collection": CollectionNames.NODE_RELATIONS.value,
         })
 
     # isOfType: record -> type node
@@ -1084,7 +1084,8 @@ async def run_deletion_test(
 # MAIN
 # ==============================================================================
 
-async def run_all() -> None:
+async def run_all() -> int:
+    """Run every case. Returns the number that failed."""
     data_store = os.getenv("DATA_STORE", "arangodb").lower()
 
     logger.info("=" * 72)
@@ -1175,6 +1176,11 @@ async def run_all() -> None:
                 logger.info(f"\n  x  {r['name']}")
                 logger.info(f"     Detail: {r['detail']}")
 
+    return failed
+
 
 if __name__ == "__main__":
-    asyncio.run(run_all())
+    # Exit non-zero when anything failed. Without this the script reported its
+    # failures in the log and still exited 0, so any caller — a CI step, a
+    # wrapper, someone checking $? — would read a failed run as a pass.
+    sys.exit(1 if asyncio.run(run_all()) else 0)

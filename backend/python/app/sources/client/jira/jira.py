@@ -17,6 +17,10 @@ from app.sources.external.common.atlassian import (
 from app.utils.oauth_config import fetch_toolset_oauth_config_by_id
 
 
+class JiraConfigUnavailableError(ValueError):
+    """The config store could not be read, as opposed to holding no usable Jira config."""
+
+
 class JiraRESTClientViaUsernamePassword(HTTPClient):
     """JIRA REST client via username and password (HTTP Basic).
 
@@ -242,12 +246,16 @@ class JiraClient(IClient):
         logger: logging.Logger,
         config_service: ConfigurationService,
         connector_instance_id: Optional[str] = None,
+        connector_type: str = "Jira",
     ) -> "JiraClient":
         """Build JiraClient using configuration service
         Args:
             logger: Logger instance
             config_service: Configuration service instance
             connector_instance_id: Optional connector instance ID to get specific instance config
+            connector_type: Registry name of the calling connector. Selects which
+                ``/services/oauth/<type>`` list the shared OAuth app is read from —
+                a Cloud Personal instance's app id is not in the workspace Jira list.
         Returns:
             JiraClient instance
         """
@@ -332,7 +340,7 @@ class JiraClient(IClient):
                         from app.edition_config import fetch_oauth_config_by_id
                         shared = await fetch_oauth_config_by_id(
                             oauth_config_id=oauth_config_id,
-                            connector_type="Jira",
+                            connector_type=connector_type,
                             config_service=config_service,
                             logger=logger,
                             org_id=auth_config.get("inheritedFromOrgId"),
@@ -378,13 +386,18 @@ class JiraClient(IClient):
         """
 
         try:
-            config = await config_service.get_config(f"/services/connectors/{connector_instance_id}/config")
-            if not config:
-                raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
-            return config
+            # Without raise_on_error a failed read comes back as None, like a missing key.
+            config = await config_service.get_config(
+                f"/services/connectors/{connector_instance_id}/config", raise_on_error=True
+            )
         except Exception as e:
             logger.error(f"Failed to get Jira connector config: {e}")
+            raise JiraConfigUnavailableError(
+                f"Failed to get Jira connector configuration for instance {connector_instance_id}"
+            ) from e
+        if not config:
             raise ValueError(f"Failed to get Jira connector configuration for instance {connector_instance_id}")
+        return config
 
     # =========================================================================
     # TOOLSET-BASED CLIENT CREATION (New Architecture)

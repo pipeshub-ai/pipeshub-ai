@@ -302,9 +302,12 @@ async def test_leader_lock_skips_when_redis_is_down():
     mock_client.ping = AsyncMock(side_effect=ConnectionError("down"))
     mock_client.aclose = AsyncMock()
 
+    mock_provider = MagicMock()
+    mock_provider.create_client = MagicMock(return_value=mock_client)
+
     with patch(
-        "app.modules.indexing.vector_membership_backfill.Redis",
-        return_value=mock_client,
+        "app.services.redis.connection_provider_factory.get_redis_provider",
+        return_value=mock_provider,
     ):
         assert await lock.try_acquire() is False
     mock_client.aclose.assert_awaited()

@@ -642,6 +642,7 @@ class TestDriveProcessing:
         existing.record_status = ProgressStatus.NOT_STARTED.value
         tx.get_record_by_external_id = AsyncMock(return_value=existing)
         dep.get_record_by_external_id = AsyncMock(return_value=existing)
+        dep.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_mock_drive_item("item-3", "updated.docx", e_tag="new-etag")
 
@@ -871,8 +872,9 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False,
         )
+        dep.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-1"))
         await connector._handle_record_updates(update)
-        dep.on_record_deleted.assert_called_once()
+        dep.on_record_deleted.assert_called_once_with(record_id="rec-1")
 
     @pytest.mark.asyncio
     async def test_handle_metadata_and_content_update(self):
@@ -1610,6 +1612,7 @@ class TestProcessSiteDrives:
         connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[drive]))
         connector._pass_drive_key_filters = MagicMock(return_value=True)
         connector._normalize_document_library_url = MagicMock(return_value="/docs")
+        connector._get_library_access = AsyncMock(return_value=(True, []))
 
         # Mock _process_drive_delta to yield items
         async def fake_delta(*args, **kwargs):
@@ -2205,9 +2208,9 @@ class TestSharePointConvertToPermissions:
         link.type = "read"
         perm.link = link
 
+        # An anonymous link names no grantee, so it yields no permission.
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2278,7 +2281,9 @@ class TestGetItemPermissions:
         connector._safe_api_call = AsyncMock(return_value=MagicMock(value=[perm_obj]))
 
         result = await connector._get_item_permissions("site-1", "drive-1", "item-1")
-        assert len(result) == 1
+        # The call succeeds; the one anonymous-link permission yields nothing,
+        # since it names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_get_item_permissions_error_returns_empty(self):

@@ -940,6 +940,7 @@ class TestProcessDriveItem:
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-new")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
@@ -962,6 +963,7 @@ class TestProcessDriveItem:
         mock_tx, _ = _make_tx_store(existing)
         c.data_store_provider.transaction = MagicMock(return_value=mock_tx)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=existing)
 
         item = _make_drive_item(e_tag="etag-1", quick_xor_hash="new-hash")
         result = await c._process_drive_item(item, "site-1", "drive-1", [])
@@ -2821,8 +2823,10 @@ class TestGetPageContent:
         c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=site_info)
         c._get_sharepoint_access_token = AsyncMock(return_value=None)
 
-        result = await c._get_page_content("site-1", "page-1")
-        assert result is None
+        # No token means the connector is unusable, not that the page was deleted.
+        with pytest.raises(HTTPException) as exc_info:
+            await c._get_page_content("site-1", "page-1")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_page_not_found(self):
@@ -2870,13 +2874,37 @@ class TestGetPageContent:
             assert result == "<div></div>"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_none(self):
+    async def test_exception_is_mapped_not_swallowed(self):
         c = _make_connector()
         c.client = MagicMock()
         c.client.sites.by_site_id.return_value.get = AsyncMock(side_effect=Exception("fail"))
 
-        result = await c._get_page_content("site-1", "page-1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c._get_page_content("site-1", "page-1")
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_unauthorized_is_not_reported_as_deleted(self):
+        c = _make_connector()
+        c.client = MagicMock()
+        site_info = MagicMock()
+        site_info.web_url = "https://contoso.sharepoint.com"
+        c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=site_info)
+        c._get_sharepoint_access_token = AsyncMock(return_value="token")
+
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+
+        with patch("httpx.AsyncClient") as mock_client_cls:
+            mock_client = AsyncMock()
+            mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+            mock_client.__aexit__ = AsyncMock(return_value=False)
+            mock_client.get = AsyncMock(return_value=mock_resp)
+            mock_client_cls.return_value = mock_client
+
+            with pytest.raises(HTTPException) as exc_info:
+                await c._get_page_content("site-1", "page-1")
+        assert exc_info.value.status_code == 409
 
 
 # =============================================================================

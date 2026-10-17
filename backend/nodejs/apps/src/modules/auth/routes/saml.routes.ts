@@ -2,7 +2,7 @@ import { Router, Response, NextFunction } from 'express';
 import { Container } from 'inversify';
 
 import passport from 'passport';
-import session from 'express-session';
+import { z } from 'zod';
 import { attachContainerMiddleware } from '../middlewares/attachContainer.middleware';
 import { AuthSessionRequest } from '../middlewares/types';
 import {
@@ -12,10 +12,20 @@ import {
 import { IamService } from '../services/iam.service';
 import {
   BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { SessionService } from '../services/session.service';
-import { SamlController } from '../controller/saml.controller';
+import {
+  SamlDesktopHandoffService,
+  isValidCodeChallenge,
+  isValidDesktopState,
+} from '../services/samlDesktopHandoff.service';
+import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
+import {
+  SAML_LOGOUT_UNSUPPORTED_MESSAGE,
+  SamlController,
+} from '../controller/saml.controller';
 import { Logger } from '../../../libs/services/logger.service';
 import { generateAuthToken } from '../utils/generateAuthToken';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
@@ -23,7 +33,10 @@ import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
-import { UserAccountController } from '../controller/userAccount.controller';
+import {
+  SIGN_IN_ACCOUNT_CHANGED,
+  UserAccountController,
+} from '../controller/userAccount.controller';
 import { MailService } from '../services/mail.service';
 import { ConfigurationManagerService, SSO_AUTH_CONFIG_PATH } from '../services/cm.service';
 import { JitProvisioningService } from '../services/jit-provisioning.service';
@@ -31,12 +44,23 @@ import {
   AuthMethodType,
   OrgAuthConfig,
 } from '../schema/orgAuthConfiguration.schema';
+import { EntitiesEventProducer } from '../../user_management/services/entity_events.service';
 import { Org } from '../../user_management/schema/org.schema';
 
 export const isValidEmail = (email: string) => {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email); // Basic email regex
 };
 
+
+const desktopExchangeValidationSchema = z.object({
+  body: z.object({
+    code: z.string().min(1),
+    codeVerifier: z.string().min(1),
+  }),
+  query: z.object({}),
+  params: z.object({}),
+  headers: z.object({}),
+});
 
 export function createSamlRouter(container: Container) {
   const router = Router();
@@ -49,23 +73,38 @@ export function createSamlRouter(container: Container) {
   const jitProvisioningService = container.get<JitProvisioningService>('JitProvisioningService');
   const configurationManagerService = container.get<ConfigurationManagerService>('ConfigurationManagerService');
 
+  const samlDesktopHandoffService = container.get<SamlDesktopHandoffService>('SamlDesktopHandoffService');
+
   const logger = container.get<Logger>('Logger');
+
+  /**
+   * A desktop sign-in ran in the user's browser, so its outcome goes to the
+   * success page, which forwards it to the app by deep link. Web sign-ins keep
+   * their existing redirects.
+   */
+  const desktopRelayState = (req: AuthSessionRequest) => {
+    const relayState = samlController.parseRelayState(req);
+    return relayState.client === 'desktop' &&
+      isValidDesktopState(relayState.state) &&
+      isValidCodeChallenge(relayState.codeChallenge)
+      ? { state: relayState.state as string, codeChallenge: relayState.codeChallenge as string }
+      : null;
+  };
+  const desktopSuccessUrl = (params: Record<string, string>) =>
+    `${config.frontendUrl}/auth/sign-in/samlSso/success?${new URLSearchParams(params).toString()}`;
+  const samlErrorUrl = (req: AuthSessionRequest, code: string) => {
+    const desktop = desktopRelayState(req);
+    return desktop
+      ? desktopSuccessUrl({ state: desktop.state, saml_error: code })
+      : `${config.frontendUrl}/login?saml_error=${encodeURIComponent(code)}`;
+  };
+  const redirectSamlError = (req: AuthSessionRequest, res: Response, code: string) =>
+    res.redirect(samlErrorUrl(req, code));
+
   router.use(attachContainerMiddleware(container));
-  router.use(
-    session({
-      secret: config.cookieSecret,
-      resave: true,
-      saveUninitialized: true,
-      cookie: {
-        maxAge: 60 * 60 * 1000, // 1 hour
-        domain: 'localhost',
-        secure: false, // Set to `true` if using HTTPS
-        sameSite: 'lax',
-      },
-    }),
-  );
+  // No server-side login session: sign-in state travels in RelayState and the
+  // Redis sign-in session, and the callback sets its own token cookies.
   router.use(passport.initialize());
-  router.use(passport.session());
 
   router.get(
     '/signIn',
@@ -92,16 +131,31 @@ export function createSamlRouter(container: Container) {
         // strategy, SAML parse failure before the custom callback fires) we still
         // redirect to /login instead of hitting the global error handler.
         const samlErrorNext = (err?: any) => {
+          if (res.headersSent) {
+            logger.warn('SAML callback continued after its response was sent', {
+              error: err ? err?.message || String(err) : undefined,
+            });
+            return;
+          }
           if (err) {
             logger.error('SAML passport middleware error', { error: err?.message || String(err) });
-            return res.redirect(`${config.frontendUrl}/login?saml_error=${encodeURIComponent(err?.message || String(err))}`);
+            return redirectSamlError(req, res, err?.message || String(err));
           }
           next();
         };
-        passport.authenticate("saml", { failureRedirect: `${config.frontendUrl}/login?saml_error=auth_failed` })(req, res, samlErrorNext);
+        const body = req.body as Record<string, unknown> | undefined;
+        if (body?.SAMLRequest !== undefined || req.query.SAMLRequest !== undefined) {
+          logger.warn('Refused a SAML logout request sent to the sign-in callback');
+          redirectSamlError(req, res, SAML_LOGOUT_UNSUPPORTED_MESSAGE);
+          return;
+        }
+        passport.authenticate('saml', {
+          session: false,
+          failureRedirect: samlErrorUrl(req, 'auth_failed'),
+        })(req, res, samlErrorNext);
       } catch (error) {
         logger.error('SAML passport error', { error: error instanceof Error ? error.message : String(error) });
-        return res.redirect(`${config.frontendUrl}/login?saml_error=auth_failed`);
+        return redirectSamlError(req, res, 'auth_failed');
       }
     },
     async (req: AuthSessionRequest, res: Response, _next: NextFunction): Promise<void> => {
@@ -122,7 +176,7 @@ export function createSamlRouter(container: Container) {
           step.allowedMethods?.some((m) => m.type === AuthMethodType.SAML_SSO),
         );
         if (!samlAllowed) {
-          return res.redirect(`${config.frontendUrl}/login?saml_error=saml_sso_disabled`);
+          return redirectSamlError(req, res, 'saml_sso_disabled');
         }
 
         const verifiedEmail = samlController.getSamlEmail(samlProfile, orgId);
@@ -141,7 +195,7 @@ export function createSamlRouter(container: Container) {
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
 
           if (iamResponse.statusCode === 404) {
-            if (!cm.data?.enableJit) return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
+            if (!cm.data?.enableJit) return redirectSamlError(req, res, 'jit_disabled');
 
             user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
           } else {
@@ -161,6 +215,19 @@ export function createSamlRouter(container: Container) {
           const iamResponse = await iamService.getUserByEmail(verifiedEmail, iamToken);
           user = iamResponse.statusCode === 200 ? iamResponse.data : null;
 
+          // An earlier step already proved an account (session.userId); SAML must
+          // prove the same one, and before any JIT create below.
+          const samlUserId: unknown = (user as { _id?: unknown } | null)?._id;
+          const samlAccountId =
+            typeof samlUserId === 'string' ? samlUserId : '';
+          if (
+            Number(session.currentStep) > 0 &&
+            samlAccountId !== session.userId
+          ) {
+            logger.warn('SAML account differs from the earlier sign-in step');
+            redirectSamlError(req, res, SIGN_IN_ACCOUNT_CHANGED);
+            return;
+          }
         }
 
         if (session?.userId === "NOT_FOUND" && !user) {
@@ -168,12 +235,17 @@ export function createSamlRouter(container: Container) {
             | Record<string, boolean>
             | undefined;
           if (!jitConfig?.saml) {
-            return res.redirect(`${config.frontendUrl}/login?saml_error=jit_disabled`);
+            return redirectSamlError(req, res, 'jit_disabled');
           }
           user = await jitProvisioningService.provisionUser(verifiedEmail, userDetails, orgId, "saml");
         }
 
         if (!user) throw new NotFoundError("User not found");
+        // The assertion was verified against this org's IdP only; the email
+        // lookup above is not org-scoped, so never sign into another org's account.
+        if (String(user.orgId) !== String(orgId)) {
+          throw new ForbiddenError('SAML account does not belong to this organisation');
+        }
 
         await sessionService.completeAuthentication(session);
         // Now 'user' is guaranteed to be available here
@@ -187,6 +259,15 @@ export function createSamlRouter(container: Container) {
           first_login: !user.hasLoggedIn,
           auth_method: 'saml',
         });
+
+        const desktop = desktopRelayState(req);
+        if (desktop) {
+          const code = await samlDesktopHandoffService.issue(
+            { accessToken, refreshToken },
+            desktop.codeChallenge,
+          );
+          return res.redirect(desktopSuccessUrl({ state: desktop.state, code }));
+        }
 
         res.cookie("accessToken", accessToken, {
           secure: true,
@@ -204,9 +285,23 @@ export function createSamlRouter(container: Container) {
         res.redirect(`${config.frontendUrl}/auth/sign-in/samlSso/success`);
       } catch (error) {
         logger.error('SAML callback error', { error: error instanceof Error ? error.message : String(error) });
-        return res.redirect(`${config.frontendUrl}/login?saml_error=unknown`);
+        return redirectSamlError(req, res, 'unknown');
       }
     }
+  );
+
+  // Unauthenticated by design: the code and PKCE verifier are the credential.
+  router.post(
+    '/desktop/exchange',
+    ValidationMiddleware.validate(desktopExchangeValidationSchema),
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const { code, codeVerifier } = req.body as { code: string; codeVerifier: string };
+        res.status(200).json(await samlDesktopHandoffService.redeem(code, codeVerifier));
+      } catch (error) {
+        next(error);
+      }
+    },
   );
 
   router.post(
@@ -235,6 +330,7 @@ export function createSamlRouter(container: Container) {
               ),
               logger,
               container.get<JitProvisioningService>('JitProvisioningService'),
+              container.get<EntitiesEventProducer>('EntitiesEventProducer'),
             );
           });
         container
@@ -247,7 +343,6 @@ export function createSamlRouter(container: Container) {
           });
         res.status(200).json({
           message: 'Auth configuration updated successfully',
-          config,
         });
         return;
       } catch (error) {

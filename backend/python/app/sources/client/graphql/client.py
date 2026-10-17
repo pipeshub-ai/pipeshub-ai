@@ -58,11 +58,16 @@ class GraphQLClient(ABC):
                     headers=self.headers
                 ) as response:
                     response_data = await response.json()
-                    return GraphQLResponse.from_response(response_data)
+                    return GraphQLResponse.from_response(
+                        response_data, status_code=response.status
+                    )
         except aiohttp.ClientError as e:
+            # ContentTypeError (a non-JSON error body) and ClientResponseError
+            # both carry the status; plain transport failures have none.
             return GraphQLResponse(
                 success=False,
-                message=f"Request failed: {str(e)}"
+                message=f"Request failed: {str(e)}",
+                status_code=getattr(e, "status", None),
             )
 
     async def close(self) -> None:

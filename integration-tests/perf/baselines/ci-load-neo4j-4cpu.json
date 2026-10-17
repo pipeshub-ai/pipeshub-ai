@@ -1,0 +1,6 @@
+{
+  "placeholder": true,
+  "benchmark": "load",
+  "label": "ci-load-neo4j-4cpu",
+  "note": "Placeholder: no real CI run has been recorded yet, so this run's p95 latencies are reported but cannot fail the job. Its own checks (error rate, enough operations, searches that find something) still can. Replace this file with the load.json artifact of a trusted scheduled run of Sustained Load on main (4-CPU runner, Neo4j, Redis broker, Azure OpenAI test models, 80 seeded files without spreadsheets, seed 1337, stages 120:4,120:8,900:8, think time 1-3s). Nothing was measured on a developer machine: seeding needs the corpus indexed by a real model first."
+}

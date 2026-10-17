@@ -16,13 +16,14 @@ from app.api.middlewares.auth import require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
 from app.containers.query import QueryAppContainer
-from app.utils.aimodels import tts_format_mime
+from app.utils.aimodels import iter_model_names, tts_format_mime
 from app.utils.llm import (
     get_stt_config,
     get_stt_model_instance,
     get_tts_config,
     get_tts_model_instance,
 )
+from app.utils.user_messages import action_failed
 
 router = APIRouter()
 
@@ -121,7 +122,7 @@ async def transcribe_audio(
         #   - 'whisper': faster-whisper missing (broken env).
         #   - 'wispr':   ffmpeg missing on the host, or transcode failure.
         logger.error("STT transcribe runtime error: %s", exc, exc_info=True)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=500, detail=action_failed("transcribe this recording")) from exc
     except HTTPException:
         raise
     except Exception as exc:
@@ -267,11 +268,7 @@ async def speech_capabilities(
         if not cfg:
             return None
         configuration = cfg.get("configuration") or {}
-        models = [
-            m.strip()
-            for m in str(configuration.get("model", "")).split(",")
-            if m.strip()
-        ]
+        models = iter_model_names(configuration)
         default_model = models[0] if models else None
         return {
             "provider": cfg.get("provider"),

@@ -17,27 +17,17 @@ from app.connectors.sources.azure_files.connector import (
 from app.models.entities import FileRecord, RecordType
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from urllib.parse import quote
+from urllib.parse import urlparse
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    MultiselectOperator,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordType, User
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.entities import User
 import base64
-from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import (
-    FilterCollection,
-    FilterOperator,
-    IndexingFilterKey,
-    MultiselectOperator,
-    SyncFilterKey,
-)
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from unittest.mock import PropertyMock
+from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
+from app.models.entities import RecordGroupType
 
 
 # ---------------------------------------------------------------------------
@@ -46,66 +36,6 @@ from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 @pytest.fixture()
 def mock_logger():
     return logging.getLogger("test.azure_files")
-
-
-@pytest.fixture()
-def mock_data_entities_processor():
-    from app.models.entities import AppMetadata
-    
-    proc = MagicMock(spec=AzureFilesDataSourceEntitiesProcessor)
-    proc.org_id = "org-azf-1"
-    proc.on_new_app_users = AsyncMock()
-    proc.on_new_record_groups = AsyncMock()
-    proc.on_new_records = AsyncMock()
-    proc.get_all_active_users = AsyncMock(return_value=[])
-    proc.account_name = "teststorage"
-    proc.get_record_by_external_id = AsyncMock(return_value=None)
-    proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
-    proc.delete_parent_child_edge_to_record = AsyncMock()
-    proc.get_app_by_id = AsyncMock(return_value=AppMetadata(
-        connector_id="az-files-1",
-        name="Azure Files",
-        type="azure_files",
-        app_group="STORAGE",
-        scope="PERSONAL",
-        created_by="user-1",
-        created_at_timestamp=1234567890,
-        updated_at_timestamp=1234567890,
-    ))
-    proc.get_user_by_user_id = AsyncMock(
-        return_value=User(
-            email="user@test.com",
-            source_user_id="src-1",
-            org_id="org-azf-1",
-            full_name="Test User",
-            title="Title",
-        )
-    )
-    return proc
-
-
-@pytest.fixture()
-def mock_data_store_provider():
-    provider = MagicMock()
-    mock_tx = MagicMock()
-    mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-    mock_tx.get_user_by_user_id = AsyncMock(return_value={"email": "user@test.com"})
-    mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-    mock_tx.__aexit__ = AsyncMock(return_value=None)
-    provider.transaction.return_value = mock_tx
-    return provider
-
-
-@pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "connectionString": "DefaultEndpointsProtocol=https;AccountName=teststorage;AccountKey=abc;EndpointSuffix=core.windows.net"
-        },
-        "scope": "TEAM",
-    })
-    return svc
 
 
 @pytest.fixture()
@@ -778,7 +708,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -789,7 +719,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):
@@ -1099,8 +1029,42 @@ class TestProcessorPlaceholderParent:
             assert isinstance(result, FileRecord)
             assert result.is_internal is True
             assert result.hide_weburl is True
-            assert "myacc.file.core.windows.net" in result.weburl
+            parsed = urlparse(result.weburl)
+            assert parsed.scheme == "https"
+            assert parsed.hostname == "myacc.file.core.windows.net"
             assert result.path == "folder"
+
+    def test_forwards_record_group_kwargs_to_base(self, logger, provider, cfg):
+        proc = AzureFilesDataSourceEntitiesProcessor(
+            logger=logger, data_store_provider=provider,
+            config_service=cfg, account_name="myacc",
+        )
+        proc.org_id = "org-1"
+        child = MagicMock()
+        child.connector_name = Connectors.AZURE_FILES
+        child.connector_id = "c1"
+        child.org_id = "org-1"
+        child.external_record_group_id = "share1"
+        child.record_group_type = RecordGroupType.FILE_SHARE.value
+
+        result = proc._create_placeholder_parent_record(
+            "share1/folder",
+            RecordType.FILE,
+            child,
+            record_name="folder",
+            record_group_type=RecordGroupType.FILE_SHARE.value,
+            external_record_group_id="share1",
+        )
+        assert isinstance(result, FileRecord)
+        assert result.record_name == "folder"
+        assert result.record_group_type == RecordGroupType.FILE_SHARE.value
+        assert result.external_record_group_id == "share1"
+        assert result.is_internal is True
+        assert result.hide_weburl is True
+        parsed = urlparse(result.weburl)
+        assert parsed.scheme == "https"
+        assert parsed.hostname == "myacc.file.core.windows.net"
+        assert result.path == "folder"
 
 
 # ===========================================================================
@@ -1175,6 +1139,24 @@ class TestInitBranches:
 class TestGetRevisionIdBranches:
     def test_file_id_returns_str(self, conn):
         assert conn._get_azure_files_revision_id({"file_id": 12345}) == "12345"
+
+    def test_file_edit_changes_the_revision(self, conn):
+        # The FileId survives an edit; alone it hid every content change.
+        before = {"file_id": 7, "size": 10, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        after = {**before, "size": 12, "last_write_time": datetime(2026, 1, 2, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(before) != conn._get_azure_files_revision_id(after)
+
+    def test_rename_keeps_the_revision(self, conn):
+        # A rename keeps the FileId, size and last-write time, so move
+        # detection still finds the record by its revision.
+        item = {"file_id": 7, "size": 10, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        renamed = {**item, "name": "new.csv", "path": "sets/2/new.csv", "etag": '"0xNEW"'}
+        assert conn._get_azure_files_revision_id(item) == conn._get_azure_files_revision_id(renamed)
+        assert conn._get_azure_files_revision_id(item) == "7:10:2026-01-01T00:00:00+00:00"
+
+    def test_directory_keeps_the_bare_file_id(self, conn):
+        item = {"file_id": 7, "is_directory": True, "last_write_time": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(item) == "7"
 
     def test_content_md5_bytes(self, conn):
         md5_bytes = b"\x01\x02\x03"
@@ -1531,6 +1513,18 @@ class TestProcessAzureFilesItem:
         assert record.is_internal is True
 
     @pytest.mark.asyncio
+    async def test_a_directory_is_text_directory_whatever_its_content_type(self, conn) -> None:
+        item = _file_item("subdir", "docs/subdir", is_directory=True, content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == MimeTypes.FOLDER.value
+
+    @pytest.mark.asyncio
+    async def test_a_file_keeps_its_content_type(self, conn) -> None:
+        item = _file_item("a.bin", "docs/a.bin", content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == "application/octet-stream"
+
+    @pytest.mark.asyncio
     async def test_process_root_level_item(self, conn):
         item = _file_item("root.txt", "root.txt", size=50)
         record, perms = await conn._process_azure_files_item(item, "myshare")
@@ -1768,8 +1762,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -1777,8 +1770,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -1786,8 +1778,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):
@@ -1948,7 +1939,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_path_info_raises(self, conn):
@@ -1957,7 +1948,8 @@ class TestStreamRecord:
         record = _make_file_record(external_record_group_id=None)
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 404
+        # Local metadata gap, not a deleted file.
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.create_stream_record_response")
@@ -1991,17 +1983,36 @@ class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_fallback_not_found(self, conn):
         from fastapi import HTTPException
+
+        class _AzureNotFound(Exception):
+            status_code = 404
+
         conn.data_source = MagicMock()
         conn.data_source.generate_file_sas_url = AsyncMock(
             return_value=_make_response(False, error="no key")
         )
-        conn.data_source.download_file = AsyncMock(
-            return_value=_make_response(False, error="not found in share")
-        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureNotFound("gone"))
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_stream_fallback_auth_error_is_not_reported_as_deleted(self, conn):
+        from fastapi import HTTPException
+
+        class _AzureUnauthorized(Exception):
+            status_code = 401
+
+        conn.data_source = MagicMock()
+        conn.data_source.generate_file_sas_url = AsyncMock(
+            return_value=_make_response(False, error="no key")
+        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureUnauthorized("401"))
+        record = _make_file_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.stream_record(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_fallback_other_error(self, conn):
@@ -2031,7 +2042,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_fallback_exception(self, conn):
@@ -2590,3 +2601,216 @@ class TestCreateConnector:
             data_entities_processor=MagicMock(),
         )
         assert isinstance(result, AzureFilesConnector)
+
+
+# ===========================================================================
+# Removing records of items no longer in the share
+# ===========================================================================
+class TestRemovingItemsThatAreGone:
+    @staticmethod
+    def _listing(conn, by_directory):
+        async def listing(share_name, directory_path=""):
+            result = by_directory.get(directory_path)
+            if result is None:
+                return _make_response(False, error="listing failed")
+            return _make_response(True, result)
+
+        conn.data_source = MagicMock()
+        conn.data_source.list_directories_and_files = listing
+        conn.sync_filters = FilterCollection()
+        conn.record_sync_point = MagicMock()
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.record_sync_point.update_sync_point = AsyncMock()
+        conn._process_azure_files_item = AsyncMock(return_value=(None, []))
+
+    @pytest.mark.asyncio
+    async def test_sync_share_reports_what_it_saw(self, conn):
+        self._listing(conn, {
+            "": [_file_item("a.txt"), _file_item("docs", is_directory=True)],
+            "docs": [_file_item("b.txt", path="docs/b.txt")],
+        })
+
+        seen, complete = await conn._sync_share("share1")
+
+        assert complete is True
+        # The share root is the parent of top-level items and is never listed.
+        assert seen == {"share1", "share1/a.txt", "share1/docs", "share1/docs/b.txt"}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_listing_marks_the_share_incomplete(self, conn):
+        self._listing(conn, {"": [_file_item("docs", is_directory=True)]})  # "docs" fails
+
+        _, complete = await conn._sync_share("share1")
+
+        assert complete is False
+
+    @pytest.mark.asyncio
+    async def test_an_item_that_fails_to_process_still_counts_as_seen(self, conn):
+        self._listing(conn, {"": [_file_item("a.txt")]})
+        conn._process_azure_files_item = AsyncMock(side_effect=Exception("boom"))
+
+        seen, complete = await conn._sync_share("share1")
+
+        assert "share1/a.txt" in seen
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_items_modified_before_the_last_sync_are_still_visited(self, conn):
+        # A rename keeps the file's timestamps; skipping on them hid moves.
+        self._listing(conn, {"": [_file_item("old.txt", last_modified=datetime(2020, 1, 1, tzinfo=timezone.utc))]})
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 4_000_000_000_000})
+
+        seen, _ = await conn._sync_share("share1")
+
+        conn._process_azure_files_item.assert_awaited_once()
+        assert "share1/old.txt" in seen
+
+    @pytest.mark.asyncio
+    async def test_records_not_seen_are_deleted(self, conn, proc):
+        proc.get_records_by_record_type = AsyncMock(return_value=[
+            _make_file_record(record_id="keep", external_record_id="share1/a.txt"),
+            _make_file_record(record_id="gone", external_record_id="share1/deleted.txt"),
+        ])
+        proc.on_record_deleted = AsyncMock()
+
+        await conn._remove_records_not_seen({"share1", "share1/a.txt"})
+
+        proc.on_record_deleted.assert_awaited_once_with("gone")
+
+    @pytest.mark.asyncio
+    @patch("app.connectors.sources.azure_files.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_run_sync_removes_only_after_every_share_was_listed(self, mock_filters, conn):
+        share_filter = MagicMock()
+        share_filter.value = ["s1", "s2"]
+        sync_filters = MagicMock()
+        sync_filters.get.return_value = share_filter
+        mock_filters.return_value = (sync_filters, FilterCollection())
+        conn.data_source = MagicMock()
+        conn.data_source.list_shares = AsyncMock(return_value=_make_response(True, data=[]))
+        conn._create_record_groups_for_shares = AsyncMock()
+        conn._remove_records_not_seen = AsyncMock()
+
+        conn._sync_share = AsyncMock(side_effect=[({"s1", "s1/a"}, True), ({"s2"}, True)])
+        await conn.run_sync()
+        conn._remove_records_not_seen.assert_awaited_once_with({"s1", "s1/a", "s2"})
+
+        conn._remove_records_not_seen.reset_mock()
+        conn._sync_share = AsyncMock(side_effect=[({"s1"}, True), ({"s2"}, False)])
+        await conn.run_sync()
+        conn._remove_records_not_seen.assert_not_awaited()
+
+
+class TestRevisionFallbacks:
+    def test_last_modified_stands_in_for_a_missing_write_time(self, conn):
+        # A bare FileId never changes on an edit, which was the original bug.
+        before = {"file_id": 7, "size": 10, "last_modified": datetime(2026, 1, 1, tzinfo=timezone.utc)}
+        after = {**before, "last_modified": datetime(2026, 1, 2, tzinfo=timezone.utc)}
+        assert conn._get_azure_files_revision_id(before) != conn._get_azure_files_revision_id(after)
+        assert conn._get_azure_files_revision_id(before) != "7"
+
+    def test_etag_is_the_last_resort(self, conn):
+        assert conn._get_azure_files_revision_id({"file_id": 7, "size": 1, "etag": '"0xA"'}) == "7:1:0xA"
+
+    @pytest.mark.asyncio
+    async def test_reindex_compares_and_stores_the_same_revision_as_the_sync(self, conn):
+        written = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        properties = {"file_id": 7, "size": 10, "last_write_time": written, "etag": '"0xE"'}
+        revision = conn._get_azure_files_revision_id(properties)
+        conn.data_source = MagicMock()
+        conn.data_source.get_file_properties = AsyncMock(return_value=_make_response(True, properties))
+
+        unchanged = _make_file_record(external_record_id="share1/a.txt", external_revision_id=revision)
+        assert await conn._check_and_fetch_updated_record("org", unchanged) is None
+
+
+def _folder_filter(values, exclude=False):
+    from app.connectors.core.registry.filters import Filter, FilterType, ListOperator
+
+    operator = ListOperator.NOT_IN if exclude else ListOperator.IN
+    return FilterCollection(filters=[Filter(key="folder_paths", value=values, type=FilterType.LIST, operator=operator)])
+
+
+class TestFolderFilter:
+    """The "Folders" sync filter on Azure Files: the walk starts in the chosen folders."""
+
+    @staticmethod
+    def _prepare(conn, by_directory):
+        visited = []
+
+        async def listing(share_name, directory_path=""):
+            visited.append(directory_path)
+            result = by_directory.get(directory_path)
+            if result is None:
+                return _make_response(False, error=f"Directory not found: {share_name}/{directory_path}")
+            return _make_response(True, result)
+
+        conn.data_source = MagicMock()
+        conn.data_source.list_directories_and_files = listing
+        conn.record_sync_point = MagicMock()
+        conn.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        conn.record_sync_point.update_sync_point = AsyncMock()
+        conn._process_azure_files_item = AsyncMock(return_value=(None, []))
+        return visited
+
+    @pytest.mark.asyncio
+    async def test_include_starts_in_the_chosen_folder_and_keeps_its_parents(self, conn):
+        conn.sync_filters = _folder_filter(["reports/2026"])
+        visited = self._prepare(conn, {"reports/2026": [_file_item("q1.pdf", path="reports/2026/q1.pdf")]})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert visited == ["reports/2026"]
+        assert complete is True
+        # Parents of the chosen folder stay, or the removal step would drop them.
+        assert {"s1", "s1/reports", "s1/reports/2026", "s1/reports/2026/q1.pdf"} == seen
+
+    @pytest.mark.asyncio
+    async def test_include_notes_the_chosen_folder_and_its_parents_as_kept(self, conn) -> None:
+        """Not written by the walk, so noted: otherwise the unlink after a full sync
+        cuts the links of everything under them to the app."""
+        conn.sync_filters = _folder_filter(["reports/2026"])
+        self._prepare(conn, {"reports/2026": [_file_item("q1.pdf", path="reports/2026/q1.pdf")]})
+        stored = {"s1/reports": "rec-reports", "s1/reports/2026": "rec-2026"}
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _cid, ext_id: MagicMock(id=stored[ext_id]) if ext_id in stored else None,
+        )
+
+        await conn._sync_share("s1")
+
+        kept = [c.args[1] for c in conn.data_entities_processor.note_kept_records.call_args_list]
+        assert ["rec-reports"] in kept and ["rec-2026"] in kept
+
+    @pytest.mark.asyncio
+    async def test_exclude_does_not_enter_the_excluded_folder(self, conn):
+        conn.sync_filters = _folder_filter(["tmp"], exclude=True)
+        visited = self._prepare(conn, {
+            "": [_file_item("a.txt"), _file_item("tmp", is_directory=True), _file_item("docs", is_directory=True)],
+            "docs": [],
+        })
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert visited == ["", "docs"]
+        assert "s1/tmp" not in seen and "s1/a.txt" in seen
+        assert complete is True
+
+    @pytest.mark.asyncio
+    async def test_a_chosen_folder_that_does_not_exist_is_empty_not_a_failure(self, conn):
+        conn.sync_filters = _folder_filter(["typo"])
+        self._prepare(conn, {})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert complete is True
+        # Left out of seen, an existing record for the folder is removed with its children.
+        assert seen == {"s1"}
+
+    @pytest.mark.asyncio
+    async def test_a_missing_chosen_folder_does_not_keep_its_parents(self, conn):
+        conn.sync_filters = _folder_filter(["reports/typo", "docs"])
+        self._prepare(conn, {"docs": []})
+
+        seen, complete = await conn._sync_share("s1")
+
+        assert complete is True
+        assert seen == {"s1", "s1/docs"}

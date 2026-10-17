@@ -1,11 +1,22 @@
 import axios, { AxiosError } from 'axios';
 import { injectable } from 'inversify';
 import { InternalServerError } from '../../../libs/errors/http.errors';
+import { HttpError } from '../../../libs/errors/http.errors';
+import { Logger } from '../../../libs/services/logger.service';
+import {
+  keepDeliberateWording,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 
 interface ConfigManagerResponse {
   statusCode: number;
   data: any;
 }
+const logger = Logger.getInstance({
+  service: 'User Management Config Service',
+});
+
 @injectable()
 export class ConfigurationManagerService {
   constructor() {}
@@ -45,8 +56,10 @@ export class ConfigurationManagerService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      logger.error('Writing the configuration failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('save that setting')),
       );
     }
   }

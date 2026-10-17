@@ -21,11 +21,26 @@ from app.agent_loop_lib.sandbox.coding.base import (
     ErrorAnalysis,
     ErrorCategory,
     InstallResult,
+    IsolationLevel,
+    SandboxCapabilities,
+    SandboxContext,
     normalize_sandbox_path,
 )
 from app.agent_loop_lib.sandbox.coding.cleanup import (
     register_sandbox_dir,
     unregister_sandbox_dir,
+)
+from app.agent_loop_lib.sandbox.coding.docker_client import (
+    DockerClientProvider,
+    get_default_provider,
+)
+from app.agent_loop_lib.sandbox.coding.egress_firewall import (
+    CONTAINER_HARDENING,
+    create_sandbox_container,
+    firewall_unavailable,
+    firewalled_container_kwargs,
+    new_firewall_token,
+    parse_cidrs,
 )
 from app.agent_loop_lib.sandbox.coding.reflection import ReflectionEngine
 from app.agent_loop_lib.sandbox.coding.validation import (
@@ -48,8 +63,12 @@ security model, not just its shape):
   the backend is constructed with ``allow_network=True`` AND the individual
   ``CodeRequest.allow_network`` is also set, the run container instead joins
   the SAME dedicated egress bridge used for package installs (below) —
-  real internet access for the sandboxed code, but still never the caller's
-  default Docker network, so compose sibling services stay unreachable.
+  public internet access for the sandboxed code. The bridge filters nothing
+  by address, so every container that joins it installs its own egress
+  rules first (``egress_firewall``: private, CGNAT, link-local/metadata and
+  bridge addresses are rejected) and then drops to an unprivileged user with
+  no capabilities. If the image can't install the rules, the run is retried
+  with no network rather than on an unfiltered bridge.
 - Packages are installed in a SEPARATE, short-lived container attached to a
   dedicated egress network (outbound internet for pip/npm only) — never the
   caller's default Docker network, so this backend can be dropped into a
@@ -124,11 +143,25 @@ def _snapshot_mtimes(root: str) -> dict[str, float]:
 # the common small-output case.
 _TAR_SPOOL_MAX_SIZE = 16 * 1024 * 1024
 
+_NETWORK_UNAVAILABLE_NOTE = (
+    "[sandbox] Network access is unavailable for this run: the egress "
+    "firewall could not be installed, so the code ran with no network.\n"
+)
+_INSTALL_FIREWALL_UNAVAILABLE = (
+    "[sandbox] Package install refused: the egress firewall could not be "
+    "installed for the install container ({reason}). Packages are never "
+    "installed on an unfiltered network; use a sandbox image that includes "
+    "iptables (deployment/sandbox/Dockerfile).\n"
+)
+
 
 class DockerCodingSandbox(CodingSandboxBackend):
     """One sandbox instance = one host working directory + a Docker image
     used to run every `execute()`/`install_packages()` call in a fresh,
     isolated container."""
+
+
+    backend_name = "docker"
 
     def __init__(
         self,
@@ -145,8 +178,19 @@ class DockerCodingSandbox(CodingSandboxBackend):
         package_allowlist: list[str] | None = None,
         package_denylist: list[str] | None = None,
         image_node_modules: str | None = None,
+        egress_allow_cidrs: tuple[str, ...] = (),
+        sandbox_user: str = "sandbox",
+        context: SandboxContext | None = None,
+        provider: "DockerClientProvider | None" = None,
     ) -> None:
         self._sandbox_id = str(uuid.uuid4())
+        self._context = context
+        # One shared client and one bounded executor per process. Creating
+        # a client per call re-handshakes with the daemon every time, and
+        # running the blocking docker-py calls on asyncio's DEFAULT
+        # executor lets a few concurrent container runs starve every other
+        # subsystem that shares it.
+        self._provider = provider or get_default_provider()
         short_suffix = self._sandbox_id.replace("-", "")[:10]
         self._working_dir = os.path.realpath(
             working_dir or os.path.join(tempfile.gettempdir(), f"alcs-docker-{short_suffix}")
@@ -162,6 +206,8 @@ class DockerCodingSandbox(CodingSandboxBackend):
         self._allowlist = set(package_allowlist) if package_allowlist else None
         self._denylist = set(package_denylist or [])
         self._image_node_modules = image_node_modules
+        self._egress_allow_cidrs = parse_cidrs(egress_allow_cidrs)
+        self._sandbox_user = sandbox_user
         self._installed: dict[str, set[str]] = {"typescript": set(), "python": set()}
         self._reflection = ReflectionEngine()
         self._provisioned = False
@@ -174,6 +220,22 @@ class DockerCodingSandbox(CodingSandboxBackend):
     def sandbox_id(self) -> str:
         return self._sandbox_id
 
+    @classmethod
+    def describe_capabilities(cls, *, allow_network: bool = False) -> SandboxCapabilities:
+        """See `LocalCodingSandbox.describe_capabilities`."""
+        return SandboxCapabilities(
+            isolation=IsolationLevel.CONTAINER,
+            supports_network=allow_network,
+            supports_streaming=False,
+            supports_reconnect=False,
+            is_metered=False,
+            persistent_filesystem=True,
+        )
+
+    @property
+    def capabilities(self) -> SandboxCapabilities:
+        return self.describe_capabilities(allow_network=self._allow_network)
+
     @property
     def working_dir(self) -> str:
         return self._working_dir
@@ -183,6 +245,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
             os.makedirs(self._output_dir, exist_ok=True)
             register_sandbox_dir(self._working_dir)
             self._provisioned = True
+            self._created_at = time.time()
         return SandboxInfo(
             sandbox_id=self._sandbox_id,
             status="ready",
@@ -251,11 +314,27 @@ class DockerCodingSandbox(CodingSandboxBackend):
         )
 
         network_enabled = self._allow_network and request.allow_network
+        # Resolved here rather than inside the blocking helper: both are
+        # async, both are cached per process, and doing them once up front
+        # keeps the image pull out of the per-run critical path.
+        await self._ensure_image()
+        egress_network = None
+        egress_cidrs: list[str] = []
+        network_note = ""
+        if network_enabled:
+            egress_network = self._egress_network
+            egress_cidrs = await self._provider.egress_network_cidrs(egress_network)
+            if not egress_cidrs:
+                logger.error("egress network %s has no readable IPv4 subnet", egress_network)
+                network_enabled, egress_network = False, None
+                network_note = _NETWORK_UNAVAILABLE_NOTE
         try:
             exit_code, stdout, stderr = await asyncio.wait_for(
-                asyncio.to_thread(
+                self._provider.run_blocking(
                     self._run_container_sync,
-                    run_cmd, src_dir, request.timeout, network_enabled, staged_inputs,
+                    run_cmd, src_dir, request.timeout, network_enabled,
+                    staged_inputs, self._provider.client, egress_network,
+                    egress_cidrs,
                 ),
                 timeout=request.timeout + 30,
             )
@@ -284,7 +363,7 @@ class DockerCodingSandbox(CodingSandboxBackend):
         artifacts.extend(self._promote_src_artifacts(src_dir, entry, staged_inputs))
         artifacts.sort()
         result = CodeResult(
-            stdout=stdout, stderr=stderr, exit_code=exit_code,
+            stdout=stdout, stderr=network_note + stderr, exit_code=exit_code,
             language=request.language, duration_ms=duration_ms, artifacts=artifacts,
         )
         if not result.success:
@@ -312,9 +391,13 @@ class DockerCodingSandbox(CodingSandboxBackend):
         if not to_install:
             return InstallResult(success=True, installed=[])
 
+        await self._ensure_image()
+        network_name = self._egress_network
         try:
-            success, stdout, stderr = await asyncio.to_thread(
+            egress_cidrs = await self._provider.egress_network_cidrs(network_name)
+            success, stdout, stderr = await self._provider.run_blocking(
                 self._install_packages_sync, to_install, language,
+                self._provider.client, network_name, egress_cidrs,
             )
         except CodingSandboxError:
             raise
@@ -357,7 +440,10 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 if d not in _LISTING_IGNORED_DIRS and not d.startswith("_src")
             ]
             for fname in filenames:
-                results.append(os.path.relpath(os.path.join(dirpath, fname), self._working_dir))
+                full = os.path.join(dirpath, fname)
+                if os.path.islink(full):
+                    continue
+                results.append(os.path.relpath(full, self._working_dir))
         return sorted(results)
 
     async def destroy(self) -> None:
@@ -420,10 +506,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 rel = os.path.relpath(full, src_dir)
                 if rel == entry:
                     continue
+                if os.path.islink(full):
+                    # A program that symlinked a host path into its cwd must not
+                    # have that followed when we read or move it back (SB-5).
+                    logger.warning("_promote_src_artifacts: skipping symlink %s", rel)
+                    continue
                 baseline = staged_inputs.get(rel)
                 if baseline is not None:
-                    with open(full, "rb") as fh:
-                        current = fh.read()
+                    current = _read_file_nofollow(full)
+                    if current is None:
+                        continue
                     if current == baseline:
                         skipped_unchanged.append(rel)
                         continue
@@ -459,6 +551,11 @@ class DockerCodingSandbox(CodingSandboxBackend):
         for dirpath, _dirnames, filenames in os.walk(self._output_dir):
             for fname in filenames:
                 full = os.path.join(dirpath, fname)
+                if os.path.islink(full):
+                    # Never report a symlink as a deliverable artifact — a
+                    # later download/read would follow it off the host (SB-5).
+                    logger.warning("_list_output_artifacts: skipping symlink %s", full)
+                    continue
                 if before is not None:
                     rel_to_output = os.path.relpath(full, self._output_dir)
                     try:
@@ -471,7 +568,17 @@ class DockerCodingSandbox(CodingSandboxBackend):
         logger.info("_list_output_artifacts: found %d file(s): %s", len(results), sorted(results))
         return sorted(results)
 
-    # -- blocking docker-py calls: only ever invoked via asyncio.to_thread --
+    def _firewalled(self, command: list[str], egress_cidrs: list[str], token: str) -> dict[str, Any]:
+        return firewalled_container_kwargs(
+            command,
+            network_cidrs=egress_cidrs,
+            allowed_cidrs=self._egress_allow_cidrs,
+            run_as=self._sandbox_user,
+            token=token,
+        )
+
+    # -- blocking docker-py calls: only ever invoked via
+    # -- DockerClientProvider.run_blocking, on its dedicated executor --
 
     def _run_container_sync(
         self,
@@ -480,30 +587,42 @@ class DockerCodingSandbox(CodingSandboxBackend):
         timeout: float,
         network_enabled: bool,
         staged_inputs: dict[str, bytes],
+        client: Any,
+        egress_network: str | None,
+        egress_cidrs: list[str] | None = None,
     ) -> tuple[int, str, str]:
-        try:
-            import docker
-            from docker.errors import ImageNotFound
-        except ImportError as exc:
-            raise CodingSandboxError(
-                "docker Python package is not installed. Install with: pip install docker"
-            ) from exc
+        token = new_firewall_token()
+        exit_code, stdout, stderr = self._run_container_once(
+            command, src_dir, timeout, network_enabled, staged_inputs, client,
+            egress_network, egress_cidrs or [], token,
+        )
+        if network_enabled and firewall_unavailable(exit_code, stderr, token):
+            # The firewall step exits before the command starts, so running
+            # again offline cannot repeat any of the program's side effects.
+            logger.error(
+                "_run_container_sync: image %s cannot install the egress firewall; "
+                "running without network: %.500s", self._image, stderr,
+            )
+            exit_code, stdout, stderr = self._run_container_once(
+                command, src_dir, timeout, False, staged_inputs, client, None, [], "",
+            )
+            stderr = _NETWORK_UNAVAILABLE_NOTE + stderr
+        return exit_code, stdout, stderr
 
-        client = docker.from_env()
+    def _run_container_once(
+        self,
+        command: list[str],
+        src_dir: str,
+        timeout: float,
+        network_enabled: bool,
+        staged_inputs: dict[str, bytes],
+        client: Any,
+        egress_network: str | None,
+        egress_cidrs: list[str],
+        token: str,
+    ) -> tuple[int, str, str]:
         container = None
         try:
-            try:
-                client.images.get(self._image)
-            except ImageNotFound:
-                logger.info("Sandbox image %s not found locally, attempting pull ...", self._image)
-                try:
-                    client.images.pull(self._image)
-                except Exception as pull_err:
-                    raise CodingSandboxError(
-                        f"Sandbox image {self._image!r} is not available locally and could not "
-                        f"be pulled: {pull_err}"
-                    ) from pull_err
-
             has_py_deps = os.path.isdir(self._deps_python_dir) and bool(os.listdir(self._deps_python_dir))
             has_node_deps = os.path.isdir(self._deps_node_dir) and bool(os.listdir(self._deps_node_dir))
             env = {"OUTPUT_DIR": "/output"}
@@ -528,18 +647,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 "nano_cpus": nano_cpus,
                 "tmpfs": {"/tmp": "size=100M"},
                 "detach": True,
+                **CONTAINER_HARDENING,
             }
             if network_enabled:
-                # Same dedicated egress bridge the install phase uses (below)
-                # — real internet access for the run container, but never
-                # the caller's default Docker network, so compose sibling
-                # services (mongo/arango/redis/...) stay unreachable by name.
-                container_kwargs["network"] = self._ensure_egress_network(client)
+                container_kwargs["network"] = egress_network
                 container_kwargs["network_disabled"] = False
+                container_kwargs.update(self._firewalled(command, egress_cidrs, token))
             else:
                 container_kwargs["network_mode"] = "none"
                 container_kwargs["network_disabled"] = self._network_disabled
-            container = client.containers.create(**container_kwargs)
+            container = create_sandbox_container(client, **container_kwargs)
             logger.info(
                 "_run_container_sync: container created id=%.12s image=%s "
                 "network_enabled=%s mem_limit=%dMB cpu=%.1f env=%s",
@@ -561,6 +678,16 @@ class DockerCodingSandbox(CodingSandboxBackend):
                 logger.info("_run_container_sync: no staged_inputs to archive")
             container.put_archive("/src", _tar_directory(src_dir))
             container.put_archive("/", _tar_empty_dir("output", mode=0o777))
+            # Restore what earlier calls on this sandbox left in $OUTPUT_DIR.
+            # Every execute() gets a fresh container, so without this the
+            # deliverable directory silently resets between calls while the
+            # working directory persists — and a model that writes a file
+            # then reads it back to verify it (the normal pattern) gets a
+            # FileNotFoundError for a file that is right there on the host.
+            # `_tar_directory` preserves mtimes, so restored files still look
+            # unchanged to `_list_output_artifacts` and are not re-reported.
+            if os.path.isdir(self._output_dir) and os.listdir(self._output_dir):
+                container.put_archive("/output", _tar_directory(self._output_dir))
             if has_py_deps:
                 container.put_archive("/", _tar_empty_dir("deps", mode=0o755))
                 container.put_archive("/deps", _tar_directory(self._deps_python_dir))
@@ -610,132 +737,146 @@ class DockerCodingSandbox(CodingSandboxBackend):
                     container.remove(force=True)
                 except Exception:
                     pass
-            try:
-                client.close()
-            except Exception:
-                pass
+
+    async def _ensure_image(self) -> None:
+        """Pull the sandbox image if the daemon doesn't have it.
+
+        Presence is cached per process, so this is a dict lookup on every
+        run after the first — the previous code asked the daemon on every
+        single execution.
+        """
+        if await self._provider.ensure_image(self._image):
+            return
+        logger.info("Sandbox image %s not found locally, attempting pull ...", self._image)
+        try:
+            await self._provider.pull_image(self._image)
+        except Exception as exc:
+            raise CodingSandboxError(
+                f"Sandbox image {self._image!r} is not available locally and "
+                f"could not be pulled: {exc}"
+            ) from exc
 
     def _install_packages_sync(
         self, to_install: list[str], language: CodingLanguage,
+        client: Any, network_name: str, egress_cidrs: list[str] | None = None,
     ) -> tuple[bool, str, str]:
-        try:
-            import docker
-        except ImportError as exc:
-            raise CodingSandboxError(
-                "docker Python package is not installed. Install with: pip install docker"
-            ) from exc
+        if language == "python":
+            cmd = [
+                "sh", "-c",
+                "pip install --quiet --no-cache-dir --target /deps "
+                f"--index-url {self._pip_index_url} " + " ".join(to_install),
+            ]
+            extract_path = "/deps"
+            host_target = self._deps_python_dir
+        else:
+            cmd = [
+                "sh", "-c",
+                "mkdir -p /install && npm install --prefix /install --no-save "
+                f"--loglevel=error --registry={self._npm_registry} "
+                + " ".join(to_install),
+            ]
+            extract_path = "/install/node_modules"
+            host_target = self._deps_node_dir
 
-        client = docker.from_env()
-        try:
-            network_name = self._ensure_egress_network(client)
+        logger.info(
+            "_install_packages_sync: language=%s to_install=%s image=%s "
+            "network=%s host_target=%s",
+            language, to_install, self._image, network_name, host_target,
+        )
+        # Fail closed: pip builds sdists and npm runs lifecycle scripts, so an
+        # unfiltered install container would hand package code the host,
+        # private ranges and cloud metadata.
+        if not egress_cidrs:
+            logger.error("_install_packages_sync: egress network %s has no readable IPv4 subnet", network_name)
+            return False, "", _INSTALL_FIREWALL_UNAVAILABLE.format(reason="egress bridge subnet unreadable")
+        token = new_firewall_token()
+        exit_code, stdout, stderr = self._install_in_container(
+            client, network_name, extract_path, host_target, to_install,
+            self._firewalled(cmd, egress_cidrs, token),
+        )
+        if firewall_unavailable(exit_code, stderr, token):
+            logger.error(
+                "_install_packages_sync: image %s cannot install the egress firewall: %.500s",
+                self._image, stderr,
+            )
+            return False, stdout, _INSTALL_FIREWALL_UNAVAILABLE.format(reason=f"image {self._image}") + stderr
+        return exit_code == 0, stdout, stderr
 
-            if language == "python":
-                cmd = [
-                    "sh", "-c",
-                    "pip install --quiet --no-cache-dir --target /deps "
-                    f"--index-url {self._pip_index_url} " + " ".join(to_install),
-                ]
-                extract_path = "/deps"
-                host_target = self._deps_python_dir
+    def _install_in_container(
+        self, client: Any, network_name: str, extract_path: str, host_target: str,
+        to_install: list[str], command_kwargs: dict[str, Any],
+    ) -> tuple[int, str, str]:
+        container = create_sandbox_container(
+            client,
+            image=self._image,
+            environment={},
+            mem_limit=self._memory_limit_mb * 1024 * 1024,
+            nano_cpus=int(self._cpu_limit * 1e9),
+            network=network_name,
+            network_disabled=False,
+            detach=True,
+            **command_kwargs,
+        )
+        try:
+            if extract_path == "/deps":
+                container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
             else:
-                cmd = [
-                    "sh", "-c",
-                    "mkdir -p /install && npm install --prefix /install --no-save "
-                    f"--loglevel=error --registry={self._npm_registry} "
-                    + " ".join(to_install),
-                ]
-                extract_path = "/install/node_modules"
-                host_target = self._deps_node_dir
-
-            mem_bytes = self._memory_limit_mb * 1024 * 1024
-            nano_cpus = int(self._cpu_limit * 1e9)
+                container.put_archive("/", _tar_empty_dir("install", mode=0o777))
+            container.start()
+            exit_info = container.wait(timeout=300)
+            exit_code = exit_info.get("StatusCode", -1)
+            stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
+            stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
             logger.info(
-                "_install_packages_sync: language=%s to_install=%s image=%s "
-                "network=%s host_target=%s",
-                language, to_install, self._image, network_name, host_target,
+                "_install_packages_sync: container %.12s exit_code=%d "
+                "stdout_len=%d stderr_preview=%.500s",
+                container.id, exit_code, len(stdout),
+                stderr[:500] if stderr else "",
             )
-            container = client.containers.create(
-                image=self._image,
-                command=cmd,
-                environment={},
-                mem_limit=mem_bytes,
-                nano_cpus=nano_cpus,
-                network=network_name,
-                network_disabled=False,
-                detach=True,
-            )
-            try:
-                if language == "python":
-                    container.put_archive("/", _tar_empty_dir("deps", mode=0o777))
-                else:
-                    container.put_archive("/", _tar_empty_dir("install", mode=0o777))
-                container.start()
-                exit_info = container.wait(timeout=300)
-                exit_code = exit_info.get("StatusCode", -1)
-                stdout = container.logs(stdout=True, stderr=False).decode(errors="replace")
-                stderr = container.logs(stdout=False, stderr=True).decode(errors="replace")
-                logger.info(
-                    "_install_packages_sync: container %.12s exit_code=%d "
-                    "stdout_len=%d stderr_preview=%.500s",
-                    container.id, exit_code, len(stdout),
-                    stderr[:500] if stderr else "",
+            if exit_code != 0:
+                logger.warning(
+                    "_install_packages_sync: install FAILED for %s — "
+                    "exit_code=%d stderr=%.1000s",
+                    to_install, exit_code, stderr,
                 )
-                if exit_code != 0:
-                    logger.warning(
-                        "_install_packages_sync: install FAILED for %s — "
-                        "exit_code=%d stderr=%.1000s",
-                        to_install, exit_code, stderr,
-                    )
-                    return False, stdout, stderr
-                os.makedirs(host_target, exist_ok=True)
-                _extract_container_dir(container, extract_path, host_target)
-                return True, stdout, stderr
-            finally:
-                try:
-                    container.remove(force=True)
-                except Exception:
-                    pass
+                return exit_code, stdout, stderr
+            os.makedirs(host_target, exist_ok=True)
+            # Dependency archive (pip --target / npm node_modules): keep in-tree
+            # symlinks such as node_modules/.bin so installed CLIs survive the
+            # round trip; filter="data" still blocks links that escape the dir.
+            _extract_container_dir(container, extract_path, host_target, allow_symlinks=True)
+            return exit_code, stdout, stderr
         finally:
             try:
-                client.close()
+                container.remove(force=True)
             except Exception:
                 pass
-
-    def _ensure_egress_network(self, client: object) -> str:
-        """Create (or reuse) the dedicated install-phase network and return
-        its name. A user-defined bridge, never the caller's default Docker
-        network, so sibling services on a compose deployment stay
-        unreachable from the install container."""
-        name = self._egress_network
-        try:
-            existing = client.networks.list(names=[name])
-            if existing:
-                return name
-            client.networks.create(
-                name=name,
-                driver="bridge",
-                internal=False,
-                labels={"agent_loop.sandbox": "egress"},
-                check_duplicate=True,
-            )
-            logger.info("Created dedicated sandbox egress network: %s", name)
-        except Exception as exc:
-            # Another process may have raced us to create the network; try
-            # once more to list and fall through if that worked.
-            logger.debug("egress network creation raised %s; re-checking", exc)
-            try:
-                if client.networks.list(names=[name]):
-                    return name
-            except Exception:
-                pass
-            raise
-        return name
 
 
 # ------------------------------------------------------------------
 # Tar helpers for put_archive / get_archive — ported from
 # app/sandbox/docker_executor.py (generic, no PipesHub-specific naming).
 # ------------------------------------------------------------------
+
+def _read_file_nofollow(path: str) -> bytes | None:
+    """Read a file, refusing to follow a final-component symlink (SB-5).
+
+    Returns ``None`` (and logs) when the path is a symlink or cannot be opened
+    without following one, so a booby-trapped link left in the sandbox dir can
+    never make the host read a file outside it.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        logger.warning("Refusing to read %s without following symlinks: %s", path, exc)
+        return None
+    try:
+        with os.fdopen(fd, "rb") as fh:
+            return fh.read()
+    except OSError as exc:
+        logger.warning("Could not read %s: %s", path, exc)
+        return None
+
 
 def _tar_directory(src_dir: str) -> bytes:
     """In-memory tar of every entry directly under `src_dir` (flat, no
@@ -765,8 +906,14 @@ def _collect_working_dir_inputs(working_dir: str) -> dict[str, bytes]:
         for fname in filenames:
             full = os.path.join(dirpath, fname)
             rel = os.path.relpath(full, working_dir)
-            with open(full, "rb") as fh:
-                files[rel] = fh.read()
+            if os.path.islink(full):
+                # Skip symlinks so a staged-input tar never carries host file
+                # contents back into the next container (SB-5).
+                logger.warning("_collect_working_dir_inputs: skipping symlink %s", rel)
+                continue
+            content = _read_file_nofollow(full)
+            if content is not None:
+                files[rel] = content
     return files
 
 
@@ -798,14 +945,24 @@ def _tar_empty_dir(name: str, *, mode: int = 0o755) -> bytes:
     return buf.read()
 
 
-def _extract_container_dir(container: object, container_path: str, local_dir: str) -> None:
+def _extract_container_dir(
+    container: object, container_path: str, local_dir: str, *, allow_symlinks: bool = False,
+) -> None:
     """Pull a directory from a container via `get_archive` and extract it
     into `local_dir`, merging with (not clearing) whatever's already there.
 
     Streamed chunk-by-chunk into a `SpooledTemporaryFile` so small archives
-    stay in memory while large ones transparently spill to disk. Any tar
-    member whose resolved path would land outside `local_dir` is skipped —
-    the same path-traversal guard `docker_executor.py` uses.
+    stay in memory while large ones transparently spill to disk.
+
+    For untrusted archives (``/output``, ``/src``) only regular files are
+    extracted: a symlink left on the host would be followed by the next run's
+    readers and copy host files back into the sandbox (SB-5). For dependency
+    archives (``allow_symlinks=True`` — ``/deps``, ``/node_modules``, which npm
+    fills with ``.bin`` links) symlinks are kept, but `filter="data"` still
+    rejects any link whose target escapes `local_dir`, so nothing can point at
+    the host. Every member is sanitised by `filter="data"`, and a member whose
+    own path would land outside `local_dir` is skipped. One bad member is
+    skipped, not fatal, so the rest of the archive still extracts.
     """
     try:
         bits, _ = container.get_archive(container_path)
@@ -820,6 +977,13 @@ def _extract_container_dir(container: object, container_path: str, local_dir: st
                 for member in tar:
                     if member.isdir():
                         continue
+                    is_link = member.issym() or member.islnk()
+                    if not member.isfile() and not (allow_symlinks and is_link):
+                        logger.warning(
+                            "Skipping non-regular tar member %r (type %r) from %s",
+                            member.name, member.type, container_path,
+                        )
+                        continue
                     if member.name.startswith(prefix):
                         member.name = member.name[len(prefix):]
                     if not member.name:
@@ -831,6 +995,14 @@ def _extract_container_dir(container: object, container_path: str, local_dir: st
                             member.name, target,
                         )
                         continue
-                    tar.extract(member, local_dir)
+                    try:
+                        # `data` filter rejects a link whose target escapes the
+                        # destination; skip that member rather than abort the run.
+                        tar.extract(member, local_dir, filter="data")
+                    except Exception as exc:
+                        logger.warning(
+                            "Skipping unsafe tar member %r from %s: %s",
+                            member.name, container_path, exc,
+                        )
     except Exception:
         logger.debug("No output artifacts to extract from container %s", container_path)

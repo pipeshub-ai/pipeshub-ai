@@ -1,12 +1,15 @@
 import asyncio
+import contextlib
+import errno
 import json
 import os
+import random
 import threading
 import time
-from typing import Any, Dict, TypedDict
+import uuid
+from typing import TYPE_CHECKING, Any, Dict, NamedTuple, TypedDict
 
 import aiohttp
-import jwt
 import msgspec
 from yarl import URL
 
@@ -18,11 +21,26 @@ from app.config.constants.service import (
     TokenScopes,
     config_node_constants,
 )
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.transformers.transformer import TransformContext, Transformer
+from app.services.cache.interface import ISignedUrlCache, NoopSignedUrlCache
+from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
+from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.services.vector_db.membership import (
+    EMPTY_CONFIRM_DELAY_SECONDS,
+    remaining_record_keys,
+)
+from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
+from app.utils.storage_path import build_hierarchical_storage_path
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.worker_scaling import scaled
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
 COMPRESSION_THRESHOLD_BYTES_DEFAULT = 20 * 1024 * 1024
 DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
@@ -48,6 +66,104 @@ def _decode_json(raw: "bytes | str") -> Any:  # noqa: ANN401 - stored records ar
     except Exception:
         return json.loads(raw) if isinstance(raw, str) else json.loads(raw.decode("utf-8"))
 _COMPRESSION_THRESHOLD_ENV = "PIPESHUB_RECORD_COMPRESSION_THRESHOLD_BYTES"
+
+
+def _json_utf8_bytes(obj: Any) -> bytes:  # noqa: ANN401 - stored records are free-form
+    """Stored records keep non-ASCII text as written, so `grep Borgartún` matches.
+
+    A lone surrogate (from broken text extraction) cannot be encoded as UTF-8;
+    such a record falls back to ASCII escapes rather than failing to store.
+    """
+    try:
+        return json.dumps(obj, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        return json.dumps(obj).encode("utf-8")
+
+
+class _RecordJson(NamedTuple):
+    """A record JSON-encoded once, for both the compression decision and the upload.
+
+    The stdlib encoder holds the GIL for the whole call, so a thread would not
+    keep it off the event loop; on a large record each extra pass costs as
+    much as the upload's own encode.
+    """
+
+    body: bytes  # as _json_utf8_bytes would write the record
+    is_utf8: bool  # False when a lone surrogate forced ASCII escapes
+    ascii_size: int  # len(json.dumps(record).encode("utf-8")), what the threshold measures
+
+
+_BELOW_0X80 = bytes(range(0x80))
+_CONTINUATION_BYTES = bytes(range(0x80, 0xC0))
+_TWO_AND_THREE_BYTE_LEADS = bytes(range(0xC0, 0xF0))
+
+
+def _ascii_json_size(utf8_json: bytes) -> int:
+    """The length *utf8_json* would have had with ``ensure_ascii=True``.
+
+    ensure_ascii changes only how DEL and non-ASCII characters are written: a
+    6-byte ``\\uXXXX`` for DEL and every BMP character (1-3 bytes in UTF-8),
+    and a 12-byte surrogate pair for a 4-byte character above the BMP.
+    """
+    size = len(utf8_json) + 5 * utf8_json.count(0x7F)
+    if utf8_json.isascii():
+        return size
+    non_ascii = utf8_json.translate(None, _BELOW_0X80)
+    leads = non_ascii.translate(None, _CONTINUATION_BYTES)
+    astral = len(leads.translate(None, _TWO_AND_THREE_BYTE_LEADS))
+    return size - len(non_ascii) + 6 * (len(leads) - astral) + 12 * astral
+
+
+def _encode_record_json(record: Any) -> _RecordJson | None:  # noqa: ANN401 - stored records are free-form
+    """None when the record is not JSON-serializable."""
+    try:
+        text = json.dumps(record, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return None
+    try:
+        body = text.encode("utf-8")
+    except UnicodeEncodeError:
+        body = json.dumps(record).encode("utf-8")
+        return _RecordJson(body, False, len(body))
+    return _RecordJson(body, True, _ascii_json_size(body))
+
+
+def _plain_envelope_bytes(
+    record: Any,  # noqa: ANN401 - stored records are free-form
+    encoded: _RecordJson | None,
+    virtual_record_id: str | None,
+) -> bytes:
+    """``_json_utf8_bytes`` of the uncompressed envelope, reusing *encoded*."""
+    if encoded is not None:
+        try:
+            vrid = json.dumps(
+                virtual_record_id, ensure_ascii=not encoded.is_utf8
+            ).encode("utf-8")
+        except UnicodeEncodeError:
+            vrid = None
+        if vrid is not None:
+            return b"".join((
+                b'{"isCompressed": false, "record": ',
+                encoded.body,
+                b', "virtualRecordId": ',
+                vrid,
+                b"}",
+            ))
+    return _json_utf8_bytes(
+        {"isCompressed": False, "record": record, "virtualRecordId": virtual_record_id}
+    )
+
+
+def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) -> int:
+    """``len(json.dumps(envelope).encode())`` for the uncompressed cloud upload.
+
+    aiohttp's ``json=`` writes ASCII escapes, so this is the size it sends.
+    """
+    return (
+        len('{"record": , "isCompressed": false, "virtualRecordId": }')
+        + encoded.ascii_size
+        + len(json.dumps(virtual_record_id))
+    )
 
 
 def compression_threshold_bytes() -> int:
@@ -83,10 +199,123 @@ def signed_url_cache_seconds() -> int:
         return _SIGNED_URL_CACHE_SECONDS_DEFAULT
 
 
-# Node closes idle keep-alive connections at 5s (its default; the app never
-# sets server.keepAliveTimeout). Ours must expire first or we reuse a socket the
-# gateway has already closed.
+# Must expire before Node closes an idle keep-alive socket, or we reuse one the
+# gateway has already closed. Node holds them 65s (server.keepAliveTimeout in
+# app.ts). The wide gap is the point: our clock only starts once the event loop
+# gets round to releasing the connection, which a busy loop delays by seconds.
 NODE_KEEPALIVE_MARGIN_SECONDS = 4.0
+
+# Per-read stall bound on every request the shared session makes. No total
+# bound: a multi-GB upload to blob storage is legitimately long, but a socket
+# that goes this long without delivering a byte is a hung gateway, and
+# aiohttp's default (a 5-minute total, applied per call) let each one of
+# those sit on a record's processing budget.
+BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS = 10.0
+BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS = 120.0
+
+# A storage request that fails transiently is retried a few times, quickly.
+# Without this, one reset connection or one gateway 503 on a 200ms request
+# failed the whole record, which the consumer then re-downloaded, re-parsed
+# and re-embedded to redo that request. Bounded to a few seconds in total: a
+# storage service that is genuinely down is the record-level retry's job,
+# and the governor's, once told.
+_STORAGE_RETRY_ATTEMPTS = 3
+_STORAGE_RETRY_BASE_SECONDS = 0.5
+_STORAGE_RETRY_CAP_SECONDS = 4.0
+_TRANSIENT_STORAGE_STATUSES = frozenset({502, 503, 504})
+_STORAGE_SERVICE_NAME = "storage"
+
+
+class TransientStorageError(aiohttp.ClientError):
+    """A storage response (502/503/504) that a retry can reasonably fix."""
+
+
+class StorageDocumentNotFoundError(aiohttp.ClientError):
+    """The storage service has no live document with this id (404).
+
+    Deleted or never created, so repeating the request cannot help. A write
+    can replace the document; a read has nothing to return.
+    """
+
+
+# Statuses meaning the storage service refused the request's content (too large,
+# unsupported, malformed): every retry gets the same answer.
+_REJECTED_STORAGE_STATUSES = frozenset({400, 413, 415, 422})
+
+
+def _storage_status_error(
+    status: int, message: str, detail: str | None = None
+) -> aiohttp.ClientError:
+    if status in _TRANSIENT_STORAGE_STATUSES:
+        return TransientStorageError(message)
+    if status == HttpStatusCode.NOT_FOUND.value:
+        return StorageDocumentNotFoundError(message)
+    if status in _REJECTED_STORAGE_STATUSES:
+        reason = f"{message}: the storage service refused it (HTTP {status})"
+        too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
+        return StorageRequestRejectedError(
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+        )
+    return aiohttp.ClientError(message)
+
+
+def _storage_error_detail(body: object) -> str | None:
+    """The human-readable reason in a storage error response, when it has one."""
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict) and isinstance(error.get("message"), str):
+            return error["message"]
+        if isinstance(body.get("message"), str):
+            return body["message"]
+    if isinstance(body, str) and body.strip():
+        return body.strip()[:300]
+    return None
+
+
+# Failures that can be retried only when the request is idempotent: the
+# request may have reached the server before the connection died.
+_RETRY_AFTER_SEND = (
+    TransientStorageError,
+    aiohttp.ServerDisconnectedError,
+    aiohttp.ClientOSError,
+    asyncio.TimeoutError,
+)
+
+
+def _with_idempotency_key(headers: dict[str, str]) -> dict[str, str]:
+    """Headers for one logical document create, reused by all its retries.
+
+    The storage service returns the document a first attempt already created
+    for this key instead of a duplicate, so the create can be retried after
+    any transient failure, including one where the server may have acted.
+    """
+    return {**headers, "Idempotency-Key": uuid.uuid4().hex}
+
+
+def _request_body_not_delivered(error: BaseException) -> bool:
+    """The connection died before the whole request body had left the client.
+
+    Typically a pooled keep-alive socket the server closed just as we reused
+    it. The server then never has a complete body to act on, so even a
+    non-idempotent request (appending a version) is safe to send again. Two
+    shapes prove it, depending on whether aiohttp's body writer or the
+    connection reports the failure first:
+
+    - "Can not write request body": raised only for an OSError while the body
+      is still being written. ClientRequest.write_bytes writes EOF after that
+      block, and a drain inside it waits only while bytes are unsent; a test
+      pins the ordering against aiohttp upgrades.
+    - EPIPE: only a send fails with it, and nothing is sent once the whole
+      request has left.
+
+    A bare ECONNRESET proves nothing: it can equally come from reading the
+    response of a request the server already processed.
+    """
+    if not isinstance(error, aiohttp.ClientOSError):
+        return False
+    return error.errno == errno.EPIPE or (error.strerror or "").startswith(
+        "Can not write request body"
+    )
 
 _shared_sessions: "dict[asyncio.AbstractEventLoop, aiohttp.ClientSession]" = {}
 
@@ -132,19 +361,34 @@ def get_shared_session() -> aiohttp.ClientSession:
     session = aiohttp.ClientSession(
         connector=aiohttp.TCPConnector(
             limit=download_connection_limit(),
-            # Below Node's 5s server.keepAliveTimeout (never overridden, so the
-            # platform default applies). aiohttp's own default is 15s, so an
-            # idle connection sat in our pool for up to 10s after the gateway
-            # had already closed it; reusing one then fails mid-request with
-            # "Server disconnected". That cost 51 record fetches and one failed
-            # tool call in a single day's logs, and became common only once the
-            # session was shared process-wide and connections started living
-            # long enough to go idle.
+            # Well inside Node's keep-alive window; see
+            # NODE_KEEPALIVE_MARGIN_SECONDS. aiohttp's own default (15s)
+            # outlived Node's old 5s window, and reusing a connection the
+            # gateway had already closed failed mid-request with "Server
+            # disconnected": 51 record fetches and one tool call in a single
+            # day's logs.
             keepalive_timeout=NODE_KEEPALIVE_MARGIN_SECONDS,
-        )
+        ),
+        timeout=aiohttp.ClientTimeout(
+            total=None,
+            sock_connect=BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS,
+            sock_read=BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS,
+        ),
     )
     _shared_sessions[loop] = session
     return session
+
+
+@contextlib.asynccontextmanager
+async def _borrowed_session() -> "AsyncIterator[aiohttp.ClientSession]":
+    """The shared session for one call's worth of requests.
+
+    Replaces the throwaway session these upload paths used to open per call
+    -- each of those built its own connector with no timeout and no
+    connection limit, sidestepping the pooled session this module exists to
+    provide. Never closes the session: it is shared.
+    """
+    yield get_shared_session()
 
 
 async def close_shared_session() -> None:
@@ -155,10 +399,10 @@ async def close_shared_session() -> None:
         await session.close()
 
 
-# Same reasoning as _shared_sessions: one client per loop, not per BlobStorage.
-# `None` is a cached "unavailable" verdict, so an outage costs one failed
-# connect per loop instead of one per record fetch.
-_shared_redis: "dict[asyncio.AbstractEventLoop, Any]" = {}
+# Same reasoning as _shared_sessions: one cache per loop, not per BlobStorage.
+# A cached `NoopSignedUrlCache` is the "unavailable" verdict, so an outage
+# costs one failed connect per loop instead of one per record fetch.
+_shared_redis: "dict[asyncio.AbstractEventLoop, ISignedUrlCache]" = {}
 # One lock per loop, not one shared lock: agent action tools run background loops
 # in this process (see agents/actions/*, asyncio.new_event_loop in a thread), and
 # a single asyncio.Lock contended from two loops parks a waiter on one loop that
@@ -178,14 +422,15 @@ def _redis_lock_for(loop: "asyncio.AbstractEventLoop") -> asyncio.Lock:
         return lock
 
 
-async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: ANN401
-    """Process-wide Redis client for the signed-URL cache, one per event loop.
+async def get_shared_signed_url_cache(config_service: Any, logger: Any) -> ISignedUrlCache:  # noqa: ANN401
+    """Process-wide `ISignedUrlCache`, one per event loop.
 
-    Returns None when the cache is disabled or Redis is unreachable; callers
-    then use the uncached path, which is what they did before it existed.
+    Returns a `NoopSignedUrlCache` when the cache is disabled or Redis is
+    unreachable, so callers never need a None check -- they get the same
+    uncached behaviour they had before this cache existed.
     """
     if not signed_url_cache_seconds():
-        return None
+        return NoopSignedUrlCache()
     loop = asyncio.get_running_loop()
     if loop in _shared_redis:
         return _shared_redis[loop]
@@ -196,40 +441,96 @@ async def get_shared_redis(config_service: Any, logger: Any) -> Any:  # noqa: AN
         for stale_loop in [lp for lp in _shared_redis if lp.is_closed()]:
             _shared_redis.pop(stale_loop, None)
 
+        cache: ISignedUrlCache
         client = None
         try:
-            from redis.asyncio import Redis
-
             cfg = await config_service.get_redis_config()
-            client = Redis(
-                host=cfg.host, port=cfg.port, password=cfg.password,
-                db=cfg.db, decode_responses=True,
-                socket_timeout=2.0, socket_connect_timeout=2.0,
+            provider = get_redis_provider(
+                RedisConnectionConfig.from_host_port(
+                    host=cfg.host, port=cfg.port, password=cfg.password, db=cfg.db, tls=cfg.tls
+                )
+            )
+            client = provider.create_client(
+                ClientOptions(
+                    decode_responses=True,
+                    socket_timeout_seconds=2.0,
+                    socket_connect_timeout_seconds=2.0,
+                )
             )
             await client.ping()
+            cache = RedisSignedUrlCache(client, provider.key_namespace)
         except Exception as e:
             if client is not None:
                 try:
                     await client.aclose()
                 except Exception:
                     pass
-            client = None
+            cache = NoopSignedUrlCache()
             logger.warning("Signed-URL cache unavailable, disabled: %s", str(e))
-        _shared_redis[loop] = client
-        return client
+        _shared_redis[loop] = cache
+        return cache
 
 
 async def close_shared_redis() -> None:
-    """Close the pooled Redis client for the running loop; call from shutdown."""
+    """Close the pooled signed-URL cache for the running loop; call from shutdown."""
     loop = asyncio.get_running_loop()
-    client = _shared_redis.pop(loop, None)
-    if client is not None:
-        await client.aclose()
+    cache = _shared_redis.pop(loop, None)
+    if cache is not None:
+        await cache.close()
 
 
 class CustomMetadataEntry(TypedDict):
     key: str
     value: Any  # NOTE: 'Any' is used here because storage metadata values may be str, int, bool, or even structured types, depending on the client and blob store requirements.
+
+def _versioned_json_form(
+    json_data: bytes,
+    document_name: str,
+    virtual_record_id: str,
+    record_id: str,
+    *,
+    compressed: bool,
+    document_path: str | None = None,
+    connector_id: str | None = None,
+    record_group_id: str | None = None,
+) -> aiohttp.FormData:
+    """Multipart body for a JSON document upload.
+
+    When *document_path* is supplied the document is stored at that
+    hierarchical path as a non-versioned file (used by the blob-tree
+    storage layout).  Otherwise it falls back to the flat
+    ``records/<vrid>`` path with versioning enabled.
+
+    Build one per attempt: an aiohttp FormData can be sent only once.
+    """
+    use_hierarchical = document_path is not None
+    effective_path = document_path if use_hierarchical else f'records/{virtual_record_id}'
+
+    form_data = aiohttp.FormData()
+    form_data.add_field('file', json_data, filename=f'{document_name}.json', content_type='application/json')
+    form_data.add_field('documentName', document_name)
+    form_data.add_field('documentPath', effective_path)
+    form_data.add_field('isVersionedFile', 'false' if use_hierarchical else 'true')
+    form_data.add_field('extension', 'json')
+    form_data.add_field('recordId', record_id)
+    idx = 0
+    if compressed:
+        form_data.add_field(f'customMetadata[{idx}][key]', 'compression')
+        form_data.add_field(f'customMetadata[{idx}][value][algorithm]', 'zstd')
+        form_data.add_field(f'customMetadata[{idx}][value][level]', '10')
+        form_data.add_field(f'customMetadata[{idx}][value][format]', 'msgspec')
+        form_data.add_field(f'customMetadata[{idx}][value][version]', 'v1')
+        form_data.add_field(f'customMetadata[{idx}][value][compressed]', 'true')
+        idx += 1
+    if connector_id:
+        form_data.add_field(f'customMetadata[{idx}][key]', 'connectorId')
+        form_data.add_field(f'customMetadata[{idx}][value]', connector_id)
+        idx += 1
+    if record_group_id:
+        form_data.add_field(f'customMetadata[{idx}][key]', 'recordGroupId')
+        form_data.add_field(f'customMetadata[{idx}][value]', record_group_id)
+    return form_data
+
 
 def _add_custom_metadata_to_form(
     form_data: aiohttp.FormData,
@@ -255,9 +556,10 @@ class BlobStorage(Transformer):
         self.logger = logger
         self.config_service = config_service
         self.graph_provider = graph_provider
+        self.compression_enabled = os.environ.get("BLOB_STORAGE_COMPRESSION", "true").lower() in ("true", "1", "yes")
 
-    async def _signed_url_client(self):
-        """Redis client for the signed-URL cache, or None when it is disabled.
+    async def _signed_url_client(self) -> ISignedUrlCache:
+        """`ISignedUrlCache` for this loop; a `NoopSignedUrlCache` when disabled.
 
         Shared per event loop rather than per instance: BlobStorage is built ad
         hoc at ~20 call sites (per request, per tool call), so a per-instance
@@ -265,7 +567,7 @@ class BlobStorage(Transformer):
         reason get_shared_session exists. Failures are never fatal; the caller
         falls back to asking the gateway.
         """
-        return await get_shared_redis(self.config_service, self.logger)
+        return await get_shared_signed_url_cache(self.config_service, self.logger)
 
     async def _record_from_signed_url(
         self,
@@ -329,22 +631,20 @@ class BlobStorage(Transformer):
         return f"sigurl:{org_id}:{document_id}"
 
     async def _cached_signed_url(self, org_id: str, document_id: str) -> str | None:
-        client = await self._signed_url_client()
-        if client is None:
-            return None
+        cache = await self._signed_url_client()
         try:
-            return await client.get(self._signed_url_key(org_id, document_id))
+            return await cache.get(self._signed_url_key(org_id, document_id))
         except Exception as e:
             self.logger.debug("Signed-URL cache read failed: %s", str(e))
             return None
 
     async def _store_signed_url(self, org_id: str, document_id: str, url: str) -> None:
-        client = await self._signed_url_client()
-        if client is None or not url:
+        if not url:
             return
+        cache = await self._signed_url_client()
         try:
-            await client.set(
-                self._signed_url_key(org_id, document_id), url, ex=signed_url_cache_seconds()
+            await cache.set(
+                self._signed_url_key(org_id, document_id), url, signed_url_cache_seconds()
             )
         except Exception as e:
             self.logger.debug("Signed-URL cache write failed: %s", str(e))
@@ -356,7 +656,6 @@ class BlobStorage(Transformer):
         payload = {
             "orgId": org_id,
             "scopes": [TokenScopes.STORAGE_TOKEN.value],
-            "exp": int(time.time()) + 3600,
         }
         # use_cache: these three reads are otherwise an etcd round trip each, on
         # every record download (~100 per chat turn). The config cache is
@@ -368,7 +667,7 @@ class BlobStorage(Transformer):
         if not scoped_jwt_secret:
             raise ValueError("Missing scoped JWT secret")
 
-        jwt_token = jwt.encode(payload, scoped_jwt_secret, algorithm="HS256")
+        jwt_token = mint_service_token(scoped_jwt_secret, payload)
         # Headers are rebuilt per call, never cached: inject_request_headers
         # stamps the caller's request id from a ContextVar.
         headers = inject_request_headers({"Authorization": f"Bearer {jwt_token}"})
@@ -414,10 +713,13 @@ class BlobStorage(Transformer):
             or DefaultEndpoints.FRONTEND_ENDPOINT.value
         )
 
-    def _maybe_compress_record(self, record: dict, *, label: str = "record") -> tuple[str | None, bool]:
+    def _maybe_compress_record(
+        self, record: dict, *, label: str = "record", encoded: _RecordJson | None = None,
+    ) -> tuple[str | None, bool]:
         """Decide whether a record is worth compressing, and compress it if so.
 
-        Returns ``(compressed_base64_or_None, is_compressed)``.
+        Returns ``(compressed_base64_or_None, is_compressed)``. Pass *encoded*
+        (from ``_encode_record_json``) to size the record without encoding it again.
 
         Compression is not free on the read side: the blob is base64'd into a
         JSON envelope, so every reader parses megabytes of base64 before it can
@@ -426,14 +728,19 @@ class BlobStorage(Transformer):
         a shape ``_process_downloaded_record`` already accepts.
         """
         try:
-            serialized_size = len(json.dumps(record).encode("utf-8"))
+            serialized_size = (
+                encoded.ascii_size if encoded is not None
+                else len(json.dumps(record).encode("utf-8"))
+            )
         except (TypeError, ValueError) as e:
             # Not JSON-serializable, so the uncompressed envelope would fail to
             # build. msgpack accepts more types — compress regardless of size.
             self.logger.debug("%s is not JSON-serializable (%s); compressing", label, str(e))
             serialized_size = None
 
-        if serialized_size is not None and serialized_size <= compression_threshold_bytes():
+        if serialized_size is not None and (
+            not self.compression_enabled or serialized_size <= compression_threshold_bytes()
+        ):
             return None, False
 
         try:
@@ -719,97 +1026,335 @@ class BlobStorage(Transformer):
 
         return cleaned
 
-    def _is_non_versioned_exception(self, error: Exception) -> bool:
-        """Detect Node storage errors for legacy documents that are not version-enabled."""
-        return "cannot be versioned" in str(error).lower()
+    async def _build_hierarchical_storage_path(
+        self,
+        record: Any,
+        virtual_record_id: str,
+    ) -> str:
+        """Build filesystem-like storage path for a record.
+
+        Delegates to the shared ``build_hierarchical_storage_path`` utility
+        so the same algorithm is used by both the writer (here) and the mover
+        (``StorageCleanupHelper``).  Always returns a usable path — falls back
+        to ``records/<virtual_record_id>`` when the hierarchy can't be computed.
+        """
+        try:
+            path = await build_hierarchical_storage_path(
+                record,
+                self.graph_provider,
+                virtual_record_id=virtual_record_id,
+                logger=self.logger,
+            )
+            return path or f"records/{virtual_record_id}"
+        except Exception as e:
+            self.logger.warning(
+                "Failed to build hierarchical path for record, falling back to flat path: %s", str(e)
+            )
+            return f"records/{virtual_record_id}"
+
+    async def update_record_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        record_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override the current blob content in place without creating a new version.
+
+        Uses PUT /buffer which accepts multipart/form-data with field 'file'.
+        Works on both versioned and non-versioned storage documents.
+        """
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            encoded = _encode_record_json(record_dict)
+            compressed_record, use_compression = self._maybe_compress_record(
+                record_dict, encoded=encoded
+            )
+
+            if use_compression:
+                json_bytes = _json_utf8_bytes({
+                    "isCompressed": True,
+                    "record": compressed_record,
+                    "virtualRecordId": virtual_record_id,
+                })
+            else:
+                json_bytes = _plain_envelope_bytes(record_dict, encoded, virtual_record_id)
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding record buffer for document: %s", document_id)
+
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"record_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise _storage_status_error(
+                        resp.status, f"Failed to update buffer: {resp.status} {error_text[:200]}"
+                    )
+
+            self.logger.info("✅ Successfully overrode buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except StorageDocumentNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Error in update_record_buffer for document %s: %s", document_id, str(e))
+            raise
+
+    @staticmethod
+    def _strip_org_prefix(org_id: str, document_path: str) -> str:
+        """Node stores documentPath as '<orgId>/PipesHub/<relative>'; Python
+        builds relative paths ('records/...'). Strip the prefix so the two
+        forms are comparable."""
+        prefix = f"{org_id}/PipesHub/"
+        if document_path.startswith(prefix):
+            return document_path[len(prefix):]
+        return document_path
+
+    async def _get_current_document_path(self, org_id: str, document_id: str) -> str | None:
+        """Fetch the ACTUAL currently-stored documentPath for a document via
+        Node's internal document-info endpoint -- not recomputed/guessed."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            get_url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+            session = get_shared_session()
+            async with session.get(get_url, headers=headers) as response:
+                if response.status == 404:
+                    return None
+                if response.status != HttpStatusCode.SUCCESS.value:
+                    self.logger.warning(
+                        "Unexpected status fetching current document path for %s: %s",
+                        document_id, response.status
+                    )
+                    return None
+                doc = await response.json()
+                return doc.get("documentPath")
+        except Exception as e:
+            self.logger.warning(
+                "Could not fetch current document path for %s: %s", document_id, str(e)
+            )
+            return None
+
+    async def get_actual_content_path(self, org_id: str, virtual_record_id: str) -> str | None:
+        """Return a record's content document's ACTUAL current stored path,
+        or None if no content document exists yet for this vrid (or it can't
+        be determined)."""
+        if not self.graph_provider:
+            return None
+        try:
+            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "⚠️ Failed to look up existing doc for vrid %s in get_actual_content_path: %s",
+                virtual_record_id, str(e)
+            )
+            return None
+        if not existing_lookup or not existing_lookup.get("record_doc_id"):
+            return None
+        raw_path = await self._get_current_document_path(
+            org_id, existing_lookup["record_doc_id"]
+        )
+        return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
         record = ctx.record
         org_id = record.org_id
         record_id = record.id
         virtual_record_id = record.virtual_record_id
+        connector_id = getattr(record, "connector_id", None)
+        record_group_id = getattr(record, "record_group_id", None)
         # Use exclude_none=True to skip None values, then clean empty values
         record_dict = record.model_dump(mode='json', exclude_none=True)
         record_dict = self._clean_empty_values(record_dict)
 
+        storage_path = await self._build_hierarchical_storage_path(record, virtual_record_id)
+        self.logger.info(
+            "📄 Built storage path for vrid %s: %s",
+            virtual_record_id, storage_path
+        )
+
         existing_lookup = None
         if self.graph_provider:
-            existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            try:
+                existing_lookup = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception as e:
+                self.logger.warning(
+                    "⚠️ Failed to look up existing doc for vrid %s, will create new: %s",
+                    virtual_record_id, str(e)
+                )
+                existing_lookup = None
 
+        actual_storage_path = storage_path
+
+        replaced_doc_id: str | None = None
         if existing_lookup and existing_lookup.get("record_doc_id"):
             existing_doc_id = existing_lookup["record_doc_id"]
-            self.logger.debug(
-                "📄 Existing storage doc found for vrid %s (doc_id=%s), uploading next version",
+            self.logger.info(
+                "📄 Overriding buffer in place for vrid %s (doc_id=%s)",
                 virtual_record_id, existing_doc_id
             )
             try:
-                document_id, file_size_bytes = await self.upload_next_version(
-                    org_id, record_id, existing_doc_id, record_dict, virtual_record_id
+                document_id, file_size_bytes = await self.update_record_buffer(
+                    org_id, existing_doc_id, record_dict, virtual_record_id
                 )
-            except Exception as e:
-                if not self._is_non_versioned_exception(e):
-                    raise
+                raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                if raw_path:
+                    actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+            except StorageDocumentNotFoundError:
+                # A concurrent move fails the write with 503, never 404; a 404
+                # means the document was deleted (e.g. with the connector that
+                # stored this shared VRID first), so a retry cannot succeed.
                 self.logger.warning(
-                    "⚠️ Existing storage doc %s is not version-enabled; creating replacement document",
-                    existing_doc_id,
+                    "Stored document %s for vrid %s no longer exists; uploading a replacement",
+                    existing_doc_id, virtual_record_id,
                 )
                 document_id, file_size_bytes = await self.save_record_to_storage(
-                    org_id, record_id, virtual_record_id, record_dict
+                    org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                    connector_id=connector_id, record_group_id=record_group_id,
                 )
+            except Exception as e:
+                # A concurrent move_record_tree may have renamed the
+                # directory between the document's MongoDB read and the
+                # disk write (TOCTOU in moveTreeLocal). Retry once after
+                # a brief pause so the move's MongoDB update can land.
+                self.logger.info(
+                    "⚠️ update_record_buffer failed for doc %s, retrying: %s",
+                    existing_doc_id, str(e),
+                )
+                await asyncio.sleep(0.5)
+                try:
+                    document_id, file_size_bytes = await self.update_record_buffer(
+                        org_id, existing_doc_id, record_dict, virtual_record_id
+                    )
+                    raw_path = await self._get_current_document_path(org_id, existing_doc_id)
+                    if raw_path:
+                        actual_storage_path = self._strip_org_prefix(org_id, raw_path)
+                except Exception as retry_e:
+                    self.logger.warning(
+                        "⚠️ Retry also failed for doc %s, falling back to new upload: %s",
+                        existing_doc_id, str(retry_e),
+                    )
+                    document_id, file_size_bytes = await self.save_record_to_storage(
+                        org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                        connector_id=connector_id, record_group_id=record_group_id,
+                    )
+                    replaced_doc_id = existing_doc_id
         else:
             self.logger.debug(
-                "📄 No existing storage doc for vrid %s, creating new document",
-                virtual_record_id
+                "📄 No existing storage doc for vrid %s, creating new document at path: %s",
+                virtual_record_id, storage_path
             )
             document_id, file_size_bytes = await self.save_record_to_storage(
-                org_id, record_id, virtual_record_id, record_dict
+                org_id, record_id, virtual_record_id, record_dict, document_path=storage_path,
+                connector_id=connector_id, record_group_id=record_group_id,
             )
 
         if document_id and self.graph_provider:
-            await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            mapped = await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            if mapped and replaced_doc_id and replaced_doc_id != document_id:
+                await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
+        ctx.settings["storage_path"] = actual_storage_path
         ctx.record = record
         return ctx
 
-    async def _get_signed_url(self, session, url, data, headers) -> dict | None:
-        """Helper method to get signed URL with retry logic"""
-        try:
-            async with session.post(url, json=data, headers=headers) as response:
-                if response.status != HttpStatusCode.SUCCESS.value:
-                    error_detail = ""
-                    try:
-                        error_response = await response.json()
-                        self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
-                                        response.status, error_response)
-                        if isinstance(error_response, dict):
-                            error_obj = error_response.get("error")
-                            if isinstance(error_obj, dict):
-                                error_detail = str(error_obj.get("message", "")).strip()
-                            elif error_obj is not None:
-                                error_detail = str(error_obj).strip()
-                            if not error_detail:
-                                error_detail = str(error_response)
-                        else:
-                            error_detail = str(error_response)
-                        if "cannot be versioned" in error_detail.lower():
-                            self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
-                    except aiohttp.ContentTypeError:
-                        error_text = await response.text()
-                        error_detail = error_text[:200].strip()
-                        self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
-                                        response.status, error_text[:200])
-                    if error_detail:
-                        raise aiohttp.ClientError(f"Failed with status {response.status}: {error_detail}")
-                    raise aiohttp.ClientError(f"Failed with status {response.status}")
+    async def _with_storage_retry(
+        self,
+        what: str,
+        attempt: "Callable[[], Awaitable[Any]]",
+        *,
+        idempotent: bool = True,
+    ) -> Any:  # noqa: ANN401 - returns whatever the attempt returns
+        """Run *attempt* again on a transient failure, with jittered backoff.
 
-                response_data = await response.json()
-                return response_data
+        A non-idempotent request (creating a document) is retried only when it
+        provably never reached the server -- the connection could not be
+        established, or it died before the body was fully written. Anything
+        after that point may already have been processed, and a repeat would
+        create a duplicate.
+        """
+        for number in range(1, _STORAGE_RETRY_ATTEMPTS + 1):
+            try:
+                return await attempt()
+            except Exception as error:
+                timed_out = isinstance(error, asyncio.TimeoutError)
+                if timed_out:
+                    get_default_downstream_feedback().report_timeout(_STORAGE_SERVICE_NAME)
+                retryable = (
+                    isinstance(error, aiohttp.ClientConnectorError)
+                    or _request_body_not_delivered(error)
+                    or (idempotent and isinstance(error, _RETRY_AFTER_SEND))
+                )
+                if not retryable:
+                    raise
+                if number >= _STORAGE_RETRY_ATTEMPTS:
+                    if not timed_out:
+                        get_default_downstream_feedback().report_unavailable(_STORAGE_SERVICE_NAME)
+                    raise
+                delay = random.uniform(
+                    0.0, min(_STORAGE_RETRY_CAP_SECONDS, _STORAGE_RETRY_BASE_SECONDS * 2 ** (number - 1))
+                )
+                self.logger.warning(
+                    "%s failed (attempt %d/%d): %s; retrying in %.1fs",
+                    what, number, _STORAGE_RETRY_ATTEMPTS, error, delay,
+                )
+                await asyncio.sleep(delay)
+        raise AssertionError("unreachable")
+
+    async def _get_signed_url(self, session, url, data, headers) -> dict | None:
+        """Ask the gateway for a signed URL; transient failures are retried."""
+        try:
+            return await self._with_storage_retry(
+                "signed URL request", lambda: self._request_signed_url(session, url, data, headers),
+            )
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error getting signed URL: %s", str(e))
             raise
         except Exception as e:
             self.logger.error("❌ Unexpected error getting signed URL: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
+
+    async def _request_signed_url(self, session, url, data, headers) -> dict | None:
+        async with session.post(url, json=data, headers=headers) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                error_detail = ""
+                try:
+                    error_response = await response.json()
+                    self.logger.error("❌ Failed to get signed URL. Status: %d, Error: %s",
+                                    response.status, error_response)
+                    if isinstance(error_response, dict):
+                        error_obj = error_response.get("error")
+                        if isinstance(error_obj, dict):
+                            error_detail = str(error_obj.get("message", "")).strip()
+                        elif error_obj is not None:
+                            error_detail = str(error_obj).strip()
+                        if not error_detail:
+                            error_detail = str(error_response)
+                    else:
+                        error_detail = str(error_response)
+                    if "cannot be versioned" in error_detail.lower():
+                        self.logger.warning("⚠️ Signed URL request indicates legacy non-versioned document")
+                except aiohttp.ContentTypeError:
+                    error_text = await response.text()
+                    error_detail = error_text[:200].strip()
+                    self.logger.error("❌ Failed to get signed URL. Status: %d, Response: %s",
+                                    response.status, error_text[:200])
+                if error_detail:
+                    raise _storage_status_error(
+                        response.status, f"Failed with status {response.status}: {error_detail}"
+                    )
+                raise _storage_status_error(response.status, f"Failed with status {response.status}")
+
+            response_data = await response.json()
+            return response_data
 
     # async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
     #     """Upload data to a pre-signed URL using httpx.
@@ -874,8 +1419,9 @@ class BlobStorage(Transformer):
     #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
-        """Helper method to upload to signed URL with retry logic"""
-        try:
+        """PUT JSON to a signed URL; transient failures are retried (same
+        key, so a repeat is harmless)."""
+        async def _attempt() -> int:
             async with session.put(
                 URL(signed_url, encoded=True),
                 json=data,
@@ -890,9 +1436,14 @@ class BlobStorage(Transformer):
                         error_text = await response.text()
                         self.logger.error("❌ Failed to upload to signed URL. Status: %d, Response: %s",
                                         response.status, error_text[:200])
-                    raise aiohttp.ClientError(f"Failed to upload with status {response.status}")
+                    raise _storage_status_error(
+                        response.status, f"Failed to upload with status {response.status}"
+                    )
 
                 return response.status
+
+        try:
+            return await self._with_storage_retry("signed URL upload", _attempt)
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error uploading to signed URL: %s", str(e))
             raise
@@ -908,7 +1459,7 @@ class BlobStorage(Transformer):
         content_type: str,
     ) -> None:
         """Upload raw bytes to a pre-signed URL (for CSV, images, etc.)."""
-        try:
+        async def _attempt() -> None:
             async with session.put(
                 URL(signed_url, encoded=True),
                 data=content,
@@ -921,9 +1472,12 @@ class BlobStorage(Transformer):
                         response.status,
                         response_text,
                     )
-                    raise aiohttp.ClientError(
-                        f"Failed to upload with status {response.status}"
+                    raise _storage_status_error(
+                        response.status, f"Failed to upload with status {response.status}"
                     )
+
+        try:
+            await self._with_storage_retry("raw upload", _attempt)
         except aiohttp.ClientError:
             raise
         except Exception as e:
@@ -931,9 +1485,12 @@ class BlobStorage(Transformer):
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
     async def _create_placeholder(self, session, url, data, headers) -> dict | None:
-        """Helper method to create placeholder with retry logic"""
-        try:
-            async with session.post(url, json=data, headers=headers) as response:
+        """Create the placeholder document. Retried like an idempotent request:
+        its Idempotency-Key makes a repeat return the first attempt's placeholder."""
+        create_headers = _with_idempotency_key(headers)
+
+        async def _attempt() -> dict | None:
+            async with session.post(url, json=data, headers=create_headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     try:
                         error_response = await response.json()
@@ -943,10 +1500,13 @@ class BlobStorage(Transformer):
                         error_text = await response.text()
                         self.logger.error("❌ Failed to create placeholder. Status: %d, Response: %s",
                                         response.status, error_text[:200])
-                    raise aiohttp.ClientError(f"Failed with status {response.status}")
+                    raise _storage_status_error(response.status, f"Failed with status {response.status}")
 
                 response_data = await response.json()
                 return response_data
+
+        try:
+            return await self._with_storage_retry("placeholder creation", _attempt)
         except aiohttp.ClientError as e:
             self.logger.error("❌ Network error creating placeholder: %s", str(e))
             raise
@@ -954,7 +1514,11 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Unexpected error creating placeholder: %s", str(e))
             raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def save_record_to_storage(self, org_id: str, record_id: str, virtual_record_id: str, record: dict) -> tuple[str | None, int | None]:
+    async def save_record_to_storage(
+        self, org_id: str, record_id: str, virtual_record_id: str,
+        record: dict, document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
+    ) -> tuple[str | None, int | None]:
         """
         Save document to storage using FormData upload
         Returns:
@@ -963,115 +1527,92 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_record, use_compression = self._maybe_compress_record(record)
+            encoded = _encode_record_json(record)
+            compressed_record, use_compression = self._maybe_compress_record(
+                record, encoded=encoded
+            )
 
             if storage_type == "local":
-                try:
-                    async with aiohttp.ClientSession() as session:
-                        # Use compressed data if available
-                        upload_data = {
-                            "isCompressed": use_compression,
-                            "record": compressed_record if use_compression else record,
-                            "virtualRecordId": virtual_record_id
-                        }
-
-                        json_data = json.dumps(upload_data).encode('utf-8')
-                        file_size_bytes = len(json_data)
-
-                        # Create form data
-                        form_data = aiohttp.FormData()
-                        form_data.add_field('file',
-                                        json_data,
-                                        filename=f'record_{virtual_record_id}.json',
-                                        content_type='application/json')
-                        form_data.add_field('documentName', f'record_{virtual_record_id}')
-                        form_data.add_field('documentPath', f'records/{virtual_record_id}')
-                        form_data.add_field('isVersionedFile', 'true')
-                        form_data.add_field('extension', 'json')
-                        form_data.add_field('recordId', record_id)
-                        if use_compression:
-                            compression_metadata = [
-                                {
-                                    "key": "compression",
-                                    "value": {
-                                        "algorithm": "zstd",
-                                        "level": 10,
-                                        "format": "msgspec",
-                                        "version": "v1",
-                                        "compressed": True,
-                                    },
-                                },
-                            ]
-                            for i, meta in enumerate(compression_metadata):
-                                form_data.add_field(f'customMetadata[{i}][key]', meta['key'])
-                                form_data.add_field(f'customMetadata[{i}][value][algorithm]', meta['value']['algorithm'])
-                                form_data.add_field(f'customMetadata[{i}][value][level]', str(meta['value']['level']))
-                                form_data.add_field(f'customMetadata[{i}][value][format]', meta['value']['format'])
-                                form_data.add_field(f'customMetadata[{i}][value][version]', meta['value']['version'])
-                                form_data.add_field(f'customMetadata[{i}][value][compressed]', str(meta['value']['compressed']).lower())
-
-                        upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
-
-                        async with session.post(upload_url,
-                                            data=form_data,
-                                            headers=headers) as response:
-                            if response.status != HttpStatusCode.SUCCESS.value:
-                                try:
-                                    error_response = await response.json()
-                                    self.logger.error("❌ Failed to upload record. Status: %d, Error: %s",
-                                                    response.status, error_response)
-                                except aiohttp.ContentTypeError:
-                                    error_text = await response.text()
-                                    self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
-                                                    response.status, error_text[:200])
-                                raise Exception("Failed to upload record")
-
-                            response_data = await response.json()
-                            document_id = response_data.get('_id')
-
-                            if not document_id:
-                                self.logger.error("❌ No document ID in upload response")
-                                raise Exception("No document ID in upload response")
-
-                            self.logger.debug("✅ Successfully uploaded record for document: %s", document_id)
-                            return document_id, file_size_bytes
-                except Exception as e:
-                    raise
-            else:
-                # Prepare placeholder for S3 storage
                 if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
-                    placeholder_data = {
-                        "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                        "customMetadata": [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True
-                                }
-                            },
-                        ]
-                    }
+                    json_data = _json_utf8_bytes({
+                        "isCompressed": True,
+                        "record": compressed_record,
+                        "virtualRecordId": virtual_record_id,
+                    })
                 else:
-                    # Fallback to uncompressed placeholder
-                    placeholder_data = {
-                        "documentName": f"record_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                    }
+                    json_data = _plain_envelope_bytes(record, encoded, virtual_record_id)
+                file_size_bytes = len(json_data)
+                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                create_headers = _with_idempotency_key(headers)
+
+                async def _attempt() -> str:
+                    form_data = _versioned_json_form(
+                        json_data, f'record_{virtual_record_id}', virtual_record_id, record_id,
+                        compressed=use_compression,
+                        document_path=document_path,
+                        connector_id=connector_id,
+                        record_group_id=record_group_id,
+                    )
+                    async with _borrowed_session() as session, session.post(
+                        upload_url, data=form_data, headers=create_headers
+                    ) as response:
+                        if response.status == HttpStatusCode.CONFLICT.value:
+                            # Our own earlier attempt is still storing it.
+                            raise TransientStorageError("Record upload still in progress")
+                        if response.status != HttpStatusCode.SUCCESS.value:
+                            try:
+                                error_body: object = await response.json()
+                                self.logger.error("❌ Failed to upload record. Status: %d, Error: %s",
+                                                response.status, error_body)
+                            except aiohttp.ContentTypeError:
+                                error_body = await response.text()
+                                self.logger.error("❌ Failed to upload record. Status: %d, Response: %s",
+                                                response.status, error_body[:200])
+                            raise _storage_status_error(
+                                response.status, "Failed to upload record", _storage_error_detail(error_body)
+                            )
+
+                        response_data = await response.json()
+                        document_id = response_data.get('_id')
+                        if not document_id:
+                            self.logger.error("❌ No document ID in upload response")
+                            raise Exception("No document ID in upload response")
+                        return document_id
+
+                document_id = await self._with_storage_retry("record upload", _attempt)
+                self.logger.debug("✅ Successfully uploaded record for document: %s", document_id)
+                return document_id, file_size_bytes
+            else:
+                # Prepare placeholder for S3/Azure storage
+                effective_path = document_path or f'records/{virtual_record_id}'
+                metadata_entries: list[dict] = []
+                if use_compression:
+                    metadata_entries.append({
+                        "key": "compression",
+                        "value": {
+                            "algorithm": "zstd",
+                            "level": 10,
+                            "format": "msgspec",
+                            "version": "v1",
+                            "compressed": True
+                        }
+                    })
+                if connector_id:
+                    metadata_entries.append({"key": "connectorId", "value": connector_id})
+                if record_group_id:
+                    metadata_entries.append({"key": "recordGroupId", "value": record_group_id})
+
+                placeholder_data: dict = {
+                    "documentName": f"record_{virtual_record_id}",
+                    "documentPath": effective_path,
+                    "extension": "json",
+                    "isVersionedFile": False,
+                }
+                if metadata_entries:
+                    placeholder_data["customMetadata"] = metadata_entries
 
                 try:
-                    async with aiohttp.ClientSession() as session:
+                    async with _borrowed_session() as session:
                         placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                         document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
 
@@ -1104,7 +1645,11 @@ class BlobStorage(Transformer):
                                 "virtualRecordId": virtual_record_id,
                             }
 
-                        file_size_bytes = len(json.dumps(upload_data).encode('utf-8'))
+                        file_size_bytes = (
+                            _cloud_envelope_size(encoded, virtual_record_id)
+                            if encoded is not None and not compressed_record
+                            else len(json.dumps(upload_data).encode('utf-8'))
+                        )
 
                         await self._upload_to_signed_url(session, signed_url, upload_data)
 
@@ -1136,29 +1681,40 @@ class BlobStorage(Transformer):
             doc_name_no_ext = os.path.splitext(file_name)[0]
 
             # Single session for all HTTP steps in this upload (local: one POST; cloud: placeholder + signed URL + PUT).
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 if storage_type == "local":
-                    form_data = aiohttp.FormData()
-                    form_data.add_field(
-                        "file", binary_data, filename=file_name, content_type=content_type
-                    )
-                    form_data.add_field("documentName", doc_name_no_ext)
-                    form_data.add_field("documentPath", f"attachments/{record_id}")
-                    form_data.add_field("isVersionedFile", "false")
-                    form_data.add_field("extension", extension)
-                    form_data.add_field("recordId", record_id)
-
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
-                    async with session.post(upload_url, data=form_data, headers=headers) as response:
-                        if response.status != HttpStatusCode.SUCCESS.value:
-                            text = await response.text()
-                            self.logger.error(
-                                "❌ Failed to upload binary to storage: %d %s", response.status, text[:200]
-                            )
-                            return None, None
-                        response_data = await response.json()
-                        document_id = response_data.get("_id")
-                        return document_id, file_size_bytes
+                    create_headers = _with_idempotency_key(headers)
+
+                    async def _attempt() -> tuple[str | None, int | None]:
+                        form_data = aiohttp.FormData()
+                        form_data.add_field(
+                            "file", binary_data, filename=file_name, content_type=content_type
+                        )
+                        form_data.add_field("documentName", doc_name_no_ext)
+                        form_data.add_field("documentPath", f"attachments/{record_id}")
+                        form_data.add_field("isVersionedFile", "false")
+                        form_data.add_field("extension", extension)
+                        form_data.add_field("recordId", record_id)
+                        async with session.post(upload_url, data=form_data, headers=create_headers) as response:
+                            if response.status == HttpStatusCode.CONFLICT.value:
+                                # Our own earlier attempt is still storing it.
+                                raise TransientStorageError("Binary upload still in progress")
+                            if response.status != HttpStatusCode.SUCCESS.value:
+                                text = await response.text()
+                                self.logger.error(
+                                    "❌ Failed to upload binary to storage: %d %s", response.status, text[:200]
+                                )
+                                # Raised, not returned, so a 502/503/504 is retried; a
+                                # failure the retry cannot fix still ends as (None, None)
+                                # in the handler below.
+                                raise _storage_status_error(
+                                    response.status, "Failed to upload binary to storage"
+                                )
+                            response_data = await response.json()
+                            return response_data.get("_id"), file_size_bytes
+
+                    return await self._with_storage_retry("binary upload", _attempt)
                 else:
                     # S3/cloud: placeholder → signed URL → raw upload
                     placeholder_data = {
@@ -1241,10 +1797,165 @@ class BlobStorage(Transformer):
             result["record_metadata_doc_id"] = record_metadata_doc_id
         return result
 
+    async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
+        """Live records (any connector) referencing *virtual_record_id*.
+
+        Same rule as the vector cleanup: raise rather than read a failed lookup
+        as "unreferenced", and confirm an empty answer once after a short pause
+        so a lagging replica cannot turn into a deleted blob.
+        """
+        raw = await self.graph_provider.get_records_by_virtual_record_id(
+            virtual_record_id, raise_on_error=True
+        )
+        remaining = remaining_record_keys(raw)
+        if not remaining:
+            await asyncio.sleep(EMPTY_CONFIRM_DELAY_SECONDS)
+            raw = await self.graph_provider.get_records_by_virtual_record_id(
+                virtual_record_id, raise_on_error=True
+            )
+            remaining = remaining_record_keys(raw)
+        return remaining
+
+    async def _delete_replaced_document(
+        self, org_id: str, document_id: str, virtual_record_id: str,
+    ) -> None:
+        """Best-effort removal of a document superseded by a replacement upload.
+
+        Called only once the VRID mapping points at the replacement, so nothing
+        reads this document any more; a failure leaves it unreferenced.
+        """
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+            delete_url = (
+                f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
+                "?hard=true"
+            )
+            async with get_shared_session().delete(delete_url, headers=headers) as resp:
+                if resp.status not in (200, 204, 404):
+                    self.logger.warning(
+                        "Could not delete replaced storage doc %s (vrid %s): status %d",
+                        document_id, virtual_record_id, resp.status,
+                    )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not delete replaced storage doc %s (vrid %s): %s",
+                document_id, virtual_record_id, exc,
+            )
+
+    async def delete_storage_docs_for_vrid(self, org_id: str, virtual_record_id: str) -> None:
+        """Delete the blob storage documents (record + metadata) and the graph
+        mapping node for an abandoned virtualRecordId.
+
+        Called when VRID reconciliation isolates a record with a new VRID and
+        the old one is no longer needed.  Safe to call when the mapping or the
+        documents have already been removed — every step is idempotent.
+
+        Content is deduplicated across connectors, so other records can still
+        hold this VRID and read these very documents; nothing is deleted while
+        any live record references it.
+
+        Raises on transient failures (HTTP errors, connection issues, a graph
+        that cannot be read) so the caller's retry loop can re-attempt the
+        entire cleanup; giving up leaves the documents in place.
+        """
+        if not self.graph_provider:
+            self.logger.warning(
+                "No graph provider — cannot clean up storage docs for abandoned VRID %s",
+                virtual_record_id,
+            )
+            return
+
+        remaining = await self._records_still_using_vrid(virtual_record_id)
+        if remaining:
+            self.logger.info(
+                "Keeping storage docs for VRID %s: still used by %d record(s)",
+                virtual_record_id, len(remaining),
+            )
+            return
+
+        collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
+
+        try:
+            mapping = await self.graph_provider.get_document(
+                virtual_record_id, collection_name
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to look up VRID mapping for cleanup (%s): %s",
+                virtual_record_id, exc,
+            )
+            raise
+
+        if not mapping:
+            self.logger.info(
+                "No VRID mapping found for abandoned VRID %s — nothing to clean up",
+                virtual_record_id,
+            )
+            return
+
+        doc_ids: list[str] = []
+        record_doc_id = mapping.get("record_doc_id") or mapping.get("documentId")
+        metadata_doc_id = mapping.get("record_metadata_doc_id")
+        if record_doc_id:
+            doc_ids.append(record_doc_id)
+        if metadata_doc_id:
+            doc_ids.append(metadata_doc_id)
+
+        all_deleted = True
+        if doc_ids:
+            try:
+                headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+                session = get_shared_session()
+                for doc_id in doc_ids:
+                    delete_url = (
+                        f"{nodejs_endpoint}"
+                        f"{Routes.STORAGE_DOCUMENT.value.format(documentId=doc_id)}"
+                        "?hard=true"
+                    )
+                    async with session.delete(delete_url, headers=headers) as resp:
+                        if resp.status in (200, 204, 404):
+                            self.logger.info(
+                                "Deleted storage doc %s for abandoned VRID %s",
+                                doc_id, virtual_record_id,
+                            )
+                        else:
+                            all_deleted = False
+                            text = await resp.text()
+                            self.logger.warning(
+                                "Storage doc delete returned %d for %s (vrid %s): %s",
+                                resp.status, doc_id, virtual_record_id, text[:200],
+                            )
+            except Exception as exc:
+                self.logger.error(
+                    "Failed to delete storage docs for abandoned VRID %s: %s",
+                    virtual_record_id, exc,
+                )
+                raise
+
+        if not all_deleted:
+            raise Exception(
+                f"Some storage docs for VRID {virtual_record_id} could not be deleted; "
+                "keeping mapping node so a retry can find them"
+            )
+
+        try:
+            await self.graph_provider.remove_nodes_by_field(
+                collection_name, "_key", field_value=virtual_record_id,
+            )
+            self.logger.info(
+                "Removed VRID mapping node for abandoned %s", virtual_record_id,
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Failed to remove VRID mapping node for %s: %s",
+                virtual_record_id, exc,
+            )
+            raise
+
     VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE = 500
 
     async def get_document_ids_by_virtual_record_ids(
-        self, virtual_record_ids: list[str]
+        self, virtual_record_ids: list[str], *, raise_on_error: bool = False
     ) -> dict[str, dict]:
         """Resolve many virtual-record → document mappings with one query per chunk.
 
@@ -1260,6 +1971,10 @@ class BlobStorage(Transformer):
         with no mapping at all are absent from the result rather than
         present-and-empty, so callers can tell the difference between "not
         found" and "not looked up".
+
+        A failed read is logged and its ids left out, so a chat turn still
+        answers. ``raise_on_error`` raises it instead, for callers that act on
+        an id being absent.
         """
         if not self.graph_provider:
             self.logger.error("❌ GraphProvider not initialized, cannot resolve virtual record IDs.")
@@ -1271,15 +1986,19 @@ class BlobStorage(Transformer):
 
         collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
         resolved: dict[str, dict] = {}
+        # Only when set: the chat path's provider calls stay exactly as they were.
+        strict = {"raise_on_error": True} if raise_on_error else {}
 
         chunk_size = self.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE
         for start in range(0, len(unique_ids), chunk_size):
             chunk = unique_ids[start:start + chunk_size]
             try:
                 nodes = await self.graph_provider.get_nodes_by_field_in(
-                    collection_name, "id", chunk
+                    collection_name, "id", chunk, **strict
                 )
             except Exception as e:
+                if raise_on_error:
+                    raise
                 # Degrade to the per-id path for this chunk rather than failing the turn.
                 self.logger.warning("Batch virtual-record lookup failed, falling back: %s", str(e))
                 nodes = []
@@ -1317,13 +2036,15 @@ class BlobStorage(Transformer):
         if missing:
             fallbacks = await asyncio.gather(
                 *[
-                    self.graph_provider.get_document(vrid, collection_name)
+                    self.graph_provider.get_document(vrid, collection_name, **strict)
                     for vrid in missing
                 ],
                 return_exceptions=True,
             )
             for vrid, doc in zip(missing, fallbacks):
                 if isinstance(doc, Exception):
+                    if raise_on_error:
+                        raise doc
                     self.logger.warning(
                         "Virtual-record mapping fallback failed for %s: %s", vrid, str(doc)
                     )
@@ -1386,38 +2107,51 @@ class BlobStorage(Transformer):
                         "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
                     )
 
-            async with session.get(download_url, headers=headers) as resp:
-                if resp.status == HttpStatusCode.SUCCESS.value:
-                    data = await resp.json(loads=_decode_json)
+            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+            if data.get("signedUrl"):
+                await self._store_signed_url(org_id, document_id, data["signedUrl"])
 
-                    if data.get("signedUrl"):
-                        await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-                    if data.get("record"):
-                        record = self._process_downloaded_record(data)
-                        record_name = record.get("record_name")
-                        self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                        return record
-                    elif data.get("signedUrl"):
-                        record = await self._record_from_signed_url(
-                            session, data["signedUrl"], file_size_bytes, virtual_record_id
-                        )
-                        if record is not None:
-                            return record
-                        self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                        raise Exception("No record found for virtual_record_id")
-                    else:
-                        self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                        raise Exception("No record found for virtual_record_id")
-                else:
-                    self.logger.error("❌ Failed to retrieve record: status %s, virtual_record_id: %s", resp.status, virtual_record_id)
-                    raise Exception("Failed to retrieve record from storage")
+            if data.get("record"):
+                record = self._process_downloaded_record(data)
+                record_name = record.get("record_name")
+                self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
+                return record
+            elif data.get("signedUrl"):
+                record = await self._record_from_signed_url(
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id
+                )
+                if record is not None:
+                    return record
+                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                raise Exception("No record found for virtual_record_id")
+            else:
+                self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+                raise Exception("No record found for virtual_record_id")
+        except StorageDocumentNotFoundError:
+            self.logger.warning(
+                "Stored document for virtual_record_id %s no longer exists", virtual_record_id
+            )
+            raise
         except Exception as e:
             self.logger.exception(
                 "❌ Error retrieving record from storage (virtual_record_id=%s)",
                 virtual_record_id,
             )
             raise e
+
+    async def _fetch_record_envelope(
+        self, session: aiohttp.ClientSession, download_url: str, headers: dict, virtual_record_id: str
+    ) -> dict:
+        """GET the record envelope from the gateway; transient failures retried."""
+        async def _attempt() -> dict:
+            async with session.get(download_url, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    raise _storage_status_error(
+                        resp.status, f"Failed to retrieve record from storage: status {resp.status}"
+                    )
+                return await resp.json(loads=_decode_json)
+
+        return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
     async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
         """
@@ -1434,17 +2168,17 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            # Create a unique key for the mapping using both IDs
             mapping_key = virtual_record_id
 
             mapping_document = {
                 "id": mapping_key,
                 "orgId": org_id,
+                "virtualRecordId": virtual_record_id,
                 "documentId": document_id,
+                "record_doc_id": document_id,
                 "updatedAt": get_epoch_timestamp_in_ms()
             }
 
-            # Add file size if provided
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
 
@@ -1497,20 +2231,26 @@ class BlobStorage(Transformer):
                 "record": compressed_record if use_compression else record,
                 "virtualRecordId": virtual_record_id
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
+            # Cloud uploads send `json=upload_data`, which ASCII-escapes; size what is sent.
+            json_data = (
+                _json_utf8_bytes(upload_data)
+                if storage_type == "local"
+                else json.dumps(upload_data).encode("utf-8")
+            )
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD_NEXT_VERSION.value.format(documentId=document_id)}"
+
+                async def _attempt() -> None:
                     form_data = aiohttp.FormData()
                     form_data.add_field('file',
                                     json_data,
                                     filename=f'record_{record_id}.json',
                                     content_type='application/json')
-
-                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD_NEXT_VERSION.value.format(documentId=document_id)}"
-
-                    async with session.post(upload_url, data=form_data, headers=headers) as response:
+                    async with _borrowed_session() as session, session.post(
+                        upload_url, data=form_data, headers=headers
+                    ) as response:
                         if response.status != HttpStatusCode.SUCCESS.value:
                             error_response = None
                             try:
@@ -1533,10 +2273,11 @@ class BlobStorage(Transformer):
                                 f"Failed to upload next version (status: {response.status})"
                             )
 
-                    self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
-                    return document_id, file_size_bytes
+                await self._with_storage_retry("next-version upload", _attempt, idempotent=False)
+                self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
+                return document_id, file_size_bytes
             else:
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
                     upload_result = await self._get_signed_url(session, upload_url, {}, headers)
 
@@ -1554,10 +2295,12 @@ class BlobStorage(Transformer):
             raise e
 
     async def save_reconciliation_metadata(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict,
+        document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
     ) -> str | None:
         """
-        On first call, creates a new document. On subsequent calls, uploads next version.
+        On first call, creates a new document. On subsequent calls, overrides in place.
 
         The metadata document ID is stored in the same virtual-record-to-doc mapping
         under the field 'record_metadata_doc_id', alongside the record's own 'record_doc_id'.
@@ -1567,13 +2310,16 @@ class BlobStorage(Transformer):
             record_id: Record ID
             virtual_record_id: Virtual record ID
             metadata_dict: Reconciliation metadata dictionary
+            document_path: Storage path (same as record content path) so metadata
+                lives alongside the record. Falls back to records/<vrid> if None.
 
         Returns:
             str | None: metadata document_id if successful
         """
         try:
 
-            # Check if metadata document already exists in the same mapping doc
+            effective_path = document_path or f"records/{virtual_record_id}"
+
             existing_metadata_doc_id = None
             if self.graph_provider:
                 try:
@@ -1587,26 +2333,47 @@ class BlobStorage(Transformer):
                     self.logger.warning("Could not check existing metadata mapping: %s", str(e))
 
             metadata_document_id = None
+            replaced_metadata_doc_id: str | None = None
             if existing_metadata_doc_id:
                 try:
-                    doc_id, _ = await self.upload_next_version(
-                        org_id, record_id, existing_metadata_doc_id,
-                        metadata_dict, virtual_record_id
+                    doc_id, _ = await self._update_metadata_buffer(
+                        org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
                     )
                     metadata_document_id = doc_id
-                except Exception as e:
-                    if not self._is_non_versioned_exception(e):
-                        raise
+                except StorageDocumentNotFoundError:
                     self.logger.warning(
-                        "⚠️ Existing metadata doc %s is not version-enabled; creating replacement metadata document",
-                        existing_metadata_doc_id,
+                        "Stored metadata document %s for vrid %s no longer exists; creating a replacement",
+                        existing_metadata_doc_id, virtual_record_id,
                     )
                     metadata_document_id = await self._create_metadata_document(
-                        org_id, record_id, virtual_record_id, metadata_dict
+                        org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                        connector_id=connector_id, record_group_id=record_group_id,
                     )
+                except Exception as e:
+                    self.logger.info(
+                        "⚠️ metadata buffer update failed for doc %s, retrying: %s",
+                        existing_metadata_doc_id, str(e),
+                    )
+                    await asyncio.sleep(0.5)
+                    try:
+                        doc_id, _ = await self._update_metadata_buffer(
+                            org_id, existing_metadata_doc_id, metadata_dict, virtual_record_id
+                        )
+                        metadata_document_id = doc_id
+                    except Exception as retry_e:
+                        self.logger.warning(
+                            "⚠️ Retry also failed for metadata doc %s; creating replacement: %s",
+                            existing_metadata_doc_id, str(retry_e),
+                        )
+                        metadata_document_id = await self._create_metadata_document(
+                            org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                            connector_id=connector_id, record_group_id=record_group_id,
+                        )
+                        replaced_metadata_doc_id = existing_metadata_doc_id
             else:
                 metadata_document_id = await self._create_metadata_document(
-                    org_id, record_id, virtual_record_id, metadata_dict
+                    org_id, record_id, virtual_record_id, metadata_dict, effective_path,
+                    connector_id=connector_id, record_group_id=record_group_id,
                 )
 
             if metadata_document_id and self.graph_provider:
@@ -1623,6 +2390,10 @@ class BlobStorage(Transformer):
                     "✅ Stored metadata mapping: %s -> record_metadata_doc_id=%s",
                     virtual_record_id, metadata_document_id
                 )
+                if replaced_metadata_doc_id and replaced_metadata_doc_id != metadata_document_id:
+                    await self._delete_replaced_document(
+                        org_id, replaced_metadata_doc_id, virtual_record_id,
+                    )
 
             return metadata_document_id
 
@@ -1630,60 +2401,91 @@ class BlobStorage(Transformer):
             self.logger.error("❌ Error saving reconciliation metadata: %s", str(e))
             raise e
 
+    async def _update_metadata_buffer(
+        self,
+        org_id: str,
+        document_id: str,
+        metadata_dict: dict,
+        virtual_record_id: str,
+    ) -> tuple[str | None, int | None]:
+        """Override metadata content in place without compression."""
+        try:
+            headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
+
+            json_bytes = _json_utf8_bytes(metadata_dict)
+            file_size_bytes = len(json_bytes)
+
+            buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
+            self.logger.info("📤 Overriding metadata buffer for document: %s", document_id)
+
+            session = get_shared_session()
+            form_data = aiohttp.FormData()
+            form_data.add_field(
+                "file",
+                json_bytes,
+                filename=f"metadata_{virtual_record_id}.json",
+                content_type="application/json",
+            )
+            async with session.put(buffer_url, data=form_data, headers=headers) as resp:
+                if resp.status != HttpStatusCode.SUCCESS.value:
+                    error_text = await resp.text()
+                    raise _storage_status_error(
+                        resp.status, f"Failed to update metadata buffer: {resp.status} {error_text[:200]}"
+                    )
+
+            self.logger.info("✅ Successfully overrode metadata buffer for document: %s", document_id)
+            return document_id, file_size_bytes
+
+        except StorageDocumentNotFoundError:
+            raise
+        except Exception as e:
+            self.logger.error("❌ Error in _update_metadata_buffer for document %s: %s", document_id, str(e))
+            raise
+
     async def _create_metadata_document(
-        self, org_id: str, record_id: str, virtual_record_id: str, metadata_dict: dict
+        self, org_id: str, record_id: str, virtual_record_id: str,
+        metadata_dict: dict, document_path: str | None = None,
+        *, connector_id: str | None = None, record_group_id: str | None = None,
     ) -> str | None:
-        """Create a new metadata document in blob storage."""
+        """Create a new metadata document in blob storage (uncompressed plain JSON)."""
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
+            encoded = _encode_record_json(metadata_dict)
             compressed_metadata, use_compression = self._maybe_compress_record(
-                metadata_dict, label="metadata"
+                metadata_dict, label="metadata", encoded=encoded
             )
 
+            effective_path = document_path or f"records/{virtual_record_id}"
             upload_data = {
                 "isCompressed": use_compression,
                 "record": compressed_metadata if use_compression else metadata_dict,
                 "virtualRecordId": virtual_record_id,
             }
-            json_data = json.dumps(upload_data).encode('utf-8')
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
-                    form_data = aiohttp.FormData()
-                    form_data.add_field('file',
-                                    json_data,
-                                    filename=f'metadata_{virtual_record_id}.json',
-                                    content_type='application/json')
-                    form_data.add_field('documentName', f'metadata_{virtual_record_id}')
-                    form_data.add_field('documentPath', f'records/{virtual_record_id}')
-                    form_data.add_field('isVersionedFile', 'true')
-                    form_data.add_field('extension', 'json')
-                    form_data.add_field('recordId', record_id)
-                    if use_compression:
-                        compression_metadata = [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True,
-                                },
-                            },
-                        ]
-                        for i, meta in enumerate(compression_metadata):
-                            form_data.add_field(f'customMetadata[{i}][key]', meta['key'])
-                            form_data.add_field(f'customMetadata[{i}][value][algorithm]', meta['value']['algorithm'])
-                            form_data.add_field(f'customMetadata[{i}][value][level]', str(meta['value']['level']))
-                            form_data.add_field(f'customMetadata[{i}][value][format]', meta['value']['format'])
-                            form_data.add_field(f'customMetadata[{i}][value][version]', meta['value']['version'])
-                            form_data.add_field(f'customMetadata[{i}][value][compressed]', str(meta['value']['compressed']).lower())
+                json_data = (
+                    _json_utf8_bytes(upload_data)
+                    if use_compression
+                    else _plain_envelope_bytes(metadata_dict, encoded, virtual_record_id)
+                )
+                upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
+                create_headers = _with_idempotency_key(headers)
 
-                    upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
-
-                    async with session.post(upload_url, data=form_data, headers=headers) as response:
+                async def _attempt() -> str:
+                    form_data = _versioned_json_form(
+                        json_data, f'metadata_{virtual_record_id}', virtual_record_id, record_id,
+                        compressed=use_compression,
+                        document_path=effective_path if document_path else None,
+                        connector_id=connector_id,
+                        record_group_id=record_group_id,
+                    )
+                    async with _borrowed_session() as session, session.post(
+                        upload_url, data=form_data, headers=create_headers
+                    ) as response:
+                        if response.status == HttpStatusCode.CONFLICT.value:
+                            # Our own earlier attempt is still storing it.
+                            raise TransientStorageError("Metadata upload still in progress")
                         if response.status != HttpStatusCode.SUCCESS.value:
                             try:
                                 error_response = await response.json()
@@ -1693,50 +2495,34 @@ class BlobStorage(Transformer):
                                 error_text = await response.text()
                                 self.logger.error("❌ Failed to create metadata. Status: %d, Response: %s",
                                                 response.status, error_text[:200])
-                            raise Exception("Failed to create metadata document")
+                            raise _storage_status_error(response.status, "Failed to create metadata document")
 
                         response_data = await response.json()
                         document_id = response_data.get('_id')
-
                         if not document_id:
                             raise Exception("No document ID in metadata upload response")
-
-                        self.logger.debug("✅ Created metadata document: %s", document_id)
                         return document_id
+
+                document_id = await self._with_storage_retry("metadata upload", _attempt)
+                self.logger.debug("✅ Created metadata document: %s", document_id)
+                return document_id
             else:
+                metadata_entries: list[dict] = []
+                if connector_id:
+                    metadata_entries.append({"key": "connectorId", "value": connector_id})
+                if record_group_id:
+                    metadata_entries.append({"key": "recordGroupId", "value": record_group_id})
 
-                if use_compression:
-                    # Prepare placeholder with compression metadata for MongoDB
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                        "customMetadata": [
-                            {
-                                "key": "compression",
-                                "value": {
-                                    "algorithm": "zstd",
-                                    "level": 10,
-                                    "format": "msgspec",
-                                    "version": "v1",
-                                    "compressed": True
-                                }
-                            },
-                        ]
-                    }
-                else:
+                placeholder_data: dict = {
+                    "documentName": f"metadata_{virtual_record_id}",
+                    "documentPath": effective_path,
+                    "extension": "json",
+                    "isVersionedFile": False,
+                }
+                if metadata_entries:
+                    placeholder_data["customMetadata"] = metadata_entries
 
-                    placeholder_data = {
-                        "documentName": f"metadata_{virtual_record_id}",
-                        "documentPath": f"records/{virtual_record_id}",
-                        "extension": "json",
-                        "isVersionedFile": True,
-                        "recordId": record_id,
-                    }
-
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                     document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
 
@@ -1783,21 +2569,22 @@ class BlobStorage(Transformer):
                 storage document.
 
         Returns:
-            dict with ``documentId``, ``fileName``, and either ``signedUrl``
-            (S3) or ``downloadUrl`` (local).
+            dict with ``documentId``, ``fileName`` and, when cloud storage issues
+            one, ``signedUrl``. There is no ``downloadUrl``: the storage service
+            has no user-facing route, so a caller that needs a link must register
+            the file as a record and use :meth:`get_record_stream_url`.
         """
         import os
 
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
-            public_base_url = await self._get_public_download_base_url()
 
             document_path = f"conversations/{conversation_id}"
             doc_name_no_ext = os.path.splitext(file_name)[0]
             extension = os.path.splitext(file_name)[1].lstrip(".")
 
             if storage_type == "local":
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     form_data = aiohttp.FormData()
                     form_data.add_field(
                         "file", file_bytes,
@@ -1831,14 +2618,9 @@ class BlobStorage(Transformer):
                         if not document_id:
                             raise Exception("No document ID in local upload response")
 
-                    download_url = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                    )
                     self.logger.info("✅ Conversation file saved (local): %s", document_id)
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url,
                         "fileName": file_name,
                     }
             else:
@@ -1851,7 +2633,7 @@ class BlobStorage(Transformer):
                 if custom_metadata:
                     placeholder_data["customMetadata"] = custom_metadata
 
-                async with aiohttp.ClientSession() as session:
+                async with _borrowed_session() as session:
                     placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                     document = await self._create_placeholder(
                         session, placeholder_url, placeholder_data, headers,
@@ -1895,15 +2677,10 @@ class BlobStorage(Transformer):
                                 }
 
                     self.logger.info(
-                        "✅ Conversation file saved (fallback URL): %s", document_id,
-                    )
-                    download_url_external = (
-                        f"{public_base_url}"
-                        f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+                        "✅ Conversation file saved (no signed URL): %s", document_id,
                     )
                     return {
                         "documentId": document_id,
-                        "downloadUrl": download_url_external,
                         "fileName": file_name,
                     }
         except Exception as e:
@@ -1931,8 +2708,8 @@ class BlobStorage(Transformer):
         invariant :class:`~app.services.artifact_registry.versioning.VersionManager`
         depends on.
 
-        Returns dict with ``documentId``, ``fileName``, and either
-        ``signedUrl`` (S3) or ``downloadUrl`` (local).
+        Returns dict with ``documentId``, ``fileName`` and, on cloud storage,
+        ``signedUrl``.
         """
         import os as _os
 
@@ -1942,7 +2719,7 @@ class BlobStorage(Transformer):
         extension = _os.path.splitext(file_name)[1].lstrip(".")
 
         if storage_type == "local":
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 form_data = aiohttp.FormData()
                 form_data.add_field(
                     "file", file_bytes, filename=file_name, content_type=content_type,
@@ -1965,12 +2742,7 @@ class BlobStorage(Transformer):
                     if not document_id:
                         raise Exception("No document ID in local upload response")
 
-                public_base_url = await self._get_public_download_base_url()
-                download_url = (
-                    f"{public_base_url}"
-                    f"{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
-                )
-                return {"documentId": document_id, "downloadUrl": download_url, "fileName": file_name}
+                return {"documentId": document_id, "fileName": file_name}
         else:
             placeholder_data = {
                 "documentName": doc_name_no_ext,
@@ -1978,7 +2750,7 @@ class BlobStorage(Transformer):
                 "extension": extension,
                 "isVersionedFile": True,
             }
-            async with aiohttp.ClientSession() as session:
+            async with _borrowed_session() as session:
                 placeholder_url = f"{nodejs_endpoint}{Routes.STORAGE_PLACEHOLDER.value}"
                 document = await self._create_placeholder(session, placeholder_url, placeholder_data, headers)
                 document_id = document.get("_id") if document else None
@@ -2006,55 +2778,50 @@ class BlobStorage(Transformer):
                                 "signedUrl": data["signedUrl"],
                                 "fileName": file_name,
                             }
-                public_base_url = await self._get_public_download_base_url()
-                return {
-                    "documentId": document_id,
-                    "downloadUrl": f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}",
-                    "fileName": file_name,
-                }
+                return {"documentId": document_id, "fileName": file_name}
 
-    async def get_download_url(self, org_id: str, document_id: str, version: int | None = None) -> str:
-        """Resolve a user-facing download URL for `document_id` — an S3/Azure
-        signed URL when available, else the org-scoped external download
-        route (local storage / any fallback where the download route
-        didn't return a `signedUrl`). Used by
-        `app.services.artifact_registry.signed_urls.SignedUrlBroker` so
-        that module never reaches into this class's private helpers.
+    async def get_download_url(
+        self, org_id: str, document_id: str, version: int | None = None,
+    ) -> str | None:
+        """S3/Azure signed download URL for `document_id`, or ``None`` when
+        storage cannot issue one (local storage). Callers that still need a
+        link fall back to :meth:`get_record_stream_url`, which checks the
+        viewer's record permissions; the storage service itself has no
+        user-facing route.
 
         `version` is a storage-layer `versionHistory` index (not a registry
-        version number); both the internal and external `/download` routes
-        accept it identically (same `downloadDocument` handler mounted
-        twice — see `storage.routes.ts`)."""
+        version number)."""
         headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
+        # Local storage's download route streams the file bytes rather than
+        # returning `{signedUrl}` JSON; calling it would fetch the whole file.
+        if storage_type == "local":
+            return None
         version_query = f"?version={version}" if version is not None else ""
-        # Local storage's download route STREAMS the file bytes back
-        # (`serveFileFromLocalStorage` in storage.controller.ts) — there is
-        # no `{signedUrl}` JSON to fetch, so calling it here would download
-        # the whole file just to throw it away. Go straight to the
-        # org-scoped external route.
-        if storage_type != "local":
-            download_api = (
-                f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-                f"{version_query}"
-            )
-            async with aiohttp.ClientSession() as session:
-                async with session.get(download_api, headers=headers) as resp:
-                    # Content-type guard: any storage vendor that streams the
-                    # file on this route (rather than returning JSON) falls
-                    # through to the external-route fallback below.
-                    if (
-                        resp.status == HttpStatusCode.SUCCESS.value
-                        and resp.content_type == "application/json"
-                    ):
-                        data = await resp.json()
-                        signed = data.get("signedUrl")
-                        if signed:
-                            return str(signed)
-        public_base_url = await self._get_public_download_base_url()
-        return (
-            f"{public_base_url}{Routes.STORAGE_DOWNLOAD_EXTERNAL.value.format(documentId=document_id)}"
+        download_api = (
+            f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
             f"{version_query}"
         )
+        async with _borrowed_session() as session:
+            async with session.get(download_api, headers=headers) as resp:
+                # Any vendor that streams on this route instead of returning
+                # JSON has no signed URL to give.
+                if (
+                    resp.status == HttpStatusCode.SUCCESS.value
+                    and resp.content_type == "application/json"
+                ):
+                    data = await resp.json()
+                    signed = data.get("signedUrl")
+                    if signed:
+                        return str(signed)
+        return None
+
+    async def get_record_stream_url(self, record_id: str, version: int | None = None) -> str:
+        """User-facing link to a record's bytes through the knowledge-base
+        stream route, which enforces the viewer's record permissions.
+        `version` is the record's own version number, not a storage index."""
+        public_base_url = await self._get_public_download_base_url()
+        version_query = f"?version={version}" if version is not None else ""
+        return f"{public_base_url}{Routes.KB_STREAM_RECORD.value.format(recordId=record_id)}{version_query}"
 
     async def get_direct_upload_url(self, org_id: str, document_id: str) -> str:
         """Signed PUT URL for an EXISTING document — the first phase of the
@@ -2068,7 +2835,7 @@ class BlobStorage(Transformer):
         headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
         if storage_type == "local":
             raise Exception("Direct signed upload URLs are not supported for local storage")
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             upload_url = f"{nodejs_endpoint}{Routes.STORAGE_DIRECT_UPLOAD.value.format(documentId=document_id)}"
             upload_result = await self._get_signed_url(session, upload_url, {}, headers)
             signed_url = (upload_result or {}).get("signedUrl")
@@ -2110,7 +2877,7 @@ class BlobStorage(Transformer):
         headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
         file_size_bytes = len(file_bytes)
 
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             form_data = aiohttp.FormData()
             form_data.add_field(
                 "file", file_bytes, filename=file_name, content_type=content_type,
@@ -2149,6 +2916,41 @@ class BlobStorage(Transformer):
                 "priorStorageVersion": prior_storage_version,
             }
 
+    async def purge_document(self, org_id: str, document_id: str) -> int:
+        """Remove a storage document and every stored copy of its file.
+
+        Returns how many documents were removed (0 when it was already gone).
+        Raises when storage could not remove it; the document is then kept, so
+        calling again is safe.
+        """
+        return await self._purge(
+            org_id, Routes.STORAGE_PURGE_DOCUMENT.value.format(documentId=document_id)
+        )
+
+    async def purge_virtual_record_documents(self, org_id: str, virtual_record_id: str) -> int:
+        """Remove a virtual record's ``record_``/``metadata_`` storage documents, wherever filed.
+
+        Only for a virtual record no record uses any more: records with identical
+        content share it.
+        """
+        return await self._purge(
+            org_id,
+            Routes.STORAGE_PURGE_VIRTUAL_RECORD.value.format(virtualRecordId=virtual_record_id),
+        )
+
+    async def _purge(self, org_id: str, route: str) -> int:
+        headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
+        async with _borrowed_session() as session, session.delete(
+            f"{nodejs_endpoint}{route}", headers=headers
+        ) as response:
+            if response.status != HttpStatusCode.SUCCESS.value:
+                error_text = (await response.text())[:500]
+                raise _storage_status_error(
+                    response.status,
+                    f"Storage purge {route} failed (status {response.status}): {error_text}",
+                )
+            return int((await response.json()).get("purged", 0))
+
     async def get_document_version_history(self, org_id: str, document_id: str) -> list[dict]:
         """Fetch the authoritative ``versionHistory`` array for `document_id`
         straight from the storage document (``GET /internal/{documentId}``).
@@ -2158,7 +2960,7 @@ class BlobStorage(Transformer):
         the ground truth to reconcile FROM."""
         headers, nodejs_endpoint, _storage_type = await self._get_auth_and_config(org_id)
         url = f"{nodejs_endpoint}{Routes.STORAGE_DOCUMENT.value.format(documentId=document_id)}"
-        async with aiohttp.ClientSession() as session:
+        async with _borrowed_session() as session:
             async with session.get(url, headers=headers) as response:
                 if response.status != HttpStatusCode.SUCCESS.value:
                     error_text = (await response.text())[:500]
@@ -2211,6 +3013,12 @@ class BlobStorage(Transformer):
                         async with session.get(URL(signed_url, encoded=True)) as signed_resp:
                             if signed_resp.status == HttpStatusCode.SUCCESS.value:
                                 data = await signed_resp.json(content_type=None)
+                            else:
+                                self.logger.warning(
+                                    "⚠️ Failed to fetch metadata from signed URL: status %s, virtual_record_id: %s",
+                                    signed_resp.status, virtual_record_id
+                                )
+                                return None
                     # Handle both compressed (from upload_next_version) and uncompressed formats
                     if data.get("isCompressed"):
                         record = self._process_downloaded_record(data)

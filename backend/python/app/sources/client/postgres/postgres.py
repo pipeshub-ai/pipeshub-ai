@@ -10,14 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 from pydantic import AliasChoices, BaseModel, Field, ValidationError, model_validator
 
 from app.config.configuration_service import ConfigurationService
 from app.sources.client.iclient import IClient
+from app.utils.url_fetcher import IPAddress, vetted_addresses
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,65 @@ else:
         import asyncpg
     except ImportError:
         asyncpg = None
+
+
+class _CheckedDialLoop:
+    """The event loop one asyncpg connection is given: its TCP connection goes to the
+    addresses already checked for the host, instead of a fresh lookup of the name.
+
+    Everything else, TLS included, runs on the real loop with the host name, so SNI and
+    certificate checks still see the name and asyncpg's sslmode fallbacks are unchanged.
+    """
+
+    def __init__(self, loop: asyncio.AbstractEventLoop, addresses: Sequence[IPAddress]) -> None:
+        self._loop = loop
+        self._addresses = addresses
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._loop, name)
+
+    async def create_connection(
+        self,
+        protocol_factory: Callable[[], asyncio.BaseProtocol],
+        host: str | None = None,
+        port: int | None = None,
+        **kwargs: object,
+    ) -> tuple[asyncio.Transport, asyncio.BaseProtocol]:
+        if kwargs.get("ssl") and kwargs.get("server_hostname") is None:
+            kwargs["server_hostname"] = host  # direct TLS would otherwise name the address
+        error: OSError | None = None
+        for ip in self._addresses:
+            try:
+                return await self._loop.create_connection(protocol_factory, str(ip), port, **kwargs)
+            except OSError as e:
+                error = e
+        assert error is not None
+        raise error
+
+
+async def connect_to_checked_address(
+    dsn: str | None = None,
+    *,
+    host: str,
+    loop: asyncio.AbstractEventLoop | None = None,
+    **kwargs: object,
+) -> asyncpg.Connection:
+    """``asyncpg.connect`` for one pool connection, to an address of ``host`` that passes the
+    deployment's address policy (``vetted_addresses``). Each new connection looks the name
+    up again, so a failover that moves the name is followed.
+
+    Raises:
+        HostCheckError: before anything is dialled, when the host is refused or doesn't resolve.
+    """
+    real_loop = loop or asyncio.get_running_loop()
+    # The lookup spends the connection's timeout (asyncpg's default is 60 s), as asyncpg's own would.
+    timeout = float(kwargs.get("timeout") or 60)
+    started = real_loop.time()
+    addresses = await vetted_addresses(host, lookup_timeout_s=timeout)
+    kwargs["timeout"] = max(timeout - (real_loop.time() - started), 1.0)
+    dial_loop = _CheckedDialLoop(real_loop, addresses) if addresses else real_loop
+    return await asyncpg.connect(dsn, host=host, loop=dial_loop, **kwargs)
+
 
 class PostgreSQLClient:
     """PostgreSQL client for asyncpg pool management."""
@@ -107,6 +167,13 @@ class PostgreSQLClient:
                     timeout=self.timeout,
                     command_timeout=self.timeout,
                     ssl=(self.sslmode or "prefer").strip().lower(),
+                    # Named, cached statements break behind a transaction-mode
+                    # pooler (PgBouncer, Supavisor): the next use can land on a
+                    # server connection that never prepared them, or on one
+                    # where that name is another client's statement. With the
+                    # cache off, asyncpg prepares unnamed statements instead.
+                    statement_cache_size=0,
+                    connect=connect_to_checked_address,
                 )
 
                 logger.info("🔧 [PostgreSQLClient] PostgreSQL connection pool ready")
@@ -165,16 +232,24 @@ class PostgreSQLClient:
         try:
             async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
                 prepared_params = self._normalize_params(params)
-                statement = await conn.prepare(query)
-                if statement.get_attributes():
-                    rows = await statement.fetch(*prepared_params)
-                    return [dict(row) for row in rows]
+                # Prepare and run in one transaction: a transaction-mode pooler
+                # keeps a transaction on one server connection, so the unnamed
+                # statement is still there when it is run.
+                async with conn.transaction():
+                    statement = await conn.prepare(query)
+                    if statement.get_attributes():
+                        rows = await statement.fetch(*prepared_params)
+                        return [dict(row) for row in rows]
 
-                status = await conn.execute(query, *prepared_params)
-                return [{"affected_rows": self._parse_affected_rows(status)}]
+                    status = await conn.execute(query, *prepared_params)
+                    return [{"affected_rows": self._parse_affected_rows(status)}]
         except Exception as e:
+            # Re-raised as-is: the driver's class (InsufficientPrivilegeError,
+            # UndefinedTableError, the acquire timeout above) is what the
+            # streaming path maps to a status, and a RuntimeError wrapper
+            # destroys it.
             logger.error(f"🔧 [PostgreSQLClient] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     async def execute_query_raw(
         self,
@@ -194,19 +269,21 @@ class PostgreSQLClient:
         try:
             async with self._pool.acquire(timeout=self.pool_acquire_timeout) as conn:
                 prepared_params = self._normalize_params(params)
-                statement = await conn.prepare(query)
-                attributes = statement.get_attributes()
-                if not attributes:
-                    await conn.execute(query, *prepared_params)
-                    return ([], [])
+                # See execute_query: one transaction keeps the pooler on one server.
+                async with conn.transaction():
+                    statement = await conn.prepare(query)
+                    attributes = statement.get_attributes()
+                    if not attributes:
+                        await conn.execute(query, *prepared_params)
+                        return ([], [])
 
-                rows = await statement.fetch(*prepared_params)
-                columns = [attr.name for attr in attributes]
-                raw_rows = [tuple(row) for row in rows]
-                return (columns, raw_rows)
+                    rows = await statement.fetch(*prepared_params)
+                    columns = [attr.name for attr in attributes]
+                    raw_rows = [tuple(row) for row in rows]
+                    return (columns, raw_rows)
         except Exception as e:
             logger.error(f"🔧 [PostgreSQLClient.execute_query_raw] Query execution failed: {e}")
-            raise RuntimeError(f"Query execution failed: {e}") from e
+            raise
 
     @staticmethod
     def _normalize_params(
@@ -332,11 +409,14 @@ class AuthConfig(BaseModel):
             if parsed.port and "port" not in set_fields:
                 self.port = parsed.port
             if parsed.path and "database" not in set_fields:
-                self.database = parsed.path.lstrip("/") or None
+                self.database = unquote(parsed.path.lstrip("/")) or None
             if parsed.username and "user" not in set_fields:
                 self.user = unquote(parsed.username)
             if parsed.password and "password" not in set_fields:
                 self.password = unquote(parsed.password)
+            sslmode = parse_qs(parsed.query).get("sslmode")
+            if sslmode and "sslmode" not in set_fields:
+                self.sslmode = sslmode[0]
 
         missing = [f for f in ("host", "database", "user") if not getattr(self, f)]
         if missing:

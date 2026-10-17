@@ -575,3 +575,79 @@ class TestProcessDocumentChunksRemoteFailure:
             await vs._process_document_chunks(chunks, "rec-1", "test_collection")
 
 
+# ===================================================================
+# get_embedding_model_instance — null ai_models guard (issue #3237)
+# ===================================================================
+
+
+class TestGetEmbeddingModelInstanceNullGuard:
+    """Regression tests for issue #3237.
+
+    When no AI models are configured, get_config returns None.
+    The code must not crash with TypeError; it must fall back to the
+    local embedding service instead.  If that fallback also fails, it
+    must raise an IndexingError with a human-readable message.
+    """
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_local_when_ai_models_is_none(self):
+        """config_service returns None → get_default_embedding_model is invoked,
+        the VectorStore publishes dense_embeddings and embedding_size, and returns False
+        (non-multimodal)."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        fake_embeddings = AsyncMock()
+        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 384)
+
+        mock_default = MagicMock(return_value=fake_embeddings)
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            mock_default,
+        ):
+            result = await vs.get_embedding_model_instance()
+
+        # The fallback must have been invoked exactly once
+        mock_default.assert_called_once()
+        # The VectorStore must publish the initialized model state
+        assert vs.dense_embeddings is fake_embeddings
+        assert vs.embedding_size == 384
+        assert result is False  # is_multimodal defaults to False for local model
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_local_when_embedding_key_missing(self):
+        """config_service returns dict without 'embedding' key → get_default_embedding_model
+        is invoked, the VectorStore publishes dense_embeddings and embedding_size, and
+        returns False (non-multimodal)."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value={"llm": []})
+
+        fake_embeddings = AsyncMock()
+        fake_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 512)
+
+        mock_default = MagicMock(return_value=fake_embeddings)
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            mock_default,
+        ):
+            result = await vs.get_embedding_model_instance()
+
+        # The fallback must have been invoked exactly once
+        mock_default.assert_called_once()
+        # The VectorStore must publish the initialized model state
+        assert vs.dense_embeddings is fake_embeddings
+        assert vs.embedding_size == 512
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_raises_clear_error_when_local_fallback_unavailable(self):
+        """When ai_models is None AND the local service is down, raise a clear IndexingError."""
+        vs = _make_vectorstore()
+        vs.config_service.get_config = AsyncMock(return_value=None)
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_default_embedding_model",
+            side_effect=RuntimeError("connection refused"),
+        ):
+            with pytest.raises(IndexingError, match="No embedding model is configured"):
+                await vs.get_embedding_model_instance()

@@ -28,12 +28,32 @@ export function retentionCutoff(now: Date = new Date()): Date {
   return new Date(now.getTime() - RETENTION_SECONDS * 1000);
 }
 
+export interface NotificationAuthContext {
+  userOid: mongoose.Types.ObjectId;
+  orgOid: mongoose.Types.ObjectId;
+}
+
+// Narrows the untyped (Record<string, any>) req.user into validated ObjectIds
+// so callers never pass unchecked values into Mongo queries.
+export function resolveNotificationAuthContext(
+  user: Record<string, unknown> | undefined,
+): NotificationAuthContext | null {
+  const userOid = toObjectId(user?.userId);
+  const orgOid = toObjectId(user?.orgId);
+  if (!userOid || !orgOid) {
+    return null;
+  }
+  return { userOid, orgOid };
+}
+
 export function buildRetentionFilter(
+  orgOid: mongoose.Types.ObjectId,
   userOid: mongoose.Types.ObjectId,
   notificationStatus: string | null,
-  includeArchived = false,   // <-- new
+  includeArchived = false,
 ): Record<string, unknown> {
   return {
+    orgId: orgOid,
     assignedTo: userOid,
     isDeleted: false,
     createdAt: { $gte: retentionCutoff() },
@@ -94,7 +114,7 @@ export function buildCursorFilter(cursor: NotificationCursor): Record<string, un
   };
 }
 
-function toObjectId(value: unknown): mongoose.Types.ObjectId | null {
+export function toObjectId(value: unknown): mongoose.Types.ObjectId | null {
   if (value instanceof mongoose.Types.ObjectId) {
     return value;
   }

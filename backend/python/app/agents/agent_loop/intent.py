@@ -42,7 +42,7 @@ from app.agent_loop_lib.agent.spec import ModelSpec
 from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.transport.opik_tracing import is_opik_configured, wrap_if_enabled
 from app.agent_loop_lib.transport.registry import TransportRegistry
-from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput, asked_questions
 from app.agents.agent_loop.converters import convert_message_from_langchain
 from app.agents.agent_loop.langchain_transport import LangChainTransport
 from app.modules.agents.qna.router import (
@@ -171,7 +171,7 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         questions = payload.get("questions") if isinstance(payload, dict) else None
         if not questions:
             return None
-        return [AskUserQuestionItemInput.model_validate(q) for q in questions]
+        return asked_questions([AskUserQuestionItemInput.model_validate(q) for q in questions]) or None
     except (ValueError, ValidationError, AttributeError, TypeError) as e:
         logger.warning("Intent: malformed ```clarify block, ignoring: %s", e)
         return None
@@ -352,6 +352,8 @@ async def parse_intent_and_route(
     graph_provider: Any = None,
     is_multimodal_llm: bool = False,
     org_id: str = "",
+    user_id: str = "",
+    is_service_account: bool = False,
     model_name: str = "",
     transport_registry: TransportRegistry | None = None,
     opik_active: bool | None = None,
@@ -397,6 +399,7 @@ async def parse_intent_and_route(
 
     prior_messages = await build_prior_routing_messages(
         query_info, blob_store=blob_store, org_id=org_id, is_multimodal_llm=is_multimodal_llm,
+        user_id=user_id, graph_provider=graph_provider, is_service_account=is_service_account,
     )
 
     human_content: Any = f"user query : {user_query}"
@@ -406,6 +409,8 @@ async def parse_intent_and_route(
             attachment_blocks = await resolve_attachments(
                 attachments=attachments, blob_store=blob_store, org_id=org_id,
                 is_multimodal_llm=is_multimodal_llm, logger=logger,
+                user_id=user_id, graph_provider=graph_provider,
+                is_service_account=is_service_account,
             )
             if attachment_blocks:
                 human_content = [

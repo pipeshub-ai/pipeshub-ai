@@ -1053,7 +1053,7 @@ class TestAiterLlmStream:
 # ---------------------------------------------------------------------------
 # create_stream_record_response
 # ---------------------------------------------------------------------------
-class TestCreateStreamRecordResponse:
+class TestCreateStreamRecordResponseFilenames:
     """Tests for create_stream_record_response."""
 
     def test_basic_response(self):
@@ -1101,7 +1101,7 @@ class TestCreateStreamRecordResponse:
 # ---------------------------------------------------------------------------
 # stream_content
 # ---------------------------------------------------------------------------
-class TestStreamContent:
+class TestStreamContentUrlTypes:
     """Tests for stream_content(signed_url, ...)."""
 
     async def test_non_string_url_raises_type_error(self):
@@ -1244,6 +1244,27 @@ class TestInvokeWithStructuredOutputAndReflection:
 
         assert result is not None
         assert result.answer == "recovered"
+        assert mock_structured_llm.ainvoke.await_count == 2
+
+    async def test_a_final_error_from_a_reflection_call_is_not_retried(self) -> None:
+        from langchain_openai import ChatOpenAI
+
+        from app.exceptions.non_retryable import NonRetryableError
+
+        class Final(NonRetryableError):
+            pass
+
+        mock_llm = MagicMock(spec=ChatOpenAI)
+        mock_structured_llm = MagicMock()
+        mock_structured_llm.ainvoke = AsyncMock(
+            side_effect=[AIMessage(content="not valid json"), Final("stop"), AIMessage(content="unused")]
+        )
+        mock_llm.with_structured_output = MagicMock(return_value=mock_structured_llm)
+
+        with pytest.raises(Final):
+            await invoke_with_structured_output_and_reflection(
+                mock_llm, [HumanMessage(content="test")], self.SimpleSchema, max_retries=2
+            )
         assert mock_structured_llm.ainvoke.await_count == 2
 
     async def test_parse_failure_then_reflection_success(self):
@@ -2054,7 +2075,7 @@ class TestStreamContentCoverage:
 
     @pytest.mark.asyncio
     async def test_stream_content_400_error(self):
-        """400 Bad Request should raise HTTPException."""
+        """400 Bad Request maps to 422 - the source refused the request."""
         from fastapi import HTTPException
 
         from app.utils.streaming import stream_content
@@ -2074,7 +2095,7 @@ class TestStreamContentCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in stream_content("https://example.com/file.pdf", "rec-1", "file.pdf"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_content_403_error(self):

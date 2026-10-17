@@ -6,13 +6,31 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { MOBILE_HAMBURGER_GUTTER_PX } from '@/app/components/sidebar';
 import { useKnowledgeBaseStore } from '../store';
-import type { ViewMode, PageViewMode, Breadcrumb } from '../types';
+import type { ViewMode, PageViewMode, Breadcrumb, NodeType } from '../types';
+import { KbNodeNameIcon } from '../utils/kb-node-name-icon';
 import { FolderIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
 import { ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { PermissionLockIcon } from '@/config';
 
+
+// Radix offsets ghost buttons by their own padding; these set their own, so the
+// offset only pushes the hover box into the neighbouring control.
+const HEADER_TEXT_BUTTON: React.CSSProperties = {
+  cursor: 'pointer',
+  height: 28,
+  minHeight: 28,
+  boxSizing: 'border-box',
+  padding: '0 8px',
+  gap: 6,
+  margin: 0,
+  fontSize: '13px',
+  fontWeight: 400,
+  color: 'var(--neutral-11)',
+  borderRadius: 'var(--radius-2)',
+};
+const HEADER_ICON_BUTTON: React.CSSProperties = { cursor: 'pointer', margin: 0 };
 interface KBHeaderProps {
   pageViewMode: PageViewMode;
   breadcrumbs?: Breadcrumb[];
@@ -26,26 +44,49 @@ interface KBHeaderProps {
   /** Shown when browsing inside a KB collection */
   showIndexingStatus?: boolean;
   onIndexingStatusClick?: () => void;
+  /** Opens the collection's Recently deleted page; only passed while the trash is on */
+  onRecentlyDeletedClick?: () => void;
 
   // Collections mode only actions (hidden in all-records mode)
   onCreateFolder?: () => void;
   onUpload?: () => void;
   onShare?: () => void;
   createPermissionDenied?: boolean;
+  folderPermissionDenied?: boolean;
+  uploadPermissionDenied?: boolean;
   sharePermissionDenied?: boolean;
   sharedMembers?: SharedAvatarMember[];
   onRename?: (nodeId: string, nodeType: string, newName: string) => Promise<void>;
   isSearchActive?: boolean;
 }
 
+/** Same mark the node's row carries; crumbs below an app inherit its connector. */
+function CrumbIcon({ crumb, connector, size }: { crumb: Breadcrumb; connector?: string; size: number }) {
+  if (crumb.nodeType === 'all-records') {
+    return <FolderIcon variant="default" size={size} color="var(--emerald-11)" />;
+  }
+  return (
+    <KbNodeNameIcon
+      isKnowledgeHub
+      nodeType={crumb.nodeType as NodeType}
+      connector={crumb.nodeType === 'app' ? crumb.subType : connector}
+      subType={crumb.subType}
+      name={crumb.name}
+      size={size}
+    />
+  );
+}
+
 function BreadcrumbItem({
   crumb,
+  connector,
   isLast,
   onClick,
   onInfoClick,
   onRename,
 }: {
   crumb: Breadcrumb;
+  connector?: string;
   isLast: boolean;
   onClick?: () => void;
   onInfoClick?: () => void;
@@ -96,11 +137,7 @@ function BreadcrumbItem({
 
   return (
     <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-      {crumb.nodeType === 'all-records' ? (
-        <FolderIcon variant="default" size={18} color="var(--emerald-11)" />
-      ) : (
-        <FolderIcon variant="default" size={18} color="var(--emerald-11)" />
-      )}
+      <CrumbIcon crumb={crumb} connector={connector} size={18} />
       {isEditing ? (
         <input
           ref={inputRef}
@@ -179,10 +216,13 @@ export function Header({
   onRefresh,
   showIndexingStatus,
   onIndexingStatusClick,
+  onRecentlyDeletedClick,
   onCreateFolder,
   onUpload,
   onShare,
   createPermissionDenied,
+  folderPermissionDenied,
+  uploadPermissionDenied,
   sharePermissionDenied,
   sharedMembers = [],
   onRename,
@@ -210,6 +250,8 @@ export function Header({
   }, [breadcrumbs]);
 
 
+  const trailConnector = breadcrumbs?.find((c) => c.nodeType === 'app')?.subType;
+
   const renderBreadcrumbs = () => {
     // if (!breadcrumbs || breadcrumbs.length === 0) {
     //   return (
@@ -231,6 +273,7 @@ export function Header({
         <BreadcrumbItem
           key={crumb.id}
           crumb={crumb}
+          connector={trailConnector}
           isLast={isLast}
           onClick={() => onBreadcrumbClick?.(crumb)}
           onInfoClick={onInfoClick}
@@ -271,7 +314,7 @@ export function Header({
                 key={crumb.id}
                 onClick={() => onBreadcrumbClick?.(crumb)}
               >
-                <FolderIcon variant="default" size={16} color="var(--emerald-11)" />
+                <CrumbIcon crumb={crumb} connector={trailConnector} size={16} />
                 {crumb.name}
               </DropdownMenu.Item>
             ))}
@@ -288,6 +331,7 @@ export function Header({
         <BreadcrumbItem
           key={crumb.id}
           crumb={crumb}
+          connector={trailConnector}
           isLast={isLast}
           onClick={() => onBreadcrumbClick?.(crumb)}
           onInfoClick={onInfoClick}
@@ -346,24 +390,24 @@ export function Header({
       {/* Right: Actions */}
       <Flex align="center" gap={isMobile ? '1' : '4'} style={{ flexShrink: 0 }}>
         {/* Common actions - always shown. Icon-only on mobile to save room. */}
-        <Flex align="center" gap={isMobile ? '1' : '5'}>
+        <Flex align="center" gap={isMobile ? '1' : '2'}>
           {isMobile ? (
-            <IconButton variant="ghost" size="2" color="gray" onClick={onFind} style={{ cursor: 'pointer' }} aria-label={t('action.find')}>
+            <IconButton variant="ghost" size="2" color="gray" onClick={onFind} style={HEADER_ICON_BUTTON} aria-label={t('action.find')}>
               <MaterialIcon name="search" size={18} color="var(--slate-11)" />
             </IconButton>
           ) : (
-            <Button variant="ghost" size="1" color="gray" onClick={onFind} style={{ cursor: 'pointer', fontSize: '14px' }}>
-              <MaterialIcon name="search" size={16} color="var(--slate-11)" />
+            <Button variant="ghost" size="1" color="gray" onClick={onFind} style={HEADER_TEXT_BUTTON}>
+              <MaterialIcon name="search" size={14} color="var(--neutral-11)" />
               {t('action.find')}
             </Button>
           )}
           {isMobile ? (
-            <IconButton variant="ghost" size="2" color="gray" onClick={onRefresh} style={{ cursor: 'pointer' }} aria-label={t('action.refresh')}>
+            <IconButton variant="ghost" size="2" color="gray" onClick={onRefresh} style={HEADER_ICON_BUTTON} aria-label={t('action.refresh')}>
               <MaterialIcon name="refresh" size={18} color="var(--slate-11)" />
             </IconButton>
           ) : (
-            <Button variant="ghost" size="1" color="gray" onClick={onRefresh} style={{ cursor: 'pointer', fontSize: '14px' }}>
-              <MaterialIcon name="refresh" size={16} color="var(--slate-11)" />
+            <Button variant="ghost" size="1" color="gray" onClick={onRefresh} style={HEADER_TEXT_BUTTON}>
+              <MaterialIcon name="refresh" size={14} color="var(--neutral-11)" />
               {t('action.refresh')}
             </Button>
           )}
@@ -374,7 +418,7 @@ export function Header({
                 size="2"
                 color="gray"
                 onClick={onIndexingStatusClick}
-                style={{ cursor: 'pointer' }}
+                style={HEADER_ICON_BUTTON}
                 aria-label={t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
               >
                 <MaterialIcon name="analytics" size={18} color="var(--slate-11)" />
@@ -385,10 +429,35 @@ export function Header({
                 size="1"
                 color="gray"
                 onClick={onIndexingStatusClick}
-                style={{ cursor: 'pointer', fontSize: '14px' }}
+                style={HEADER_TEXT_BUTTON}
               >
-                <MaterialIcon name="analytics" size={16} color="var(--slate-11)" />
+                <MaterialIcon name="analytics" size={14} color="var(--slate-11)" />
                 {t('collections.stats.menuLabel', { defaultValue: 'Analytics' })}
+              </Button>
+            )
+          )}
+          {onRecentlyDeletedClick && (
+            isMobile ? (
+              <IconButton
+                variant="ghost"
+                size="2"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={HEADER_ICON_BUTTON}
+                aria-label={t('collections.trash.menuLabel')}
+              >
+                <MaterialIcon name="delete_outline" size={18} color="var(--slate-11)" />
+              </IconButton>
+            ) : (
+              <Button
+                variant="ghost"
+                size="1"
+                color="gray"
+                onClick={onRecentlyDeletedClick}
+                style={HEADER_TEXT_BUTTON}
+              >
+                <MaterialIcon name="delete_outline" size={14} color="var(--slate-11)" />
+                {t('collections.trash.menuLabel')}
               </Button>
             )
           )}
@@ -412,6 +481,7 @@ export function Header({
                       disabled={createPermissionDenied}
                     >
                       <MaterialIcon name="add" size={18} color="white" />
+                      {createPermissionDenied && <PermissionLockIcon />}
                     </IconButton>
                   ) : (
                     <Button
@@ -429,15 +499,33 @@ export function Header({
                 </DropdownMenu.Trigger>
                 <DropdownMenu.Content align="end">
                   {onCreateFolder && (
-                    <DropdownMenu.Item onClick={() => onCreateFolder()}>
-                      <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
-                      {t('kb.newFolder')}
+                    <DropdownMenu.Item
+                      disabled={folderPermissionDenied}
+                      onClick={() => {
+                        if (folderPermissionDenied) return;
+                        onCreateFolder();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="create_new_folder" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('kb.newFolder')}</Text>
+                        {folderPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                   {onUpload && (
-                    <DropdownMenu.Item onClick={() => onUpload()}>
-                      <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
-                      {t('dialog.uploadData')}
+                    <DropdownMenu.Item
+                      disabled={uploadPermissionDenied}
+                      onClick={() => {
+                        if (uploadPermissionDenied) return;
+                        onUpload();
+                      }}
+                    >
+                      <Flex align="center" gap="2">
+                        <MaterialIcon name="file_upload" size={16} color="var(--slate-11)" />
+                        <Text size="2">{t('dialog.uploadData')}</Text>
+                        {uploadPermissionDenied && <PermissionLockIcon />}
+                      </Flex>
                     </DropdownMenu.Item>
                   )}
                 </DropdownMenu.Content>
@@ -462,6 +550,7 @@ export function Header({
           value={viewMode}
           onValueChange={(value) => setViewMode(value as ViewMode)}
           size="1"
+          data-icon-only=""
         >
           <SegmentedControl.Item value="grid">
             <Flex align="center" justify="center">

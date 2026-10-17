@@ -57,6 +57,9 @@ class ZoomResponse(BaseModel):
     message: str | None = Field(
         default=None, description="Additional message information"
     )
+    status_code: int | None = Field(
+        default=None, description="HTTP status returned by Zoom, when there was one"
+    )
 
     class Config:
         """Pydantic configuration."""

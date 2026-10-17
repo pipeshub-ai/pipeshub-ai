@@ -27,6 +27,13 @@ from app.services.parsing.interface import ParseResult, ParserProvider
 # ---------------------------------------------------------------------------
 
 
+def _sink_mock() -> MagicMock:
+    sink = MagicMock()
+    sink.extract_named_entities = AsyncMock(return_value=MagicMock(entities=[]))
+    sink.persist_named_entities = AsyncMock()
+    return sink
+
+
 def _make_empty_bc() -> BlocksContainer:
     return BlocksContainer(blocks=[], block_groups=[])
 
@@ -81,6 +88,10 @@ def _make_event_processor(
     # TypeError, which is now propagated rather than swallowed.
     if not isinstance(getattr(processor, "indexing_pipeline", None), AsyncMock):
         processor.indexing_pipeline = AsyncMock()
+    # Dedup checks the twin's stored content before reusing it; default to present.
+    blob_storage = processor.sink_orchestrator.blob_storage
+    if not isinstance(getattr(blob_storage, "get_actual_content_path", None), AsyncMock):
+        blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
 
     return EventProcessor(
         logger=logging.getLogger("test"),
@@ -151,9 +162,10 @@ async def test_full_pipeline_happy_path() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)  # no metadata returned
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -180,6 +192,43 @@ async def test_full_pipeline_happy_path() -> None:
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_named_entity_failure_still_enriches_and_persists_after_graph_write() -> None:
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
+
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    order: list[str] = []
+    failed = NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.extract_named_entities = AsyncMock(return_value=failed)
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
+    sink_orchestrator.persist_named_entities = AsyncMock(side_effect=lambda *a: order.append("persist"))
+    sink_orchestrator.blob_storage.apply = AsyncMock()
+    transform_pipeline = MagicMock()
+    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        transform_pipeline=transform_pipeline,
+    )
+    events = [event async for event in ep.on_event(_make_event_data())]
+
+    assert IndexingEvent.INDEXING_COMPLETE in [e.event for e in events]
+    assert order == ["enrich", "persist"]
+    sink_orchestrator.extract_named_entities.assert_awaited_once()
+    assert sink_orchestrator.extract_named_entities.await_args.kwargs["client"] is extraction_client
+    assert sink_orchestrator.persist_named_entities.await_args.args[1] is failed
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_enrichment_failure_does_not_block_indexing() -> None:
     """When enrich raises, the INDEXING_COMPLETE event is still yielded."""
     parsing_client = MagicMock()
@@ -189,9 +238,10 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(side_effect=RuntimeError("LLM down"))
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -233,9 +283,10 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock()  # should NOT be called
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
 
     transform_pipeline = MagicMock()
     transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
@@ -252,8 +303,10 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
 
     # Extraction client should not have been called
     extraction_client.classify.assert_not_awaited()
-    # But indexing should have happened
+    # But indexing should have happened, without marking enrichment as running
     sink_orchestrator.index.assert_awaited_once()
+    (index_ctx,), _ = sink_orchestrator.index.await_args
+    assert not index_ctx.settings.get("enrichment_follows")
     updates = [
         call.args[2]
         for call in ep.graph_provider.update_node.await_args_list
@@ -276,7 +329,7 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -296,7 +349,7 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
         "updatedAtTimestamp": 1000000,
     }
     graph_provider.get_document = AsyncMock(
-        side_effect=lambda *_args: dict(persisted_record)
+        side_effect=lambda *_args, **_kwargs: dict(persisted_record)
     )
     graph_provider.get_departments = AsyncMock(return_value=[])
     graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
@@ -339,11 +392,10 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
 
     third = await gen.__anext__()
     assert third.event == IndexingEvent.INDEXING_COMPLETE
-    assert {
-        "parsingStatus": "COMPLETED",
-        "indexingStatus": "IN_PROGRESS",
-        "extractionStatus": "IN_PROGRESS",
-    } in status_writes
+    # Enrichment's IN_PROGRESS rides in the sink's indexed write (mocked here),
+    # so no reader sees the record indexed with enrichment not yet started.
+    (index_ctx,), _ = sink_orchestrator.index.await_args
+    assert index_ctx.settings.get("enrichment_follows") is True
 
     with pytest.raises(StopAsyncIteration):
         await gen.__anext__()
@@ -363,7 +415,7 @@ async def test_start_parsing_size_bytes_uses_utf8_length_for_str_content() -> No
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -425,6 +477,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
         "extractionStatus": "COMPLETED",
     }])
     graph_provider.copy_document_relationships = AsyncMock(return_value=True)
+    graph_provider.copy_named_entity_mentions = AsyncMock(return_value=0)
     graph_provider.get_departments = AsyncMock(return_value=[])
 
     ep = _make_event_processor(
@@ -440,3 +493,322 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
     parsing_client.parse.assert_not_awaited()
     # Events still yielded for status reporting
     assert len(events) >= 1
+
+
+# ---------------------------------------------------------------------------
+# AppleDouble / OS-metadata sidecar guard (content-based, not filename-based)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_apple_double_sidecar_is_skipped_before_parsing() -> None:
+    """A macOS AppleDouble sidecar (detected by magic bytes, not filename)
+    must be marked FILE_TYPE_NOT_SUPPORTED and never reach the parser."""
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    event_data = _make_event_data()
+    event_data["payload"]["recordName"] = "._Report.pdf"
+    event_data["payload"]["buffer"] = b"\x00\x05\x16\x07" + b"\x00" * 32
+
+    events = []
+    async for event in ep.on_event(event_data):
+        events.append(event)
+
+    parsing_client.parse.assert_not_awaited()
+    sink_orchestrator.index.assert_not_awaited()
+
+    event_types = [e.event for e in events]
+    assert event_types == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+
+    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
+    assert any(update.get("indexingStatus") == "FILE_TYPE_NOT_SUPPORTED" for update in updates)
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_apple_double_sidecar_does_not_complete_if_status_write_fails() -> None:
+    """If persisting FILE_TYPE_NOT_SUPPORTED fails (update_node returns
+    False, not an exception), on_event must raise instead of yielding
+    PARSING_COMPLETE/INDEXING_COMPLETE — otherwise the message would be
+    treated as handled while the record is stuck at its prior status with
+    nothing left to ever revisit it."""
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    graph_provider = MagicMock()
+    graph_provider.get_document = AsyncMock(return_value={
+        "_key": "rec-1",
+        "orgId": "org-1",
+        "recordName": "._Report.pdf",
+        "recordType": "FILE",
+        "indexingStatus": "NOT_STARTED",
+        "mimeType": "application/pdf",
+        "connectorName": None,
+        "origin": "UPLOAD",
+        "externalRecordId": "ext-rec-1",
+        "connectorId": "connector-1",
+        "createdAtTimestamp": 1000000,
+        "updatedAtTimestamp": 1000000,
+    })
+    graph_provider.get_departments = AsyncMock(return_value=[])
+    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
+    graph_provider.find_duplicate_records = AsyncMock(return_value=[])
+    graph_provider.update_node = AsyncMock(return_value=False)  # simulate write failure
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        graph_provider=graph_provider,
+    )
+
+    event_data = _make_event_data()
+    event_data["payload"]["recordName"] = "._Report.pdf"
+    event_data["payload"]["buffer"] = b"\x00\x05\x16\x07" + b"\x00" * 32
+
+    from app.exceptions.indexing_exceptions import IndexingError  # noqa: PLC0415
+
+    events = []
+    with pytest.raises(IndexingError):
+        async for event in ep.on_event(event_data):
+            events.append(event)
+
+    # No completion event was yielded before the failed write was surfaced.
+    event_types = [e.event for e in events]
+    assert IndexingEvent.INDEXING_COMPLETE not in event_types
+    parsing_client.parse.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_apple_double_sidecar_is_skipped_in_legacy_pipeline() -> None:
+    """Same guard applies when USE_PARSING_SERVICE is unset (legacy dispatch) —
+    the check runs before the service/legacy branch, so neither PDF handler
+    should ever be invoked."""
+    mock_processor = MagicMock()
+    mock_processor.indexing_pipeline = AsyncMock()
+    mock_processor.process_pdf_with_docling = AsyncMock(return_value=_noop_gen())
+    mock_processor.process_pdf_document_with_ocr = AsyncMock(return_value=_noop_gen())
+
+    ep = _make_event_processor(processor=mock_processor)
+
+    event_data = _make_event_data()
+    event_data["payload"]["recordName"] = "._Report.pdf"
+    event_data["payload"]["buffer"] = b"\x00\x05\x16\x07" + b"\x00" * 32
+
+    events = []
+    async for event in ep.on_event(event_data):
+        events.append(event)
+
+    mock_processor.process_pdf_with_docling.assert_not_called()
+    mock_processor.process_pdf_document_with_ocr.assert_not_called()
+
+    event_types = [e.event for e in events]
+    assert event_types == [IndexingEvent.PARSING_COMPLETE, IndexingEvent.INDEXING_COMPLETE]
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_real_pdf_named_with_leading_dot_is_not_skipped() -> None:
+    """A real PDF whose *filename* happens to start with '._' (not an actual
+    AppleDouble sidecar) must still be parsed normally — the guard keys off
+    content magic bytes, never off the filename convention."""
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    event_data = _make_event_data()
+    event_data["payload"]["recordName"] = "._John_Carter_Report.pdf"
+    event_data["payload"]["buffer"] = b"%PDF-1.7\n" + b"rest of a real pdf"
+
+    events = []
+    async for event in ep.on_event(event_data):
+        events.append(event)
+
+    parsing_client.parse.assert_awaited_once()
+    sink_orchestrator.index.assert_awaited_once()
+
+    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
+    assert not any(
+        update.get("indexingStatus") == "FILE_TYPE_NOT_SUPPORTED" for update in updates
+    )
+
+
+# ---------------------------------------------------------------------------
+# Blob storage status update (post-enrichment)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_blob_storage_failure_does_not_block_indexing() -> None:
+    """When blob_storage.apply raises, INDEXING_COMPLETE is still yielded and the
+    error is logged rather than propagated."""
+    parsing_client = MagicMock()
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.circuit_open = False
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=SemanticMetadata(categories=["Finance"]))
+
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.resolve_entities = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=RuntimeError("blob write failed"))
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    events = []
+    async for event in ep.on_event(_make_event_data()):
+        events.append(event)
+
+    # Blob storage failure must not crash the generator.
+    sink_orchestrator.blob_storage.apply.assert_awaited_once()
+    # Pipeline still completes and reports success despite the blob failure.
+    event_types = [e.event for e in events]
+    assert IndexingEvent.PARSING_COMPLETE in event_types
+    assert IndexingEvent.INDEXING_COMPLETE in event_types
+    # Document was still indexed and enriched before the blob failure.
+    sink_orchestrator.index.assert_awaited_once()
+    sink_orchestrator.enrich.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_blob_storage_called_after_enrichment() -> None:
+    """blob_storage.apply must run after the enrichment try/except block, so the
+    stored record carries the enrichment output."""
+    parsing_client = MagicMock()
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    parsing_client.circuit_open = False
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=SemanticMetadata(categories=["Finance"]))
+
+    call_order: list[str] = []
+
+    async def _enrich_side_effect(_ctx: Any) -> None:
+        call_order.append("enrich")
+
+    async def _blob_apply_side_effect(_ctx: Any) -> None:
+        call_order.append("blob_storage.apply")
+
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock(side_effect=_enrich_side_effect)
+    sink_orchestrator.resolve_entities = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=_blob_apply_side_effect)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+
+    async for _ in ep.on_event(_make_event_data()):
+        pass
+
+    sink_orchestrator.enrich.assert_awaited_once()
+    sink_orchestrator.blob_storage.apply.assert_awaited_once()
+    assert call_order == ["enrich", "blob_storage.apply"]
+
+
+# ---------------------------------------------------------------------------
+# Org sent to the parsing and extraction services
+# ---------------------------------------------------------------------------
+
+
+def _service_clients() -> tuple[MagicMock, MagicMock, MagicMock]:
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock()
+    sink_orchestrator.blob_storage.apply = AsyncMock()
+    return parsing_client, extraction_client, sink_orchestrator
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_event_without_org_sends_the_stored_records_org() -> None:
+    parsing_client, extraction_client, sink_orchestrator = _service_clients()
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+    event_data = _make_event_data()
+    del event_data["payload"]["orgId"]
+
+    async for _ in ep.on_event(event_data):
+        pass
+
+    assert parsing_client.parse.await_args.kwargs["org_id"] == "org-1"
+    assert extraction_client.classify.await_args.kwargs["org_id"] == "org-1"
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_record_with_no_org_anywhere_fails_for_good_without_calling_the_services() -> None:
+    from app.exceptions.indexing_exceptions import ProcessingError  # noqa: PLC0415
+    from app.services.messaging.error_classifier import (  # noqa: PLC0415
+        MessageErrorClassifier,
+        MessageErrorType,
+    )
+
+    parsing_client, extraction_client, sink_orchestrator = _service_clients()
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+    )
+    del ep.graph_provider.get_document.return_value["orgId"]
+    event_data = _make_event_data()
+    del event_data["payload"]["orgId"]
+
+    with pytest.raises(ProcessingError, match="has no organisation") as exc_info:
+        async for _ in ep.on_event(event_data):
+            pass
+
+    assert (
+        MessageErrorClassifier.classify_by_exception(exc_info.value)
+        == MessageErrorType.TERMINAL
+    )
+    parsing_client.parse.assert_not_awaited()
+    extraction_client.classify.assert_not_awaited()
+    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
+    assert not any("indexingStatus" in update for update in updates)

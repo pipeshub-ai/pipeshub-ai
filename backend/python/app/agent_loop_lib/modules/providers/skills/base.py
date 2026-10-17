@@ -3,7 +3,9 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from app.agent_loop_lib.core.exceptions import AgentLoopError
 
 """Skill data model — implements the agentskills.io / anthropic/skills
 SKILL.md standard directly (see modules/providers/skills/loader.py for the parser) rather than
@@ -34,6 +36,25 @@ class SkillStatus(str, Enum):
     DRAFT = "draft"
     DEPRECATED = "deprecated"
     CANDIDATE = "candidate"  # pending approval from the learning loop
+    DISABLED = "disabled"    # owner-muted: reversible, unlike DEPRECATED
+
+
+# Statuses that must never be advertised to an agent (prompt catalog, list_skills
+# tool, search) — DEPRECATED is a one-way soft-archive, DISABLED is a reversible
+# mute; both stop advertising, only DISABLED additionally refuses `load_skill`
+# (see `SkillManager.activate_skill`). Kept as one set so every filter site
+# (`catalog_snapshot`, `SkillsListTool`, `FilesystemSkillIndex.search`,
+# `SemanticSkillIndex.search`) can share one predicate instead of repeating
+# `!= SkillStatus.DEPRECATED` and drifting when a new hidden status is added.
+CATALOG_HIDDEN_STATUSES = frozenset({SkillStatus.DEPRECATED, SkillStatus.DISABLED})
+
+
+def is_advertised(metadata: "SkillMetadata") -> bool:
+    """Whether `metadata` should appear in a catalog/search surface an agent
+    sees. Management surfaces (REST `GET /skills`, the personal Skills UI)
+    intentionally do NOT call this — owners must still see disabled/deprecated
+    skills to manage them."""
+    return metadata.status not in CATALOG_HIDDEN_STATUSES
 
 
 class SkillSource(str, Enum):
@@ -241,6 +262,32 @@ class SkillFilter(BaseModel):
     concepts: list[str] | None = None   # match if the skill has at least one of these
     related_to: str | None = None       # match if this skill name appears in `related` or `requires`
 
+    @field_validator("query", "category", "subcategory", "status", "source", "related_to", mode="before")
+    @classmethod
+    def _blank_means_unfiltered(cls, value: object) -> object:
+        """A blank filter is an ABSENT filter, not a literal one to match.
+
+        Tool-calling models routinely emit `""` for optional string
+        parameters instead of omitting them (observed from `skills_list`:
+        `{"category": "", "subcategory": "", "tags": ["pdf"], "status":
+        "active"}`). Without this, `matches_filter`'s `is not None` checks
+        treat `""` as a value no skill can ever equal, so a single blank
+        argument silently empties the whole catalog."""
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("tags", "concepts", mode="before")
+    @classmethod
+    def _drop_blank_members(cls, value: object) -> object:
+        """Same reasoning as `_blank_means_unfiltered`, for the list-membership
+        filters: `[""]` is truthy, so it would reach the set-intersection test
+        and match nothing. An all-blank list means no filter at all."""
+        if isinstance(value, list):
+            kept = [item for item in value if not (isinstance(item, str) and not item.strip())]
+            return kept or None
+        return value
+
 
 class SkillMatch(BaseModel):
     """Search result with relevance score."""
@@ -272,6 +319,64 @@ def matches_filter(metadata: SkillMetadata, filt: SkillFilter) -> bool:
     if filt.related_to is not None and filt.related_to not in (*metadata.related, *metadata.requires):
         return False
     return True
+
+
+class SkillConflictError(AgentLoopError):
+    """Optimistic-concurrency failure: the skill changed since the caller
+    last read it. Sibling of `RegistryError` (not a subclass) so REST
+    handlers can map it to 409 without going through
+    `_handle_registry_error`'s message-substring 404/409 split."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        current_updated_at: int,
+        current_version: str | None = None,
+    ) -> None:
+        self.name = name
+        self.current_updated_at = current_updated_at
+        self.current_version = current_version or ""
+        super().__init__(
+            f"Skill {name!r} was modified (current version {self.current_version!r})"
+        )
+
+
+class SkillInUseError(AgentLoopError):
+    """Delete refused because agents still reference the skill, or another
+    skill `requires` it. Carries the same structured payload the REST
+    `DELETE /{name}` 409 body has always returned."""
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        used_by_agents: list[dict[str, Any]],
+        required_by_skills: list[str],
+    ) -> None:
+        self.name = name
+        self.used_by_agents = used_by_agents
+        self.required_by_skills = required_by_skills
+        if required_by_skills:
+            message = (
+                f"Skill {name!r} is required by other skill(s) and cannot be deleted. "
+                "Deprecate it instead so dependents still resolve."
+            )
+        else:
+            message = (
+                f"Skill {name!r} is assigned to {len(used_by_agents)} agent(s). "
+                "Retry with detach=true to unassign it from them first, or deprecate it instead."
+            )
+        super().__init__(message)
+
+
+class SkillReferentialUsage(BaseModel):
+    """Who currently depends on a skill — agents assigned it, and other
+    skills whose frontmatter `requires` it. Empty on stores without a
+    graph of those edges (filesystem)."""
+
+    used_by_agents: list[dict[str, Any]] = Field(default_factory=list)
+    required_by_skills: list[str] = Field(default_factory=list)
 
 
 class SkillVersionInfo(BaseModel):

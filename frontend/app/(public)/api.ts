@@ -1,4 +1,4 @@
-import { publicAuthClient } from '@/lib/api/public-auth-client';
+import { publicAuthClient, ensureDesktopFrontendOrigin } from '@/lib/api/public-auth-client';
 import type { AuthMethod, SignInResponse } from '@/lib/api/auth-public-types';
 import {
   getAuthSessionRequestConfig,
@@ -32,23 +32,10 @@ export interface OAuthCodeExchangePayload {
 
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 
-export interface SignUpResponse {
-  accessToken: string;
-  refreshToken: string;
-  user?: {
-    id: string;
-    name?: string;
-    email?: string;
-    phone?: string;
-    created_at?: string;
-    updated_at?: string;
-  };
-}
-
 export const AuthApi = {
   /**
-   * Register a new user account.
-   * Returns an accessToken on success.
+   * Create the organization and its first admin. The response carries no
+   * session; sign in afterwards with the same email and password.
    */
   async signUp(payload: {
     email: string;
@@ -56,8 +43,8 @@ export const AuthApi = {
     firstName: string;
     lastName: string;
     registeredName: string;
-  }): Promise<SignUpResponse> {
-    const { data } = await publicAuthClient.post<SignUpResponse>(
+  }): Promise<void> {
+    await publicAuthClient.post(
       '/api/v1/org',
       {
         contactEmail: payload.email,
@@ -67,7 +54,6 @@ export const AuthApi = {
         accountType: 'business',
       },
     );
-    return data;
   },
 
   /**
@@ -80,7 +66,12 @@ export const AuthApi = {
    * long-lived credential.
    */
   async initAuth(): Promise<AuthInitResponse> {
-    const response = await publicAuthClient.post<AuthInitResponse>('/api/v1/userAccount/initAuth');
+    const [response] = await Promise.all([
+      publicAuthClient.post<AuthInitResponse>('/api/v1/userAccount/initAuth'),
+      // Desktop needs the frontend origin before any provider button renders.
+      // Run it beside this call so it adds no latency of its own.
+      ensureDesktopFrontendOrigin(),
+    ]);
 
     // Persist the session token so subsequent requests carry it
     const sessionToken = response.headers['x-session-token'];
@@ -210,6 +201,15 @@ export const AuthApi = {
       { method: 'oauth', credentials: { accessToken } },
       getAuthSessionRequestConfig(),
     );
+  },
+
+  /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
+  async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
+    const { data } = await publicAuthClient.post<SignInResponse>(
+      '/api/v1/saml/desktop/exchange',
+      { code, codeVerifier },
+    );
+    return data;
   },
 
   /**

@@ -229,3 +229,126 @@ class TestAdmissionGateDemandAccounting:
         # A controller sampling once at the end still sees demand: with 300
         # tasks and a limit of 2, the large majority had to wait.
         assert demand.blocked_acquires >= 290
+
+
+class TestRecentHoldTimes:
+    """The hold times a holder reports on release, kept per sample for the
+    pool's median (``PoolDemand.hold_seconds_by_sample``)."""
+
+    @staticmethod
+    def _gate() -> AdmissionGate:
+        return AdmissionGate(Pool.INDEX_LIGHT, _registry(limit=64, pool=Pool.INDEX_LIGHT))
+
+    def test_reported_holds_reach_the_demand(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> None:
+            for held in (17.6, 18.0, 600.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+            await gate.acquire()
+            gate.release()  # nothing reported: not a sample
+
+        asyncio.run(scenario())
+        demand = gate.drain_demand()
+        assert demand.hold_seconds_by_sample == ((17.6, 18.0, 600.0),)
+        assert demand.completions == 4
+
+    def test_earlier_samples_are_kept_newest_last(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[tuple[float, ...], ...]:
+            for held in (1.0, 2.0, 3.0, 4.0, 5.0, 6.0):
+                await gate.acquire()
+                gate.release(held_seconds=held)
+                gate.drain_demand()
+            return gate.drain_demand().hold_seconds_by_sample
+
+        # The last four drained samples, then this (empty) one.
+        assert asyncio.run(scenario()) == ((3.0,), (4.0,), (5.0,), (6.0,), ())
+
+    def test_one_sample_keeps_a_bounded_number_of_holds(self) -> None:
+        gate = self._gate()
+
+        async def scenario() -> tuple[float, ...]:
+            for i in range(1100):
+                await gate.acquire()
+                gate.release(held_seconds=float(i))
+            return gate.drain_demand().hold_seconds_by_sample[-1]
+
+        holds = asyncio.run(scenario())
+        assert len(holds) == 1024
+        assert holds[-1] == 1099.0
+
+
+class TestArrivalOrder:
+    """Waiters are admitted in the order they arrived. With every waiter
+    woken at once they raced for the permit, and one could lose that race
+    for the whole of its processing budget while newer arrivals went ahead."""
+
+    @staticmethod
+    def _gate(limit: int) -> tuple[AdmissionGate, LimitRegistry]:
+        registry = LimitRegistry(Limits(values=dict.fromkeys(Pool, limit)))
+        return AdmissionGate(Pool.LIGHT_PARSE, registry), registry
+
+    @pytest.mark.asyncio
+    async def test_waiters_are_admitted_first_come_first_served(self) -> None:
+        gate, _ = self._gate(1)
+        assert await gate.acquire()
+        admitted: list[str] = []
+
+        async def waiter(name: str) -> None:
+            assert await gate.acquire()
+            admitted.append(name)
+
+        tasks = []
+        for name in ("a", "b", "c"):
+            tasks.append(asyncio.create_task(waiter(name)))
+            await asyncio.sleep(0)
+        assert admitted == []
+
+        for expected in (["a"], ["a", "b"], ["a", "b", "c"]):
+            gate.release()
+            await asyncio.sleep(0.01)
+            assert admitted == expected
+        await asyncio.gather(*tasks)
+
+    @pytest.mark.asyncio
+    async def test_a_new_arrival_cannot_overtake_the_queue(self) -> None:
+        gate, _ = self._gate(1)
+        assert await gate.acquire()
+        first = asyncio.create_task(gate.acquire())
+        await asyncio.sleep(0)
+        gate.release()  # room exists now, but `first` is queued for it
+        assert not first.done()
+        late = asyncio.create_task(gate.acquire())
+        await asyncio.sleep(0.01)
+        assert first.done() and first.result() is True
+        assert not late.done()
+        gate.release()
+        await asyncio.sleep(0.01)
+        assert late.done()
+
+    @pytest.mark.asyncio
+    async def test_a_limit_increase_admits_the_queue_one_after_another(self) -> None:
+        gate, registry = self._gate(1)
+        assert await gate.acquire()
+        waiters = [asyncio.create_task(gate.acquire()) for _ in range(3)]
+        await asyncio.sleep(0)
+        registry.set(Pool.LIGHT_PARSE, 4)
+        await asyncio.sleep(0.02)
+        assert all(w.done() and w.result() for w in waiters)
+        assert gate.in_use == 4
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_that_gives_up_does_not_block_those_behind_it(self) -> None:
+        gate, _ = self._gate(1)
+        assert await gate.acquire()
+        impatient = asyncio.create_task(gate.acquire(timeout=0.02))
+        await asyncio.sleep(0)
+        patient = asyncio.create_task(gate.acquire())
+        await asyncio.sleep(0.05)
+        assert impatient.done() and impatient.result() is False
+        gate.release()
+        await asyncio.sleep(0.01)
+        assert patient.done() and patient.result() is True

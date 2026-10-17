@@ -7,9 +7,14 @@ import { Users } from '../schema/users.schema';
 import { UserGroups } from '../schema/userGroup.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OrgLogos } from '../schema/orgLogo.schema';
-import sharp from 'sharp';
+import {
+  detectRasterImageFormat,
+  readImageUpload,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   AuthMethodType,
   OrgAuthConfig,
@@ -22,6 +27,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { ContainerRequest } from '../../auth/middlewares/types';
 import {
@@ -168,7 +177,7 @@ export class OrgController {
 
       if (!passwordValidator(password)) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
         );
       }
 
@@ -237,6 +246,31 @@ export class OrgController {
         ],
       });
 
+      // Built before the save so the transactional branch can store them with
+      // the same commit. An organisation that exists without the events that
+      // announce it is invisible to the permission graph, which is the pair
+      // this transaction is here to keep together.
+      const orgCreatedEvent: Event = {
+        eventType: EventType.OrgCreatedEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: org._id.toString(),
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        } as OrgAddedEvent,
+      };
+      const adminUserEvent: Event = {
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: adminUser.orgId.toString(),
+          userId: adminUser._id.toString(),
+          fullName: adminUser.fullName,
+          email: adminUser.email,
+          syncAction: 'none',
+        } as UserAddedEvent,
+      };
+
       const rsAvailable = this.config.rsAvailable === 'true';
       if (rsAvailable) {
         session = await mongoose.startSession();
@@ -248,6 +282,10 @@ export class OrgController {
         await adminUser.save({ session });
         await adminUserCredentials.save({ session });
         await org.save({ session });
+        // Inside the transaction: either the organisation and the events that
+        // describe it both land, or neither does.
+        await this.eventService.publishEvent(orgCreatedEvent, session);
+        await this.eventService.publishEvent(adminUserEvent, session);
         await session.commitTransaction();
       } else {
         await orgAuthConfig.save();
@@ -256,6 +294,11 @@ export class OrgController {
         await adminUser.save();
         await adminUserCredentials.save();
         await org.save();
+        // No replica set, so no transaction to join. The events are still
+        // recorded durably and delivered with retries; only the atomicity is
+        // unavailable here.
+        await this.eventService.publishEvent(orgCreatedEvent);
+        await this.eventService.publishEvent(adminUserEvent);
       }
 
       recordEvent(ORG_CREATED_EVENT, {
@@ -279,7 +322,7 @@ export class OrgController {
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
           templateData: {
-            invitee: 'PipesHub',
+            invitee: getBrandConfig().productName,
             name: 'User',
             orgName: org.registeredName,
             link: `${this.config.frontendUrl}`,
@@ -287,39 +330,14 @@ export class OrgController {
         });
       }
 
-      await this.eventService.start();
-      let event: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id,
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id,
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      await this.eventService.stop();
       res.status(200).json(org);
     } catch (error) {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Error retrieving users',
+      this.logger.error('Creating the organisation failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the organisation')),
       );
     } finally {
       if (session) {
@@ -393,7 +411,7 @@ export class OrgController {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -433,7 +451,7 @@ export class OrgController {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -456,26 +474,20 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const logoFile = req.body.fileBuffer;
+      const upload = readImageUpload(req.body as unknown);
       const orgId = req.user?.orgId;
-      if (!logoFile) {
+      if (upload === undefined) {
         throw new BadRequestError('Organisation logo file is required');
       }
 
-      const isSvg = logoFile.mimetype === 'image/svg+xml';
+      const logoBuffer = upload.buffer;
+      // The declared MIME type is client-controlled. Raster vs SVG is decided
+      // from the bytes, so an SVG labelled image/png is never decoded.
+      const rasterFormat = detectRasterImageFormat(logoBuffer);
       let processedBuffer: Buffer;
       let mimeType: string;
 
-      if (isSvg) {
-        // For SVG files, validate for dangerous content and reject if found
-        // This preserves the original buffer without corruption
-        this.validateSVG(logoFile.buffer);
-        // Use original buffer if validation passes - no modification
-        processedBuffer = logoFile.buffer;
-        // Always set mimeType to a safe, hardcoded value (not user-controlled)
-        mimeType = 'image/svg+xml';
-      } else {
-        // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
+      if (rasterFormat !== null) {
         const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
         const INITIAL_JPEG_QUALITY = 100;
         const MIN_JPEG_QUALITY = 10;
@@ -485,12 +497,24 @@ export class OrgController {
 
         do {
           quality -= JPEG_QUALITY_STEP;
-          processedBuffer = await sharp(logoFile.buffer)
+          processedBuffer = await sharp(logoBuffer)
             .jpeg({ quality })
             .toBuffer();
-        } while (processedBuffer.length > MAX_LOGO_SIZE_BYTES && quality > MIN_JPEG_QUALITY);
+        } while (
+          processedBuffer.length > MAX_LOGO_SIZE_BYTES &&
+          quality > MIN_JPEG_QUALITY
+        );
 
         mimeType = 'image/jpeg';
+      } else if (upload.mimetype === 'image/svg+xml') {
+        // SVG is stored as text after a string check. It is not decoded.
+        this.validateSVG(logoBuffer);
+        processedBuffer = logoBuffer;
+        mimeType = 'image/svg+xml';
+      } else {
+        throw new BadRequestError(
+          'Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image',
+        );
       }
 
       const base64Logo = processedBuffer.toString('base64');

@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from app.services.messaging.config import MessageHandler
+
+if TYPE_CHECKING:
+    from app.services.messaging.lanes.backlog import LaneBacklog
 
 
 class IMessagingConsumer(ABC):
@@ -34,3 +37,15 @@ class IMessagingConsumer(ABC):
     def is_running(self) -> bool:
         """Check if consumer is running"""
         pass
+
+    async def lane_backlog(self, topic: str) -> "LaneBacklog":
+        """Per lane of ``topic``, when the oldest event this consumer's group
+        has not finished with was published.
+
+        One read of the broker per lane, never per message. Callable from any
+        event loop. Raises when the broker cannot answer, and on consumers that
+        do not report a backlog, so a caller must be ready to decide without it.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not report a lane backlog for {topic}"
+        )

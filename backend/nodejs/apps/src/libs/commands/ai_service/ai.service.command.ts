@@ -10,6 +10,10 @@ export interface AICommandOptions {
   headers?: Record<string, string>;
   queryParams?: Record<string, string | number | boolean>;
   body?: any;
+  // Total budget across all attempts: the abort signal is shared, so a timed-out
+  // first attempt fails the remaining ones immediately.
+  timeoutMs?: number;
+  maxAttempts?: number;
 }
 
 interface FetchCommandError extends Error {
@@ -30,12 +34,16 @@ const AI_SERVICE_TIMEOUT_MS = 620_000;
 export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   private method: HttpMethod;
   private body?: any;
+  private timeoutMs: number;
+  private maxAttempts: number;
 
   constructor(options: AICommandOptions) {
     super(options.uri, options.queryParams, options.headers);
     this.method = options.method;
     this.body = this.sanitizeBody(options.body);
     this.headers = this.sanitizeHeaders(options.headers!);
+    this.timeoutMs = options.timeoutMs ?? AI_SERVICE_TIMEOUT_MS;
+    this.maxAttempts = options.maxAttempts ?? 3;
   }
   
   // Execute the HTTP request based on the provided options.
@@ -53,13 +61,13 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       // downloading, retry shortly" message the health check produced.
       // Not applied to executeStream(), whose SSE progress stream is meant to
       // outlive any single request.
-      signal: AbortSignal.timeout(AI_SERVICE_TIMEOUT_MS),
+      signal: AbortSignal.timeout(this.timeoutMs),
     };
 
     try {
       const response = await this.fetchWithRetry(
         async () => fetch(url, requestOptions),
-        3,
+        this.maxAttempts,
         300,
       );
 
@@ -71,16 +79,19 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
 
       // Assuming the response is JSON; adjust if needed.
       const data = await response.json();
+      const retryAfter = response.headers.get('retry-after');
       return {
         statusCode: response.status,
         data: data,
         msg: response.statusText,
+        ...(retryAfter ? { headers: { 'retry-after': retryAfter } } : {}),
       };
     } catch (error: any) {
+      // Headers are left out: they carry the caller's bearer token.
       logger.error('AI service command failed', {
         error: error.message,
         url: url,
-        requestOptions: requestOptions,
+        method: this.method,
       });
       throw error;
     }
@@ -154,13 +165,16 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
   }
 
   // Execute streaming request
-  public async executeStream(): Promise<Readable> {
+  public async executeStream(signal?: AbortSignal): Promise<Readable> {
     const url = this.buildUrl();
     const sanitizedHeaders = this.sanitizeHeaders(this.headers);
     const requestOptions: RequestInit = {
       method: this.method,
       headers: sanitizedHeaders,
       body: this.body,
+      // Lets Node abandon a run nobody is waiting for (see `attachUpstreamAbort`);
+      // aborting only the Readable would leave Python generating into the void.
+      ...(signal ? { signal } : {}),
     };
 
     try {
@@ -224,7 +238,7 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
       logger.error('AI service streaming command failed', {
         error: error.message,
         url: url,
-        requestOptions: requestOptions,
+        method: this.method,
       });
       throw error;
     }

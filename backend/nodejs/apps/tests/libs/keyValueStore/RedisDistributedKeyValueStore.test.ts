@@ -4,6 +4,8 @@ import sinon from 'sinon';
 import { DistributedKeyValueStore } from '../../../src/libs/keyValueStore/keyValueStore';
 import { RedisDistributedKeyValueStore, RedisStoreConfig } from '../../../src/libs/keyValueStore/providers/RedisDistributedKeyValueStore';
 import { KeyAlreadyExistsError, KeyNotFoundError } from '../../../src/libs/errors/etcd.errors';
+import { resetRedisProviderRegistry } from '../../../src/libs/services/redis/connectionProviderFactory';
+import { createFakeRedisProvider, FakeRedisProvider } from '../../helpers/fake-redis-provider';
 
 // ----------------------------------------------------------------
 // Mock Redis client
@@ -13,22 +15,16 @@ class MockRedisClient {
   getBuffer = sinon.stub();
   del = sinon.stub();
   scan = sinon.stub();
-  watch = sinon.stub().resolves();
-  unwatch = sinon.stub().resolves();
-  multi = sinon.stub();
+  evalsha = sinon.stub();
   ping = sinon.stub();
   quit = sinon.stub().resolves();
   publish = sinon.stub().resolves();
 }
 
-class MockMulti {
-  set = sinon.stub().returnsThis();
-  exec = sinon.stub();
-}
-
 describe('RedisDistributedKeyValueStore', () => {
   let store: RedisDistributedKeyValueStore<string>;
   let mockClient: MockRedisClient;
+  let fakeProvider: FakeRedisProvider;
   let serializer: sinon.SinonStub;
   let deserializer: sinon.SinonStub;
 
@@ -49,6 +45,12 @@ describe('RedisDistributedKeyValueStore', () => {
     // Replace the internal Redis client with our mock
     mockClient = new MockRedisClient();
     (store as any).client = mockClient;
+    // A full fake provider, not a `{ loadScript }` stub: key enumeration goes
+    // through `provider.scanKeys()` (R2), so a partial double would let a
+    // regression back to `client.scan()` pass unnoticed.
+    fakeProvider = createFakeRedisProvider();
+    fakeProvider.loadScript.resolves('cas-sha');
+    (store as any).provider = fakeProvider;
   });
 
   afterEach(() => {
@@ -80,6 +82,47 @@ describe('RedisDistributedKeyValueStore', () => {
     it('should return key unchanged if it does not start with prefix', () => {
       const result = (store as any).stripPrefix('other:mykey');
       expect(result).to.equal('other:mykey');
+    });
+  });
+
+  // ---- REDIS_KEY_NAMESPACE (R9) ----------------------------------
+  describe('REDIS_KEY_NAMESPACE', () => {
+    afterEach(() => {
+      delete process.env.REDIS_KEY_NAMESPACE;
+      resetRedisProviderRegistry();
+    });
+
+    it('prepends the namespace to the key prefix', () => {
+      process.env.REDIS_KEY_NAMESPACE = 'tenant-a';
+      const namespaced = new RedisDistributedKeyValueStore<string>(
+        config,
+        serializer,
+        deserializer,
+      );
+      expect((namespaced as any).buildKey('mykey')).to.equal(
+        'tenant-a:test:kv:mykey',
+      );
+      expect(
+        (namespaced as any).stripPrefix('tenant-a:test:kv:mykey'),
+      ).to.equal('mykey');
+    });
+
+    it('publishes cache invalidation on the namespaced channel', async () => {
+      process.env.REDIS_KEY_NAMESPACE = 'tenant-a';
+      const namespaced = new RedisDistributedKeyValueStore<string>(
+        config,
+        serializer,
+        deserializer,
+      );
+      const client = new MockRedisClient();
+      (namespaced as any).client = client;
+
+      await namespaced.publishCacheInvalidation('key1');
+
+      expect(client.publish.calledOnce).to.be.true;
+      expect(client.publish.firstCall.args[0]).to.equal(
+        'tenant-a:pipeshub:cache:invalidate',
+      );
     });
   });
 
@@ -188,26 +231,27 @@ describe('RedisDistributedKeyValueStore', () => {
   // ---- getAllKeys ------------------------------------------------
   describe('getAllKeys', () => {
     it('should scan and return stripped keys', async () => {
-      mockClient.scan
-        .onFirstCall().resolves(['0', ['test:kv:k1', 'test:kv:k2']]);
+      fakeProvider.setScanKeys(['test:kv:k1', 'test:kv:k2']);
 
       const keys = await store.getAllKeys();
       expect(keys).to.deep.equal(['k1', 'k2']);
-      expect(mockClient.scan.calledOnce).to.be.true;
+      expect(fakeProvider.scanKeys.calledOnceWith('test:kv:*')).to.be.true;
     });
 
-    it('should handle multiple scan iterations', async () => {
-      mockClient.scan
-        .onFirstCall().resolves(['1', ['test:kv:k1']])
-        .onSecondCall().resolves(['0', ['test:kv:k2']]);
+    it('should enumerate through the provider, never a single client SCAN', async () => {
+      // R2: `Cluster.scan()` reaches one arbitrary node, so a raw client SCAN
+      // silently returns a fraction of the keyspace on cluster/MemoryDB. The
+      // provider owns the topology and fans out over every master.
+      fakeProvider.setScanKeys(['test:kv:k1']);
 
-      const keys = await store.getAllKeys();
-      expect(keys).to.deep.equal(['k1', 'k2']);
-      expect(mockClient.scan.callCount).to.equal(2);
+      await store.getAllKeys();
+
+      expect(mockClient.scan.called).to.be.false;
+      expect(fakeProvider.scanKeys.called).to.be.true;
     });
 
     it('should leave keys without the KV prefix unchanged when scanning', async () => {
-      mockClient.scan.onFirstCall().resolves(['0', ['other:full', 'test:kv:k1']]);
+      fakeProvider.setScanKeys(['other:full', 'test:kv:k1']);
 
       const keys = await store.getAllKeys();
 
@@ -215,7 +259,7 @@ describe('RedisDistributedKeyValueStore', () => {
     });
 
     it('should return empty array when no keys exist', async () => {
-      mockClient.scan.resolves(['0', []]);
+      fakeProvider.setScanKeys([]);
       const keys = await store.getAllKeys();
       expect(keys).to.deep.equal([]);
     });
@@ -269,94 +313,95 @@ describe('RedisDistributedKeyValueStore', () => {
   // ---- listKeysInDirectory --------------------------------------
   describe('listKeysInDirectory', () => {
     it('should scan with prefix pattern and strip prefix', async () => {
-      mockClient.scan.resolves(['0', ['test:kv:dir/a', 'test:kv:dir/b']]);
+      fakeProvider.setScanKeys(['test:kv:dir/a', 'test:kv:dir/b']);
       const keys = await store.listKeysInDirectory('dir/');
       expect(keys).to.deep.equal(['dir/a', 'dir/b']);
     });
 
     it('should append trailing slash if missing', async () => {
-      mockClient.scan.resolves(['0', []]);
+      fakeProvider.setScanKeys([]);
       await store.listKeysInDirectory('dir');
-      const pattern = mockClient.scan.firstCall.args[2]; // MATCH argument
-      expect(pattern).to.equal('test:kv:dir/*');
+      expect(fakeProvider.scanKeys.firstCall.args[0]).to.equal('test:kv:dir/*');
     });
 
     it('should not double-append trailing slash', async () => {
-      mockClient.scan.resolves(['0', []]);
+      fakeProvider.setScanKeys([]);
       await store.listKeysInDirectory('dir/');
-      const pattern = mockClient.scan.firstCall.args[2]; // MATCH argument
-      expect(pattern).to.equal('test:kv:dir/*');
+      expect(fakeProvider.scanKeys.firstCall.args[0]).to.equal('test:kv:dir/*');
     });
 
-    it('should handle multiple scan iterations', async () => {
-      mockClient.scan
-        .onFirstCall().resolves(['5', ['test:kv:dir/a']])
-        .onSecondCall().resolves(['0', ['test:kv:dir/b']]);
+    it('should enumerate through the provider, never a single client SCAN', async () => {
+      fakeProvider.setScanKeys(['test:kv:dir/a']);
 
-      const keys = await store.listKeysInDirectory('dir/');
-      expect(keys).to.deep.equal(['dir/a', 'dir/b']);
+      await store.listKeysInDirectory('dir/');
+
+      expect(mockClient.scan.called).to.be.false;
+      expect(fakeProvider.scanKeys.called).to.be.true;
     });
   });
 
   // ---- compareAndSet --------------------------------------------
+  // Single-key Lua GET+SET (R6), not WATCH/MULTI/EXEC -- see the comment on
+  // COMPARE_AND_SET_SCRIPT in the source for why.
   describe('compareAndSet', () => {
-    let mockMulti: MockMulti;
-
-    beforeEach(() => {
-      mockMulti = new MockMulti();
-      mockClient.multi.returns(mockMulti);
-    });
-
     it('should succeed when expected matches current value', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves([['OK']]);
+      mockClient.evalsha.resolves(1);
 
       const result = await store.compareAndSet('key', 'current', 'new-val');
       expect(result).to.be.true;
-      expect(mockClient.watch.calledWith('test:kv:key')).to.be.true;
+      const args = mockClient.evalsha.firstCall.args;
+      expect(args[0]).to.equal('cas-sha');
+      expect(args[1]).to.equal(1);
+      expect(args[2]).to.equal('test:kv:key');
     });
 
     it('should fail when expected does not match current value', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('different'));
+      mockClient.evalsha.resolves(0);
 
       const result = await store.compareAndSet('key', 'expected', 'new-val');
       expect(result).to.be.false;
-      expect(mockClient.unwatch.calledOnce).to.be.true;
     });
 
     it('should succeed when both expected and current are null', async () => {
-      mockClient.getBuffer.resolves(null);
-      mockMulti.exec.resolves([['OK']]);
+      mockClient.evalsha.resolves(1);
 
       const result = await store.compareAndSet('key', null, 'new-val');
       expect(result).to.be.true;
+      // ARGV[3] ("expect no existing value") must be '1' for a null expectation.
+      const args = mockClient.evalsha.firstCall.args;
+      expect(args[5]).to.equal('1');
     });
 
     it('should fail when expected is null but current exists', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('exists'));
+      mockClient.evalsha.resolves(0);
 
       const result = await store.compareAndSet('key', null, 'new-val');
       expect(result).to.be.false;
     });
 
     it('should fail when expected is set but current is null', async () => {
-      mockClient.getBuffer.resolves(null);
+      mockClient.evalsha.resolves(0);
 
       const result = await store.compareAndSet('key', 'expected', 'new-val');
       expect(result).to.be.false;
     });
 
-    it('should return false when transaction is aborted (result is null)', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves(null);
+    it('should reload the script once and retry on NOSCRIPT', async () => {
+      mockClient.evalsha
+        .onFirstCall().rejects(new Error('NOSCRIPT No matching script'))
+        .onSecondCall().resolves(1);
+      (store as any).provider.loadScript
+        .onFirstCall().resolves('cas-sha')
+        .onSecondCall().resolves('cas-sha-2');
 
       const result = await store.compareAndSet('key', 'current', 'new-val');
-      expect(result).to.be.false;
+      expect(result).to.be.true;
+      expect(mockClient.evalsha.callCount).to.equal(2);
+      expect(mockClient.evalsha.secondCall.args[0]).to.equal('cas-sha-2');
     });
 
     it('should notify watchers on successful CAS', async () => {
-      mockClient.getBuffer.resolves(Buffer.from('current'));
-      mockMulti.exec.resolves([['OK']]);
+      mockClient.evalsha.resolves(1);
 
       const callback = sinon.stub();
       await store.watchKey('key', callback);
@@ -367,7 +412,7 @@ describe('RedisDistributedKeyValueStore', () => {
     });
 
     it('should return false on error', async () => {
-      mockClient.watch.rejects(new Error('redis down'));
+      mockClient.evalsha.rejects(new Error('redis down'));
 
       const result = await store.compareAndSet('key', 'old', 'new');
       expect(result).to.be.false;

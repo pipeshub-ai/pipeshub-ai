@@ -26,6 +26,7 @@ import {
 } from '../controllers/oauth.controllers';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
 
 // ============================================================================
 // Validation Schemas
@@ -77,6 +78,7 @@ const oauthConfigListSchema = z.object({
       .optional(),
     search: z.string().optional(),
     scope: z.enum(['personal', 'team']).optional(),
+    reveal: z.string().optional(),
   }),
 });
 
@@ -90,6 +92,7 @@ const createOAuthConfigSchema = z.object({
   body: z.object({
     oauthInstanceName: z.string().min(1, 'OAuth instance name is required'),
     config: z.any(),
+    baseUrl: z.string().optional(),
   }),
 });
 
@@ -114,6 +117,7 @@ const updateOAuthConfigSchema = z.object({
   body: z.object({
     oauthInstanceName: z.string().min(1, 'OAuth instance name is required').optional(),
     config: z.any().optional(),
+    baseUrl: z.string().optional(),
   }),
 });
 
@@ -129,6 +133,7 @@ const updateOAuthConfigSchema = z.object({
  */
 export function createOAuthRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'connectorType', 'configId');
   const config = container.get<AppConfig>('AppConfig');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
 

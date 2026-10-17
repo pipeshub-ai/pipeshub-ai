@@ -24,7 +24,8 @@ export const authorizeQuerySchema = z.object({
     state: z.string().min(1),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
     code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
-    code_challenge_method: z.enum(['S256', 'plain']).optional(),
+    // RFC 9700: only S256; `plain` exposes the verifier on the wire
+    code_challenge_method: z.enum(['S256']).optional(),
     nonce: z.string().optional(),
   }),
 })
@@ -38,7 +39,8 @@ export const authorizeConsentSchema = z.object({
     consent: z.enum(['granted', 'denied']),
     // RFC 7636: code_challenge must be base64url encoded (no padding)
     code_challenge: z.string().regex(codeChallengePattern, 'Invalid code_challenge format').optional(),
-    code_challenge_method: z.enum(['S256', 'plain']).optional(),
+    // RFC 9700: only S256; `plain` exposes the verifier on the wire
+    code_challenge_method: z.enum(['S256']).optional(),
   }),
 })
 
@@ -48,6 +50,7 @@ export const tokenSchema = z.object({
       OAuthGrantType.AUTHORIZATION_CODE,
       OAuthGrantType.CLIENT_CREDENTIALS,
       OAuthGrantType.REFRESH_TOKEN,
+      OAuthGrantType.DEVICE_CODE,
     ]),
     code: z.string().optional(),
     redirect_uri: z.string().url().optional(),
@@ -58,6 +61,48 @@ export const tokenSchema = z.object({
     scope: z.string().optional(),
     // RFC 7636: code_verifier must match the pattern [A-Za-z0-9-._~]{43,128}
     code_verifier: z.string().regex(codeVerifierPattern, 'Invalid code_verifier format').optional(),
+    device_code: z.string().min(1).optional(),
+  }),
+})
+
+export const dcrRequestSchema = z.object({
+  body: z.object({
+    redirect_uris: z.array(z.string().min(1)).max(10).optional(),
+    token_endpoint_auth_method: z
+      .enum(['none', 'client_secret_basic', 'client_secret_post'])
+      .optional(),
+    grant_types: z.array(z.string()).optional(),
+    response_types: z.array(z.string()).optional(),
+    client_name: z.string().min(1).max(100).optional(),
+    client_uri: z.string().url().optional(),
+    logo_uri: z.string().url().optional(),
+    scope: z.string().optional(),
+    contacts: z.array(z.string()).optional(),
+    tos_uri: z.string().url().optional(),
+    policy_uri: z.string().url().optional(),
+    software_id: z.string().optional(),
+    software_version: z.string().optional(),
+  }),
+})
+
+export const deviceAuthorizationSchema = z.object({
+  body: z.object({
+    client_id: z.string().min(1),
+    scope: z.string().optional(),
+  }),
+})
+
+export const deviceUserCodeSchema = z.object({
+  body: z.object({
+    user_code: z.string().min(1).max(32),
+    consent: z.enum(['granted', 'denied']).optional(),
+  }),
+})
+
+export const deviceConsentSchema = z.object({
+  body: z.object({
+    user_code: z.string().min(1).max(32),
+    consent: z.enum(['granted', 'denied']),
   }),
 })
 
@@ -86,6 +131,22 @@ export const mongoIdRegex = /^[a-fA-F0-9]{24}$/
 export const appIdParamsSchema = z.object({
   params: z.object({
     appId: z.string().regex(mongoIdRegex, 'Invalid App ID'),
+  }),
+})
+
+/**
+ * `serviceAccountId: null` puts the app back to acting as its creator, which
+ * is why null is accepted rather than the field simply being optional.
+ */
+export const setAppTokenIdentitySchema = z.object({
+  params: z.object({
+    appId: z.string().regex(mongoIdRegex, 'Invalid App ID'),
+  }),
+  body: z.object({
+    serviceAccountId: z
+      .string()
+      .regex(mongoIdRegex, 'Invalid service account ID')
+      .nullable(),
   }),
 })
 

@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Fixture Product Changelog</title>
+  <id>urn:fixture:changelog</id>
+  <updated>2025-09-06T09:00:00Z</updated>
+  <entry>
+    <id>urn:fixture:changelog:1</id>
+    <title>Fixture Changelog: Search Filters</title>
+    <link href="{{BASE_URL}}/feeds/changelog/search-filters.html"/>
+    <updated>2025-09-05T09:00:00Z</updated>
+    <summary>Summary for Fixture Changelog: Search Filters.</summary>
+  </entry>
+  <entry>
+    <id>urn:fixture:changelog:2</id>
+    <title>Fixture Changelog: Faster Sync</title>
+    <link href="{{BASE_URL}}/feeds/changelog/faster-sync.html"/>
+    <updated>2025-09-06T09:00:00Z</updated>
+    <summary>Summary for Fixture Changelog: Faster Sync.</summary>
+  </entry>
+</feed>

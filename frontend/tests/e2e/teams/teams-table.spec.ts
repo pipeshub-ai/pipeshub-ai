@@ -1,4 +1,5 @@
 import { test, expect } from '../fixtures/base.fixture';
+import { changeLimit } from '../helpers/pagination.helper';
 
 test.describe('Teams Table', () => {
   test.beforeEach(async ({ page }) => {
@@ -35,66 +36,43 @@ test.describe('Teams Table', () => {
     expect(textAfter).not.toBe(textBefore);
   });
 
-  test('search filters teams', async ({ page }) => {
+  test('search filters teams and clearing it restores them', async ({ page }) => {
     const searchInput = page.locator('input[placeholder*="Search"]');
-    if (await searchInput.isVisible()) {
-      await searchInput.fill('E2E Team');
-      await page.waitForTimeout(1_000);
+    await expect(searchInput).toBeVisible({ timeout: 10_000 });
+    const rows = page.locator('[role="row"]');
+    const before = await rows.count();
 
-      const rows = page.locator('[role="row"]');
-      const count = await rows.count();
-      expect(count).toBeGreaterThanOrEqual(0);
-    }
+    await searchInput.fill('zzz-nonexistent-team-zzz');
+    await expect(rows).toHaveCount(0, { timeout: 10_000 });
+
+    // Clearing the search brings back exactly the teams listed before it.
+    await searchInput.clear();
+    await expect(rows).toHaveCount(before, { timeout: 10_000 });
   });
 
   test('search with no match shows empty state', async ({ page }) => {
     const searchInput = page.locator('input[placeholder*="Search"]');
-    if (await searchInput.isVisible()) {
-      await searchInput.fill('zzz-nonexistent-team-zzz');
-      await page.waitForTimeout(1_000);
+    await expect(searchInput).toBeVisible({ timeout: 10_000 });
+    await searchInput.fill('zzz-nonexistent-team-zzz');
+    await page.waitForTimeout(1_000);
 
-      const rows = page.locator('[role="row"]');
-      const count = await rows.count();
-      expect(count).toBe(0);
-    }
+    const rows = page.locator('[role="row"]');
+    const count = await rows.count();
+    expect(count).toBe(0);
+  });
+
+  // The default limit is 25, so each test changes to a different value first:
+  // a click that changes nothing fails instead of passing.
+  test('pagination: change limit to 50', async ({ page }) => {
+    await changeLimit(page, 50);
   });
 
   test('pagination: change limit to 25', async ({ page }) => {
-    const limitTrigger = page.locator('text=/per page/').first();
-    if (await limitTrigger.isVisible()) {
-      await limitTrigger.locator('..').click();
-      await page.locator('[role="menuitem"]').filter({ hasText: '25 per page' }).click();
-      await page.waitForTimeout(1_500);
-
-      const rows = page.locator('[role="row"]');
-      const count = await rows.count();
-      expect(count).toBeLessThanOrEqual(25);
-    }
-  });
-
-  test('pagination: change limit to 50', async ({ page }) => {
-    const limitTrigger = page.locator('text=/per page/').first();
-    if (await limitTrigger.isVisible()) {
-      await limitTrigger.locator('..').click();
-      await page.locator('[role="menuitem"]').filter({ hasText: '50 per page' }).click();
-      await page.waitForTimeout(1_500);
-
-      const rows = page.locator('[role="row"]');
-      const count = await rows.count();
-      expect(count).toBeLessThanOrEqual(50);
-    }
+    await changeLimit(page, 50);
+    await changeLimit(page, 25);
   });
 
   test('pagination: change limit to 100', async ({ page }) => {
-    const limitTrigger = page.locator('text=/per page/').first();
-    if (await limitTrigger.isVisible()) {
-      await limitTrigger.locator('..').click();
-      await page.locator('[role="menuitem"]').filter({ hasText: '100 per page' }).click();
-      await page.waitForTimeout(2_000);
-
-      const rows = page.locator('[role="row"]');
-      const count = await rows.count();
-      expect(count).toBeLessThanOrEqual(100);
-    }
+    await changeLimit(page, 100);
   });
 });

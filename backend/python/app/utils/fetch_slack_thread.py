@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional, TYPE_CHECKING
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, CollectionNames, Connectors
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.utils.logger import create_logger
 
@@ -56,6 +56,15 @@ async def has_slack_connector_configured(
         return False
 
 
+def connector_instances_have_slack(instances: list[dict] | None) -> bool:
+    """Slack check over an already-fetched connector-instance list — see
+    :func:`app.utils.execute_query.connector_instances_have_sql`."""
+    return any(
+        str(i.get("type", "")).upper() in _SLACK_CONNECTOR_TYPES and bool(i.get("isConfigured"))
+        for i in (instances or [])
+    )
+
+
 def agent_knowledge_has_slack_connector(agent_knowledge: Optional[List[Dict[str, Any]]]) -> bool:
     """Return True if the agent's attached knowledge includes a Slack connector.
 
@@ -69,6 +78,43 @@ def agent_knowledge_has_slack_connector(agent_knowledge: Optional[List[Dict[str,
         isinstance(k, dict) and str(k.get("type", "")).upper() in _SLACK_CONNECTOR_TYPES
         for k in agent_knowledge
     )
+
+
+async def resolve_user_key(
+    graph_provider: "IGraphDBProvider",
+    user_id: str | None,
+) -> str | None:
+    """Map the chat's external ``userId`` to the user's graph key, or None."""
+    if not user_id:
+        return None
+    try:
+        user = await graph_provider.get_user_by_user_id(user_id=user_id)
+    except Exception as e:
+        logger.warning("Failed to resolve user key for %s: %s", user_id, e)
+        return None
+    if not user:
+        return None
+    return user.get("_key") or user.get("id")
+
+
+async def user_can_access_node(
+    graph_provider: "IGraphDBProvider",
+    node_id: str,
+    user_key: str,
+    org_id: str,
+) -> bool:
+    """True only if the node is in ``org_id`` and ``user_key`` may access it."""
+    try:
+        node = await graph_provider.get_knowledge_hub_node_access(
+            node_id=node_id,
+            user_key=user_key,
+            org_id=org_id,
+            folder_mime_types=FOLDER_MIME_TYPES,
+        )
+    except Exception as e:
+        logger.warning("Access check failed for node %s: %s", node_id, e)
+        return False
+    return node is not None
 
 
 class FetchSlackThreadArgs(BaseModel):
@@ -101,6 +147,11 @@ def _model_to_dict(record: Any) -> Dict[str, Any]:
         except Exception:
             return record.model_dump()
     return dict(record)
+
+
+def _record_key(record: object) -> str | None:
+    meta = _model_to_dict(record)
+    return meta.get("id") or meta.get("_key")
 
 
 async def _fetch_record_by_id(
@@ -197,6 +248,8 @@ async def _fetch_record_by_id(
 async def _resolve_thread_record_group(
     record_id: str,
     graph_provider: "IGraphDBProvider",
+    *,
+    raise_on_error: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Resolve a Slack record id to its SLACK_THREAD RecordGroup id + connector_id.
 
@@ -211,11 +264,17 @@ async def _resolve_thread_record_group(
 
     Anything else (channel burst, non-parent single, non-Slack record) returns None
     — there is no thread to expand.
+
+    A graph read that fails also returns None, unless ``raise_on_error`` is
+    set: a caller that answers "not a thread" for None must not say so about a
+    thread it simply could not read.
     """
     try:
         record = await graph_provider.get_record_by_id(record_id)
     except Exception as e:
         logger.warning(f"Failed to fetch record {record_id} from graph: {e}")
+        if raise_on_error:
+            raise
         return None
 
     if not record:
@@ -260,6 +319,8 @@ async def _resolve_thread_record_group(
             logger.warning(
                 f"Failed to look up thread RG external_id={ext_thread_id}: {e}"
             )
+            if raise_on_error:
+                raise
             return None
         if thread_rg:
             rg_dict = _model_to_dict(thread_rg)
@@ -282,8 +343,11 @@ async def _fetch_thread_records_impl(
     blob_store: Optional["BlobStorage"] = None,
     org_id: Optional[str] = None,
     config_service: Optional["ConfigurationService"] = None,
+    user_id: str | None = None,
+    scope_state: dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
-    """Resolve the thread RG for the given record and return every record in it.
+    """Resolve the thread RG for the given record and return the records in it
+    the user may access and the turn's scope (``scope_state``) admits.
 
     Returned records are built through the same `chat_helpers.get_record` pipeline
     used for first-pass retrieval, so their `block_containers`, `context_metadata`
@@ -292,7 +356,10 @@ async def _fetch_thread_records_impl(
     ``blob_store`` may be omitted on deep-agent runs where tools are built before
     retrieval mutates state; when ``config_service`` and ``graph_provider`` are set,
     a ``BlobStorage`` instance is created on demand (same pattern as ``execute_query``).
-    ``org_id`` may be taken from the resolved Slack record when state has no org.
+
+    ``record_id`` comes from the model, so it is untrusted: the record must be in
+    the caller's org and accessible to the user, and the thread listing is
+    permission-filtered for them.
     """
     if not graph_provider:
         return {
@@ -300,26 +367,38 @@ async def _fetch_thread_records_impl(
             "error": "Slack thread tool requires graph_provider (graph DB).",
         }
 
-    resolved = await _resolve_thread_record_group(record_id, graph_provider)
-    if not resolved:
-        return {
-            "ok": False,
-            "error": (
-                f"Record '{record_id}' is not part of a Slack thread "
-                f"(no SLACK_THREAD record group found). Pass a thread-burst record id, "
-                f"or a channel message that has replies."
-            ),
-        }
-
-    effective_org = (org_id or "").strip() or (resolved.get("org_id") or "").strip()
+    effective_org = (org_id or "").strip()
     if not effective_org:
         return {
             "ok": False,
-            "error": (
-                "Slack thread tool could not determine org_id. "
-                "Ensure chat state includes org_id or the Slack record includes org metadata."
-            ),
+            "error": "Slack thread tool could not determine org_id from the chat.",
         }
+
+    user_key = await resolve_user_key(graph_provider, user_id)
+    if not user_key:
+        return {
+            "ok": False,
+            "error": "Slack thread tool could not resolve the current user.",
+        }
+
+    # Same error for missing and forbidden, so the tool doesn't confirm a record exists.
+    if not await user_can_access_node(graph_provider, record_id, user_key, effective_org):
+        return {
+            "ok": False,
+            "error": f"Record '{record_id}' was not found or you don't have access to it.",
+        }
+
+    not_a_thread = {
+        "ok": False,
+        "error": (
+            f"Record '{record_id}' is not part of a Slack thread "
+            f"(no SLACK_THREAD record group found). Pass a thread-burst record id, "
+            f"or a channel message that has replies."
+        ),
+    }
+    resolved = await _resolve_thread_record_group(record_id, graph_provider)
+    if not resolved or resolved.get("org_id") != effective_org:
+        return not_a_thread
 
     effective_blob = blob_store
     if effective_blob is None and config_service is not None:
@@ -352,10 +431,25 @@ async def _fetch_thread_records_impl(
             connector_id=connector_id,
             org_id=effective_org,
             depth=0,
+            user_key=user_key,
         )
     except Exception as e:
         logger.error(f"get_records_by_record_group failed for thread {thread_rg_id}: {e}")
         return {"ok": False, "error": f"Failed to list thread records: {e}"}
+
+    from app.utils.chat_helpers import accessible_node_ids
+
+    thread_ids = {rid for r in thread_records or [] if (rid := _record_key(r))}
+    allowed = await accessible_node_ids(
+        graph_provider, thread_ids | {record_id}, user_id or "", effective_org,
+    )
+    if scope_state is not None:
+        from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+        allowed &= await ids_within_scope(scope_state, graph_provider, user_key, effective_org, sorted(allowed))
+    if record_id not in allowed:
+        return not_a_thread
+    thread_records = [r for r in thread_records if _record_key(r) in allowed]
 
     if not thread_records:
         return {
@@ -370,8 +464,7 @@ async def _fetch_thread_records_impl(
     skipped: List[str] = []
 
     for r in thread_records:
-        meta = _model_to_dict(r)
-        rid = meta.get("id") or meta.get("_key")
+        rid = _record_key(r)
         if not rid:
             continue
 
@@ -412,10 +505,13 @@ def create_fetch_slack_thread_tool(
     blob_store: Optional["BlobStorage"] = None,
     config_service: Optional["ConfigurationService"] = None,
     tool_state: Optional[Dict[str, Any]] = None,
+    user_id: str | None = None,
 ) -> Callable:
     """Factory for the fetch_slack_thread tool with runtime deps injected.
 
     Args:
+        user_id: The chat user's external ``userId``. Required: without it
+            every call fails, because thread access is checked per user.
         virtual_record_id_to_result: Shared map of vrid -> built record dict.
             Newly fetched thread records are inserted here so subsequent tool
             calls (e.g. fetch_full_record) reuse the same instances.
@@ -454,8 +550,9 @@ def create_fetch_slack_thread_tool(
         Pass the exact Record ID value shown in the context (may be a short
         label such as "R3"). The tool will:
           1. Resolve the SLACK_THREAD RecordGroup the record belongs to.
-          2. Return every record that BELONGS_TO that group (thread-burst
-             MessageRecords + dependent FileRecords), in chronological order.
+          2. Return the records that BELONGS_TO that group (thread-burst
+             MessageRecords + dependent FileRecords) the user may access,
+             in chronological order.
           3. Hydrate them through the same pipeline as first-pass retrieval,
              so block_containers, context_metadata and metadata fields all
              match the records you already see.
@@ -487,6 +584,8 @@ def create_fetch_slack_thread_tool(
                 blob_store=blob_store,
                 org_id=org_id,
                 config_service=config_service,
+                user_id=user_id,
+                scope_state=tool_state,
             )
         except Exception as e:
             logger.exception("fetch_slack_thread_tool failed")

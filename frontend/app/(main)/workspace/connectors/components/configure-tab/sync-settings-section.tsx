@@ -8,7 +8,7 @@ import {
   WorkspaceRightPanelBodyPortalContext,
   WORKSPACE_DRAWER_POPPER_Z_INDEX,
 } from '@/app/(main)/workspace/components/workspace-right-panel';
-import { STRATEGY_LABELS, INTERVAL_OPTIONS } from '../../constants';
+import { STRATEGY_LABEL_KEYS, INTERVAL_OPTIONS } from '../../constants';
 import type { SyncStrategy } from '../../types';
 
 // ========================================
@@ -22,6 +22,7 @@ export function SyncSettingsSection({
   connectorName,
   onStrategyChange,
   onIntervalChange,
+  disabled = false,
 }: {
   supportedStrategies: SyncStrategy[];
   selectedStrategy: SyncStrategy;
@@ -29,6 +30,7 @@ export function SyncSettingsSection({
   connectorName: string;
   onStrategyChange: (strategy: SyncStrategy) => void;
   onIntervalChange: (minutes: number) => void;
+  disabled?: boolean;
 }) {
   const panelBodyPortal = useContext(WorkspaceRightPanelBodyPortalContext);
 
@@ -58,6 +60,7 @@ export function SyncSettingsSection({
         <Select.Root
           value={selectedStrategy}
           onValueChange={(v) => onStrategyChange(v as SyncStrategy)}
+          disabled={disabled}
         >
           <Select.Trigger
             style={{ width: '100%', height: 32 }}
@@ -70,7 +73,7 @@ export function SyncSettingsSection({
           >
             {supportedStrategies.map((strategy) => (
               <Select.Item key={strategy} value={strategy}>
-                {STRATEGY_LABELS[strategy] ?? strategy}
+                {STRATEGY_LABEL_KEYS[strategy] ? t(STRATEGY_LABEL_KEYS[strategy]) : strategy}
               </Select.Item>
             ))}
           </Select.Content>
@@ -86,6 +89,7 @@ export function SyncSettingsSection({
           <Select.Root
             value={String(intervalMinutes ?? 60)}
             onValueChange={(v) => onIntervalChange(Number(v))}
+            disabled={disabled}
           >
             <Select.Trigger
               style={{ width: '100%', height: 32 }}
@@ -98,7 +102,7 @@ export function SyncSettingsSection({
             >
               {INTERVAL_OPTIONS.map((opt) => (
                 <Select.Item key={opt.value} value={String(opt.value)}>
-                  {opt.label}
+                  {t(opt.labelKey)}
                 </Select.Item>
               ))}
             </Select.Content>

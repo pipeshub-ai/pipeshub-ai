@@ -24,6 +24,11 @@ from msgraph.generated.users.users_request_builder import UsersRequestBuilder
 from app.models.entities import AppUser, FileRecord
 from app.models.permission import Permission, PermissionType
 
+GUEST_USER_TYPE = "Guest"
+# Not hierarchicalsharing: that reports only the root of a sharing change, and every item stores its own
+# grants, so its descendants would keep a revoked grant.
+SHAREPOINT_DELTA_PREFER = "deltashowsharingchanges"
+
 
 # Map Microsoft Graph roles to permission type
 def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
@@ -31,13 +36,21 @@ def map_msgraph_role_to_permission_type(role: str) -> PermissionType:
     role_lower = role.lower()
     if role_lower in ["owner", "fullcontrol"]:
         return PermissionType.OWNER
-    elif role_lower in ["write", "editor", "contributor", "writeaccess"]:
+    elif role_lower in ["write", "edit", "editor", "contributor", "writeaccess"]:
         return PermissionType.WRITE
     elif role_lower in ["read", "reader", "readaccess"]:
         return PermissionType.READ
     else:
         # Default to read for unknown roles
         return PermissionType.READ
+
+
+_ROLE_RANK = {PermissionType.READ: 0, PermissionType.WRITE: 1, PermissionType.OWNER: 2}
+
+
+def map_msgraph_roles_to_permission_type(roles: list[str] | None) -> PermissionType:
+    """The strongest of a grant's roles: Graph can list several, in no set order."""
+    return max((map_msgraph_role_to_permission_type(role) for role in roles or ["read"]), key=_ROLE_RANK.__getitem__)
 
 
 
@@ -177,12 +190,15 @@ class MSGraphClient:
             self.logger.error(f"Unexpected error fetching groups: {ex}")
             raise ex
 
-    async def get_group_members(self, group_id: str) -> List[dict]:
+    async def get_group_members(self, group_id: str, *, raise_on_error: bool = False) -> List[dict]:
         """
         Get all members of a specific group.
 
         Args:
             group_id: The ID of the group
+            raise_on_error: Raise instead of returning [] when the members can't be read.
+                Saving [] replaces the group's stored members, so a caller that can keep
+                what is stored should ask for the error.
 
         Returns:
             List of user IDs who are members of the group
@@ -206,6 +222,8 @@ class MSGraphClient:
 
         except Exception as e:
             self.logger.error(f"Error fetching group members for {group_id}: {e}")
+            if raise_on_error:
+                raise
             return []
 
     async def get_all_users(self) -> List[AppUser]:
@@ -221,7 +239,7 @@ class MSGraphClient:
             async with self.rate_limiter:
                 query_params = UsersRequestBuilder.UsersRequestBuilderGetQueryParameters(
                     select=['id', 'displayName', 'userPrincipalName', 'accountEnabled',
-                            'mail', 'jobTitle', 'department', 'surname']
+                            'mail', 'jobTitle', 'department', 'surname', 'userType']
                 )
 
                 request_configuration = RequestConfiguration(
@@ -253,6 +271,7 @@ class MSGraphClient:
                     is_active=user.account_enabled,
                     title=user.job_title,
                     source_created_at=user.created_date_time.timestamp() if user.created_date_time else None,
+                    is_guest=user.user_type == GUEST_USER_TYPE,
                 ))
 
             return user_list
@@ -353,6 +372,8 @@ class MSGraphClient:
                 ri.http_method = Method.GET
                 ri.url = url  # absolute URL
                 ri.headers.add("Accept", "application/json")
+                # Without it an item whose sharing alone changed is left out of the delta.
+                ri.headers.add("Prefer", SHAREPOINT_DELTA_PREFER)
 
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
@@ -481,13 +502,17 @@ class MSGraphClient:
             raise ex
 
 
-    async def get_file_permission(self, drive_id: str, item_id: str) -> List['Permission']:
+    async def get_file_permission(
+        self, drive_id: str, item_id: str, *, raise_on_error: bool = False
+    ) -> List['Permission']:
         """
         Retrieves permissions for a specified file by Drive ID and File ID.
 
         Args:
             drive_id (str): The ID of the drive containing the file
             item_id (str): The ID of the file
+            raise_on_error (bool): Raise instead of returning [] when the permissions can't
+                be read, so a caller replacing stored access can keep it instead.
 
         Returns:
             List[Permission]: A list of Permission objects associated with the file
@@ -512,18 +537,26 @@ class MSGraphClient:
             return permissions
         except ODataError as e:
             self.logger.error(f"Error fetching file permissions for File ID {item_id}: {e}")
+            if raise_on_error:
+                raise
             return []
         except Exception as ex:
             self.logger.error(f"Unexpected error fetching file permissions for File ID {item_id}: {ex}")
+            if raise_on_error:
+                raise
             return []
 
-    async def list_folder_children(self, drive_id: str, folder_id: str) -> List[DriveItem]:
+    async def list_folder_children(
+        self, drive_id: str, folder_id: str, *, raise_on_error: bool = False
+    ) -> List[DriveItem]:
         """
         List all children of a folder.
 
         Args:
             drive_id: The drive ID
             folder_id: The folder ID
+            raise_on_error: Raise instead of returning [] when the listing, or any of
+                its later pages, can't be read, so a caller can tell it from an empty folder.
 
         Returns:
             List of DriveItem objects
@@ -548,18 +581,28 @@ class MSGraphClient:
 
         except ODataError as e:
             self.logger.error(f"Error listing folder children for {folder_id}: {e}")
+            if raise_on_error:
+                raise
             return []
         except Exception as ex:
             self.logger.error(f"Unexpected error listing folder children for {folder_id}: {ex}")
+            if raise_on_error:
+                raise
             return []
 
-    async def get_signed_url(self, drive_id: str, item_id: str) -> Optional[str]:
+    async def get_signed_url(
+        self, drive_id: str, item_id: str, raise_on_error: bool = False
+    ) -> Optional[str]:
         """
         Creates a signed URL (sharing link) for a file or folder, valid for the specified duration.
 
         Args:
             drive_id (str): The ID of the drive.
             item_id (str): The ID of the file or folder.
+            raise_on_error (bool): Propagate the Graph error instead of returning None.
+                Sync treats the URL as optional and must not fail a whole crawl over one
+                item; the streaming path needs the ODataError so an expired token isn't
+                reported to the user as a deleted file.
 
         Returns:
             str: The signed URL or None if not available.
@@ -574,6 +617,8 @@ class MSGraphClient:
 
         except Exception as ex:
             self.logger.error(f"Error creating signed URL for item {item_id} in drive {drive_id}: {ex}")
+            if raise_on_error:
+                raise
             return None
 
     async def search_query(
@@ -681,5 +726,10 @@ class MSGraphClient:
                                 f"Error: {ex.error.message}"
                             )
 
-            self.logger.error(f"Error searching entities {entity_types}: {ex}")
+            error_msg = type(ex).__name__
+            try:
+                error_msg = str(ex)
+            except Exception:
+                pass
+            self.logger.error(f"Error searching entities {entity_types}: {error_msg}")
             raise

@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { CONTENT_PADDING, HEADER_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
+import type { SkillForBuilder } from '../../types';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { NodeTemplate } from '../types';
 import { filterTemplatesBySearch, groupConnectorInstances, prepareDragData } from '../sidebar-utils';
@@ -18,16 +19,19 @@ import {
   useFeatureFlagsStore,
   selectMcpEnabled,
   selectActionsEnabled,
+  selectSkillsEnabled,
 } from '@/lib/store/feature-flags-store';
+import { BetaBadge } from '@/app/components/ui/beta-badge';
 import { AgentBuilderToolsetsSection } from './sidebar-toolsets-section';
 import { AgentBuilderMcpSection } from './sidebar-mcp-section';
+import { AgentBuilderSkillsSection } from './sidebar-skills-section';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { DraggableRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import type { McpMyServerEntry } from '../../../workspace/mcp-servers/types';
 import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
 import type { AgentWebSearchAttachment } from '../types';
 
-const PALETTE_ROW_MIN_HEIGHT = 44;
 const PALETTE_ICON_SIZE = 20;
 
 /** Matches `expanded[k] ?? true` for keys not seeded in `useState` (e.g. `knowledge-connector-*`). */
@@ -46,69 +50,12 @@ const paletteRowLabelStyle: React.CSSProperties = {
   textAlign: 'left',
 };
 
-function applyDragData(event: React.DragEvent, entries: Record<string, string>) {
-  event.dataTransfer.effectAllowed = 'move';
-  Object.entries(entries).forEach(([k, v]) => {
-    if (v != null) event.dataTransfer.setData(k, v);
-  });
-}
-
-function DraggableRow({
-  children,
-  disabled,
-  data,
-  onBlocked,
-  comfortable = false,
-}: {
-  children: React.ReactNode;
-  disabled?: boolean;
-  data: Record<string, string>;
-  onBlocked?: () => void;
-  /** Taller rows for main palette items (models, knowledge, connectors). */
-  comfortable?: boolean;
-}) {
-  return (
-    <Box
-      draggable={!disabled}
-      onDragStart={(e) => {
-        if (disabled) {
-          e.preventDefault();
-          onBlocked?.();
-          return;
-        }
-        applyDragData(e, data);
-      }}
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        width: '100%',
-        minWidth: 0,
-        minHeight: comfortable ? PALETTE_ROW_MIN_HEIGHT : 36,
-        padding: comfortable ? '0 14px' : '0 12px',
-        boxSizing: 'border-box',
-        gap: comfortable ? 10 : 8,
-        cursor: disabled ? 'not-allowed' : 'grab',
-        opacity: disabled ? 0.55 : 1,
-        borderRadius: comfortable ? 'var(--radius-2)' : 'var(--radius-1)',
-        border: comfortable ? '1px solid var(--olive-3)' : '1px solid transparent',
-        backgroundColor: comfortable ? 'var(--olive-2)' : 'transparent',
-      }}
-      className={
-        disabled
-          ? 'agent-builder-draggable-row agent-builder-draggable-row--disabled'
-          : 'agent-builder-draggable-row'
-      }
-    >
-      {children}
-    </Box>
-  );
-}
-
 export function AgentBuilderSidebar(props: {
   open: boolean;
   width: number;
   loading: boolean;
   nodeTemplates: NodeTemplate[];
+  availableSkills: SkillForBuilder[];
   configuredConnectors: Connector[];
   toolsets: BuilderSidebarToolset[];
   activeToolsetTypeKeys: Set<string>;
@@ -124,6 +71,7 @@ export function AgentBuilderSidebar(props: {
   onNotify: (message: string) => void;
   agentKey?: string | null;
   isServiceAccount?: boolean;
+  shareWithOrg?: boolean;
   onManageAgentToolsetCredentials?: (toolset: BuilderSidebarToolset) => void;
   /** Viewer without edit: lock models/KB/apps palette (no drag onto canvas). */
   paletteStructureLocked?: boolean;
@@ -139,6 +87,7 @@ export function AgentBuilderSidebar(props: {
     width,
     loading,
     nodeTemplates,
+    availableSkills,
     configuredConnectors,
     toolsets,
     activeToolsetTypeKeys,
@@ -150,6 +99,7 @@ export function AgentBuilderSidebar(props: {
     onNotify,
     agentKey = null,
     isServiceAccount = false,
+    shareWithOrg = false,
     onManageAgentToolsetCredentials,
     paletteStructureLocked = false,
     paletteDragBlockedMessage = '',
@@ -160,6 +110,7 @@ export function AgentBuilderSidebar(props: {
   const { t } = useTranslation();
   const mcpEnabled = useFeatureFlagsStore(selectMcpEnabled);
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
   const onPaletteDragBlocked = useCallback(() => {
     if (paletteDragBlockedMessage) onNotify(paletteDragBlockedMessage);
   }, [paletteDragBlockedMessage, onNotify]);
@@ -171,6 +122,7 @@ export function AgentBuilderSidebar(props: {
     'knowledge-collections': true,
     tools: true,
     mcpServers: true,
+    skills: true,
   });
 
   const filtered = useMemo(() => filterTemplatesBySearch(nodeTemplates, search), [nodeTemplates, search]);
@@ -185,6 +137,7 @@ export function AgentBuilderSidebar(props: {
   const kbIndividuals = filtered.filter(
     (t) => t.category === 'knowledge' && t.type.startsWith('kb-') && t.type !== 'kb-group'
   );
+  const skillTemplates = filtered.filter((t) => t.category === 'skills');
 
   const SHOW_MORE_LIMIT = 5;
   const [showAllKbCollections, setShowAllKbCollections] = useState(false);
@@ -569,12 +522,34 @@ export function AgentBuilderSidebar(props: {
                     refreshMcpServers={refreshMcpServers}
                     mcpMergeCheckNodes={mcpMergeCheckNodes}
                     isServiceAccount={isServiceAccount}
+                    agentShared={isServiceAccount || shareWithOrg}
                     agentKey={agentKey}
                     onNotify={onNotify}
                     structureLocked={paletteStructureLocked}
                     onPaletteStructureDragBlocked={onPaletteDragBlocked}
                   />
                 </Box>
+              ) : null}
+            </>
+          ) : null}
+
+          {skillsEnabled ? (
+            <>
+              <SectionHeader
+                title={t('agentBuilder.skillsSection')}
+                icon="psychology"
+                open={expanded.skills}
+                onToggle={() => toggle('skills')}
+                beta
+              />
+              {expanded.skills ? (
+                <AgentBuilderSkillsSection
+                  availableSkills={availableSkills}
+                  skillTemplates={skillTemplates}
+                  loading={loading}
+                  structureLocked={paletteStructureLocked}
+                  onPaletteStructureDragBlocked={onPaletteDragBlocked}
+                />
               ) : null}
             </>
           ) : null}
@@ -589,11 +564,13 @@ function SectionHeader({
   icon,
   open,
   onToggle,
+  beta = false,
 }: {
   title: string;
   icon?: string;
   open: boolean;
   onToggle: () => void;
+  beta?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -647,6 +624,7 @@ function SectionHeader({
         >
           {title}
         </span>
+        {beta ? <BetaBadge /> : null}
       </Flex>
       <IconButton
         size="2"

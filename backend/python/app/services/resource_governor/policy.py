@@ -11,6 +11,7 @@ growth ramps slowly (plan section 4).
 from __future__ import annotations
 
 import math
+import statistics
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
@@ -27,6 +28,8 @@ from app.utils.env_config import env_float as _env_float
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from app.services.resource_governor.feedback import FeedbackWindow
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -109,6 +112,27 @@ INDEX_HEADROOM = _env_float("GOVERNOR_INDEX_HEADROOM", 2.0, low=1.0, high=16.0)
 INDEX_MIN_PER_TIER = 8
 INDEX_MAX_PER_TIER = int(_env_float("GOVERNOR_INDEX_MAX", 512, low=1, high=100_000))
 
+# Total in-flight budget across both index tiers when MAX_CONCURRENT_INDEXING
+# is unset. The per-tier derivation above says how deep each tier's *own*
+# pipeline can usefully be; it says nothing about what the services every
+# in-flight record fans out to can absorb. An index permit is mostly time
+# spent waiting on parsing, embedding, the graph and the vector store, and
+# each of those has a fixed pool behind it (the Neo4j driver's 100
+# connections, the lease Redis pool's 32), so the width has to be bounded by
+# them rather than by how many buffers this container could hold. Six per
+# CPU keeps a small host's pipeline full; the absolute cap keeps the number
+# of records that can be inside a graph write at once under the default
+# Neo4j pool even when every one of them is. Deliberately not env-tunable:
+# an operator who needs a different total sets MAX_CONCURRENT_INDEXING.
+INDEX_SLOTS_PER_CPU = 6.0
+INDEX_TOTAL_MIN = 24
+INDEX_TOTAL_MAX = 96
+# Heavy is sized first under the total, but never past this share of it:
+# on a host with more cores than the cap can seat, heavy would otherwise
+# derive enough to take all but light's minimum reserve, and light -- the
+# tier the bulk of records fall into -- would run eight at a time.
+INDEX_HEAVY_MAX_SHARE = 2.0 / 3.0
+
 # Resident memory one in-flight record is assumed to hold — its downloaded
 # buffer plus post-parse chunk/embedding state. Sizes ``index_memory_cap``
 # the same way HEAVY_PARSE_WORKING_SET_GB sizes ``heavy_memory_cap``. Split by
@@ -132,6 +156,25 @@ INDEX_LIGHT_WORKING_SET_GB = _env_float(
 # read (not just via _env_float's low/high) so the invariant MEM_HARD >
 # MEM_SOFT > MEM_SOFT - GROW_BAND holds even when only one of the three is
 # overridden and the others fall back to their un-clamped defaults.
+# Downstream brake, index pools only. An index permit is mostly time spent
+# waiting on other services, so when one of them signals distress the right
+# response is fewer records in flight -- CPU and memory here say nothing
+# about it. A hard symptom (throttle, exhausted pool, unreachable service)
+# halves the pool, the same response as a memory incident; a few timeouts
+# in one sample take a quarter off, one alone is more likely a pathological
+# document than a stalled dependency. Growth then waits for
+# DOWNSTREAM_GROW_CONFIRM_SAMPLES clean samples, which at the 15s interval
+# outlasts the Neo4j pool-acquisition timeout, so it cannot resume before a
+# stall would have shown up. A pool whose mean hold time has climbed to
+# DOWNSTREAM_LATENCY_HOLD_FACTOR times its low-water mark is queueing on
+# something downstream and holds where it is rather than growing into it.
+DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD = 2
+DOWNSTREAM_TIMEOUT_SHRINK_FACTOR = 0.75
+DOWNSTREAM_GROW_CONFIRM_SAMPLES = 2
+DOWNSTREAM_LATENCY_HOLD_FACTOR = 2.0
+HOLD_EWMA_ALPHA = 0.3
+HOLD_BASELINE_DRIFT = 0.05
+
 MEM_SOFT = _env_float("GOVERNOR_MEM_SOFT", 0.70, low=0.10, high=0.95)
 MEM_HARD = max(_env_float("GOVERNOR_MEM_HARD", 0.80, low=0.11, high=0.99), MEM_SOFT + 0.01)
 # Default 0: heavy grows up to MEM_SOFT like light. The memory cap and
@@ -233,9 +276,23 @@ def _free_memory_gb(snap: ResourceSnapshot) -> float | None:
     return max(0.0, (snap.mem_limit_bytes - resident) / (1024 ** 3))
 
 
-def heavy_memory_cap(snap: ResourceSnapshot) -> int | None:
-    """How many heavy parses the *currently free* memory can hold, or
-    ``None`` when the cgroup limit is unknown.
+def _worker_share(total: int, worker_count: int) -> int:
+    """One worker process's share of a count resolved for all of them.
+
+    The count is floored once, for the whole cgroup, and only then split, so
+    the shares add up to it rather than to N floors. Each share is floored at
+    1 because a worker's gate admits into an empty pool whatever its limit;
+    with more workers than the count, what holds them together to it is a
+    counter they share (the cluster leases, or ``SharedSlots`` for heavy
+    parses), not this.
+    """
+    workers = max(1, worker_count)
+    return total if workers == 1 else max(1, total // workers)
+
+
+def heavy_memory_cap(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+    """How many heavy parses this process's share of the *currently free*
+    memory can hold, or ``None`` when the cgroup limit is unknown.
 
     The heavy ceiling is sized off CPU alone (``resolve_ceilings``), which
     is the right steady-state number but says nothing about whether the
@@ -249,12 +306,27 @@ def heavy_memory_cap(snap: ResourceSnapshot) -> int | None:
     free_gb = _free_memory_gb(snap)
     if free_gb is None:
         return None
-    return max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB))
+    return _worker_share(max(1, int(free_gb / HEAVY_PARSE_WORKING_SET_GB)), worker_count)
 
 
-def index_memory_cap(snap: ResourceSnapshot, pool: Pool) -> int | None:
-    """How many in-flight records of *pool*'s tier the currently free memory
-    can hold, or ``None`` when the cgroup limit is unknown.
+def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
+    """Heavy parses the whole cgroup may run at once: the heavy budget for all
+    of its worker processes, held to what free memory holds.
+
+    The same target one process's heavy gate walks toward (``_target_for``):
+    a parse already running is not counted back into free memory, and a
+    smaller value never revokes one.
+    """
+    mem_cap = heavy_memory_cap(snap)
+    return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
+
+
+def index_memory_cap(
+    snap: ResourceSnapshot, pool: Pool, worker_count: int = 1
+) -> int | None:
+    """How many in-flight records of *pool*'s tier this process's share of
+    the currently free memory can hold, or ``None`` when the cgroup limit is
+    unknown.
 
     The index ceilings are parse-derived (``resolve_ceilings``), which says
     nothing about whether the memory to hold that many downloaded buffers
@@ -275,7 +347,7 @@ def index_memory_cap(snap: ResourceSnapshot, pool: Pool) -> int | None:
         if pool is Pool.INDEX_HEAVY
         else INDEX_LIGHT_WORKING_SET_GB
     )
-    return max(COUNT_POOL_FLOOR, int(free_gb / working_set))
+    return _worker_share(max(COUNT_POOL_FLOOR, int(free_gb / working_set)), worker_count)
 
 
 # ---------------------------------------------------------------------------
@@ -301,8 +373,12 @@ def resolve_ceilings(
     * light parse —
       ``min(cpus * LIGHT_PARSE_SLOTS_PER_CPU, LIGHT_PARSE_MAX, env_parse)``
     * index, per tier — ``clamp(parse_ceiling * INDEX_HEADROOM,
-      INDEX_MIN_PER_TIER, INDEX_MAX_PER_TIER)``, with ``env_index`` capping
-      the two together
+      INDEX_MIN_PER_TIER, INDEX_MAX_PER_TIER)``, with the two together capped
+      by ``env_index`` or, when unset, by
+      ``clamp(cpus * INDEX_SLOTS_PER_CPU, INDEX_TOTAL_MIN, INDEX_TOTAL_MAX)``;
+      heavy is sized first and light keeps a small reserve
+    * each parse ceiling is then held to its index tier, since a parse permit
+      is only ever held alongside an index permit
 
     Each tier's in-flight budget derives from *its own* parse ceiling because
     that is the only figure that says how much pipeline depth the tier can
@@ -330,10 +406,10 @@ def resolve_ceilings(
     they hold below these ceilings exactly as long as the memory isn't there
     and no longer.
 
-    ``worker_count > 1`` divides the result, since each worker process runs
-    its own governor against the same cgroup.
+    ``worker_count > 1`` returns one worker process's share
+    (``split_ceilings``), since each runs its own governor against the same
+    cgroup.
     """
-    workers = max(1, worker_count)
     cpus = max(0.0, snap.cpu_quota)
     reservation = min(EMBEDDING_CPU_RESERVATION, cpus * EMBEDDING_CPU_RESERVATION_MAX_FRACTION)
     heavy_cpus = max(0.0, cpus - reservation) if reserve_embedding_cpus else cpus
@@ -367,41 +443,64 @@ def resolve_ceilings(
     index_heavy_ceiling = _index_ceiling(heavy_parse_ceiling)
     index_light_ceiling = _index_ceiling(light_parse_ceiling)
 
+    # The *total* in-flight budget is what an operator reasons about and what
+    # bounds downstream fan-out. MAX_CONCURRENT_INDEXING sets it explicitly;
+    # otherwise it derives from the CPU quota, bounded by what the shared
+    # downstream pools can take (INDEX_TOTAL_MAX).
     if env_index is not None:
-        # MAX_CONCURRENT_INDEXING caps the *total* in-flight budget, which is
-        # what an operator is reasoning about. Scale both tiers to fit rather
-        # than applying it to each, which would silently double it.
-        total = index_heavy_ceiling + index_light_ceiling
         allowed = max(1, env_index)
-        if total > allowed:
-            share = allowed / total
-            index_heavy_ceiling = max(1, math.floor(index_heavy_ceiling * share))
-            index_light_ceiling = max(1, math.floor(index_light_ceiling * share))
-            if index_heavy_ceiling + index_light_ceiling > allowed:
-                # Only reachable at allowed == 1: two tiers each floored at 1
-                # cannot add up to 1. Collapse rather than overshoot — light
-                # drops to zero and ``effective_index_tier`` routes every
-                # record to heavy, so the cap holds exactly. Nothing is lost:
-                # at a total of one there is one record in flight whatever its
-                # tier, so there is no fairness left to split.
-                index_heavy_ceiling = allowed
-                index_light_ceiling = 0
+    else:
+        allowed = int(_clamp(cpus * INDEX_SLOTS_PER_CPU, INDEX_TOTAL_MIN, INDEX_TOTAL_MAX))
+    if index_heavy_ceiling + index_light_ceiling > allowed:
+        # Heavy is sized first. Light derives at ten slots per CPU against
+        # heavy's one, so splitting the budget in proportion hands nearly all
+        # of it to light and leaves heavy — the tier whose records take
+        # minutes and whose parse slots are the scarce ones — a handful of
+        # permits. Heavy is held to INDEX_HEAVY_MAX_SHARE of the total and
+        # light keeps a small reserve, so a queue of PDFs can never take
+        # every permit from records that finish in seconds; at allowed == 1
+        # that reserve is zero and light collapses to nothing, so
+        # ``effective_index_tier`` routes every record to heavy and the cap
+        # holds exactly.
+        light_reserve = min(INDEX_MIN_PER_TIER, index_light_ceiling, allowed // 2)
+        heavy_cap = max(1, int(allowed * INDEX_HEAVY_MAX_SHARE))
+        index_heavy_ceiling = min(index_heavy_ceiling, allowed - light_reserve, heavy_cap)
+        index_light_ceiling = min(index_light_ceiling, allowed - index_heavy_ceiling)
 
-    if workers > 1:
-        heavy_parse_ceiling = max(1, heavy_parse_ceiling // workers)
-        light_parse_ceiling = max(1, light_parse_ceiling // workers)
-        index_heavy_ceiling = max(1, index_heavy_ceiling // workers)
-        # Floor at 1 only if the tier exists at all; a collapsed light tier
-        # must stay collapsed, not be resurrected to 1 by the division.
-        index_light_ceiling = (
-            max(1, index_light_ceiling // workers) if index_light_ceiling else 0
-        )
+    # A record holding a parse permit also holds an index permit, so a parse
+    # ceiling above its index tier would be depth the pipeline can never
+    # reach: the extra parse slots would wait on index admission forever.
+    heavy_parse_ceiling = max(1, min(heavy_parse_ceiling, index_heavy_ceiling))
+    light_parse_ceiling = (
+        max(1, min(light_parse_ceiling, index_light_ceiling)) if index_light_ceiling else 1
+    )
 
+    return split_ceilings(
+        Ceilings(
+            heavy=heavy_parse_ceiling,
+            light=light_parse_ceiling,
+            index_heavy=index_heavy_ceiling,
+            index_light=index_light_ceiling,
+        ),
+        worker_count,
+    )
+
+
+def split_ceilings(total: Ceilings, worker_count: int) -> Ceilings:
+    """One worker process's share of ceilings resolved for all of them.
+
+    Every share is floored at 1, so with more workers than slots the shares
+    add up to more than ``total``; the cluster-wide leases, which are sized
+    from ``total``, are what hold every worker together to it.
+    """
     return Ceilings(
-        heavy=heavy_parse_ceiling,
-        light=light_parse_ceiling,
-        index_heavy=index_heavy_ceiling,
-        index_light=index_light_ceiling,
+        heavy=_worker_share(total.heavy, worker_count),
+        light=_worker_share(total.light, worker_count),
+        index_heavy=_worker_share(total.index_heavy, worker_count),
+        # A collapsed light tier must stay collapsed, not be resurrected to 1.
+        index_light=(
+            _worker_share(total.index_light, worker_count) if total.index_light else 0
+        ),
     )
 
 
@@ -463,7 +562,7 @@ def _index_pressure_floor(pool: Pool) -> int:
     return max(COUNT_POOL_FLOOR, int(budget_gb / working_set))
 
 
-def pressure_floor(pool: Pool, ceiling: int) -> int:
+def pressure_floor(pool: Pool, ceiling: int, worker_count: int = 1) -> int:
     """Lowest limit a memory or CPU brake may shrink *pool* to.
 
     Distinct from ``floor_for``, which is a *warm-start* width — where the
@@ -482,14 +581,18 @@ def pressure_floor(pool: Pool, ceiling: int) -> int:
     order of magnitude of throughput while saving no memory at all. Both tiers
     now floor at whatever number of *their own* records fits the same budget,
     so a memory-starved node still turns over a useful number of the cheap
-    ones while heavy is held to a couple.
+    ones while heavy is held to a couple. That budget is the cgroup's, so with
+    ``worker_count`` workers each one floors at its share of it.
     """
     if _is_index_pool(pool):
         # Never above the warm-start width: brakes only ever reduce a limit, so
         # a floor above where the pool starts would let one *raise* it. On a
         # ceiling small enough for that to bind, the two coincide and the pool
         # simply has no room to shrink.
-        return min(_index_pressure_floor(pool), floor_for(pool, ceiling))
+        return min(
+            _worker_share(_index_pressure_floor(pool), worker_count),
+            floor_for(pool, ceiling),
+        )
     return floor_for(pool, ceiling)
 
 
@@ -526,11 +629,13 @@ def _ceiling_for(pool: Pool, ceilings: Ceilings) -> int:
     }[pool]
 
 
-def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
+def _target_for(
+    pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings, worker_count: int = 1
+) -> int:
     """Section 4 "Targets per sample" — the value growth ramps toward, never
     a value jumped to directly."""
     if pool is Pool.HEAVY_PARSE:
-        mem_cap = heavy_memory_cap(snap)
+        mem_cap = heavy_memory_cap(snap, worker_count)
         bound = ceilings.heavy if mem_cap is None else min(ceilings.heavy, mem_cap)
         # Clamped to 1, not to floor_for: the memory gate must be able to
         # hold heavy *below* its warm-start floor when the cgroup genuinely
@@ -553,9 +658,9 @@ def _target_for(pool: Pool, snap: ResourceSnapshot, ceilings: Ceilings) -> int:
         # paths disagree about how far down is too far and the walk-down
         # quietly undercuts the brake.
         ceiling = _ceiling_for(pool, ceilings)
-        mem_cap = index_memory_cap(snap, pool)
+        mem_cap = index_memory_cap(snap, pool, worker_count)
         bound = ceiling if mem_cap is None else min(ceiling, mem_cap)
-        return int(_clamp(bound, pressure_floor(pool, ceiling), ceiling))
+        return int(_clamp(bound, pressure_floor(pool, ceiling, worker_count), ceiling))
 
     raise AssertionError(f"unhandled pool {pool!r}")  # exhaustive over Pool StrEnum
 
@@ -673,6 +778,99 @@ def _cpu_brake_active(snap: ResourceSnapshot) -> bool:
     return False
 
 
+def _all_slow(holds: tuple[float, ...], threshold: float) -> bool:
+    return bool(holds) and all(hold > threshold for hold in holds)
+
+
+def _track_hold_time(state: PoolState, demand: PoolDemand) -> PoolState:
+    """Fold this sample's typical permit hold time into the pool's EWMA and
+    low-water baseline. The baseline drifts toward the EWMA by a small
+    fraction of the gap each sample, so a workload that is simply slower
+    than the one before it becomes the new normal within a few minutes
+    instead of pinning growth for the life of the process.
+
+    When holders report how long each permit was held
+    (``PoolDemand.hold_seconds_by_sample``), each sample's new holds are
+    judged against the baseline. A hold over ``DOWNSTREAM_LATENCY_HOLD_FACTOR``
+    times the baseline is slow.
+
+    - Any of the sample's holds is fast: the median of the fast ones feeds
+      the EWMA. The few slow ones are large records, not a slow pool: pull
+      requests holding a permit for ten minutes beside chat messages that
+      take fifteen seconds. Read by the mean, ``permit_seconds /
+      completions``, they look exactly like a slowdown and stop the pool
+      growing for as long as they run.
+    - Every hold is slow, in this sample and in the previous one: every
+      record is slowing down. The EWMA goes straight to the median of the
+      slow holds, so the hold engages on that sample, before slow start has
+      doubled the pool, however few permits each sample releases.
+    - Every hold is slow but some of the previous sample's were not:
+      possibly a batch of large records finishing together. Nothing changes until the next
+      sample says which it is.
+
+    The mean is still used when no hold times were reported at all."""
+    if demand.completions <= 0:
+        return state
+    samples = demand.hold_seconds_by_sample
+    if not any(samples):
+        mean_hold = demand.permit_seconds / demand.completions
+        return _fold_hold(state, mean_hold)
+    current = samples[-1]
+    if not current:
+        return state
+    if not state.hold_baseline:
+        return _fold_hold(state, statistics.median(current))
+
+    threshold = DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
+    if not _all_slow(current, threshold):
+        return _fold_hold(
+            state, statistics.median([hold for hold in current if hold <= threshold])
+        )
+    previous = next((sample for sample in reversed(samples[:-1]) if sample), ())
+    if not previous or not _all_slow(previous, threshold):
+        return state
+    slow_median = statistics.median(current)
+    return _fold_hold(
+        state, slow_median, ewma=max(slow_median, state.hold_ewma or 0.0)
+    )
+
+
+def _fold_hold(
+    state: PoolState, hold: float, *, ewma: float | None = None
+) -> PoolState:
+    """Move the EWMA toward *hold* (or set it to *ewma*), then let the
+    baseline drift toward it."""
+    if ewma is None:
+        ewma = (
+            hold
+            if state.hold_ewma is None
+            else HOLD_EWMA_ALPHA * hold + (1.0 - HOLD_EWMA_ALPHA) * state.hold_ewma
+        )
+    if state.hold_baseline is None:
+        baseline = ewma
+    else:
+        drifted = state.hold_baseline + (ewma - state.hold_baseline) * HOLD_BASELINE_DRIFT
+        baseline = min(ewma, drifted)
+    return replace(state, hold_ewma=ewma, hold_baseline=baseline)
+
+
+def _latency_hold(state: PoolState) -> bool:
+    if state.hold_ewma is None or not state.hold_baseline:
+        return False
+    return state.hold_ewma > DOWNSTREAM_LATENCY_HOLD_FACTOR * state.hold_baseline
+
+
+def _downstream_shrink_target(
+    current: int, floor: int, feedback: FeedbackWindow
+) -> tuple[int | None, bool]:
+    """``(shrink_to, incident)`` the downstream window asks for, if any."""
+    if feedback.incident:
+        return max(floor, current // 2), True
+    if feedback.timeout_count >= DOWNSTREAM_TIMEOUT_SHRINK_THRESHOLD:
+        return max(floor, math.ceil(current * DOWNSTREAM_TIMEOUT_SHRINK_FACTOR)), False
+    return None, False
+
+
 def _next_pool_limit(
     pool: Pool,
     current: int,
@@ -682,11 +880,13 @@ def _next_pool_limit(
     demand: PoolDemand,
     now: float,
     interval: float,
+    feedback: FeedbackWindow | None = None,
+    worker_count: int = 1,
 ) -> tuple[int, PoolState]:
     ceiling = _ceiling_for(pool, ceilings)
-    floor = pressure_floor(pool, ceiling)
+    floor = pressure_floor(pool, ceiling, worker_count)
     shrink_step = COUNT_POOL_STEP
-    target = _target_for(pool, snap, ceilings)
+    target = _target_for(pool, snap, ceilings, worker_count)
     pressure = snap.mem_pressure
     # Asymmetric on purpose: shrink on the cgroup's true occupancy, grow on
     # the baseline-credited reading. Braking on the credited reading pushes
@@ -704,6 +904,19 @@ def _next_pool_limit(
     # only queues cheap Jira/Slack work behind a problem they are not causing.
     cpu_brake = _is_cpu_bound_pool(pool) and _cpu_brake_active(snap)
 
+    # The downstream brake is for the index pools: they are what fans out to
+    # the services that reported, and the parse pools sit *behind* an index
+    # permit, so narrowing index alone is what reduces the load.
+    downstream = feedback if _is_index_pool(pool) and feedback is not None else None
+    # The holdoff is judged on its value *entering* this sample, so a clean
+    # window counts toward growth only from the next sample on: two clean
+    # samples means two full intervals with no symptoms before the pool grows.
+    downstream_holdoff = state.downstream_holdoff
+    if _is_index_pool(pool):
+        state = _track_hold_time(state, demand)
+        if downstream is None or downstream.is_empty:
+            state = replace(state, downstream_holdoff=max(0, downstream_holdoff - 1))
+
     # Collect every shrink rule that applies this sample and take the
     # tightest. Rules that fire together are describing one shortage from
     # different angles, so honouring only the gentler one would leave the
@@ -716,6 +929,14 @@ def _next_pool_limit(
         incident = True
     elif (brake_pressure is not None and brake_pressure >= MEM_SOFT) or cpu_brake:
         shrink_to = max(floor, current - shrink_step)
+
+    downstream_shrink = False
+    if downstream is not None:
+        wanted, downstream_incident = _downstream_shrink_target(current, floor, downstream)
+        if wanted is not None:
+            downstream_shrink = True
+            incident = incident or downstream_incident
+            shrink_to = wanted if shrink_to is None else min(shrink_to, wanted)
 
     # Heavy and index both have a target that live free memory can pull below
     # the ceiling (_target_for). Overall pressure can sit well under MEM_SOFT
@@ -736,7 +957,10 @@ def _next_pool_limit(
             if incident
             else max(state.cooldown_until, now + SHRINK_COOLDOWN_SECONDS)
         )
-        return shrink_to, _reset_for_shrink(state, cooldown_until=cooldown_until)
+        next_state = _reset_for_shrink(state, cooldown_until=cooldown_until)
+        if downstream_shrink:
+            next_state = replace(next_state, downstream_holdoff=DOWNSTREAM_GROW_CONFIRM_SAMPLES)
+        return shrink_to, next_state
 
     if pressure is None:
         # Cannot prove there is memory headroom to grow into — freeze.
@@ -753,10 +977,13 @@ def _next_pool_limit(
     demand_threshold = (
         DEMAND_UTILISATION_THRESHOLD if cpu_bound else LIGHT_DEMAND_UTILISATION_THRESHOLD
     )
+    downstream_hold = _is_index_pool(pool) and (downstream_holdoff > 0 or _latency_hold(state))
     if pressure < grow_threshold and not cooling_down:
         healthy_streak = state.healthy_streak + 1
-        if healthy_streak >= confirm_samples and demand.has_demand(
-            current, interval, threshold=demand_threshold
+        if (
+            healthy_streak >= confirm_samples
+            and not downstream_hold
+            and demand.has_demand(current, interval, threshold=demand_threshold)
         ):
             next_state = replace(state, healthy_streak=healthy_streak)
             grow_step, grow_state = _growth_step(pool, ceiling, next_state, snap)
@@ -779,13 +1006,18 @@ def next_limits(
     demand: Mapping[Pool, PoolDemand],
     now: float,
     interval: float = SAMPLE_INTERVAL_SECONDS,
+    feedback: FeedbackWindow | None = None,
+    worker_count: int = 1,
 ) -> tuple[Limits, ControllerState]:
-    """Advance every adapted pool's limit by at most one step toward its
-    target, and hold the index pool at its ceiling (``_is_index_pool``).
+    """Advance every pool's limit by at most one step toward its target.
 
-    Pure and deterministic given its inputs — the caller supplies ``now``
-    and the sampled ``demand`` so this can be exercised in tests without a
-    clock or a running event loop.
+    ``feedback`` is what downstream services reported since the last sample
+    (``DownstreamFeedback.drain``); it only ever shrinks or holds the index
+    pools. ``worker_count`` is how many processes share the cgroup's free
+    memory, and ``ceilings`` must be one process's share of the budget. Pure
+    and deterministic given its inputs — the caller supplies ``now`` and the
+    sampled ``demand`` so this can be exercised in tests without a clock or
+    a running event loop.
     """
     new_values: dict[Pool, int] = {}
     new_states: dict[Pool, PoolState] = {}
@@ -793,6 +1025,7 @@ def next_limits(
         pool_demand = demand.get(pool, PoolDemand.empty())
         new_limit, new_state = _next_pool_limit(
             pool, current.get(pool), snap, ceilings, state.get(pool), pool_demand, now, interval,
+            feedback=feedback, worker_count=worker_count,
         )
         new_values[pool] = new_limit
         new_states[pool] = new_state

@@ -33,6 +33,7 @@ from app.connectors.sources.github_teams.timestamps import (
 )
 from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import CodeFileRecord
+from app.services.graph_db.common.record_visibility import RecordVisibility
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
     failed_response,
@@ -121,7 +122,7 @@ def _patch_calls(c: object, collection: str) -> list[list[dict]]:
     """All batch_update_nodes patch lists written to *collection*."""
     return [
         call.args[0]
-        for call in c.tx_store.batch_update_nodes.await_args_list
+        for call in c.data_entities_processor.batch_update_nodes.await_args_list
         if call.args[1] == collection
     ]
 
@@ -139,7 +140,7 @@ class TestTimestampBackfill:
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
 
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (100, 200)})
@@ -163,7 +164,7 @@ class TestTimestampBackfill:
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
 
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps.fetch_commit_dates = AsyncMock(return_value={"src/main.py": (None, 200)})
@@ -183,7 +184,7 @@ class TestTimestampBackfill:
         file_node = _code_node(1, "src/main.py")
         file_node["sourceCreatedAtTimestamp"] = 100
         file_node["sourceLastModifiedTimestamp"] = 200
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[file_node], [_folder_node(1, "src")]],
         )
 
@@ -208,7 +209,7 @@ class TestTimestampBackfill:
         folder_node = _folder_node(1, "src")
         folder_node["sourceCreatedAtTimestamp"] = 100
         folder_node["sourceLastModifiedTimestamp"] = 200
-        c.tx_store.get_nodes_by_filters = AsyncMock(
+        c.data_entities_processor.get_nodes_by_filters = AsyncMock(
             side_effect=[[file_node], [folder_node]],
         )
 
@@ -889,14 +890,24 @@ class TestLargeBlobFallback:
             if method is c.data_source.get_file_contents:
                 return ok_response(empty_content)
             if method is c.data_source.get_git_blob:
-                return failed_response("404")
+                return failed_response("gone", status_code=HttpStatusCode.NOT_FOUND.value)
             raise AssertionError(f"unexpected ds_call for {method!r}")
 
         c.runtime.ds_call.side_effect = dispatch
 
         sync = ReposSync(c)
-        with pytest.raises(Exception, match="blobsha1"):
+        with pytest.raises(HTTPException) as exc:
             await sync.fetch_code_file_content(self._record())
+        assert exc.value.status_code == HttpStatusCode.NOT_FOUND.value
+
+
+def _inventory(live: dict[str, str], trashed: dict[str, str] | None = None) -> AsyncMock:
+    """``_list_code_records_by_path``, answering live or trashed records as asked."""
+    return AsyncMock(
+        side_effect=lambda _group, visibility=RecordVisibility.LIVE: dict(
+            live if visibility is RecordVisibility.LIVE else (trashed or {})
+        )
+    )
 
 
 class TestPruneDeletedPaths:
@@ -904,9 +915,7 @@ class TestPruneDeletedPaths:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(
-            return_value={"a.py": "rec-a", "b.py": "rec-b"}
-        )
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"})
 
         await sync._prune_deleted_paths(repo, {"a.py"})
 
@@ -921,10 +930,7 @@ class TestPruneDeletedPaths:
         every full sync as an empty ghost."""
         c = make_mock_connector()
         sync = ReposSync(c)
-        c.tx_store.get_record_group_by_external_id = AsyncMock(
-            return_value=SimpleNamespace(id="rg-1")
-        )
-        c.tx_store.get_records_by_status = AsyncMock(return_value=[
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[
             SimpleNamespace(id="rec-a", file_path="src/a.py",
                             external_record_id="/1/blob/src/a.py"),
             SimpleNamespace(id="rec-src", file_path=None,
@@ -937,11 +943,35 @@ class TestPruneDeletedPaths:
 
         assert by_path == {"src/a.py": "rec-a", "src": "rec-src"}
 
+    async def test_unreadable_inventory_skips_the_prune(self) -> None:
+        """An empty or partial inventory makes pruning blind.
+
+        Every walked path would look stale, so the valve would either delete the
+        whole repo's records or (at zero records) quietly do nothing and report a
+        clean sync. The listing failure must stop the prune instead.
+        """
+        from app.exceptions.graph_db_exceptions import GraphQueryError
+
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(
+            side_effect=GraphQueryError("db down")
+        )
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+        assert any(
+            "Could not list code records for pruning" in str(call)
+            for call in sync.logger.error.call_args_list
+        )
+
     async def test_stale_folders_are_pruned_deepest_first(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(return_value={
+        sync._list_code_records_by_path = _inventory({
             "src": "rec-src",
             "src/sub": "rec-sub",
             "src/sub/c.py": "rec-c",
@@ -958,13 +988,86 @@ class TestPruneDeletedPaths:
         c = make_mock_connector()
         repo = make_repo(repo_id=1)
         sync = ReposSync(c)
-        sync._list_code_records_by_path = AsyncMock(
-            return_value={f"f{i}.py": f"rec-{i}" for i in range(20)}
-        )
+        sync._list_code_records_by_path = _inventory({f"f{i}.py": f"rec-{i}" for i in range(20)})
 
         await sync._prune_deleted_paths(repo, {"f0.py"})
 
         c.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    async def test_a_trashed_record_the_walk_no_longer_has_is_pruned_too(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        c.data_entities_processor.get_records_in_record_group = AsyncMock(
+            side_effect=lambda *, visibility=RecordVisibility.LIVE, **_kw: [
+                r for r in (
+                    SimpleNamespace(id="rec-a", file_path="a.py", external_record_id="/1/blob/a.py", is_deleted=False),
+                    SimpleNamespace(id="rec-old", file_path="old.py", external_record_id="/1/blob/old.py", is_deleted=True),
+                )
+                if r.is_deleted is (visibility is RecordVisibility.DELETED)
+            ]
+        )
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert deleted == ["rec-old"]
+
+    async def test_the_prune_asks_for_trashed_roots_and_reports_what_it_could_not_delete(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"}, {"old.py": "rec-old"})
+        c.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "failed_records": [{"record_id": "rec-old", "reason": "Validation failed"}],
+        })
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        assert c.data_entities_processor.on_records_deleted_cascade.await_args.kwargs == {
+            "include_trashed_roots": True
+        }
+        assert any("Could not prune" in str(call) and "rec-old" in str(call)
+                   for call in sync.logger.error.call_args_list)
+
+    async def test_with_the_trash_on_a_record_already_in_it_is_not_reported(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"}, {"old.py": "rec-old"})
+        c.data_entities_processor.on_records_deleted_cascade = AsyncMock(return_value={
+            "success": True, "softDeleted": True,
+            "failed_records": [{"record_id": "rec-old", "reason": "Not found, already deleted, or outside this connector"}],
+        })
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        assert not any("Could not prune" in str(call) for call in sync.logger.error.call_args_list)
+
+    async def test_a_trashed_record_on_a_live_records_path_does_not_hide_it(self) -> None:
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        sync._list_code_records_by_path = _inventory({"a.py": "rec-a", "b.py": "rec-b"}, {"b.py": "rec-b-old"})
+
+        await sync._prune_deleted_paths(repo, {"a.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert sorted(deleted) == ["rec-b", "rec-b-old"]
+
+    async def test_trashed_records_do_not_count_toward_the_valve(self) -> None:
+        """Records the trash already holds are not evidence of a truncated walk."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=1)
+        sync = ReposSync(c)
+        live = {f"f{i}.py": f"rec-{i}" for i in range(20)}
+        trashed = {f"gone/t{i}.py": f"rec-t{i}" for i in range(30)}
+        sync._list_code_records_by_path = _inventory(live, trashed)
+
+        await sync._prune_deleted_paths(repo, set(live) - {"f0.py"})
+
+        deleted = c.data_entities_processor.on_records_deleted_cascade.call_args.args[0]
+        assert sorted(deleted) == sorted(["rec-0", *trashed.values()])
 
 
 class TestRunDispatchEdgeCases:
@@ -1088,8 +1191,9 @@ class TestFetchCodeFileContentErrors:
             connector_name="GITHUB TEAMS", connector_id="github-conn-1",
             external_record_id="/1/blob/a.py", file_path="a.py",
         )
-        with pytest.raises(Exception, match="Repository id not found"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_repo_lookup_failure_raises(self) -> None:
         record = CodeFileRecord(
@@ -1100,9 +1204,13 @@ class TestFetchCodeFileContentErrors:
             file_path="a.py",
         )
         c = make_mock_connector()
-        c.runtime.ds_call.return_value = failed_response("404")
-        with pytest.raises(Exception, match="Failed to resolve repo"):
+        c.runtime.ds_call.return_value = failed_response(
+            "unauthorized", status_code=HttpStatusCode.UNAUTHORIZED.value
+        )
+        # An expired token must ask the user to reconnect (409), not claim a 404.
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(c).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
     async def test_contents_failure_raises(self) -> None:
         record = CodeFileRecord(
@@ -1118,12 +1226,15 @@ class TestFetchCodeFileContentErrors:
             if method is c.data_source.get_repo_by_id:
                 return ok_response(make_repo(repo_id=1))
             if method is c.data_source.get_file_contents:
-                return failed_response("500")
+                return failed_response(
+                    "server error", status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value
+                )
             raise AssertionError(f"unexpected {method!r}")
 
         c.runtime.ds_call.side_effect = dispatch
-        with pytest.raises(Exception, match="Failed to fetch content"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(c).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_GATEWAY.value
 
     async def test_missing_file_path_raises(self) -> None:
         record = CodeFileRecord(
@@ -1133,8 +1244,9 @@ class TestFetchCodeFileContentErrors:
             external_record_id="/1/blob/a.py", external_record_group_id="1-code-repository",
             file_path="",
         )
-        with pytest.raises(Exception, match="Cannot resolve repo path"):
+        with pytest.raises(HTTPException) as exc:
             await ReposSync(make_mock_connector()).fetch_code_file_content(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
 
 class TestTimestampLifecycle:
@@ -1177,7 +1289,7 @@ class TestTimestampLifecycle:
 
     async def test_apply_patches_failure_is_logged(self) -> None:
         c = make_mock_connector()
-        c.tx_store.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db"))
+        c.data_entities_processor.batch_update_nodes = AsyncMock(side_effect=RuntimeError("db"))
         await ReposSync(c).timestamps._apply_patches(
             [{"id": "n1", "sourceCreatedAtTimestamp": 1}], "records", context="acme/widgets"
         )

@@ -16,6 +16,7 @@ export interface MailBody {
   subject?: string;
   templateData?: Record<string, any>;
   sendCcTo?: string[];
+  replyTo?: string;
   attachments?: any[];
 }
 
@@ -23,10 +24,12 @@ export enum EmailTemplateType {
   LoginWithOtp = 'loginWithOTP',
   ResetPassword = 'resetPassword',
   ResetEmail = 'resetEmail',
+  EmailChangeNotice = 'emailChangeNotice',
   AccountCreation = 'accountCreation',
   OrgEmailVerification = 'orgEmailVerification',
   AppuserInvite = 'appuserInvite',
   SuspiciousLoginAttempt = 'suspiciousLoginAttempt',
   DomainLimitReached = 'domainLimitReached',
-
+  JoinRequestNotify = 'joinRequestNotify',
+  JoinRequestDecision = 'joinRequestDecision',
 }

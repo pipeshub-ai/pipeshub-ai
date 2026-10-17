@@ -48,6 +48,11 @@ __all__ = ["artifact_context_reminder"]
 # of recent ones to decide whether something already exists.
 _MAX_ARTIFACTS_IN_REMINDER = 20
 
+# How much of a tool call's arguments to echo per artifact line. Deliberately
+# small: this is a "how was this made" hint, not a source listing. A few
+# hundred characters of a program is worse than none — enough to anchor the
+# model on a fragment, never enough to edit from. The full source is one
+# `artifacts__get_artifact_content` call away.
 _MAX_ARGS_CHARS = 200
 
 
@@ -167,12 +172,17 @@ def _build_reminder(
         line = f"- {a.name!r} ({', '.join(parts)})"
         lines.append(line)
     lines.append(
-        "To reuse one as input: pass its name in run_code's input_artifacts. To update "
-        "one in place: call artifacts__update_artifact(artifact_id=...) if that tool is "
-        "available to you, or re-run run_code with input_artifacts=[name] and save the "
-        "output under the SAME name. To regenerate an output from its source: find its "
-        "derived_from_code_artifact_id, pass THAT code artifact's name into run_code's "
-        "input_artifacts, edit it, and re-run. "
+        "When the user asks to update, extend, restyle, or 'keep the same style as' one of "
+        "these, do NOT write a fresh program from memory — that silently loses the "
+        "original's layout, fonts, colours and structure. Instead take that deliverable's "
+        "derived_from_code_artifact_id, call "
+        "artifacts__get_artifact_content(artifact_id=<that id>) to read the source that "
+        "produced it, edit that source, and re-run it. Write new code from scratch only "
+        "when the user wants something genuinely different, not a variation. "
+        "To reuse an artifact's BYTES inside the sandbox (rather than reading it yourself): "
+        "pass its name in run_code's input_artifacts. To update one in place: call "
+        "artifacts__update_artifact(artifact_id=...) if available, or re-run run_code and "
+        "save the output under the SAME name. "
         "STAGING artifacts are internal pipeline files — do NOT reference them to the user "
         "by name or offer them as downloads; call promote_artifact(artifact_id) when a "
         "STAGING file is ready to be shown."

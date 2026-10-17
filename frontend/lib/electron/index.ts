@@ -12,3 +12,11 @@ export {
   shouldSkipElectronServerUrlSetup,
 } from './api-base-url-storage';
 export { streamingFetch } from './streaming-fetch';
+export {
+  buildDesktopRedirectUri,
+  exchangeOAuthTokenViaMain,
+  runDesktopOAuth,
+  desktopOAuthErrorMessage,
+  DesktopOAuthError,
+  type DesktopOAuthFlow,
+} from './oauth-deep-link';

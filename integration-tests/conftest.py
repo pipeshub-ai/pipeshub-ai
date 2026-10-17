@@ -15,7 +15,10 @@ import pytest_asyncio
 from dotenv import load_dotenv
 
 if TYPE_CHECKING:
+    from helper.blob_store import BlobStoreProbe
     from helper.graph_provider import GraphProviderProtocol
+    from helper.mongo_store import MongoStoreProbe
+    from helper.vector_store import VectorStoreProbe
 
 _THIS_DIR = Path(__file__).resolve().parent
 _HELPER_DIR = _THIS_DIR / "helper"
@@ -120,7 +123,10 @@ from ai_models_setup import (  # noqa: E402
 )
 from xdist_shared import shared_session_resource  # noqa: E402
 from integration_report import TestReportEntry, write_html_report  # noqa: E402
-from local_auth import obtain_local_oauth_credentials  # noqa: E402
+from local_auth import (  # noqa: E402
+    obtain_local_oauth_credentials,
+    obtain_user_session_token,
+)
 from pipeshub_client import PipeshubClient  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
@@ -133,6 +139,7 @@ from helper.clients.conversations_client import (  # noqa: E402
 from helper.clients.kb_client import KBClient  # noqa: E402
 from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
 from helper.clients.org_client import OrgClient  # noqa: E402
+from helper.clients.projects_client import ProjectsClient  # noqa: E402
 from helper.clients.search_client import SearchClient  # noqa: E402
 from helper.clients.teams_client import TeamsClient  # noqa: E402
 from helper.clients.user_groups_client import UserGroupsClient  # noqa: E402
@@ -141,7 +148,11 @@ from helper.http.request_id import (  # noqa: E402
     install_requests_hook,
     set_current_test,
 )
-from sample_data import ensure_sample_data_files_root  # noqa: E402
+from helper.http.session_client import SessionClient  # noqa: E402
+from sample_data import (  # noqa: E402
+    ensure_sample_data_files_root,
+    ensure_sample_data_google_drive_it_files_root,
+)
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
 _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
@@ -220,25 +231,36 @@ def _merge_phase_report(
             stderr_captured=existing.stderr_captured or stderr_captured,
         )
 
-    if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="skipped",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
-        if report.outcome == "passed":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="passed",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
+    # Fixture/setup skips never emit a call phase — treat skip in any phase like JUnit.
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if existing.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if when == "call" and report.outcome == "passed":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="passed",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
 
     # setup/teardown passed (or other): keep call outcome, extend duration, merge streams
     return TestReportEntry(
@@ -271,16 +293,16 @@ def _initial_entry_from_phase(
             stdout_captured=stdout_captured,
             stderr_captured=stderr_captured,
         )
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=report.nodeid,
+            outcome="skipped",
+            duration=duration,
+            err_full=None,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
     if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=report.nodeid,
-                outcome="skipped",
-                duration=duration,
-                err_full=None,
-                stdout_captured=stdout_captured,
-                stderr_captured=stderr_captured,
-            )
         return TestReportEntry(
             nodeid=report.nodeid,
             outcome="passed",
@@ -382,6 +404,11 @@ def search_client(pipeshub_client: PipeshubClient) -> SearchClient:
 
 
 @pytest.fixture(scope="session")
+def projects_client(pipeshub_client: PipeshubClient) -> ProjectsClient:
+    return ProjectsClient(pipeshub_client)
+
+
+@pytest.fixture(scope="session")
 def auth_client(pipeshub_client: PipeshubClient) -> AuthClient:
     return AuthClient(pipeshub_client)
 
@@ -397,8 +424,28 @@ def oauth_provider_client(pipeshub_client: PipeshubClient) -> OAuthProviderClien
 
 
 @pytest.fixture(scope="session")
-def oauth_apps_client(pipeshub_client: PipeshubClient) -> OAuthAppsClient:
-    return OAuthAppsClient(pipeshub_client)
+def user_session_client(pipeshub_client: PipeshubClient) -> SessionClient:
+    """The test user logged in with a password, for session-only routes.
+
+    OAuth client management, OAuth consent and personal access tokens refuse
+    the client-credentials token ``pipeshub_client`` holds (#3626).
+    """
+    if not (os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv("PIPESHUB_TEST_USER_PASSWORD")):
+        pytest.skip(
+            "PIPESHUB_TEST_USER_EMAIL / PIPESHUB_TEST_USER_PASSWORD are not set; "
+            "session-only routes cannot be called with CLIENT_ID / CLIENT_SECRET alone"
+        )
+    base_url = pipeshub_client.base_url
+    return SessionClient(
+        base_url,
+        login=lambda: obtain_user_session_token(base_url),
+        timeout_seconds=pipeshub_client.timeout_seconds,
+    )
+
+
+@pytest.fixture(scope="session")
+def oauth_apps_client(user_session_client: SessionClient) -> OAuthAppsClient:
+    return OAuthAppsClient(user_session_client)
 
 
 @pytest.fixture(scope="session")
@@ -420,6 +467,12 @@ def kb_client(pipeshub_client: PipeshubClient) -> KBClient:
 def sample_data_root() -> Path:
     """Session-scoped path to sample data files from GitHub."""
     return ensure_sample_data_files_root()
+
+
+@pytest.fixture(scope="session")
+def drive_blocks_sample_root() -> Path:
+    """Session-scoped path to google-drive-it-files sample data from GitHub."""
+    return ensure_sample_data_google_drive_it_files_root()
 
 
 @pytest.fixture(scope="session")
@@ -449,8 +502,11 @@ def ai_models_configured(
     embedding is also written to org config via the same API call path; indexing
     services load it from Configuration Manager, not from this fixture object.
 
-    On teardown, both models are DELETEd via the providers endpoint so no test
-    residue is left on the backend.
+    An embedding model the org already embeds with (same provider and model) is
+    reused rather than added again, and teardown leaves it. On teardown the
+    models this fixture added are DELETEd via the providers endpoint; PipesHub
+    refuses to delete an embedding model whose vectors are stored, so that one
+    stays for the next session on the stack to reuse.
 
     These models are org-wide singletons, so under ``-n`` they are seeded once
     per run and shared by every worker rather than once per worker session.
@@ -471,6 +527,48 @@ def ai_models_configured(
         ),
     ) as models:
         yield models.llm
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def vector_store() -> AsyncGenerator["VectorStoreProbe", None]:
+    """Read-only probe for what the vector database still holds.
+
+    Session-scoped like ``graph_provider``: it holds one client, and the
+    deletion suites ask it many small questions.
+    """
+    from helper.vector_store import VectorStoreProbe
+
+    probe = VectorStoreProbe()
+    try:
+        yield probe
+    finally:
+        await probe.close()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def blob_store() -> AsyncGenerator["BlobStoreProbe", None]:
+    """Read-only probe for what blob storage still holds."""
+    from helper.blob_store import BlobStoreProbe
+
+    yield BlobStoreProbe()
+
+
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def mongo_store() -> AsyncGenerator["MongoStoreProbe", None]:
+    """Read-only probe for the storage documents MongoDB still holds."""
+    from helper.mongo_store import MongoStoreProbe
+
+    probe = MongoStoreProbe()
+    try:
+        yield probe
+    finally:
+        probe.close()
+
+
+@pytest.fixture(scope="session")
+def test_org_id(pipeshub_client) -> str:
+    """The tenant every store scopes its data by."""
+    return pipeshub_client.org_id
 
 
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
@@ -641,6 +739,18 @@ def pytest_sessionstart(session) -> None:  # type: ignore[override]
             UserWarning,
             stacklevel=2,
         )
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--update-mcp-golden",
+        action="store_true",
+        default=False,
+        help=(
+            "Rewrite response-validation/mcp/golden/mcp_surface_<pin>.json from the live "
+            "/mcp server before comparing. Use after bumping @pipeshub-ai/mcp."
+        ),
+    )
 
 
 @pytest.hookimpl(trylast=True)

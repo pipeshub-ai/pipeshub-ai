@@ -60,12 +60,16 @@ describe('enterprise_search/constants/constants', () => {
       expect(CONVERSATION_STATUS.NONE).to.equal('None')
     })
 
-    it('should have exactly 4 statuses', () => {
-      expect(Object.keys(CONVERSATION_STATUS)).to.have.lengthOf(4)
+    it('should have STOPPED as "Stopped"', () => {
+      expect(CONVERSATION_STATUS.STOPPED).to.equal('Stopped')
+    })
+
+    it('should have exactly 5 statuses', () => {
+      expect(Object.keys(CONVERSATION_STATUS)).to.have.lengthOf(5)
     })
 
     it('should contain only the expected keys', () => {
-      const expectedKeys = ['COMPLETE', 'FAILED', 'INPROGRESS', 'NONE']
+      const expectedKeys = ['COMPLETE', 'FAILED', 'INPROGRESS', 'NONE', 'STOPPED']
       expect(Object.keys(CONVERSATION_STATUS)).to.have.members(expectedKeys)
     })
   })

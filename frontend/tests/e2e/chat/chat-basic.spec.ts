@@ -195,10 +195,7 @@ test.describe('Chat — new chat navigation', () => {
 
   test('new chat button is accessible in the sidebar', async ({ page }) => {
     const viewport = page.viewportSize();
-    if (!viewport || viewport.width < 768) {
-      test.skip();
-      return;
-    }
+    test.skip(!viewport || viewport.width < 768, 'the chat sidebar is collapsed on narrow screens');
 
     // "New Chat" or compose/edit icon in the sidebar header
     const newChatEl = page

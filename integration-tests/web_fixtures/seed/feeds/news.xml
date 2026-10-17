@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Fixture Company News</title>
+    <link>{{BASE_URL}}/feeds/</link>
+    <description>News items for the RSS connector integration tests.</description>
+    <item>
+      <guid isPermaLink="false">fixture-news-1</guid>
+      <title>Fixture News: Quarterly Roadmap</title>
+      <link>{{BASE_URL}}/feeds/news/roadmap.html</link>
+      <description>Summary for Fixture News: Quarterly Roadmap.</description>
+      <pubDate>Mon, 01 Sep 2025 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid isPermaLink="false">fixture-news-2</guid>
+      <title>Fixture News: Office Move</title>
+      <link>{{BASE_URL}}/feeds/news/office-move.html</link>
+      <description>Summary for Fixture News: Office Move.</description>
+      <pubDate>Tue, 02 Sep 2025 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid isPermaLink="false">fixture-news-3</guid>
+      <title>Fixture News: Security Training</title>
+      <link>{{BASE_URL}}/feeds/news/security-training.html</link>
+      <description>Summary for Fixture News: Security Training.</description>
+      <pubDate>Wed, 03 Sep 2025 09:00:00 GMT</pubDate>
+    </item>
+    <item>
+      <guid isPermaLink="false">fixture-news-4</guid>
+      <title>Fixture News: Archive Item Past The Limit</title>
+      <link>{{BASE_URL}}/feeds/news/past-limit.html</link>
+      <description>Summary for Fixture News: Archive Item Past The Limit.</description>
+      <pubDate>Thu, 04 Sep 2025 09:00:00 GMT</pubDate>
+    </item>
+  </channel>
+</rss>

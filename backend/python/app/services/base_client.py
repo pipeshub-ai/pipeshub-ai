@@ -15,9 +15,13 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
 
 if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+    from app.config.constants.service import TokenScopes
     from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
@@ -31,6 +35,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0           # seconds; doubled on each retry (exponential)
 TRANSIENT_STATUS_CODES = (set(range(500, 600)) - {501}) | {429}
 HTTP_TOO_MANY_REQUESTS = 429
+AUTH_REFUSED_STATUS_CODES = {401, 403}
 
 # Backpressure (429 + Retry-After) gets its own, longer attempt budget so a
 # saturated-but-healthy downstream service is waited out instead of being
@@ -91,6 +96,14 @@ class ServiceUnavailableError(ServiceCallError):
     """Raised when the remote service is unreachable or persistently 5xx."""
 
 
+class ServiceAuthRefusedError(ServiceCallError):
+    """Raised when the service answers 401/403 to this client's own call.
+
+    A deployment fault (secret mismatch, services upgraded out of order), never
+    a fault of the document being sent, so it must not fail the document for good.
+    """
+
+
 class ServiceBackpressureError(ServiceCallError):
     """Raised when a service signals sustained backpressure (429 + Retry-After).
 
@@ -129,9 +142,10 @@ def _extract_service_error_message(response: httpx.Response) -> str | None:
     if isinstance(error, str) and error.strip():
         return error.strip()
 
-    msg = body.get("message")
-    if isinstance(msg, str) and msg.strip():
-        return msg.strip()
+    for field in ("message", "detail"):
+        msg = body.get(field)
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
     return None
 
 
@@ -300,9 +314,13 @@ class BaseServiceClient:
         circuit_breaker_cooldown: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
         max_backpressure_attempts: int = DEFAULT_MAX_BACKPRESSURE_ATTEMPTS,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
+        config_service: "ConfigurationService | None" = None,
+        service_scope: "TokenScopes | None" = None,
     ) -> None:
         self.service_url = service_url.rstrip("/")
         self.service_name = service_name
+        self._config_service = config_service
+        self._service_scope = service_scope
         self._timeout = httpx.Timeout(
             connect=connect_timeout,
             read=read_timeout,
@@ -361,8 +379,16 @@ class BaseServiceClient:
         files: dict | None = None,
         data: dict | None = None,
         operation: str = "request",
+        budget_seconds: float | None = None,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``budget_seconds`` is the caller's own deadline for the whole
+        operation (for the indexing pipeline, the record's processing
+        timeout). A retry is only scheduled if it can complete inside what is
+        left of it: a read timeout longer than the remaining budget would
+        just be cancelled from above, having tied up the downstream service
+        for nothing.
 
         Guarded by a circuit breaker: when open, this fails immediately with
         no connection attempt and no retry sleeps, so a downstream outage
@@ -407,6 +433,7 @@ class BaseServiceClient:
         transient_attempts = 0
         backpressure_attempts = 0
         last_error_message: str | None = None
+        started_at = time.monotonic()
 
         async with self._make_client() as client:
             while True:
@@ -433,6 +460,18 @@ class BaseServiceClient:
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
                         self.circuit_breaker.record_success()
+                        if response.status_code in AUTH_REFUSED_STATUS_CODES:
+                            detail = _extract_service_error_message(response)
+                            message = (
+                                f"{self.service_name} {operation} was refused "
+                                f"with status {response.status_code}"
+                            )
+                            raise ServiceAuthRefusedError(
+                                f"{message}: {detail}" if detail else message,
+                                status_code=response.status_code,
+                                service_name=self.service_name,
+                                details={"error_message": detail} if detail else None,
+                            )
                         return response
 
                     retry_after = (
@@ -464,6 +503,18 @@ class BaseServiceClient:
                                 retry_after=retry_after,
                                 service_name=self.service_name,
                             )
+                        if budget_seconds is not None:
+                            spent = time.monotonic() - started_at
+                            if spent + wait + (self._timeout.read or 0.0) > budget_seconds:
+                                # The record above would cancel this attempt
+                                # anyway; a backpressure error re-queues it
+                                # with a proper backoff instead.
+                                raise ServiceBackpressureError(
+                                    f"{self.service_name} {operation} is backpressured and "
+                                    f"the remaining budget cannot fit another attempt",
+                                    retry_after=retry_after,
+                                    service_name=self.service_name,
+                                )
                         self.logger.debug(
                             "[%s] %s backpressured (429, Retry-After=%.1fs), waiting %.1fs (%d/%d)",
                             self.service_name, operation, retry_after, wait,
@@ -492,6 +543,10 @@ class BaseServiceClient:
                         self.service_name, operation, transient_attempts, exc,
                     )
                     last_exc = exc
+                    if isinstance(exc, (TimeoutError, httpx.TimeoutException)):
+                        # Connect/write errors are not timeouts; they are
+                        # reported once, as unavailable, if the retries run out.
+                        get_default_downstream_feedback().report_timeout(self.service_name)
                 except httpx.RequestError as exc:
                     # Everything else under RequestError (InvalidURL,
                     # UnsupportedProtocol, ProtocolError, ...) is a
@@ -512,6 +567,17 @@ class BaseServiceClient:
                 if transient_attempts >= attempt_limit:
                     break
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
+                if budget_seconds is not None:
+                    spent = time.monotonic() - started_at
+                    read_timeout = self._timeout.read or 0.0
+                    if spent + delay + read_timeout > budget_seconds:
+                        self.logger.warning(
+                            "[%s] %s not retried: %.0fs of a %.0fs budget spent and another "
+                            "attempt could take %.0fs",
+                            self.service_name, operation, spent, budget_seconds,
+                            delay + read_timeout,
+                        )
+                        break
                 self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
                 await asyncio.sleep(delay)
 
@@ -528,6 +594,7 @@ class BaseServiceClient:
             self.service_name, operation, attempted, summary,
         )
         self.circuit_breaker.record_failure()
+        get_default_downstream_feedback().report_unavailable(self.service_name)
 
         if last_exc is not None:
             raise ServiceUnavailableError(
@@ -549,10 +616,35 @@ class BaseServiceClient:
     # Public helpers for sub-classes
     # ------------------------------------------------------------------
 
-    async def _post_json(self, path: str, payload: dict, operation: str = "POST") -> httpx.Response:
+    async def _auth_headers(self, org_id: str | None) -> dict[str, str]:
+        """Bearer header for a client that declares a service scope; empty otherwise."""
+        if self._service_scope is None:
+            return {}
+        if self._config_service is None:
+            raise ServiceCallError(
+                f"{self.service_name} requires a {self._service_scope.value} service token, "
+                "but this client has no config service to mint one",
+                service_name=self.service_name,
+            )
+        claims: dict[str, Any] = {"scopes": [self._service_scope.value]}
+        if org_id:
+            claims["orgId"] = org_id
+        token = await generate_jwt(self._config_service, claims)
+        return {"Authorization": f"Bearer {token}"}
+
+    async def _post_json(
+        self,
+        path: str,
+        payload: dict,
+        operation: str = "POST",
+        org_id: str | None = None,
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         body = json.dumps(payload).encode("utf-8")
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            **await self._auth_headers(org_id),
+        }
         # Starlette does not auto-decompress Content-Encoding: gzip request bodies,
         # so we never compress JSON request payloads here.
         return await self._request_with_retry(
@@ -565,15 +657,23 @@ class BaseServiceClient:
         files: dict,
         data: dict,
         operation: str = "POST multipart",
+        budget_seconds: float | None = None,
+        org_id: str | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
-            "POST", url, files=files, data=data, operation=operation
+            "POST", url, files=files, data=data, operation=operation,
+            headers=await self._auth_headers(org_id),
+            budget_seconds=budget_seconds,
         )
 
-    async def _get_json(self, path: str, operation: str = "GET") -> httpx.Response:
+    async def _get_json(
+        self, path: str, operation: str = "GET", org_id: str | None = None
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
-        return await self._request_with_retry("GET", url, operation=operation)
+        return await self._request_with_retry(
+            "GET", url, operation=operation, headers=await self._auth_headers(org_id)
+        )
 
     # ------------------------------------------------------------------
     # Health check

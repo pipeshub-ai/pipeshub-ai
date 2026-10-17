@@ -255,9 +255,8 @@ class TestSaveVersionedArtifactToStorage:
                 "org-1", "conv-1", "artifact.html", b"<h1>Hello</h1>", "text/html"
             )
 
-        assert result["documentId"] == "art-doc-1"
-        assert "downloadUrl" in result
-        assert result["fileName"] == "artifact.html"
+        # No user-facing storage link: the registry links via the record stream.
+        assert result == {"documentId": "art-doc-1", "fileName": "artifact.html"}
 
     @pytest.mark.asyncio
     async def test_local_storage_upload_fails(self):
@@ -297,7 +296,7 @@ class TestSaveVersionedArtifactToStorage:
         assert result["signedUrl"] == "https://s3/get-url"
 
     @pytest.mark.asyncio
-    async def test_cloud_storage_fallback_to_download_url(self):
+    async def test_cloud_storage_without_signed_url_returns_no_link(self):
         bs = _make_blob_storage()
         bs._get_auth_and_config = AsyncMock(
             return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "s3")
@@ -315,8 +314,7 @@ class TestSaveVersionedArtifactToStorage:
                 "org-1", "conv-1", "report.pdf", b"%PDF"
             )
 
-        assert result["documentId"] == "art-doc-3"
-        assert "downloadUrl" in result
+        assert result == {"documentId": "art-doc-3", "fileName": "report.pdf"}
 
     @pytest.mark.asyncio
     async def test_cloud_storage_no_placeholder_id_raises(self):
@@ -355,48 +353,81 @@ class TestGetDownloadUrl:
             url = await bs.get_download_url("org-1", "doc-1")
 
         assert url == "https://s3/signed"
+        assert mock_session.get.call_args.args[0] == "http://node:3000/api/v1/document/internal/doc-1/download"
 
     @pytest.mark.asyncio
-    async def test_cloud_no_signed_url_falls_through(self):
+    async def test_cloud_without_signed_url_returns_none(self):
         bs = _make_blob_storage()
         bs._get_auth_and_config = AsyncMock(
             return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "s3")
         )
-        bs._get_public_download_base_url = AsyncMock(return_value="http://pub:3000")
 
-        get_resp = _resp(200, {})
-        mock_session = _session(get_resp=get_resp)
+        mock_session = _session(get_resp=_resp(200, {}))
 
         with patch(f"{MODULE}.aiohttp.ClientSession", return_value=mock_session):
-            url = await bs.get_download_url("org-1", "doc-1")
-
-        assert "doc-1" in url
-        assert url.startswith("http://pub:3000")
+            assert await bs.get_download_url("org-1", "doc-1") is None
 
     @pytest.mark.asyncio
-    async def test_local_storage_goes_to_external_url(self):
+    async def test_cloud_error_status_returns_none(self):
+        bs = _make_blob_storage()
+        bs._get_auth_and_config = AsyncMock(
+            return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "s3")
+        )
+
+        mock_session = _session(get_resp=_resp(404, {"signedUrl": "https://s3/ignored"}))
+
+        with patch(f"{MODULE}.aiohttp.ClientSession", return_value=mock_session):
+            assert await bs.get_download_url("org-1", "doc-1") is None
+
+    @pytest.mark.asyncio
+    async def test_local_storage_returns_none_without_calling_storage(self):
         bs = _make_blob_storage()
         bs._get_auth_and_config = AsyncMock(
             return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "local")
         )
+        mock_session = _session()
+
+        with patch(f"{MODULE}.aiohttp.ClientSession", return_value=mock_session):
+            assert await bs.get_download_url("org-1", "doc-1", version=3) is None
+
+        mock_session.get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_version_is_sent_to_internal_route(self):
+        bs = _make_blob_storage()
+        bs._get_auth_and_config = AsyncMock(
+            return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "s3")
+        )
+        mock_session = _session(get_resp=_resp(200, {"signedUrl": "https://s3/v3"}))
+
+        with patch(f"{MODULE}.aiohttp.ClientSession", return_value=mock_session):
+            url = await bs.get_download_url("org-1", "doc-1", version=3)
+
+        assert url == "https://s3/v3"
+        assert mock_session.get.call_args.args[0] == (
+            "http://node:3000/api/v1/document/internal/doc-1/download?version=3"
+        )
+
+
+class TestGetRecordStreamUrl:
+    @pytest.mark.asyncio
+    async def test_points_at_the_permission_checked_record_stream(self):
+        bs = _make_blob_storage()
         bs._get_public_download_base_url = AsyncMock(return_value="http://pub:3000")
 
-        url = await bs.get_download_url("org-1", "doc-1")
+        url = await bs.get_record_stream_url("rec-1")
 
-        assert "doc-1" in url
-        assert url.startswith("http://pub:3000")
+        assert url == "http://pub:3000/api/v1/knowledgeBase/stream/record/rec-1"
+        assert "/api/v1/document/" not in url
 
     @pytest.mark.asyncio
     async def test_version_appended_as_query_param(self):
         bs = _make_blob_storage()
-        bs._get_auth_and_config = AsyncMock(
-            return_value=({"Authorization": "Bearer tok"}, "http://node:3000", "local")
-        )
         bs._get_public_download_base_url = AsyncMock(return_value="http://pub:3000")
 
-        url = await bs.get_download_url("org-1", "doc-1", version=3)
+        url = await bs.get_record_stream_url("rec-1", version=2)
 
-        assert "?version=3" in url
+        assert url == "http://pub:3000/api/v1/knowledgeBase/stream/record/rec-1?version=2"
 
 
 # ============================================================================

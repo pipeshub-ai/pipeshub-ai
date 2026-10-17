@@ -1,3 +1,4 @@
+import os
 from logging import Logger
 from typing import TYPE_CHECKING
 
@@ -6,6 +7,7 @@ from app.services.messaging.config import (
     MessageBrokerType,
     RedisConfig,
     RedisStreamsConfig,
+    Topic,
     get_message_broker_type,
     messaging_env,
 )
@@ -23,14 +25,22 @@ from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
 from app.services.messaging.kafka.producer.producer import KafkaMessagingProducer
+from app.services.messaging.lanes.assignment import (
+    AssignedRedisLaneRouter,
+    shared_lane_assignments,
+)
 from app.services.messaging.lanes.hash_router import build_lane_router
-from app.services.messaging.lanes.interface import LaneConfig
+from app.services.messaging.lanes.interface import LaneAssignmentMode, LaneConfig
 from app.services.messaging.lanes.producer import LaneAwareProducer
 from app.services.messaging.redis_streams.consumer import RedisStreamsConsumer
 from app.services.messaging.redis_streams.indexing_consumer import (
     IndexingRedisStreamsConsumer,
 )
 from app.services.messaging.redis_streams.producer import RedisStreamsProducer
+from app.services.distributed.interface import (
+    IDistributedLeaseManager,
+    IRetryTracker,
+)
 from app.services.messaging.retry_manager import RetryManager
 from app.services.messaging.scheduling.interface import (
     FairnessKeyExtractor,
@@ -38,9 +48,14 @@ from app.services.messaging.scheduling.interface import (
     WeightProvider,
 )
 from app.services.messaging.scheduling.key_extractors import CompositeKeyExtractor
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 
 if TYPE_CHECKING:
     from app.services.messaging.backpressure import BackpressureCoordinator
+    from app.services.messaging.connector_off import ConnectorOffFilter
+    from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.lanes.interface import LaneRouter
     from app.services.resource_governor import ResourceGovernor
 
 
@@ -59,6 +74,7 @@ def _fair_scheduler_config_from_env() -> FairSchedulerConfig:
         max_per_entity_messages=messaging_env.fair_scheduling_max_per_entity,
         max_dwell_seconds=messaging_env.fair_scheduling_max_dwell_seconds,
         parallel_partitions=messaging_env.fair_scheduling_parallel_partitions,
+        max_remembered_positions=messaging_env.fair_scheduling_max_remembered_positions,
     )
 
 
@@ -68,7 +84,40 @@ def lane_config_from_env() -> LaneConfig:
         lane_count=messaging_env.fair_scheduling_lane_count,
         lane_key_field=messaging_env.fair_scheduling_lane_key_field,
         laned_topics=messaging_env.fair_scheduling_laned_topics,
+        assignment=LaneAssignmentMode(messaging_env.fair_scheduling_lane_assignment),
+        assignment_cache_seconds=messaging_env.fair_scheduling_lane_cache_seconds,
     )
+
+
+def _build_producer_lane_router(
+    logger: Logger,
+    lane_config: LaneConfig,
+    broker_type: MessageBrokerType,
+    config: KafkaProducerConfig | RedisStreamsConfig,
+) -> "LaneRouter":
+    """The hash router, or on Redis with assignment on, the lane map's router.
+
+    The lane map lives on the broker's own Redis, so a lookup and the publish
+    it serves fail together. Only ``record-events`` is assigned, since that is
+    the topic the creation and delete hooks and the indexing consumer keep the
+    map for; any other laned topic keeps hashing, and with ``record-events``
+    not laned there is nothing to assign.
+    """
+    topic = Topic.RECORD_EVENTS.value
+    if (
+        broker_type == MessageBrokerType.KAFKA
+        or lane_config.assignment is not LaneAssignmentMode.ASSIGNED
+        or topic not in lane_config.laned_topics
+    ):
+        return build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA)
+    assignments = shared_lane_assignments(
+        logger,
+        get_redis_provider(RedisConnectionConfig.from_redis_config(config)),
+        topic=topic,
+        fallback_lane_count=lane_config.lane_count,
+        cache_seconds=lane_config.assignment_cache_seconds,
+    )
+    return AssignedRedisLaneRouter(assignments, logger)
 
 
 def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) -> list[str]:
@@ -86,6 +135,33 @@ def lane_topics_for(topic: str, broker_type: MessageBrokerType | None = None) ->
     return router.lane_topics(topic)
 
 
+def _reject_namespaced_redis_streams() -> None:
+    """Refuse `REDIS_KEY_NAMESPACE` + `MESSAGE_BROKER=redis` (R9).
+
+    The namespace isolates KV keys, caches, retry counters, leases and the
+    BullMQ queue, but NOT Redis Streams: stream names round-trip through
+    `xreadgroup` into `xack`, and the indexing consumer derives lane numbers
+    from them, so prefixing them is a change with real message-loss risk that
+    has to land on its own.
+
+    Until it does, two releases pointed at one endpoint would share every
+    stream *and* consumer group -- so a message produced by release A can be
+    delivered to release B's consumer and acked there, and A never sees it.
+    Setting the namespace is an explicit request for isolation, so failing
+    fast is the honest answer; silently not isolating routes work to the
+    wrong deployment.
+    """
+    namespace = os.getenv("REDIS_KEY_NAMESPACE", "").strip()
+    if namespace:
+        raise ValueError(
+            f"REDIS_KEY_NAMESPACE={namespace!r} does not isolate Redis Streams, "
+            "so two deployments sharing this endpoint would consume each "
+            "other's messages. Use a separate Redis/Valkey instance per "
+            "deployment for MESSAGE_BROKER=redis, or switch to "
+            "MESSAGE_BROKER=kafka."
+        )
+
+
 class MessagingFactory:
     """Factory for creating messaging service instances.
 
@@ -100,7 +176,7 @@ class MessagingFactory:
         logger: Logger,
         redis_config: RedisConfig,
         ttl_seconds: int = RetryManager.DEFAULT_TTL_SECONDS,
-    ) -> RetryManager:
+    ) -> IRetryTracker:
         """Create a RetryManager for persistent failure retry tracking.
 
         This RetryManager stores retry counts in Redis and can be used by both Kafka
@@ -137,6 +213,8 @@ class MessagingFactory:
             broker_type = get_message_broker_type()
 
         producer: IMessagingProducer
+        if broker_type == MessageBrokerType.REDIS:
+            _reject_namespaced_redis_streams()
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka producer config is required")
@@ -164,7 +242,7 @@ class MessagingFactory:
         return LaneAwareProducer(
             logger,
             producer,
-            build_lane_router(lane_config, broker_type == MessageBrokerType.KAFKA),
+            _build_producer_lane_router(logger, lane_config, broker_type, config),
             lane_config,
         )
 
@@ -174,14 +252,16 @@ class MessagingFactory:
         config: KafkaConsumerConfig | RedisStreamsConfig | None = None,
         broker_type: MessageBrokerType | None = None,
         consumer_type: ConsumerType = ConsumerType.SIMPLE,
-        retry_manager: RetryManager | None = None,
+        retry_manager: IRetryTracker | None = None,
         producer: IMessagingProducer | None = None,
-        concurrency_manager: DistributedConcurrencyManager | None = None,
+        concurrency_manager: IDistributedLeaseManager | None = None,
         governor: "ResourceGovernor | None" = None,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
         fair_scheduler_config: FairSchedulerConfig | None = None,
         key_extractor: FairnessKeyExtractor | None = None,
         weight_provider: WeightProvider | None = None,
+        disposition_sink: "AbandonedMessageSink | None" = None,
+        connector_off_filter: "ConnectorOffFilter | None" = None,
     ) -> IMessagingConsumer:
         """Create a messaging consumer based on broker type.
 
@@ -214,6 +294,9 @@ class MessagingFactory:
             weight_provider: Optional per-key DRR quantum provider (INDEXING consumers only),
                       for giving some keys a larger share than others. Defaults to a
                       flat quantum for every key.
+            connector_off_filter: Optional (INDEXING consumers only). Settles, as they
+                      are read, the record events the handler would only skip because
+                      their connector is turned off or removed.
 
         Returns:
             IMessagingConsumer instance
@@ -226,6 +309,8 @@ class MessagingFactory:
             fields=effective_fair_config.key_fields
         )
 
+        if broker_type == MessageBrokerType.REDIS:
+            _reject_namespaced_redis_streams()
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:
                 raise ValueError("Kafka consumer config is required")
@@ -245,6 +330,8 @@ class MessagingFactory:
                     fair_scheduler_config=effective_fair_config,
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
+                    disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return KafkaMessagingConsumer(logger, config, retry_manager)
         else:
@@ -266,5 +353,7 @@ class MessagingFactory:
                     fair_scheduler_config=effective_fair_config,
                     key_extractor=effective_key_extractor,
                     weight_provider=weight_provider,
+                    disposition_sink=disposition_sink,
+                    connector_off_filter=connector_off_filter,
                 )
             return RedisStreamsConsumer(logger, config, retry_manager)

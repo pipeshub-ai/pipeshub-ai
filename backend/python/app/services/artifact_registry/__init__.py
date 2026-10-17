@@ -6,6 +6,7 @@ this package is an internal collaborator it composes."""
 from __future__ import annotations
 
 from .access import AccessDeniedError, AccessPolicy, ArtifactNotFoundError
+from .gallery import ArtifactDisplayPolicy, ArtifactGalleryService
 from .lineage import LineageTracker
 from .models import Actor, ArtifactLineage, ArtifactMetadata, ArtifactVersion, UploadGrant
 from .registry import MAX_ARTIFACT_BYTES, ArtifactRegistryService
@@ -25,6 +26,8 @@ __all__ = [
     "AccessPolicy",
     "AccessDeniedError",
     "ArtifactNotFoundError",
+    "ArtifactDisplayPolicy",
+    "ArtifactGalleryService",
     "VersionManager",
     "VersionConflictError",
     "VersionSyncError",

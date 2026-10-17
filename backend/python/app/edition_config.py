@@ -4,6 +4,7 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
+from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
     REDACTED_PLACEHOLDER,
@@ -16,7 +17,6 @@ from app.api.routes.toolset_resolvers import (
     resolve_inherited_from_org_id,
 )
 from app.api.routes.mcp_resolvers import (
-    build_mcp_fallback_config_services,
     build_schedule_refresh_kwargs,
     forbid_inherited_mcp_mutation,
     get_mcp_instance as get_mcp_instance_resolved,
@@ -28,10 +28,12 @@ from app.api.routes.mcp_resolvers import (
 from app.utils.oauth_config import fetch_oauth_config_by_id
 from app.api.middlewares.auth import (
     authMiddleware,
+    deny_service_tokens,
     extract_bearer_token,
     get_config_service,
     isJwtTokenValid,
     require_scopes,
+    require_service_token,
 )
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
@@ -42,7 +44,6 @@ from app.api.routes.toolsets import router as toolsets_router
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
 from app.connectors.api.connector_resolvers import (
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,
@@ -50,15 +51,12 @@ from app.connectors.api.connector_resolvers import (
     ensure_oauth_default,
     filter_oauth_configs_for_list,
     forbid_inherited_oauth_mutation,
-    lookup_user_for_records,
     mask_oauth_config_for_response,
     oauth_create_extra_fields,
-    records_user_id_arg,
     resolve_config_service,
     resolve_oauth_config,
     resolve_oauth_configs,
     resolve_shared_oauth_config_for_flow,
-    resolve_stats_org_id,
     schedule_token_refresh_kwargs,
     strip_redacted_fields,
 )

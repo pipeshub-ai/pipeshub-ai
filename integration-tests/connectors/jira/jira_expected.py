@@ -11,6 +11,9 @@ from app.config.constants.arangodb import (
     OriginTypes,
     PermissionModel,
 )
+from app.connectors.sources.atlassian.jira_cloud.connector import (
+    PLACEHOLDER_REVISION_PREFIX,
+)
 from app.connectors.utils.value_mapper import ValueMapper
 from app.models.entities import (
     AppMetadata,
@@ -88,7 +91,8 @@ class JiraExpected:
             parent_record_type = RecordType.TICKET
 
         status_obj = fields.get("status", {}) or {}
-        status = vm.map_status(status_obj.get("name") if status_obj else None)
+        source_status = status_obj.get("name") if status_obj else None
+        status = vm.map_status(source_status)
 
         priority_obj = fields.get("priority", {}) or {}
         priority = vm.map_priority(priority_obj.get("name") if priority_obj else None)
@@ -144,6 +148,7 @@ class JiraExpected:
             is_dependent_node=False,
             parent_node_id=None,
             status=status,
+            source_status=source_status,
             priority=priority,
             type=issue_type,
             assignee=assignee_name,
@@ -153,6 +158,26 @@ class JiraExpected:
             assignee_email=assignee_email,
             creator_email=creator_email,
         )
+
+    @staticmethod
+    async def placeholder_stub(
+        issue_key: str,
+        *,
+        connector_id: str,
+        datasource: Any,
+        site_base_url: str | None = None,
+    ) -> TicketRecord:
+        """The stub the sweep should have left behind (mirrors ``_build_ancestor_stub``)."""
+        rec = await JiraExpected.ticket_record(
+            issue_key,
+            connector_id=connector_id,
+            datasource=datasource,
+            site_base_url=site_base_url,
+        )
+        rec.external_revision_id = f"{PLACEHOLDER_REVISION_PREFIX}{rec.source_updated_at}"
+        rec.mime_type = MimeTypes.UNKNOWN.value
+        rec.is_placeholder = True
+        return rec
 
     @staticmethod
     def user_group(

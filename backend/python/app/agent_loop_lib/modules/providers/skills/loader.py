@@ -29,6 +29,7 @@ __all__ = [
     "parse_skill_md",
     "render_skill_md",
     "discover_resources",
+    "read_resources",
     "iter_skill_dirs",
     "load_skill_file",
     "load_skills_from_dir",
@@ -37,8 +38,12 @@ __all__ = [
 logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"\A---[ \t]*\n(.*?\n)---[ \t]*\n?(.*)\Z", re.DOTALL)
-_RESOURCE_KINDS = ("scripts", "references", "assets")
 _IGNORED_PREFIXES = ("_", ".")
+# Directories never scanned as bundled resources, on top of any dotfile/
+# dot-directory (see `_should_ignore_resource`) — build artifacts and VCS
+# metadata that could otherwise be picked up from an unclean local checkout
+# or a source archive.
+_IGNORED_RESOURCE_DIR_NAMES = frozenset({"__pycache__", "node_modules", ".git"})
 
 _default_validator = SkillValidator()
 
@@ -84,23 +89,61 @@ def render_skill_md(skill: Skill) -> str:
     return f"---\n{frontmatter_yaml}---\n\n{skill.body.strip()}\n"
 
 
+def _should_ignore_resource(rel_path: str) -> bool:
+    """`rel_path` is already POSIX-separated (see `discover_resources`)."""
+    if rel_path == "SKILL.md" or rel_path.endswith(".pyc"):
+        return True
+    return any(part.startswith(".") for part in rel_path.split("/"))
+
+
 def discover_resources(skill_dir: str) -> dict[str, list[str]]:
-    """List bundled resource files under a skill's `scripts/`, `references/`,
-    and `assets/` subdirectories (relative to `skill_dir`) — level-3
-    progressive disclosure. Contents are never read here, only enumerated."""
+    """List every bundled resource file under a skill's directory (relative
+    to `skill_dir`) — level-3 progressive disclosure. The agentskills.io spec
+    allows "any additional files or directories" a skill needs (real
+    community skills rely on this: Anthropic's `pdf` skill has `forms.md`/
+    `reference.md` at the skill root, `docx` has an `ooxml/` directory of
+    scripts and schemas alongside the conventional `scripts/`/`references/`/
+    `assets/`), so nothing here is restricted to those three names — only
+    `SKILL.md` itself, dotfiles/dot-directories, `__pycache__/`,
+    `node_modules/`, `.git/`, and `*.pyc` are excluded. Root-level files
+    (no subdirectory) are grouped under the synthetic `"files"` kind so
+    `Skill.resources` stays the same `dict[str, list[str]]` shape every
+    caller (REST, `load_skill`, the frontend) already expects. Contents are
+    never read here, only enumerated."""
     resources: dict[str, list[str]] = {}
-    for kind in _RESOURCE_KINDS:
-        kind_dir = os.path.join(skill_dir, kind)
-        if not os.path.isdir(kind_dir):
-            continue
-        files: list[str] = []
-        for dirpath, _dirnames, filenames in os.walk(kind_dir):
-            for filename in filenames:
-                rel = os.path.relpath(os.path.join(dirpath, filename), skill_dir)
-                files.append(rel)
-        if files:
-            resources[kind] = sorted(files)
-    return resources
+    for dirpath, dirnames, filenames in os.walk(skill_dir):
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d not in _IGNORED_RESOURCE_DIR_NAMES
+        ]
+        for filename in filenames:
+            rel = os.path.relpath(os.path.join(dirpath, filename), skill_dir).replace(os.sep, "/")
+            if _should_ignore_resource(rel):
+                continue
+            kind = rel.split("/", 1)[0] if "/" in rel else "files"
+            resources.setdefault(kind, []).append(rel)
+    return {kind: sorted(paths) for kind, paths in resources.items()}
+
+
+def read_resources(skill_dir: str, listing: dict[str, list[str]]) -> dict[str, str]:
+    """Read every resource path enumerated by `listing` (as returned by
+    `discover_resources`) into a `{relative_path: text}` map. Used by
+    `BuiltinSkillSeeder` to bundle an in-repo pack's scripts/references/
+    assets into the graph doc it creates/upgrades, so a builtin's SKILL.md
+    instructions that invoke a bundled script (e.g. `python skills/
+    office-utils/scripts/unpack.py`) actually have that script available in
+    the sandbox. Binary files (non-UTF-8) are skipped with a warning logged
+    — same lenient behavior as `package_importer.py`'s text-only import."""
+    contents: dict[str, str] = {}
+    for paths in listing.values():
+        for rel in paths:
+            full = os.path.join(skill_dir, *rel.split("/"))
+            try:
+                with open(full, "rb") as f:
+                    data = f.read()
+                contents[rel] = data.decode("utf-8")
+            except (OSError, UnicodeDecodeError) as e:
+                logger.warning("Skipping unreadable/binary resource %s: %s", full, e)
+    return contents
 
 
 def iter_skill_dirs(root: str, max_category_depth: int = 2):

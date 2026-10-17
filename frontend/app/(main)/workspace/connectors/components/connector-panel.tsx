@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Flex, Tabs, Box, Button, Text } from '@radix-ui/themes';
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { ConnectorIcon, MaterialIcon } from '@/app/components/ui';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import {
   WorkspaceRightPanel,
@@ -29,18 +30,23 @@ import {
   resolveOAuthFieldVisibility,
 } from '../utils/auth-helpers';
 import { trimAuthPayloadForApi, trimConnectorConfig, stripLinkedOAuthAppCredentials } from '../utils/trim-config';
-import { collectSyncCustomFieldErrors } from '../utils/sync-custom-fields-validation';
+import { collectSyncCustomFieldErrors, syncCustomFieldErrorMessage } from '../utils/sync-custom-fields-validation';
+import { connectorTypeKey, localizeSyncField } from '../utils/localize-sync-field';
 import {
   visibleAuthSchemaFields,
   collectAuthFieldErrors,
 } from './authenticate-tab/auth-step-validation';
 import { useConnectorOAuthPopup } from './authenticate-tab/use-connector-oauth-popup';
 import {
+  collectSyncFilterErrors,
   hasAnySyncFiltersSelected,
   isManualIndexingEnabled,
 } from '../utils/sync-filter-save-guards';
 import type { PanelTab } from '../types';
 import { getConnectorDocumentationUrl } from '../utils/connector-metadata';
+import { isLocalFsConfigReadOnly } from '../utils/local-fs-helpers';
+
+let connectionCheckSeq = 0;
 
 /** Non-admin OAuth instances must pick an OAuth app before save. */
 function oauthAppSelectionError(
@@ -123,6 +129,8 @@ export function ConnectorPanel() {
     bumpCatalogRefresh,
     oauthAuthorizeUiEpoch,
     selectedScope,
+    connectionCheck,
+    setConnectionCheck,
   } = useConnectorsStore();
 
   const openInstancePanel = useConnectorsStore((s) => s.openInstancePanel);
@@ -174,6 +182,7 @@ export function ConnectorPanel() {
     (isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate) ||
       instanceAuthenticated);
+  const configReadOnly = isLocalFsConfigReadOnly(connectorType);
   // Use registry connector's display name so the panel always shows the type name
   // (e.g. "Pipeshub docs") rather than an instance name when creating a new connector.
   const connectorTypeName = registryConnectors.find((c) => c.type === connectorType)?.name ?? connectorName;
@@ -228,7 +237,7 @@ export function ConnectorPanel() {
         if (s.panelConnector?.type !== connectorType || (s.panelConnectorId ?? '') !== instanceKey) {
           return;
         }
-        const message = err instanceof Error ? err.message : 'Failed to load connector configuration';
+        const message = getUserFacingErrorMessage(err, 'We couldn\'t load this connector\'s settings. Please try again in a moment.');
         setSchemaError(message);
       } finally {
         if (gen === panelOpenFetchGen.current) {
@@ -453,7 +462,8 @@ export function ConnectorPanel() {
       vFields,
       formData.auth,
       (f) => t('workspace.actions.validation.fieldRequired', { field: f.displayName }),
-      (f) => t('workspace.actions.validation.fieldMustBeTrue', { field: f.displayName })
+      (f) => t('workspace.actions.validation.fieldMustBeTrue', { field: f.displayName }),
+      (f, error) => t(`workspace.actions.validation.${error}`, { field: f.displayName })
     );
     if (Object.keys(fieldErrs).length > 0) {
       mergeFormErrors(fieldErrs);
@@ -487,8 +497,53 @@ export function ConnectorPanel() {
     t,
   ]);
 
+  /** Try the credentials before saving them; on failure the reason is shown on the Authenticate tab. */
+  const passesConnectionCheck = useCallback(
+    async (auth: Record<string, unknown>): Promise<boolean> => {
+      const id = ++connectionCheckSeq;
+      const isStale = () => useConnectorsStore.getState().connectionCheck.id !== id;
+      setConnectionCheck({ status: 'checking', message: null, id });
+      let message: string;
+      try {
+        const result = await ConnectorsApi.testConnection(connectorType, {
+          auth,
+          ...(panelConnectorId ? { connectorId: panelConnectorId } : {}),
+        });
+        if (isStale()) return false;
+        if (result.success) {
+          setConnectionCheck({ status: 'idle', message: null });
+          return true;
+        }
+        message = result.message;
+      } catch (err: unknown) {
+        if (isStale()) return false;
+        message = getUserFacingErrorMessage(
+          err,
+          t('workspace.connectors.authTab.connectionCheck.requestFailed')
+        );
+      }
+      setConnectionCheck({ status: 'failed', message });
+      requestAnimationFrame(() => {
+        document
+          .querySelector('[data-ph-connection-check-error]')
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      });
+      return false;
+    },
+    [connectorType, panelConnectorId, setConnectionCheck, t]
+  );
+
   const handleSaveAuth = useCallback(async () => {
     if (!resolveAuthenticateOrReturn()) {
+      return;
+    }
+
+    const trimmedAuth = trimAuthPayloadForApi(formData.auth);
+    const finalAuth = useConnectorsStore.getState().disableCredentialEditWhenLinked
+      ? stripLinkedOAuthAppCredentials(trimmedAuth)
+      : trimmedAuth;
+
+    if (connectorSchema?.supportsConnectionCheck && !(await passesConnectionCheck(finalAuth))) {
       return;
     }
     setIsSavingAuth(true);
@@ -497,12 +552,6 @@ export function ConnectorPanel() {
       // Create mode: POST /connectors
       try {
         setSaveError(null);
-
-        const trimmedAuth = trimAuthPayloadForApi(formData.auth);
-        const disableCredEditFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
-        const finalAuth = disableCredEditFlag
-          ? stripLinkedOAuthAppCredentials(trimmedAuth)
-          : trimmedAuth;
 
         const result = (await ConnectorsApi.createConnectorInstance({
           connectorType,
@@ -525,7 +574,7 @@ export function ConnectorPanel() {
         const newConnectorId =
           result?.connector?.connectorId ?? result?._key ?? result?.connectorId;
         if (!newConnectorId) {
-          setSaveError('Create succeeded but no connector id was returned');
+          setSaveError(t('workspace.connectors.errors.missingCreatedId'));
           return;
         }
 
@@ -551,7 +600,7 @@ export function ConnectorPanel() {
           ]);
           setSchemaAndConfig(schemaRes.schema, configRes);
         } catch {
-          setSaveError('Connector was created but configuration could not be loaded. Try reopening the panel.');
+          setSaveError(t('workspace.connectors.errors.createdConfigUnavailable'));
         } finally {
           setIsLoadingConfig(false);
         }
@@ -567,7 +616,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.createError');
+        const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.createError'));
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -577,15 +626,9 @@ export function ConnectorPanel() {
       try {
         setSaveError(null);
 
-        const editTrimmedAuth = trimAuthPayloadForApi(formData.auth);
-        const editDisableCredFlag = useConnectorsStore.getState().disableCredentialEditWhenLinked;
-        const editFinalAuth = editDisableCredFlag
-          ? stripLinkedOAuthAppCredentials(editTrimmedAuth)
-          : editTrimmedAuth;
-
         await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
           auth: {
-            ...editFinalAuth,
+            ...finalAuth,
             connectorScope: selectedScope,
           },
           baseUrl: window.location.origin,
@@ -622,7 +665,7 @@ export function ConnectorPanel() {
           setPanelActiveTab('configure');
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.authSaveError');
+        const message = getUserFacingErrorMessage(err, t('workspace.connectors.toasts.authSaveError'));
         setSaveError(message);
       } finally {
         setIsSavingAuth(false);
@@ -632,6 +675,8 @@ export function ConnectorPanel() {
     isCreateMode,
     selectedScope,
     resolveAuthenticateOrReturn,
+    connectorSchema,
+    passesConnectionCheck,
     instanceName,
     connectorType,
     selectedAuthType,
@@ -650,11 +695,14 @@ export function ConnectorPanel() {
   ]);
 
   const performSaveConfig = useCallback(async () => {
+    // Backstop for the confirm dialogs, which can reach here without the footer button.
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
     if (!currentConnectorId) {
-      setSaveError('No connector ID found. Please complete authentication first.');
+      setSaveError(t('workspace.connectors.errors.authenticateFirst'));
       return;
     }
 
@@ -664,7 +712,12 @@ export function ConnectorPanel() {
     const trimmedCustomValues = trimConnectorConfig(
       formData.sync.customValues
     ) as Record<string, unknown>;
-    const syncFieldErrors = collectSyncCustomFieldErrors(syncCustomFields, trimmedCustomValues);
+    const typeKey = connectorTypeKey(connectorType);
+    const syncFieldErrors = collectSyncCustomFieldErrors(
+      syncCustomFields.map((field) => localizeSyncField(field, typeKey, t)),
+      trimmedCustomValues,
+      (field, error) => syncCustomFieldErrorMessage(t, field, error)
+    );
 
     const syncErrorPatch: Record<string, string | null | undefined> = {};
     for (const f of syncCustomFields) {
@@ -731,7 +784,12 @@ export function ConnectorPanel() {
         );
       }
     } catch (err: unknown) {
-      const message = err instanceof Error ? err.message : t('workspace.connectors.toasts.configSaveError');
+      const message =
+        typeof err === 'object' && err !== null && 'message' in err
+          ? String((err as { message: unknown }).message)
+          : t('workspace.connectors.toasts.configSaveError');
+      // No toast here: the axios interceptor already raises one carrying this same
+      // message (lib/api/error-toast.ts). This only drives the inline panel alert.
       setSaveError(message);
     } finally {
       setIsSavingConfig(false);
@@ -740,6 +798,7 @@ export function ConnectorPanel() {
     panelConnectorId,
     formData,
     connectorSchema,
+    configReadOnly,
     mergeFormErrors,
     closePanel,
     connectorType,
@@ -753,11 +812,13 @@ export function ConnectorPanel() {
   ]);
 
   const handleSaveConfig = useCallback(() => {
+    if (configReadOnly) return;
+
     const currentConnectorId =
       panelConnectorId || useConnectorsStore.getState().panelConnectorId;
 
     if (!currentConnectorId) {
-      setSaveError('No connector ID found. Please complete authentication first.');
+      setSaveError(t('workspace.connectors.errors.authenticateFirst'));
       return;
     }
 
@@ -767,7 +828,12 @@ export function ConnectorPanel() {
     const trimmedCustomValues = trimConnectorConfig(
       formData.sync.customValues
     ) as Record<string, unknown>;
-    const syncFieldErrors = collectSyncCustomFieldErrors(syncCustomFields, trimmedCustomValues);
+    const typeKey = connectorTypeKey(connectorType);
+    const syncFieldErrors = collectSyncCustomFieldErrors(
+      syncCustomFields.map((field) => localizeSyncField(field, typeKey, t)),
+      trimmedCustomValues,
+      (field, error) => syncCustomFieldErrorMessage(t, field, error)
+    );
 
     const syncErrorPatch: Record<string, string | null | undefined> = {};
     for (const f of syncCustomFields) {
@@ -781,6 +847,15 @@ export function ConnectorPanel() {
     }
 
     const syncFields = connectorSchema?.filters?.sync?.schema?.fields;
+    const firstSyncFilterError = Object.values(
+      collectSyncFilterErrors(syncFields, formData.filters.sync)
+    )[0];
+    if (firstSyncFilterError) {
+      setSaveError(firstSyncFilterError);
+      addToast({ variant: 'error', title: firstSyncFilterError, duration: 4500 });
+      return;
+    }
+
     const manualOn = isManualIndexingEnabled(formData.filters.indexing);
     const hasSync = hasAnySyncFiltersSelected(syncFields, formData.filters.sync);
 
@@ -803,12 +878,16 @@ export function ConnectorPanel() {
     panelConnectorId,
     panelConnector,
     connectorSchema,
+    configReadOnly,
     formData.sync.customValues,
     formData.filters.sync,
     formData.filters.indexing,
     mergeFormErrors,
     performSaveConfig,
     setSaveError,
+    addToast,
+    connectorType,
+    t,
   ]);
 
   const handleConfirmSyncSave = useCallback(() => {
@@ -859,13 +938,16 @@ export function ConnectorPanel() {
     authTypeForConfigureGate,
     instanceAuthenticated,
     isSavingAuth,
+    isCheckingConnection: connectionCheck.status === 'checking',
     isSavingConfig,
     isLoadingSchema,
     isLoadingConfig,
+    configReadOnly,
     onNext: handleSaveAuth,
     onSave: handleSaveConfig,
     labels: {
       next: t('common.next'),
+      testingConnection: t('workspace.connectors.authTab.connectionCheck.testing'),
       saving: t('action.saving'),
       cancel: t('action.cancel'),
       loadingConfig: t('workspace.connectors.loadingConfig'),
@@ -876,6 +958,7 @@ export function ConnectorPanel() {
       authBeforeConfigure: t('workspace.connectors.authRequiredBeforeConfig'),
       backToAuth: t('workspace.connectors.backToCredentials'),
       backFromConfigure: t('workspace.connectors.backFromConfigure'),
+      configReadOnly: t('workspace.connectors.configTab.localFsDesktopOnlySaveTooltip'),
     },
     onContinueFromAuthorize: async () => {
       await refreshPanelFromServer();
@@ -965,7 +1048,7 @@ export function ConnectorPanel() {
                 {t('workspace.connectors.tabs.authenticate')}
               </Tabs.Trigger>
               {showAuthorizeTab ? (
-                <Tabs.Trigger value="authorize">Authorize</Tabs.Trigger>
+                <Tabs.Trigger value="authorize">{t('workspace.connectors.tabs.authorize')}</Tabs.Trigger>
               ) : null}
               <Tabs.Trigger
                 value="configure"
@@ -990,7 +1073,7 @@ export function ConnectorPanel() {
                 </Tabs.Content>
               ) : null}
               <Tabs.Content value="configure">
-                <ConfigureTab />
+                <ConfigureTab readOnly={configReadOnly} />
               </Tabs.Content>
             </Box>
           </Tabs.Root>
@@ -1019,6 +1102,7 @@ export function ConnectorPanel() {
         connectorId={panelConnectorId}
         connectorName={connectorName || connectorTypeName}
         actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveConfig')}
+        disabledNoticeSource={connectorType}
         onProceed={performSaveConfig}
         container={connectorPanelNestedModalHost}
       />
@@ -1054,9 +1138,11 @@ function getFooterConfig({
   authTypeForConfigureGate,
   instanceAuthenticated,
   isSavingAuth,
+  isCheckingConnection,
   isSavingConfig,
   isLoadingSchema,
   isLoadingConfig,
+  configReadOnly,
   onNext,
   onSave,
   labels,
@@ -1072,13 +1158,16 @@ function getFooterConfig({
   authTypeForConfigureGate: string;
   instanceAuthenticated: boolean;
   isSavingAuth: boolean;
+  isCheckingConnection: boolean;
   isSavingConfig: boolean;
   isLoadingSchema: boolean;
   isLoadingConfig: boolean;
+  configReadOnly: boolean;
   onNext: () => void;
   onSave: () => void;
   labels: {
     next: string;
+    testingConnection: string;
     saving: string;
     cancel: string;
     loadingConfig: string;
@@ -1089,6 +1178,7 @@ function getFooterConfig({
     authBeforeConfigure: string;
     backToAuth: string;
     backFromConfigure: string;
+    configReadOnly: string;
   };
   onContinueFromAuthorize: () => void | Promise<void>;
   onBackFromConfigure: () => void | Promise<void>;
@@ -1107,10 +1197,10 @@ function getFooterConfig({
 
   if (panelActiveTab === 'authenticate') {
     return {
-      primaryLabel: `${labels.next} →`,
-      /** Validation runs on click; only disable while the save request is in flight. */
-      primaryDisabled: isSavingAuth,
-      primaryLoading: isSavingAuth,
+      primaryLabel: isCheckingConnection ? labels.testingConnection : `${labels.next} →`,
+      /** Validation runs on click; only disable while the check or save request is in flight. */
+      primaryDisabled: isSavingAuth || isCheckingConnection,
+      primaryLoading: isSavingAuth || isCheckingConnection,
       primaryTooltip: isSavingAuth ? labels.saving : undefined,
       onPrimary: onNext,
       secondaryLabel: labels.cancel,
@@ -1142,7 +1232,9 @@ function getFooterConfig({
       isNoneAuthType(authTypeForConfigureGate) ||
       !isOAuthType(authTypeForConfigureGate));
 
-  const configTooltip = !hasConnectorId
+  const configTooltip = configReadOnly
+    ? labels.configReadOnly
+    : !hasConnectorId
     ? labels.completeAuthForSave
     : !configureSaveAllowed
     ? labels.authBeforeConfigure
@@ -1152,7 +1244,8 @@ function getFooterConfig({
 
   return {
     primaryLabel: labels.saveConfig,
-    primaryDisabled: !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
+    primaryDisabled:
+      configReadOnly || !configureSaveAllowed || isSavingConfig || isLoadingSchema || isLoadingConfig,
     primaryLoading: isSavingConfig,
     primaryTooltip: configTooltip,
     onPrimary: onSave,

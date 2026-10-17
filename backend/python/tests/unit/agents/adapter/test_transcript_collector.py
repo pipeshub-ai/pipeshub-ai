@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
 from app.agents.agent_loop.protocol.transcript_collector import TranscriptCollector
 
@@ -112,6 +113,37 @@ class TestToolCallParts:
         assert part["status"] == "blocked"
         assert part["resultPreview"] == "blocked after 3 failures"
 
+    async def test_a_call_awaiting_approval_is_kept_as_such(self) -> None:
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "call-5"}))
+        await collector.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "mcp_jira_create_issue", "reason": "Waiting for your approval.", "tool_call_id": "call-5",
+                "status": ToolCallStatus.AWAITING_APPROVAL, "approval": {"approvalId": "ap-1", "toolName": "create_issue"},
+            })
+        )
+
+        part = collector.parts[0]
+        assert part["status"] == "awaiting_approval"
+        assert part["resultPreview"] == "Waiting for your approval."
+        # Kept with the conversation, so the card is there after a reload.
+        assert part["approval"] == {"approvalId": "ap-1", "toolName": "create_issue"}
+
+    async def test_a_call_a_person_approved_is_marked_on_its_part(self) -> None:
+        """So the reply that ran it isn't regenerated (which could run it again)."""
+        collector = TranscriptCollector()
+
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool": "mcp_jira_create_issue", "args": {}, "tool_call_id": "approved_ap1", "approved": True,
+        }))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "jira_search", "args": {}, "tool_call_id": "call-9"}))
+
+        assert collector.parts[0]["approved"] is True
+        assert "approved" not in collector.parts[1]
+
     async def test_result_preview_is_truncated(self) -> None:
         collector = TranscriptCollector()
 
@@ -121,7 +153,7 @@ class TestToolCallParts:
             _event(EventType.TOOL_CALL_END, {"tool": "jira_search", "content": "x" * 10_000, "is_error": False, "tool_call_id": "call-4"})
         )
 
-        assert len(collector.parts[0]["resultPreview"]) == 500
+        assert len(collector.parts[0]["resultPreview"]) == RESULT_PREVIEW_CHARS
 
     async def test_end_without_matching_start_is_dropped(self) -> None:
         collector = TranscriptCollector()
@@ -160,6 +192,32 @@ class TestToolCallParts:
 
         assert collector.parts[0]["resultSummary"] == "Found 3 issues"
 
+    async def test_the_result_view_is_kept_like_the_live_one(self) -> None:
+        from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
+
+        collector = TranscriptCollector()
+        live: list[dict] = []
+
+        class _Sink:
+            async def write(self, frame: dict) -> None:
+                live.append(frame)
+
+        emitter = AGUIEventEmitter(_Sink(), thread_id="t")  # type: ignore[arg-type]
+        view = {"kind": "records", "columns": ["Text"], "rows": [{"cells": ["y" * 100]}] * 20, "total": 20}
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        for n in range(40):
+            await collector.emit(_event(EventType.TOOL_CALL_START, {"tool": "jira_search", "args": {}, "tool_call_id": f"c-{n}"}))
+            end = _event(EventType.TOOL_CALL_END, {
+                "tool": "jira_search", "content": "[]", "is_error": False, "tool_call_id": f"c-{n}", "result_view": view,
+            })
+            await collector.emit(end)
+            await emitter.emit(end)
+
+        saved = ["resultView" in part for part in collector.parts]
+        shown = ["resultView" in frame["data"] for frame in live if frame["data"].get("role") == "tool"]
+        assert saved == shown
+        assert saved[0] and not saved[-1]
+
     async def test_tool_call_without_summaries_still_works(self) -> None:
         collector = TranscriptCollector()
 
@@ -172,6 +230,7 @@ class TestToolCallParts:
         part = collector.parts[0]
         assert "argsSummary" not in part
         assert "resultSummary" not in part
+        assert "resultView" not in part
 
 
 class TestSubAgentNesting:
@@ -305,4 +364,77 @@ class TestNoFullToolResultsLeak:
             _event(EventType.TOOL_CALL_END, {"tool": "big_tool", "content": huge_result, "is_error": False, "tool_call_id": "call-5"})
         )
 
-        assert len(collector.parts[0]["resultPreview"]) <= 500
+        assert len(collector.parts[0]["resultPreview"]) <= RESULT_PREVIEW_CHARS
+
+
+class TestLargeToolArgsStayParseable:
+    """The transcript's `args` are re-parsed with `JSON.parse` on the Node
+    side (`enterprise_search/utils/utils.ts::toolResultsFromParts`) to rebuild
+    a previous turn's tool calls. Truncating the serialized JSON at a byte
+    offset leaves a document that cannot parse, and Node's `catch` then drops
+    `args` ENTIRELY — so `run_code`'s program disappeared from history rather
+    than arriving shortened, and the model rewrote from scratch instead of
+    editing.
+    """
+
+    async def _tool_call_part(self, args: dict[str, Any]) -> dict[str, Any]:
+        collector = TranscriptCollector()
+        await collector.emit(_event(EventType.RUN_STARTED, {}))
+        await collector.emit(_event(EventType.TOOL_CALL_START, {
+            "tool_call_id": "call_1", "tool": "run_code", "args": args,
+        }))
+        return next(p for p in collector.parts if p["type"] == "tool_call")
+
+    async def test_oversized_args_still_parse_as_json(self) -> None:
+        # 3322 chars: the exact program size from the production failure.
+        part = await self._tool_call_part({
+            "code": "x" * 3322, "language": "typescript", "packages": ["pptxgenjs"],
+        })
+        parsed = json.loads(part["args"])  # must not raise
+        assert isinstance(parsed, dict)
+
+    async def test_oversized_args_keep_every_key(self) -> None:
+        """Only the oversized VALUE is shortened. Dropping the small keys
+        alongside it would lose the language and package list, which are
+        exactly what a follow-up turn needs to reproduce the setup."""
+        part = await self._tool_call_part({
+            "code": "x" * 5000, "language": "typescript", "packages": ["pptxgenjs"],
+        })
+        parsed = json.loads(part["args"])
+        assert parsed["language"] == "typescript"
+        assert parsed["packages"] == ["pptxgenjs"]
+
+    async def test_truncation_is_visible_not_silent(self) -> None:
+        """A prefix presented as the whole program is worse than no program:
+        the model would treat a half-written script as complete."""
+        part = await self._tool_call_part({"code": "x" * 5000})
+        code = json.loads(part["args"])["code"]
+        assert len(code) < 5000
+        assert "truncated" in code.lower()
+        assert "5000" in code, "the true length should be recoverable"
+
+    async def test_small_args_are_untouched(self) -> None:
+        args = {"code": 'console.log("hi")', "language": "typescript"}
+        part = await self._tool_call_part(args)
+        assert json.loads(part["args"]) == args
+
+    async def test_stays_within_the_size_budget(self) -> None:
+        """The cap exists to bound the persisted Mongo document."""
+        part = await self._tool_call_part({
+            "code": "x" * 50_000, "notes": "y" * 50_000,
+        })
+        assert len(part["args"]) <= 4000
+
+    async def test_non_string_values_survive(self) -> None:
+        part = await self._tool_call_part({
+            "code": "x" * 5000, "timeout": 30, "allow_network": True, "retries": None,
+        })
+        parsed = json.loads(part["args"])
+        assert parsed["timeout"] == 30
+        assert parsed["allow_network"] is True
+        assert parsed["retries"] is None
+
+    async def test_unserializable_args_do_not_explode(self) -> None:
+        """`default=str` handled this before; it still has to."""
+        part = await self._tool_call_part({"when": object(), "code": "x" * 5000})
+        assert json.loads(part["args"])

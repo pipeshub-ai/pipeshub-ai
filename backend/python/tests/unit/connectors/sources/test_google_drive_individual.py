@@ -95,57 +95,6 @@ def _make_record(**kwargs):
     return rec
 
 
-@pytest.fixture
-def connector():
-    with patch(
-        "app.connectors.sources.google.drive.individual.connector.GoogleClient"
-    ), patch(
-        "app.connectors.sources.google.drive.individual.connector.SyncPoint"
-    ) as MockSyncPoint:
-        mock_sync_point = AsyncMock()
-        mock_sync_point.read_sync_point = AsyncMock(return_value=None)
-        mock_sync_point.update_sync_point = AsyncMock()
-        MockSyncPoint.return_value = mock_sync_point
-
-        from app.connectors.sources.google.drive.individual.connector import (
-            GoogleDriveIndividualConnector,
-        )
-
-        logger = _make_logger()
-        dep = AsyncMock()
-        dep.org_id = "org-123"
-        dep.on_new_records = AsyncMock()
-        dep.on_new_app_users = AsyncMock()
-        dep.on_new_record_groups = AsyncMock()
-        dep.on_record_deleted = AsyncMock()
-        dep.on_record_metadata_update = AsyncMock()
-        dep.on_record_content_update = AsyncMock()
-        dep.on_updated_record_permissions = AsyncMock()
-        dep.reindex_existing_records = AsyncMock()
-
-        ds_provider = _make_mock_data_store_provider()
-        config_service = AsyncMock()
-
-        conn = GoogleDriveIndividualConnector(
-            logger=logger,
-            data_entities_processor=dep,
-            data_store_provider=ds_provider,
-            config_service=config_service,
-            connector_id="drive-conn-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
-        conn.sync_filters = FilterCollection()
-        conn.indexing_filters = FilterCollection()
-        conn.google_client = MagicMock()
-        conn.drive_data_source = AsyncMock()
-        async def execute(operation):
-            return operation()
-        conn.drive_data_source.execute = AsyncMock(side_effect=execute)
-        conn.config = {"credentials": {"access_token": "t", "refresh_token": "r"}}
-        yield conn
-
-
 # ===================================================================
 # init() – lines 247-284
 # ===================================================================
@@ -764,7 +713,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_stream_chunk_error(self, connector):
@@ -894,6 +843,8 @@ class TestGetFileMetadataFromDrive:
 
         result = await connector._get_file_metadata_from_drive("f1")
         assert result["id"] == "f1"
+        assert mock_files.get.call_args.kwargs["supportsAllDrives"] is True
+        assert mock_files.get.call_args.kwargs["fileId"] == "f1"
 
     @pytest.mark.asyncio
     async def test_not_found_error(self, connector):
@@ -923,7 +874,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -1004,8 +956,10 @@ class TestStreamRecord:
             mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_regular_file_pdf_conversion(self, connector):
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_regular_file_pdf_conversion(self, connector, file_name):
         record = _make_record()
+        record.record_name = file_name
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"}
         )
@@ -1021,10 +975,8 @@ class TestStreamRecord:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -1037,6 +989,13 @@ class TestStreamRecord:
 
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
+            path, temp_dir = connector._convert_to_pdf.await_args.args
+            assert temp_dir == "/tmp/test_dir"
+            assert os.path.dirname(path) == temp_dir
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
@@ -1054,6 +1013,10 @@ class TestStreamRecord:
             mock_stream.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_record_http_exception_passthrough(self, connector):
@@ -1076,7 +1039,7 @@ class TestStreamRecord:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector):
+    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -1096,20 +1059,20 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_other(self, connector):
+    async def test_pdf_download_http_error_other(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -1127,17 +1090,15 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
 
 # ===================================================================
@@ -2401,7 +2362,7 @@ class TestStreamGoogleApiRequestFullCoverage:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_stream_chunk_error(self, connector):
@@ -2531,6 +2492,8 @@ class TestGetFileMetadataFromDriveFullCoverage:
 
         result = await connector._get_file_metadata_from_drive("f1")
         assert result["id"] == "f1"
+        assert mock_files.get.call_args.kwargs["supportsAllDrives"] is True
+        assert mock_files.get.call_args.kwargs["fileId"] == "f1"
 
     @pytest.mark.asyncio
     async def test_not_found_error(self, connector):
@@ -2560,7 +2523,8 @@ class TestGetFileMetadataFromDriveFullCoverage:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -2658,10 +2622,8 @@ class TestStreamRecordFullCoverage:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -2674,6 +2636,10 @@ class TestStreamRecordFullCoverage:
 
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
@@ -2691,6 +2657,10 @@ class TestStreamRecordFullCoverage:
             mock_stream.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_record_http_exception_passthrough(self, connector):
@@ -2713,7 +2683,7 @@ class TestStreamRecordFullCoverage:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector):
+    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -2733,20 +2703,20 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_other(self, connector):
+    async def test_pdf_download_http_error_other(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -2764,17 +2734,15 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
 
 # ===================================================================

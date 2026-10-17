@@ -4,11 +4,15 @@ Tests for MessagingFactory: create_producer and create_consumer.
 
 import logging
 import os
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.messaging.config import ConsumerType, MessageBrokerType
+from app.services.messaging.config import (
+    ConsumerType,
+    MessageBrokerType,
+    RedisStreamsConfig,
+)
 from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
@@ -171,3 +175,51 @@ class TestCreateProducerTypeError:
             )
 
 
+
+
+class TestNamespacedRedisStreamsRejected:
+    """`REDIS_KEY_NAMESPACE` promises isolation that Redis Streams does not
+    deliver, so the combination is refused rather than silently mis-routing.
+
+    Stream names and consumer groups are unprefixed, so two releases pointed
+    at one endpoint share both: a message produced by release A can be handed
+    to release B's consumer and acked there, and A never sees it.
+    """
+
+    def test_a_namespaced_redis_broker_is_refused(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        with pytest.raises(ValueError, match="does not isolate Redis Streams"):
+            MessagingFactory.create_producer(
+                logger=MagicMock(),
+                config=RedisStreamsConfig(host="localhost", port=6379),
+                broker_type=MessageBrokerType.REDIS,
+            )
+
+    def test_the_consumer_path_is_refused_too(self, monkeypatch) -> None:
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        with pytest.raises(ValueError, match="does not isolate Redis Streams"):
+            MessagingFactory.create_consumer(
+                logger=MagicMock(),
+                config=RedisStreamsConfig(host="localhost", port=6379),
+                broker_type=MessageBrokerType.REDIS,
+            )
+
+    def test_kafka_is_unaffected_by_the_namespace(self, monkeypatch) -> None:
+        """The namespace is a Redis concept; it must not block a Kafka broker."""
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", "tenant-a")
+        with pytest.raises(ValueError, match="Kafka producer config is required"):
+            MessagingFactory.create_producer(
+                logger=MagicMock(), config=None, broker_type=MessageBrokerType.KAFKA
+            )
+
+    @pytest.mark.parametrize("value", ["", "   "])
+    def test_an_unset_or_blank_namespace_is_allowed(
+        self, monkeypatch, value: str
+    ) -> None:
+        monkeypatch.setenv("REDIS_KEY_NAMESPACE", value)
+        producer = MessagingFactory.create_producer(
+            logger=MagicMock(),
+            config=RedisStreamsConfig(host="localhost", port=6379),
+            broker_type=MessageBrokerType.REDIS,
+        )
+        assert producer is not None

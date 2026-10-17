@@ -1,0 +1,2 @@
+Marker release-notes: version 2.4 adds folder filters and faster incremental sync.
+Version 2.3 fixed retries for rate-limited sources.

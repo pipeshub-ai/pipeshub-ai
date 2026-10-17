@@ -1,6 +1,7 @@
 from typing import Any, Dict, List
 
 from qdrant_client.http.models import (  # type: ignore
+    Batch,
     FieldCondition,
     Filter,
     Fusion,
@@ -8,10 +9,10 @@ from qdrant_client.http.models import (  # type: ignore
     MatchAny,
     MatchValue,
     MinShould,
-    PointStruct,
     Prefetch,
     QueryRequest,
     SparseVector as QdrantSparseVector,
+    ValuesCount,
 )
 
 from app.services.vector_db.filters import canonical_filter_key
@@ -119,6 +120,19 @@ class QdrantUtils:
 
     @staticmethod
     def _generic_to_qdrant(cond: GenericFieldCondition) -> FieldCondition:
+        if cond.values_count_lte is not None:
+            # Qdrant expresses an array-length bound natively, alongside an
+            # optional match on the same key.
+            match = None
+            if cond.values is not None:
+                match = MatchAny(any=cond.values)
+            elif cond.value is not None:
+                match = MatchValue(value=cond.value)
+            return FieldCondition(
+                key=cond.key,
+                match=match,
+                values_count=ValuesCount(lte=cond.values_count_lte),
+            )
         if cond.values is not None:
             return FieldCondition(key=cond.key, match=MatchAny(any=cond.values))
         return FieldCondition(key=cond.key, match=MatchValue(value=cond.value))
@@ -128,16 +142,63 @@ class QdrantUtils:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def vector_point_to_qdrant(point: VectorPoint) -> PointStruct:
-        vector: Dict[str, Any] = {}
-        if point.dense_vector is not None:
-            vector["dense"] = point.dense_vector
-        if point.sparse_vector is not None:
-            vector["sparse"] = QdrantSparseVector(
-                indices=point.sparse_vector.indices,
-                values=point.sparse_vector.values,
+    def vector_points_to_batches(points: list[VectorPoint]) -> list[Batch]:
+        """Column-oriented ``Batch`` es for one upsert call: one per vector set.
+
+        ``AsyncQdrantClient.upsert`` walks every value of every
+        ``PointStruct`` looking for objects that need server-side inference
+        (pure Python, ~2 ms per 1536-dim point, on the caller's event loop);
+        a ``Batch`` is checked in well under a millisecond, and the request
+        sent is the same. A ``Batch`` names the same vectors for every point,
+        so points with different vector names (an image point has no sparse
+        vector) go in separate batches. Points are grouped by vector set, not
+        by run, so text and image points that alternate still make at most
+        one batch per set; order within a set is kept. If an id appears more
+        than once, runs are kept instead, so the later write still wins.
+        """
+        batches: list[Batch] = []
+
+        def flush(group: list[VectorPoint]) -> None:
+            if not group:
+                return
+            vectors: dict[str, Any] = {}
+            if group[0].dense_vector is not None:
+                vectors["dense"] = [p.dense_vector for p in group]
+            if group[0].sparse_vector is not None:
+                vectors["sparse"] = [
+                    QdrantSparseVector(
+                        indices=p.sparse_vector.indices,
+                        values=p.sparse_vector.values,
+                    )
+                    for p in group
+                ]
+            batches.append(
+                Batch(
+                    ids=[p.id for p in group],
+                    vectors=vectors,
+                    payloads=[p.payload for p in group],
+                )
             )
-        return PointStruct(id=point.id, vector=vector, payload=point.payload)
+
+        def vector_set(point: VectorPoint) -> tuple[bool, bool]:
+            return (point.dense_vector is not None, point.sparse_vector is not None)
+
+        if len({p.id for p in points}) == len(points):
+            groups: dict[tuple[bool, bool], list[VectorPoint]] = {}
+            for point in points:
+                groups.setdefault(vector_set(point), []).append(point)
+            for group in groups.values():
+                flush(group)
+            return batches
+
+        run: list[VectorPoint] = []
+        for point in points:
+            if run and vector_set(point) != vector_set(run[0]):
+                flush(run)
+                run = []
+            run.append(point)
+        flush(run)
+        return batches
 
     # ------------------------------------------------------------------
     # Search request conversion

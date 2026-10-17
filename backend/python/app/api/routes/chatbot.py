@@ -1,43 +1,67 @@
 import asyncio
-from collections.abc import AsyncGenerator
 import base64
+import inspect
 import json
 import logging
+from collections.abc import AsyncGenerator, Mapping
+from contextlib import aclosing
+from io import BytesIO
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
+import pdfplumber
 from dependency_injector.wiring import inject
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import StreamingResponse
-from io import BytesIO
-
-import pdfplumber
+from fastapi.responses import JSONResponse, StreamingResponse
 from langchain_core.language_models.chat_models import BaseChatModel
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
-from app.config.constants.ai_models import validate_reasoning_effort
-from app.modules.parsers.pdf.pdf_rasterizer import render_all_pages_as_pil_from_bytes_sync
-from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
+from app.agents.agent_loop.cancellation.registry import (
+    RunCancellationRegistry,
+    RunOwner,
+)
+from app.agents.agent_loop.cancellation.validation import validate_run_id
+from app.agents.agent_loop.error_classification import classify_exception
 from app.agents.agent_loop.protocol import AGUIEventType, frame, resolve_protocol
+from app.agents.agent_loop.protocol.stream_collector import collect_stream_outcome
 from app.agents.chat_modes import resolve_chat_mode_policy, run_chat_stream
 from app.agents.chat_modes.policy import AgentCapabilities, resolve_agent_policy
-from app.api.middlewares.auth import require_scopes
+from app.api.middlewares.auth import require_scopes, require_service_token
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.service import OAuthScopes, config_node_constants
+from app.config.constants.ai_models import validate_reasoning_effort
 from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.service import OAuthScopes, TokenScopes, config_node_constants
 from app.containers.query import QueryAppContainer
 from app.events.processor import convert_record_dict_to_record
-from app.models.blocks import Block, BlockType, BlocksContainer, CitationMetadata, DataFormat
+from app.models.blocks import (
+    Block,
+    BlocksContainer,
+    BlockType,
+    CitationMetadata,
+    DataFormat,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    count_chars_per_page_from_bytes_sync,
+    render_all_pages_as_pil_from_bytes_sync,
+)
+from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
+    PDFPlumberOpenCVProcessor,
+)
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.telemetry.event_buffer import record_event
-from app.telemetry.identity import domain_from_email
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import (
+    IMAGE_DESCRIPTION_BUDGET_S,
+    TransformContext,
+)
+from app.services.artifact_registry.access import is_direct_share, reader_edge
+from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import get_generator_model_async
 from app.utils.attachment_mime_types import (
     DELIMITED_MIME_TYPES,
@@ -46,8 +70,13 @@ from app.utils.attachment_mime_types import (
     SUPPORTED_ATTACHMENT_MIME_TYPES,
     TEXT_ATTACHMENT_MIME_TYPES,
 )
+from app.utils.attachment_utils import is_chat_attachment, keep_accessible_attachments
+from app.utils.concurrency import gather_with_concurrency
+from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
+from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
@@ -75,6 +104,10 @@ class ChatQuery(BaseModel):
     timezone: str | None = None  # IANA timezone id from the client (e.g., "America/New_York")
     currentTime: str | None = None  # ISO 8601 datetime string from the client
     conversationId: str | None = None  # Passed by Node.js layer for background task tracking
+    # Author-set instructions from the Project this conversation is linked
+    # to (Node `ProjectService.buildContext`). Additive — rendered as its
+    # own prompt section, never merged into system_prompt/instructions.
+    projectInstructions: str | None = Field(default=None, max_length=8000)
     attachments: list[dict[str, Any]] = []
     # AG-UI is the only supported SSE wire protocol. This field is
     # accepted but ignored — `resolve_protocol` always returns "agui".
@@ -87,8 +120,54 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Opt-in measurement surface for evaluation clients: streams CUSTOM
+    # `retrieval_context` frames naming the records and blocks that reached
+    # the model, plus a `run_usage` frame. No effect on the answer.
+    includeRetrievalContext: bool = False
+    # "short": a search waits at most `KEYWORD_SEARCH_SHORT_WAIT_SECS` for the
+    # keyword (grep) pattern match once its semantic results are in, and keeps
+    # what it found by then. For callers that would rather answer sooner, such
+    # as agents calling chat over MCP. Ignored under HIGH_ACCURACY_MODE.
+    # Absent or "full": waits for all of it, as before.
+    keywordSearchBudget: Literal["short", "full"] | None = None
+    # Stop Generation: client-generated UUID identifying this run, so a
+    # later `POST /chat/cancel {runId}` can target it. Absent for callers
+    # that predate this field or don't need cancellation (the agent loop
+    # generates one itself — see `stream_bridge.py`/`bridge.py`).
+    runId: str | None = None
+    # Set by Node for a project-scoped chat (see `applyProjectScope`,
+    # project-context.ts). When true and the effective `filters` carry no
+    # apps/kb, `get_accessible_virtual_record_ids` returns no records instead
+    # of falling back to "search everything the user can access" — an empty
+    # project scope must stay empty, never widen. Threaded into `filters`
+    # below rather than passed as a separate retrieval parameter.
+    strictScope: bool = False
+    # Set by Node for a project-scoped chat whose turn selects below app level:
+    # the project's own sources (`{"apps": [...]}`), which the selected record
+    # groups, folders and records must lie in. Never taken from a client.
+    allowedFilters: dict[str, Any] | None = None
 
     _validate_reasoning_effort = field_validator("reasoningEffort")(validate_reasoning_effort)
+    _validate_run_id = field_validator("runId")(validate_run_id)
+
+
+class CancelRunRequest(BaseModel):
+    """Body of `POST /chat/cancel`. One endpoint for both assistant
+    (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs — the
+    registry is keyed by `runId` alone, not by which route created it.
+
+    `conversationId` is Node's already-ownership-checked path param,
+    forwarded so the registry can reject a `runId` that is real and owned
+    by this same user/org but was registered under a DIFFERENT
+    conversation (see `RunOwner.conversation_id`). Optional only so an
+    older/rolling-deploy Node build without this field still gets the
+    pre-existing user/org check rather than a hard 400.
+    """
+
+    runId: str
+    conversationId: str | None = None
+
+    _validate_run_id = field_validator("runId")(validate_run_id)
 
 
 class AttachmentUploadItem(BaseModel):
@@ -103,12 +182,33 @@ class AttachmentUploadRequest(BaseModel):
     attachments: list[AttachmentUploadItem]
 
 
+def _text_layer_char_counts(file_content: bytes) -> list[int] | None:
+    try:
+        return count_chars_per_page_from_bytes_sync(file_content)
+    except Exception:
+        logger.warning(
+            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
+            exc_info=True,
+        )
+        return None
+
+
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
+    chars_per_page = _text_layer_char_counts(file_content)
     with pdfplumber.open(BytesIO(file_content)) as pdf:
         total = len(pdf.pages)
         if total == 0:
             return False
-        ocr_count = sum(1 for page in pdf.pages if OCRStrategy.needs_ocr(page, logger))
+        if chars_per_page is None or len(chars_per_page) != total:
+            chars_per_page = [None] * total
+        # A page with no text layer always needs OCR (`needs_ocr` sees zero text
+        # density), so it is counted without pdfplumber, which can spend minutes
+        # walking a page whose glyphs are drawn as vector paths.
+        ocr_count = sum(
+            1
+            for page, chars in zip(pdf.pages, chars_per_page)
+            if chars == 0 or OCRStrategy.needs_ocr(page, logger)
+        )
     return ocr_count / total >= 0.5
 
 
@@ -157,12 +257,9 @@ def _build_image_blocks(file_content: bytes, mime_type: str) -> BlocksContainer:
 async def _build_text_blocks(file_content: bytes) -> BlocksContainer:
     """Parse a plain-text or markdown file into a BlocksContainer using the default MarkdownParser."""
     from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
-    try:
-        text = file_content.decode("utf-8")
-    except UnicodeDecodeError:
-        text = file_content.decode("latin-1")
+    from app.modules.parsers.text_decoding import decode_text
     parser = MarkdownItParser()
-    return await parser.parse_to_blocks(text.strip())
+    return await parser.parse_to_blocks(decode_text(file_content).strip())
 
 
 async def _build_docx_blocks(
@@ -231,6 +328,11 @@ async def get_config_service(request: Request) -> ConfigurationService:
     return container.config_service()
 
 
+async def get_run_cancellation_registry(request: Request) -> RunCancellationRegistry:
+    container: QueryAppContainer = request.app.container
+    return container.run_cancellation_registry()
+
+
 async def get_model_config(config_service: ConfigurationService, model_key: str | None = None, model_name: str | None = None) -> tuple[dict[str, Any], dict[str, Any]]:
     """Get model configuration based on user selection or fallback to default
 
@@ -258,8 +360,10 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         return next((config for config in configs if config.get("modelKey") == key), None)
 
     # Get initial config
-    ai_models = await config_service.get_config(config_node_constants.AI_MODELS.value)
-    llm_configs = ai_models["llm"]
+    ai_models = await config_service.get_config(
+        config_node_constants.AI_MODELS.value, use_cache=True,
+    ) or {}
+    llm_configs = ai_models.get("llm") or []
 
     # Search based on provided parameters
     if model_key is None and model_name is None:
@@ -280,13 +384,13 @@ async def get_model_config(config_service: ConfigurationService, model_key: str 
         new_ai_models = await config_service.get_config(
             config_node_constants.AI_MODELS.value,
             use_cache=False
-        )
-        llm_configs = new_ai_models["llm"]
+        ) or {}
+        llm_configs = new_ai_models.get("llm") or []
         if key_config := _find_config_by_key(llm_configs, model_key):
             return key_config, new_ai_models
 
     if not llm_configs:
-        raise ValueError("No LLM configurations found")
+        raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
     return llm_configs, ai_models
 
@@ -308,7 +412,7 @@ async def get_llm_for_chat(
     try:
         llm_config, ai_models_config = await get_model_config(config_service, model_key, model_name)
         if not llm_config:
-            raise ValueError("No LLM configurations found")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
 
         # Handle list of configs - extract first one if we got a list
         if isinstance(llm_config, list):
@@ -345,12 +449,42 @@ async def get_llm_for_chat(
             model_provider, llm_config, default_model_name, reasoning_effort
         )
         return llm, llm_config, ai_models_config
+    except LLMNotConfiguredError:
+        # Already says what to do; the "Failed to initialize" prefix would only bury it.
+        raise
     except Exception as e:
         raise ValueError(f"Failed to initialize LLM: {str(e)}")
 
 
+# Shown when the chat model fails to start for a reason the classifier doesn't recognise.
+CHAT_MODEL_START_FAILED = (
+    "The selected AI model couldn't be started. Try another model, or ask a "
+    "workspace admin to check it in Workspace → AI Models."
+)
+
+
+_ATTACHMENT_UNREADABLE_HINTS = {
+    "image": "The image may be damaged or in a format we can't open. Save it as PNG or JPEG and attach it again.",
+    "text": "Make sure it's a plain-text file, then attach it again.",
+    "docx": "It may be damaged or password-protected. Save it again, or attach it as a PDF.",
+    "spreadsheet": "It may be damaged or password-protected. Save it again, or attach it as a CSV.",
+    "csv": "Check that it's a valid CSV or TSV file, then attach it again.",
+    "pdf": "It may be damaged or password-protected. Save it again, or attach a different copy.",
+    "upload": "Please attach it again.",
+}
+
+
+def _attachment_unreadable(file_name: str, kind: str) -> str:
+    """The message a user sees when a chat attachment can't be read; the cause goes to the log."""
+    return f"Couldn't read {file_name}. {_ATTACHMENT_UNREADABLE_HINTS[kind]}"
+
+
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
+
+# The browser gives an attachment upload 90s, and one stalled vision call can run
+# for minutes. An image left undescribed still reaches a multimodal chat model.
+_CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S = 40
 
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
@@ -451,7 +585,20 @@ async def _rollback_attachment_records(
             )
 
 
-@router.post("/chat/attachments/upload", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
+@router.post(
+    "/chat/attachments/upload",
+    dependencies=[
+        Depends(
+            require_scopes(
+                OAuthScopes.CONVERSATION_CHAT,
+                OAuthScopes.AGENT_EXECUTE,
+                service_scopes=(TokenScopes.CONVERSATION_CREATE,),
+            )
+        )
+    ],
+)
 @inject
 async def upload_chat_attachments(
     request: Request,
@@ -487,7 +634,7 @@ async def upload_chat_attachments(
     # have no User node and skip permission edges, so the lookup is skipped.
     user_key: str | None = None
     if not is_service_account:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await get_user_or_503(graph_provider, user_id)
         if not user_doc:
             raise HTTPException(status_code=404, detail="User not found for attachment upload")
         user_key = user_doc.get("_key") or user_doc.get("id")
@@ -512,12 +659,13 @@ async def upload_chat_attachments(
             raise HTTPException(
                 status_code=400,
                 detail=(
-                    f"Unsupported attachment type '{item.mimeType}': {item.fileName}. "
-                    "Supported: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV."
+                    f"{item.fileName} can't be attached because that file type isn't supported. "
+                    "You can attach PDF, Word (DOCX), Excel (XLSX), CSV, TSV, text, Markdown, "
+                    "JPEG and PNG files."
                 ),
             )
         if item.size <= 0:
-            raise HTTPException(status_code=400, detail=f"Attachment size must be positive: {item.fileName}")
+            raise HTTPException(status_code=400, detail=f"{item.fileName} is empty. Attach a file that has content.")
 
         record_id = str(uuid4())
         virtual_record_id = str(uuid4())
@@ -531,7 +679,7 @@ async def upload_chat_attachments(
         try:
             file_binary = base64.b64decode(item.contentBase64, validate=True)
         except Exception:
-            raise HTTPException(status_code=400, detail=f"Invalid base64 content for attachment: {item.fileName}")
+            raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "upload"))
 
         storage_doc_id, _ = await blob_storage.save_binary_to_storage(
             org_id=org_id,
@@ -575,28 +723,32 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "image_direct"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to process image attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "image"))
         elif is_text:
             try:
                 block_containers = await _build_text_blocks(file_binary)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "text"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse text attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "text"))
         elif is_docx:
             try:
                 block_containers = await _build_docx_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "docling"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse DOCX attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "docx"))
         elif is_spreadsheet:
             try:
                 block_containers = await _build_excel_blocks(file_binary, item.fileName, config_service)
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "excel_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse Excel attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "spreadsheet"))
         elif is_delimited:
             try:
                 block_containers = await _build_csv_blocks(
@@ -605,7 +757,8 @@ async def upload_chat_attachments(
                 parsed_blocks_by_record[record_id] = block_containers
                 parse_mode = "csv_lightweight"
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse CSV attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "csv"))
         else:
             try:
                 needs_ocr = await asyncio.to_thread(_pdf_has_any_ocr_page, file_binary)
@@ -615,8 +768,9 @@ async def upload_chat_attachments(
                         raise HTTPException(
                             status_code=400,
                             detail=(
-                                f"Scanned attachment page cap exceeded. "
-                                f"Maximum allowed combined scanned pages is {OCR_IMAGE_PAGE_CAP}."
+                                f"{item.fileName} has too many scanned pages to attach: the limit is "
+                                f"{OCR_IMAGE_PAGE_CAP} scanned pages per message. Attach fewer pages "
+                                "or split the document."
                             ),
                         )
                     block_containers = await asyncio.to_thread(
@@ -632,7 +786,8 @@ async def upload_chat_attachments(
             except HTTPException:
                 raise
             except Exception as e:
-                raise HTTPException(status_code=400, detail=f"Failed to parse attachment {item.fileName}: {str(e)}")
+                logger.warning("Chat attachment %s could not be read: %s", item.fileName, e)
+                raise HTTPException(status_code=400, detail=_attachment_unreadable(item.fileName, "pdf"))
         record_doc["isVLMOcrProcessed"] = needs_ocr
         file_doc = {
             "_key": record_id,
@@ -684,19 +839,9 @@ async def upload_chat_attachments(
             # can be created. Grant an org-scoped permission edge instead so the
             # uploaded file is readable org-wide through the standard ACL path
             # (orgAccessPermissionEdge in check_record_access_with_details).
-            permission_edges = [
-                {
-                    "from_id": org_id,
-                    "from_collection": CollectionNames.ORGS.value,
-                    "to_id": rd["_key"],
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "ORGANIZATION",
-                    "role": "READER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                }
-                for rd in record_docs
-            ]
+            permission_edges = service_account_upload_permission_edges(
+                org_id, [rd["_key"] for rd in record_docs], ts,
+            )
             await graph_provider.batch_create_edges(permission_edges, CollectionNames.PERMISSION.value)
         else:
             permission_edges = [
@@ -723,6 +868,10 @@ async def upload_chat_attachments(
             config_service=config_service,
         )
 
+        # One budget for the whole request: its records are indexed one after
+        # another, and the Slack bot and API send up to 10 files in one upload.
+        loop = asyncio.get_running_loop()
+        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -734,7 +883,11 @@ async def upload_chat_attachments(
             record.virtual_record_id = record_doc.get("virtualRecordId")
             ctx = TransformContext(
                 record=record,
-                settings={"sink_only": True, "skip_vector_store": True},
+                settings={
+                    "sink_only": True,
+                    "skip_vector_store": True,
+                    IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
+                },
             )
             await sink_orchestrator.index(ctx)
     except Exception:
@@ -754,109 +907,413 @@ class AttachmentPermissionRequest(BaseModel):
     recordIds: list[str]
 
 
-@router.post("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+class ArtifactPermissionRequest(BaseModel):
+    conversationId: str
+    userIds: list[str]
+
+
+_PermissionRequestT = TypeVar("_PermissionRequestT", bound=BaseModel)
+
+_PERMISSION_EDGE_LOOKUP_CONCURRENCY = 16
+
+
+async def _parse_permission_request(
+    request: Request, model: type[_PermissionRequestT]
+) -> _PermissionRequestT:
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        return model(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
+
+
+def _permission_grantor(claims: Mapping[str, Any]) -> tuple[str, str]:
+    """Node signs the conversation owner's `userId`/`orgId` into the service token
+    only after checking ownership or sharing in Mongo; the body is never trusted
+    for either."""
+    org_id = claims.get("orgId")
+    grantor_user_id = claims.get("userId")
+    if not org_id or not grantor_user_id:
+        raise HTTPException(status_code=400, detail="Service token must carry orgId and userId")
+    return org_id, grantor_user_id
+
+
+async def _resolve_user_keys(
+    graph_provider: IGraphDBProvider, user_ids: list[str]
+) -> list[str]:
+    """Resolve auth `userId`s to the User node's internal `_key`/`id` — permission
+    edges MATCH the User node, not the auth `userId`. Unresolvable users are logged
+    and skipped rather than failing the whole batch."""
+    user_keys: list[str] = []
+    for user_id in user_ids:
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        if not user_doc:
+            logger.warning("User not found for permission grant/revoke, skipping: %s", user_id)
+            continue
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if not user_key:
+            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
+            continue
+        user_keys.append(user_key)
+    return user_keys
+
+
+async def _get_permission_edges(
+    graph_provider: IGraphDBProvider, pairs: list[tuple[str, str]]
+) -> list[dict[str, Any] | None]:
+    """`USER -> RECORD` permission edge (or None) for each `(user_key, record_id)`, in order."""
+    return await gather_with_concurrency(
+        _PERMISSION_EDGE_LOOKUP_CONCURRENCY,
+        *(
+            graph_provider.get_edge(
+                from_id=user_key,
+                from_collection=CollectionNames.USERS.value,
+                to_id=record_id,
+                to_collection=CollectionNames.RECORDS.value,
+                collection=CollectionNames.PERMISSION.value,
+            )
+            for user_key, record_id in pairs
+        ),
+    )
+
+
+async def _records_owned_by(
+    graph_provider: IGraphDBProvider, grantor_user_id: str, record_ids: list[str]
+) -> set[str]:
+    """Only records the grantor OWNS may be shared onward. Attachment recordIds come
+    from the client's message body, so without this a sharer could hand out (or
+    strip) access to records they cannot see themselves."""
+    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id])
+    if not grantor_keys or not record_ids:
+        return set()
+    edges = await _get_permission_edges(
+        graph_provider, [(grantor_keys[0], record_id) for record_id in record_ids]
+    )
+    return {
+        record_id
+        for record_id, edge in zip(record_ids, edges)
+        if edge and edge.get("role") == "OWNER"
+    }
+
+
+async def _user_record_pairs(
+    graph_provider: IGraphDBProvider, org_id: str, user_ids: list[str], record_ids: list[str]
+) -> tuple[list[tuple[str, str]], list[dict[str, Any] | None]]:
+    user_keys = await _org_user_keys(graph_provider, org_id, user_ids)
+    pairs = [
+        (user_key, record_id)
+        for user_key in dict.fromkeys(user_keys)
+        for record_id in dict.fromkeys(record_ids)
+    ]
+    return pairs, await _get_permission_edges(graph_provider, pairs)
+
+
+async def _grant_reader_permissions(
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    grantor_user_id: str,
+    user_ids: list[str],
+    record_ids: list[str],
+) -> int:
+    """Create READER edges for pairs with no permission edge yet, on records the
+    grantor owns. Other edges are left alone: `batch_create_edges` overwrites
+    every property, so re-granting would downgrade an OWNER edge and rewrite edges
+    on every shared conversation view. The exception is an artifact the owner also
+    shared directly: its edge records the conversation grant once, so taking the
+    direct share away later leaves the chat's access."""
+    if not user_ids or not record_ids:
+        return 0
+
+    pairs, existing = await _user_record_pairs(graph_provider, org_id, user_ids, record_ids)
+    missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
+    direct_only = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and not edge.get("chatGranted")
+    ]
+    if not missing and not direct_only:
+        return 0
+
+    owned = await _records_owned_by(
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in missing] + [rid for (_, rid), _ in direct_only])),
+    )
+    ts = get_epoch_timestamp_in_ms()
+    edges: list[dict[str, Any]] = [
+        {
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": record_id,
+            "to_collection": CollectionNames.RECORDS.value,
+            "type": "USER",
+            "role": "READER",
+            "createdAtTimestamp": ts,
+            "updatedAtTimestamp": ts,
+        }
+        for user_key, record_id in missing
+        if record_id in owned
+    ]
+    edges += [
+        reader_edge(user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in direct_only
+        if record_id in owned
+    ]
+    if edges:
+        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
+    return len(edges)
+
+
+async def _revoke_reader_permissions(
+    graph_provider: IGraphDBProvider,
+    org_id: str,
+    grantor_user_id: str,
+    user_ids: list[str],
+    record_ids: list[str],
+) -> int:
+    """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
+    `(_from, _to)` regardless of role, so without the READER filter an unshare that
+    names the owner would delete the owner's own OWNER edges. An artifact the
+    owner also shared directly keeps its edge and only loses the chat's grant."""
+    if not user_ids or not record_ids:
+        return 0
+
+    pairs, existing = await _user_record_pairs(graph_provider, org_id, user_ids, record_ids)
+    readers = [
+        pair
+        for pair, edge in zip(pairs, existing)
+        if edge and edge.get("role") == "READER" and not is_direct_share(edge)
+    ]
+    also_direct = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and edge.get("chatGranted")
+    ]
+    if not readers and not also_direct:
+        return 0
+
+    owned = await _records_owned_by(
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in readers] + [rid for (_, rid), _ in also_direct])),
+    )
+    ts = get_epoch_timestamp_in_ms()
+    direct_kept = [
+        reader_edge(user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in also_direct
+        if record_id in owned
+    ]
+    if direct_kept:
+        await graph_provider.batch_create_edges(direct_kept, CollectionNames.PERMISSION.value)
+    edges: list[dict[str, Any]] = [
+        {
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": record_id,
+            "to_collection": CollectionNames.RECORDS.value,
+        }
+        for user_key, record_id in readers
+        if record_id in owned
+    ]
+    if edges:
+        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
+    return len(edges) + len(direct_kept)
+
+
+async def _get_artifact_record_ids_for_conversation(
+    graph_provider: IGraphDBProvider, org_id: str, conversation_id: str
+) -> list[str]:
+    """Every artifact record id (`_key`, shared with its `records` doc) in a
+    conversation. Sorted so SKIP/LIMIT pages don't overlap or skip, and raises on
+    graph errors rather than reporting them as "no artifacts"."""
+    record_ids: list[str] = []
+    skip = 0
+    page_size = 200
+    while True:
+        docs = await graph_provider.get_documents_paginated(
+            CollectionNames.ARTIFACTS.value,
+            skip=skip,
+            limit=page_size,
+            filters={"orgId": org_id, "conversationId": conversation_id},
+            sort_field="_key",
+            raise_on_error=True,
+        )
+        if not docs:
+            break
+        for doc in docs:
+            record_id = doc.get("_key") or doc.get("id")
+            if record_id:
+                record_ids.append(record_id)
+        if len(docs) < page_size:
+            break
+        skip += page_size
+    return record_ids
+
+
+async def _attachment_caller(
+    request: Request, graph_provider: IGraphDBProvider,
+) -> tuple[str, str | None, bool]:
+    """(org id, the caller's User node key, is a service account). A service
+    account has no User node, so it owns no attachment."""
+    user = request.state.user or {}
+    org_id = user.get("orgId")
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Missing org context")
+    if user.get("isServiceAccount"):
+        return org_id, None, True
+    user_id = user.get("userId")
+    user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
+    return org_id, (user_doc or {}).get("_key") or (user_doc or {}).get("id"), False
+
+
+# The ids come from the client: bound the graph reads they cause.
+_OWNERSHIP_CHECKS_AT_ONCE = 8
+
+
+async def _owned_chat_attachments(
+    graph_provider: IGraphDBProvider, org_id: str, user_key: str | None, record_ids: list[str],
+) -> list[str]:
+    """The ids that are chat attachments of this org uploaded by this user. The
+    ids come from the client and a READER edge written here is honoured by every
+    permission check, so only the uploader may share, unshare or delete one."""
+    if not user_key:
+        return []
+
+    async def owned(record_id: str) -> bool:
+        record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
+        if not is_chat_attachment(record, org_id):
+            return False
+        edge = await graph_provider.get_edge(
+            from_id=user_key,
+            from_collection=CollectionNames.USERS.value,
+            to_id=record_id,
+            to_collection=CollectionNames.RECORDS.value,
+            collection=CollectionNames.PERMISSION.value,
+        )
+        return (edge or {}).get("role") == "OWNER"
+
+    ids = list(dict.fromkeys(r for r in record_ids if r))
+    flags = await gather_with_concurrency(_OWNERSHIP_CHECKS_AT_ONCE, *(owned(r) for r in ids))
+    return [r for r, ok in zip(ids, flags) if ok]
+
+
+async def _grantor_chat_attachments(
+    graph_provider: IGraphDBProvider, org_id: str, grantor_user_id: str, record_ids: list[str],
+) -> list[str]:
+    """The attachment routes take record ids from the client; only this org's chat
+    attachments the grantor uploaded may be shared or unshared through them, never
+    a collection file or connector record the grantor happens to own."""
+    grantor_keys = await _resolve_user_keys(graph_provider, [grantor_user_id])
+    return await _owned_chat_attachments(
+        graph_provider, org_id, grantor_keys[0] if grantor_keys else None, record_ids,
+    )
+
+
+async def _org_user_keys(
+    graph_provider: IGraphDBProvider, org_id: str, user_ids: list[str],
+) -> list[str]:
+    """User node keys for the ids that are users of this org; others are skipped."""
+    keys: list[str] = []
+    for user_id in dict.fromkeys(user_ids):
+        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_key = (user_doc or {}).get("_key") or (user_doc or {}).get("id")
+        if not user_key or user_doc.get("orgId") != org_id:
+            logger.warning("Not a user of this org, skipping: %s", user_id)
+            continue
+        keys.append(user_key)
+    return keys
+
+
+@router.post("/chat/attachments/permissions")
 @inject
 async def grant_attachment_permissions(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Grant READER permission edges on chat attachment records to the specified users."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
-
-    try:
-        payload = AttachmentPermissionRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
-
-    if not payload.userIds or not payload.recordIds:
-        return {"granted": 0}
-
-    ts = get_epoch_timestamp_in_ms()
-    edges: list[dict[str, Any]] = []
-
-    for user_id in payload.userIds:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
-        if not user_doc:
-            logger.warning("User not found for permission grant, skipping: %s", user_id)
-            continue
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if not user_key:
-            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
-            continue
-        for record_id in payload.recordIds:
-            edges.append(
-                {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                    "type": "USER",
-                    "role": "READER",
-                    "createdAtTimestamp": ts,
-                    "updatedAtTimestamp": ts,
-                }
-            )
-
-    if edges:
-        await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
-
-    return {"granted": len(edges)}
+    """Grant READER on chat attachment records to the users a conversation was shared with."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
+    granted = await _grant_reader_permissions(
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"granted": granted}
 
 
-@router.delete("/chat/attachments/permissions", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@router.delete("/chat/attachments/permissions")
 @inject
 async def revoke_attachment_permissions(
     request: Request,
     graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
 ) -> dict[str, Any]:
-    """Remove READER permission edges on chat attachment records for the specified users."""
-    try:
-        body = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+    """Revoke READER on chat attachment records from users a conversation was unshared from."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, AttachmentPermissionRequest)
+    record_ids = await _grantor_chat_attachments(graph_provider, org_id, grantor_user_id, payload.recordIds)
+    revoked = await _revoke_reader_permissions(
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"revoked": revoked}
 
-    try:
-        payload = AttachmentPermissionRequest(**body)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request payload: {str(e)}")
 
-    if not payload.userIds or not payload.recordIds:
+@router.post("/chat/artifacts/permissions")
+@inject
+async def grant_artifact_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Grant READER on a conversation's artifacts. Node calls this on share, and on
+    each shared viewer's first-page load so artifacts created after the share
+    become readable."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    if not payload.userIds:
+        return {"granted": 0}
+
+    record_ids = await _get_artifact_record_ids_for_conversation(
+        graph_provider, org_id, payload.conversationId
+    )
+    granted = await _grant_reader_permissions(
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"granted": granted}
+
+
+@router.delete("/chat/artifacts/permissions")
+@inject
+async def revoke_artifact_permissions(
+    request: Request,
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    claims: Mapping[str, Any] = Depends(require_service_token(TokenScopes.CONVERSATION_PERMISSIONS)),
+) -> dict[str, Any]:
+    """Revoke READER on a conversation's artifacts from users it was unshared from."""
+    org_id, grantor_user_id = _permission_grantor(claims)
+    payload = await _parse_permission_request(request, ArtifactPermissionRequest)
+    if not payload.userIds:
         return {"revoked": 0}
 
-    edges: list[dict[str, Any]] = []
-
-    for user_id in payload.userIds:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
-        if not user_doc:
-            logger.warning("User not found for permission revoke, skipping: %s", user_id)
-            continue
-        user_key = user_doc.get("_key") or user_doc.get("id")
-        if not user_key:
-            logger.warning("Resolved user missing _key/id, skipping: %s", user_id)
-            continue
-        for record_id in payload.recordIds:
-            edges.append(
-                {
-                    "from_id": user_key,
-                    "from_collection": CollectionNames.USERS.value,
-                    "to_id": record_id,
-                    "to_collection": CollectionNames.RECORDS.value,
-                }
-            )
-
-    if edges:
-        await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-
-    return {"revoked": len(edges)}
+    record_ids = await _get_artifact_record_ids_for_conversation(
+        graph_provider, org_id, payload.conversationId
+    )
+    revoked = await _revoke_reader_permissions(
+        graph_provider, org_id, grantor_user_id, payload.userIds, record_ids
+    )
+    return {"revoked": revoked}
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))],
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
 async def delete_chat_attachment(
@@ -880,18 +1337,20 @@ async def delete_chat_attachment(
     ``delete_nodes_and_edges`` removes the RECORDS node plus all edges that
     reference it; a separate ``delete_nodes`` call removes the FILES node.
     """
-    user = request.state.user or {}
-    org_id = user.get("orgId")
-    if not org_id:
-        raise HTTPException(status_code=400, detail="Missing org context")
+    org_id, caller_key, _ = await _attachment_caller(request, graph_provider)
 
-    # Verify the record belongs to this org before deleting.
     record = await graph_provider.get_document(record_id, CollectionNames.RECORDS.value)
-    if not record:
-        # Already gone — treat as success so the client stays consistent.
-        return
-    if record.get("orgId") != org_id:
-        raise HTTPException(status_code=403, detail="Attachment does not belong to this organisation")
+    # record_id comes from the client: only a chat attachment, and only by its
+    # uploader, or any member could delete any record in the org (KB and
+    # connector records included). One answer for a missing id, another org's
+    # record and one that is not the caller's, so the id is never confirmed.
+    if (
+        not record
+        or record.get("connectorName") != Connectors.ATTACHMENTS.value
+        or not is_chat_attachment(record, org_id)
+        or not await _owned_chat_attachments(graph_provider, org_id, caller_key, [record_id])
+    ):
+        raise HTTPException(status_code=404, detail="Attachment not found")
 
     # Remove the RECORDS node and all its incident edges
     # (IS_OF_TYPE to FILES, PERMISSION edges to the record).
@@ -905,12 +1364,98 @@ async def delete_chat_attachment(
     )
 
 
+async def _load_user_doc(graph_provider: IGraphDBProvider, user_id: str | None) -> dict | None:
+    """Deferred so the graph call happens inside the coroutine, not when the
+    task is created — enrichment is best-effort and its failures are handled
+    by the caller's `gather(..., return_exceptions=True)`."""
+    if not user_id:
+        return None
+    return await graph_provider.get_user_by_user_id(user_id)
+
+
+async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) -> dict | None:
+    """See :func:`_load_user_doc`."""
+    if not org_id:
+        return None
+    return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
+
+
+async def load_entity_vector_store(
+    container: Any, logger_: Any, org_id: str | None,  # noqa: ANN401
+) -> Any | None:  # noqa: ANN401
+    """The entity store backing the knowledge-graph entity tools, or None.
+
+    None hides the tools and their prompt paragraph: when the provider is
+    missing or fails, and when *org_id*'s entities collection does not
+    exist yet, so a deployment with nothing indexed does not pay for tools
+    that can only come back empty. Never raises; chat must not fail over an
+    optional dependency.
+    """
+    provider = getattr(container, "entity_vector_store", None)
+    if provider is None:
+        return None
+    try:
+        store = provider()
+        if inspect.isawaitable(store):
+            store = await store
+        if store is None or not await store.collection_exists(org_id):
+            return None
+        return store
+    except Exception as exc:
+        logger_.warning("entity_vector_store unavailable: %s", exc)
+        return None
+
+
+async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
+    """Load the entity store's embedding models at startup. Loaded lazily,
+    they used up the first entity search's deadline, which then dropped every
+    match unchecked. Skipped without an entities collection: initialising
+    would create one, and chat hides the tools until there is one. Never
+    raises; a failed load is retried after the store's back-off, as a failed
+    first search would be."""
+    store = await load_entity_vector_store(container, logger_, None)
+    if store is None:
+        return
+    try:
+        logger_.info("🔥 Warming up entity vector store in background")
+        await store.embedding_fingerprint()
+        logger_.info("✅ Entity vector store warmup complete")
+    except Exception as exc:
+        logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
+
+
+async def load_system_prompts(
+    config_service: ConfigurationService, logger_: Any,
+) -> dict[str, Any]:
+    """System prompts from the dedicated key, falling back to the legacy
+    aiModels blob for OSS deployments that haven't migrated yet."""
+    try:
+        sp_raw = await config_service.get_config(
+            config_node_constants.SYSTEM_PROMPTS.value, use_cache=True,
+        )
+        if sp_raw:
+            return sp_raw
+        ai_raw = await config_service.get_config(
+            config_node_constants.AI_MODELS.value, use_cache=True,
+        )
+        if ai_raw:
+            return {
+                k: ai_raw[k]
+                for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
+                if k in ai_raw
+            }
+    except Exception:
+        logger_.debug("Could not load system prompts config", exc_info=True)
+    return {}
+
+
 async def _generate_chat_stream_via_agent_loop(
     request: Request,
     query_info: "ChatQuery",
     retrieval_service: RetrievalService,
     graph_provider: IGraphDBProvider,
     config_service: ConfigurationService,
+    cancellation_registry: RunCancellationRegistry | None = None,
 ) -> AsyncGenerator[str, None]:
     """Adapts a validated `ChatQuery` + the authenticated request into the
     plain-dict `query_info`/`user_info` contract `chat_modes.run_chat_stream()`
@@ -931,39 +1476,51 @@ async def _generate_chat_stream_via_agent_loop(
     user_id = user.get("userId")
     protocol = resolve_protocol(query_info.protocol, request)
 
-    try:
-        llm_bundle = await get_llm_for_chat(
+    # LLM init, system prompts, user/org enrichment, and the entity vector
+    # store are independent of each other and all sit before the first
+    # streamed byte, so they run as one wave instead of serial round trips.
+    llm_task = asyncio.ensure_future(
+        get_llm_for_chat(
             config_service, query_info.modelKey, query_info.modelName, query_info.chatMode,
             reasoning_effort=query_info.reasoningEffort,
         )
+    )
+    prompts_task = asyncio.ensure_future(load_system_prompts(config_service, logger_))
+    user_doc_task = asyncio.ensure_future(_load_user_doc(graph_provider, user_id))
+    org_doc_task = asyncio.ensure_future(_load_org_doc(graph_provider, org_id))
+    user_context_flag_task = asyncio.ensure_future(is_user_context_enabled(config_service))
+    # Optional — backs the knowledgegraph search_entities /
+    # find_records_by_entity tools. When unavailable those tools are simply
+    # not granted, rather than blocking chat.
+    entity_vector_store_task = asyncio.ensure_future(
+        load_entity_vector_store(container, logger_, org_id)
+    )
+    background_tasks = [
+        prompts_task, user_doc_task, org_doc_task,
+        user_context_flag_task, entity_vector_store_task,
+    ]
+
+    try:
+        llm_bundle = await llm_task
         if not llm_bundle or llm_bundle[0] is None:
-            raise ValueError("Failed to initialize LLM service. LLM configuration is missing.")
+            raise LLMNotConfiguredError(LLM_MISSING_FOR_CHAT)
         llm, model_config, ai_models_config = llm_bundle
     except Exception as exc:
+        for pending in background_tasks:
+            pending.cancel()
+        await asyncio.gather(*background_tasks, return_exceptions=True)
         logger_.error(f"Error initializing LLM for chat: {exc}", exc_info=True)
+        error_code, user_message = classify_exception(exc)
+        if error_code == "unknown":
+            user_message = CHAT_MODEL_START_FAILED
         if protocol == "agui":
-            evt = frame(AGUIEventType.RUN_ERROR, message=str(exc), code="llm_initialization_failed")
+            evt = frame(AGUIEventType.RUN_ERROR, message=user_message, code="llm_initialization_failed")
             yield f"event: {evt['event']}\ndata: {json.dumps(evt['data'])}\n\n"
         else:
-            yield create_sse_event("error", {"error": str(exc)})
+            yield create_sse_event("error", {"error": user_message})
         return
 
-    # Fetch system prompts from dedicated key; fall back to legacy aiModels blob for OSS
-    # deployments that haven't migrated yet.
-    system_prompts_config: dict[str, Any] = {}
-    try:
-        sp_raw = await config_service.get_config(config_node_constants.SYSTEM_PROMPTS.value)
-        if sp_raw:
-            system_prompts_config = sp_raw
-        else:
-            ai_raw = await config_service.get_config(config_node_constants.AI_MODELS.value)
-            if ai_raw:
-                system_prompts_config = {
-                    k: ai_raw[k] for k in ("customSystemPrompt", "customSystemPromptWebSearch", "customSystemPromptAgent")
-                    if k in ai_raw
-                }
-    except Exception:
-        logger_.debug("Could not load system prompts config", exc_info=True)
+    system_prompts_config: dict[str, Any] = await prompts_task
 
     policy = resolve_chat_mode_policy(query_info.chatMode)
     is_multimodal_llm = bool(model_config.get("isMultimodal"))
@@ -982,76 +1539,118 @@ async def _generate_chat_stream_via_agent_loop(
             )
             policy = resolve_agent_policy(caps)
 
+    # strictScope rides along inside `filters` (not a separate top-level key)
+    # so every downstream consumer that already forwards `filters` straight
+    # into `get_accessible_virtual_record_ids` picks it up for free.
+    effective_filters: dict[str, Any] = dict(query_info.filters or {})
+    if query_info.strictScope:
+        effective_filters["strictScope"] = True
+
+    attachments, previous_conversations = await keep_accessible_attachments(
+        graph_provider,
+        org_id=org_id,
+        user_id=user_id,
+        is_service_account=bool(user.get("isServiceAccount")),
+        attachments=query_info.attachments,
+        previous_conversations=query_info.previousConversations,
+        logger=logger_,
+    )
     query_dict = {
         "query": query_info.query,
         "limit": query_info.limit,
-        "previous_conversations": query_info.previousConversations,
-        "filters": query_info.filters,
+        "previous_conversations": previous_conversations,
+        "filters": effective_filters,
+        "allowedFilters": query_info.allowedFilters,
         "retrievalMode": query_info.retrievalMode,
         "quickMode": query_info.quickMode,
         "chatMode": query_info.chatMode,
         "timezone": query_info.timezone,
         "currentTime": query_info.currentTime,
         "conversationId": query_info.conversationId,
-        "attachments": query_info.attachments,
+        "projectInstructions": query_info.projectInstructions,
+        "attachments": attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "includeRetrievalContext": query_info.includeRetrievalContext,
+        "keywordSearchBudget": query_info.keywordSearchBudget,
+        "runId": query_info.runId,
+        "is_service_account": bool(user.get("isServiceAccount")),
     }
     user_info = {
         "userId": user_id,
         "orgId": org_id,
         "userEmail": user.get("email") or "",
         "sendUserInfo": request.query_params.get("sendUserInfo", True),
+        "isServiceAccount": bool(user.get("isServiceAccount")),
     }
 
     org_info: dict[str, Any] | None = None
-    try:
-        user_doc = await graph_provider.get_user_by_user_id(user_id) if user_id else None
-        if user_doc and isinstance(user_doc, dict):
-            for field in ("fullName", "firstName", "lastName", "displayName"):
-                if user_doc.get(field):
-                    user_info[field] = user_doc[field]
-        if org_id:
-            org_doc = await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
-            if org_doc and isinstance(org_doc, dict):
-                raw_account_type = str(org_doc.get("accountType", "")).lower()
-                org_info = {
-                    "orgId": org_id,
-                    "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
-                    "name": org_doc.get("name") or "",
-                }
-    except Exception:
-        logger_.debug("Failed to enrich user/org context for prompt", exc_info=True)
+    user_doc, org_doc, user_context_flag = await asyncio.gather(
+        user_doc_task, org_doc_task, user_context_flag_task, return_exceptions=True,
+    )
+    if isinstance(user_doc, BaseException):
+        logger_.debug("Failed to load user doc for prompt enrichment", exc_info=user_doc)
+    elif user_doc and isinstance(user_doc, dict):
+        for field in ("fullName", "firstName", "lastName", "displayName"):
+            if user_doc.get(field):
+                user_info[field] = user_doc[field]
+        # Reused by `_fetch_available_connectors` (chat_modes/bridge.py) so
+        # the same user lookup is not repeated further down the request.
+        user_key = user_doc.get("_key") or user_doc.get("id")
+        if user_key:
+            user_info["userKey"] = user_key
+    if isinstance(org_doc, BaseException):
+        logger_.debug("Failed to load org doc for prompt enrichment", exc_info=org_doc)
+    elif org_doc and isinstance(org_doc, dict):
+        raw_account_type = str(org_doc.get("accountType", "")).lower()
+        org_info = {
+            "orgId": org_id,
+            "accountType": raw_account_type if raw_account_type in ("enterprise", "individual") else "",
+            "name": org_doc.get("name") or "",
+        }
+
+    if isinstance(user_context_flag, BaseException):
+        logger_.debug(
+            "Failed to read ENABLE_USER_CONTEXT; defaulting to enabled",
+            exc_info=user_context_flag,
+        )
+        user_context_enabled = True
+    else:
+        user_context_enabled = bool(user_context_flag)
+    if not user_context_enabled:
+        user_info["sendUserInfo"] = False
+
+    entity_vector_store = await entity_vector_store_task
 
     client_name = request.headers.get("client-name")
 
-    async for event in run_chat_stream(
+    # `aclosing`: closing this generator (client gone, collector done) must close
+    # the bridge now so its producer task is cancelled, not whenever it is GC'd.
+    async with aclosing(run_chat_stream(
         query_dict, user_info, llm, policy, logger_,
         retrieval_service=retrieval_service, graph_provider=graph_provider,
         reranker_service=None, config_service=config_service,
         org_info=org_info,
         model_name=query_info.modelName, model_key=query_info.modelKey,
         is_multimodal_llm=is_multimodal_llm, context_length=context_length,
+        configured_context_window=model_config.get("contextLength"),
         llm_provider=model_config.get("provider") or "",
         system_prompts_config=system_prompts_config, protocol=protocol,
         client_name=client_name,
-    ):
-        yield event
+        cancellation_registry=cancellation_registry,
+        entity_vector_store=entity_vector_store,
+    )) as events:
+        async for event in events:
+            yield event
 
 
-@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
-@inject
-async def askAIStream(
+async def _parse_chat_query(
     request: Request,
-    retrieval_service: RetrievalService = Depends(get_retrieval_service),
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    config_service: ConfigurationService = Depends(get_config_service),
-) -> StreamingResponse:
-    """Perform semantic search across documents with streaming events and tool support.
-
-    Every mode (`internal_search`, `web_search`, `agent`) routes through the
-    agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
-    for the mode → tool/prefetch behavior.
-    """
+    cancellation_registry: RunCancellationRegistry,
+    *,
+    streaming: bool,
+) -> "ChatQuery":
+    """Request prelude shared by `/chat` and `/chat/stream`: parse, validate,
+    reject a `runId` that is already running, and record the session."""
     try:
         body = await request.json()
     except Exception:
@@ -1062,6 +1661,11 @@ async def askAIStream(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
 
+    # A real HTTP 409 is only possible HERE, before `StreamingResponse` is
+    # returned — once the SSE generator below starts, Starlette has already
+    # committed the response to 200. See `RunCancellationRegistry.is_active`.
+    if query_info.runId and await cancellation_registry.is_active(query_info.runId):
+        raise HTTPException(status_code=409, detail=f"runId '{query_info.runId}' is already active")
 
     _chat_user = getattr(request.state, "user", {}) or {}
     _chat_email = _chat_user.get("email")
@@ -1073,7 +1677,55 @@ async def askAIStream(
         "domain": domain_from_email(_chat_email),
         "mode": query_info.chatMode,
         "search_type": _search_type,
+        "streaming": streaming,
     })
+    return query_info
+
+
+@router.post("/chat", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def askAI(
+    request: Request,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> JSONResponse:
+    """Non-streaming twin of `/chat/stream`: runs the same agent-loop stream
+    and returns its final `completion_data` as JSON (see `stream_collector`).
+
+    Called by Node's `POST /api/v1/conversations/create` and
+    `POST /api/v1/conversations/:id/messages`.
+    """
+    query_info = await _parse_chat_query(request, cancellation_registry, streaming=False)
+    stream = _generate_chat_stream_via_agent_loop(
+        request=request,
+        query_info=query_info,
+        retrieval_service=retrieval_service,
+        graph_provider=graph_provider,
+        config_service=config_service,
+        cancellation_registry=cancellation_registry,
+    )
+    outcome = await collect_stream_outcome(stream, request.is_disconnected)
+    return outcome.to_response()
+
+
+@router.post("/chat/stream", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+@inject
+async def askAIStream(
+    request: Request,
+    retrieval_service: RetrievalService = Depends(get_retrieval_service),
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    config_service: ConfigurationService = Depends(get_config_service),
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> StreamingResponse:
+    """Perform semantic search across documents with streaming events and tool support.
+
+    Every mode (`internal_search`, `web_search`, `agent`) routes through the
+    agent loop (`app.agents.chat_modes.run_chat_stream`) — see that package
+    for the mode → tool/prefetch behavior.
+    """
+    query_info = await _parse_chat_query(request, cancellation_registry, streaming=True)
 
     stream = _generate_chat_stream_via_agent_loop(
         request=request,
@@ -1081,6 +1733,7 @@ async def askAIStream(
         retrieval_service=retrieval_service,
         graph_provider=graph_provider,
         config_service=config_service,
+        cancellation_registry=cancellation_registry,
     )
 
     return StreamingResponse(
@@ -1093,3 +1746,48 @@ async def askAIStream(
             "Access-Control-Allow-Headers": "Cache-Control",
         },
     )
+
+
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
+@router.post(
+    "/chat/cancel",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
+)
+async def cancel_chat_stream(
+    request: Request,
+    cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),
+) -> dict[str, bool]:
+    """Cooperatively cancel an in-flight run — one endpoint for both
+    assistant (`/chat/stream`) and agent (`/{agent_id}/chat/stream`) runs,
+    since the registry is keyed by `runId` alone. Node's own
+    `/conversations/:id/cancel` and `/agents/:key/conversations/:id/cancel`
+    routes (owner-filtered against Mongo) forward here after their own
+    ownership check; this is the second, independent check against the
+    `RunOwner` the run was actually registered with.
+
+    Never a 4xx for "already finished"/"unknown" — `{cancelled: false}` —
+    only for a genuine mismatch (403) or a malformed `runId` (400, via
+    `CancelRunRequest`'s field validator).
+    """
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON in request body")
+
+    try:
+        cancel_request = CancelRunRequest(**body)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid request parameters: {str(e)}")
+
+    user = getattr(request.state, "user", {}) or {}
+    requester = RunOwner(
+        user_id=user.get("userId", ""),
+        org_id=user.get("orgId", ""),
+        conversation_id=cancel_request.conversationId,
+    )
+
+    outcome = await cancellation_registry.cancel(cancel_request.runId, requester)
+    if outcome == "forbidden":
+        raise HTTPException(status_code=403, detail="You do not own this run")
+    return {"cancelled": outcome == "cancelled"}

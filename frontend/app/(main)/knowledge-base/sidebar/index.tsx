@@ -20,6 +20,7 @@ import { convertToTreeNode } from './section';
 import { isKbCollectionsHubApp } from '../utils/all-records-transformer';
 import { findNodeInCategorized } from '../utils/find-node';
 import { FolderTreeItem, CollectionItem } from './section-element';
+import { ConnectMoreApps } from './connect-more-apps';
 import type {
   PageViewMode,
   KnowledgeBase,
@@ -492,6 +493,20 @@ function KBSidebarContent({
   return (
     <SidebarBase
       header={<SidebarBackHeader title={headerTitle} onBack={onBack} />}
+      footer={
+        !isCollectionsMode && !isMobile && moreConnectors.length > 0 ? (
+          <ConnectMoreApps
+            connectors={moreConnectors}
+            connectorsHref={buildConnectorsUrl(isAdmin)}
+            buildConnectorHref={(param) => buildConnectorsUrl(isAdmin, param)}
+            onNavigateToConnectors={() => router.push(buildConnectorsUrl(isAdmin))}
+            onNavigateToConnector={(connectorTypeParam) =>
+              router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
+            }
+          />
+        ) : undefined
+      }
+      footerHeight="auto"
       secondaryPanel={buildSecondaryPanel()}
       onDismissSecondaryPanel={isSecondaryPanelOpen ? handleDismissSecondaryPanel : undefined}
       isMobile={isMobile}
@@ -531,7 +546,6 @@ function KBSidebarContent({
           connectorAppTrees={connectorAppTrees}
           loadingAppIds={loadingAppIds}
           connectors={connectors}
-          moreConnectors={moreConnectors}
           expandedSections={expandedSections}
           onToggleSection={toggleSection}
           expandedFolders={expandedFolders}
@@ -542,12 +556,6 @@ function KBSidebarContent({
           onNodeExpand={onNodeExpand}
           kbSharedTree={sharedTree}
           kbPrivateTree={privateTree}
-          onNavigateToConnectors={() => router.push(buildConnectorsUrl(isAdmin))}
-          onNavigateToConnector={(connectorTypeParam) =>
-            router.push(buildConnectorsUrl(isAdmin, connectorTypeParam))
-          }
-          connectorsHref={buildConnectorsUrl(isAdmin)}
-          buildConnectorHref={(param) => buildConnectorsUrl(isAdmin, param)}
           onReindex={onSidebarReindex}
           onRename={onSidebarRename}
           onDelete={onSidebarDelete}

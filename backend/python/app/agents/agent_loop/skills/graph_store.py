@@ -2,8 +2,9 @@
 `SkillCandidateStore` backed by `IGraphDBProvider` — works unmodified
 against either `ArangoHTTPProvider` or `Neo4jProvider` since it only calls
 the generic, backend-agnostic surface of that interface (`get_document`,
-`batch_upsert_nodes`, `update_node`, `delete_nodes`/`delete_nodes_and_edges`,
-`batch_create_edges`, `delete_edges_from`, `get_nodes_by_filters`) — never
+`batch_upsert_nodes`, `update_node`, `update_node_if_match`,
+`delete_nodes`/`delete_nodes_and_edges`, `batch_create_edges`,
+`delete_edges_from`, `get_nodes_by_filters`) — never
 `execute_query` (that method is explicitly database-specific: AQL for
 Arango, Cypher for Neo4j, so using it here would silently break whichever
 backend isn't the one currently deployed).
@@ -53,8 +54,10 @@ from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
     SkillCandidate,
+    SkillConflictError,
     SkillFilter,
     SkillMetadata,
+    SkillReferentialUsage,
     SkillSource,
     SkillStatus,
     SkillVersionInfo,
@@ -81,6 +84,8 @@ _CANDIDATES = CollectionNames.AGENT_SKILL_CANDIDATES.value
 _RELATION = CollectionNames.AGENT_SKILL_RELATION.value
 _PERMISSION = CollectionNames.PERMISSION.value
 _USERS = CollectionNames.USERS.value
+_AGENT_HAS_SKILL = CollectionNames.AGENT_HAS_SKILL.value
+_AGENT_INSTANCES = CollectionNames.AGENT_INSTANCES.value
 
 _SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
 
@@ -94,6 +99,15 @@ def _bump_patch(version: str) -> str:
         return "1.0.1"
     major, minor, patch = (int(x) for x in match.groups())
     return f"{major}.{minor}.{patch + 1}"
+
+
+def _next_updated_at(existing: Any, now: int | None = None) -> int:
+    """If-Match tokens are millisecond timestamps. Two writes in the same
+    millisecond must still advance the token, or a later CAS still matches
+    the prior value."""
+    clock = get_epoch_timestamp_in_ms() if now is None else now
+    prev = int(existing or 0)
+    return clock if clock > prev else prev + 1
 
 
 def _doc_id(doc: dict) -> str | None:
@@ -157,12 +171,61 @@ def _resources_from_doc(doc: dict) -> dict[str, str]:
 def _resource_listing(resources: dict[str, str]) -> dict[str, list[str]]:
     """`{path: content}` -> `{kind: [paths]}`, matching the shape
     `Skill.resources` uses everywhere else (level-3 progressive
-    disclosure — a listing, never eagerly-loaded content)."""
+    disclosure — a listing, never eagerly-loaded content). A root-level
+    path (no subdirectory) groups under the synthetic `"files"` kind —
+    same convention as `loader.discover_resources` — since a real
+    community skill can have reference files sitting directly beside
+    SKILL.md (e.g. Anthropic's `pdf` skill's `forms.md`/`reference.md`),
+    not only inside `scripts/`/`references/`/`assets/`."""
     listing: dict[str, list[str]] = {}
     for path in sorted(resources):
-        kind = path.split("/", 1)[0]
+        kind = path.split("/", 1)[0] if "/" in path else "files"
         listing.setdefault(kind, []).append(path)
     return listing
+
+
+def edge_source_key(edge: dict[str, Any]) -> str:
+    """Extract an edge's source-node bare key, regardless of graph provider
+    shape: ArangoDB's `get_edges_to_node` returns raw documents with a full
+    `_from` id (`"collection/key"`), while Neo4j's returns a generic
+    `from_id` that is already the bare key (see `Neo4jProvider.get_edges_to_node`).
+    Returns "" if neither field is present/non-empty."""
+    from_id = edge.get("from_id")
+    if from_id:
+        return str(from_id)
+    return (edge.get("_from") or "").split("/", 1)[-1]
+
+
+async def collect_referential_usage(
+    graph: "IGraphDBProvider",
+    org_id: str,
+    name: str,
+) -> SkillReferentialUsage:
+    """Who currently depends on this skill — `AGENT_HAS_SKILL` assignments
+    and `agentSkillRelation` `type == "requires"` edges. Shared by
+    `GraphSkillStore.get_referential_usage` and the REST usage helper."""
+    skill_full_id = f"{_SKILLS}/{org_id}_{name}"
+
+    agent_edges = await graph.get_edges_to_node(skill_full_id, _AGENT_HAS_SKILL)
+    used_by_agents: list[dict[str, Any]] = []
+    for edge in agent_edges:
+        agent_id = edge_source_key(edge)
+        if not agent_id:
+            continue
+        agent_doc = await graph.get_document(agent_id, _AGENT_INSTANCES)
+        if agent_doc:
+            used_by_agents.append({"id": agent_id, "name": agent_doc.get("name", agent_id)})
+
+    relation_edges = await graph.get_edges_to_node(skill_full_id, _RELATION)
+    required_by_skills = sorted({
+        edge_source_key(edge).removeprefix(f"{org_id}_")
+        for edge in relation_edges
+        if edge.get("type") == "requires" and edge_source_key(edge)
+    })
+    return SkillReferentialUsage(
+        used_by_agents=used_by_agents,
+        required_by_skills=required_by_skills,
+    )
 
 
 class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
@@ -230,9 +293,25 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         """Full body path: parses the stored `content` (always kept
         consistent with the denormalized fields — see `_skill_to_doc`) and
         overlays the resource *listing* derived from the stored
-        `resourcePaths`/`resourceContents` arrays."""
+        `resourcePaths`/`resourceContents` arrays.
+
+        Lifecycle fields (`updated_at`, status, deprecation) live on the
+        graph document, not in SKILL.md — copy them onto metadata so
+        GET /skills/:name can round-trip the If-Match token."""
         skill = parse_skill_md(doc["content"], expected_name=doc.get("name"), validator=self._validator)
-        return skill.model_copy(update={"resources": _resource_listing(_resources_from_doc(doc))})
+        graph_meta = self._doc_to_metadata(doc)
+        return skill.model_copy(update={
+            "resources": _resource_listing(_resources_from_doc(doc)),
+            "metadata": skill.metadata.model_copy(update={
+                "created_at": graph_meta.created_at,
+                "updated_at": graph_meta.updated_at,
+                "status": graph_meta.status,
+                "source": graph_meta.source,
+                "version": graph_meta.version,
+                "deprecated_reason": graph_meta.deprecated_reason,
+                "replaced_by": graph_meta.replaced_by,
+            }),
+        })
 
     def _skill_to_doc(
         self,
@@ -327,6 +406,16 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
             return None
         return _resources_from_doc(doc).get(resource_path)
 
+    async def get_resources(self, skill_name: str) -> dict[str, str]:
+        """Overrides `SkillReader`'s default N+1 loop: one `get_document`
+        call already fetches every `resourcePaths`/`resourceContents` pair
+        for this skill, so there's nothing left to loop over — see
+        `SkillBundleResolver`, the caller this exists for."""
+        doc = await self._get_org_doc(skill_name)
+        if doc is None:
+            return {}
+        return _resources_from_doc(doc)
+
     async def exists(self, name: str) -> bool:
         return await self._get_org_doc(name) is not None
 
@@ -349,53 +438,96 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
 
     # ---- SkillWriter ----------------------------------------------------
 
+    def _validate_resources(self, resources: dict[str, str]) -> None:
+        for path in resources:
+            self._validator.validate_resource_path(path)
+        self._validator.validate_resource_budget(resources)
+
     async def create_skill(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
+        resources: dict[str, str] | None = None,
     ) -> SkillMetadata:
         if await self.exists(name):
             raise RegistryError(f"Skill {name!r} already exists")
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
         skill = self._apply_category_defaults(skill, category, subcategory)
+        resources = resources or {}
+        self._validate_resources(resources)
 
         now = get_epoch_timestamp_in_ms()
-        doc = self._skill_to_doc(skill, resources={}, created_by=self._user_id, created_at=now, updated_at=now)
+        doc = self._skill_to_doc(
+            skill, resources=resources, created_by=self._user_id, created_at=now, updated_at=now,
+        )
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
         await self._create_owner_permission_edge(name, now)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
 
-    async def update_skill(self, name: str, content: str) -> SkillMetadata:
+    async def update_skill(
+        self,
+        name: str,
+        content: str,
+        resources: dict[str, str] | None = None,
+        expected_updated_at: int | None = None,
+        status: SkillStatus | None = None,
+    ) -> SkillMetadata:
         existing_doc = await self._get_org_doc(name)
         if existing_doc is None:
             raise RegistryError(f"Skill {name!r} not found")
+        if (
+            expected_updated_at is not None
+            and existing_doc.get("updatedAtTimestamp") != expected_updated_at
+        ):
+            raise SkillConflictError(
+                name,
+                current_updated_at=int(existing_doc.get("updatedAtTimestamp") or 0),
+                current_version=existing_doc.get("version"),
+            )
         skill = parse_skill_md(content, expected_name=name, validator=self._validator)
         self._validator.validate_skill(skill, expected_name=name)
+        resolved_resources = _resources_from_doc(existing_doc) if resources is None else resources
+        self._validate_resources(resolved_resources)
 
-        now = get_epoch_timestamp_in_ms()
+        now = _next_updated_at(existing_doc.get("updatedAtTimestamp"))
         await self._snapshot_revision(existing_doc, now)
         bumped_metadata = skill.metadata.model_copy(update={"version": _bump_patch(existing_doc.get("version"))})
         skill = skill.model_copy(update={"metadata": bumped_metadata})
         doc = self._skill_to_doc(
             skill,
-            resources=_resources_from_doc(existing_doc),
+            resources=resolved_resources,
             created_by=existing_doc.get("createdBy", self._user_id),
             created_at=existing_doc.get("createdAtTimestamp", now),
             updated_at=now,
             updated_by=self._user_id,
             usage=_extract_usage(existing_doc),
         )
-        await self._graph.batch_upsert_nodes([doc], _SKILLS)
+        # Pack SKILL.md is always `active`; lifecycle (e.g. a builtin mute)
+        # lives on the graph column, so overlay it on this same CAS write
+        # rather than a follow-up `set_skill_status`.
+        if status is not None:
+            doc["status"] = status.value
+        await self._commit_skill_update(name, doc, expected_updated_at)
         await self._sync_relation_edges(name, skill.metadata, now)
         return skill.metadata
 
-    async def patch_skill(self, name: str, old_string: str, new_string: str) -> bool:
+    async def patch_skill(
+        self,
+        name: str,
+        old_string: str,
+        new_string: str,
+        expected_updated_at: int | None = None,
+    ) -> bool:
         skill = await self.get_skill(name)
         if skill is None or skill.body.count(old_string) != 1:
             return False
         new_body = skill.body.replace(old_string, new_string, 1)
         self._validator.validate_body(new_body)
-        await self.update_skill(name, render_skill_md(skill.model_copy(update={"body": new_body})))
+        await self.update_skill(
+            name,
+            render_skill_md(skill.model_copy(update={"body": new_body})),
+            expected_updated_at=expected_updated_at,
+        )
         return True
 
     async def delete_skill(self, name: str) -> bool:
@@ -409,12 +541,30 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         await self._graph.delete_nodes_and_edges([self._key(name)], _SKILLS)
         return True
 
+    async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
+        return await collect_referential_usage(self._graph, self._org_id, name)
+
+    async def detach_from_agents(self, name: str) -> None:
+        usage = await self.get_referential_usage(name)
+        if not usage.used_by_agents:
+            return
+        edges_to_delete = [
+            {
+                "from_id": agent["id"], "from_collection": _AGENT_INSTANCES,
+                "to_id": f"{self._org_id}_{name}", "to_collection": _SKILLS,
+            }
+            for agent in usage.used_by_agents
+        ]
+        await self._graph.batch_delete_edges(edges_to_delete, _AGENT_HAS_SKILL)
+
     async def write_resource(self, skill_name: str, path: str, content: str) -> bool:
+        self._validator.validate_resource_path(path)
         doc = await self._get_org_doc(skill_name)
         if doc is None:
             return False
         resources = _resources_from_doc(doc)
         resources[path] = content
+        self._validator.validate_resource_budget(resources)
         return await self._graph.update_node(
             self._key(skill_name), _SKILLS,
             {**_resources_to_fields(resources), "updatedAtTimestamp": get_epoch_timestamp_in_ms()},
@@ -443,6 +593,41 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         updated_skill = skill.model_copy(update={"metadata": updated_metadata})
         await self.update_skill(name, render_skill_md(updated_skill))
         return True
+
+    async def set_skill_status(
+        self,
+        name: str,
+        status: SkillStatus,
+        from_status: SkillStatus | None = None,
+    ) -> bool:
+        """Enable/disable primitive — writes only the `status` graph column
+        (+ `updatedAtTimestamp`), unlike `deprecate_skill`'s `update_skill`
+        round-trip: `_doc_to_skill` already overlays this column onto
+        metadata regardless of what's parsed from `content` (see that
+        method's docstring), so there is nothing in the stored SKILL.md text
+        that needs to change and no revision/semver bump to make.
+
+        `from_status` is compare-and-swap: the write lands only if the
+        stored status still matches. `update_node_if_match` replaces the
+        whole document, so the CAS carries the read doc with status and
+        token overlaid — matching on `updatedAtTimestamp` so a concurrent
+        content edit cannot be clobbered by a mute."""
+        doc = await self._get_org_doc(name)
+        if doc is None:
+            return False
+        if from_status is not None and doc.get("status") != from_status.value:
+            return False
+        observed = int(doc.get("updatedAtTimestamp") or 0)
+        next_ts = _next_updated_at(observed)
+        if from_status is None:
+            return await self._graph.update_node(
+                self._key(name), _SKILLS,
+                {"status": status.value, "updatedAtTimestamp": next_ts},
+            )
+        merged = {**doc, "status": status.value, "updatedAtTimestamp": next_ts}
+        return await self._graph.update_node_if_match(
+            self._key(name), _SKILLS, merged, "updatedAtTimestamp", observed,
+        )
 
     # ---- SkillHistoryReader ----------------------------------------------
 
@@ -501,6 +686,42 @@ class GraphSkillStore(SkillStore, SkillHistoryReader, SkillCandidateStore):
         await self._graph.batch_upsert_nodes([doc], _SKILLS)
         await self._sync_relation_edges(name, restored.metadata, now)
         return restored.metadata
+
+    async def _commit_skill_update(
+        self,
+        name: str,
+        doc: dict[str, Any],
+        expected_updated_at: int | None,
+    ) -> None:
+        """Last-write-wins when `expected_updated_at` is None; otherwise the
+        timestamp check is the write itself (`update_node_if_match`), not a
+        prior read. The written token always advances past the matched
+        value so a same-millisecond clock cannot reuse If-Match."""
+        incoming = int(doc.get("updatedAtTimestamp") or 0)
+        if expected_updated_at is not None:
+            doc["updatedAtTimestamp"] = (
+                incoming if incoming > expected_updated_at else expected_updated_at + 1
+            )
+        if expected_updated_at is None:
+            await self._graph.batch_upsert_nodes([doc], _SKILLS)
+            return
+        applied = await self._graph.update_node_if_match(
+            self._key(name),
+            _SKILLS,
+            doc,
+            "updatedAtTimestamp",
+            expected_updated_at,
+        )
+        if applied:
+            return
+        current = await self._get_org_doc(name)
+        if current is None:
+            raise RegistryError(f"Skill {name!r} not found")
+        raise SkillConflictError(
+            name,
+            current_updated_at=int(current.get("updatedAtTimestamp") or 0),
+            current_version=current.get("version"),
+        )
 
     async def _get_version_doc(self, name: str, version: str) -> dict | None:
         docs = await self._graph.get_nodes_by_filters(

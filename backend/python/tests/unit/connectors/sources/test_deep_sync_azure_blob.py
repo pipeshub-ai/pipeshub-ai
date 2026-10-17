@@ -6,18 +6,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
-    get_file_extension,
-    get_folder_path_segments_from_blob_name,
-    get_mimetype_for_azure_blob,
-    get_parent_path_from_blob_name,
 )
 from app.models.entities import User
-from app.models.permission import EntityType, PermissionType
 
 
 # ---------------------------------------------------------------------------
@@ -36,6 +30,8 @@ def mock_dep():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.account_name = "teststorage"
     proc.get_user_by_user_id = AsyncMock(
@@ -200,7 +196,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_personal_scope_uses_creator_permission(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -209,8 +205,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].email == "creator@t.com"
-        assert permissions[0].type == PermissionType.OWNER
+        assert permissions == []
 
     async def test_personal_scope_no_creator_falls_back_to_org(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
@@ -218,7 +213,7 @@ class TestCreateRecordGroups:
         await connector._create_record_groups_for_containers(["c1"])
         call_args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         _, permissions = call_args[0]
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []
 
     async def test_empty_list_no_op(self, connector):
         await connector._create_record_groups_for_containers([])

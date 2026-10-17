@@ -1,0 +1,43 @@
+name: SDK break approval
+
+# A pull request whose change breaks the last released SDK (SDK tests verdict FLAG) gets the label
+# breaks-previous-sdk and a failed "SDK break approval" status. A person who has read the report
+# adds the label sdk-break-approved; this job turns the status green and names them. Removing the
+# label turns it red again. Anyone with triage access can change labels. The status is not a
+# required check: FLAG does not stop the merge.
+
+on:
+  pull_request:
+    types: [labeled, unlabeled]
+
+permissions:
+  contents: read
+
+jobs:
+  approval:
+    name: Record the SDK break approval
+    if: >-
+      github.event.label.name == 'sdk-break-approved' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'breaks-previous-sdk')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      statuses: write
+    steps:
+      - name: Set the approval status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          ACTION: ${{ github.event.action }}
+          SENDER: ${{ github.event.sender.login }}
+        run: |
+          if [ "$ACTION" = labeled ]; then
+            state=success
+            description="Approved by @${SENDER}"
+          else
+            state=failure
+            description="Approval removed by @${SENDER}: add the label sdk-break-approved"
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/statuses/${HEAD_SHA}" -f state="$state" \
+            -f context="SDK break approval" -f description="$description" > /dev/null

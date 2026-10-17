@@ -1,6 +1,14 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  buildDesktopRedirectUri,
+  desktopOAuthErrorMessage,
+  isElectron,
+  runDesktopOAuth,
+} from '@/lib/electron';
+import { makeDesktopState } from '@/lib/auth/desktop-oauth';
+import { AuthApi } from '../../api';
 import ProviderButton from './provider-button';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -56,6 +64,62 @@ export default function OAuthSignInButton({
 
   const handleLogin = useCallback(() => {
     cleanupRef.current?.();
+
+    if (isElectron()) {
+      // The IdP cannot redirect to app://, so the flow runs in the user's
+      // browser and the code comes back by deep link; this app redeems it.
+      let resolvedRedirectUri: string;
+      try {
+        resolvedRedirectUri = redirectUri || buildDesktopRedirectUri('oauth');
+      } catch (err) {
+        const message = desktopOAuthErrorMessage(err, providerName);
+        if (message) onError(message);
+        return;
+      }
+      const random = Array.from(window.crypto.getRandomValues(new Uint8Array(16)))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      const state = makeDesktopState(random);
+      const params = new URLSearchParams({
+        response_type: 'code',
+        client_id: clientId,
+        scope,
+        redirect_uri: resolvedRedirectUri,
+        state,
+      });
+      const flow = runDesktopOAuth({
+        provider: 'oauth',
+        authUrl: `${authorizationUrl}?${params}`,
+        expectedState: state,
+      });
+      cleanupRef.current = () => {
+        flow.cancel();
+        cleanupRef.current = null;
+      };
+      setIsLoading(true);
+      flow.promise
+        .then(async (result) => {
+          if (!result.code) throw new Error('No authorization code received.');
+          const tokens = await AuthApi.exchangeOAuthCode({
+            code: result.code,
+            provider: 'oauth',
+            redirectUri: resolvedRedirectUri,
+          });
+          if (!tokens.accessToken) {
+            throw new Error('Authentication succeeded but no access token was returned.');
+          }
+          cleanupRef.current = null;
+          setIsLoading(false);
+          onSuccess(tokens.accessToken);
+        })
+        .catch((err: unknown) => {
+          cleanupRef.current = null;
+          setIsLoading(false);
+          const message = desktopOAuthErrorMessage(err, providerName);
+          if (message) onError(message);
+        });
+      return;
+    }
 
     const resolvedRedirectUri =
       redirectUri || `${window.location.origin}/auth/oauth/callback`;

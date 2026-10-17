@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus, RecordRelations
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -40,6 +41,7 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.graphql.response import GraphQLError, GraphQLResponse
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +141,8 @@ class TestLinearInit:
         connector, *_ = _make_connector()
         with patch("app.connectors.sources.linear.connector.LinearClient") as mock_client_cls:
             mock_client_cls.build_from_services = AsyncMock(side_effect=Exception("Auth failed"))
-            result = await connector.init()
-            assert result is False
+            with pytest.raises(ConnectorInitError, match="Auth failed"):
+                await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_org_failure(self):
@@ -150,8 +152,8 @@ class TestLinearInit:
             mock_ds = MagicMock()
             mock_ds.organization = AsyncMock(return_value=_mock_response(success=False, message="fail"))
             with patch("app.connectors.sources.linear.connector.LinearDataSource", return_value=mock_ds):
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="fail"):
+                    await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_empty_org_data(self):
@@ -161,8 +163,62 @@ class TestLinearInit:
             mock_ds = MagicMock()
             mock_ds.organization = AsyncMock(return_value=_mock_response(data={"organization": {}}))
             with patch("app.connectors.sources.linear.connector.LinearDataSource", return_value=mock_ds):
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await connector.init()
+
+    @staticmethod
+    def _timed_out_organization() -> GraphQLResponse:
+        return GraphQLResponse(success=False, message="Failed to execute query organization: ")
+
+    @staticmethod
+    def _organization() -> GraphQLResponse:
+        return GraphQLResponse(
+            success=True, data={"organization": {"id": "org-1", "name": "TestOrg"}}, status_code=200,
+        )
+
+    async def _init_with_organization_responses(
+        self, *responses: GraphQLResponse,
+    ) -> tuple[LinearConnector, MagicMock, bool]:
+        connector, *_ = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.organization = AsyncMock(side_effect=list(responses))
+        with patch("app.connectors.sources.linear.connector.LinearClient") as mock_client_cls, \
+                patch("app.connectors.sources.linear.connector.LinearDataSource", return_value=mock_ds), \
+                patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
+            mock_client_cls.build_from_services = AsyncMock(return_value=MagicMock())
+            return connector, mock_ds, await connector.init()
+
+    @pytest.mark.asyncio
+    async def test_init_asks_again_after_organization_query_times_out(self) -> None:
+        connector, mock_ds, result = await self._init_with_organization_responses(
+            self._timed_out_organization(), self._organization(),
+        )
+
+        assert result is True
+        assert connector.organization_id == "org-1"
+        assert mock_ds.organization.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_init_does_not_retry_rejected_credentials(self) -> None:
+        rejected = GraphQLResponse(
+            success=False, message="Authentication required", status_code=400,
+            errors=[GraphQLError(message="Authentication required", extensions={"code": "AUTHENTICATION_ERROR"})],
+        )
+
+        with pytest.raises(ConnectorInitError, match="Authentication required"):
+            await self._init_with_organization_responses(rejected, self._organization())
+
+    @pytest.mark.asyncio
+    async def test_connection_test_asks_again_after_organization_query_times_out(self) -> None:
+        connector, *_ = _make_connector()
+        connector.data_source = MagicMock()
+        fresh_ds = MagicMock()
+        fresh_ds.organization = AsyncMock(side_effect=[self._timed_out_organization(), self._organization()])
+        connector._get_fresh_datasource = AsyncMock(return_value=fresh_ds)
+
+        with patch("app.connectors.sources.linear.connector.asyncio.sleep", new=AsyncMock()):
+            assert await connector.test_connection_and_access() is True
+        assert fresh_ds.organization.await_count == 2
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +545,7 @@ class TestLinearRunSync:
             ))
 
             # Mock issue/attachment/document/project/deletion syncs
-            connector._sync_issues_for_teams = AsyncMock(return_value=set())
+            connector._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
             connector._sync_attachments = AsyncMock()
             connector._sync_documents = AsyncMock()
             connector._sync_projects_for_teams = AsyncMock()
@@ -522,25 +578,12 @@ class TestLinearRunSync:
             dep.on_new_app_users.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_run_sync_inits_if_no_datasource(self):
+    async def test_run_sync_raises_if_no_datasource(self):
         connector, dep, *_ = _make_connector()
         connector.data_source = None
 
-        with patch("app.connectors.sources.linear.connector.load_connector_filters",
-                    new_callable=AsyncMock, return_value=(FilterCollection(), FilterCollection())):
-            connector.init = AsyncMock()
-            connector._fetch_users = AsyncMock(return_value=[])
-            connector._fetch_teams = AsyncMock(return_value=([], []))
-            connector._sync_issues_for_teams = AsyncMock(return_value=set())
-            connector._sync_attachments = AsyncMock()
-            connector._sync_documents = AsyncMock()
-            connector._sync_projects_for_teams = AsyncMock()
-            connector._sync_deleted_issues = AsyncMock()
-            connector._sync_deleted_projects = AsyncMock()
-            connector._sweep_placeholder_records = AsyncMock(return_value=0)
-
+        with pytest.raises(RuntimeError, match="not initialized"):
             await connector.run_sync()
-            connector.init.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

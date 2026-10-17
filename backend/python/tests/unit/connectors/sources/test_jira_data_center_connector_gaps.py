@@ -11,6 +11,8 @@ from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import ListOperator, SyncFilterKey
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    GroupMemberships,
+    GroupPickerPage,
     JiraDataCenterConnector,
 )
 from app.models.entities import AppUser, RecordGroupType, RecordType, TicketRecord
@@ -100,7 +102,7 @@ class TestRunSyncAndInitGaps:
         )
 
         with patch.object(conn, "_fetch_users", new=AsyncMock(return_value=[])), patch.object(
-            conn, "_sync_user_groups", new=AsyncMock(return_value={}),
+            conn, "_sync_user_groups", new=AsyncMock(return_value=GroupMemberships({})),
         ), patch.object(
             conn, "_fetch_application_roles_to_groups_mapping", new=AsyncMock(return_value={}),
         ), patch.object(
@@ -157,7 +159,7 @@ class TestIssueDeletionGaps:
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
-            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
+            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) is None
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_empty_entities_breaks(self):
@@ -193,42 +195,67 @@ class TestIssueDeletionGaps:
         conn = _make_connector()
         ds = MagicMock()
         ds.get_issue_v2 = AsyncMock(return_value=MagicMock(status=404))
-        tx = MagicMock()
-        tx.get_record_by_issue_key = AsyncMock(return_value=None)
-        conn.data_store_provider.transaction = MagicMock(return_value=_tx_ctx(tx))
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=None)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             await conn._handle_deleted_issue("MISSING-1")
 
-        tx.delete_records_and_relations.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_get_issue_exception_is_ignored(self):
         conn = _make_connector()
         ds = MagicMock()
         ds.get_issue_v2 = AsyncMock(side_effect=RuntimeError("network"))
-        tx = MagicMock()
-        tx.get_record_by_issue_key = AsyncMock(return_value=None)
-        conn.data_store_provider.transaction = MagicMock(return_value=_tx_ctx(tx))
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=None)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             await conn._handle_deleted_issue("PROJ-9")
 
-    @pytest.mark.asyncio
-    async def test_handle_deleted_issue_outer_exception_logged(self):
-        conn = _make_connector()
-        conn.data_store_provider.transaction = MagicMock(side_effect=RuntimeError("tx boom"))
+        conn.data_entities_processor.get_record_by_issue_key.assert_awaited_once()
 
-        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=MagicMock())):
+    @pytest.mark.asyncio
+    async def test_handle_deleted_issue_outer_exception_is_raised(self) -> None:
+        conn = _make_connector()
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(side_effect=RuntimeError("db boom"))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=MagicMock())), \
+                pytest.raises(RuntimeError, match="db boom"):
             await conn._handle_deleted_issue("PROJ-1")
 
     @pytest.mark.asyncio
-    async def test_delete_direct_attachment_records_error_returns_zero(self):
+    async def test_a_failed_issue_delete_keeps_the_audit_checkpoint(self) -> None:
+        """Swallowed, the checkpoint moved past the audit event and the issue was never retried."""
         conn = _make_connector()
-        tx = MagicMock()
-        tx.get_records_by_parent = AsyncMock(side_effect=RuntimeError("db"))
+        conn.issues_sync_point.read_sync_point = AsyncMock(return_value={"last_sync_time": 1_700_000_000_000})
+        conn.issues_sync_point.update_sync_point = AsyncMock()
+        conn._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
+        ds = MagicMock()
+        ds.get_issue_v2 = AsyncMock(return_value=MagicMock(status=404))
+        issues = {"PROJ-1": MagicMock(id="issue-1", external_record_id="100"),
+                  "PROJ-2": MagicMock(id="issue-2", external_record_id="200")}
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(
+            side_effect=lambda connector_id, issue_key: issues[issue_key]
+        )
 
-        assert await conn._delete_direct_attachment_records("100", tx) == 0
+        async def cascade(record_ids: list[str], *_a: object, **_k: object) -> dict:
+            if record_ids == ["issue-1"]:
+                return {"success": False, "reason": "db"}
+            return {"success": True, "deleted_records": [{"record_id": "issue-2"}]}
+
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(side_effect=cascade)
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            await conn._handle_issue_deletions(1_600_000_000_000)
+
+        deleted = [c.args[0] for c in conn.data_entities_processor.on_records_deleted_cascade.await_args_list]
+        assert deleted == [["issue-1"], ["issue-2"]]
+        conn.issues_sync_point.update_sync_point.assert_not_awaited()
 
 
 class TestPermissionSchemeGaps:
@@ -468,25 +495,48 @@ class TestUserAndGroupGaps:
         conn = _make_connector()
         conn.data_source = MagicMock()
 
-        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=[])):
+        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=GroupPickerPage([]))):
             result = await conn._sync_user_groups([])
 
-        assert result == {}
+        assert result == GroupMemberships({})
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_each_group_is_written_in_its_own_transaction(self) -> None:
+        # All groups of a large site in one transaction outlived its timeout and
+        # every group was rolled back.
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        groups = GroupPickerPage([
+            {"groupId": "g1", "name": "developers"},
+            {"groupId": "g2", "name": "designers"},
+            {"groupId": "g3", "name": "support"},
+        ])
+
+        with patch.object(conn, "_fetch_groups", new=AsyncMock(return_value=groups)),              patch.object(conn, "_fetch_group_members", new=AsyncMock(return_value=[])):
+            await conn._sync_user_groups([])
+
+        calls = conn.data_entities_processor.on_new_user_groups.await_args_list
+        assert [len(c.args[0]) for c in calls] == [1, 1, 1]
+        assert [c.args[0][0][0].source_user_group_id for c in calls] == ["g1", "g2", "g3"]
 
     @pytest.mark.asyncio
     async def test_fetch_groups_bad_payload_shapes(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         ds = MagicMock()
-        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp([]))
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": [], "total": 0}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() == GroupPickerPage([])
+
+        ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp([]))
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
+            assert await conn._fetch_groups() is None, "an answer that is not a page is not an empty list"
 
         ds.groups_picker_get_v2 = AsyncMock(return_value=_ok_resp({"groups": "bad"}))
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_groups() == []
+            assert await conn._fetch_groups() is None, "an unreadable list is not an empty one"
 
     @pytest.mark.asyncio
     async def test_fetch_group_members_requires_name_and_datasource(self):
@@ -500,6 +550,17 @@ class TestUserAndGroupGaps:
 
 
 class TestIssueLinkAndEpicDiscoveryGaps:
+    def test_related_records_add_what_the_description_names(self) -> None:
+        conn = _make_connector()
+        issue = {"fields": {
+            "summary": "Ship it",
+            "description": "See https://github.com/acme/api/pull/3081 and OPS-12",
+            "issuelinks": [],
+        }}
+        related = conn._related_records(issue)
+        assert [r.weburl for r in related if r.weburl] == ["https://github.com/acme/api/pull/3081"]
+        assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
     def test_parse_issue_links_skips_missing_linked_id(self):
         conn = _make_connector()
         issue = {

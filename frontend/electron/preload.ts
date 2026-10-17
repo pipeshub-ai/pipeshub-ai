@@ -96,11 +96,28 @@ contextBridge.exposeInMainWorld('electronAPI', {
     return () => ipcRenderer.send('stream/abort', { streamId });
   },
   localSync: {
+    /** `{ ok: true, deviceId, deviceName }`, or `{ ok: false, error }` when the machine id could not be read. */
+    getDeviceInfo: () => ipcRenderer.invoke('local-sync/device-info'),
     start: (payload: unknown) => ipcRenderer.invoke('local-sync/start', payload),
+    checkRootPathConflict: (connectorId: string, rootPath: string) => (
+      ipcRenderer.invoke('local-sync/check-root-path', { connectorId, rootPath })
+    ),
     stop: (connectorId: string) => ipcRenderer.invoke('local-sync/stop', { connectorId }),
+    /** Deleting a connector: unmount *and* purge its journal, cursor and watcher state. */
+    remove: (connectorId: string) => ipcRenderer.invoke('local-sync/remove', { connectorId }),
+    /** Drop journal state for connectors the backend no longer lists. */
+    reap: (connectorIds: string[]) => ipcRenderer.invoke('local-sync/reap', { connectorIds }),
     status: (connectorId?: string) => ipcRenderer.invoke('local-sync/status', { connectorId }),
-    replay: (connectorId?: string) => ipcRenderer.invoke('local-sync/replay', { connectorId }),
-    fullResync: (connectorId: string) => ipcRenderer.invoke('local-sync/full-resync', { connectorId }),
+    bootstrap: () => ipcRenderer.invoke('local-sync/bootstrap'),
+    /**
+     * Hand the current access token to the main process, at login and on every
+     * refresh. Main holds it in memory only — nothing is written to disk — so
+     * sync runs while this process does.
+     */
+    setAccessToken: (accessToken: string, apiBaseUrl: string) => (
+      ipcRenderer.invoke('local-sync/access-token', { accessToken, apiBaseUrl })
+    ),
+    clearCredentials: () => ipcRenderer.invoke('local-sync/clear-credentials'),
     onStatus: (callback: (payload: unknown) => void): (() => void) => {
       const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
       ipcRenderer.on('local-sync-status', listener);
@@ -111,5 +128,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
     openRecordSource: (payload: OpenLocalFsRecordSourcePayload) => (
       ipcRenderer.invoke('local-fs/open-record-source', payload)
     ),
+  },
+  /**
+   * Desktop sign-in: the OAuth screen runs in the default browser and the
+   * result comes back as a pipeshub:// deep link. See lib/electron/oauth-deep-link.ts.
+   */
+  oauth: {
+    openExternal: (url: string) => ipcRenderer.invoke('oauth/open-external', { url }),
+    /** Drains a link that arrived before this renderer had a listener. */
+    consumePending: () => ipcRenderer.invoke('oauth/pending'),
+    /** Redeems a code where the Origin header has to be set (see main.ts). */
+    exchangeToken: (payload: { url: string; body: string; origin?: string; timeoutMs?: number }) =>
+      ipcRenderer.invoke('oauth/token-exchange', payload),
+    onCallback: (callback: (payload: unknown) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on('oauth/callback', listener);
+      return () => ipcRenderer.removeListener('oauth/callback', listener);
+    },
   },
 });

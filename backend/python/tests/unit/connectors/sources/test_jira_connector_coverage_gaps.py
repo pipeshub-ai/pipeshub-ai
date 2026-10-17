@@ -10,12 +10,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.constants import OAuthConfigKeys
-from app.connectors.sources.atlassian.jira_cloud.connector import (
-    JiraConnector,
-    adf_to_text,
-    adf_to_text_with_images,
-)
+from app.connectors.sources.atlassian.jira_cloud.connector import JiraConnector
 from app.connectors.sources.atlassian.jira_data_center.connector import (
     JiraDataCenterConnector,
     _application_role_groups_from_dc_role,
@@ -36,6 +33,7 @@ def _make_cloud_connector() -> JiraConnector:
     dep.get_all_active_users = AsyncMock(return_value=[])
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
+    dep.get_record_by_issue_key = AsyncMock(return_value=None)
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -60,128 +58,6 @@ def _make_dc_connector() -> JiraDataCenterConnector:
     cs = MagicMock()
     cs.get_config = AsyncMock()
     return JiraDataCenterConnector(logger, dep, dsp, cs, "conn-dc-gap", "team", "u1")
-
-
-class TestAdfCoverageGaps:
-    def test_paragraph_containing_list_avoids_extra_spacing(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "text", "text": "Before"},
-                    {
-                        "type": "bulletList",
-                        "content": [{
-                            "type": "listItem",
-                            "content": [{
-                                "type": "paragraph",
-                                "content": [{"type": "text", "text": "nested"}],
-                            }],
-                        }],
-                    },
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "Before" in result
-        assert "nested" in result
-
-    def test_heading_outside_table_uses_markdown_prefix(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "heading",
-                "attrs": {"level": 3},
-                "content": [{"type": "text", "text": "Section"}],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "### Section" in result
-
-    def test_numbered_list_with_nested_content(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "orderedList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [
-                        {"type": "paragraph", "content": [{"type": "text", "text": "Parent"}]},
-                        {
-                            "type": "bulletList",
-                            "content": [{
-                                "type": "listItem",
-                                "content": [{
-                                    "type": "paragraph",
-                                    "content": [{"type": "text", "text": "Child"}],
-                                }],
-                            }],
-                        },
-                    ],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "1. Parent" in result
-        assert "Child" in result
-
-    def test_inline_code_and_hard_break(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "paragraph",
-                "content": [
-                    {"type": "inlineCode", "text": "code"},
-                    {"type": "hardBreak"},
-                    {"type": "text", "text": "after"},
-                ],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "`code`" in result
-        assert "after" in result
-
-    def test_single_node_without_doc_content_wrapper(self):
-        adf = {
-            "type": "paragraph",
-            "content": [{"type": "text", "text": "standalone paragraph"}],
-        }
-        result = adf_to_text(adf)
-        assert "standalone paragraph" in result
-
-    @pytest.mark.asyncio
-    async def test_adf_to_text_with_images_fetch_failure_uses_alt(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "media",
-                "attrs": {"id": "m1", "alt": "fallback.png"},
-            }],
-        }
-
-        async def failing_fetcher(_media_id: str, _alt: str) -> None:
-            raise RuntimeError("fetch failed")
-
-        result = await adf_to_text_with_images(adf, failing_fetcher)
-        assert "fallback.png" in result
-
-    def test_media_in_list_without_cache(self):
-        adf = {
-            "type": "doc",
-            "content": [{
-                "type": "bulletList",
-                "content": [{
-                    "type": "listItem",
-                    "content": [{
-                        "type": "media",
-                        "attrs": {"id": "missing", "alt": "in-list.png"},
-                    }],
-                }],
-            }],
-        }
-        result = adf_to_text(adf)
-        assert "in-list.png" in result
 
 
 class TestCloudInitCoverageGaps:
@@ -220,9 +96,10 @@ class TestCloudInitCoverageGaps:
         assert connector.site_url == "https://first.atlassian.net"
 
     @pytest.mark.asyncio
-    async def test_init_returns_false_when_client_build_fails(self):
+    async def test_init_raises_when_client_build_fails(self):
         """Site resolution (incl. the no-accessible-sites error) now lives in
-        build_from_services; if it raises a plain error, init() returns False."""
+        build_from_services; init() re-raises as ConnectorInitError so the router can
+        forward the real reason to the FE."""
         connector = _make_cloud_connector()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
@@ -230,23 +107,20 @@ class TestCloudInitCoverageGaps:
                 side_effect=ValueError("Jira: No accessible Atlassian sites for this OAuth token.")
             )
 
-            result = await connector.init()
-
-        assert result is False
+            with pytest.raises(ConnectorInitError, match="No accessible Atlassian sites"):
+                await connector.init()
 
     @pytest.mark.asyncio
-    async def test_init_resolves_creator_email_and_caches_myself(self):
+    async def test_init_caches_myself_without_resolving_creator(self):
         connector = _make_cloud_connector()
-        creator = MagicMock()
-        creator.email = "creator@example.com"
-        connector.data_entities_processor.get_user_by_user_id = AsyncMock(return_value=creator)
+        connector.data_entities_processor.get_user_by_user_id = AsyncMock()
 
         with patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraClient") as MockJiraClient:
             mock_client = MagicMock()
             mock_ds = MagicMock()
             mock_ds.get_current_user = AsyncMock(return_value=MagicMock(
                 status=200,
-                json=MagicMock(return_value={"emailAddress": "creator@example.com"}),
+                json=MagicMock(return_value={"emailAddress": "jira@example.com"}),
             ))
             mock_client.get_client = MagicMock(return_value=MagicMock())
             MockJiraClient.build_from_services = AsyncMock(return_value=mock_client)
@@ -262,20 +136,26 @@ class TestCloudInitCoverageGaps:
                 result = await connector.init()
 
         assert result is True
-        assert connector.creator_email == "creator@example.com"
+        assert connector._authenticated_jira_email == "jira@example.com"
+        connector.data_entities_processor.get_user_by_user_id.assert_not_awaited()
 
 
 class TestCloudHandleDeletedIssueGaps:
     @pytest.mark.asyncio
-    async def test_handle_deleted_issue_logs_exception(self):
+    async def test_handle_deleted_issue_logs_and_reraises(self):
+        # _handle_deleted_issue logs the failure with a traceback and re-raises; the sync loop
+        # catches it per-issue (see the caller) rather than aborting the whole run. Confirm the
+        # error propagates rather than being silently swallowed.
         connector = _make_cloud_connector()
-        connector.data_store_provider.transaction = MagicMock()
-        connector.data_store_provider.transaction.return_value.__aenter__ = AsyncMock(
+        # Confirm-GET returns 404 (issue really gone) so we reach the DB lookup — which then
+        # fails; the point of this test is that the failure propagates rather than being swallowed.
+        connector._get_issue_with_retry = AsyncMock(return_value=MagicMock(status=404))
+        connector.data_entities_processor.get_record_by_issue_key = AsyncMock(
             side_effect=RuntimeError("tx failed"),
         )
-        connector.data_store_provider.transaction.return_value.__aexit__ = AsyncMock(return_value=None)
 
-        await connector._handle_deleted_issue("PROJ-1")
+        with pytest.raises(RuntimeError, match="tx failed"):
+            await connector._handle_deleted_issue("PROJ-1")
 
     @pytest.mark.asyncio
     async def test_sync_project_lead_roles_skips_lead_processing_errors(self):
@@ -304,12 +184,13 @@ class TestDcModuleHelperGaps:
 
 class TestDcInitAndAuditGaps:
     @pytest.mark.asyncio
-    async def test_init_missing_auth_type_returns_false(self):
+    async def test_init_missing_auth_type_raises(self):
         conn = _make_dc_connector()
         conn.config_service.get_config = AsyncMock(
             return_value={"auth": {"baseUrl": "https://jira.example", "apiToken": "x"}},
         )
-        assert await conn.init() is False
+        with pytest.raises(ConnectorInitError, match="authType is required"):
+            await conn.init()
 
     def test_issue_key_from_auditing_event_skips_non_issue_objects(self):
         entity = {
@@ -328,12 +209,13 @@ class TestDcInitAndAuditGaps:
         assert await conn._detect_and_handle_deletions(1_700_000_000_000) == 0
 
     @pytest.mark.asyncio
-    async def test_detect_and_handle_deletions_swallows_per_issue_errors(self):
+    async def test_detect_and_handle_deletions_tries_every_issue_and_keeps_the_checkpoint_on_a_failure(self):
         conn = _make_dc_connector()
         conn._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
-        conn._handle_deleted_issue = AsyncMock(side_effect=[None, RuntimeError("boom")])
+        conn._handle_deleted_issue = AsyncMock(side_effect=[RuntimeError("boom"), None])
 
-        assert await conn._detect_and_handle_deletions(1_700_000_000_000) == 1
+        assert await conn._detect_and_handle_deletions(1_700_000_000_000) is None
+        assert conn._handle_deleted_issue.await_count == 2
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_paginates(self):
@@ -364,7 +246,7 @@ class TestDcInitAndAuditGaps:
         assert ds.get_auditing_events_v1.await_count == 2
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_unauthorized_returns_empty(self):
+    async def test_fetch_deleted_issues_from_audit_forbidden_returns_none(self):
         conn = _make_dc_connector()
         resp = MagicMock()
         resp.status = 403
@@ -373,10 +255,10 @@ class TestDcInitAndAuditGaps:
         ds.get_auditing_events_v1 = AsyncMock(return_value=resp)
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
-            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) == []
+            assert await conn._fetch_deleted_issues_from_audit(1_700_000_000_000) is None
 
     @pytest.mark.asyncio
-    async def test_fetch_deleted_issues_from_audit_exception_returns_partial(self):
+    async def test_fetch_deleted_issues_from_audit_exception_returns_none(self):
         conn = _make_dc_connector()
         ok = MagicMock()
         ok.status = 200
@@ -392,4 +274,4 @@ class TestDcInitAndAuditGaps:
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=ds)):
             keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
-        assert keys == ["PROJ-9"]
+        assert keys is None, "a half-read window must not be reported as complete"

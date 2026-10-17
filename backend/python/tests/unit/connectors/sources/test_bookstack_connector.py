@@ -9,10 +9,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors
-from app.connectors.sources.bookstack.connector import BookStackConnector, RecordUpdate
+from app.connectors.sources.bookstack.connector import BookStackConnector, ReadOutcome, RecordUpdate
 from contextlib import asynccontextmanager
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, SyncFilterKey
 from app.models.entities import (
     AppRole,
@@ -70,19 +70,6 @@ def mock_data_store_provider():
 
 
 @pytest.fixture()
-def mock_config_service():
-    svc = AsyncMock()
-    svc.get_config = AsyncMock(return_value={
-        "auth": {
-            "base_url": "https://bookstack.example.com",
-            "token_id": "tok-id-1",
-            "token_secret": "tok-secret-1",
-        },
-    })
-    return svc
-
-
-@pytest.fixture()
 def bookstack_connector(mock_logger, mock_data_entities_processor,
                         mock_data_store_provider, mock_config_service):
     with patch("app.connectors.sources.bookstack.connector.BookStackApp"):
@@ -98,11 +85,12 @@ def bookstack_connector(mock_logger, mock_data_entities_processor,
     return connector
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -215,6 +203,22 @@ class TestBookStackSignedUrlAndStream:
         await bookstack_connector.stream_record(record)
         mock_stream.assert_called_once()
 
+    async def test_stream_record_yields_one_bytes_chunk(self, bookstack_connector):
+        """Starlette iterates a `str` body one character per ASGI message."""
+        bookstack_connector.data_source = MagicMock()
+        bookstack_connector.data_source.export_page_markdown = AsyncMock(
+            return_value=_make_response(True, {"markdown": "# Hello"}, status_code=200)
+        )
+        record = MagicMock()
+        record.external_record_id = "page/42"
+        record.record_name = "Test Page"
+        record.mime_type = "text/markdown"
+        record.id = "rec-1"
+
+        response = await bookstack_connector.stream_record(record)
+        chunks = [chunk async for chunk in response.body_iterator]
+        assert chunks == [b"# Hello"]
+
     async def test_stream_record_not_initialized(self, bookstack_connector):
         bookstack_connector.data_source = None
         with pytest.raises(Exception):
@@ -224,12 +228,26 @@ class TestBookStackSignedUrlAndStream:
         from fastapi import HTTPException
         bookstack_connector.data_source = MagicMock()
         bookstack_connector.data_source.export_page_markdown = AsyncMock(
-            return_value=_make_response(False, error="Not found")
+            return_value=_make_response(False, error="Not found", status_code=404)
         )
         record = MagicMock()
         record.external_record_id = "page/42"
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as ei:
             await bookstack_connector.stream_record(record)
+        assert ei.value.status_code == 404
+
+    async def test_stream_record_expired_token_is_not_reported_as_deleted(
+        self, bookstack_connector
+    ):
+        bookstack_connector.data_source = MagicMock()
+        bookstack_connector.data_source.export_page_markdown = AsyncMock(
+            return_value=_make_response(False, error="HTTP 401", status_code=401)
+        )
+        record = MagicMock()
+        record.external_record_id = "page/42"
+        with pytest.raises(HTTPException) as ei:
+            await bookstack_connector.stream_record(record)
+        assert ei.value.status_code == 409
 
 
 # ===========================================================================
@@ -275,7 +293,7 @@ class TestBookStackRoles:
     async def test_list_roles_with_details_success(self, bookstack_connector):
         bookstack_connector.data_source = MagicMock()
         bookstack_connector.data_source.list_roles = AsyncMock(
-            return_value=_make_response(True, {"data": [{"id": 1}, {"id": 2}]})
+            return_value=_make_response(True, {"data": [{"id": 1}, {"id": 2}], "total": 2})
         )
         role1_detail = _make_response(True, {"id": 1, "display_name": "Admin", "permissions": []})
         role2_detail = _make_response(True, {"id": 2, "display_name": "Editor", "permissions": []})
@@ -391,8 +409,9 @@ class TestBookStackPermissions:
             "fallback_permissions": {"inheriting": False},
         }
         perms = await bookstack_connector._parse_bookstack_permissions(permissions_data, {}, "page")
-        # 1 owner + 1 read + 1 write
-        assert len(perms) == 3
+        # Everyone Else is set, so an override reaches every role and ownership grants nothing.
+        assert len(perms) == 2
+        assert all(p.type != PermissionType.OWNER for p in perms)
 
     async def test_parse_bookstack_permissions_fallback_book(self, bookstack_connector):
         bookstack_connector.data_source = MagicMock()
@@ -411,8 +430,9 @@ class TestBookStackPermissions:
         perms = await bookstack_connector._parse_bookstack_permissions(
             permissions_data, roles_details, "book"
         )
-        # 1 owner + 1 from role 100 (write because create-all)
-        assert len(perms) == 2
+        # Role 100 (write because create-all); the owner has no *-view-own role, so no owner grant.
+        assert len(perms) == 1
+        assert perms[0].type == PermissionType.WRITE
 
 
 # ===========================================================================
@@ -616,8 +636,22 @@ class TestBookStackHandleRecordUpdates:
             is_deleted=True, metadata_changed=False, content_changed=False,
             permissions_changed=False, external_record_id="page/1",
         )
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await bookstack_connector._handle_record_updates(update)
-        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        bookstack_connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(bookstack_connector.connector_id, "page/1")
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self, bookstack_connector):
+        update = RecordUpdate(
+            record=None, is_new=False, is_updated=False, is_deleted=True,
+            metadata_changed=False, content_changed=False, permissions_changed=False,
+            external_record_id="page/404",
+        )
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        bookstack_connector.data_entities_processor.on_record_deleted = AsyncMock()
+        await bookstack_connector._handle_record_updates(update)
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_not_awaited()
 
     async def test_handle_updated_metadata_and_content(self, bookstack_connector):
         update = RecordUpdate(
@@ -640,6 +674,7 @@ class TestBookStackHandleRecordUpdates:
         await bookstack_connector._handle_record_updates(update)
 
     async def test_handle_update_exception(self, bookstack_connector):
+        bookstack_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         bookstack_connector.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
         update = RecordUpdate(
             record=MagicMock(record_name="R"), is_new=False, is_updated=False,
@@ -648,6 +683,7 @@ class TestBookStackHandleRecordUpdates:
         )
         # Should not raise
         await bookstack_connector._handle_record_updates(update)
+        bookstack_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -731,7 +767,8 @@ class TestBookStackUserEvents:
             })
         )
         bookstack_connector._handle_user_create_event = AsyncMock()
-        bookstack_connector._handle_role_create_event = AsyncMock()
+        role = (AppRole(app_name=Connectors.BOOKSTACK, connector_id="bs-conn-1", source_role_id="1", name="Admin"), [])
+        bookstack_connector._read_role_with_members = AsyncMock(return_value=(ReadOutcome.COMPLETE, role))
         events = [{"detail": "(5) TestUser"}]
         app_users = [
             AppUser(
@@ -740,7 +777,7 @@ class TestBookStackUserEvents:
             ),
         ]
         await bookstack_connector._handle_user_upsert_event(events, app_users)
-        bookstack_connector._handle_role_create_event.assert_awaited()
+        bookstack_connector.data_entities_processor.on_new_app_roles.assert_awaited_once_with([role])
 
 
 # ===========================================================================
@@ -777,13 +814,14 @@ class TestBookStackRoleEvents:
         bookstack_connector.data_entities_processor.on_app_role_deleted.assert_awaited_once()
 
     async def test_handle_role_update_event(self, bookstack_connector):
+        role = (AppRole(app_name=Connectors.BOOKSTACK, connector_id="bs-conn-1", source_role_id="1", name="Admin"), [])
+        bookstack_connector._read_role_with_members = AsyncMock(return_value=(ReadOutcome.COMPLETE, role))
         bookstack_connector._handle_role_delete_event = AsyncMock()
-        bookstack_connector._handle_role_create_event = AsyncMock()
-        bookstack_connector._sync_record_groups = AsyncMock()
+        bookstack_connector._sync_record_groups = AsyncMock(return_value=True)
         bookstack_connector._sync_records = AsyncMock()
         await bookstack_connector._handle_role_update_event(1, {})
         bookstack_connector._handle_role_delete_event.assert_awaited_once()
-        bookstack_connector._handle_role_create_event.assert_awaited_once()
+        bookstack_connector.data_entities_processor.on_new_app_roles.assert_awaited_once_with([role])
 
 
 # ===========================================================================
@@ -892,11 +930,12 @@ def connector(mock_logger_fullcov, mock_data_entities_processor_fullcov,
     return c
 
 
-def _make_response(success=True, data=None, error=None):
+def _make_response(success=True, data=None, error=None, status_code=None):
     r = MagicMock()
     r.success = success
     r.data = data
     r.error = error
+    r.status_code = status_code
     return r
 
 
@@ -967,7 +1006,7 @@ class TestListRolesWithDetails:
     async def test_success(self, connector):
         connector.data_source = AsyncMock()
         connector.data_source.list_roles = AsyncMock(
-            return_value=_make_response(data={"data": [{"id": 1}, {"id": 2}]})
+            return_value=_make_response(data={"data": [{"id": 1}, {"id": 2}], "total": 2})
         )
         connector.data_source.get_role = AsyncMock(side_effect=[
             _make_response(data={"id": 1, "display_name": "Admin"}),
@@ -1196,11 +1235,13 @@ class TestHandleUserUpsertEvent:
         connector.data_source.get_user = AsyncMock(return_value=_make_response(
             data={"id": 5, "email": "u@test.com", "roles": [{"id": 1, "display_name": "Admin"}]}
         ))
-        connector._handle_role_create_event = AsyncMock()
+        role = (AppRole(app_name=Connectors.BOOKSTACK, connector_id="bs-1", source_role_id="1", name="Admin"), [])
+        connector._read_role_with_members = AsyncMock(return_value=(ReadOutcome.COMPLETE, role))
 
-        await connector._handle_user_upsert_event(events, users)
+        assert await connector._handle_user_upsert_event(events, users) is True
         connector._handle_user_create_event.assert_awaited_once()
-        connector._handle_role_create_event.assert_awaited_once()
+        connector._read_role_with_members.assert_awaited_once_with(1)
+        connector.data_entities_processor.on_new_app_roles.assert_awaited_once_with([role])
 
     @pytest.mark.asyncio
     async def test_user_with_no_roles(self, connector):
@@ -1622,7 +1663,8 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
 
 
 class TestParseBookstackPermissions:
@@ -1638,8 +1680,8 @@ class TestParseBookstackPermissions:
             "fallback_permissions": {},
         }
         result = await connector._parse_bookstack_permissions(data, {}, "book")
-        assert len(result) == 1
-        assert result[0].type == PermissionType.OWNER
+        # Everyone Else does not inherit, so it overrides every role and ownership grants nothing.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_owner_no_email(self, connector):
@@ -2341,7 +2383,7 @@ class TestHandleRoleCreateEvent:
         mock_data_entities_processor_fullcov.on_new_app_roles.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_user_detail_fetch_failure(self, connector, mock_data_entities_processor_fullcov):
+    async def test_user_detail_fetch_failure_keeps_stored_role(self, connector, mock_data_entities_processor_fullcov) -> None:
         connector.data_source = AsyncMock()
         connector.data_source.get_role = AsyncMock(
             return_value=_make_response(data={
@@ -2350,8 +2392,9 @@ class TestHandleRoleCreateEvent:
             })
         )
         connector.data_source.get_user = AsyncMock(side_effect=Exception("fail"))
-        await connector._handle_role_create_event(1, {})
-        mock_data_entities_processor_fullcov.on_new_app_roles.assert_awaited_once()
+        # Writing the role would replace its stored members with the ones read.
+        assert await connector._handle_role_create_event(1, {}) is False
+        mock_data_entities_processor_fullcov.on_new_app_roles.assert_not_awaited()
 
 
 class TestHandleRoleDeleteEvent:
@@ -2364,14 +2407,15 @@ class TestHandleRoleDeleteEvent:
 class TestHandleRoleUpdateEvent:
     @pytest.mark.asyncio
     async def test_delegates(self, connector):
+        role = (AppRole(app_name=Connectors.BOOKSTACK, connector_id="bs-1", source_role_id="1", name="Admin"), [])
+        connector._read_role_with_members = AsyncMock(return_value=(ReadOutcome.COMPLETE, role))
         connector._handle_role_delete_event = AsyncMock()
-        connector._handle_role_create_event = AsyncMock()
-        connector._sync_record_groups = AsyncMock()
+        connector._sync_record_groups = AsyncMock(return_value=True)
         connector._sync_records = AsyncMock()
 
-        await connector._handle_role_update_event(1, {})
+        assert await connector._handle_role_update_event(1, {}) is True
         connector._handle_role_delete_event.assert_awaited_once()
-        connector._handle_role_create_event.assert_awaited_once()
+        connector.data_entities_processor.on_new_app_roles.assert_awaited_once_with([role])
         connector._sync_record_groups.assert_awaited_once()
         connector._sync_records.assert_awaited_once()
 

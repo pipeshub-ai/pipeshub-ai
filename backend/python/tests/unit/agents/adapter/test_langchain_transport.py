@@ -4,17 +4,26 @@ response types from a fake LangChain `BaseChatModel`, with no network."""
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
 
+from app.agent_loop_lib.core.context import CancellationToken
 from app.agent_loop_lib.core.exceptions import TransportError
-from app.agent_loop_lib.core.messages import ImagePart, ImageSource, TextPart, ToolMessage, UserMessage
+from app.agent_loop_lib.core.messages import (
+    ImagePart,
+    ImageSource,
+    TextPart,
+    ToolMessage,
+    UserMessage,
+)
 from app.agent_loop_lib.core.responses import StopReason
 from app.agent_loop_lib.core.streaming import StreamCompleteEvent, TextDeltaEvent
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agents.agent_loop import langchain_transport as transport_module
+from app.agents.agent_loop.error_classification import classify_error
 from app.agents.agent_loop.langchain_transport import (
     LangChainTransport,
     _supports_multipart_tool_result,
@@ -158,6 +167,22 @@ class TestComplete:
         assert model.bind_tools_called_with is not None
         assert len(model.bind_tools_called_with) == 1
 
+    async def test_openai_family_tools_are_not_strict(self) -> None:
+        # Named like LangChain's class: the transport recognises the family by class name.
+        class AzureChatOpenAI(_FakeModel):
+            pass
+
+        model = AzureChatOpenAI()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert model.bind_tools_called_with[0]["function"]["strict"] is False
+
+    async def test_other_providers_tools_carry_no_strict_key(self) -> None:
+        model = _FakeModel()
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+        await LangChainTransport(model).complete([UserMessage(content="hi")], tools=[schema])
+        assert "strict" not in model.bind_tools_called_with[0]["function"]
+
     async def test_no_tools_does_not_bind(self) -> None:
         model = _FakeModel()
         transport = LangChainTransport(model)
@@ -230,6 +255,13 @@ class TestComplete:
         with pytest.raises(TransportError) as exc_info:
             await transport.complete([UserMessage(content="hi")])
         assert exc_info.value.retryable is True
+
+    async def test_empty_message_error_keeps_its_class_name(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=TimeoutError()))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert "TimeoutError" in str(exc_info.value)
+        assert classify_error(f"LLM call failed: {exc_info.value}")[0] == "timeout"
 
     async def test_unrelated_exception_with_no_status_code_is_not_retryable(self) -> None:
         transport = LangChainTransport(_FakeModel(raise_on_invoke=ValueError("bad input")))
@@ -468,6 +500,17 @@ def _requesty_conflict_error() -> RuntimeError:
     return exc
 
 
+def _azure_tools_conflict_error() -> RuntimeError:
+    """Azure OpenAI's wording, for gpt-6 models sent tools on Chat Completions."""
+    exc = RuntimeError(
+        "Error code: 400 - {'error': {'message': \"Function tools with reasoning_effort are "
+        "not supported for this model in /v1/chat/completions. To use function tools, use "
+        "/v1/responses or set reasoning_effort to 'none'.\", 'type': 'invalid_request_error'}}"
+    )
+    exc.status_code = 400
+    return exc
+
+
 def _tool_choice_conflict_error() -> RuntimeError:
     exc = RuntimeError("Invalid parameter: 'tool_choice.function' is not supported here.")
     exc.status_code = 400
@@ -537,6 +580,34 @@ class TestApiShapeFallbackComplete:
         assert pinned.reasoning_effort is None
         assert store.recorded == [
             ("model-key-2", "some-model", LLMApiMode.RESPONSES.value),
+        ]
+
+    async def test_azure_wording_moves_an_unticked_model_to_responses_api(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A gpt-6 model added with Reasoning unticked carries no reasoning
+        setting, yet Azure still refuses its tools on Chat Completions. The
+        retry goes to the Responses API with the model's own default effort."""
+        store = _FakeApiModeStore()
+        monkeypatch.setattr(transport_module, "get_llm_api_mode_store", lambda: store)
+
+        model = _FakeApiShapeModel(
+            use_responses_api=None,
+            fail_when_responses_api=False, error=_azure_tools_conflict_error(),
+            response=AIMessage(content="worked via responses api"),
+        )
+        transport = LangChainTransport(model, model_name="gpt-6.1-sol", model_key="model-key-3")
+        schema = ToolSchema(name="t", description="d", input_schema={"type": "object", "properties": {}})
+
+        response = await transport.complete([UserMessage(content="hi")], tools=[schema])
+
+        assert response.message.text == "worked via responses api"
+        pinned = transport._llm
+        assert pinned.use_responses_api is True
+        assert pinned.reasoning is None
+        assert pinned.reasoning_effort is None
+        assert store.recorded == [
+            ("model-key-3", "gpt-6.1-sol", LLMApiMode.RESPONSES.value),
         ]
 
     async def test_unrelated_500_does_not_trigger_fallback(
@@ -1322,6 +1393,26 @@ class TestToolImageRelocationRespectsTheCap:
         "'user', but this message with role 'tool' contains an image URL"
     )
 
+    @pytest.mark.parametrize("cap", [1, 2])
+    def test_injected_images_survive_tool_copy_deduplication(self, cap):
+        transport = self._transport(cap)
+        transport._supports_multipart_tool_result = False
+        images = [
+            ImagePart(source=ImageSource(type="url", data=f"https://x/{i}.png"))
+            for i in range(cap)
+        ]
+        messages = [
+            UserMessage(content=[TextPart(text="Read the PDF figures"), *images]),
+            ToolMessage(content=[TextPart(text="Retrieved figures"), *images], tool_call_id="fetch"),
+        ]
+
+        converted = transport._to_langchain(messages, None)
+
+        assert self._image_count(converted) == cap
+        assert self._image_count([m for m in converted if m.type == "human"]) == cap
+        assert self._image_count([m for m in converted if m.type == "tool"]) == 0
+        assert self._image_count(transport._to_langchain(messages, None)) == cap
+
     @staticmethod
     def _messages(tool_images: int = 5) -> list:
         messages = [UserMessage(content="what is in these?")]
@@ -1346,13 +1437,20 @@ class TestToolImageRelocationRespectsTheCap:
     def _transport(self, cap):
         return LangChainTransport(_FakeModel(), model_name="m", max_images_per_request=cap)
 
+    @staticmethod
+    def _retry(transport, exc, messages) -> list | None:
+        """What the relocation retry sends, or None when there is no retry."""
+        if not transport._relocates_tool_images(exc, messages):
+            return None
+        return transport._request(messages, ("", ""), relocate=True)[0]
+
     @pytest.mark.parametrize("cap", [1, 2, 5, 10, None])
     def test_the_retry_carries_what_the_first_attempt_carried(self, cap) -> None:
         t = self._transport(cap)
         messages = self._messages()
 
         first = t._to_langchain(messages, None)
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), messages, None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), messages)
 
         assert retry is not None
         assert self._image_count(retry) == self._image_count(first)
@@ -1361,7 +1459,7 @@ class TestToolImageRelocationRespectsTheCap:
         """The concrete regression: five tool images, a model that takes two."""
         t = self._transport(2)
 
-        retry = t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None)
+        retry = self._retry(t, RuntimeError(self.CONFLICT), self._messages())
 
         assert self._image_count(retry) == 2
 
@@ -1372,9 +1470,7 @@ class TestToolImageRelocationRespectsTheCap:
 
         from app.agents.agent_loop.converters import _RELOCATED_IMAGES_PREFIX
 
-        retry = self._transport(2)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), self._messages(), None
-        )
+        retry = self._retry(self._transport(2), RuntimeError(self.CONFLICT), self._messages())
 
         assert isinstance(retry[-1], HumanMessage)
         assert retry[-1].content[0] == {"type": "text", "text": _RELOCATED_IMAGES_PREFIX}
@@ -1391,21 +1487,379 @@ class TestToolImageRelocationRespectsTheCap:
             ]),
         ]
 
-        retry = self._transport(1)._tool_image_fallback(
-            RuntimeError(self.CONFLICT), messages, None
-        )
+        retry = self._retry(self._transport(1), RuntimeError(self.CONFLICT), messages)
 
         assert retry is None
 
     def test_an_unrelated_error_is_not_a_relocation(self) -> None:
-        assert self._transport(2)._tool_image_fallback(
-            RuntimeError("429 rate limit exceeded"), self._messages(), None
-        ) is None
+        assert self._retry(self._transport(2), RuntimeError("429 rate limit exceeded"), self._messages()) is None
 
     def test_once_pinned_the_shape_is_not_rediscovered(self) -> None:
         """`_to_langchain` relocates on its own from then on — and caps."""
         t = self._transport(2)
         t._tool_images_relocated = True
 
-        assert t._tool_image_fallback(RuntimeError(self.CONFLICT), self._messages(), None) is None
+        assert self._retry(t, RuntimeError(self.CONFLICT), self._messages()) is None
         assert self._image_count(t._to_langchain(self._messages(), None)) == 2
+
+
+class _FailsMidStreamModel(_FakeModel):
+    """Yields `emit_before_failing` chunks, then raises.
+
+    The distinction the transport has to make: a failure with nothing yet
+    sent is safe to retry, while a failure after deltas have reached the
+    client is not — retrying replays text the user already saw.
+    """
+
+    def __init__(self, exc: Exception, *, emit_before_failing: int) -> None:
+        super().__init__()
+        self._exc = exc
+        self._emit = emit_before_failing
+        self.stream_attempts = 0
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        self.stream_attempts += 1
+        for i in range(self._emit):
+            yield AIMessageChunk(content=f"chunk{i} ")
+        raise self._exc
+
+
+class TestTransientStreamDisconnectIsRetryable:
+    """`httpx.RemoteProtocolError: peer closed connection without sending a
+    complete message body` is a transient disconnect seen in production
+    against Azure OpenAI. It carries no HTTP status and is not an `OSError`,
+    so it fell through `_is_network_error` and was marked non-retryable —
+    `retry_model_call` skipped it and the turn died on a blip.
+    """
+
+    def _protocol_error(self) -> Exception:
+        import httpx
+
+        return httpx.RemoteProtocolError(
+            "peer closed connection without sending complete message body "
+            "(incomplete chunked read)"
+        )
+
+    async def test_disconnect_before_any_output_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_stream=self._protocol_error()))
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is True
+
+    async def test_same_error_on_a_non_streaming_call_is_retryable(self) -> None:
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=self._protocol_error()))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert exc_info.value.retryable is True
+
+    async def test_generic_protocol_errors_are_covered_too(self) -> None:
+        class LocalProtocolError(Exception):
+            pass
+
+        transport = LangChainTransport(_FakeModel(raise_on_invoke=LocalProtocolError("bad frame")))
+        with pytest.raises(TransportError) as exc_info:
+            await transport.complete([UserMessage(content="hi")])
+        assert exc_info.value.retryable is True
+
+
+class TestPartialStreamIsNeverReplayed:
+    """`stream()` already refuses to retry internally once chunks have been
+    emitted, but the retry decision the OUTER `retry_model_call` middleware
+    reads is `TransportError.retryable`, which was computed from the
+    exception type alone. A retryable-looking error arriving mid-stream
+    therefore let the middleware re-run the whole call and stream the same
+    text to the user twice.
+    """
+
+    async def test_mid_stream_failure_is_marked_non_retryable(self) -> None:
+        import httpx
+
+        model = _FailsMidStreamModel(
+            httpx.RemoteProtocolError("incomplete chunked read"), emit_before_failing=2,
+        )
+        transport = LangChainTransport(model)
+
+        deltas: list[str] = []
+        with pytest.raises(TransportError) as exc_info:
+            async for event in transport.stream([UserMessage(content="hi")]):
+                if isinstance(event, TextDeltaEvent):
+                    deltas.append(event.delta)
+
+        assert deltas, "precondition: the client must have received output"
+        assert exc_info.value.retryable is False, (
+            "retrying after partial output would replay it to the user"
+        )
+
+    async def test_a_timeout_mid_stream_is_also_not_replayed(self) -> None:
+        """`readtimeout` IS in the network hints, so this is the case that
+        was already reachable before protocol errors were added."""
+        model = _FailsMidStreamModel(TimeoutError("read timed out"), emit_before_failing=3)
+        transport = LangChainTransport(model)
+
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert exc_info.value.retryable is False
+
+    async def test_transport_does_not_re_stream_on_its_own(self) -> None:
+        model = _FailsMidStreamModel(TimeoutError("read timed out"), emit_before_failing=1)
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError):
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        assert model.stream_attempts == 1
+
+
+class _EmitsThenFailsModel(_FakeModel):
+    """Yields the given chunks, then raises.
+
+    Lets a test distinguish "the provider sent us something" from "the client
+    saw something" — an empty or metadata-only chunk is the former but not the
+    latter.
+    """
+
+    def __init__(self, exc: Exception, chunks: list[AIMessageChunk]) -> None:
+        super().__init__()
+        self._exc = exc
+        self._chunks = chunks
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        for chunk in self._chunks:
+            yield chunk
+        raise self._exc
+
+
+class TestRetryabilityFollowsWhatTheClientSaw:
+    """The reason a mid-stream failure is non-retryable is that retrying would
+    replay text the user already read. That turns on whether a StreamEvent was
+    YIELDED, not on whether the provider sent a chunk.
+
+    OpenAI-family providers open a stream with a role-only chunk carrying empty
+    content, so a disconnect in the first moments — exactly the transient case
+    worth retrying — arrives with a chunk already buffered and nothing shown.
+    """
+
+    def _protocol_error(self) -> Exception:
+        import httpx
+
+        return httpx.RemoteProtocolError("incomplete chunked read")
+
+    async def _stream_error(self, model: _FakeModel) -> TransportError:
+        transport = LangChainTransport(model)
+        with pytest.raises(TransportError) as exc_info:
+            async for _ in transport.stream([UserMessage(content="hi")]):
+                pass
+        return exc_info.value
+
+    async def test_empty_chunk_then_disconnect_is_still_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_several_empty_chunks_then_disconnect_is_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="") for _ in range(3)],
+        )
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_metadata_only_chunk_then_disconnect_is_retryable(self) -> None:
+        chunk = AIMessageChunk(content="", response_metadata={"model_name": "gpt-4"})
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_empty_content_list_then_disconnect_is_retryable(self) -> None:
+        """Anthropic-shaped content: a list whose blocks carry no text."""
+        chunk = AIMessageChunk(content=[{"type": "text", "text": ""}])
+        model = _EmitsThenFailsModel(self._protocol_error(), [chunk])
+        assert (await self._stream_error(model)).retryable is True
+
+    async def test_real_text_then_disconnect_is_not_retryable(self) -> None:
+        """The case the gate exists for: the user has read this."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content="Here is your answer")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_empty_then_real_text_then_disconnect_is_not_retryable(self) -> None:
+        model = _EmitsThenFailsModel(
+            self._protocol_error(),
+            [AIMessageChunk(content=""), AIMessageChunk(content="visible")],
+        )
+        assert (await self._stream_error(model)).retryable is False
+
+    async def test_the_client_really_saw_nothing_in_the_retryable_case(self) -> None:
+        """Guards the premise: if these chunks did produce events, the test
+        above would be asserting the wrong thing."""
+        model = _EmitsThenFailsModel(
+            self._protocol_error(), [AIMessageChunk(content="")],
+        )
+        transport = LangChainTransport(model)
+        seen: list[Any] = []
+        with pytest.raises(TransportError):
+            async for event in transport.stream([UserMessage(content="hi")]):
+                seen.append(event)
+        assert seen == []
+
+
+class _CancellingModel:
+    """Fake LangChain model whose `astream()` cancels `token` right before
+    yielding the chunk at index `cancel_before_index` — lets a test assert
+    exactly what `LangChainTransport.stream()`'s per-chunk cancellation
+    check (module docstring, Stop Generation Phase 3b) does with a chunk
+    that arrives AFTER cancellation: it must never be appended/emitted."""
+
+    def __init__(
+        self, chunks: list[AIMessageChunk], token: CancellationToken, cancel_before_index: int,
+    ) -> None:
+        self._chunks = chunks
+        self._token = token
+        self._cancel_before_index = cancel_before_index
+
+    def bind_tools(self, tools: list[Any]) -> "_CancellingModel":
+        return self
+
+    async def astream(self, messages: list, config: Any = None) -> AsyncIterator[AIMessageChunk]:
+        for i, chunk in enumerate(self._chunks):
+            if i == self._cancel_before_index:
+                self._token.cancel()
+            yield chunk
+
+
+class TestStreamCancellation:
+    """`LangChainTransport.stream()`'s `CancellationToken` check — the
+    intra-LLM-call half of Stop Generation (Phase 3b). `TestStream` above
+    covers the same method with no token wired at all (`None` is a no-op,
+    the default for every transport built outside a cancellable run)."""
+
+    async def test_cancellation_before_any_chunk_yields_only_a_cancelled_complete_event(
+        self,
+    ) -> None:
+        token = CancellationToken()
+        chunks = [AIMessageChunk(content="never seen")]
+        model = _CancellingModel(chunks, token, cancel_before_index=0)
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        assert len(events) == 1
+        final = events[0]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        assert final.response.message.text == ""
+
+    async def test_cancellation_mid_stream_keeps_prior_text_and_drops_the_in_progress_tool_call(
+        self,
+    ) -> None:
+        token = CancellationToken()
+        chunks = [
+            AIMessageChunk(content="Partial answer so far"),
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": "final_answer", "args": '{"answer_mark', "id": "1", "index": 0},
+            ]),
+            AIMessageChunk(content="", tool_call_chunks=[
+                {"name": None, "args": 'down": "..."}', "id": None, "index": 0},
+            ]),
+        ]
+        model = _CancellingModel(chunks, token, cancel_before_index=1)
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        text_events = [e for e in events if isinstance(e, TextDeltaEvent)]
+        assert [e.delta for e in text_events] == ["Partial answer so far"]
+
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        # The user-visible text survives cancellation ...
+        assert final.response.message.text == "Partial answer so far"
+        # ... but the tool call whose arguments were still being assembled
+        # when the token fired must not reach `Agent.step()` — its JSON is
+        # truncated mid-string and would corrupt the tool-dispatch loop.
+        assert final.response.message.tool_calls is None
+
+    async def test_a_not_yet_cancelled_token_does_not_affect_a_normal_stream(self) -> None:
+        token = CancellationToken()
+        chunks = [AIMessageChunk(content="Hello "), AIMessageChunk(content="world")]
+        transport = LangChainTransport(_FakeModel(stream_chunks=chunks), cancellation_token=token)
+
+        events = [e async for e in transport.stream([UserMessage(content="hi")])]
+
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.END_TURN
+        assert final.response.message.text == "Hello world"
+
+
+class _StallingModel:
+    """Fake LangChain model whose `astream()` yields one chunk, then hangs
+    on an `asyncio.Event` that never fires — simulates a provider that
+    stops sending chunks mid-response (network stall, slow TTFB for the
+    next token) without ending the stream. Used to prove the cancellation
+    check does not depend on another chunk arriving to run (the gap
+    `test_langchain_transport.py`'s `TestStreamCancellation` doesn't
+    cover: those fakes only cancel synchronously between chunks)."""
+
+    def __init__(self, chunks: list[AIMessageChunk]) -> None:
+        self._chunks = chunks
+        self.aclose_called = False
+
+    def bind_tools(self, tools: list[Any]) -> "_StallingModel":
+        return self
+
+    async def astream(self, messages: list, config: Any = None) -> "AsyncIterator[AIMessageChunk]":
+        try:
+            for chunk in self._chunks:
+                yield chunk
+            await asyncio.Event().wait()  # never set -- simulates an indefinite stall
+        finally:
+            # A real provider stream's teardown runs here on GeneratorExit
+            # (delivered by our `.aclose()`) -- this is how we assert that
+            # actually happened rather than the generator being abandoned.
+            self.aclose_called = True
+
+
+class TestStreamCancellationDuringProviderStall:
+    """Stop Generation follow-up (CodeRabbit review): the per-chunk
+    `is_cancelled` check alone can only run once `astream()` yields
+    another chunk. `LangChainTransport.stream()` also races
+    `CancellationToken.wait()` against the next chunk so a cooperative
+    cancel is not stuck behind a provider that never sends one."""
+
+    async def test_cancel_during_a_stall_stops_the_stream_without_another_chunk(self) -> None:
+        token = CancellationToken()
+        model = _StallingModel([AIMessageChunk(content="partial")])
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        events: list[Any] = []
+        stream = transport.stream([UserMessage(content="hi")])
+        events.append(await anext(stream))  # the one real chunk, before the stall
+        token.cancel()  # fired while astream() is stuck on the never-set Event
+        events.append(await anext(stream))
+
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+
+        final = events[-1]
+        assert isinstance(final, StreamCompleteEvent)
+        assert final.response.stop_reason == StopReason.CANCELLED
+        assert final.response.message.text == "partial"
+
+    async def test_cancel_during_a_stall_closes_the_provider_generator(self) -> None:
+        """The teardown side of the same scenario: `.aclose()` must
+        actually run (not be left to GC) so the provider's underlying
+        connection is released promptly."""
+        token = CancellationToken()
+        model = _StallingModel([AIMessageChunk(content="partial")])
+        transport = LangChainTransport(model, cancellation_token=token)
+
+        stream = transport.stream([UserMessage(content="hi")])
+        await anext(stream)
+        token.cancel()
+        async for _ in stream:
+            pass
+
+        assert model.aclose_called is True

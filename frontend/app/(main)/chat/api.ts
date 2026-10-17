@@ -1,7 +1,7 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
+import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
-  ChatMessage,
   Conversation,
   ConversationMessage,
   ConversationPagination,
@@ -25,7 +25,10 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
   AttachmentRef,
+  type ChatKnowledgeFilters,
+  CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
 } from './types';
+import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
 
@@ -83,11 +86,20 @@ async function runChatStream(
 ): Promise<void> {
   const body = { ...payload, protocol: 'agui' };
   const tracking: AGUIStreamTracking = { receivedComplete: false };
+  let transportFailed = false;
   await streamSSERequest(endpoint, body, {
     onEvent: createAGUIEventHandler(callbacks, tracking),
-    onError: (error) => callbacks.onError?.(error),
+    onError: (error) => {
+      transportFailed = true;
+      callbacks.onError?.(error);
+    },
     signal: callbacks.signal,
   });
+  // A connection that closes cleanly without a terminal frame would otherwise
+  // leave the turn "streaming" forever, with Stop showing and no answer.
+  if (!tracking.receivedComplete && !tracking.receivedError && !transportFailed && !callbacks.signal?.aborted) {
+    callbacks.onError?.(new Error(CHAT_STREAM_ERROR_MESSAGES.interrupted));
+  }
 }
 
 /** Map GET /conversations (or agent conversations) row → sidebar `Conversation` */
@@ -103,6 +115,7 @@ export function mapApiConversationToConversation(conv: ConversationApiResponse):
     status: conv.status,
     modelInfo: conv.modelInfo,
     isOwner: conv.isOwner,
+    sharedBy: conv.sharedBy,
   };
 }
 
@@ -126,22 +139,35 @@ function sanitizeFilterIds(ids: unknown[] | null | undefined): string[] {
 }
 
 /**
- * Normalise an app/KB filter list and return a `{ filters }` spread fragment
- * for **non-agent** (assistant) streams.
+ * The `filters` object as sent: `apps` and `kb` always, and the keys that
+ * select below app level (record groups, folders, records) when not empty.
+ */
+function sanitizeFilters(filters: Partial<ChatKnowledgeFilters> | null | undefined): ChatKnowledgeFilters {
+  const recordGroups = sanitizeFilterIds(filters?.recordGroups);
+  const records = sanitizeFilterIds(filters?.records);
+  const recordsExact = sanitizeFilterIds(filters?.recordsExact);
+  return {
+    apps: sanitizeFilterIds(filters?.apps),
+    kb: sanitizeFilterIds(filters?.kb),
+    ...(recordGroups.length > 0 ? { recordGroups } : {}),
+    ...(records.length > 0 ? { records } : {}),
+    ...(recordsExact.length > 0 ? { recordsExact } : {}),
+  };
+}
+
+/**
+ * Normalise the filters and return a `{ filters }` spread fragment for
+ * **non-agent** (assistant) streams.
  *
  * Only emits the key when at least one valid ID remains — so the backend
  * treats the absence of `filters` as "search everything" (correct for the
  * assistant endpoint where no scope is intentional).
  */
 function buildFiltersPayload(
-  apps: unknown[] | null | undefined,
-  kb: unknown[] | null | undefined,
+  filters: Partial<ChatKnowledgeFilters> | null | undefined,
 ): Record<string, unknown> {
-  const validApps = sanitizeFilterIds(apps);
-  const validKb = sanitizeFilterIds(kb);
-  return validApps.length > 0 || validKb.length > 0
-    ? { filters: { apps: validApps, kb: validKb } }
-    : {};
+  const valid = sanitizeFilters(filters);
+  return hasAnyFilter(valid) ? { filters: valid } : {};
 }
 
 /**
@@ -152,10 +178,9 @@ function buildFiltersPayload(
  * `{ apps: [], kb: [] }` means "this agent has no knowledge scope."
  */
 function buildAgentFiltersPayload(
-  apps: unknown[] | null | undefined,
-  kb: unknown[] | null | undefined,
-): { filters: { apps: string[]; kb: string[] } } {
-  return { filters: { apps: sanitizeFilterIds(apps), kb: sanitizeFilterIds(kb) } };
+  filters: Partial<ChatKnowledgeFilters> | null | undefined,
+): { filters: ChatKnowledgeFilters } {
+  return { filters: sanitizeFilters(filters) };
 }
 
 // Chat API endpoints
@@ -263,23 +288,6 @@ export const ChatApi = {
     };
   },
 
-  // Fetch messages for a conversation
-  async fetchMessages(conversationId: string): Promise<ChatMessage[]> {
-    const { data } = await apiClient.get<ChatMessage[]>(
-      `/api/chat/conversations/${conversationId}/messages`
-    );
-    return data;
-  },
-
-  // Create a new conversation
-  async createConversation(title: string): Promise<Conversation> {
-    const { data } = await apiClient.post<Conversation>(
-      `/api/chat/conversations`,
-      { title }
-    );
-    return data;
-  },
-
   /**
    * Stream a chat message with SSE
    * Handles new conversation creation and existing conversation messages
@@ -305,6 +313,7 @@ export const ChatApi = {
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
+        ...(request.runId ? { runId: request.runId } : {}),
         ...(request.reasoningEffort ? { reasoningEffort: request.reasoningEffort } : {}),
         // `undefined` (runtime.ts omits the field entirely when every tool
         // is selected) must NOT become `[]` here — an empty array means
@@ -312,10 +321,12 @@ export const ChatApi = {
         // "use every configured toolset", `[]` as an explicit empty
         // filter), the opposite of what an unfiltered selection means.
         ...(request.agentStreamTools !== undefined ? { tools: request.agentStreamTools } : {}),
-        ...buildAgentFiltersPayload(f.apps, f.kb),
+        ...buildAgentFiltersPayload(f),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
+        ...(request.projectId ? { projectId: request.projectId } : {}),
+        ...(request.toolApproval ? { toolApproval: request.toolApproval } : {}),
       };
     } else {
       endpoint = request.conversationId
@@ -323,6 +334,7 @@ export const ChatApi = {
         : `/api/v1/conversations/stream`;
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
+      // `rest` already carries `runId` — spread through as-is.
       const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
       payload = {
         ...rest,
@@ -330,7 +342,7 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
-        ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+        ...buildFiltersPayload(reqFilters),
         ...(reqAttachments?.length ? { attachments: reqAttachments } : {}),
       };
     }
@@ -362,6 +374,7 @@ export const ChatApi = {
       agentStreamTools?: string[];
       agentCapabilities?: StreamChatRequest['agentCapabilities'];
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      runId?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -371,7 +384,7 @@ export const ChatApi = {
       modelName: request.modelName,
       modelFriendlyName: request.modelFriendlyName || request.modelName,
       chatMode: request.chatMode,
-      ...buildFiltersPayload(request.filters?.apps, request.filters?.kb),
+      ...buildFiltersPayload(request.filters),
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
     };
@@ -383,6 +396,9 @@ export const ChatApi = {
     }
     if (request.reasoningEffort) {
       body.reasoningEffort = request.reasoningEffort;
+    }
+    if (request.runId) {
+      body.runId = request.runId;
     }
 
     await runChatStream(endpoint, body, callbacks);
@@ -404,9 +420,10 @@ export const ChatApi = {
       chatMode: AgentStrategyApiSegment;
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
-      filters: { apps: string[]; kb: string[] };
+      filters: ChatKnowledgeFilters;
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
+      runId?: string;
     }
   ): Promise<void> {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
@@ -418,7 +435,7 @@ export const ChatApi = {
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
-      ...buildAgentFiltersPayload(model.filters.apps, model.filters.kb),
+      ...buildAgentFiltersPayload(model.filters),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
@@ -429,8 +446,43 @@ export const ChatApi = {
     if (model.reasoningEffort) {
       agentRegenBody.reasoningEffort = model.reasoningEffort;
     }
+    if (model.runId) {
+      agentRegenBody.runId = model.runId;
+    }
 
     await runChatStream(endpoint, agentRegenBody, callbacks);
+  },
+
+  /**
+   * Cooperatively stop an in-flight stream by `runId`.
+   * Endpoint: POST /api/v1/conversations/:conversationId/cancel (assistant)
+   *        or POST /api/v1/agents/:agentId/conversations/:conversationId/cancel (agent)
+   *
+   * Never rejects on "already finished" — the backend returns
+   * `{ cancelled: false }` (200) for an unknown/already-settled `runId`
+   * rather than a 4xx; see `cancelConversationStream` (Node) /
+   * `cancel_chat_stream` (Python). Callers that only care whether the
+   * stream is now stopped can ignore the return value entirely and rely on
+   * the grace-timeout abort fallback (`stopStreamForSlot`) instead.
+   */
+  async cancelStream(
+    conversationId: string,
+    runId: string,
+    agentId?: string | null,
+  ): Promise<{ cancelled: boolean }> {
+    const endpoint = agentId
+      ? `/api/v1/agents/${agentId}/conversations/${conversationId}/cancel`
+      : `/api/v1/conversations/${conversationId}/cancel`;
+    const { data } = await apiClient.post<{ cancelled: boolean }>(
+      endpoint,
+      { runId },
+      // The composer already shows its own "Stopping…" affordance; a
+      // generic error toast on top (e.g. if the run already ended) would
+      // be confusing noise — `stopStreamForSlot`'s grace-timeout fallback
+      // covers the case where this call fails outright.
+      { suppressErrorToast: true },
+    );
+    return data;
   },
 
   /**
@@ -605,6 +657,7 @@ export const ChatApi = {
       : `/api/v1/conversations/attachments/upload`;
     const { data } = await apiClient.post<{ attachments: AttachmentRef[] }>(url, fd, {
       signal: opts.signal,
+      timeout: CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
       // Remove the default application/json Content-Type so axios can auto-set
       // multipart/form-data with the correct boundary for this FormData upload.
       headers: { 'Content-Type': undefined },
@@ -640,14 +693,15 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { page?: number; limit?: number }): Promise<ListCollectionsForChatResult> {
-    const page = params?.page ?? 1;
+  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
         params: {
-          page,
+          // Only a cursor the server issued is ever sent back; one it did not
+          // issue is a 400.
+          ...(params?.cursor ? { cursor: params.cursor } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
@@ -671,8 +725,8 @@ export const ChatApi = {
     }));
     return {
       knowledgeBases,
-      requestedPage: page,
       requestedLimit: limit,
+      nextCursor: data.pagination?.nextCursor ?? null,
       serverPagination: data.pagination ?? null,
     };
   },
@@ -741,16 +795,21 @@ interface KnowledgeHubNodesResponse {
     limit?: number;
     totalItems?: number;
     totalPages?: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext?: boolean;
     hasPrev?: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   } | null;
 }
 
 /** One page from {@link ChatApi.listCollectionsForChat}. */
 export interface ListCollectionsForChatResult {
   knowledgeBases: KnowledgeBaseForChat[];
-  requestedPage: number;
   requestedLimit: number;
+  /** The cursor for the next page, or null at the end of the result. */
+  nextCursor: string | null;
   serverPagination: KnowledgeHubNodesResponse['pagination'];
 }
 

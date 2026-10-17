@@ -9,8 +9,10 @@ Covers:
 - _is_local_cpu_embedding
 """
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import openai
 import pytest
 
 from app.exceptions.indexing_exceptions import (
@@ -137,6 +139,145 @@ class TestInitializeCollection:
 # ===================================================================
 # get_embedding_model_instance
 # ===================================================================
+
+class TestEmbeddingModelCaching:
+    """The model is rebuilt only when the embedding config actually changes."""
+
+    @staticmethod
+    def _config(model="text-embedding-3-small"):
+        return {"embedding": [{
+            "provider": "openAI",
+            "isDefault": True,
+            "isMultimodal": False,
+            "configuration": {"model": model, "apiKey": "fake-key"},
+        }]}
+
+    @pytest.mark.asyncio
+    async def test_second_call_reuses_client_and_skips_probe(self):
+        """Rebuilding per record opens a fresh connection pool and burns an
+        extra embed round trip on the dimension probe."""
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "m"
+        vs.config_service.get_config = AsyncMock(return_value=self._config())
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_embedding_model",
+            return_value=mock_embeddings,
+        ) as build:
+            await vs.get_embedding_model_instance()
+            await vs.get_embedding_model_instance()
+
+        assert build.call_count == 1
+        assert mock_embeddings.aembed_query.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_config_change_rebuilds_client(self):
+        vs = _make_vectorstore()
+        mock_embeddings = MagicMock()
+        mock_embeddings.aembed_query = AsyncMock(return_value=[0.1] * 1024)
+        mock_embeddings.model_name = "m"
+        vs.config_service.get_config = AsyncMock(return_value=self._config())
+
+        with patch(
+            "app.modules.transformers.vectorstore.get_embedding_model",
+            return_value=mock_embeddings,
+        ) as build:
+            await vs.get_embedding_model_instance()
+            vs.config_service.get_config = AsyncMock(
+                return_value=self._config("text-embedding-3-large")
+            )
+            await vs.get_embedding_model_instance()
+
+        assert build.call_count == 2
+
+
+class TestEmbedDocumentsWithRetry:
+    """Tests for VectorStore._embed_documents_with_retry."""
+
+    @staticmethod
+    def _rate_limit_error():
+        response = MagicMock()
+        response.headers = {"Retry-After": "7"}
+        return openai.RateLimitError("rate limited", response=response, body=None)
+
+    @pytest.mark.asyncio
+    async def test_transient_failure_is_retried(self):
+        """One 429 must not discard the batches already upserted for the record."""
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=[self._rate_limit_error(), [[0.1] * 3]]
+        )
+
+        with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+            result = await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert result == [[0.1] * 3]
+        assert vs.dense_embeddings.aembed_documents.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_rate_limit_signals_backpressure(self):
+        """A 429 has to pause the consumer, not just expire as a batch timeout."""
+        from app.services.messaging.backpressure import (
+            BackpressureCoordinator,
+            set_default_backpressure_coordinator,
+        )
+
+        coordinator = BackpressureCoordinator()
+        set_default_backpressure_coordinator(coordinator)
+        try:
+            vs = _make_vectorstore()
+            vs.embedding_provider = "openAI"
+            vs.dense_embeddings = MagicMock()
+            vs.dense_embeddings.aembed_documents = AsyncMock(
+                side_effect=[self._rate_limit_error(), [[0.1] * 3]]
+            )
+
+            with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+                await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+            assert coordinator.paused_services == frozenset({"openAI"})
+        finally:
+            set_default_backpressure_coordinator(None)
+
+    @pytest.mark.asyncio
+    async def test_non_retriable_error_is_not_retried(self):
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=ValueError("bad model name")
+        )
+
+        with pytest.raises(ValueError):
+            await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert vs.dense_embeddings.aembed_documents.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_exhausted_attempts_raise_embedding_error(self):
+        from app.exceptions.indexing_exceptions import EmbeddingError
+        from app.modules.transformers.vectorstore import _EMBEDDING_BATCH_MAX_ATTEMPTS
+
+        vs = _make_vectorstore()
+        vs.embedding_provider = "openAI"
+        vs.dense_embeddings = MagicMock()
+        vs.dense_embeddings.aembed_documents = AsyncMock(
+            side_effect=asyncio.TimeoutError()
+        )
+
+        with patch("app.modules.transformers.vectorstore.asyncio.sleep", AsyncMock()):
+            with pytest.raises(EmbeddingError, match="chars"):
+                await vs._embed_documents_with_retry(["hello"], "rec-1")
+
+        assert (
+            vs.dense_embeddings.aembed_documents.await_count
+            == _EMBEDDING_BATCH_MAX_ATTEMPTS
+        )
+
 
 class TestGetEmbeddingModelInstance:
     @pytest.mark.asyncio
@@ -535,18 +676,7 @@ class TestCreateEmbeddingsDeeper:
 # _normalize_image_to_base64
 # ===================================================================
 
-class TestNormalizeImageToBase64:
-    @pytest.mark.asyncio
-    async def test_data_url(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64,iVBORw0KGgo=")
-        assert result == "iVBORw0KGgo="
-
-    @pytest.mark.asyncio
-    async def test_data_url_no_comma(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("data:image/png;base64")
-        assert result is None
+class TestNormalizeImageToBase64RawInput:
 
     @pytest.mark.asyncio
     async def test_raw_base64(self):
@@ -560,18 +690,6 @@ class TestNormalizeImageToBase64:
         result = await vs._normalize_image_to_base64("aGVsbG8")
         assert result is not None
         assert result.endswith("=")
-
-    @pytest.mark.asyncio
-    async def test_none_input(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64(None)
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_empty_string(self):
-        vs = _make_vectorstore()
-        result = await vs._normalize_image_to_base64("")
-        assert result is None
 
     @pytest.mark.asyncio
     async def test_non_string_input(self):
@@ -602,11 +720,18 @@ class TestDeleteEmbeddings:
 
     @pytest.mark.asyncio
     async def test_failure_raises(self):
-        from app.exceptions.indexing_exceptions import EmbeddingError
         vs = _make_vectorstore()
         vs.vector_db_service.filter_collection = AsyncMock(side_effect=Exception("db error"))
-        with pytest.raises(EmbeddingError):
+        with pytest.raises(VectorStoreError):
             await vs.delete_embeddings("vr-1", "test_collection")
+
+    @pytest.mark.asyncio
+    async def test_block_delete_failure_is_a_storage_error(self):
+        vs = _make_vectorstore()
+        vs.vector_db_service.filter_collection = AsyncMock(return_value={})
+        vs.vector_db_service.delete_points = AsyncMock(side_effect=Exception("db error"))
+        with pytest.raises(VectorStoreError):
+            await vs.delete_blocks_by_ids({"b1"}, "vr-1", "test_collection")
 
 
 # ===================================================================
@@ -757,6 +882,109 @@ class TestIndexDocumentsTableBlocks:
         vs._create_embeddings.assert_awaited_once()
         chunks = vs._create_embeddings.call_args[0][0]
         assert any("Summary of sales" in getattr(c, "page_content", "") for c in chunks)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("block_type", "field"),
+        [("TABLE_ROW", "row_natural_language_text"), ("TABLE", "table_summary")],
+    )
+    async def test_oversized_table_text_is_split_to_the_token_ceiling(
+        self, block_type: str, field: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Table rows and summaries went to the embedder whole. One over the
+        model's token limit is rejected only after the full retry budget, which
+        stalls the record."""
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+        from app.modules.transformers.vectorstore import _exceeds_token_ceiling
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        text = "Header: value, " * 2_000
+        block = Block(
+            type=getattr(BlockType, block_type),
+            format=DataFormat.JSON,
+            data={field: text},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert len(docs) > 1
+        assert not any(_exceeds_token_ceiling(d.page_content, 512) for d in docs)
+        assert "".join(d.page_content for d in docs) == text
+        assert {d.metadata["blockId"] for d in docs} == {block.id}
+
+    @pytest.mark.asyncio
+    async def test_table_row_under_the_ceiling_stays_one_document(self) -> None:
+        from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
+
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        block = Block(
+            type=BlockType.TABLE_ROW,
+            format=DataFormat.JSON,
+            data={"row_natural_language_text": "Name: Alice, Age: 30"},
+            index=0,
+        )
+
+        await vs.index_documents(
+            BlocksContainer(blocks=[block], block_groups=[]),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert [d.page_content for d in docs] == ["Name: Alice, Age: 30"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["table_group", "sql_row", "sql_table", "sql_view"])
+    async def test_oversized_group_and_sql_text_is_split_to_the_token_ceiling(
+        self, source: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Table block-group summaries, SQL rows, DDL and view text reached the
+        embedder whole, the same failure as an oversized table row."""
+        from app.models.blocks import BlockGroup, GroupSubType, GroupType
+        from app.modules.transformers.vectorstore import _exceeds_token_ceiling
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs = _make_vectorstore()
+        vs.get_embedding_model_instance = AsyncMock(return_value=False)
+        vs._create_embeddings = AsyncMock()
+        text = "Header: value, " * 2_000
+        blocks, groups = [], []
+        if source == "table_group":
+            groups.append(BlockGroup(type=GroupType.TABLE, index=0, data={"table_summary": text}))
+        elif source == "sql_row":
+            blocks.append(_make_block(
+                "sql-row-1", "table_row", {"row_natural_language_text": text}, sub_type="sql_table",
+            ))
+        elif source == "sql_table":
+            groups.append(BlockGroup(
+                type=GroupType.TABLE, sub_type=GroupSubType.SQL_TABLE, index=0,
+                data={"fqn": "db.s.t", "ddl": text},
+            ))
+        else:
+            groups.append(BlockGroup(
+                type=GroupType.VIEW, sub_type=GroupSubType.SQL_VIEW, index=0,
+                data={"fqn": "db.s.v", "definition": text},
+            ))
+
+        await vs.index_documents(
+            _make_blocks_container(blocks=blocks, block_groups=groups),
+            "org-1", "rec-1", "vr-1", "text/plain"
+        )
+
+        docs = vs._create_embeddings.call_args[0][0]
+        assert len(docs) > 1
+        assert not any(_exceeds_token_ceiling(d.page_content, 512) for d in docs)
+        assert text in "".join(d.page_content for d in docs)
+        assert len({d.metadata["blockId"] for d in docs}) == 1
 
 
 # ===================================================================
@@ -1015,7 +1243,6 @@ dropped in the multi-vector-DB changeset:
 - Empty table_summary / row_natural_language_text produce no embedding.
 """
 
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -1133,6 +1360,9 @@ def _make_vectorstore_p1(supports_sparse=False):
     dense.aembed_query = AsyncMock(return_value=[0.1] * 1024)
     vs.dense_embeddings = dense
     vs.embedding_provider = None
+    vs.embedding_endpoint = None
+    vs._embedding_config_hash = None
+    vs._embedding_model_lock = asyncio.Lock()
     vs.api_key = None
     vs.model_name = "test-model"
     vs.region_name = None

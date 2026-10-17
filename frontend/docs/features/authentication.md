@@ -272,6 +272,8 @@ GET /api/v1/configurationManager/frontendPublicUrl
 
 The redirect URI is built as `{frontendUrl}/auth/{method}/callback`.
 
+The desktop app uses the same redirect URIs: sign-in opens in the user's browser and the callback page hands the result back over a `pipeshub://` link. For generic OAuth, a custom `redirectUri` must still be `{frontendUrl}/auth/oauth/callback`, since that page is what completes the handoff. SAML needs no IdP change; its desktop result goes through `{frontendUrl}/auth/sign-in/samlSso/success`.
+
 ---
 
 ## UI Behaviour

@@ -13,15 +13,21 @@ interface ChatItemMenuProps {
   onRename: () => void;
   onArchive: () => void;
   onDelete: () => void;
+  /** Saves the whole chat as a Markdown file. Omit to hide the option. */
+  onExport?: () => void;
   /** Agent-scoped sidebar: only delete is supported by the API */
   showRename?: boolean;
   showArchive?: boolean;
+  /** Opens the move-to-project picker. Omit to hide the option entirely. */
+  onMoveToProject?: () => void;
+  /** Unlinks the conversation from its current project. Only shown when the row is already linked. */
+  onRemoveFromProject?: () => void;
 }
 
 /**
  * Meatball (three-dot) dropdown menu for a chat sidebar item.
  *
- * Shows on hover of the parent row. Options: Rename, Archive, Delete.
+ * Shows on hover of the parent row. Options: Rename, Export, Archive, Delete.
  * Matches Figma spec (node 2496:29091).
  */
 export function ChatItemMenu({
@@ -30,8 +36,11 @@ export function ChatItemMenu({
   onRename,
   onArchive,
   onDelete,
+  onExport,
   showRename = true,
   showArchive = true,
+  onMoveToProject,
+  onRemoveFromProject,
 }: ChatItemMenuProps) {
   const { t } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
@@ -90,6 +99,19 @@ export function ChatItemMenu({
             </Flex>
           </DropdownMenu.Item>
         )}
+        {onExport && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onExport();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="download" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.export.menuItem')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
         {showArchive && (
           <DropdownMenu.Item
             onClick={(e) => {
@@ -100,6 +122,32 @@ export function ChatItemMenu({
             <Flex align="center" gap="1">
               <MaterialIcon name="archive" size={16} color="var(--slate-11)" />
               <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.archive')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onMoveToProject && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onMoveToProject();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="drive_file_move" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.projects.moveToProject')}</Text>
+            </Flex>
+          </DropdownMenu.Item>
+        )}
+        {onRemoveFromProject && (
+          <DropdownMenu.Item
+            onClick={(e) => {
+              e.stopPropagation();
+              onRemoveFromProject();
+            }}
+          >
+            <Flex align="center" gap="1">
+              <MaterialIcon name="folder_off" size={16} color="var(--slate-11)" />
+              <Text size="2" style={{ color: 'var(--slate-11)' }}>{t('chat.projects.removeFromProject')}</Text>
             </Flex>
           </DropdownMenu.Item>
         )}

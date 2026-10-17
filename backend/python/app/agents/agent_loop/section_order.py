@@ -41,10 +41,13 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # ── Band A — static ──────────────────────────────────────────────────────
     ("identity",                   Volatility.STATIC),
     ("agent_instructions",         Volatility.STATIC),
+    # Author-set instructions from a linked Project (Node ProjectService) —
+    # set for any conversation (Chat Assistant, Universal Agent Mode, or a
+    # real Agent Builder agent) that is linked to a project.
+    ("project_instructions",       Volatility.STATIC),
     # Org-level "Custom Instructions" (workspace settings), mode-resolved by
     # `chat_modes.bridge` — Chat Assistant only, never set for Agent Builder.
     ("custom_instructions",        Volatility.STATIC),
-    ("goal_brief",                 Volatility.STATIC),
     ("operating_rules",            Volatility.STATIC),
     ("response_format",            Volatility.STATIC),
     ("base_system_prompt",         Volatility.STATIC),
@@ -53,6 +56,11 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # internal_knowledge_first, full_record_policy, hybrid_strategy, and
     # tool_selection_strategy — see `_build_finding_information`).
     ("finding_information",        Volatility.STATIC),
+    # When to reach for the calculator instead of mental arithmetic; depends
+    # only on the grant and disclosure, so it is fixed for the request.
+    ("exact_numbers",              Volatility.STATIC),
+    # How to research when the person turned deep research on; absent otherwise.
+    ("deep_research",              Volatility.STATIC),
     ("code_execution",             Volatility.STATIC),
     # ── Band B — conversation-stable ─────────────────────────────────────────
     # `available_tools` grows when fetch_tools loads new toolsets; everything
@@ -61,15 +69,31 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     ("knowledge_sources",          Volatility.CONV),
     ("capability_summary",         Volatility.CONV),
     ("user_context",               Volatility.CONV),
-    ("skills_overview",            Volatility.CONV),
     ("answer_confidence",          Volatility.CONV),
     # Worked examples — injected for SMALL and MID tiers only; omitted for
     # FRONTIER where the function schemas are sufficient scaffolding.
     ("worked_traces",              Volatility.CONV),
+    # Last Band B section, deliberately: `preloaded_skills` (the first Band
+    # C section below) is this turn's "here's the one that actually
+    # matched" follow-up to this catalog — keeping any other CONV section
+    # between them would put unrelated content in the way of a reader
+    # connecting the two.
+    ("skills_overview",            Volatility.CONV),
     # ── Band C — turn-volatile ────────────────────────────────────────────────
+    # Adjacent to `skills_overview` above (see its comment) — written by the
+    # `skill_preloading` PRE_AGENT middleware, never by this builder.
+    ("preloaded_skills",           Volatility.TURN),
+    # Same relationship to `available_tools` (Band B) that `preloaded_skills`
+    # has to `skills_overview` — written by the `tool_preloading` middleware.
+    ("preloaded_tools",            Volatility.TURN),
+    # The router's requirements, success criteria and gaps for this question.
+    ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),
     ("request_context",            Volatility.TURN),
     ("attachments",                Volatility.TURN),
+    # Citation rules for an agent that cites only what a question brought
+    # (retrieved results, attachments); see `citation_rules` above otherwise.
+    ("turn_citation_rules",        Volatility.TURN),
     ("extra_sections",             Volatility.TURN),
 )
 

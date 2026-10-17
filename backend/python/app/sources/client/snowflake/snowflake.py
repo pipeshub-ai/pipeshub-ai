@@ -475,6 +475,17 @@ class SnowflakeResponse(BaseModel):
     )
     error: Optional[str] = Field(default=None, description="Error code if failed")
     message: Optional[str] = Field(default=None, description="Error message if failed")
+    status_code: Optional[int] = Field(
+        default=None,
+        description="HTTP status the Snowflake API returned, when the call reached it",
+    )
+    # The SQL API answers every statement-level failure with HTTP 422 — revoked
+    # privilege, dropped table and suspended warehouse alike — so the status
+    # discriminates nothing and this is the only signal that tells them apart.
+    sql_state: Optional[str] = Field(
+        default=None,
+        description="SQLSTATE of a statement-level failure, from the response body",
+    )
     statement_handle: Optional[str] = Field(
         default=None, description="Statement handle for async queries"
     )

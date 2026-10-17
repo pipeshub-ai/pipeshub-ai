@@ -54,6 +54,27 @@ LANES_PAUSED = METRICS_BACKEND.gauge(
     ["broker"],
 )
 
+# Bounded by the reason, never labelled by connector.
+LANE_ASSIGNMENT_FALLBACKS = METRICS_BACKEND.counter(
+    "pipeshub_lane_assignment_fallbacks_total",
+    "Record events sent to their connector's hashed lane because the lane map "
+    "could not be read",
+    ["reason"],
+)
+
+# Bounded by the lane count; never labelled by connector.
+LANE_CONNECTORS = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_lane_connectors",
+    "Connectors assigned to each Redis Streams lane, by size",
+    ["lane", "size"],
+)
+
+LANE_OLDEST_WAITING = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_lane_oldest_waiting_seconds",
+    "Age of the oldest event each lane has not finished with; 0 when it has none",
+    ["lane"],
+)
+
 DWELL_EXCEEDED = METRICS_BACKEND.counter(
     "pipeshub_indexing_scheduler_dwell_exceeded_total",
     "Buffered items force-resolved after exceeding the dwell budget",
@@ -64,6 +85,22 @@ MISSING_KEY = METRICS_BACKEND.counter(
     "pipeshub_indexing_scheduler_missing_key_total",
     "Messages whose fairness key field was absent, grouped under the default",
     ["broker", "field"],
+)
+
+CONNECTOR_OFF_SETTLED = METRICS_BACKEND.counter(
+    "pipeshub_indexing_connector_off_settled_total",
+    "Queued events of turned-off or removed connectors acknowledged as they "
+    "were read, without being buffered or dispatched",
+    ["broker"],
+)
+
+# Bounded: one series per index tier. A heavy tier pinned at its ceiling
+# while light reads zero is the signature of attachments queueing on the
+# heavy-parse slots -- healthy, as long as light keeps moving.
+GATE_WAITERS = METRICS_BACKEND.gauge(
+    "pipeshub_indexing_gate_waiters",
+    "Tasks spawned but not yet admitted through their index gate, by tier",
+    ["broker", "tier"],
 )
 
 
@@ -91,9 +128,29 @@ def record_lanes_paused(broker: str, count: int) -> None:
     LANES_PAUSED.set(broker, value=count)
 
 
+def record_lane_assignment_fallback(reason: str) -> None:
+    LANE_ASSIGNMENT_FALLBACKS.inc(reason)
+
+
+def record_lane_connectors(lane: str, size: str, count: int) -> None:
+    LANE_CONNECTORS.set(lane, size, value=count)
+
+
+def record_lane_oldest_waiting(lane: str, seconds: float) -> None:
+    LANE_OLDEST_WAITING.set(lane, value=seconds)
+
+
 def record_dwell_exceeded(broker: str, count: int = 1) -> None:
     DWELL_EXCEEDED.inc(broker, value=count)
 
 
 def record_missing_key(broker: str, field: str) -> None:
     MISSING_KEY.inc(broker, field)
+
+
+def record_gate_waiters(broker: str, tier: str, count: int) -> None:
+    GATE_WAITERS.set(broker, tier, value=count)
+
+
+def record_connector_off_settled(broker: str, count: int) -> None:
+    CONNECTOR_OFF_SETTLED.inc(broker, value=count)

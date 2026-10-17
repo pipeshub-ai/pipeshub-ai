@@ -2,10 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import ipaddress
+import json
 import os
 import re
+import socket
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Dict
+from operator import attrgetter
+from typing import TYPE_CHECKING, Any, Dict, Mapping, TypeVar
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -19,7 +24,10 @@ from app.config.constants.ai_models import (
     AZURE_EMBEDDING_API_VERSION,
     DEFAULT_EMBEDDING_MODEL,
     DEFAULT_REASONING_EFFORT,
+    EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
     OPENROUTER_BASE_URL,
+    REASONING_EFFORT_VALUES,
+    REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS,
     AzureOpenAILLM,
 )
 from app.utils.embedding_server_client import get_embedding_server_embeddings
@@ -30,7 +38,40 @@ from app.utils.llm_api_mode_store import (
     get_llm_api_mode_store,
 )
 from app.utils.logger import create_logger
+from app.utils.model_egress import (
+    address_refusal,
+    env_proxy_applies,
+    guard_httpx_client,
+    guarded_async_client,
+    is_platform_endpoint,
+    parse_answers,
+    private_allowed_for,
+)
+from app.utils.url_fetcher import (
+    PRIVATE_ADDRESS_SWITCH_ENV,
+    IPAddress,
+    _ip_is_blocked,
+    is_never_allowed_address,
+    literal_ip,
+    private_addresses_blocked,
+)
 
+_SdkModel = TypeVar("_SdkModel")
+
+
+
+def _decorate_chat_model(model, provider, model_name, config):  # noqa: ANN001, ANN202
+    # Imported here: edition_services pulls in connector and graph code that
+    # every service using this module should not have to load.
+    from app.edition_services import decorate_chat_model
+
+    return decorate_chat_model(model, provider, model_name, config)
+
+
+def _decorate_embeddings(embeddings, provider, model_name, config):  # noqa: ANN001, ANN202
+    from app.edition_services import decorate_embeddings
+
+    return decorate_embeddings(embeddings, provider, model_name, config)
 
 def coerce_message_content_to_text(content: Any) -> str:
     """Normalize a LangChain message ``content`` value to plain text.
@@ -100,14 +141,193 @@ LOCAL_CPU_EMBEDDING_PROVIDERS = frozenset({
     EmbeddingProvider.SENTENCE_TRANSFOMERS.value,
 })
 
+# These speak a hosted-API protocol but are usually pointed at a server the
+# operator runs themselves. Whether they are as slow as the built-in embedding
+# server depends on where the endpoint points, not on the provider name — so
+# they are resolved per-endpoint by ``is_local_cpu_embedding_provider``.
+SELF_HOSTABLE_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.LITELLM_PROXY.value,
+    EmbeddingProvider.LM_STUDIO.value,
+    EmbeddingProvider.OLLAMA.value,
+    EmbeddingProvider.OPENAI_COMPATIBLE.value,
+})
 
-def is_local_cpu_embedding_provider(provider: str | None) -> bool:
-    """Whether *provider* embeds on local CPU via the embedding server.
+_LOCAL_HOSTNAME_SUFFIXES = (".localhost", ".local", ".internal", ".svc")
+
+
+def _is_locally_served_endpoint(endpoint: str | None) -> bool:
+    """Whether *endpoint* points at a host inside this deployment.
+
+    Deliberately does not resolve DNS: this runs on the indexing event loop for
+    every batch, and a lookup here would block it. A name that cannot be judged
+    from its text alone is treated as remote, which only costs the shorter
+    timeout budget the caller already used before endpoints were consulted.
+    """
+    if not endpoint:
+        return False
+    host = urlparse(endpoint if "//" in endpoint else f"//{endpoint}").hostname
+    if not host:
+        return False
+    host = host.lower().removesuffix(".")
+
+    try:
+        return ipaddress.ip_address(host).is_private
+    except ValueError:
+        pass
+
+    if host == "localhost" or host.endswith(_LOCAL_HOSTNAME_SUFFIXES):
+        return True
+    # Single-label names only resolve inside a private network — a Docker
+    # Compose service name or a Kubernetes short name.
+    return "." not in host
+
+
+_URL_SCHEME = re.compile(r"^[a-zA-Z][a-zA-Z0-9+.\-]*://")
+
+
+def _endpoint_host(endpoint: object) -> str:
+    """The host a client would connect to for *endpoint*, or "" when it names none.
+
+    Raises:
+        ValueError: when the value is not text or is not an http(s) URL.
+    """
+    if not isinstance(endpoint, str):
+        raise ValueError(f"Model endpoint must be a URL, got {type(endpoint).__name__}.")
+    try:
+        parsed = urlparse(endpoint if _URL_SCHEME.match(endpoint) else f"//{endpoint}")
+        host = (parsed.hostname or "").lower()
+        if parsed.scheme not in ("", "http", "https"):
+            raise ValueError("not http(s)")
+        if not host.isascii():
+            # Clients convert the name with IDNA before connecting, which reads "。" and
+            # "．" as dots: "169.254．169.254" is dialed as 169.254.169.254.
+            host = host.encode("idna").decode("ascii")
+    except ValueError as e:
+        raise ValueError(f"Model endpoint {endpoint!r} must be an http(s) URL.") from e
+    return host.removesuffix(".")
+
+
+def require_allowed_endpoint(endpoint: str | None) -> None:
+    """Refuse a model endpoint this deployment must not call.
+
+    Text only, like ``_is_locally_served_endpoint``: this runs on the indexing event
+    loop for every batch, so it must not resolve DNS. It refuses early with a clear reason;
+    what a name resolves to is checked when the client connects (``app.utils.model_egress``)
+    and when a config is tested before it is saved (``require_public_endpoint``).
+
+    Raises:
+        ValueError: with the reason, worded for the admin who entered the endpoint.
+    """
+    if not endpoint:
+        return
+    host = _endpoint_host(endpoint)
+    if not host:
+        return  # nothing a client could connect to; a provider that needs it fails on its own
+    ip = literal_ip(host)
+    if (ip is not None and is_never_allowed_address(ip)) or host == "metadata.google.internal":
+        raise ValueError(
+            f"Model endpoint {endpoint!r} is a link-local or cloud metadata address, which is never allowed."
+        )
+    if (
+        private_addresses_blocked()
+        and not is_platform_endpoint(endpoint)
+        and (_ip_is_blocked(ip) if ip is not None else _is_locally_served_endpoint(f"//{host}"))
+    ):
+        raise ValueError(
+            f"Model endpoint {endpoint!r} is a private or internal address, which this deployment "
+            f"does not allow ({PRIVATE_ADDRESS_SWITCH_ENV})."
+        )
+
+
+def _resolved_addresses(host: str) -> list[IPAddress]:
+    """Raises ``socket.gaierror`` or ``UnicodeError`` when the name cannot be looked up."""
+    return parse_answers(socket.getaddrinfo(host, None, type=socket.SOCK_STREAM))
+
+
+def _unresolved_reason(endpoint: str, error: Exception | None) -> str:
+    if isinstance(error, socket.gaierror) and error.errno == socket.EAI_AGAIN:
+        return f"Model endpoint {endpoint!r} could not be checked: temporary DNS failure. Try again."
+    return f"Model endpoint {endpoint!r} does not resolve: no address was found for its host name."
+
+
+async def require_public_endpoint(endpoint: str | None) -> None:
+    """``require_allowed_endpoint`` plus a DNS lookup, for testing a config before it is
+    saved: a name that does not resolve, or resolves to an address the text check refuses,
+    is refused too.
+
+    A name reached through an ``HTTP(S)_PROXY`` may resolve only on the proxy's side, so a
+    failed local lookup is not held against it.
+
+    Raises:
+        ValueError: with the reason. It does not say what the name resolves to: that would
+            tell the caller about addresses inside the deployment's network.
+    """
+    require_allowed_endpoint(endpoint)
+    if not endpoint or is_platform_endpoint(endpoint):
+        return
+    host = _endpoint_host(endpoint)
+    if not host or literal_ip(host) is not None:
+        return
+    lookup_error: Exception | None = None
+    try:
+        addresses = await asyncio.to_thread(_resolved_addresses, host)
+    except (socket.gaierror, UnicodeError) as e:
+        addresses, lookup_error = [], e
+    if not addresses:
+        if env_proxy_applies(endpoint):
+            return
+        raise ValueError(_unresolved_reason(endpoint, lookup_error)) from lookup_error
+    reason = address_refusal(addresses, allow_private=private_allowed_for(endpoint))
+    if reason is not None:
+        raise ValueError(f"Model endpoint {endpoint!r} resolves to {reason}.")
+
+
+def _endpoint_client_kwargs(base_url: str) -> dict[str, Any]:
+    """``AsyncOpenAI`` arguments for a configured endpoint, on a client that checks what the
+    name resolves to as it connects and answers a redirect instead of following it."""
+    from openai import DefaultAsyncHttpxClient
+
+    require_allowed_endpoint(base_url)
+    http_client = DefaultAsyncHttpxClient()
+    guard_httpx_client(http_client, base_url)
+    return {"base_url": base_url, "http_client": http_client}
+
+
+# Where each kind of model keeps its SDK clients (openai.OpenAI, anthropic.Anthropic,
+# ollama.Client and their async twins). Every one of those holds its httpx client in ``_client``.
+_OPENAI_ROOT_CLIENTS = ("root_client", "root_async_client")
+_OPENAI_RESOURCE_CLIENTS = ("client._client", "async_client._client")
+_OWN_CLIENTS = ("_client", "_async_client")
+
+
+def _guard_clients(model: _SdkModel, sdk_clients: tuple[str, ...], endpoint: str | None) -> _SdkModel:
+    """Guard a model's HTTP clients with ``guard_httpx_client``: no redirects (the OpenAI,
+    Anthropic and Ollama SDKs follow them by default), and every new connection dials only
+    an address that passed the endpoint policy."""
+    for sdk_client in sdk_clients:
+        guard_httpx_client(attrgetter(sdk_client)(model)._client, endpoint)
+    return model
+
+
+def is_local_cpu_embedding_provider(
+    provider: str | None, endpoint: str | None = None
+) -> bool:
+    """Whether *provider* embeds on hardware this deployment shares.
+
+    Callers use this to pick batch size, concurrency and timeout budgets, so
+    the question is "is this as slow as a CPU model next door", not "is the
+    vendor named locally". A self-hostable provider pointed at a private
+    address answers yes; the same provider pointed at a vendor's cloud does not.
 
     ``None`` counts as local: an unconfigured deployment falls back to
     ``get_default_embedding_model()``.
     """
-    return provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS
+    if provider is None or provider in LOCAL_CPU_EMBEDDING_PROVIDERS:
+        return True
+    return (
+        provider in SELF_HOSTABLE_EMBEDDING_PROVIDERS
+        and _is_locally_served_endpoint(endpoint)
+    )
 
 
 class LLMProvider(Enum):
@@ -135,6 +355,7 @@ class LLMProvider(Enum):
 class ImageGenerationProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
@@ -142,6 +363,7 @@ class ImageGenerationProvider(Enum):
 class TTSProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     GEMINI = "gemini"
     OPENROUTER = "openRouter"
 
@@ -149,6 +371,7 @@ class TTSProvider(Enum):
 class STTProvider(Enum):
     LITELLM_PROXY = "litellmProxy"
     OPENAI = "openAI"
+    OPENAI_COMPATIBLE = "openAICompatible"
     WHISPER = "whisper"
     WISPR = "wispr"
     GEMINI = "gemini"
@@ -158,8 +381,47 @@ MAX_OUTPUT_TOKENS = 4096
 MAX_OUTPUT_TOKENS_CLAUDE_MODERN = 16384
 MAX_OUTPUT_TOKENS_CLAUDE_4_5 = 64000
 
+def embedding_config_hash(embedding_configs: "list[dict[str, Any]] | None") -> str:
+    """Deterministic hash of the embedding config, for cache invalidation.
+
+    Covers every field that changes which client gets built or how it
+    authenticates, so a change made in the admin UI rebuilds the model rather
+    than being served from a stale cache. Shared by the indexing and retrieval
+    paths so both invalidate on the same events.
+    """
+    if not embedding_configs:
+        return "default"
+    serialisable = []
+    for cfg in embedding_configs:
+        configuration = cfg.get("configuration") or {}
+        serialisable.append({
+            "provider": cfg.get("provider"),
+            "isDefault": cfg.get("isDefault"),
+            "isMultimodal": cfg.get("isMultimodal"),
+            "model": configuration.get("model"),
+            "endpoint": configuration.get("endpoint"),
+            "dimensions": configuration.get("dimensions"),
+            "apiKey": configuration.get("apiKey"),
+            "organizationId": configuration.get("organizationId"),
+            "trustRemoteCode": configuration.get("trustRemoteCode"),
+            "region": configuration.get("region"),
+            "awsAccessKeyId": configuration.get("awsAccessKeyId"),
+            "awsAccessSecretKey": configuration.get("awsAccessSecretKey"),
+            "serviceAccountJson": configuration.get("serviceAccountJson"),
+            "project": configuration.get("project"),
+            "location": configuration.get("location"),
+        })
+    return hashlib.sha256(
+        json.dumps(serialisable, sort_keys=True, default=str).encode()
+    ).hexdigest()[:16]
+
+
 def get_default_embedding_model() -> Embeddings:
-    return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
+    embeddings = get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
+    return _decorate_embeddings(
+        embeddings, "default", DEFAULT_EMBEDDING_MODEL,
+        {"configuration": {"model": DEFAULT_EMBEDDING_MODEL}},
+    )
 
 logger = create_logger("aimodels")
 
@@ -237,10 +499,29 @@ def _create_vertex_credentials(service_account_json: str) -> Any:
     from google.oauth2 import service_account
 
     info = json.loads(service_account_json)
+    # google-auth sends the signed token request to the key file's own token_uri.
+    if isinstance(info, dict):
+        require_allowed_endpoint(info.get("token_uri"))
     return service_account.Credentials.from_service_account_info(
         info,
         scopes=["https://www.googleapis.com/auth/cloud-platform"],
     )
+
+
+_VERTEX_LOCATION = re.compile(r"[a-z0-9-]+")
+
+
+def _vertex_location(configuration: dict[str, Any]) -> str:
+    """The configured Vertex AI region. The SDK puts it in the API host name, so anything
+    but a region name would point the client at another host.
+
+    Raises:
+        ValueError: when the value is not a region name.
+    """
+    location = configuration.get("location") or "us-central1"
+    if not isinstance(location, str) or not _VERTEX_LOCATION.fullmatch(location):
+        raise ValueError(f"Vertex AI location {location!r} must be a region name such as 'us-central1'.")
+    return location
 
 
 def is_multimodal_llm(config: dict[str, Any]) -> bool:
@@ -269,6 +550,31 @@ def _set_embedding_dimensions_kwarg(
         kwargs[key] = dimensions
 
 
+def _set_openai_client_limits_kwargs(
+    kwargs: Dict[str, Any],
+    provider: str | None = None,
+    endpoint: str | None = None,
+) -> None:
+    """Bound one HTTP attempt and disable the SDK's own retry loop.
+
+    Callers wrap embed calls in their own timeout (the indexing pipeline bounds
+    each batch), and the SDK's silent 2 retries at a 600s default timeout sit
+    entirely inside that budget — so a rate-limited or stalled provider expires
+    the caller's clock instead of surfacing as the 429 or timeout it was.
+    Retries belong to the caller, which can also signal backpressure; see
+    ``app.utils.embedding_retry``.
+
+    Locally served models (LM Studio, self-hosted LiteLLM, etc.) are much
+    slower per request than hosted APIs, so they get the same generous timeout
+    the local embedding server uses.
+    """
+    if is_local_cpu_embedding_provider(provider, endpoint):
+        kwargs["timeout"] = EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
+    else:
+        kwargs["timeout"] = REMOTE_EMBEDDING_REQUEST_TIMEOUT_SECONDS
+    kwargs["max_retries"] = 0
+
+
 # `check_embedding_ctx_length=True` makes langchain-openai tiktoken-encode each
 # text and send `input` as arrays of token IDs. Only OpenAI's own embeddings
 # endpoint accepts that shape; every other server speaking the OpenAI protocol
@@ -286,19 +592,77 @@ def _accepts_token_array_embedding_input(base_url: str | None) -> bool:
     return bool(host) and host.lower() in _TOKEN_ARRAY_EMBEDDING_HOSTS
 
 
+def iter_model_names(configuration: Mapping[str, Any] | None) -> list[str]:
+    """Split a stored ``configuration.model`` into individual names.
+
+    Older entries kept several models in one comma-separated string. New
+    entries store one name. Both shapes go through this helper.
+    """
+    if not isinstance(configuration, Mapping):
+        return []
+    raw = configuration.get("model")
+    if raw is None:
+        return []
+    return [name.strip() for name in str(raw).split(",") if name.strip()]
+
+
+def select_model_name(
+    configuration: Mapping[str, Any],
+    model_name: str | None,
+    *,
+    is_default: bool | None = None,
+    empty_error: str = "No model configured",
+) -> str:
+    """Pick the model a factory should build.
+
+    A default entry may be asked for a name that is not in its stored list
+    (callers substitute the active model). A non-default entry must name a
+    model it actually stores.
+    """
+    names = iter_model_names(configuration)
+    if model_name is None:
+        if not names:
+            raise ValueError(empty_error)
+        return names[0]
+    if not is_default and model_name not in names:
+        raise ValueError(
+            f"Model name {model_name} not found in {configuration.get('model')}"
+        )
+    return model_name
+
+
+def openai_async_client_kwargs(configuration: Mapping[str, Any]) -> dict[str, Any]:
+    """``AsyncOpenAI`` kwargs, including a guarded client when a base URL is set."""
+    kwargs: dict[str, Any] = {}
+    api_key = configuration.get("apiKey")
+    if api_key:
+        kwargs["api_key"] = api_key
+    organization = configuration.get("organizationId")
+    if organization:
+        kwargs["organization"] = organization
+    endpoint = configuration.get("endpoint") or None
+    if isinstance(endpoint, str):
+        endpoint = endpoint.strip() or None
+    if endpoint:
+        kwargs.update(_endpoint_client_kwargs(endpoint))
+    return kwargs
+
+
 def get_embedding_model(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
+    embeddings = _get_embedding_model_impl(provider, config, model_name)
+    return _decorate_embeddings(embeddings, provider, model_name, config)
+
+
+def _get_embedding_model_impl(provider: str, config: dict[str, Any], model_name: str | None = None) -> Embeddings:
     configuration = config['configuration']
+    require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    if is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        model_name = model_names[0]
-    elif not is_default and model_name is None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        model_name = model_names[0]
-    elif not is_default and model_name is not None:
-        model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-        if model_name not in model_names:
-            raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No embedding model configured",
+    )
 
     logger.debug(f"Getting embedding model: provider={provider}, model_name={model_name}")
 
@@ -323,7 +687,8 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=check_embedding_ctx_length,
         )
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
-        return OpenAIEmbeddings(**kwargs)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
+        return _guard_clients(OpenAIEmbeddings(**kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.AZURE_OPENAI.value:
         from langchain_openai.embeddings import AzureOpenAIEmbeddings
@@ -334,8 +699,12 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             api_version=AZURE_EMBEDDING_API_VERSION,
             azure_endpoint=configuration['endpoint'],
         )
+        deployment_name = configuration.get("deploymentName")
+        if deployment_name:
+            kwargs["azure_deployment"] = deployment_name
         _set_embedding_dimensions_kwarg(kwargs, dimensions)
-        return AzureOpenAIEmbeddings(**kwargs)
+        _set_openai_client_limits_kwargs(kwargs, provider, configuration.get('endpoint'))
+        return _guard_clients(AzureOpenAIEmbeddings(**kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.COHERE.value:
         from langchain_cohere import CohereEmbeddings
@@ -347,15 +716,16 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
 
 
     elif provider == EmbeddingProvider.DEFAULT.value:
-        return get_default_embedding_model()
+        # Raw client: get_embedding_model() decorates the result once.
+        return get_embedding_server_embeddings(DEFAULT_EMBEDDING_MODEL)
 
     elif provider == EmbeddingProvider.FIREWORKS.value:
         from langchain_fireworks import FireworksEmbeddings
-        return FireworksEmbeddings(
+        return _guard_clients(FireworksEmbeddings(
             model=model_name,
             api_key=configuration['apiKey'],
             base_url=configuration['endpoint'],
-        )
+        ), ("client",), configuration['endpoint'])
 
     elif provider == EmbeddingProvider.GEMINI.value:
         from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -398,20 +768,36 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
     elif provider == EmbeddingProvider.OLLAMA.value:
         from langchain_ollama import OllamaEmbeddings
 
-        return OllamaEmbeddings(
-            model=model_name,
-            base_url=configuration['endpoint']
+        ollama_embedding_url = configuration.get("endpoint") or os.getenv(
+            "OLLAMA_API_URL", "http://localhost:11434"
         )
+        return _guard_clients(OllamaEmbeddings(
+            model=model_name,
+            base_url=ollama_embedding_url,
+        ), _OWN_CLIENTS, ollama_embedding_url)
 
     elif provider == EmbeddingProvider.OPENAI.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
 
+        openai_endpoint = (configuration.get("endpoint") or "").strip() or None
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             api_key=configuration["apiKey"],
             organization=configuration.get("organizationId"),
         )
+        if openai_endpoint:
+            openai_kwargs["base_url"] = openai_endpoint
+            openai_kwargs["check_embedding_ctx_length"] = _accepts_token_array_embedding_input(
+                openai_endpoint
+            )
         _set_embedding_dimensions_kwarg(openai_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(openai_kwargs, provider, openai_endpoint)
+        if openai_endpoint:
+            return _guard_clients(
+                OpenAIEmbeddings(**openai_kwargs),
+                _OPENAI_RESOURCE_CLIENTS,
+                openai_endpoint,
+            )
         return OpenAIEmbeddings(**openai_kwargs)
 
     elif provider == EmbeddingProvider.AWS_BEDROCK.value:
@@ -441,7 +827,8 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(base_url),
         )
         _set_embedding_dimensions_kwarg(compat_kwargs, dimensions)
-        return OpenAIEmbeddings(**compat_kwargs)
+        _set_openai_client_limits_kwargs(compat_kwargs, provider, base_url)
+        return _guard_clients(OpenAIEmbeddings(**compat_kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.OPENROUTER.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
@@ -453,6 +840,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=_accepts_token_array_embedding_input(OPENROUTER_BASE_URL),
         )
         _set_embedding_dimensions_kwarg(or_emb_kwargs, dimensions)
+        _set_openai_client_limits_kwargs(or_emb_kwargs, provider, OPENROUTER_BASE_URL)
         return OpenAIEmbeddings(**or_emb_kwargs)
 
     elif provider == EmbeddingProvider.LM_STUDIO.value:
@@ -465,7 +853,8 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(lms_emb_kwargs, dimensions)
-        return OpenAIEmbeddings(**lms_emb_kwargs)
+        _set_openai_client_limits_kwargs(lms_emb_kwargs, provider, configuration["endpoint"])
+        return _guard_clients(OpenAIEmbeddings(**lms_emb_kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.LITELLM_PROXY.value:
         from langchain_openai.embeddings import OpenAIEmbeddings
@@ -477,7 +866,8 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             check_embedding_ctx_length=False,
         )
         _set_embedding_dimensions_kwarg(llp_emb_kwargs, dimensions)
-        return OpenAIEmbeddings(**llp_emb_kwargs)
+        _set_openai_client_limits_kwargs(llp_emb_kwargs, provider, configuration["endpoint"])
+        return _guard_clients(OpenAIEmbeddings(**llp_emb_kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.TOGETHER.value:
         from app.utils.custom_embeddings import TogetherEmbeddings
@@ -488,7 +878,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
             base_url=configuration['endpoint'],
         )
         _set_embedding_dimensions_kwarg(together_kwargs, dimensions)
-        return TogetherEmbeddings(**together_kwargs)
+        return _guard_clients(TogetherEmbeddings(**together_kwargs), _OPENAI_RESOURCE_CLIENTS, configuration.get("endpoint"))
 
     elif provider == EmbeddingProvider.VOYAGE.value:
         from app.utils.custom_embeddings import VoyageEmbeddings
@@ -517,7 +907,7 @@ def get_embedding_model(provider: str, config: dict[str, Any], model_name: str |
         vertex_emb_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,
-            location=configuration.get("location") or "us-central1",
+            location=_vertex_location(configuration),
             credentials=creds,
         )
         _set_embedding_dimensions_kwarg(vertex_emb_kwargs, dimensions, key="output_dimensionality")
@@ -734,6 +1124,12 @@ _GEMINI_FAMILY = frozenset({
     LLMProvider.VERTEX_AI.value,
 })
 
+# LangChain sends reasoning_effort to Gemini as thinking_level, which only Gemini 3+
+# accepts; 2.5 and older 400 with "Thinking level is not supported for this model".
+_GEMINI_PRE_THINKING_LEVEL = re.compile(
+    r"^(?:models/)?(?:gemini-[12](?:[.-]|$)|gemma)", re.IGNORECASE
+)
+
 # Direct OpenAI and Azure OpenAI reject `reasoning_effort` combined with
 # function tools on /v1/chat/completions for the entire gpt-5.x family
 # ("Function tools with reasoning_effort are not supported ... in
@@ -757,11 +1153,64 @@ _RESPONSES_API_PROVIDERS = frozenset({
 _OPENAI_RESPONSES_API_HOSTS = frozenset({"api.openai.com"})
 
 
+def _is_openai_custom_endpoint(provider: str, base_url: str | None) -> bool:
+    """A custom base URL on the native OpenAI provider is some other server.
+    It does not implement /v1/responses just because the provider id is openAI."""
+    return (
+        provider == LLMProvider.OPENAI.value
+        and bool(base_url)
+        and not _targets_openai_responses_api(base_url)
+    )
+
+
 def _targets_openai_responses_api(base_url: str | None) -> bool:
     if not base_url:
         return False
     host = urlparse(base_url).hostname
     return bool(host) and host.lower() in _OPENAI_RESPONSES_API_HOSTS
+
+
+# Qwen 3.8+ Chat Completions rejects OpenAI's 'xhigh'. That is a model-
+# family constraint — OpenRouter, LiteLLM, a generic openai-compatible
+# entry, Fireworks, LM Studio, vLLM, Groq, ... all hit it when they serve
+# these IDs. Allowed set is none/default/low/medium/high; platform 'max'
+# clamps to 'high'.
+_QWEN_38_EFFORT_MAP: Dict[str, str] = {
+    "none": "none",
+    "low": "low",
+    "medium": "medium",
+    "high": "high",
+    "max": "high",
+}
+
+# Dotted IDs: qwen/qwen3.8-27b, Qwen3.8-Max, qwen3.5:9b. Require the dot so
+# `qwen3-8b` (8B params of Qwen 3) is not mistaken for version 3.8.
+_QWEN_DOTTED_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)\.(\d+)", re.IGNORECASE)
+# Undotted major-only: qwen4, qwen-4-plus. Does not consume a following
+# param-size (`qwen3-32b` → 3.0, which is older than 3.8).
+_QWEN_MAJOR_VERSION_RE = re.compile(r"(?:^|/)qwen[-_]?(\d+)(?:[-_]|$)", re.IGNORECASE)
+
+
+def _parse_qwen_version(model_name: str | None) -> tuple[int, int] | None:
+    """Return ``(major, minor)`` for a Qwen model ID, or ``None``.
+
+    ``qwen/qwen3.8-27b`` → (3, 8); ``qwen3-32b`` → (3, 0); ``qwen4-plus`` →
+    (4, 0). Non-Qwen names return ``None``.
+    """
+    if not model_name or "qwen" not in model_name.lower():
+        return None
+    dotted = _QWEN_DOTTED_VERSION_RE.search(model_name)
+    if dotted:
+        return int(dotted.group(1)), int(dotted.group(2))
+    major = _QWEN_MAJOR_VERSION_RE.search(model_name)
+    if major:
+        return int(major.group(1)), 0
+    return None
+
+
+def _is_qwen_38_or_later(model_name: str | None) -> bool:
+    parsed = _parse_qwen_version(model_name)
+    return parsed is not None and parsed >= (3, 8)
 
 
 # LLM routers/gateways (Requesty, OpenRouter, LiteLLM proxy, and similar)
@@ -780,7 +1229,13 @@ def _targets_openai_responses_api(base_url: str | None) -> bool:
 # they support `reasoning_effort` + bound tools on Chat Completions today
 # (with a documented, non-fatal loss of cross-turn reasoning persistence),
 # unlike gpt-5.x which hard-rejects the combination with a 400.
-_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+#
+# The later generations (gpt-6, gpt-6.1, ...) behave the same way: Azure
+# OpenAI answers "'temperature' does not support 0.2 with this model" for
+# gpt-6-luna and gpt-6.1-sol, and refuses reasoning with tools on Chat
+# Completions. So the major version is any single digit from 5 up, the same
+# range `_BEDROCK_OPENAI_GPT_RE` uses. A single digit keeps `gpt-50` out.
+_OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
 
 # gpt-5-chat / gpt-5.x-chat-latest are non-reasoning chat variants: they
 # don't accept a `reasoning`/`reasoning_effort` value at all and must never
@@ -788,10 +1243,12 @@ _OPENAI_GPT5_MODEL_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?(?:[-_]|$)", re.
 # reason — langchain-openai itself special-cases them the same way
 # (`"chat" not in model_lower`, `validate_temperature`/
 # `_construct_responses_api_payload` in langchain_openai's chat_models/base.py).
-_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-5(?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
+_OPENAI_GPT5_CHAT_PATTERN = re.compile(r"(?:^|/)gpt-[5-9](?:\.\d+)?-chat(?:[-_]|$)", re.IGNORECASE)
 
 
 def _is_openai_gpt5_model(model_name: str | None) -> bool:
+    """True for OpenAI's gpt-5 family and the generations after it (gpt-6,
+    gpt-6.1, ...), excluding their non-reasoning ``-chat`` variants."""
     if not model_name:
         return False
     if _OPENAI_GPT5_CHAT_PATTERN.search(model_name):
@@ -805,7 +1262,7 @@ def _default_temperature(
 ) -> float:
     """Default ``temperature`` for a provider's constructor kwargs.
 
-    OpenAI gpt-5.x (and o-series) reasoning models only accept
+    OpenAI gpt-5.x and later (and o-series) reasoning models only accept
     ``temperature=1`` (any other value 400s on both Chat Completions and the
     Responses API) — this is the one check shared verbatim by every provider
     branch below that constructs a LangChain client, so it lives here once
@@ -833,6 +1290,32 @@ def _default_temperature(
     return 1 if is_reasoning_model else configuration.get("temperature", 0.2)
 
 
+MODEL_DEFAULT_REASONING_EFFORT_KEY = "defaultReasoningEffort"
+
+
+def model_default_reasoning_effort(config: dict[str, Any]) -> str | None:
+    """The reasoning effort an admin set on this model, or ``None`` if none is set.
+
+    The AI models settings API saves it inside ``configuration``, the only
+    part of a model entry that keeps fields it does not list. A top-level
+    key is read only when ``configuration`` has none.
+    """
+    configuration = config.get("configuration")
+    raw = configuration.get(MODEL_DEFAULT_REASONING_EFFORT_KEY) if isinstance(configuration, dict) else None
+    if raw is None or not str(raw).strip():
+        raw = config.get(MODEL_DEFAULT_REASONING_EFFORT_KEY)
+    if raw is None or not str(raw).strip():
+        return None
+    value = str(raw).strip()
+    if value not in REASONING_EFFORT_VALUES:
+        raise ValueError(
+            f"This model's default reasoning effort is '{value}', which isn't a valid "
+            "choice. Set it to low, medium, high or max, or remove it to use the "
+            "platform default."
+        )
+    return value
+
+
 def _reasoning_effort_kwargs(
     reasoning_effort: str | None,
     config: dict[str, Any],
@@ -851,7 +1334,8 @@ def _reasoning_effort_kwargs(
     in LangChain, so callers must never pass it unconditionally.
 
     When ``reasoning_effort`` is absent (no explicit user choice and no agent
-    default), a reasoning-capable model defaults to ``DEFAULT_REASONING_EFFORT``
+    default), a reasoning-capable model uses the default set on the model
+    itself (``model_default_reasoning_effort``), else ``DEFAULT_REASONING_EFFORT``
     ("high") rather than silently omitting the parameter and letting each
     provider fall back to its own default — those vary per provider/model and
     are often a lower, cheaper tier than a user picking a "reasoning" model
@@ -876,6 +1360,8 @@ def _reasoning_effort_kwargs(
     - Fireworks: none, low, medium, high, max (no 'xhigh')
     - MiniMax, XAI: none, low, medium, high (no 'max' or 'xhigh'; 'max' is
       clamped to 'high')
+    - Qwen 3.8+ (any OpenAI-compatible host, detected by model name): none,
+      default, low, medium, high (no 'xhigh'; 'max' clamps to 'high')
     - Gemini: minimal, low, medium, high (no 'none' or 'max')
     - Anthropic: low, medium, high, xhigh, max (no 'none')
     - LM Studio: low, medium, high (no 'none' or 'max')
@@ -926,8 +1412,12 @@ def _reasoning_effort_kwargs(
     - ``LLMApiMode.RESPONSES``: this model needs the Responses API even
       though the name/host heuristic didn't detect it — take that branch
       whenever ``provider in _OPENAI_FAMILY`` (still gated on
-      ``effort != "none"`` like the heuristic path, since reasoning-off
-      never needs it). Gated on the provider family, not applied
+      ``effort != "none"`` like the heuristic path). It also applies with
+      ``isReasoning`` off: a model that reasons by default (Azure's gpt-6)
+      refuses tools on Chat Completions even with no reasoning setting, so
+      it gets ``use_responses_api`` alone. Neither path applies to Qwen 3.8+
+      or to the native OpenAI provider pointed at another server, which
+      have no /v1/responses. Gated on the provider family, not applied
       unconditionally, because ``api_mode`` is looked up only by
       ``(model_key, model_name)`` with no provider check — an unrelated
       provider reusing the same pair (e.g. after reconfiguring a model
@@ -944,12 +1434,24 @@ def _reasoning_effort_kwargs(
       hands a model an unfloored ``"none"``.
     """
     if not config.get("isReasoning"):
+        # Reasoning is unticked, but this model was seen to refuse tools on
+        # Chat Completions and accept them on the Responses API (Azure's
+        # gpt-6 models do this: they reason by default). Keep using the
+        # Responses API, with no reasoning setting so the model keeps its own
+        # default, exactly as the retry that succeeded was sent.
+        if (
+            api_mode == LLMApiMode.RESPONSES.value
+            and provider in _OPENAI_FAMILY
+            and not _is_qwen_38_or_later(model_name)
+            and not _is_openai_custom_endpoint(provider, base_url)
+        ):
+            return {"use_responses_api": True}
         return {}
 
     if api_mode == LLMApiMode.NO_REASONING_WITH_TOOLS.value:
         return {}
 
-    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
     if effort_input == "none":
         # "none" is no longer offered as a UI choice (see the docstring
         # above) — floor it unconditionally rather than only when a
@@ -958,6 +1460,17 @@ def _reasoning_effort_kwargs(
 
     if provider == LLMProvider.OLLAMA.value:
         return {"reasoning": _OLLAMA_EFFORT_MAP.get(effort_input, effort_input)}
+
+    # Model-family first, not host: Qwen 3.8+ 400s on 'xhigh' whether the
+    # caller reached OpenRouter, LiteLLM, or a self-hosted endpoint.
+    # Skip the Responses API — these are not OpenAI gpt-5.
+    if _is_qwen_38_or_later(model_name):
+        return {"reasoning_effort": _QWEN_38_EFFORT_MAP.get(effort_input, effort_input)}
+
+    if provider in _GEMINI_FAMILY and _GEMINI_PRE_THINKING_LEVEL.match(
+        model_name or ""
+    ):
+        return {}
 
     effort = effort_input
     if provider in _OPENAI_FAMILY:
@@ -975,7 +1488,8 @@ def _reasoning_effort_kwargs(
     elif provider == LLMProvider.ANTHROPIC.value:
         effort = _ANTHROPIC_EFFORT_MAP.get(effort_input, effort_input)
 
-    needs_responses_api = effort != "none" and (
+    openai_custom_endpoint = _is_openai_custom_endpoint(provider, base_url)
+    needs_responses_api = effort != "none" and not openai_custom_endpoint and (
         provider in _RESPONSES_API_PROVIDERS
         or (
             provider in _OPENAI_FAMILY
@@ -1017,11 +1531,16 @@ _BEDROCK_GPT_OSS_EFFORT_MAP: Dict[str, str] = {
 }
 _BEDROCK_OPENAI_EFFORT_MAP = _BEDROCK_GPT_OSS_EFFORT_MAP
 
-# Same gpt-5 family as ``_OPENAI_GPT5_MODEL_PATTERN``, but Bedrock IDs are
-# dot-delimited (``us.openai.gpt-5.6-luna``) so the prefix must also allow
-# ``.``. A substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and
-# mid-token names like ``my-gpt-5-compatible``.
-_GPT5_MODEL_RE = re.compile(r"(?:^|[./])gpt-5(?:\.\d+)?(?:[-_]|$)", re.IGNORECASE)
+# OpenAI's closed GPT-5+ models on Bedrock (GPT-5.x, GPT-6 Sol/Luna/Astra).
+# Bedrock IDs are dot-delimited (``us.openai.gpt-6-luna``), so the name must be
+# bare, follow a ``/`` (an inference-profile ARN), or sit under the ``openai.``
+# namespace -- another provider's ``amazon.gpt-6-model`` is not OpenAI. A
+# substring ``gpt[-_.]?5`` would false-positive ``gpt-50`` and mid-token names
+# like ``my-gpt-5-compatible``. The major is a single digit on purpose;
+# ``gpt-oss`` never matches.
+_BEDROCK_OPENAI_GPT_RE = re.compile(
+    r"(?:^|/|\bopenai\.)gpt-[5-9](?:\.\d+)?(?:[-_]|$)", re.IGNORECASE,
+)
 
 # Nova 2 maxReasoningEffort is low|medium|high only.
 _BEDROCK_NOVA_EFFORT_MAP: Dict[str, str] = {
@@ -1057,14 +1576,14 @@ def _bedrock_is_gpt_oss(model_name: str | None) -> bool:
     return bool(model_name) and "gpt-oss" in model_name.lower()
 
 
-def _bedrock_is_openai_gpt5(model_name: str | None) -> bool:
-    """GPT-5.x on Bedrock Converse (Sol/Terra/Luna), not gpt-oss."""
+def _bedrock_is_openai_gpt(model_name: str | None) -> bool:
+    """GPT-5.x / GPT-6 on Bedrock Converse (Sol/Terra/Luna/Astra), not gpt-oss."""
     if not model_name:
         return False
     lowered = model_name.lower()
     if "gpt-oss" in lowered:
         return False
-    return bool(_GPT5_MODEL_RE.search(lowered))
+    return bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
 
 
 def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
@@ -1076,7 +1595,7 @@ def _bedrock_is_openai(provider: str, model_name: str | None) -> bool:
     return (
         "openai" in lowered
         or "gpt-oss" in lowered
-        or bool(_GPT5_MODEL_RE.search(lowered))
+        or bool(_BEDROCK_OPENAI_GPT_RE.search(lowered))
     )
 
 
@@ -1117,14 +1636,15 @@ def _bedrock_anthropic_uses_adaptive_thinking(model_name: str | None) -> bool:
     return bool(re.search(r"claude.*4[-_.]([67]|[6-9]\d)", lowered))
 
 
-def _resolve_bedrock_effort_input(reasoning_effort: str | None) -> str:
+def _resolve_bedrock_effort_input(reasoning_effort: str | None, config: dict[str, Any]) -> str:
     """Normalize UI effort for Bedrock, flooring explicit ``none`` to low.
 
-    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: ``none``
-    is no longer offered in the UI and must not fully disable reasoning when
-    the model is flagged ``isReasoning``.
+    Matches the platform-wide policy in ``_reasoning_effort_kwargs``: the
+    model's own default fills in for a missing effort, and ``none`` is no
+    longer offered in the UI and must not fully disable reasoning when the
+    model is flagged ``isReasoning``.
     """
-    effort_input = reasoning_effort or DEFAULT_REASONING_EFFORT
+    effort_input = reasoning_effort or model_default_reasoning_effort(config) or DEFAULT_REASONING_EFFORT
     if effort_input == "none":
         return REASONING_MANDATORY_FALLBACK_EFFORT
     return effort_input
@@ -1149,15 +1669,15 @@ def _bedrock_additional_model_request_fields(
     if _bedrock_is_deepseek_r1(model_name):
         return {}
 
-    effort_input = _resolve_bedrock_effort_input(reasoning_effort)
+    effort_input = _resolve_bedrock_effort_input(reasoning_effort, config)
     provider = (provider_in_bedrock or "").lower()
 
     if _bedrock_is_openai(provider, model_name):
         if _bedrock_is_gpt_oss(model_name):
             effort = _BEDROCK_GPT_OSS_EFFORT_MAP.get(effort_input, effort_input)
         else:
-            # GPT-5.6 (and future gpt-5* Converse models): pass UI effort
-            # through. ``none`` is already floored to low above.
+            # GPT-5.6 / GPT-6 Converse models: pass UI effort through.
+            # ``none`` is already floored to low above.
             effort = effort_input
         return {"reasoning_effort": effort}
 
@@ -1231,7 +1751,8 @@ def _bedrock_temperature(
     - Claude models that dropped sampling params → omit.
     - Claude with thinking / adaptive thinking enabled → omit (non-1 values 400).
     - Nova 2 with ``maxReasoningEffort=high`` → omit (also forbids maxTokens).
-    - GPT-5.x on Bedrock typically rejects temperature → omit.
+    - GPT-5.x / GPT-6 on Bedrock Converse reject temperature at any value
+      (including 1) → omit.
     - Otherwise use configured temperature (default 0.2). Never force 1 for
       Bedrock OpenAI gpt-oss (unlike direct OpenAI gpt-5.x).
     """
@@ -1241,7 +1762,7 @@ def _bedrock_temperature(
         and ("claude" in model_name.lower() or "anthropic" in model_name.lower())
     )
 
-    if _bedrock_is_openai_gpt5(model_name):
+    if _bedrock_is_openai_gpt(model_name):
         return None
 
     if is_anthropic and not _anthropic_supports_sampling_params(model_name):
@@ -1290,7 +1811,7 @@ def _identify_bedrock_provider(model_name: str | None) -> str | None:
         return LLMProvider.MISTRAL.value
     if "claude" in lowered or "anthropic" in lowered:
         return LLMProvider.ANTHROPIC.value
-    if "openai" in lowered or "gpt-oss" in lowered or _GPT5_MODEL_RE.search(lowered):
+    if "openai" in lowered or "gpt-oss" in lowered or _BEDROCK_OPENAI_GPT_RE.search(lowered):
         return "openai"
     if "llama" in lowered or "meta" in lowered:
         return "meta"
@@ -1349,12 +1870,23 @@ def get_generator_model(
     model_name: str | None = None,
     reasoning_effort: str | None = None,
 ) -> BaseChatModel:
+    model = _get_generator_model_impl(provider, config, model_name, reasoning_effort)
+    return _decorate_chat_model(model, provider, model_name, config)
+
+
+def _get_generator_model_impl(
+    provider: str,
+    config: dict[str, Any],
+    model_name: str | None = None,
+    reasoning_effort: str | None = None,
+) -> BaseChatModel:
     configuration = config['configuration']
+    require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
     configured_model = configuration.get("model")
     if not configured_model:
         raise ValueError(f"Provider '{provider}' configuration is missing a 'model' name.")
-    model_names = [name.strip() for name in configured_model.split(",") if name.strip()]
+    model_names = iter_model_names(configuration)
     if not model_names:
         raise ValueError(f"Provider '{provider}' configuration has an empty 'model' field.")
 
@@ -1486,7 +2018,7 @@ def get_generator_model(
                     model_name=model_name, api_mode=api_mode,
                 )
             )
-            return ChatAnthropic(**azure_claude_kwargs)
+            return _guard_clients(ChatAnthropic(**azure_claude_kwargs), _OWN_CLIENTS, configuration.get("endpoint"))
         else:
             azure_ai_openai_kwargs: Dict[str, Any] = dict(
                 model=model_name,
@@ -1511,7 +2043,7 @@ def get_generator_model(
                     base_url=configuration.get("endpoint"), model_name=model_name, api_mode=api_mode,
                 )
             )
-            return ChatOpenAI(**azure_ai_openai_kwargs)
+            return _guard_clients(ChatOpenAI(**azure_ai_openai_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.AZURE_OPENAI.value:
         from langchain_openai import AzureChatOpenAI
@@ -1531,7 +2063,7 @@ def get_generator_model(
                 reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
             )
         )
-        return AzureChatOpenAI(**azure_openai_kwargs)
+        return _guard_clients(AzureChatOpenAI(**azure_openai_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.COHERE.value:
         from langchain_cohere import ChatCohere
@@ -1638,12 +2170,13 @@ def get_generator_model(
         )
         if context_length:
             ollama_kwargs["num_ctx"] = int(context_length)
-        return ChatOllama(**ollama_kwargs)
+        return _guard_clients(ChatOllama(**ollama_kwargs), _OWN_CLIENTS, ollama_kwargs["base_url"])
 
     elif provider == LLMProvider.OPENAI.value:
         from langchain_openai import ChatOpenAI
 
         temperature = _default_temperature(configuration, config, model_name, provider=provider)
+        openai_endpoint = (configuration.get("endpoint") or "").strip() or None
         openai_kwargs: Dict[str, Any] = dict(
             model=model_name,
             temperature=temperature,
@@ -1652,11 +2185,18 @@ def get_generator_model(
             organization=configuration.get("organizationId"),
             stream_usage=True,  # Enable token usage tracking for Opik
         )
+        if openai_endpoint:
+            openai_kwargs["base_url"] = openai_endpoint
         openai_kwargs.update(
             _reasoning_effort_kwargs(
-                reasoning_effort, config, provider=provider, model_name=model_name, api_mode=api_mode,
+                reasoning_effort, config, provider=provider, base_url=openai_endpoint,
+                model_name=model_name, api_mode=api_mode,
             )
         )
+        if openai_endpoint:
+            return _guard_clients(
+                ChatOpenAI(**openai_kwargs), _OPENAI_ROOT_CLIENTS, openai_endpoint,
+            )
         return ChatOpenAI(**openai_kwargs)
 
     elif provider == LLMProvider.XAI.value:
@@ -1678,13 +2218,13 @@ def get_generator_model(
     elif provider == LLMProvider.TOGETHER.value:
         from app.utils.custom_chat_model import ChatTogether
 
-        return ChatTogether(
+        return _guard_clients(ChatTogether(
                 model=model_name,
                 temperature=0.2,
                 timeout=DEFAULT_LLM_TIMEOUT,  # 6 minute timeout
                 api_key=configuration["apiKey"],
                 base_url=configuration["endpoint"],
-            )
+            ), _OPENAI_ROOT_CLIENTS + _OPENAI_RESOURCE_CLIENTS, configuration["endpoint"])  # it builds a client for each
 
     elif provider == LLMProvider.OPENAI_COMPATIBLE.value:
         from langchain_openai import ChatOpenAI
@@ -1701,7 +2241,7 @@ def get_generator_model(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
-        return ChatOpenAI(**openai_compat_kwargs)
+        return _guard_clients(ChatOpenAI(**openai_compat_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.LM_STUDIO.value:
         from langchain_openai import ChatOpenAI
@@ -1718,7 +2258,7 @@ def get_generator_model(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
-        return ChatOpenAI(**lm_studio_kwargs)
+        return _guard_clients(ChatOpenAI(**lm_studio_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.LITELLM_PROXY.value:
         from langchain_openai import ChatOpenAI
@@ -1735,7 +2275,7 @@ def get_generator_model(
             reasoning_effort, config, provider=provider,
             base_url=configuration["endpoint"], model_name=model_name, api_mode=api_mode,
         ))
-        return ChatOpenAI(**litellm_proxy_kwargs)
+        return _guard_clients(ChatOpenAI(**litellm_proxy_kwargs), _OPENAI_ROOT_CLIENTS, configuration.get("endpoint"))
 
     elif provider == LLMProvider.OPENROUTER.value:
         from langchain_openai import ChatOpenAI
@@ -1775,7 +2315,7 @@ def get_generator_model(
         vertex_llm_kwargs: Dict[str, Any] = dict(
             model=model_name,
             project=project,
-            location=configuration.get("location") or "us-central1",
+            location=_vertex_location(configuration),
             credentials=creds,
             temperature=temperature,
             max_tokens=MAX_OUTPUT_TOKENS,
@@ -1815,6 +2355,29 @@ async def get_generator_model_async(
 # ---------------------------------------------------------------------------
 # Image generation
 # ---------------------------------------------------------------------------
+# Generous for a generated image; stops a provider-chosen URL from streaming without end.
+_MAX_PROVIDER_IMAGE_BYTES = 50 * 1024 * 1024
+
+
+async def _download_provider_image(url: str) -> bytes:
+    """Fetch an image a provider returned as a URL. The URL is the provider's to choose,
+    so it is held to the same address policy as the endpoint it came from."""
+    require_allowed_endpoint(url)
+    if private_addresses_blocked():
+        from app.utils.public_http import PublicFetchLimits, PublicUrlFetcher
+
+        response = await PublicUrlFetcher().get(
+            url, PublicFetchLimits(max_bytes=_MAX_PROVIDER_IMAGE_BYTES, timeout_s=60.0)
+        )
+        if response.status_code >= 400:
+            raise ValueError(f"Image URL answered {response.status_code}")
+        return response.content
+
+    async with guarded_async_client(url, timeout=60.0) as http_client:
+        resp = await http_client.get(url)
+        resp.raise_for_status()
+        return resp.content
+
 
 
 # OpenAI Images API supports a restricted size vocabulary. Requests with any
@@ -1918,7 +2481,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "organization": self._organization,
         }
         if self._base_url:
-            client_kwargs["base_url"] = self._base_url
+            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
         client = AsyncOpenAI(**client_kwargs)
 
         # The ``response_format`` parameter is **only** accepted by DALL-E
@@ -1952,12 +2515,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             url = getattr(item, "url", None)
             if url:
                 try:
-                    import httpx
-
-                    async with httpx.AsyncClient(timeout=60.0) as http_client:
-                        resp = await http_client.get(url)
-                        resp.raise_for_status()
-                        images.append(resp.content)
+                    images.append(await _download_provider_image(url))
                 except Exception:
                     logger.exception(
                         "Failed to download OpenAI image URL fallback"
@@ -1989,7 +2547,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             "organization": self._organization,
         }
         if self._base_url:
-            client_kwargs["base_url"] = self._base_url
+            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
         client = AsyncOpenAI(**client_kwargs)
 
         image_file = io.BytesIO(input_image)
@@ -2019,12 +2577,7 @@ class _OpenAIImageAdapter(ImageGenerationAdapter):
             url = getattr(item, "url", None)
             if url:
                 try:
-                    import httpx
-
-                    async with httpx.AsyncClient(timeout=60.0) as http_client:
-                        resp = await http_client.get(url)
-                        resp.raise_for_status()
-                        images.append(resp.content)
+                    images.append(await _download_provider_image(url))
                 except Exception:
                     logger.exception(
                         "Failed to download OpenAI image edit URL fallback"
@@ -2231,6 +2784,44 @@ class _OpenRouterImageAdapter(ImageGenerationAdapter):
         return images
 
 
+def _build_openai_image(configuration: Dict[str, Any], model_name: str) -> ImageGenerationAdapter:
+    return _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_image(configuration: Dict[str, Any], model_name: str) -> ImageGenerationAdapter:
+    return _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        base_url=configuration["endpoint"],
+        provider_override=ImageGenerationProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_IMAGE_BUILDERS = {
+    ImageGenerationProvider.OPENAI.value: _build_openai_image,
+    ImageGenerationProvider.OPENAI_COMPATIBLE.value: _build_compatible_image,
+    ImageGenerationProvider.GEMINI.value: lambda configuration, model_name: _GeminiImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    ImageGenerationProvider.OPENROUTER.value: lambda configuration, model_name: _OpenRouterImageAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    ImageGenerationProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAIImageAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        base_url=configuration["endpoint"],
+        provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_image_generation_model(
     provider: str,
     config: Dict[str, Any],
@@ -2246,47 +2837,23 @@ def get_image_generation_model(
     """
 
     configuration = config["configuration"]
+    require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [name.strip() for name in configuration["model"].split(",") if name.strip()]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No image-generation model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(f"Model name {model_name} not found in {configuration['model']}")
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No image-generation model configured",
+    )
 
     logger.info(
         f"Getting image generation model: provider={provider}, model_name={model_name}"
     )
 
-    if provider == ImageGenerationProvider.OPENAI.value:
-        return _OpenAIImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-        )
-
-    if provider == ImageGenerationProvider.GEMINI.value:
-        return _GeminiImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == ImageGenerationProvider.OPENROUTER.value:
-        return _OpenRouterImageAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == ImageGenerationProvider.LITELLM_PROXY.value:
-        return _OpenAIImageAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            base_url=configuration["endpoint"],
-            provider_override=ImageGenerationProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported image generation provider: {provider}")
+    builder = _IMAGE_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported image generation provider: {provider}")
+    return builder(configuration, model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -2369,7 +2936,7 @@ class _OpenAITTSAdapter(TTSAdapter):
             "organization": self._organization,
         }
         if self._base_url:
-            client_kwargs["base_url"] = self._base_url
+            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
 
         client = AsyncOpenAI(**client_kwargs)
         try:
@@ -2593,6 +3160,57 @@ class _GeminiTTSAdapter(TTSAdapter):
         return await _reencode_pcm_via_ffmpeg(pcm, target_format=fmt)
 
 
+def _build_openai_tts(configuration: Dict[str, Any], model_name: str) -> TTSAdapter:
+    return _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_tts(configuration: Dict[str, Any], model_name: str) -> TTSAdapter:
+    return _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration["endpoint"],
+        provider_override=TTSProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_TTS_BUILDERS = {
+    TTSProvider.OPENAI.value: _build_openai_tts,
+    TTSProvider.OPENAI_COMPATIBLE.value: _build_compatible_tts,
+    TTSProvider.GEMINI.value: lambda configuration, model_name: _GeminiTTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        endpoint=configuration.get("endpoint") or None,
+    ),
+    TTSProvider.OPENROUTER.value: lambda configuration, model_name: _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=OPENROUTER_BASE_URL,
+        provider_override=TTSProvider.OPENROUTER.value,
+    ),
+    TTSProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAITTSAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        default_voice=configuration.get("voice"),
+        default_format=configuration.get("responseFormat"),
+        base_url=configuration["endpoint"],
+        provider_override=TTSProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_tts_model(
     provider: str,
     config: Dict[str, Any],
@@ -2603,62 +3221,21 @@ def get_tts_model(
     Mirrors the ``get_image_generation_model`` signature.
     """
     configuration = config["configuration"]
+    require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [
-        name.strip()
-        for name in str(configuration.get("model", "")).split(",")
-        if name.strip()
-    ]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No TTS model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(
-            f"Model name {model_name} not found in {configuration.get('model')}"
-        )
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No TTS model configured",
+    )
 
     logger.info(f"Getting TTS model: provider={provider}, model_name={model_name}")
 
-    if provider == TTSProvider.OPENAI.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-        )
-
-    if provider == TTSProvider.GEMINI.value:
-        return _GeminiTTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            endpoint=configuration.get("endpoint") or None,
-        )
-
-    if provider == TTSProvider.OPENROUTER.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            base_url=OPENROUTER_BASE_URL,
-            provider_override=TTSProvider.OPENROUTER.value,
-        )
-
-    if provider == TTSProvider.LITELLM_PROXY.value:
-        return _OpenAITTSAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            default_voice=configuration.get("voice"),
-            default_format=configuration.get("responseFormat"),
-            base_url=configuration["endpoint"],
-            provider_override=TTSProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported TTS provider: {provider}")
+    builder = _TTS_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported TTS provider: {provider}")
+    return builder(configuration, model_name)
 
 
 # ---------------------------------------------------------------------------
@@ -2730,7 +3307,7 @@ class _OpenAISTTAdapter(STTAdapter):
             "organization": self._organization,
         }
         if self._base_url:
-            client_kwargs["base_url"] = self._base_url
+            client_kwargs.update(_endpoint_client_kwargs(self._base_url))
         client = AsyncOpenAI(**client_kwargs)
         file_tuple = (
             _stt_filename_for_mime(mime, filename),
@@ -3254,6 +3831,58 @@ class _OpenRouterSTTAdapter(STTAdapter):
         return text if isinstance(text, str) else ""
 
 
+def _build_openai_stt(configuration: Dict[str, Any], model_name: str) -> STTAdapter:
+    return _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        organization=configuration.get("organizationId"),
+        base_url=configuration.get("endpoint") or None,
+    )
+
+
+def _build_compatible_stt(configuration: Dict[str, Any], model_name: str) -> STTAdapter:
+    return _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey") or "not-needed",
+        base_url=configuration["endpoint"],
+        provider_override=STTProvider.OPENAI_COMPATIBLE.value,
+    )
+
+
+_STT_BUILDERS = {
+    STTProvider.OPENAI.value: _build_openai_stt,
+    STTProvider.OPENAI_COMPATIBLE.value: _build_compatible_stt,
+    STTProvider.WHISPER.value: lambda configuration, model_name: _WhisperLocalSTTAdapter(
+        model=model_name,
+        device=configuration.get("device", "auto"),
+        compute_type=configuration.get("computeType", "int8"),
+        download_root=configuration.get("modelDir") or None,
+    ),
+    STTProvider.WISPR.value: lambda configuration, model_name: _WisprFlowSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        endpoint=configuration.get("endpoint") or None,
+        default_language=configuration.get("language") or None,
+        default_app_type=configuration.get("appType") or "ai",
+    ),
+    STTProvider.GEMINI.value: lambda configuration, model_name: _GeminiSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+        endpoint=configuration.get("endpoint") or None,
+    ),
+    STTProvider.OPENROUTER.value: lambda configuration, model_name: _OpenRouterSTTAdapter(
+        model=model_name,
+        api_key=configuration["apiKey"],
+    ),
+    STTProvider.LITELLM_PROXY.value: lambda configuration, model_name: _OpenAISTTAdapter(
+        model=model_name,
+        api_key=configuration.get("apiKey"),
+        base_url=configuration["endpoint"],
+        provider_override=STTProvider.LITELLM_PROXY.value,
+    ),
+}
+
+
 def get_stt_model(
     provider: str,
     config: Dict[str, Any],
@@ -3261,66 +3890,18 @@ def get_stt_model(
 ) -> STTAdapter:
     """Return an STT adapter for the given provider/config."""
     configuration = config["configuration"]
+    require_allowed_endpoint(configuration.get("endpoint"))
     is_default = config.get("isDefault")
-    model_names = [
-        name.strip()
-        for name in str(configuration.get("model", "")).split(",")
-        if name.strip()
-    ]
-    if model_name is None:
-        if not model_names:
-            raise ValueError("No STT model configured")
-        model_name = model_names[0]
-    elif not is_default and model_name not in model_names:
-        raise ValueError(
-            f"Model name {model_name} not found in {configuration.get('model')}"
-        )
+    model_name = select_model_name(
+        configuration,
+        model_name,
+        is_default=is_default,
+        empty_error="No STT model configured",
+    )
 
     logger.info(f"Getting STT model: provider={provider}, model_name={model_name}")
 
-    if provider == STTProvider.OPENAI.value:
-        return _OpenAISTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            organization=configuration.get("organizationId"),
-        )
-
-    if provider == STTProvider.WHISPER.value:
-        return _WhisperLocalSTTAdapter(
-            model=model_name,
-            device=configuration.get("device", "auto"),
-            compute_type=configuration.get("computeType", "int8"),
-            download_root=configuration.get("modelDir") or None,
-        )
-
-    if provider == STTProvider.WISPR.value:
-        return _WisprFlowSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            endpoint=configuration.get("endpoint") or None,
-            default_language=configuration.get("language") or None,
-            default_app_type=configuration.get("appType") or "ai",
-        )
-
-    if provider == STTProvider.GEMINI.value:
-        return _GeminiSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-            endpoint=configuration.get("endpoint") or None,
-        )
-
-    if provider == STTProvider.OPENROUTER.value:
-        return _OpenRouterSTTAdapter(
-            model=model_name,
-            api_key=configuration["apiKey"],
-        )
-
-    if provider == STTProvider.LITELLM_PROXY.value:
-        return _OpenAISTTAdapter(
-            model=model_name,
-            api_key=configuration.get("apiKey"),
-            base_url=configuration["endpoint"],
-            provider_override=STTProvider.LITELLM_PROXY.value,
-        )
-
-    raise ValueError(f"Unsupported STT provider: {provider}")
+    builder = _STT_BUILDERS.get(provider)
+    if builder is None:
+        raise ValueError(f"Unsupported STT provider: {provider}")
+    return builder(configuration, model_name)

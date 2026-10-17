@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · **עברית** · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md)
+**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · **עברית** · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md) · [Čeština](../cs/SECURITY.md)
 
 </div>
 
@@ -16,7 +16,7 @@
 
 **אנא אל תיצור issues ציבוריים ב-GitHub עבור פגיעוּיות אבטחה.**
 
-במקום זאת, אנא דווח על פגיעוּיות אבטחה באמצעות שליחת דוא"ל אל: **abhishek@pipeshub.com**
+במקום זאת, אנא דווח על פגיעוּיות אבטחה באמצעות שליחת דוא"ל אל: **security@pipeshub.com**
 
 ### מה לכלול
 

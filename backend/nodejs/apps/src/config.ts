@@ -54,7 +54,11 @@ export { createWorkspaceAuthRouter } from './modules/auth/routes/workspaceAuth.r
 // --- User management (feature flags stub, org config stub) ---
 export { createFeatureFlagRouter } from './modules/user_management/routes/featureFlag.routes';
 export { createOrgConfigRouter } from './modules/user_management/routes/orgConfig.routes';
+export { createRequestRouter } from './modules/user_management/routes/request.routes';
 
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
+
+// --- Edition boot hooks ---
+export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';

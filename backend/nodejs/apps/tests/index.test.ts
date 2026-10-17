@@ -2,6 +2,10 @@ import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import { Logger } from '../src/libs/services/logger.service';
+// Imported here, not inside a test: modules take their logger when they load,
+// and the tests below stub Logger.getInstance, so a load inside one would leave
+// every module of the app holding the mock for later files in this worker.
+import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
 
 /**
@@ -539,24 +543,17 @@ describe('index.ts - Application Bootstrap', () => {
   // =========================================================================
   // Application class import
   // =========================================================================
-  describe('Application class availability', function () {
-    // Importing ../src/app pulls the full module graph; under parallel CI this
-    // can exceed Mocha's default 10s timeout on cold starts.
-    this.timeout(120000);
-
+  describe('Application class availability', () => {
     it('should be importable from app module', () => {
-      const { Application } = require('../src/app');
       expect(Application).to.be.a('function');
     });
 
     it('should be constructable', () => {
-      const { Application } = require('../src/app');
       const app = new Application();
       expect(app).to.be.instanceOf(Application);
     });
 
     it('should expose initialize, start, stop, runMigration, preInitMigration methods', () => {
-      const { Application } = require('../src/app');
       const app = new Application();
       expect(app.initialize).to.be.a('function');
       expect(app.start).to.be.a('function');

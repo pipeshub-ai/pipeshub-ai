@@ -29,10 +29,18 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
+from app.services.resource_governor.models import ParseTier
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
+
 
 @pytest.fixture
 def logger():
@@ -476,18 +484,41 @@ class TestWorkerThreadPendingTasks:
 
 class TestStopWorkerThreadNotRunning:
 
-    def test_stop_when_loop_exists_but_not_running(self, consumer):
-        """Stop when worker_loop exists but is not running - skips loop.stop()."""
+    def test_stop_is_requested_even_when_loop_is_not_running_yet(self, consumer) -> None:
+        """A worker still on its way into run_forever() must be told to stop."""
         mock_loop = MagicMock()
         mock_loop.is_running.return_value = False
+        mock_loop.is_closed.return_value = False
         consumer.worker_loop = mock_loop
         mock_executor = MagicMock()
         consumer.worker_executor = mock_executor
 
         consumer._IndexingKafkaConsumer__stop_worker_thread()
-        # Loop stop was NOT called since it wasn't running
+        mock_loop.call_soon_threadsafe.assert_called_once_with(mock_loop.stop)
+        mock_executor.shutdown.assert_called_once_with(wait=True)
+
+    def test_stop_skips_request_when_loop_already_closed(self, consumer) -> None:
+        mock_loop = MagicMock()
+        mock_loop.is_closed.return_value = True
+        consumer.worker_loop = mock_loop
+        mock_executor = MagicMock()
+        consumer.worker_executor = mock_executor
+
+        consumer._IndexingKafkaConsumer__stop_worker_thread()
         mock_loop.call_soon_threadsafe.assert_not_called()
         mock_executor.shutdown.assert_called_once_with(wait=True)
+
+    def test_stop_still_shuts_down_when_loop_closes_mid_request(self, consumer) -> None:
+        mock_loop = MagicMock()
+        mock_loop.is_closed.return_value = False
+        mock_loop.call_soon_threadsafe.side_effect = RuntimeError("Event loop is closed")
+        consumer.worker_loop = mock_loop
+        mock_executor = MagicMock()
+        consumer.worker_executor = mock_executor
+
+        consumer._IndexingKafkaConsumer__stop_worker_thread()
+        mock_executor.shutdown.assert_called_once_with(wait=True)
+        assert consumer.worker_executor is None
 
 
 # ===================================================================
@@ -643,8 +674,7 @@ class TestBackpressureAlreadyLogged:
         consumer._backpressure_logged = True
 
         # Simulate reaching capacity via gate waiters
-        with consumer._futures_lock:
-            consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
 
         consumer._IndexingKafkaConsumer__apply_backpressure()
         # Pause not called because assigned - paused = empty set

@@ -13,15 +13,17 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.constants.arangodb import MimeTypes
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.stream_purpose import is_streaming_for_indexing
+from app.connectors.core.base.error.stream_errors import connector_not_ready
 from app.models.entities import CodeFileRecord, FileRecord, Record, RecordType
+from app.sources.external.github.github_async import rate_limit_reserve_exempt
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
-from app.utils.streaming import (
-    create_stream_record_response,
-    stream_with_eager_first_chunk as _stream_with_eager_first_chunk,
-)
+from app.utils.streaming import create_stream_record_response
 
 if TYPE_CHECKING:
     from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
@@ -44,15 +46,34 @@ class StreamingHelper:
     # ------------------------------------------------------------------
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record, keeping the quota reserve only when indexing asks.
+
+        Indexing stops at the reserve like sync does: the refusal reaches it as
+        a 429 with the reset as ``Retry-After``, and it puts the record back in
+        line until then. A person opening a file is exempt: that is one request
+        they asked for, and refusing it while GitHub would grant it only gets
+        in their way.
+        """
+        if is_streaming_for_indexing():
+            return await self._stream_record(record)
+        with rate_limit_reserve_exempt():
+            return await self._stream_record(record)
+
+    async def _stream_record(self, record: Record) -> StreamingResponse:
         """Build and return an HTTP streaming response for a GitHub record.
 
         - TICKET / PULL_REQUEST: serialises the full blocks container in a
           single-chunk ``StreamingResponse`` with the blocks MIME type.
-        - FILE / CODE_FILE: primes the byte stream eagerly (surfaces auth /
-          404 errors before headers are committed) then returns a chunked
-          download response via ``create_stream_record_response``.
+        - FILE / CODE_FILE: returns a chunked download response via
+          ``create_stream_record_response``. The router's
+          ``start_streaming_response`` primes the first chunk, so source
+          errors still surface before the status is committed.
         """
         c = self.c
+        # init() reports failure by returning False and cleanup() nulls this
+        # out, so without the guard a dead connector is an AttributeError.
+        if not c.data_source:
+            raise connector_not_ready(c.display_name)
         await c.runtime.refresh_token_if_needed()
 
         if record.record_type == RecordType.TICKET.value:
@@ -73,13 +94,13 @@ class StreamingHelper:
 
         if record.record_type == RecordType.FILE.value:
             if not isinstance(record, FileRecord):
-                raise ValueError(f"Expected FileRecord for FILE stream, got {type(record).__name__}")
+                raise HTTPException(
+                    HttpStatusCode.BAD_REQUEST.value,
+                    f"Expected FileRecord for FILE stream, got {type(record).__name__}",
+                )
             filename = record.record_name or str(record.external_record_id)
-            primed = await _stream_with_eager_first_chunk(
-                c.comments.fetch_attachment_content(record)
-            )
             return create_stream_record_response(
-                primed,
+                c.comments.fetch_attachment_content(record),
                 filename=filename,
                 mime_type=record.mime_type,
                 fallback_filename=f"record_{record.id}",
@@ -87,18 +108,23 @@ class StreamingHelper:
 
         if record.record_type == RecordType.CODE_FILE.value:
             if not isinstance(record, CodeFileRecord):
-                raise ValueError(f"Expected CodeFileRecord for CODE_FILE stream, got {type(record).__name__}")
+                raise HTTPException(
+                    HttpStatusCode.BAD_REQUEST.value,
+                    f"Expected CodeFileRecord for CODE_FILE stream, got {type(record).__name__}",
+                )
             filename = record.record_name or str(record.external_record_id)
             content = await c.repos.fetch_code_file_content(record)
-            primed = await _stream_with_eager_first_chunk(_bytes_to_async_gen(content))
             return create_stream_record_response(
-                primed,
+                _bytes_to_async_gen(content),
                 filename=filename,
                 mime_type=record.mime_type,
                 fallback_filename=f"record_{record.id}",
             )
 
-        raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+        raise HTTPException(
+            HttpStatusCode.BAD_REQUEST.value,
+            f"Unsupported record type for streaming: {record.record_type}",
+        )
 
     @staticmethod
     def _blocks_content_disposition(record: Record) -> dict[str, str]:

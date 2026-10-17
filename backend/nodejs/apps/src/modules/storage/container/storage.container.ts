@@ -71,6 +71,7 @@ export class StorageContainer {
             storageConfig,
             Logger.getInstance(loggerConfig),
             keyValueStoreService,
+            appConfig.scopedJwtSecret,
           );
         });
     } catch (error) {

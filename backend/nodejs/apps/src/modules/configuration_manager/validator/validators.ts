@@ -1,5 +1,15 @@
 import { z } from 'zod';
-import { googleWorkspaceTypes, storageTypes } from '../constants/constants';
+import {
+  AI_MODEL_TYPES,
+  googleWorkspaceTypes,
+  storageTypes,
+} from '../constants/constants';
+import { REASONING_EFFORT_VALUES } from '../../enterprise_search/constants/constants';
+import {
+  resolveS3Credentials,
+  S3_PARTIAL_CREDENTIALS_MESSAGE,
+} from '../../storage/utils/s3-credentials.util';
+import { canSearch } from '../types/web-search.types';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -18,13 +28,43 @@ const slackBotConfigBodySchema = z.object({
 
 export const s3ConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.S3),
-  s3AccessKeyId: z.string().min(1, { message: 'S3 access key ID is required' }),
-  s3SecretAccessKey: z.string().min(1, {
-    message: 'S3 secret access key is required',
-  }),
+  // Optional: omit both to use the EC2/ECS IAM role via the AWS default
+  // credential provider chain instead of explicit IAM user credentials.
+  s3AccessKeyId: z.string().optional(),
+  s3SecretAccessKey: z.string().optional(),
   s3Region: z.string().min(1, { message: 'S3 region is required' }),
   s3BucketName: z.string().min(1, { message: 'S3 bucket name is required' }),
 });
+
+// The credential pair is atomic: half a pair would silently authenticate with
+// the IAM role instead of the operator's IAM user.
+const refineS3CredentialPair = (
+  data: { s3AccessKeyId?: string; s3SecretAccessKey?: string },
+  ctx: z.RefinementCtx,
+): void => {
+  const resolved = resolveS3Credentials({
+    accessKeyId: data.s3AccessKeyId,
+    secretAccessKey: data.s3SecretAccessKey,
+  });
+  if (resolved.kind !== 'partial') return;
+  ctx.addIssue({
+    code: z.ZodIssueCode.custom,
+    message: S3_PARTIAL_CREDENTIALS_MESSAGE,
+    path: [
+      resolved.missingField === 'accessKeyId'
+        ? 's3AccessKeyId'
+        : 's3SecretAccessKey',
+    ],
+  });
+};
+
+export const s3ConfigSchemaRefined =
+  s3ConfigSchema.superRefine(refineS3CredentialPair);
+
+const isS3Config = (data: {
+  storageType: string;
+}): data is z.infer<typeof s3ConfigSchema> =>
+  data.storageType === storageTypes.S3;
 
 export const azureBlobConfigSchema = baseStorageSchema.extend({
   storageType: z.literal(storageTypes.AZURE_BLOB),
@@ -76,11 +116,17 @@ export const localConfigSchema = baseStorageSchema.extend({
 });
 
 export const storageValidationSchema = z.object({
-  body: z.discriminatedUnion('storageType', [
-    s3ConfigSchema,
-    azureBlobConfigSchema,
-    localConfigSchema,
-  ]),
+  body: z
+    .discriminatedUnion('storageType', [
+      s3ConfigSchema,
+      azureBlobConfigSchema,
+      localConfigSchema,
+    ])
+    .superRefine((data, ctx) => {
+      if (isS3Config(data)) {
+        refineS3CredentialPair(data, ctx);
+      }
+    }),
 });
 
 export const smtpConfigSchema = z.object({
@@ -427,18 +473,12 @@ export const metricsCollectionRemoteServerSchema = z.object({
 });
 
 
-// Enum definitions
-export const modelType = z.enum([
-  'llm',
-  'embedding',
-  'ocr',
-  'slm',
-  'reasoning',
-  'multiModal',
-  'imageGeneration',
-  'tts',
-  'stt',
-]);
+// Enum definitions. `AI_MODEL_TYPES` is the single list; Zod wants a mutable tuple.
+export const modelType = z.enum(
+  AI_MODEL_TYPES as unknown as [AIModelTypeName, ...AIModelTypeName[]],
+);
+
+type AIModelTypeName = (typeof AI_MODEL_TYPES)[number];
 
 // Provider validation is now dynamic — the Python backend registry is the
 // source of truth.  We only enforce that a non-empty string is provided.
@@ -470,7 +510,23 @@ export const configurationSchema = z.object({
   region: z.string().optional().describe("AWS region"),
   model_kwargs: z.record(z.any()).optional().describe("Additional model kwargs"),
   encode_kwargs: z.record(z.any()).optional().describe("Additional encoding kwargs"),
-  cache_folder: z.string().optional().describe("Cache folder for models")
+  cache_folder: z.string().optional().describe("Cache folder for models"),
+  // Python's LLM factory treats a blank value as "no default", same as absent.
+  defaultReasoningEffort: z
+    .string()
+    .nullable()
+    .optional()
+    .refine(
+      (value) =>
+        value == null ||
+        value.trim() === '' ||
+        (REASONING_EFFORT_VALUES as readonly string[]).includes(value.trim()),
+      {
+        message:
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+      },
+    )
+    .describe('Reasoning effort used when a request does not choose one'),
 }).passthrough().refine(
   (data) => {
     // If modelFriendlyName is provided, model must be a single model (not comma-separated)
@@ -512,6 +568,71 @@ export const updateProviderRequestSchema = z.object({
   }),
 });
 
+export const discoverModelsRequestSchema = z.object({
+  body: z.object({
+    provider: providerType,
+    capability: z.string().optional(),
+    configuration: configurationSchema.default({}),
+    modelType: modelType.optional(),
+    modelKey: z.string().optional(),
+    query: z.string().optional(),
+  }),
+});
+
+const batchModelSchema = z.object({
+  model: z.string().min(1),
+  modelFriendlyName: z.string().optional(),
+  isMultimodal: z.boolean().default(false),
+  isReasoning: z.boolean().default(false),
+  contextLength: z.number().optional().nullable(),
+});
+
+/** Drop a shared friendly name before the single-model refine. Each batch model carries its own. */
+const batchSharedConfigurationSchema = z.preprocess((value) => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+  if (!('modelFriendlyName' in value)) return value;
+  const copy = { ...(value as Record<string, unknown>) };
+  delete copy.modelFriendlyName;
+  return copy;
+}, configurationSchema);
+
+export const batchAddModelsRequestSchema = z.object({
+  body: z.object({
+    modelType: modelType,
+    provider: providerType,
+    configuration: batchSharedConfigurationSchema,
+    models: z.array(batchModelSchema).min(1).max(25),
+    defaultModel: z.string().optional(),
+    connectionId: z.string().uuid().optional(),
+  }).superRefine((body, ctx) => {
+    const seen = new Set<string>();
+    for (const model of body.models) {
+      if (seen.has(model.model)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Duplicate model id ${model.model}`,
+          path: ['models'],
+        });
+      }
+      seen.add(model.model);
+    }
+  }),
+});
+
+export const rotateConnectionCredentialsSchema = z.object({
+  body: z.object({
+    configuration: z.object({
+      apiKey: z.string().optional(),
+      awsAccessKeyId: z.string().optional(),
+      awsAccessSecretKey: z.string().optional(),
+      serviceAccountJson: z.string().optional(),
+    }).strict(),
+  }),
+  params: z.object({
+    connectionId: z.string().min(1),
+  }),
+});
+
 export const addProviderRequestSchema = z.object({
   body: z.object({
     modelType: modelType,
@@ -537,9 +658,10 @@ export const aiModelsConfigSchema = z.object({
       imageGeneration: z.array(modelConfigurationSchema).optional(),
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
+      decision: z.array(modelConfigurationSchema).optional(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
     })
     .refine(
       (data) => {
@@ -558,50 +680,20 @@ export const aiModelsConfigSchema = z.object({
 
 export const modelTypeSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
   }),
 });
 
 export const updateDefaultModelSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
 
 export const deleteProviderSchema = z.object({
   params: z.object({
-    modelType: z.enum([
-      'ocr',
-      'embedding',
-      'llm',
-      'slm',
-      'reasoning',
-      'multiModal',
-      'imageGeneration',
-      'tts',
-      'stt',
-    ]),
+    modelType,
     modelKey: z.string().min(1, { message: 'Model key is required' }),
   }),
 });
@@ -612,12 +704,52 @@ export const webSearchProviderType = z.enum([
   'serper',
   'tavily',
   'exa',
+  'brave',
+  'searxng',
+  'firecrawl',
+  'crawl4ai',
 ]);
+
+const notADefaultPageReader = (body: {
+  provider: string;
+  isDefault?: boolean;
+}): boolean => !(body.isDefault && !canSearch(body.provider));
+const PAGE_READER_DEFAULT_MESSAGE = {
+  message:
+    'This provider only reads pages, so it cannot be the default web search provider',
+  path: ['isDefault'],
+};
+
+const isServerAddress = (value: unknown): boolean => {
+  if (typeof value !== 'string' || value.length > 2048) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const webSearchConfigurationSchema = z
   .record(z.any())
+  .refine(
+    (configuration) =>
+      configuration.baseUrl === undefined ||
+      isServerAddress(configuration.baseUrl),
+    {
+      message:
+        'baseUrl must be an http(s) address of at most 2048 characters, without a user name or password',
+      path: ['baseUrl'],
+    },
+  )
   .describe(
-    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+    'Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)',
   );
 
 export const webSearchProviderConfigSchema = z.object({
@@ -630,28 +762,32 @@ export const webSearchProviderConfigSchema = z.object({
 });
 
 export const addWebSearchProviderSchema = z.object({
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const updateWebSearchProviderSchema = z.object({
   params: z.object({
     providerKey: z.string().min(1, { message: 'Provider key is required' }),
   }),
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const deleteWebSearchProviderSchema = z.object({

@@ -6,11 +6,14 @@ import { configPaths } from '../../paths/paths';
 import { fetchConfigJwtGenerator } from '../../../../libs/utils/createJwt';
 import { executeConnectorCommand } from '../../../tokens_manager/utils/connector.utils';
 import { HttpMethod } from '../../../../libs/enums/http-methods.enum';
+import { getRedisProvider } from '../../../../libs/services/redis/connectionProviderFactory';
+import { redisConnectionConfigFromHostPort } from '../../../../libs/services/redis/connectionConfig';
 import {
   ConnectorSyncBlock,
   buildCrawlingScheduleFromSync,
   isScheduledSyncStrategy,
 } from '../../../crawling_manager/utils/schedule_config_mapper';
+import { reconcileConnectorSchedule } from '../../../crawling_manager/services/connector_schedule_orchestrator';
 
 interface ScheduledConnectorRecord {
   connectorId: string;
@@ -19,6 +22,9 @@ interface ScheduledConnectorRecord {
   ownerUserId?: string | null;
   isActive: boolean;
   sync: ConnectorSyncBlock;
+  /** Only when asked for by id: no such connector, or its settings could not be read. */
+  missing?: boolean;
+  unreadable?: boolean;
 }
 
 const MIGRATION_FLAG_DONE = 'true';
@@ -67,26 +73,45 @@ export class ScheduledJobsBackfillMigration {
     this.backoffInitialDelayMs = backoffOptions.initialDelayMs ?? BACKFILL_INITIAL_DELAY_MS;
   }
 
-  async run(): Promise<{ scheduled: number; skipped: number; errored: number }> {
+  /**
+   * `ignoreDoneFlag` makes this a repair pass rather than a migration: it recreates the job of any
+   * scheduled connector that lost it (a schedule write that failed after a save, a Redis flush),
+   * and leaves every connector that has one alone.
+   */
+  async run({
+    ignoreDoneFlag = false,
+  }: { ignoreDoneFlag?: boolean } = {}): Promise<{
+    scheduled: number;
+    skipped: number;
+    errored: number;
+  }> {
     // Guard: skip if a previous successful run already set the flag.
-    try {
-      const flag = await this.kvStore.get<string>(
-        configPaths.connectorSyncScheduledJobsMigration,
-      );
-      if (flag === MIGRATION_FLAG_DONE) {
-        this.logger.info(
-          'Connector-sync scheduled-jobs migration already completed; skipping',
+    if (!ignoreDoneFlag) {
+      try {
+        const flag = await this.kvStore.get<string>(
+          configPaths.connectorSyncScheduledJobsMigrationV2,
         );
-        return { scheduled: 0, skipped: 0, errored: 0 };
+        if (flag === MIGRATION_FLAG_DONE) {
+          this.logger.info(
+            'Connector-sync scheduled-jobs migration already completed; skipping',
+          );
+          return { scheduled: 0, skipped: 0, errored: 0 };
+        }
+      } catch (error) {
+        this.logger.warn(
+          'Failed to read migration flag; proceeding with idempotent run',
+          { error: error instanceof Error ? error.message : 'Unknown error' },
+        );
       }
-    } catch (error) {
-      this.logger.warn(
-        'Failed to read migration flag; proceeding with idempotent run',
-        { error: error instanceof Error ? error.message : 'Unknown error' },
-      );
     }
 
     this.logger.info('Starting connector-sync scheduled-jobs backfill migration');
+
+    // Drop the pre-`{crawling}`-prefix keys first. Nothing can reach them any
+    // more -- the queue and the worker both look under the hash-tagged prefix
+    // now -- so leaving them behind means the old repeatable-job schedules sit
+    // in Redis forever, invisible and un-removable through the BullMQ API.
+    if (!ignoreDoneFlag) await this.sweepLegacyQueueKeys();
 
     // Fetch the first batch with exponential backoff — the connector service
     // may still be starting up on the first boot.
@@ -101,7 +126,7 @@ export class ScheduledJobsBackfillMigration {
 
     let scheduled = 0;
     let skipped = 0;
-    let errored = 0;
+    let errored = await this.reconcilePending();
 
     let { items, hasMore } = firstBatch;
     let page = 1;
@@ -207,6 +232,21 @@ export class ScheduledJobsBackfillMigration {
       }
     }
 
+    if (ignoreDoneFlag) {
+      // A repair pass owns no flag; whatever failed is tried again by the next pass.
+      if (errored > 0) {
+        this.logger.warn(
+          'Connector schedule repair pass finished with errors',
+          {
+            scheduled,
+            skipped,
+            errored,
+          },
+        );
+      }
+      return { scheduled, skipped, errored };
+    }
+
     if (errored > 0) {
       // Do NOT write the completion flag when any connector failed.
       // The migration will re-run on next boot and retry the failed ones.
@@ -223,7 +263,7 @@ export class ScheduledJobsBackfillMigration {
     // this migration does not run again on subsequent boots.
     try {
       await this.kvStore.set(
-        configPaths.connectorSyncScheduledJobsMigration,
+        configPaths.connectorSyncScheduledJobsMigrationV2,
         MIGRATION_FLAG_DONE,
       );
       this.logger.info('Connector-sync scheduled-jobs backfill migration finished', {
@@ -242,12 +282,157 @@ export class ScheduledJobsBackfillMigration {
   }
 
   /**
+   * Delete every `bull:*` key left over from before the queue prefix became
+   * `{crawling}`. Best-effort: a failure here costs disk, not correctness, so
+   * it must never block the backfill that actually restores the schedules.
+   */
+  private async sweepLegacyQueueKeys(): Promise<void> {
+    // Scoped to this one queue, never a bare `bull:*`: that default prefix is
+    // shared by every BullMQ queue in the database, so a wildcard sweep would
+    // delete another service's jobs, delayed work, and queue metadata if it
+    // shares this Redis.
+    const LEGACY_PREFIX = 'bull:crawling-scheduler:';
+    const DELETE_CHUNK = 200;
+    try {
+      const provider = getRedisProvider(
+        redisConnectionConfigFromHostPort({
+          host: this.appConfig.redis.host,
+          port: this.appConfig.redis.port,
+          username: this.appConfig.redis.username,
+          password: this.appConfig.redis.password,
+          db: this.appConfig.redis.db,
+          tls: this.appConfig.redis.tls,
+        }),
+      );
+      const client = provider.getClient();
+      let batch: string[] = [];
+      let deleted = 0;
+
+      // Per-key DEL in a pipeline, never `DEL k1 k2 …` (R5): the legacy keys
+      // are spread across slots and a multi-key DEL is a CROSSSLOT error on a
+      // cluster. Chunked so a large leftover queue does not build one huge
+      // pipeline in memory.
+      const flush = async (): Promise<void> => {
+        if (batch.length === 0) {
+          return;
+        }
+        const pipeline = client.pipeline();
+        for (const key of batch) {
+          pipeline.del(key);
+        }
+        await pipeline.exec();
+        deleted += batch.length;
+        batch = [];
+      };
+
+      for await (const key of provider.scanKeys(`${LEGACY_PREFIX}*`)) {
+        batch.push(key);
+        if (batch.length >= DELETE_CHUNK) {
+          await flush();
+        }
+      }
+      await flush();
+
+      if (deleted > 0) {
+        this.logger.info(
+          'Removed BullMQ keys stranded by the queue-prefix change',
+          { deleted },
+        );
+      }
+    } catch (error) {
+      this.logger.warn(
+        'Failed to sweep legacy BullMQ keys; continuing with the backfill',
+        { error: error instanceof Error ? error.message : 'Unknown error' },
+      );
+    }
+  }
+
+  /**
    * Fetch one page of connector records from the Python backend.
    * `page` is 1-based. Throws on any HTTP or service error so callers can
    * decide how to handle it.
    */
+  /**
+   * Applies the saves whose settings read failed, from each connector's own settings: the walk
+   * below leaves out a connector that is off, manual or unreadable alike, so its absence proves
+   * nothing. Returns how many failed; those stay pending for the next pass.
+   */
+  private async reconcilePending(): Promise<number> {
+    // Marks a save sets after this are its own change, still owed after this pass.
+    const startedAt = Date.now();
+    let errored = 0;
+    let pending: { connectorId: string; orgId: string }[];
+    try {
+      pending = await this.scheduler.listReconcilesPending();
+    } catch (error) {
+      this.logger.error(
+        'Could not read the schedule changes owed by failed saves',
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      return 1;
+    }
+    const orgOf = new Map(pending.map((p) => [p.connectorId, p.orgId]));
+    for (let i = 0; i < pending.length; i += BACKFILL_BATCH_SIZE) {
+      const ids = pending
+        .slice(i, i + BACKFILL_BATCH_SIZE)
+        .map((p) => p.connectorId);
+      let items: ScheduledConnectorRecord[];
+      try {
+        ({ items } = await this.fetchBatch(1, ids));
+      } catch (error) {
+        this.logger.error(
+          'Could not read the settings of connectors owed a schedule change',
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+        errored++;
+        continue; // the next batch may still be readable
+      }
+      for (const item of items) {
+        if (item.unreadable) continue; // still owed; never read as "sync is off"
+        try {
+          if (item.missing) {
+            await this.scheduler.removeJobsForConnector(
+              item.connectorId,
+              orgOf.get(item.connectorId) ?? item.orgId,
+            );
+          } else {
+            await reconcileConnectorSchedule(this.scheduler, this.logger, {
+              connector: item.type,
+              connectorId: item.connectorId,
+              orgId: item.orgId,
+              userId:
+                (typeof item.ownerUserId === 'string' && item.ownerUserId) ||
+                'system',
+              isActive: item.isActive,
+              sync: item.sync,
+            });
+          }
+          await this.scheduler.clearReconcilePending(
+            item.connectorId,
+            startedAt,
+          );
+        } catch (error) {
+          errored++;
+          this.logger.error(
+            'Could not apply a schedule change owed by a failed save',
+            {
+              connectorId: item.connectorId,
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        }
+      }
+    }
+    return errored;
+  }
+
   private async fetchBatch(
     page: number,
+    connectorIds?: string[],
   ): Promise<{ items: ScheduledConnectorRecord[]; hasMore: boolean }> {
     const { connectorBackend, scopedJwtSecret } = this.appConfig;
     if (!connectorBackend) {
@@ -272,7 +457,10 @@ export class ScheduledJobsBackfillMigration {
 
     const url =
       `${connectorBackend}/api/v1/connectors/internal/all-scheduled` +
-      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}`;
+      `?page=${page}&limit=${BACKFILL_BATCH_SIZE}` +
+      (connectorIds
+        ? `&connectorIds=${encodeURIComponent(connectorIds.join(','))}`
+        : '');
 
     const resp = await executeConnectorCommand(url, HttpMethod.GET, headers);
     const status = resp?.statusCode;

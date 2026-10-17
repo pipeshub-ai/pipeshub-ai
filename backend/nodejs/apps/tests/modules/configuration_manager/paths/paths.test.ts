@@ -17,7 +17,7 @@ describe('configPaths', () => {
   })
 
   it('should have migration paths', () => {
-    expect(configPaths.connectorSyncScheduledJobsMigration).to.equal('/migrations/connector_sync_scheduled_jobs')
+    expect(configPaths.connectorSyncScheduledJobsMigrationV2).to.equal('/migrations/connector_sync_scheduled_jobs_v2')
     expect(configPaths.chatKbFiltersMigration).to.equal('/migrations/chat_kb_filters_v1')
     expect(configPaths.adminRoleMigration).to.equal('/migrations/admin_role_v1')
     expect(configPaths.documentOrgIdMigration).to.equal('/migrations/document_orgid_v1')

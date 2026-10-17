@@ -92,7 +92,8 @@ class TestRelevanceBands:
 
         section = ctx.scope.extra_prompt_sections["preloaded_skills"]
         assert "Full instructions for deploy-service." in section
-        assert "already been loaded in full" in section
+        assert "## Preloaded Skills" in section
+        assert "already loaded in full" in section
         assert manager.activated == ["deploy-service"]
 
     async def test_between_thresholds_injects_pointer_only_no_activation(self) -> None:
@@ -102,8 +103,8 @@ class TestRelevanceBands:
         ctx = await _run(manager, preload_body_threshold=0.75, mention_threshold=0.4)
 
         section = ctx.scope.extra_prompt_sections["preloaded_skills"]
-        assert "deploy-service: Use deploy-service when needed" in section
-        assert "may also be relevant" in section
+        assert "**deploy-service**" in section
+        assert "potentially relevant" in section
         assert "Full instructions" not in section
         assert manager.activated == []
 
@@ -127,7 +128,7 @@ class TestRelevanceBands:
 
         section = ctx.scope.extra_prompt_sections["preloaded_skills"]
         assert "Full instructions for deploy-service." in section
-        assert "rollback-service: Use rollback-service when needed" in section
+        assert "**rollback-service**" in section
         assert "unrelated-skill" not in section
 
     async def test_activation_failure_falls_back_to_pointer(self) -> None:
@@ -142,7 +143,7 @@ class TestRelevanceBands:
         ctx = await _run(manager, preload_body_threshold=0.75, mention_threshold=0.4)
 
         section = ctx.scope.extra_prompt_sections["preloaded_skills"]
-        assert "deploy-service: Use deploy-service when needed" in section
+        assert "**deploy-service**" in section
         assert "Full instructions" not in section
 
 
@@ -197,7 +198,7 @@ class TestScopedAgentWithoutLoadSkill:
         ctx = await _run(manager, scope=scope, preload_body_threshold=0.75, mention_threshold=0.4)
 
         section = ctx.scope.extra_prompt_sections["preloaded_skills"]
-        assert "deploy-service: Use deploy-service when needed" in section
+        assert "**deploy-service**" in section
 
 
 class TestNoOpGuards:

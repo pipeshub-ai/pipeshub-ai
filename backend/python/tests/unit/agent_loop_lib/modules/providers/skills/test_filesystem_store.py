@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import os
 
+import pytest
+
 from app.agent_loop_lib.core.exceptions import RegistryError
 from app.agent_loop_lib.modules.providers.skills.base import SkillFilter, SkillStatus
-from app.agent_loop_lib.modules.providers.skills.filesystem_store import FilesystemSkillStore
+from app.agent_loop_lib.modules.providers.skills.filesystem_store import (
+    FilesystemSkillStore,
+)
 from app.agent_loop_lib.modules.providers.skills.validator import SkillFormatError
 
 
@@ -336,13 +340,122 @@ class TestResources:
         assert await store.write_resource("readonly", "a.txt", "x") is False
 
     async def test_write_resource_path_traversal_is_rejected(self, tmp_path) -> None:
+        """`validate_resource_path` now rejects traversal up front (raises
+        `SkillFormatError`) rather than silently no-op'ing via `_safe_join`
+        — fails fast at write time instead of at sandbox-upload time."""
         store = FilesystemSkillStore(str(tmp_path / "skills"))
         await store.create_skill("s", _skill_md("s"))
 
-        ok = await store.write_resource("s", "../../../etc/passwd", "malicious")
+        try:
+            await store.write_resource("s", "../../../etc/passwd", "malicious")
+        except SkillFormatError:
+            pass
+        else:
+            raise AssertionError("expected SkillFormatError")
 
-        assert ok is False
         assert not (tmp_path / "etc" / "passwd").exists()
+
+    async def test_write_resource_rejects_file_over_per_file_limit(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "app.agent_loop_lib.modules.providers.skills.validator.MAX_RESOURCE_FILE_BYTES",
+            20,
+        )
+        monkeypatch.setattr(
+            "app.agent_loop_lib.modules.providers.skills.validator.MAX_SKILL_RESOURCE_BYTES",
+            100,
+        )
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"))
+
+        with pytest.raises(SkillFormatError, match="per-file limit"):
+            await store.write_resource("s", "scripts/big.py", "x" * 21)
+
+        assert await store.get_resource("s", "scripts/big.py") is None
+
+    async def test_write_resource_rejects_when_merged_total_exceeds_per_skill_limit(
+        self, tmp_path, monkeypatch,
+    ) -> None:
+        monkeypatch.setattr(
+            "app.agent_loop_lib.modules.providers.skills.validator.MAX_RESOURCE_FILE_BYTES",
+            20,
+        )
+        monkeypatch.setattr(
+            "app.agent_loop_lib.modules.providers.skills.validator.MAX_SKILL_RESOURCE_BYTES",
+            30,
+        )
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"), resources={"scripts/a.py": "x" * 20})
+
+        with pytest.raises(SkillFormatError, match="per-skill limit"):
+            await store.write_resource("s", "scripts/b.py", "x" * 20)
+
+        assert await store.get_resource("s", "scripts/a.py") == "x" * 20
+        assert await store.get_resource("s", "scripts/b.py") is None
+
+    async def test_create_rejects_invalid_resources_before_writing_skill_md(self, tmp_path) -> None:
+        primary = tmp_path / "skills"
+        store = FilesystemSkillStore(str(primary))
+
+        with pytest.raises(SkillFormatError):
+            await store.create_skill(
+                "s", _skill_md("s"), resources={"../escape.py": "print(1)"},
+            )
+
+        assert await store.exists("s") is False
+        assert not (primary / "s" / "SKILL.md").exists()
+
+    async def test_update_rejects_invalid_resources_without_replacing_skill_md(self, tmp_path) -> None:
+        primary = tmp_path / "skills"
+        store = FilesystemSkillStore(str(primary))
+        original = _skill_md("s", description="original")
+        await store.create_skill("s", original, resources={"scripts/old.py": "legacy"})
+
+        with pytest.raises(SkillFormatError):
+            await store.update_skill(
+                "s",
+                _skill_md("s", description="changed"),
+                resources={"../escape.py": "print(1)"},
+            )
+
+        skill = await store.get_skill("s")
+        assert skill is not None
+        assert skill.metadata.description == "original"
+        assert (primary / "s" / "SKILL.md").read_text(encoding="utf-8") == original
+        assert await store.get_resource("s", "scripts/old.py") == "legacy"
+
+    async def test_update_with_resources_replaces_the_whole_tree(self, tmp_path) -> None:
+        primary = tmp_path / "skills"
+        store = FilesystemSkillStore(str(primary))
+        await store.create_skill(
+            "s", _skill_md("s"), resources={"scripts/old.py": "legacy", "scripts/keep.py": "old-keep"},
+        )
+
+        await store.update_skill(
+            "s", _skill_md("s", description="v2"), resources={"scripts/keep.py": "new-keep"},
+        )
+
+        assert await store.get_resource("s", "scripts/old.py") is None
+        assert await store.get_resource("s", "scripts/keep.py") == "new-keep"
+        assert (primary / "s" / "SKILL.md").is_file()
+
+    async def test_update_with_empty_resources_clears_bundled_files(self, tmp_path) -> None:
+        primary = tmp_path / "skills"
+        store = FilesystemSkillStore(str(primary))
+        await store.create_skill("s", _skill_md("s"), resources={"scripts/old.py": "legacy"})
+
+        await store.update_skill("s", _skill_md("s"), resources={})
+
+        assert await store.get_resource("s", "scripts/old.py") is None
+        assert not (primary / "s" / "scripts").exists()
+        assert (primary / "s" / "SKILL.md").is_file()
+
+    async def test_update_without_resources_preserves_existing_files(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"), resources={"scripts/old.py": "legacy"})
+
+        await store.update_skill("s", _skill_md("s", description="v2"))
+
+        assert await store.get_resource("s", "scripts/old.py") == "legacy"
 
     async def test_get_resource_path_traversal_returns_none(self, tmp_path) -> None:
         primary = tmp_path / "skills"
@@ -427,6 +540,54 @@ class TestDeprecateSkill:
             f.write("no frontmatter here")
 
         assert await store.deprecate_skill("s", "reason") is False
+
+
+class TestSetSkillStatus:
+    async def test_disable_then_enable_round_trips(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"))
+
+        assert await store.set_skill_status("s", SkillStatus.DISABLED) is True
+        disabled = await store.get_skill("s")
+        assert disabled.metadata.status == SkillStatus.DISABLED
+
+        assert await store.set_skill_status("s", SkillStatus.ACTIVE) is True
+        enabled = await store.get_skill("s")
+        assert enabled.metadata.status == SkillStatus.ACTIVE
+
+    async def test_never_touches_deprecated_reason_or_replaced_by(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"))
+        await store.deprecate_skill("s", "superseded", replaced_by="s2")
+
+        await store.set_skill_status("s", SkillStatus.DISABLED)
+
+        skill = await store.get_skill("s")
+        assert skill.metadata.status == SkillStatus.DISABLED
+        assert skill.metadata.deprecated_reason == "superseded"
+        assert skill.metadata.replaced_by == "s2"
+
+    async def test_unknown_skill_returns_false(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        assert await store.set_skill_status("nope", SkillStatus.DISABLED) is False
+
+    async def test_readonly_skill_returns_false(self, tmp_path) -> None:
+        extra = tmp_path / "extra"
+        _write_raw_skill(str(extra), "readonly", _skill_md("readonly"))
+        store = FilesystemSkillStore(str(tmp_path / "primary"), extra_skills_dirs=[str(extra)])
+
+        assert await store.set_skill_status("readonly", SkillStatus.DISABLED) is False
+
+    async def test_from_status_mismatch_returns_false(self, tmp_path) -> None:
+        store = FilesystemSkillStore(str(tmp_path / "skills"))
+        await store.create_skill("s", _skill_md("s"))
+        await store.set_skill_status("s", SkillStatus.DISABLED)
+
+        assert await store.set_skill_status(
+            "s", SkillStatus.ACTIVE, from_status=SkillStatus.ACTIVE,
+        ) is False
+        skill = await store.get_skill("s")
+        assert skill.metadata.status == SkillStatus.DISABLED
 
 
 class TestListSkillsFilter:

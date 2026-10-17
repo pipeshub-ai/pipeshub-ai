@@ -3,6 +3,12 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import axios from 'axios'
 import { ConnectorServiceCommand } from '../../../../src/libs/commands/connector_service/connector.service.command'
+import { registerDesktopPresence } from '../../../../src/libs/services/desktop-presence.provider'
+const makePresence = (online: boolean | null, connected: boolean | null = null) => ({
+  isLocalFsDeviceOnline: sinon.stub().returns(online),
+  isDesktopConnected: sinon.stub().returns(connected),
+})
+import { ConflictError } from '../../../../src/libs/errors/http.errors'
 import {
   BadRequestError,
   InternalServerError,
@@ -134,16 +140,9 @@ function createMockAppConfig(): any {
 
 function createMockRecordRelationService(): any {
   return {
-    publishRecordEvents: sinon.stub().resolves(),
-    createNewRecordEventPayload: sinon.stub().resolves({}),
     createUpdateRecordEventPayload: sinon.stub().resolves({}),
     createDeleteRecordEvent: sinon.stub().resolves(),
     resyncConnectorRecords: sinon.stub().resolves({ success: true }),
-    eventProducer: {
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      stop: sinon.stub().resolves(),
-    },
     syncEventProducer: {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -227,10 +226,13 @@ function stubUpdateRecordFileUploadConnectorCalls(options: {
         externalRecordId != null
           ? { externalRecordId }
           : { externalRecordId: null },
+      knowledgeBase: { id: 'kb-1' },
     },
   })
 
-  executeStub.onSecondCall().resolves({
+  executeStub.onSecondCall().resolves({ statusCode: 200, data: { userRole: 'WRITER' } })
+
+  executeStub.onThirdCall().resolves({
     statusCode: options.updateRecordStatus ?? 200,
     data: {
       updatedRecord: options.updatedRecord ?? {
@@ -966,6 +968,152 @@ describe('Knowledge Base Controller', () => {
     it('should return a handler function', () => {
       const handler = listKBPermissions(createMockAppConfig())
       expect(handler).to.be.a('function')
+    })
+  })
+
+  // The request validators let a caller leave out either userIds or teamIds
+  // (both are optional arrays). These handlers must treat a missing list as
+  // empty instead of reading `.length` of undefined and answering 500.
+  describe('KB permission handlers with userIds or teamIds omitted', () => {
+    function stubConnector(data: Record<string, unknown>): sinon.SinonStub {
+      return sinon
+        .stub(ConnectorServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data } as any)
+    }
+
+    // The command keeps the forwarded body as a JSON string.
+    function sentBody(executeStub: sinon.SinonStub): unknown {
+      return JSON.parse(executeStub.firstCall.thisValue.body)
+    }
+
+    it('createKBPermission shares with users when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'READER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'READER',
+      })
+    })
+
+    it('createKBPermission shares with teams when userIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('updateKBPermission changes a user role when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'WRITER',
+      })
+    })
+
+    it('updateKBPermission changes a team role when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+        role: 'WRITER',
+      })
+    })
+
+    it('removeKBPermission removes a user when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+      })
+    })
+
+    it('removeKBPermission removes a team when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('still rejects a request that names neither users nor teams', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({ params: { kbId: 'kb-1' }, body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
     })
   })
 
@@ -1859,6 +2007,28 @@ describe('Knowledge Base Controller', () => {
   })
 
   describe('getRecordBuffer (happy path)', () => {
+    // The route's guardPathParams rejects these first; the controller must still
+    // encode them so a route that skips the guard can't widen the connector path.
+    it('should percent-encode recordId in the connector URL (GHSA-rfmg-j28j-f635)', async () => {
+      const mockStream = { pipe: sinon.stub(), on: sinon.stub() }
+      const axiosGet = sinon.stub(axios, 'get').resolves({ headers: {}, data: mockStream })
+      const handler = getRecordBuffer('http://localhost:8088')
+
+      for (const [recordId, encoded] of [
+        ['../records', '..%2Frecords'],
+        ['abc?x=1#frag', 'abc%3Fx%3D1%23frag'],
+        ['r1/../../internal/stream/record/r2/', 'r1%2F..%2F..%2Finternal%2Fstream%2Frecord%2Fr2%2F'],
+      ]) {
+        axiosGet.resetHistory()
+        const req = createMockRequest({ params: { recordId }, query: { convertTo: 'pdf' } })
+        await handler(req, createMockResponse(), createMockNext())
+        expect(axiosGet.calledOnce).to.be.true
+        expect(axiosGet.firstCall.args[0]).to.equal(
+          `http://localhost:8088/api/v1/stream/record/${encoded}?convertTo=pdf`,
+        )
+      }
+    })
+
     it('should stream record buffer to client', async () => {
       const mockStream = {
         pipe: sinon.stub(),
@@ -2834,7 +3004,7 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(connectorStub.callCount).to.equal(2)
+      expect(connectorStub.callCount).to.equal(3)
       expect(uploadStub.calledOnce).to.be.true
       expect(uploadStub.firstCall.args[2]).to.equal('ext-doc-123')
       expect(res.status.calledWith(200)).to.be.true
@@ -2894,7 +3064,7 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
-      expect(connectorStub.callCount).to.equal(1)
+      expect(connectorStub.callCount).to.equal(2)
     })
 
     it('should call next when storage upload fails with non-404 error', async () => {
@@ -2916,8 +3086,8 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(InternalServerError)
-      expect(next.firstCall.args[0].message).to.include('File upload failed')
-      expect(connectorStub.callCount).to.equal(1)
+      expect(next.firstCall.args[0].message).to.include('PipesHub tried to save this file')
+      expect(connectorStub.callCount).to.equal(2)
     })
 
     it('should call next when existing record has no externalRecordId for file upload', async () => {
@@ -2941,7 +3111,7 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
-      expect(connectorStub.callCount).to.equal(1)
+      expect(connectorStub.callCount).to.equal(2)
       expect(uploadStub.called).to.be.false
     })
 
@@ -2978,7 +3148,7 @@ describe('Knowledge Base Controller', () => {
       await handler(req, res, next)
 
       expect(next.called).to.be.false
-      expect(connectorStub.callCount).to.equal(2)
+      expect(connectorStub.callCount).to.equal(3)
       expect(res.status.calledWith(200)).to.be.true
     })
 
@@ -3473,5 +3643,150 @@ describe('Knowledge Base Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+  })
+})
+
+describe('resyncConnectorRecords (Local FS desktop presence)', () => {
+  afterEach(() => {
+    sinon.restore()
+    registerDesktopPresence(null)
+  })
+
+  function stubActiveAndInstance(instance: Record<string, unknown>) {
+    const executeStub = sinon.stub(ConnectorServiceCommand.prototype, 'execute')
+    executeStub.onFirstCall().resolves({
+      statusCode: 200,
+      data: { connectors: [{ _key: 'c1' }] },
+    })
+    executeStub.onSecondCall().resolves({
+      statusCode: 200,
+      data: { connector: { _key: 'c1', isLocked: false, ...instance } },
+    })
+    return executeStub
+  }
+
+  it('answers 409 DESKTOP_OFFLINE and does not publish when the owner device is offline', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS', fullSync: false },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(409)).to.be.true
+    const body = res.json.firstCall.args[0]
+    expect(body.details.code).to.equal('DESKTOP_OFFLINE')
+    expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    // Keyed on the connector's creator and owner device, not the caller.
+    expect(presence.isLocalFsDeviceOnline.calledOnceWithExactly('org-1', 'owner-1', 'dev-a')).to.be.true
+  })
+
+  it('answers DESKTOP_UNCLAIMED when the connector has no owner device', async () => {
+    const presence = makePresence(true, true)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({ params: { connectorId: 'c1' }, body: { connectorName: 'Local FS' } })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(409)).to.be.true
+    expect(res.json.firstCall.args[0].details.code).to.equal('DESKTOP_UNCLAIMED')
+    expect(mockRecordRelation.resyncConnectorRecords.called).to.be.false
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
+  })
+
+  it('publishes when the desktop is online', async () => {
+    registerDesktopPresence(makePresence(true))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.called).to.be.false
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('lets the request through when presence cannot tell', async () => {
+    registerDesktopPresence(makePresence(null))
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', ownerDeviceId: 'dev-a' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(mockRecordRelation.resyncConnectorRecords.calledOnce).to.be.true
+  })
+
+  it('ignores presence for non-Local-FS connectors', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Google Drive', createdBy: 'owner-1' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Google Drive' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(res.status.calledWith(200)).to.be.true
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
+  })
+
+  it('still reports a running sync as a conflict before checking presence', async () => {
+    const presence = makePresence(false)
+    registerDesktopPresence(presence)
+    const mockRecordRelation = createMockRecordRelationService()
+    stubActiveAndInstance({ type: 'Local FS', createdBy: 'owner-1', isLocked: true, status: 'SYNCING' })
+
+    const handler = resyncConnectorRecords(mockRecordRelation, createMockAppConfig())
+    const req = createMockRequest({
+      params: { connectorId: 'c1' },
+      body: { connectorName: 'Local FS' },
+    })
+    const res = createMockResponse()
+    const next = createMockNext()
+
+    await handler(req, res, next)
+
+    expect(next.calledOnce).to.be.true
+    expect(next.firstCall.args[0]).to.be.instanceOf(ConflictError)
+    expect(res.status.called).to.be.false
+    expect(presence.isLocalFsDeviceOnline.called).to.be.false
   })
 })

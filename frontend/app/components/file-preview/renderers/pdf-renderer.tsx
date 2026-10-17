@@ -19,6 +19,11 @@ const PDF_PAGE_HEIGHT = 747.2272727272727;
 const SCROLL_DELAY_MS = 300;
 const NAVIGATION_SETTLE_MS = 500;
 
+// PdfLoader passes its props straight to pdf.js getDocument(), but its prop
+// types omit this option, hence the spread. Turning eval off stops a crafted
+// PDF font from running script in the page.
+const PDF_LOADER_SAFE_OPTIONS = { isEvalSupported: false };
+
 type PdfJsViewer = {
   currentPageNumber: number;
   currentScaleValue: string;
@@ -454,6 +459,7 @@ export function PDFRenderer({
     >
       <PdfLoader
         url={fileUrl}
+        {...PDF_LOADER_SAFE_OPTIONS}
         beforeLoad={
           <Flex
             align="center"

@@ -8,6 +8,7 @@ import {
   FileRejectionReason,
 } from '../../../../src/libs/middlewares/file_processor/fp.constant'
 import { Logger } from '../../../../src/libs/services/logger.service'
+import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -474,7 +475,9 @@ describe('FileProcessorService - rejectionMessage edge cases', () => {
     handler(req, res, next)
 
     expect(req.body.rejectedFiles).to.have.length(1)
-    expect(req.body.rejectedFiles[0].error).to.equal('Unsupported file type')
+    expect(req.body.rejectedFiles[0].error).to.equal(
+      "PipesHub can't read this type of file. Convert it to a supported format such as PDF, DOCX or TXT and upload it again.",
+    )
   })
 
   it('reports EXCEEDS_SIZE_LIMIT with correct MB in the message', () => {
@@ -492,7 +495,9 @@ describe('FileProcessorService - rejectionMessage edge cases', () => {
     handler(req, res, next)
 
     expect(req.body.rejectedFiles).to.have.length(1)
-    expect(req.body.rejectedFiles[0].error).to.equal('File exceeds the 5 MB size limit')
+    expect(req.body.rejectedFiles[0].error).to.equal(
+      'This file is larger than the 5 MB limit. Make it smaller or split it, then upload it again.',
+    )
   })
 
   it('uses originalname as fallback when filePath is not set on file', () => {
@@ -548,3 +553,34 @@ describe('FileProcessorService - single file buffer in partial mode', () => {
     expect(req.body.rejectedFiles).to.have.length(0)
   })
 })
+
+describe('FileProcessorService - uploadErrorMessage', () => {
+  const service = new FileProcessorService(createPartialConfig({ maxFileSize: 5 * ONE_MB, maxFilesAllowed: 20 }))
+
+  it('turns multer limits into what to do next, with the real limits', () => {
+    expect(service.uploadErrorMessage({ code: 'LIMIT_FILE_SIZE', message: 'File too large' })).to.equal(
+      'One of the files is larger than the 5 MB limit. Remove it or make it smaller, then upload again.',
+    )
+    expect(service.uploadErrorMessage({ code: 'LIMIT_FILE_COUNT', message: 'Too many files' })).to.equal(
+      'You can upload up to 20 files at a time. Upload the rest in another batch.',
+    )
+    expect(service.uploadErrorMessage({ code: 'LIMIT_UNEXPECTED_FILE', message: 'Unexpected field' })).to.equal(
+      "The files weren't sent the way this page expects. Refresh the page and try again.",
+    )
+  })
+
+  it('never shows the library text for anything else', () => {
+    expect(service.uploadErrorMessage({ message: 'Unexpected end of form' })).to.equal(
+      "The upload didn't complete. Check your connection and try again.",
+    )
+    expect(service.uploadErrorMessage(undefined)).to.equal(
+      "The upload didn't complete. Check your connection and try again.",
+    )
+  })
+
+  it('keeps a message we wrote ourselves', () => {
+    const ours = new BadRequestError('This upload is larger than the 50 MB total limit. Upload fewer files at a time.')
+    expect(service.uploadErrorMessage(ours)).to.equal(ours.message)
+  })
+})
+

@@ -13,6 +13,7 @@ from app.modules.agents.qna.chat_state import (
     cleanup_old_tool_results,
     cleanup_state_after_retrieval,
     remember_record_ids,
+    remember_shown_results,
 )
 
 
@@ -54,6 +55,36 @@ def minimal_user_info():
 # build_initial_state
 # ===================================================================
 class TestBuildInitialState:
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "keywordSearchBudget": "short"}, "short"),
+        ({"query": "q", "keyword_search_budget": "full"}, "full"),
+        ({"query": "q"}, None),
+    ], ids=["camel-case", "snake-case", "absent"])
+    def test_keyword_search_budget_reaches_the_search_tools(
+        self, mock_deps, minimal_user_info, chat_query, expected,
+    ) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["keyword_search_budget"] == expected
+
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "deepResearch": True}, True),
+        ({"query": "q", "deepResearch": False}, False),
+        ({"query": "q"}, False),
+    ], ids=["on", "off", "absent"])
+    def test_deep_research_reaches_the_agent(self, mock_deps, minimal_user_info, chat_query, expected) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["deep_research"] is expected
+
+    def test_the_resolved_web_config_keeps_every_stored_provider(self, mock_deps, minimal_user_info) -> None:
+        """The agent route resolves the fallbacks and page readers; they must reach the tools."""
+        others = [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}, "junk"]
+        chat_query = {"query": "q", "webSearchConfig": {"provider": "serper", "configuration": {"apiKey": "k"}, "providers": others}}
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["web_search_config"] == {
+            "provider": "serper", "configuration": {"apiKey": "k"},
+            "providers": [{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}],
+        }
+
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(
             chat_query=minimal_chat_query,
@@ -144,6 +175,34 @@ class TestBuildInitialState:
         assert state["output_file_path"] == "/tmp/out.txt"
         assert state["conversation_id"] == "conv-123"
         assert len(state["previous_conversations"]) == 1
+
+    def test_default_project_instructions_is_none(self, mock_deps, minimal_chat_query, minimal_user_info):
+        state = build_initial_state(
+            chat_query=minimal_chat_query,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["project_instructions"] is None
+
+    def test_project_instructions_passthrough(self, mock_deps, minimal_user_info):
+        """`projectInstructions` (Node `ChatQuery` field) flows into
+        `chat_state["project_instructions"]` unchanged — additive, distinct
+        from both `instructions` (agent-specific) and `custom_instructions`
+        (org-level)."""
+        cq = {
+            "query": "q",
+            "instructions": "Focus on finance",
+            "custom_instructions": "Always respond in Spanish.",
+            "projectInstructions": "Cite the Q3 report for every financial claim.",
+        }
+        state = build_initial_state(
+            chat_query=cq,
+            user_info=minimal_user_info,
+            **mock_deps,
+        )
+        assert state["instructions"] == "Focus on finance"
+        assert state["custom_instructions"] == "Always respond in Spanish."
+        assert state["project_instructions"] == "Cite the Q3 report for every financial claim."
 
     def test_with_toolsets(self, mock_deps, minimal_user_info):
         cq = {
@@ -417,6 +476,38 @@ class TestRememberRecordIds:
 
     def test_no_state_is_a_noop(self):
         remember_record_ids(None, ["r1"])
+
+    def test_keeps_names_in_the_order_shown_latest_last(self) -> None:
+        """`knowledgegraph__fetch_record` lists these, most recent first, when
+        the model asks for an id that does not resolve."""
+        state = {}
+
+        remember_record_ids(state, ["r1", "r2"], names={"r1": "Plan", "r2": "Notes"})
+        remember_record_ids(state, ["r3"])
+        remember_record_ids(state, ["r1"])
+
+        assert list(state["known_record_names"].items()) == [
+            ("r2", "Notes"), ("r3", ""), ("r1", "Plan"),
+        ]
+
+    def test_shown_results_are_remembered_but_trimmed_ones_are_not(self) -> None:
+        """Retrieval fills its map before trimming to the top blocks; a record
+        whose blocks were all trimmed never reached the model."""
+        state = {}
+        vr_map = {
+            "vr-1": {"id": "r1", "record_name": "Plan"},
+            "vr-2": {"id": "r2", "record_name": "Trimmed"},
+            "vr-3": {"_key": "r3", "recordName": "Keyword hit"},
+        }
+
+        remember_shown_results(
+            state,
+            [{"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-3"}],
+            vr_map,
+        )
+
+        assert state["known_record_names"] == {"r1": "Plan", "r3": "Keyword hit"}
+        assert state["known_record_ids"] == {"r1", "r3"}
 
 
 class TestCleanupOldToolResults:

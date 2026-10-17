@@ -20,6 +20,7 @@ import {
   RedisStreamsAdminService,
 } from './redis-streams.service';
 import { AppConfig } from '../../modules/tokens_manager/config/config';
+import { MAIL_CONSUMER_LIVENESS_MS } from '../../modules/mail/types/mail-event.types';
 import { loadMessagingEnv } from '../config/messaging.env';
 import { MESSAGING_ERRORS } from '../constants/messaging.constants';
 
@@ -195,10 +196,83 @@ export function createNotificationMessageConsumer(
   );
 }
 
+/**
+ * Refuse `REDIS_KEY_NAMESPACE` + `MESSAGE_BROKER=redis` (R9).
+ *
+ * The namespace isolates KV keys, the cache-invalidation channel, and the
+ * BullMQ queue prefix -- but NOT Redis Streams. Stream names round-trip
+ * through `XREADGROUP` into `XACK`, and the indexing consumer derives lane
+ * numbers from them, so prefixing them is a change with real message-loss
+ * risk that has to land on its own.
+ *
+ * Until it does, two releases pointed at one endpoint share every stream
+ * *and* consumer group, so a message produced by release A can be delivered
+ * to release B's consumer and acked there -- A never sees it. Setting the
+ * namespace is an explicit request for isolation, so failing fast is the
+ * honest answer; silently not isolating routes work to the wrong deployment.
+ *
+ * Mirrors `_reject_namespaced_redis_streams` in
+ * `backend/python/app/services/messaging/messaging_factory.py`.
+ */
+function rejectNamespacedRedisStreams(): void {
+  const namespace = (process.env.REDIS_KEY_NAMESPACE ?? '').trim();
+  if (namespace) {
+    throw new Error(
+      `REDIS_KEY_NAMESPACE='${namespace}' does not isolate Redis Streams, so ` +
+        "two deployments sharing this endpoint would consume each other's " +
+        'messages. Use a separate Redis/Valkey instance per deployment for ' +
+        'MESSAGE_BROKER=redis, or switch to MESSAGE_BROKER=kafka.',
+    );
+  }
+}
+
+const MAIL_CONSUMER_GROUP = 'mail-consumer-group';
+const MAIL_CLIENT_ID = 'mail-consumer';
+
+/** Dedicated consumer group/stream group for the mail topic (Kafka + Redis). */
+export function createMailMessageConsumer(
+  appConfig: AppConfig,
+  logger: Logger,
+): IMessageConsumer {
+  const resolved = resolveMessageBrokerConfig(appConfig);
+  if (resolved.type === MessageBrokerType.KAFKA) {
+    const kafka: KafkaConfig = {
+      ...resolved.kafka,
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+      sessionTimeout: MAIL_CONSUMER_LIVENESS_MS,
+      rebalanceTimeout: MAIL_CONSUMER_LIVENESS_MS,
+    };
+    return createMessageConsumerByParts(
+      MessageBrokerType.KAFKA,
+      kafka,
+      undefined,
+      logger,
+    );
+  }
+  const redis: RedisBrokerConfig = {
+    ...buildRedisBrokerConfig(appConfig.redis, {
+      clientId: MAIL_CLIENT_ID,
+      groupId: MAIL_CONSUMER_GROUP,
+    }),
+    claimMinIdleMs: MAIL_CONSUMER_LIVENESS_MS,
+    // A batch would idle later entries past claimMinIdleMs while earlier
+    // sends run, letting a replica that starts up reclaim and resend them.
+    readCount: 1,
+  };
+  return createMessageConsumerByParts(
+    MessageBrokerType.REDIS,
+    undefined,
+    redis,
+    logger,
+  );
+}
+
 export function buildRedisBrokerConfig(
   redisConfig: RedisConfig,
   options?: { clientId?: string; groupId?: string },
 ): RedisBrokerConfig {
+  rejectNamespacedRedisStreams();
   const env = loadMessagingEnv();
   return {
     type: MessageBrokerType.REDIS,
@@ -207,7 +281,6 @@ export function buildRedisBrokerConfig(
     password: redisConfig.password,
     db: redisConfig.db,
     maxLen: env.redisStreamsMaxLen,
-    keyPrefix: env.redisStreamsKeyPrefix,
     clientId: options?.clientId,
     groupId: options?.groupId,
   };

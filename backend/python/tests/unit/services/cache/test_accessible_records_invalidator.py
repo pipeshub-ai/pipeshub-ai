@@ -1,8 +1,9 @@
-"""AccessibleRecordsInvalidator: resolves the org, guards the KB-only policy, and
+"""AccessibleRecordsInvalidator: resolves the org, coalesces connector deletes, and
 never lets a cache problem fail the caller's real work."""
 
 from __future__ import annotations
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -144,16 +145,17 @@ class TestRecordIndexed:
         await inv.on_record_indexed(connector_name="KB", connector_id="kb-1", org_id=ORG)
         cache.invalidate_kb.assert_awaited_once_with(ORG, "kb-1")
 
-    async def test_connector_records_are_ignored(self) -> None:
-        """A full sync flips thousands of records COMPLETED; invalidating per
-        record would empty the cache exactly when the graph is busiest."""
-        inv, cache, graph = _make()
+    async def test_a_connector_record_drops_its_connector_entry(self) -> None:
+        """It finished indexing after its sync completed, so the delete at sync
+        completion did not cover it."""
+        inv, cache, graph = _indexed_settling()
 
         await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
 
+        cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
         cache.invalidate_kb.assert_not_called()
-        cache.invalidate_connector.assert_not_called()
         graph.get_document.assert_not_called()
+        await _windows(3)
 
     async def test_falls_back_to_the_record_group_id(self) -> None:
         inv, cache, _ = _make()
@@ -182,3 +184,173 @@ class TestRecordIndexed:
         inv, cache, _ = _make(app_doc={"orgId": ORG})
         cache.invalidate_kb = AsyncMock(side_effect=RuntimeError("redis down"))
         await inv.on_record_indexed(connector_name="KB", connector_id="kb-1", org_id=ORG)
+
+
+SETTLE = 0.02
+
+
+def _indexed_settling(**kwargs) -> tuple[AccessibleRecordsInvalidator, MagicMock, MagicMock]:
+    inv, cache, graph = _make(**kwargs)
+    cache.mark_connector_changed = AsyncMock()
+    inv.RECORD_INDEXED_SETTLE_SECONDS = SETTLE
+    return inv, cache, graph
+
+
+def _settling(**kwargs) -> tuple[AccessibleRecordsInvalidator, MagicMock, MagicMock]:
+    inv, cache, graph = _make(**kwargs)
+    cache.mark_connector_changed = AsyncMock()
+    inv.PERMISSION_CHANGE_SETTLE_SECONDS = SETTLE
+    return inv, cache, graph
+
+
+async def _windows(n: float) -> None:
+    await asyncio.sleep(SETTLE * n)
+
+
+class TestConnectorPermissionsChanged:
+    async def test_one_change_deletes_once_and_the_run_ends(self) -> None:
+        inv, cache, _ = _settling()
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        cache.invalidate_connector.assert_awaited_once_with(ORG, "conn-1")
+
+        await _windows(3)
+        cache.invalidate_connector.assert_awaited_once()
+        assert inv._settling == {}
+
+    async def test_a_burst_costs_two_drops(self) -> None:
+        """A sync narrowing access record after record must not empty the cache
+        per record, but every change still rejects the fills in flight."""
+        inv, cache, graph = _settling(app_doc={"orgId": ORG})
+
+        for _ in range(50):
+            await inv.on_connector_permissions_changed("conn-1")
+
+        assert cache.invalidate_connector.await_count == 1
+        assert cache.mark_connector_changed.await_count == 49
+        graph.get_document.assert_awaited_once()
+        await _windows(4)
+        assert cache.invalidate_connector.await_count == 2
+        assert inv._settling == {}
+
+    async def test_changes_that_keep_arriving_keep_the_run_going(self) -> None:
+        inv, cache, _ = _settling()
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+
+        for _ in range(4):
+            await _windows(0.9)
+            await inv.on_connector_permissions_changed("conn-1", ORG)
+        deletes_while_busy = cache.invalidate_connector.await_count
+        await _windows(4)
+
+        assert deletes_while_busy >= 3
+        assert cache.invalidate_connector.await_count > deletes_while_busy
+        assert inv._settling == {}
+
+    async def test_a_change_after_the_run_ends_deletes_at_once(self) -> None:
+        inv, cache, _ = _settling()
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        await _windows(3)
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+
+        assert cache.invalidate_connector.await_count == 2
+        await _windows(3)
+
+    async def test_each_connector_has_its_own_run(self) -> None:
+        inv, cache, _ = _settling()
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        await inv.on_connector_permissions_changed("conn-2", ORG)
+
+        assert [c.args for c in cache.invalidate_connector.await_args_list] == [
+            (ORG, "conn-1"), (ORG, "conn-2"),
+        ]
+        await _windows(3)
+
+    async def test_unresolved_org_drops_nothing(self) -> None:
+        inv, cache, _ = _settling(app_doc=None)
+        await inv.on_connector_permissions_changed("conn-1")
+        await _windows(3)
+        cache.invalidate_connector.assert_not_called()
+        cache.mark_connector_changed.assert_not_called()
+
+    async def test_blank_connector_id_is_a_noop(self) -> None:
+        inv, cache, graph = _settling()
+        await inv.on_connector_permissions_changed("")
+        graph.get_document.assert_not_called()
+        cache.invalidate_connector.assert_not_called()
+
+    async def test_cache_failures_are_swallowed(self) -> None:
+        inv, cache, _ = _settling()
+        cache.invalidate_connector = AsyncMock(side_effect=RuntimeError("redis down"))
+        cache.mark_connector_changed = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)  # must not raise
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+        await _windows(4)
+
+        assert cache.invalidate_connector.await_count == 2
+        assert inv._settling == {}
+
+
+class TestConnectorRecordsIndexed:
+    """A full sync flips thousands of records COMPLETED in a burst; a delete per
+    record would empty the cache exactly when the graph is busiest."""
+
+    async def test_a_burst_costs_two_drops(self) -> None:
+        inv, cache, graph = _indexed_settling(app_doc={"orgId": ORG})
+
+        for _ in range(50):
+            await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1")
+
+        assert cache.invalidate_connector.await_count == 1
+        cache.mark_connector_changed.assert_not_called()
+        graph.get_document.assert_awaited_once()
+        await _windows(4)
+        assert cache.invalidate_connector.await_count == 2
+        assert inv._indexed_settling == {}
+
+    async def test_one_record_deletes_once_and_the_run_ends(self) -> None:
+        inv, cache, _ = _indexed_settling()
+
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
+        await _windows(3)
+
+        cache.invalidate_connector.assert_awaited_once()
+        assert inv._indexed_settling == {}
+
+    async def test_a_record_after_the_run_ends_deletes_at_once(self) -> None:
+        inv, cache, _ = _indexed_settling()
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
+        await _windows(3)
+
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
+
+        assert cache.invalidate_connector.await_count == 2
+        await _windows(3)
+
+    async def test_indexing_does_not_hold_back_a_permission_change(self) -> None:
+        inv, cache, _ = _indexed_settling()
+        inv.PERMISSION_CHANGE_SETTLE_SECONDS = SETTLE
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
+
+        await inv.on_connector_permissions_changed("conn-1", ORG)
+
+        assert cache.invalidate_connector.await_count == 2
+        await _windows(3)
+
+    async def test_an_unresolvable_org_is_a_noop(self) -> None:
+        inv, cache, _ = _indexed_settling(app_doc=None)
+
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1")
+
+        cache.invalidate_connector.assert_not_called()
+        assert inv._indexed_settling == {}
+
+    async def test_failures_are_swallowed(self) -> None:
+        inv, cache, _ = _indexed_settling()
+        cache.invalidate_connector = AsyncMock(side_effect=RuntimeError("redis down"))
+
+        await inv.on_record_indexed(connector_name="DRIVE", connector_id="conn-1", org_id=ORG)
+        await _windows(3)

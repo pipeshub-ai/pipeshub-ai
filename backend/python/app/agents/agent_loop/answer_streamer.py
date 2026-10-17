@@ -94,6 +94,9 @@ class TerminalAnswerStreamer:
         self._event_sink = event_sink
 
         self._buffer = ""
+        # Length of the cut-off reply's text carried into `_buffer` by a
+        # continuing turn; dropped again if that turn ends in a terminal tool.
+        self._carried = 0
         self._web_records: list[dict[str, Any]] = []
         self._ref_to_url: dict[str, str] | None = None
         self.streamed_answer = ""
@@ -112,7 +115,7 @@ class TerminalAnswerStreamer:
 
     async def on_event(self, event: "AgentEvent") -> None:
         if event.event_type == EventType.TEXT_MESSAGE_START:
-            self._start_turn()
+            self._start_turn(continues=bool(event.payload.get("continues_truncated")))
         elif event.event_type == EventType.TEXT_MESSAGE_CONTENT:
             await self._on_delta(event.payload.get("delta", ""))
         elif event.event_type == EventType.TOOL_CALL_START:
@@ -121,7 +124,9 @@ class TerminalAnswerStreamer:
             # tool call arguments (e.g. final_answer.answer_markdown).
             # Clearing now would erase the live answer before the run ends.
             tool_name = event.payload.get("tool", "")
-            if not self._is_streaming_terminal_tool(tool_name):
+            if self._is_streaming_terminal_tool(tool_name):
+                await self._drop_carried_text()
+            else:
                 await self._clear_preamble()
         elif event.event_type == EventType.AGENT_COMPLETE:
             self.streamed_answer = self._buffer
@@ -157,10 +162,15 @@ class TerminalAnswerStreamer:
         )
         return tool_name == FinalAnswerTool().name
 
-    def _start_turn(self) -> None:
+    def _start_turn(self, *, continues: bool = False) -> None:
         """Snapshot the citation state for this turn's normalization calls.
-        Stable within a turn since no tools execute mid-model-call."""
-        self._buffer = ""
+        Stable within a turn since no tools execute mid-model-call.
+        `continues`: this turn resumes a reply cut off at the output-token
+        limit, so the text streamed so far stays on screen unless the turn
+        ends in a tool call instead."""
+        self._carried = len(self._buffer) if continues else 0
+        if not continues:
+            self._buffer = ""
         self._last_emit = 0.0
         self._withheld = False
         self._web_records = self._collector.web_records
@@ -209,6 +219,16 @@ class TerminalAnswerStreamer:
         ):
             await self._event_sink.write(evt)
 
+    async def _drop_carried_text(self) -> None:
+        """A turn that followed a cut-off reply wrote its answer through a
+        terminal tool instead of continuing it, so the carried-over text is
+        not part of the answer."""
+        if not self._carried:
+            return
+        self._buffer = self._buffer[self._carried:]
+        self._carried = 0
+        await self._emit_state_delta()
+
     async def _clear_preamble(self) -> None:
         """A tool call is about to run for the turn that was just streamed
         — it was never the final answer. Clear it immediately rather than
@@ -223,6 +243,7 @@ class TerminalAnswerStreamer:
         closed that turn's message by the time this fires — the frontend
         drops an ended message with no following `RUN_FINISHED` the same
         way it drops this legacy empty-buffer reset."""
+        self._carried = 0
         if not self._buffer:
             return
         self._buffer = ""

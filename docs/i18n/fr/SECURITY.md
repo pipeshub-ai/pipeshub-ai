@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [English](../../../SECURITY.md) · **Français** · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md)
+**Translations:** [English](../../../SECURITY.md) · **Français** · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md) · [Čeština](../cs/SECURITY.md)
 
 </div>
 
@@ -14,7 +14,7 @@ Nous prenons les vulnérabilités de sécurité au sérieux et apprécions vos e
 
 **Veuillez NE PAS créer d'issues GitHub publiques pour les vulnérabilités de sécurité.**
 
-Signalez plutôt les vulnérabilités de sécurité par e-mail à : **abhishek@pipeshub.com**
+Signalez plutôt les vulnérabilités de sécurité par e-mail à : **security@pipeshub.com**
 
 ### Ce qu'il faut inclure
 

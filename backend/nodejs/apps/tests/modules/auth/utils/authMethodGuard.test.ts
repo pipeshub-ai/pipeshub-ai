@@ -1,7 +1,13 @@
 /// <reference types="mocha" />
 import 'reflect-metadata'
 import { expect } from 'chai'
-import { assertAuthMethodEnabled, IOrgAuthConfigLike } from '../../../../src/modules/auth/utils/authMethodGuard'
+import {
+  assertAuthMethodEnabled,
+  assertMethodAllowedAtStep,
+  IOrgAuthConfigLike,
+  SIGN_IN_METHOD_NOT_ALLOWED,
+} from '../../../../src/modules/auth/utils/authMethodGuard'
+import { BadRequestError } from '../../../../src/libs/errors/http.errors'
 import { AuthMethodType } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema'
 
 describe('authMethodGuard', () => {
@@ -60,6 +66,30 @@ describe('authMethodGuard', () => {
         ],
       }
       expect(() => assertAuthMethodEnabled(config, AuthMethodType.GOOGLE)).to.not.throw()
+    })
+  })
+
+  describe('assertMethodAllowedAtStep', () => {
+    const steps: IOrgAuthConfigLike['authSteps'] = [
+      { allowedMethods: [{ type: 'password' }, { type: 'google' }] },
+      { allowedMethods: [{ type: 'otp' }] },
+    ]
+
+    it('allows a method the current step lists', () => {
+      expect(() => assertMethodAllowedAtStep(steps, 0, 'google')).to.not.throw()
+      expect(() => assertMethodAllowedAtStep(steps, 1, 'otp')).to.not.throw()
+    })
+
+    it("refuses a method that only another step lists", () => {
+      expect(() => assertMethodAllowedAtStep(steps, 1, 'password'))
+        .to.throw(BadRequestError, SIGN_IN_METHOD_NOT_ALLOWED)
+      expect(() => assertMethodAllowedAtStep(steps, 0, 'otp'))
+        .to.throw(BadRequestError, SIGN_IN_METHOD_NOT_ALLOWED)
+    })
+
+    it('refuses everything when the step or the config is missing', () => {
+      expect(() => assertMethodAllowedAtStep(steps, 2, 'otp')).to.throw(BadRequestError)
+      expect(() => assertMethodAllowedAtStep(undefined, 0, 'password')).to.throw(BadRequestError)
     })
   })
 })

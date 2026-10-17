@@ -1,10 +1,12 @@
 """Unit tests for app.modules.transformers.pipeline.IndexingPipeline."""
 
+import asyncio
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import ProgressStatus
+from app.config.constants.arangodb import CollectionNames, EventTypes, ProgressStatus
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import (
     Block,
@@ -16,6 +18,7 @@ from app.models.blocks import (
 )
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
+from app.utils import indexing_timing as timing
 
 _SENTINEL = object()
 
@@ -87,6 +90,7 @@ def sink_orchestrator():
     sink.blob_storage.apply = AsyncMock()
     sink.vector_store = MagicMock()
     sink.vector_store.index_record_summary = AsyncMock()
+    sink.resolve_entities = AsyncMock()
     return sink
 
 
@@ -164,9 +168,82 @@ class TestApplyEmpty:
 
 
 # ---------------------------------------------------------------------------
+# apply -- empty blocks, 1:1 update: reconciliation metadata document_path
+# ---------------------------------------------------------------------------
+class TestApplyEmptyMetadataPath:
+    @pytest.mark.asyncio
+    async def test_saves_metadata_at_content_actual_current_path(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        """document_path passed to save_reconciliation_metadata must come
+        from content's actual current location, not be omitted (which would
+        silently default metadata to the flat records/<vrid> form regardless
+        of where content really lives)."""
+        record = _make_record(blocks=[], block_groups=[], record_id="rec-1")
+        record.virtual_record_id = "vr-1"
+        record.org_id = "org-1"
+        ctx = _make_ctx(record)
+        ctx.event_type = EventTypes.UPDATE_RECORD.value
+        ctx.prev_virtual_record_id = "vr-1"
+
+        sink_orchestrator.vector_store.purge_record_vectors = AsyncMock()
+        sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(
+            return_value="records/conn-1/Finance/doc.pdf"
+        )
+        sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
+
+        await pipeline.apply(ctx)
+
+        sink_orchestrator.blob_storage.get_actual_content_path.assert_awaited_once_with(
+            "org-1", "vr-1"
+        )
+        sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
+        call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
+        assert call_args.kwargs["document_path"] == "records/conn-1/Finance/doc.pdf"
+
+    @pytest.mark.asyncio
+    async def test_passes_none_path_when_no_existing_content(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ):
+        """When content doesn't exist yet (or the path can't be determined),
+        document_path is passed as None -- save_reconciliation_metadata's own
+        existing fallback (flat records/<vrid>) handles that safely."""
+        record = _make_record(blocks=[], block_groups=[], record_id="rec-2")
+        record.virtual_record_id = "vr-2"
+        record.org_id = "org-1"
+        ctx = _make_ctx(record)
+        ctx.event_type = EventTypes.REINDEX_RECORD.value
+        ctx.prev_virtual_record_id = "vr-2"
+
+        sink_orchestrator.vector_store.purge_record_vectors = AsyncMock()
+        sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value=None)
+        sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
+
+        await pipeline.apply(ctx)
+
+        call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
+        assert call_args.kwargs["document_path"] is None
+
+
+# ---------------------------------------------------------------------------
 # apply -- non-empty blocks
 # ---------------------------------------------------------------------------
 class TestApplyNonEmpty:
+    @pytest.mark.asyncio
+    async def test_the_index_phase_is_told_enrichment_follows(self, pipeline, sink_orchestrator) -> None:
+        record = _make_record(blocks=[_valid_text_block()], block_groups=[])
+        ctx = _make_ctx(record)
+        seen: dict = {}
+
+        async def index(c: TransformContext) -> None:
+            seen.update(c.settings)
+
+        sink_orchestrator.index = AsyncMock(side_effect=index)
+
+        await pipeline.apply(ctx)
+
+        assert seen.get("enrichment_follows") is True
+
     @pytest.mark.asyncio
     async def test_non_empty_calls_extraction_then_sink(self, pipeline, doc_extraction, sink_orchestrator):
         record = _make_record(blocks=[_valid_text_block()], block_groups=[])
@@ -353,3 +430,38 @@ class TestEnrich:
         await pipeline._enrich(ctx)
 
         assert call_order == ["extraction", "blob", "summary", "enrich"]
+
+    @pytest.mark.asyncio
+    async def test_summary_embedding_time_is_counted_once(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ) -> None:
+        """index_record_summary times its own embed and upsert steps, so a
+        stage wrapped around the whole call would count that time twice."""
+        metadata = _make_semantic_metadata(summary="Timed summary")
+
+        async def set_metadata(ctx) -> None:
+            ctx.record.semantic_metadata = metadata
+
+        async def embed_summary(*_args, **_kwargs) -> None:
+            with timing.stage("embed.dense"):
+                await asyncio.sleep(0.05)
+
+        doc_extraction.apply = AsyncMock(side_effect=set_metadata)
+        sink_orchestrator.vector_store.index_record_summary = AsyncMock(
+            side_effect=embed_summary
+        )
+        ctx = _make_ctx(_make_record(blocks=[_valid_text_block()], block_groups=[]))
+
+        timeline, token = timing.begin_record("rec-123")
+        started = time.perf_counter()
+        try:
+            await pipeline._enrich(ctx)
+        finally:
+            wall = time.perf_counter() - started
+            timing.end_record(timeline, token, outcome="ok")
+
+        # Every step here runs one after another, so busy time cannot
+        # exceed the wall time of the call.
+        busy = sum(total for _count, total, _max in timeline.stage_totals().values())
+        assert busy <= wall
+        assert timeline.stage_totals()["embed.dense"][0] == 1

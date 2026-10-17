@@ -11,8 +11,24 @@ import pytest_asyncio
 from connector_lifecycle import RESOURCE_NAME, constructor, destructor
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol
+from helper.source_credentials import source_unavailable
 
 from connectors.s3.s3_storage_helper import S3StorageHelper
+
+
+def s3_connector_config() -> dict[str, Any]:
+    """Connector config for the shared test bucket, from the suite's env vars."""
+    config: dict[str, Any] = {
+        "auth": {
+            "accessKey": os.getenv("S3_ACCESS_KEY"),
+            "secretKey": os.getenv("S3_SECRET_KEY"),
+            "bucket": RESOURCE_NAME,
+        }
+    }
+    region = os.getenv("S3_REGION")
+    if region:
+        config["auth"]["region"] = region
+    return config
 
 
 @pytest.fixture(scope="session")
@@ -20,7 +36,10 @@ def s3_storage():
     access_key = os.getenv("S3_ACCESS_KEY")
     secret_key = os.getenv("S3_SECRET_KEY")
     if not access_key or not secret_key:
-        pytest.skip("S3 credentials not set.")
+        source_unavailable(
+            "The S3 bucket this suite syncs from is not configured.",
+            secrets=["S3_ACCESS_KEY", "S3_SECRET_KEY"],
+        )
     return S3StorageHelper(access_key=access_key, secret_key=secret_key)
 
 
@@ -31,19 +50,7 @@ async def s3_connector(
     graph_provider: GraphProviderProtocol,
     sample_data_root,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    access_key = os.getenv("S3_ACCESS_KEY")
-    secret_key = os.getenv("S3_SECRET_KEY")
-    config = {
-        "auth": {
-            "accessKey": access_key,
-            "secretKey": secret_key,
-            "bucket": RESOURCE_NAME,
-        }
-    }
-    region = os.getenv("S3_REGION")
-    if region:
-        config["auth"]["region"] = region
-
+    config = s3_connector_config()
     state = await constructor(
         s3_storage,
         pipeshub_client,

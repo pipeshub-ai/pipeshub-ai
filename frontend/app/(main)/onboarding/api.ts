@@ -1,19 +1,16 @@
 import { apiClient } from '@/lib/api';
 import type {
   OrgProfileFormData,
-  AiModelFormData,
-  EmbeddingModelFormData,
   StorageFormData,
   SmtpFormData,
   OnboardingStatus,
   OnboardingStatusResponse,
-  LlmConfigResponse,
-  EmbeddingConfigResponse,
   StorageConfigResponse,
   SmtpConfigResponse,
   OrgDetailsResponse,
   UserBackgroundSurveyResponse,
 } from './types';
+import { resolveS3Credentials } from './utils/s3-credentials';
 
 // ===============================
 // Onboarding Status Gate
@@ -72,82 +69,6 @@ export async function updateOrgProfile(data: OrgProfileFormData): Promise<void> 
 }
 
 // ===============================
-// Step 1 — LLM (AI Model) — REQUIRED
-// ===============================
-
-/**
- * GET /api/v1/configurationManager/ai-models/llm
- */
-export async function getLlmConfig(): Promise<LlmConfigResponse> {
-  const { data } = await apiClient.get<LlmConfigResponse>(
-    '/api/v1/configurationManager/ai-models/llm'
-  );
-  return data;
-}
-
-/**
- * POST /api/v1/configurationManager/ai-models/providers
- * modelType: 'llm'
- */
-export async function saveLlmConfig(form: AiModelFormData): Promise<void> {
-  const configuration: Record<string, unknown> = {
-    apiKey: form.apiKey,
-    model: form.model,
-  };
-  if (form.endpoint) configuration.endpoint = form.endpoint;
-  if (form.deploymentName) configuration.deploymentName = form.deploymentName;
-  if (form.apiVersion) configuration.apiVersion = form.apiVersion;
-  if (form.modelFriendlyName) configuration.modelFriendlyName = form.modelFriendlyName;
-
-  await apiClient.post('/api/v1/configurationManager/ai-models/providers', {
-    modelType: 'llm',
-    provider: form.provider,
-    configuration,
-    isMultimodal: form.isMultimodal,
-    isReasoning: form.isReasoning,
-    ...(form.contextLength ? { contextLength: form.contextLength } : {}),
-    isDefault: true,
-  });
-}
-
-// ===============================
-// Step 2 — Embedding Model — required for onboarding and skip adds the default model(configure or use system default when available)
-// ===============================
-
-/**
- * GET /api/v1/configurationManager/ai-models/embedding
- */
-export async function getEmbeddingConfig(): Promise<EmbeddingConfigResponse> {
-  const { data } = await apiClient.get<EmbeddingConfigResponse>(
-    '/api/v1/configurationManager/ai-models/embedding'
-  );
-  return data;
-}
-
-/**
- * POST /api/v1/configurationManager/ai-models/providers
- * modelType: 'embedding'
- * If providerType === 'default', skip this call (system embeddings are used).
- */
-export async function saveEmbeddingConfig(form: EmbeddingModelFormData): Promise<void> {
-  if (form.providerType === 'default') return;
-
-  const configuration: Record<string, unknown> = {
-    apiKey: form.apiKey,
-    model: form.model,
-  };
-  if (form.endpoint) configuration.endpoint = form.endpoint;
-
-  await apiClient.post('/api/v1/configurationManager/ai-models/providers', {
-    modelType: 'embedding',
-    provider: form.providerType,
-    configuration,
-    isMultimodal: form.isMultimodal,
-    isDefault: true,
-  });
-}
-
-// ===============================
 // Step 3 — Storage — OPTIONAL
 // ===============================
 
@@ -185,8 +106,16 @@ export async function saveStorageConfig(
   const body: Record<string, unknown> = { storageType: form.providerType };
 
   if (form.providerType === 's3') {
-    body.s3AccessKeyId = form.s3AccessKeyId;
-    body.s3SecretAccessKey = form.s3SecretAccessKey;
+    // Both keys omitted tells the API to use the instance IAM role; a half-filled
+    // pair is still sent so the API rejects it instead of silently switching mode.
+    const credentials = resolveS3Credentials({
+      accessKeyId: form.s3AccessKeyId,
+      secretAccessKey: form.s3SecretAccessKey,
+    });
+    if (credentials.kind !== 'iamRole') {
+      body.s3AccessKeyId = form.s3AccessKeyId?.trim() ?? '';
+      body.s3SecretAccessKey = form.s3SecretAccessKey?.trim() ?? '';
+    }
     body.s3Region = form.s3Region;
     body.s3BucketName = form.s3BucketName;
   } else if (form.providerType === 'azureBlob') {

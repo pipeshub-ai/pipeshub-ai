@@ -32,6 +32,20 @@ if TYPE_CHECKING:
     from datetime import datetime
 
 
+def _status_of(exc: BaseException) -> int | None:
+    """The source's HTTP status behind a failure, when it reported one.
+
+    python-gitlab hangs it off ``GitlabError.response_code``; the direct httpx
+    calls in this module raise ``HTTPStatusError`` instead. Without it every
+    failure reaches the streaming layer as an opaque 500.
+    """
+    code = getattr(exc, "response_code", None)
+    if isinstance(code, int):
+        return code
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status if isinstance(status, int) else None
+
+
 class GitLabDataSource:
     """
     Typed wrapper over python-gitlab for common GitLab read operations.
@@ -135,7 +149,7 @@ class GitLabDataSource:
                 return GitLabResponse(success=True, data=self._sdk.user)
             return GitLabResponse(success=True, data=self._sdk.users.get(user_id))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Projects
@@ -154,7 +168,7 @@ class GitLabDataSource:
             # default_branch off the result, none of which exist on a lazy handle.
             return GitLabResponse(success=True, data=self._sdk.projects.get(project_id))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/projects.py - ProjectsSync._resolve_projects_with_filters (unscoped)
@@ -215,7 +229,7 @@ class GitLabDataSource:
                 data=self._sdk.projects.list(get_all=get_all, **extra, **params),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/projects.py - ProjectsSync._resolve_projects_with_filters (group-scoped)
@@ -259,7 +273,7 @@ class GitLabDataSource:
                 data=g.projects.list(get_all=get_all, **extra, **params),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.create_project
@@ -284,7 +298,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=self._sdk.projects.create(payload))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.update_project
@@ -321,7 +335,7 @@ class GitLabDataSource:
                 p.save()
             return GitLabResponse(success=True, data=p)
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.delete_project
@@ -331,7 +345,7 @@ class GitLabDataSource:
             self._project(project_id).delete()
             return GitLabResponse(success=True, data=True)
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Issues
@@ -373,7 +387,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=p.issues.list(get_all=get_all, **params))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/issues.py - IssuesSync._build_ticket_blocks
@@ -383,7 +397,7 @@ class GitLabDataSource:
         try:
             return GitLabResponse(success=True, data=self._project(project_id).issues.get(issue_iid))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.create_issue
@@ -407,7 +421,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=self._project(project_id).issues.create(payload))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.update_issue
@@ -441,7 +455,7 @@ class GitLabDataSource:
                 issue.save()
             return GitLabResponse(success=True, data=issue)
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.delete_issue
@@ -451,7 +465,7 @@ class GitLabDataSource:
             self._project(project_id).issues.delete(issue_iid)
             return GitLabResponse(success=True, data=True)
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/issues.py    - IssuesSync._build_ticket_blocks
@@ -464,7 +478,7 @@ class GitLabDataSource:
             p = self._sdk.projects.get(project_id)
             return GitLabResponse(success=True, data=p.issues.get(issue_iid).notes.list(get_all=get_all))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Merge Requests
@@ -506,7 +520,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=p.mergerequests.list(get_all=get_all, **params))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
@@ -520,7 +534,7 @@ class GitLabDataSource:
                 data=self._project(project_id).mergerequests.get(id=mr_iid),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/comments.py - CommentsHelper._build_merge_request_comment_blocks
@@ -534,7 +548,7 @@ class GitLabDataSource:
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
             return GitLabResponse(success=True, data=mr.notes.list(get_all=get_all))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/comments.py - CommentsHelper._build_merge_request_comment_blocks
@@ -546,13 +560,18 @@ class GitLabDataSource:
         ``data`` is a dict with a ``changes`` list; each entry has
         ``new_path``, ``old_path``, ``diff``, ``new_file``, ``deleted_file``,
         ``too_large``, and ``generated_file`` fields.
+
+        ``access_raw_diffs`` asks for every patch under GitLab's hard limit.
+        Without it, GitLab collapses (empties) any patch of 10% of that limit
+        or more on a merge request that changes more than one file, so a
+        medium-sized edit would arrive with no diff.
         """
         try:
             p = self._sdk.projects.get(project_id, lazy=True)
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
-            return GitLabResponse(success=True, data=mr.changes(get_all=True))
+            return GitLabResponse(success=True, data=mr.changes(get_all=True, access_raw_diffs="true"))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/merge_requests.py - MergeRequestsSync._build_pull_request_blocks
@@ -565,7 +584,7 @@ class GitLabDataSource:
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
             return GitLabResponse(success=True, data=mr.commits(get_all=get_all))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.create_merge_request
@@ -597,7 +616,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=self._project(project_id).mergerequests.create(payload))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   app/agents/actions/gitlab/gitlab.py - GitLab.merge_merge_request
@@ -617,7 +636,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=mr.merge(**params))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Repository (REST)
@@ -630,7 +649,7 @@ class GitLabDataSource:
         try:
             return GitLabResponse(success=True, data=self._project(project_id).branches.get(branch))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/repos.py - ReposSync._sync_repo_incremental
@@ -652,7 +671,7 @@ class GitLabDataSource:
                 data=self._project(project_id).repository_compare(from_sha, to_sha, straight=straight),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/repos.py - ReposSync._code_file_source_timestamps
@@ -719,7 +738,7 @@ class GitLabDataSource:
                 },
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/repos.py - ReposSync._sync_repo_incremental (incremental diff rename detection)
@@ -749,7 +768,7 @@ class GitLabDataSource:
             )
             return GitLabResponse(success=True, data=p.repository_tree(**payload))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/repos.py    - ReposSync._sync_repo_full (file content download)
@@ -765,7 +784,7 @@ class GitLabDataSource:
             p = self._sdk.projects.get(project_id)
             return GitLabResponse(success=True, data=p.files.get(**self._params(ref=ref, file_path=file_path)))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Repository (GraphQL)
@@ -831,7 +850,7 @@ class GitLabDataSource:
             resp.raise_for_status()
             return GitLabResponse(success=True, data=resp.content)
         except Exception as e:
-            return GitLabResponse(success=False, error=f"{type(e).__name__}: {e}")
+            return GitLabResponse(success=False, error=f"{type(e).__name__}: {e}", status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Members
@@ -839,7 +858,6 @@ class GitLabDataSource:
 
     # Used by:
     #   gitlab/projects.py - ProjectsSync._sync_project_members_as_pseudo
-    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
     def list_project_members_all(
@@ -860,12 +878,26 @@ class GitLabDataSource:
                 extra["iterator"] = iterator
             return GitLabResponse(success=True, data=p.members_all.list(get_all=get_all, **extra))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
+    #   gitlab/projects.py - ProjectsSync._ensure_gitlab_group_record_groups
+    def list_group_members(
+        self,
+        group_id: int | str,
+        *,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List direct group members (``/members``), not members inherited from a parent."""
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            return GitLabResponse(success=True, data=g.members.list(get_all=get_all))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
-    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     def list_group_members_all(
         self,
         group_id: int | str,
@@ -883,7 +915,7 @@ class GitLabDataSource:
                 extra["iterator"] = iterator
             return GitLabResponse(success=True, data=g.members_all.list(get_all=get_all, **extra))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Groups
@@ -941,7 +973,7 @@ class GitLabDataSource:
                 data=self._sdk.groups.list(get_all=get_all, **extra, **params),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/scope.py    - ScopeHelper._expand_groups_with_descendants (auditor fallback)
@@ -986,7 +1018,7 @@ class GitLabDataSource:
                 data=g.descendant_groups.list(get_all=get_all, **extra, **params),
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
     #   gitlab/projects.py   - ProjectsSync._ensure_gitlab_group_record_groups
@@ -996,7 +1028,7 @@ class GitLabDataSource:
         try:
             return GitLabResponse(success=True, data=self._sdk.groups.get(group_id))
         except Exception as e:
-            return GitLabResponse(success=False, error=str(e))
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # ------------------------------------------------------------------
     # Direct HTTP (images and attachment streaming)
@@ -1019,9 +1051,10 @@ class GitLabDataSource:
             return GitLabResponse(
                 success=False,
                 error=f"HTTP {e.response.status_code} fetching image from {image_url}",
+                status_code=e.response.status_code,
             )
         except Exception as e:
-            return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}")
+            return GitLabResponse(success=False, error=f"Error fetching image from {image_url}: {e}", status_code=_status_of(e))
 
     # Used by:
     #   gitlab/attachments.py - AttachmentsHelper._fetch_attachment_content

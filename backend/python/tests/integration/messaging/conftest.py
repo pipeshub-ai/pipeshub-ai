@@ -19,8 +19,14 @@ import asyncio
 import logging
 import os
 import uuid
+from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
+
+if TYPE_CHECKING:
+    import threading
+    from collections.abc import AsyncIterator, Callable
 
 KAFKA_BOOTSTRAP = os.environ.get("KAFKA_IT_BOOTSTRAP", "localhost:29192")
 REDIS_HOST = os.environ.get("REDIS_IT_HOST", "localhost")
@@ -149,3 +155,114 @@ async def committed_offsets(bootstrap: str, group: str, topic: str) -> dict[int,
         return result
     finally:
         await consumer.stop()
+
+
+def held_handler(
+    seen: list[str], hold_after: int, gate: threading.Event, parked: list[str]
+) -> Callable[..., AsyncIterator]:
+    """Index the first ``hold_after`` records, then park every later one until
+    ``gate`` opens.
+
+    Makes a restart test deterministic: however fast the broker, work is in
+    flight and the rest of the backlog is untouched when the consumer stops.
+    ``gate`` is a threading.Event because handlers run on the consumer's
+    worker-thread loop, not the test's.
+    """
+    from app.services.messaging.config import (
+        IndexingEvent,
+        PipelineEvent,
+        PipelineEventData,
+    )
+    from app.services.resource_governor.models import ParseTier
+
+    async def handle(parsed_message) -> AsyncIterator:
+        yield PipelineEvent(
+            event=IndexingEvent.START_PARSING,
+            data=PipelineEventData(tier=ParseTier.LIGHT),
+        )
+        yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE)
+        record_id = parsed_message.payload["recordId"]
+        if len(seen) >= hold_after:
+            parked.append(record_id)
+            await asyncio.to_thread(gate.wait, DRAIN_TIMEOUT_SECONDS)
+        seen.append(record_id)
+        yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE)
+
+    return handle
+
+
+async def stop_mid_flight(consumer, gate: threading.Event, parked: list[str]) -> None:
+    """Stop ``consumer`` while handlers are parked on ``gate``.
+
+    The gate opens only once the consume loop has exited, so the parked
+    handlers finish as in-flight work at shutdown and nothing new is taken.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + DRAIN_TIMEOUT_SECONDS
+    stopping = None
+    try:
+        while not parked:
+            if loop.time() > deadline:
+                raise AssertionError("no record was ever in flight")
+            await asyncio.sleep(0.05)
+        stopping = asyncio.create_task(consumer.stop())
+        while not consumer.consume_task.done():
+            if loop.time() > deadline:
+                raise AssertionError("the consume loop never stopped")
+            await asyncio.sleep(0.05)
+    finally:
+        gate.set()
+        await (stopping if stopping is not None else consumer.stop())
+
+
+async def wait_until_held(seen: list[str], parked: list[str]) -> None:
+    """Wait for a ``held_handler`` consumer to settle: some records indexed,
+    the rest parked or still on the broker, and nothing left in motion."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + DRAIN_TIMEOUT_SECONDS
+    while not parked:
+        if loop.time() > deadline:
+            raise AssertionError("no record was ever held")
+        await asyncio.sleep(0.05)
+    settled_at, count = loop.time(), len(seen)
+    while loop.time() - settled_at < 1.0:
+        await asyncio.sleep(0.1)
+        if len(seen) != count:
+            settled_at, count = loop.time(), len(seen)
+
+
+class OneTopicProducer:
+    """Sends events addressed to the production topic to this test's own."""
+
+    def __init__(self, inner, topic: str) -> None:
+        self._inner = inner
+        self._topic = topic
+
+    async def send_event(self, topic: str, event_type: str, payload: dict, key: str | None = None) -> bool:
+        return await self._inner.send_event(
+            topic=self._topic, event_type=event_type, payload=payload, key=key
+        )
+
+
+async def run_stranded_sweep(graph, producer, consumer, topic: str, *, hours_later: float) -> int:
+    """The real stranded-record sweep, asking ``consumer`` what is still
+    waiting on ``topic``, run as if ``hours_later`` hours had gone by since."""
+    from app import indexing_main
+    from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+    async def run_coordination(coro):  # noqa: ANN202
+        return await coro
+
+    def later() -> int:
+        return get_epoch_timestamp_in_ms() + int(hours_later * 3600 * 1000)
+
+    with patch.object(indexing_main, "get_epoch_timestamp_in_ms", later):
+        return await indexing_main._republish_stranded_records(
+            graph_provider=graph,
+            logger=logging.getLogger("it-sweep"),
+            producer=producer,
+            run_coordination=run_coordination,
+            concurrency_manager=None,
+            page_size=100,
+            read_backlog=lambda: consumer.lane_backlog(topic),
+        )

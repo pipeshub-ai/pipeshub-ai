@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import {
@@ -21,7 +21,7 @@ import {
 } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useLabsStore } from './store';
-import { LabsApi, bytesToMb, mbToBytes } from './api';
+import { LabsApi, bytesToMb, mbToBytes, type AvailableFlag } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
@@ -50,6 +50,155 @@ function InfoCallout({ children }: { children: React.ReactNode }) {
       <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px' }}>
         {children}
       </Text>
+    </Flex>
+  );
+}
+
+function FeatureFlagRow({
+  flag,
+  checked,
+  onCheckedChange,
+}: {
+  flag: AvailableFlag;
+  checked: boolean;
+  onCheckedChange: (value: boolean) => void;
+}) {
+  return (
+    <Flex
+      align="center"
+      justify="between"
+      style={{ width: '100%', gap: 'var(--space-4)' }}
+    >
+      <Box style={{ flex: 1 }}>
+        <Text
+          size="2"
+          weight="medium"
+          style={{ color: 'var(--slate-12)', display: 'block' }}
+        >
+          {flag.label || flag.key}
+        </Text>
+        {flag.description && (
+          <Text
+            size="1"
+            style={{
+              color: 'var(--slate-11)',
+              display: 'block',
+              marginTop: 2,
+              lineHeight: '16px',
+              fontWeight: 300,
+            }}
+          >
+            {flag.description}
+          </Text>
+        )}
+      </Box>
+      <Switch
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label={flag.label || flag.key}
+        style={{ flexShrink: 0, cursor: 'pointer' }}
+        size="1"
+      />
+    </Flex>
+  );
+}
+
+function AdvancedFlagsAccordion({
+  flags,
+  values,
+  onFlagChange,
+}: {
+  flags: AvailableFlag[];
+  values: Record<string, boolean>;
+  onFlagChange: (key: string, value: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const [open, setOpen] = useState(false);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <Flex
+      direction="column"
+      style={{
+        width: '100%',
+        border: '1px solid var(--olive-4)',
+        borderRadius: 'var(--radius-2)',
+        backgroundColor: 'var(--olive-3)',
+        overflow: 'hidden',
+      }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+        aria-expanded={open}
+        style={{
+          appearance: 'none',
+          margin: 0,
+          padding: '12px 14px',
+          border: 'none',
+          background: hovered || open ? 'var(--olive-4)' : 'transparent',
+          cursor: 'pointer',
+          width: '100%',
+          textAlign: 'left',
+        }}
+      >
+        <Flex align="center" justify="between" gap="3">
+          <Flex align="center" gap="3" style={{ flex: 1, minWidth: 0 }}>
+            <Flex
+              align="center"
+              justify="center"
+              style={{
+                width: 28,
+                height: 28,
+                borderRadius: 'var(--radius-2)',
+                backgroundColor: 'var(--accent-a3)',
+                flexShrink: 0,
+              }}
+            >
+              <MaterialIcon name="tune" size={16} color="var(--accent-11)" />
+            </Flex>
+            <Flex direction="column" gap="1" style={{ minWidth: 0 }}>
+              <Text size="2" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                {t('workspace.labs.featureFlags.advancedTitle', 'Show advanced feature flags')}
+              </Text>
+              <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 300, lineHeight: '16px' }}>
+                {t(
+                  'workspace.labs.featureFlags.advancedSubtitle',
+                  'Internal flags that most workspaces can leave at their defaults.'
+                )}
+              </Text>
+            </Flex>
+          </Flex>
+          <MaterialIcon
+            name={open ? 'expand_less' : 'expand_more'}
+            size={20}
+            color="var(--slate-11)"
+            style={{ flexShrink: 0 }}
+          />
+        </Flex>
+      </button>
+      {open && (
+        <Flex
+          direction="column"
+          gap="5"
+          style={{
+            padding: 14,
+            borderTop: '1px solid var(--olive-4)',
+            backgroundColor: 'var(--olive-2)',
+          }}
+        >
+          {flags.map((flag) => (
+            <FeatureFlagRow
+              key={flag.key}
+              flag={flag}
+              checked={!!values[flag.key]}
+              onCheckedChange={(value) => onFlagChange(flag.key, value)}
+            />
+          ))}
+        </Flex>
+      )}
     </Flex>
   );
 }
@@ -112,6 +261,8 @@ export default function LabsPage() {
   const setDiscardDialogOpen = useLabsStore((s) => s.setDiscardDialogOpen);
   const setLoading = useLabsStore((s) => s.setLoading);
   const isDirty = useLabsStore((s) => s.isDirty);
+  const regularFlags = availableFlags.filter((flag) => !flag.advanced);
+  const advancedFlags = availableFlags.filter((flag) => !!flag.advanced);
 
   useEffect(() => {
     if (isProfileInitialized && isAdmin === false) {
@@ -332,47 +483,21 @@ export default function LabsPage() {
                 'Toggle experimental capabilities for every agent in this workspace.'
               )}
             >
-              {availableFlags.map((flag) => {
-                const checked = !!form.featureFlags[flag.key];
-                return (
-                  <Flex
-                    key={flag.key}
-                    align="center"
-                    justify="between"
-                    style={{ width: '100%', gap: 'var(--space-4)' }}
-                  >
-                    <Box style={{ flex: 1 }}>
-                      <Text
-                        size="2"
-                        weight="medium"
-                        style={{ color: 'var(--slate-12)', display: 'block' }}
-                      >
-                        {flag.label || flag.key}
-                      </Text>
-                      {flag.description && (
-                        <Text
-                          size="1"
-                          style={{
-                            color: 'var(--slate-11)',
-                            display: 'block',
-                            marginTop: 2,
-                            lineHeight: '16px',
-                            fontWeight: 300,
-                          }}
-                        >
-                          {flag.description}
-                        </Text>
-                      )}
-                    </Box>
-                    <Switch
-                      checked={checked}
-                      onCheckedChange={(val) => setFlagValue(flag.key, val)}
-                      style={{ flexShrink: 0, cursor: 'pointer' }}
-                      size='1'
-                    />
-                  </Flex>
-                );
-              })}
+              {regularFlags.map((flag) => (
+                <FeatureFlagRow
+                  key={flag.key}
+                  flag={flag}
+                  checked={!!form.featureFlags[flag.key]}
+                  onCheckedChange={(val) => setFlagValue(flag.key, val)}
+                />
+              ))}
+              {advancedFlags.length > 0 && (
+                <AdvancedFlagsAccordion
+                  flags={advancedFlags}
+                  values={form.featureFlags}
+                  onFlagChange={setFlagValue}
+                />
+              )}
             </SettingsSection>
           </Box>
         )}

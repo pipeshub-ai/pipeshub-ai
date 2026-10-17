@@ -1,0 +1,122 @@
+{
+ "recorded_with": {"langchain-anthropic": "1.5.3", "langchain-core": "1.5.3", "langchain-google-genai": "4.3.2", "langchain-ollama": "1.0.0", "langchain-openai": "1.4.1"},
+ "scenarios": {
+  "anthropic_cut_off_mid_tool_use": [
+   {"content": [], "id": "lc_run--01a1107f-65af-7f30-b365-c4606266f434", "response_metadata": {"model_name": "claude-sonnet-4-5", "model_provider": "anthropic"}},
+   {"content": [{"id": "toolu_fa", "index": 0, "input": {}, "name": "final_answer", "toolset_name": null, "type": "tool_use"}], "id": "lc_run--01a1107f-65af-7f30-b365-c4606266f434", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "", "id": "toolu_fa", "index": 0, "name": "final_answer", "type": "tool_call_chunk"}]},
+   {"content": [{"index": 0, "partial_json": "{\"answer_markdown\": \"This answer is", "type": "input_json_delta"}], "id": "lc_run--01a1107f-65af-7f30-b365-c4606266f434", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "{\"answer_markdown\": \"This answer is", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"index": 0, "partial_json": " cut off mid-sent", "type": "input_json_delta"}], "id": "lc_run--01a1107f-65af-7f30-b365-c4606266f434", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": " cut off mid-sent", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"chunk_position": "last", "content": [], "id": "lc_run--01a1107f-65af-7f30-b365-c4606266f434", "response_metadata": {"model_provider": "anthropic", "stop_reason": "max_tokens", "stop_sequence": null}, "usage_metadata": {"input_token_details": {"cache_creation": 0, "cache_read": 5}, "input_tokens": 30, "output_tokens": 4096, "total_tokens": 4126}}
+  ],
+  "anthropic_thinking_text_tool_use": [
+   {"content": [], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_name": "claude-sonnet-4-5", "model_provider": "anthropic"}},
+   {"content": [{"index": 0, "thinking": "Let me think", "type": "thinking"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}},
+   {"content": [{"index": 0, "thinking": " about it.", "type": "thinking"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}},
+   {"content": [{"index": 0, "signature": "sig123", "thinking": "", "type": "thinking"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}},
+   {"content": [{"index": 1, "text": "I'll ", "type": "text"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}},
+   {"content": [{"index": 1, "text": "look.", "type": "text"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}},
+   {"content": [{"id": "toolu_1", "index": 2, "input": {}, "name": "search", "toolset_name": null, "type": "tool_use"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "", "id": "toolu_1", "index": 2, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": [{"index": 2, "partial_json": "", "type": "input_json_delta"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "", "id": null, "index": 2, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"index": 2, "partial_json": "{\"query\": \"ca", "type": "input_json_delta"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "{\"query\": \"ca", "id": null, "index": 2, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"index": 2, "partial_json": "ts\"}", "type": "input_json_delta"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "ts\"}", "id": null, "index": 2, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"id": "toolu_2", "index": 3, "input": {}, "name": "search", "toolset_name": null, "type": "tool_use"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "", "id": "toolu_2", "index": 3, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": [{"index": 3, "partial_json": "{\"query\":", "type": "input_json_delta"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": "{\"query\":", "id": null, "index": 3, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"index": 3, "partial_json": " \"dogs\"}", "type": "input_json_delta"}], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic"}, "tool_call_chunks": [{"args": " \"dogs\"}", "id": null, "index": 3, "name": null, "type": "tool_call_chunk"}]},
+   {"chunk_position": "last", "content": [], "id": "lc_run--01a1107f-6590-7be1-956a-099e9fc17732", "response_metadata": {"model_provider": "anthropic", "stop_reason": "tool_use", "stop_sequence": null}, "usage_metadata": {"input_token_details": {"cache_creation": 0, "cache_read": 5}, "input_tokens": 30, "output_tokens": 42, "total_tokens": 72}}
+  ],
+  "azure_openai_chat_tool_call": [
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e"},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"model_provider": "openai"}},
+   {"content": "Checking.", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_az", "index": 0, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"query\":", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": " \"quarterly report\"}", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "response_metadata": {"finish_reason": "tool_calls", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5edb-7732-9261-403157cede5e"}
+  ],
+  "gemini_thought_text_function_call": [
+   {"content": [{"index": 0, "thinking": "Considering the question.", "type": "thinking"}], "id": "lc_run--01a1107f-67c5-7da1-982b-6c9817770851", "response_metadata": {"model_provider": "google_genai", "safety_ratings": []}, "usage_metadata": {"input_token_details": {"cache_read": 0}, "input_tokens": 9, "output_token_details": {"reasoning": 4}, "output_tokens": 4, "total_tokens": 13}},
+   {"content": "I'll ", "id": "lc_run--01a1107f-67c5-7da1-982b-6c9817770851", "response_metadata": {"model_provider": "google_genai", "safety_ratings": []}, "usage_metadata": {"input_token_details": {"cache_read": 0}, "input_tokens": 0, "output_token_details": {"reasoning": 0}, "output_tokens": 1, "total_tokens": 1}},
+   {"content": "look.", "id": "lc_run--01a1107f-67c5-7da1-982b-6c9817770851", "response_metadata": {"model_provider": "google_genai", "safety_ratings": []}, "usage_metadata": {"input_token_details": {"cache_read": 0}, "input_tokens": 0, "output_token_details": {"reasoning": 0}, "output_tokens": 2, "total_tokens": 2}},
+   {"additional_kwargs": {"function_call": {"arguments": "{\"query\": \"dogs\"}", "name": "search"}}, "content": "", "id": "lc_run--01a1107f-67c5-7da1-982b-6c9817770851", "response_metadata": {"finish_reason": "STOP", "model_name": "gemini-2.5-flash", "model_provider": "google_genai", "safety_ratings": []}, "tool_call_chunks": [{"args": "{\"query\": \"cats\"}", "id": "78c6b67f-05d5-4103-b186-c5974d5726ee", "index": null, "name": "search", "type": "tool_call_chunk"}, {"args": "{\"query\": \"dogs\"}", "id": "3d0e8725-ac50-41a3-9643-af3c8d036ad3", "index": null, "name": "search", "type": "tool_call_chunk"}], "usage_metadata": {"input_token_details": {"cache_read": 0}, "input_tokens": 0, "output_token_details": {"reasoning": 0}, "output_tokens": 9, "total_tokens": 9}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-67c5-7da1-982b-6c9817770851"}
+  ],
+  "ollama_text_and_whole_tool_call": [
+   {"content": "I'll ", "id": "lc_run--01a1107f-69a4-7d63-bb3a-627f4d5caa35"},
+   {"content": "look.", "id": "lc_run--01a1107f-69a4-7d63-bb3a-627f4d5caa35"},
+   {"content": "", "id": "lc_run--01a1107f-69a4-7d63-bb3a-627f4d5caa35", "tool_call_chunks": [{"args": "{\"query\": \"cats\"}", "id": "ab799ad3-d307-4ab9-aaac-9dd35e0cd43c", "index": null, "name": "search", "type": "tool_call_chunk"}, {"args": "{\"query\": \"dogs\"}", "id": "a08e2c42-0adf-41f5-8626-99d5dad30075", "index": null, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-69a4-7d63-bb3a-627f4d5caa35", "response_metadata": {"created_at": "2026-01-01T00:00:00Z", "done": true, "done_reason": "stop", "eval_count": 12, "eval_duration": 3, "load_duration": 1, "logprobs": null, "model": "llama3.1", "model_name": "llama3.1", "model_provider": "ollama", "prompt_eval_count": 9, "prompt_eval_duration": 1, "total_duration": 5}, "usage_metadata": {"input_tokens": 9, "output_tokens": 12, "total_tokens": 21}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-69a4-7d63-bb3a-627f4d5caa35"}
+  ],
+  "openai_chat_cut_off_mid_arguments": [
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_fa", "index": 0, "name": "final_answer", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"answer_markdown\": \"", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "This answer is cut", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": " off mid-sent", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "response_metadata": {"finish_reason": "length", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5ec8-7633-b6c7-379c4d9285a7"}
+  ],
+  "openai_chat_final_answer_tool_call": [
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_fa", "index": 0, "name": "final_answer", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"answer_markdown\": \"", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "# Title\\n\\n", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "Some \\\"quoted\\\" text", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": " and more.\"}", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "response_metadata": {"finish_reason": "tool_calls", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5ec2-71f3-8ef9-837c95437a79"}
+  ],
+  "openai_chat_malformed_arguments": [
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_bad", "index": 0, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "```json\n{\"query\": ", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "\"cats\",}\n```", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "response_metadata": {"finish_reason": "tool_calls", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5ecf-7413-932f-f7961d1f8284"}
+  ],
+  "openai_chat_text_and_two_tool_calls": [
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}},
+   {"content": "Let me ", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}},
+   {"content": "look.", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_a", "index": 0, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"qu", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "ery\": \"cats", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": " and dogs\"}", "id": null, "index": 0, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_b", "index": 1, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"query\": \"b", "id": null, "index": 1, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "irds\"}", "id": null, "index": 1, "name": null, "type": "tool_call_chunk"}]},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "response_metadata": {"finish_reason": "tool_calls", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5eb8-7543-ae40-77f7dde14761"}
+  ],
+  "openai_chat_text_only": [
+   {"content": "", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "response_metadata": {"model_provider": "openai"}},
+   {"content": "The ", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "response_metadata": {"model_provider": "openai"}},
+   {"content": "answer ", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "response_metadata": {"model_provider": "openai"}},
+   {"content": "is 42.", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "response_metadata": {"model_provider": "openai"}},
+   {"content": "", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "response_metadata": {"finish_reason": "stop", "model_name": "gpt-4.1", "model_provider": "openai", "system_fingerprint": "fp_1"}},
+   {"content": "", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca", "usage_metadata": {"input_token_details": {"cache_read": 3}, "input_tokens": 11, "output_token_details": {"reasoning": 0}, "output_tokens": 7, "total_tokens": 18}},
+   {"chunk_position": "last", "content": "", "id": "lc_run--01a1107f-5ea1-78c3-97a4-4a0c383d8dca"}
+  ],
+  "openai_responses_reasoning_text_tool_call": [
+   {"content": [], "id": "resp_1", "response_metadata": {"id": "resp_1", "model_provider": "openai"}},
+   {"content": [{"id": "rs_1", "index": 0, "summary": [], "type": "reasoning"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"id": "rs_1", "index": 0, "summary": [{"index": 0, "text": "", "type": "summary_text"}], "type": "reasoning"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"index": 0, "summary": [{"index": 0, "text": "Thinking ", "type": "summary_text"}], "type": "reasoning"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"index": 0, "summary": [{"index": 0, "text": "about cats.", "type": "summary_text"}], "type": "reasoning"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"index": 1, "text": "Let me ", "type": "text"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"index": 1, "text": "look.", "type": "text"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"id": "msg_1", "index": 1, "text": "", "type": "text"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}},
+   {"content": [{"arguments": "", "call_id": "call_r", "id": "fc_1", "index": 2, "name": "search", "type": "function_call"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "", "id": "call_r", "index": 2, "name": "search", "type": "tool_call_chunk"}]},
+   {"content": [{"arguments": "{\"query\": ", "index": 2, "type": "function_call"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "{\"query\": ", "id": null, "index": 2, "name": null, "type": "tool_call_chunk"}]},
+   {"content": [{"arguments": "\"cats\"}", "index": 2, "type": "function_call"}], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"model_provider": "openai"}, "tool_call_chunks": [{"args": "\"cats\"}", "id": null, "index": 2, "name": null, "type": "tool_call_chunk"}]},
+   {"chunk_position": "last", "content": [], "id": "lc_run--01a1107f-5ee2-7082-b390-3bf9ef6de79e", "response_metadata": {"created_at": 1700000000.0, "metadata": {}, "model": "gpt-5", "model_name": "gpt-5", "model_provider": "openai", "object": "response", "status": "completed"}, "usage_metadata": {"input_token_details": {"cache_read": 4}, "input_tokens": 20, "output_token_details": {"reasoning": 6}, "output_tokens": 15, "total_tokens": 35}}
+  ]
+ }
+}

@@ -6,6 +6,8 @@ from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.ai_models.decision import DecisionModel, get_decision_model
 from app.utils.aimodels import (
     STTAdapter,
     TTSAdapter,
@@ -14,6 +16,27 @@ from app.utils.aimodels import (
     get_tts_model,
     is_local_cpu_embedding_provider,
 )
+
+# Users read these as a file's failure reason or a chat error, so each says what to do next.
+LLM_MISSING_FOR_FILE = (
+    "No AI model is set up for this workspace yet, so this file couldn't be processed. "
+    "An admin can add one in Workspace → AI Models, then reindex the file."
+)
+LLM_MISSING_FOR_CHAT = (
+    "No AI model is set up for this workspace yet. "
+    "An admin can add one in Workspace → AI Models, then you can send your message again."
+)
+
+
+class LLMNotConfiguredError(DocumentProcessingError, ValueError):
+    """No language model is configured for the org.
+
+    A DocumentProcessingError so indexing passes the message through as the
+    record's failure reason instead of prefixing it with "Failed to process document".
+    """
+
+    def __init__(self, message: str = LLM_MISSING_FOR_FILE) -> None:
+        super().__init__(message)
 
 
 async def _load_ai_models(config_service: ConfigurationService) -> dict:
@@ -37,7 +60,7 @@ async def _instantiate_llm_from_configs(
 ) -> Tuple[BaseChatModel, dict]:
     """Pick and instantiate an LLM from a config list (default first, then any)."""
     if not llm_configs:
-        raise ValueError("No LLM configurations found")
+        raise LLMNotConfiguredError()
 
     for config in llm_configs:
         if config.get("isDefault", False):
@@ -94,7 +117,7 @@ async def get_llm(
 ) -> Tuple[BaseChatModel, dict]:
     if not llm_configs:
         ai_models = await _load_ai_models(config_service)
-        llm_configs = ai_models["llm"]
+        llm_configs = ai_models.get("llm")
     return await _instantiate_llm_from_configs(llm_configs, reasoning_effort=reasoning_effort)
 
 
@@ -169,7 +192,10 @@ async def is_local_cpu_embedding_configured(
         config = next(
             (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
         )
-        return is_local_cpu_embedding_provider(config.get("provider"))
+        configuration = config.get("configuration") or {}
+        return is_local_cpu_embedding_provider(
+            config.get("provider"), configuration.get("endpoint")
+        )
     except Exception:
         logger.warning(
             "Could not resolve the embedding provider; assuming a local CPU model",
@@ -189,7 +215,7 @@ async def get_image_generation_config(config_service: ConfigurationService) -> d
     return _select_default_config(ai_models.get("imageGeneration") or [])
 
 
-async def _get_speech_config(
+async def _get_default_config(
     config_service: ConfigurationService,
     bucket: str,
 ) -> dict | None:
@@ -207,12 +233,25 @@ async def _get_speech_config(
 
 async def get_tts_config(config_service: ConfigurationService) -> dict | None:
     """Return the active TTS model config, or ``None`` if unset."""
-    return await _get_speech_config(config_service, "tts")
+    return await _get_default_config(config_service, "tts")
 
 
 async def get_stt_config(config_service: ConfigurationService) -> dict | None:
     """Return the active STT model config, or ``None`` if unset."""
-    return await _get_speech_config(config_service, "stt")
+    return await _get_default_config(config_service, "stt")
+
+
+async def get_decision_config(config_service: ConfigurationService) -> dict | None:
+    return await _get_default_config(config_service, "decision")
+
+
+async def get_decision_model_instance(
+    config_service: ConfigurationService,
+) -> tuple[DecisionModel, dict] | None:
+    config = await get_decision_config(config_service)
+    if not config:
+        return None
+    return get_decision_model(config["provider"], config), config
 
 
 async def get_tts_model_instance(

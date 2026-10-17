@@ -6,7 +6,7 @@ test.describe('Login Page', () => {
     await page.waitForSelector('#email-field', { timeout: 15_000 });
   });
 
-  test('renders login form with email and password fields', async ({ page }) => {
+  test('renders login form with email and password fields @smoke', async ({ page }) => {
     await expect(page.locator('#email-field')).toBeVisible();
     await expect(page.locator('#password-field')).toBeVisible();
     await expect(page.locator('button[type="submit"]')).toBeVisible();
@@ -26,12 +26,10 @@ test.describe('Login Page', () => {
 
   test('shows error for wrong password', async ({ page }) => {
     const email = process.env.TEST_USER_EMAIL;
-    if (!email) {
-      test.skip();
-      return;
-    }
+    // Every authenticated test depends on this account, so a missing one is a setup failure.
+    expect(email, 'TEST_USER_EMAIL must be set for the e2e suite').toBeTruthy();
 
-    await page.fill('#email-field', email);
+    await page.fill('#email-field', email!);
     await page.fill('#password-field', 'definitelywrongpassword123');
     await page.click('button[type="submit"]');
 
@@ -39,16 +37,13 @@ test.describe('Login Page', () => {
     await expect(errorText.first()).toBeVisible({ timeout: 10_000 });
   });
 
-  test('successful login redirects to /chat', async ({ page }) => {
+  test('successful login redirects to /chat @smoke', async ({ page }) => {
     const email = process.env.TEST_USER_EMAIL;
     const password = process.env.TEST_USER_PASSWORD;
-    if (!email || !password) {
-      test.skip();
-      return;
-    }
+    expect(email && password, 'TEST_USER_EMAIL and TEST_USER_PASSWORD must be set').toBeTruthy();
 
-    await page.fill('#email-field', email);
-    await page.fill('#password-field', password);
+    await page.fill('#email-field', email!);
+    await page.fill('#password-field', password!);
     await page.click('button[type="submit"]');
 
     await page.waitForURL('**/chat/**', { timeout: 15_000 });

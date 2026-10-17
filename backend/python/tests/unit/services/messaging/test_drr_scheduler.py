@@ -20,6 +20,9 @@ def _config(**overrides) -> FairSchedulerConfig:
         max_buffered_messages=1000,
         max_per_entity_messages=100,
         max_dwell_seconds=900.0,
+        # These tests exercise the flat / two-level algorithm on the keys
+        # they build; the tier sub-level has its own tests below.
+        tier_level=False,
     )
     defaults.update(overrides)
     return FairSchedulerConfig(**defaults)
@@ -496,3 +499,100 @@ class TestKeyDepthNormalization:
         scheduler.enqueue(("org-a", "__default__"), "second")
 
         assert scheduler.pending_count_for(("org-a", "__default__")) == 2
+
+
+class TestTierSubLevel:
+    """``tier_level`` adds one leaf per document tier under every entity. The
+    scheduler is told only the depths; the tier is just another key level."""
+
+    def _scheduler(self, **overrides) -> DRRScheduler[str]:
+        defaults = {
+            "key_fields": ("orgId", "connectorId"),
+            "tier_level": True,
+            "max_per_entity_messages": 4,
+        }
+        defaults.update(overrides)
+        return DRRScheduler(_config(**defaults))
+
+    def test_config_reports_entity_and_key_depth(self):
+        config = _config(key_fields=("orgId", "connectorId"), tier_level=True)
+        assert config.entity_depth == 2
+        assert config.key_depth == 3
+        assert _config(key_fields=("orgId",), tier_level=False).key_depth == 1
+
+    def test_entity_key_strips_the_tier(self):
+        scheduler = self._scheduler()
+        assert scheduler.entity_key(("o", "c", "heavy")) == ("o", "c")
+        assert scheduler.entity_key(("o", "c")) == ("o", "c")
+
+    def test_per_entity_cap_spans_both_tiers(self):
+        scheduler = self._scheduler()
+        assert scheduler.enqueue(("o", "c", "heavy"), "h1") == EnqueueResult.ACCEPTED
+        assert scheduler.enqueue(("o", "c", "heavy"), "h2") == EnqueueResult.ACCEPTED
+        assert scheduler.enqueue(("o", "c", "light"), "l1") == EnqueueResult.ACCEPTED
+        assert scheduler.enqueue(("o", "c", "light"), "l2") == EnqueueResult.ACCEPTED
+        assert scheduler.enqueue(("o", "c", "light"), "l3") == EnqueueResult.ENTITY_FULL
+        assert scheduler.enqueue(("o", "c", "heavy"), "h3") == EnqueueResult.ENTITY_FULL
+        # Another entity is unaffected.
+        assert scheduler.enqueue(("o", "d", "light"), "x") == EnqueueResult.ACCEPTED
+        assert scheduler.pending_count_for(("o", "c")) == 4
+
+    def test_blocked_heavy_head_does_not_hide_light_siblings(self):
+        """The reason the level exists: the dispatcher only inspects the head
+        of a leaf, so with one leaf per entity a heavy record that cannot be
+        admitted would hide every light record queued behind it."""
+        scheduler = self._scheduler(max_per_entity_messages=100)
+        for i in range(3):
+            scheduler.enqueue(("o", "c", "heavy"), f"h{i}")
+        for i in range(3):
+            scheduler.enqueue(("o", "c", "light"), f"l{i}")
+
+        light_only = lambda item: item.startswith("l")  # noqa: E731
+        popped = [scheduler.dequeue(can_dispatch=light_only) for _ in range(4)]
+        assert [entry[1] for entry in popped if entry] == ["l0", "l1", "l2"]
+        assert popped[-1] is None
+        assert scheduler.pending_count_for(("o", "c", "heavy")) == 3
+
+    def test_heavy_keeps_its_turn_and_deficit_while_blocked(self):
+        scheduler = self._scheduler(max_per_entity_messages=100)
+        scheduler.enqueue(("o", "c", "heavy"), "h0")
+        scheduler.enqueue(("o", "c", "light"), "l0")
+        scheduler.enqueue(("o", "c", "light"), "l1")
+
+        assert scheduler.dequeue(can_dispatch=lambda i: i.startswith("l"))[1] == "l0"
+        # Unblocked: heavy was skipped without being charged, so it is next.
+        assert scheduler.dequeue()[1] == "h0"
+        assert scheduler.dequeue()[1] == "l1"
+
+    def test_tiers_alternate_within_an_entity(self):
+        scheduler = self._scheduler(max_per_entity_messages=100)
+        for i in range(3):
+            scheduler.enqueue(("o", "c", "heavy"), f"h{i}")
+            scheduler.enqueue(("o", "c", "light"), f"l{i}")
+        order = [scheduler.dequeue()[1] for _ in range(6)]
+        assert order == ["h0", "l0", "h1", "l1", "h2", "l2"]
+
+    def test_active_entity_count_counts_entities_not_leaves(self):
+        scheduler = self._scheduler()
+        scheduler.enqueue(("o", "c", "heavy"), "h")
+        scheduler.enqueue(("o", "c", "light"), "l")
+        scheduler.enqueue(("o", "d", "light"), "x")
+        assert scheduler.active_entity_count == 2
+        assert scheduler.active_count_at(0) == 1
+        assert scheduler.active_count_at(2) == 3
+
+    def test_short_key_is_padded_to_the_tier_depth(self):
+        scheduler = self._scheduler()
+        scheduler.enqueue(("o", "c"), "x")
+        key, item = scheduler.dequeue()
+        assert key == ("o", "c", "__default__")
+        assert item == "x"
+
+    def test_purge_and_drain_cover_both_leaves(self):
+        scheduler = self._scheduler()
+        scheduler.enqueue(("o", "c", "heavy"), "h")
+        scheduler.enqueue(("o", "c", "light"), "l")
+        assert scheduler.purge(lambda item: item == "h") == ["h"]
+        assert scheduler.active_entity_count == 1
+        assert scheduler.drain_all() == [(("o", "c", "light"), "l")]
+        assert scheduler.is_empty

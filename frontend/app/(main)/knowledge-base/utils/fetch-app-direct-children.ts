@@ -2,6 +2,7 @@ import { KnowledgeHubApi } from '../api';
 import { SIDEBAR_PAGINATION_PAGE_SIZE } from '../constants';
 import { useKnowledgeBaseStore } from '../store';
 import { buildConnectorAppSidebarTree } from './tree-builder';
+import { kbSessionToken } from './kb-session';
 
 /** expandedSections key for an app row in All Records sidebar */
 export function appSectionKey(appId: string): string {
@@ -10,6 +11,10 @@ export function appSectionKey(appId: string): string {
 
 /** Coalesce concurrent fetches for the same app into one in-flight request. */
 const inflightAppChildFetches = new Map<string, Promise<void>>();
+/** Forgets in-flight app fetches so a new session never waits on the previous one's. */
+export function resetAppChildFetches(): void {
+  inflightAppChildFetches.clear();
+}
 
 async function runFetchAppDirectChildren(appId: string): Promise<void> {
   const app = useKnowledgeBaseStore.getState().appNodes.find((a) => a.id === appId);
@@ -23,27 +28,25 @@ async function runFetchAppDirectChildren(appId: string): Promise<void> {
     addNodes,
   } = useKnowledgeBaseStore.getState();
 
+  const stillSignedIn = kbSessionToken();
   setAppLoading(appId, true);
   try {
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
       onlyContainers: true,
-      page: 1,
       limit: SIDEBAR_PAGINATION_PAGE_SIZE,
       sortBy: 'name',
       sortOrder: 'asc',
     });
+    if (!stillSignedIn()) return;
 
     cacheAppChildren(appId, response.items);
 
     const pag = response.pagination;
     setAppChildPagination(
       appId,
-      pag
-        ? {
-            hasNext: pag.hasNext,
-            nextPage: pag.hasNext ? pag.page + 1 : pag.page,
-          }
-        : { hasNext: false, nextPage: 1 }
+      pag?.nextCursor
+        ? { hasNext: pag.hasNext, nextCursor: pag.nextCursor }
+        : { hasNext: false, nextCursor: null }
     );
 
     // Build a hierarchical tree from the fetched children for BOTH KB and

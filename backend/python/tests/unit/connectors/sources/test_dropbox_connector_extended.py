@@ -333,8 +333,10 @@ class TestHandleRecordUpdates:
         update.record.record_name = "deleted"
         update.is_new = False
         update.is_updated = False
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         await c._handle_record_updates(update)
-        c.data_entities_processor.on_record_deleted.assert_called_once()
+        c.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(c.connector_id, "ext-1")
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
     @pytest.mark.asyncio
     async def test_new_record(self):
@@ -397,6 +399,7 @@ class TestHandleRecordUpdates:
     @pytest.mark.asyncio
     async def test_error_handling(self):
         c = _make_connector()
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="rec-key"))
         c.data_entities_processor.on_record_deleted = AsyncMock(side_effect=Exception("fail"))
         update = MagicMock()
         update.is_deleted = True
@@ -407,6 +410,7 @@ class TestHandleRecordUpdates:
         update.is_updated = False
         # Should not raise
         await c._handle_record_updates(update)
+        c.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-key")
 
 
 # ===========================================================================
@@ -577,7 +581,7 @@ class TestConvertDropboxPermissions:
             file_or_folder_id="id:f1",
             is_file=True,
         )
-        assert result == []
+        assert result is None  # unread, so the stored grants are kept
 
 
 # ===========================================================================
@@ -682,20 +686,18 @@ class TestGetSignedUrl:
     async def test_file_record(self):
         c = _make_connector()
 
-        mock_user = MagicMock()
-        mock_user.email = "user@test.com"
         mock_file_record = MagicMock()
         mock_file_record.path = "/test.pdf"
 
-        c.data_entities_processor.get_first_user_with_permission_to_node = AsyncMock(return_value=mock_user)
         c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=mock_file_record)
-
-        # Mock team_members_get_info_v2
-        team_member_info = MagicMock()
-        member_info = MagicMock()
-        member_info.profile.team_member_id = "tm-1"
-        team_member_info.data.members_info = [MagicMock(get_member_info=MagicMock(return_value=member_info))]
-        c.data_source.team_members_get_info_v2 = AsyncMock(return_value=team_member_info)
+        c.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[
+            MagicMock(email="gone@test.com"), MagicMock(email="user@test.com"),
+        ])
+        c.data_entities_processor.get_app_user_by_email = AsyncMock(side_effect=[
+            MagicMock(source_user_id="tm-0", is_active=False),
+            MagicMock(source_user_id="tm-1", is_active=True),
+        ])
+        c.data_entities_processor.get_groups_with_access_to_record = AsyncMock(return_value=[])
 
         # Mock files_get_temporary_link
         temp_link = MagicMock()
@@ -712,9 +714,42 @@ class TestGetSignedUrl:
 
         result = await c.get_signed_url(record)
         assert result == "https://dl.dropbox.com/file"
+        c.data_source.files_get_temporary_link.assert_awaited_once_with(
+            path="/test.pdf", team_folder_id="group-1", team_member_id="tm-1", raise_on_error=True,
+        )
+        c.data_entities_processor.get_groups_with_access_to_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_group_members_are_asked_when_no_user_is_granted(self) -> None:
+        c = _make_connector()
+        c.data_entities_processor.get_file_record_by_id = AsyncMock(return_value=MagicMock(path="/test.pdf"))
+        c.data_entities_processor.get_users_with_permission_to_node = AsyncMock(return_value=[])
+        c.data_entities_processor.get_groups_with_access_to_record = AsyncMock(
+            return_value=[MagicMock(source_user_group_id="g:1")]
+        )
+        inactive = MagicMock()
+        inactive.profile.team_member_id = "tm-off"
+        inactive.profile.status.is_active.return_value = False
+        active = MagicMock()
+        active.profile.team_member_id = "tm-on"
+        active.profile.status.is_active.return_value = True
+        c._fetch_group_members = AsyncMock(return_value=[inactive, active])
+        c.data_source.files_get_temporary_link = AsyncMock(
+            return_value=MagicMock(success=True, data=MagicMock(link="https://dl.dropbox.com/g"))
+        )
+        record = MagicMock(external_record_group_id="dbmid:owner")
+
+        result = await c.get_signed_url(record)
+        assert result == "https://dl.dropbox.com/g"
+        assert c._fetch_group_members.call_args.args[0] == "g:1"
+        c.data_source.files_get_temporary_link.assert_awaited_once_with(
+            path="/test.pdf", team_folder_id=None, team_member_id="tm-on", raise_on_error=True,
+        )
 
     @pytest.mark.asyncio
     async def test_folder_record(self):
+        from fastapi import HTTPException
+
         c = _make_connector()
         record = MagicMock()
         record.record_type = RecordType.FILE
@@ -722,8 +757,9 @@ class TestGetSignedUrl:
         record.external_record_group_id = "group-1"
         record.external_record_id = "id:d1"
 
-        result = await c.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await c.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================

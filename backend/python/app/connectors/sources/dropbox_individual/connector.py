@@ -1,6 +1,7 @@
 import asyncio
 import mimetypes
 import re
+import urllib.parse
 import uuid
 from datetime import datetime, timezone
 from logging import Logger
@@ -22,13 +23,16 @@ from fastapi.responses import StreamingResponse
 # Base connector and service imports
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
-from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    oauth_app_not_linked_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -63,6 +67,7 @@ from app.connectors.core.constants import (
 )
 # App-specific Dropbox client imports
 from app.connectors.sources.dropbox_individual.common.apps import DropboxIndividualApp
+from app.connectors.sources.dropbox.deletes import apply_deleted_entry, item_still_exists
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 
 # Model imports
@@ -74,12 +79,19 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.dropbox.dropbox_ import (
     DropboxClient,
     DropboxTokenConfig,
 )
 from app.sources.external.dropbox.dropbox_ import DropboxDataSource
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.utils.streaming import create_stream_record_response, stream_content
 
 
@@ -158,6 +170,7 @@ def get_mimetype_enum_for_dropbox(entry: Union[FileMetadata, FolderMetadata]) ->
     .with_description("Sync files and folders from Dropbox Personal account")\
     .with_categories(["Storage"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Dropbox Personal",
@@ -283,12 +296,15 @@ class DropboxIndividualConnector(BaseConnector):
         access_token = credentials_config.get("access_token")
         refresh_token = credentials_config.get("refresh_token")
 
-        auth_config = config.get("auth")
+        auth_config = config.get("auth") or {}
         oauth_config_id = auth_config.get("oauthConfigId")
 
         if not oauth_config_id:
-            self.logger.error("Dropbox Individual oauthConfigId not found in auth configuration.")
-            return False
+            self.logger.error(
+                "Dropbox Individual has no oauthConfigId in its auth config; it reads its "
+                "client ID and secret only from a linked OAuth app."
+            )
+            raise oauth_app_not_linked_error()
 
         oauth_config = await self._fetch_oauth_config_by_id(
             oauth_config_id=oauth_config_id,
@@ -408,6 +424,14 @@ class DropboxIndividualConnector(BaseConnector):
             RecordUpdate object or None if entry should be skipped
         """
         try:
+            # A delete has no id, dates or extension to filter on.
+            if isinstance(entry, DeletedMetadata):
+                await apply_deleted_entry(
+                    self.data_entities_processor, self.connector_id, entry.path_lower,
+                    self._item_still_exists, self.logger,
+                )
+                return None
+
             # 0. Apply date filters
             if not self._pass_date_filters(
                 entry, modified_after, modified_before, created_after, created_before
@@ -417,35 +441,6 @@ class DropboxIndividualConnector(BaseConnector):
             if not self._pass_extension_filter(entry):
                 self.logger.debug(f"Skipping item {entry.name} (ID: {entry.id}) due to extention filters.")
                 return None
-
-            # 1. Handle Deleted Items (Deletion from db not implemented yet)
-            if isinstance(entry, DeletedMetadata):
-                # return None
-                # self.logger.info(f"Item at path '{entry.path_lower}' has been deleted.")
-
-
-                # async with self.data_store_provider.transaction() as tx_store:
-                #     record = await tx_store.get_record_by_path(
-                #         connector_name=self.connector_name,
-                #         path=entry.path_lower,
-                #     )
-
-                # await self.data_entities_processor.on_record_deleted(
-                #     record_id=record["_key"]
-                # )
-
-
-                # return RecordUpdate(
-                #     record=None,
-                #     external_record_id=entry.id,
-                #     is_new=False,
-                #     is_updated=False,
-                #     is_deleted=True,
-                #     metadata_changed=False,
-                #     content_changed=False,
-                #     permissions_changed=False
-                # )
-                pass
 
             # 2. Get existing record from the database
             existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -457,7 +452,6 @@ class DropboxIndividualConnector(BaseConnector):
             is_updated = False
             metadata_changed = False
             content_changed = False
-            permissions_changed = False
             is_file = isinstance(entry, FileMetadata)
 
             if existing_record:
@@ -490,8 +484,7 @@ class DropboxIndividualConnector(BaseConnector):
             # 5.5 Get preview URL
             # We keep the verbose logging and fallback logic from Teams because
             # Dropbox API often throws "shared_link_already_exists" for individual users too.
-            self.logger.info("=" * 50)
-            self.logger.info("Processing weburl for path: %s", entry.path_lower)
+            self.logger.debug("Processing weburl for path: %s", entry.path_lower)
 
             preview_url = None
             link_settings = SharedLinkSettings(
@@ -505,19 +498,19 @@ class DropboxIndividualConnector(BaseConnector):
                 settings=link_settings
             )
 
-            self.logger.info("Result 1: %s", shared_link_result)
+            self.logger.debug("Result 1: %s", shared_link_result)
 
             if shared_link_result.success:
                 # Successfully created new link
                 preview_url = shared_link_result.data.url
-                self.logger.info("Successfully created new link: %s", preview_url)
+                self.logger.debug("Successfully created new link: %s", preview_url)
             else:
                 # First call failed - check if link already exists
                 error_str = str(shared_link_result.error)
-                self.logger.info("First call failed with error type")
+                self.logger.debug("First call failed with error type")
 
                 if 'shared_link_already_exists' in error_str:
-                    self.logger.info("Link already exists, making second call to retrieve it")
+                    self.logger.debug("Link already exists, making second call to retrieve it")
 
                     # Make second call with settings=None to get the existing link
                     second_result = await self.data_source.sharing_create_shared_link_with_settings(
@@ -525,12 +518,12 @@ class DropboxIndividualConnector(BaseConnector):
                         settings=None
                     )
 
-                    self.logger.info("Result 2 received")
+                    self.logger.debug("Result 2 received")
 
                     if second_result.success:
                         # Unexpectedly succeeded
                         preview_url = second_result.data.url
-                        self.logger.info("Second call succeeded: %s", preview_url)
+                        self.logger.debug("Second call succeeded: %s", preview_url)
                     else:
                         # Expected to fail - extract URL from error string
                         second_error_str = str(second_result.error)
@@ -542,7 +535,7 @@ class DropboxIndividualConnector(BaseConnector):
 
                             if url_match:
                                 preview_url = url_match.group(1)
-                                self.logger.info("Successfully extracted URL from error: %s", preview_url)
+                                self.logger.debug("Successfully extracted URL from error: %s", preview_url)
                             else:
                                 self.logger.error("Could not extract URL from second error string")
                                 self.logger.debug("Error string: %s", second_error_str[:500]) # Log first 500 chars
@@ -551,11 +544,18 @@ class DropboxIndividualConnector(BaseConnector):
                 else:
                     self.logger.error("Unexpected error type on first call (not shared_link_already_exists)")
 
-            # Final check
+            # Final check - fall back to a direct Dropbox web link if we couldn't
+            # create/retrieve a shared link (e.g. access_denied on nested shared
+            # folders with a restrictive shared_link_policy, or path/not_found
+            # for content whose path doesn't resolve in this namespace context).
             if preview_url is None:
-                self.logger.error("Failed to retrieve preview URL for %s", entry.path_lower)
+                encoded_path = urllib.parse.quote(entry.path_display, safe="/")
+                preview_url = f"https://www.dropbox.com/home{encoded_path}"
+                self.logger.warning(
+                    "Falling back to home URL for %s: %s", entry.path_lower, preview_url
+                )
             else:
-                self.logger.info("Final preview_url: %s", preview_url)
+                self.logger.debug("Final preview_url: %s", preview_url)
 
             # 6. Get parent record ID
             parent_path = None
@@ -590,6 +590,7 @@ class DropboxIndividualConnector(BaseConnector):
                 weburl=preview_url, # Calculated in step 5.5
                 signed_url=signed_url, # Calculated in step 5
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=entry.size if is_file else 0,
                 is_file=is_file,
                 preview_renderable=is_file,
@@ -599,33 +600,8 @@ class DropboxIndividualConnector(BaseConnector):
                 sha256_hash=entry.content_hash if is_file and hasattr(entry, 'content_hash') else None,
             )
 
-            # 8. Handle Permissions
-            new_permissions = []
-
-            try:
-                new_permissions.append(
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.WRITE,
-                        entity_type=EntityType.USER
-                    )
-                )
-
-            except Exception as perm_ex:
-                self.logger.warning(f"Could not fetch permissions for {entry.name}: {perm_ex}")
-                # Safe Fallback to owner permission to prevent data invisibility
-                new_permissions = [
-                    Permission(
-                        external_id=user_id,
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-                ]
-
-            # 9. Compare permissions
-            old_permissions = []
+            file_record.rewrite_permissions = True
+            file_record.inherit_permissions = True
 
             return RecordUpdate(
                 record=file_record,
@@ -634,15 +610,19 @@ class DropboxIndividualConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=metadata_changed,
                 content_changed=content_changed,
-                permissions_changed=permissions_changed,
-                old_permissions=old_permissions,
-                new_permissions=new_permissions,
+                permissions_changed=True,
+                old_permissions=[],
+                new_permissions=[],
                 external_record_id=entry.id
             )
 
         except Exception as ex:
             self.logger.error(f"Error processing Dropbox entry {getattr(entry, 'id', entry.path_lower)}: {ex}", exc_info=True)
             return None
+
+    async def _item_still_exists(self, record: Record) -> bool | None:
+        """Whether a deleted path's record still resolves by id (a move also reports a delete at the old path)."""
+        return item_still_exists(await self.data_source.files_get_metadata(path=record.external_record_id))
 
     async def _process_dropbox_items_generator(
         self,
@@ -959,9 +939,12 @@ class DropboxIndividualConnector(BaseConnector):
         """Handle different types of record updates (new, updated, deleted)."""
         try:
             if record_update.is_deleted:
-                await self.data_entities_processor.on_record_deleted(
-                    record_id=record_update.external_record_id
+                # The update carries the source's id; records are deleted by their key.
+                existing_record = await self.data_entities_processor.get_record_by_external_id(
+                    self.connector_id, record_update.external_record_id
                 )
+                if existing_record:
+                    await self.data_entities_processor.on_record_deleted(record_id=existing_record.id)
             elif record_update.is_new:
                 self.logger.info(f"New record detected: {record_update.record.record_name}")
             elif record_update.is_updated:
@@ -1004,6 +987,9 @@ class DropboxIndividualConnector(BaseConnector):
 
             app_user = self._get_current_user_as_app_user(response.data)
             await self.data_entities_processor.on_new_app_users([app_user])
+            await self.register_authenticated_source_user(
+                response.data.email, response.data.account_id
+            )
             self.logger.info(f"Synced user: {app_user.email} ({app_user.source_user_id})")
 
             # 2. Identify the User (for backward compatibility with existing code)
@@ -1042,11 +1028,9 @@ class DropboxIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=user_id,
+            inherit_permissions=True,
         )
-        # Permissions: Owner
-        permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
-
-        await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
         return record_group
 
     async def run_incremental_sync(self) -> None:
@@ -1068,7 +1052,7 @@ class DropboxIndividualConnector(BaseConnector):
         Simplified for individual accounts.
         """
         if not self.data_source:
-            return None
+            raise connector_not_ready(self.display_name)
         try:
             # Dropbox uses path or file ID for temporary links. ID is more robust.
             target_identifier = record.external_record_id
@@ -1077,21 +1061,44 @@ class DropboxIndividualConnector(BaseConnector):
                 target_identifier = getattr(record, 'path', None)
             if not target_identifier:
                 self.logger.warning(f"Cannot generate signed URL: Record {record.id} missing external_id")
-                return None
-            response = await self.data_source.files_get_temporary_link(path=target_identifier)
-
+                raise not_downloadable(
+                    "This item is missing its Dropbox path and cannot be downloaded.",
+                    connector=self.display_name,
+                )
+            response = await self.data_source.files_get_temporary_link(
+                path=target_identifier, raise_on_error=True
+            )
+            if not response.success or not response.data:
+                self.logger.error(
+                    f"Failed to get temporary link for record {record.id}: {response.error}"
+                )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data),
+                connector=self.display_name,
+                message=response.error,
+            )
             return response.data.link
+        except HTTPException:
+            raise
         except Exception as e:
-            self.logger.error(f"Error creating signed URL for record {record.id}: {e}")
-            return None
+            self.logger.error(
+                f"Error creating signed URL for record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def stream_record(self, record: Record) -> StreamingResponse:
         signed_url = await self.get_signed_url(record)
         if not signed_url:
-            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="File not found or access denied")
+            raise not_found_at_source(self.display_name)
 
         return create_stream_record_response(
-            stream_content(signed_url),
+            stream_content(
+                signed_url,
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=self.display_name,
+            ),
             filename=record.record_name,
             mime_type=record.mime_type,
             fallback_filename=f"record_{record.id}"

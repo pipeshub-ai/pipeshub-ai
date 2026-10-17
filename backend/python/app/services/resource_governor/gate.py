@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from collections import deque
 from typing import TYPE_CHECKING
 
 from app.services.resource_governor.models import Pool, PoolDemand
@@ -23,6 +24,12 @@ if TYPE_CHECKING:
 # wakeup is ever missed, a waiter re-checks admission at worst this often
 # instead of stalling indefinitely.
 _SAFETY_NET_INTERVAL_SECONDS = 1.0
+# Reported permit hold times are kept per sample interval for the last this
+# many intervals (PoolDemand.hold_seconds_by_sample), so the policy can widen
+# its view past a sample that released only one or two permits.
+_HOLD_SAMPLES_KEPT = 4
+# Bound on one interval's hold times; past it the oldest of that interval go.
+_MAX_HOLDS_PER_SAMPLE = 1024
 
 
 class StartRateLimiter:
@@ -57,6 +64,28 @@ class StartRateLimiter:
         return False
 
 
+class _Waiter:
+    """One queued acquire. Woken by the gate; re-arms itself after each wake
+    so a wake that did not lead to admission is not lost on the next one."""
+
+    __slots__ = ("_loop", "_future")
+
+    def __init__(self, loop: asyncio.AbstractEventLoop) -> None:
+        self._loop = loop
+        self._future: asyncio.Future[None] = loop.create_future()
+
+    def wake(self) -> None:
+        if not self._future.done():
+            self._future.set_result(None)
+
+    async def wait(self, poll: float) -> None:
+        # asyncio.wait, not wait_for: a poll timeout must not cancel the
+        # future a later wake() will complete.
+        await asyncio.wait({self._future}, timeout=poll)
+        if self._future.done():
+            self._future = self._loop.create_future()
+
+
 class AdmissionGate:
     """Weighted admission control bound to the event loop that first uses it.
 
@@ -80,7 +109,12 @@ class AdmissionGate:
         self._clock = clock
 
         self._loop: asyncio.AbstractEventLoop | None = None
-        self._event: asyncio.Event | None = None
+        # Arrival-ordered waiters. Only the head is woken on a release or a
+        # limit change, so a record's wait is bounded by its place in the
+        # queue: with every waiter woken at once they all raced for the
+        # permit, and one could lose that race for the whole of its
+        # processing budget while newer arrivals went ahead of it.
+        self._waiters: deque[_Waiter] = deque()
         self._unsubscribe: Callable[[], None] | None = None
 
         self._in_use = 0
@@ -90,15 +124,16 @@ class AdmissionGate:
         self._completions = 0
         self._max_in_use = 0
         self._rate_limited_acquires = 0
+        self._sample_holds: deque[float] = deque(maxlen=_MAX_HOLDS_PER_SAMPLE)
+        self._holds_by_sample: deque[tuple[float, ...]] = deque(maxlen=_HOLD_SAMPLES_KEPT)
         self._last_change = clock()
 
     # -- loop binding ---------------------------------------------------
 
-    def _bind(self) -> asyncio.Event:
+    def _bind(self) -> asyncio.AbstractEventLoop:
         loop = asyncio.get_running_loop()
         if self._loop is None:
             self._loop = loop
-            self._event = asyncio.Event()
             self._unsubscribe = self._registry.subscribe(self._pool, self._on_limit_changed)
         elif loop is not self._loop:
             raise RuntimeError(
@@ -107,16 +142,19 @@ class AdmissionGate:
                 "AdmissionGate instance must not be shared across event loops "
                 "— obtain a separate gate for the other loop."
             )
-        assert self._event is not None
-        return self._event
+        return loop
 
     def wake(self) -> None:
         """Re-check admission on this gate's loop. Safe from any thread."""
-        loop, event = self._loop, self._event
-        if loop is None or event is None:
+        loop = self._loop
+        if loop is None:
             return
         with contextlib.suppress(RuntimeError):
-            loop.call_soon_threadsafe(event.set)
+            loop.call_soon_threadsafe(self._wake_head)
+
+    def _wake_head(self) -> None:
+        if self._waiters:
+            self._waiters[0].wake()
 
     def _on_limit_changed(self, _pool: Pool, _value: int) -> None:
         """Registry subscriber callback — may run on any thread."""
@@ -159,13 +197,17 @@ class AdmissionGate:
         respond with backpressure instead of an exception (plan section
         1.4 — a timeout here must never be treated as a service failure).
         """
-        event = self._bind()
-        if self._try_admit(cost):
+        loop = self._bind()
+        # Nobody may overtake a queued waiter, so a fresh arrival only takes
+        # the fast path while the queue is empty.
+        if not self._waiters and self._try_admit(cost):
             return True
 
         wait_start = self._clock()
         self._blocked_acquires += 1
         deadline = None if timeout is None else wait_start + timeout
+        waiter = _Waiter(loop)
+        self._waiters.append(waiter)
         try:
             while True:
                 remaining = None if deadline is None else deadline - self._clock()
@@ -176,22 +218,30 @@ class AdmissionGate:
                     if remaining is None
                     else min(_SAFETY_NET_INTERVAL_SECONDS, remaining)
                 )
-                event.clear()
-                with contextlib.suppress(asyncio.TimeoutError):
-                    await asyncio.wait_for(event.wait(), timeout=poll)
-                if self._try_admit(cost):
+                await waiter.wait(poll)
+                if self._waiters[0] is waiter and self._try_admit(cost):
                     return True
         finally:
             self._total_wait_seconds += self._clock() - wait_start
+            with contextlib.suppress(ValueError):
+                self._waiters.remove(waiter)
+            # Whether admitted or given up, the next in line gets its turn:
+            # a limit that grew by several permits admits several waiters,
+            # one wake at a time.
+            self._wake_head()
 
-    def release(self, cost: int = 1) -> None:
+    def release(self, cost: int = 1, held_seconds: float | None = None) -> None:
+        """Return *cost* permits. ``held_seconds``, when the holder knows it,
+        is how long this permit was held; it feeds the pool's typical hold
+        time (``PoolDemand.hold_seconds_by_sample``)."""
         now = self._clock()
         self._fold_permit_seconds(now)
         released = min(cost, self._in_use)
         self._in_use -= released
         self._completions += 1
-        if self._event is not None:
-            self._event.set()
+        if held_seconds is not None and held_seconds >= 0:
+            self._sample_holds.append(held_seconds)
+        self._wake_head()
 
     @contextlib.asynccontextmanager
     async def slot(self, cost: int = 1, timeout: float | None = None) -> AsyncIterator[bool]:
@@ -219,7 +269,10 @@ class AdmissionGate:
             completions=self._completions,
             max_in_use=self._max_in_use,
             rate_limited_acquires=self._rate_limited_acquires,
+            hold_seconds_by_sample=(*self._holds_by_sample, tuple(self._sample_holds)),
         )
+        self._holds_by_sample.append(tuple(self._sample_holds))
+        self._sample_holds.clear()
         self._permit_seconds = 0.0
         self._blocked_acquires = 0
         self._total_wait_seconds = 0.0

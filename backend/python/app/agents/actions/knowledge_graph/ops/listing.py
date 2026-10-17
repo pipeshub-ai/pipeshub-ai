@@ -19,7 +19,10 @@ from app.connectors.sources.localKB.api.knowledge_hub_models import (
     NodeItem,
     NodeType,
 )
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
+from app.modules.demo_data.chat import excluded_app_ids
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -151,7 +154,14 @@ async def execute_list_files(
         if not graph_provider:
             return False, "Graph provider not available."
 
-        from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            list_selected_nodes,
+            resolve_scope,
+        )
+
+        selected = await list_selected_nodes(state, graph_provider, user_id, org_id)
+        if selected is not None:
+            return True, selected
 
         scope = await resolve_scope(state, allow_catalog_fallback=True)
         if scope.is_empty():
@@ -181,31 +191,19 @@ async def execute_list_files(
         if sort_order not in _VALID_SORT_ORDERS:
             sort_order = "desc"
 
-        # Resolve source_ids against the agent's scope.
-        # source_ids can contain both app connector ids and KB ids.
-        if source_ids_norm:
-            all_scope = set(agent_connector_ids) | kb_ids
-            matched = [sid for sid in source_ids_norm if sid in all_scope]
-            if matched:
-                use_apps = [sid for sid in matched if sid in set(agent_connector_ids)]
-                use_kbs = {sid for sid in matched if sid in kb_ids}
-            else:
-                use_apps = agent_connector_ids
-                use_kbs = kb_ids
-        elif query:
-            use_apps = agent_connector_ids
-            use_kbs = kb_ids
-        else:
-            # Browse without query — scope to all configured apps
-            use_apps = agent_connector_ids
-            use_kbs = kb_ids
+        # KB ids keep a KB-only agent's search scoped (None would search everything).
+        agent_source_ids = list(dict.fromkeys([*agent_connector_ids, *scope.kb_ids]))
 
-        use_connector_ids = use_apps or None
-        use_record_group_ids = list(use_kbs) if use_kbs else None
+        # source_ids may name apps and KBs; narrow to them, never widen.
+        allowed = set(agent_source_ids)
+        matched = [sid for sid in source_ids_norm or [] if sid in allowed]
+        use_connector_ids = matched or agent_source_ids
+        use_record_group_ids = [sid for sid in use_connector_ids if sid in kb_ids] or None
 
         service = KnowledgeHubService(
             logger=logger_instance,
             graph_provider=graph_provider,
+            excluded_app_ids=excluded_app_ids(state),
         )
 
         response = await service.get_nodes(
@@ -222,12 +220,18 @@ async def execute_list_files(
             node_types=node_types,
             record_types=record_types,
             connector_ids=use_connector_ids,
-            flattened=False,
+            # An explicit False makes the service list; an omitted flag
+            # plus connector_ids makes it search.
+            flattened=None if query else False,
             record_group_ids=use_record_group_ids,
         )
 
         from app.modules.agents.qna.chat_state import remember_record_ids
-        remember_record_ids(state, _record_ids_in_items(response.items))
+        remember_record_ids(
+            state,
+            _record_ids_in_items(response.items),
+            names={item.id: item.name for item in response.items or []},
+        )
 
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)

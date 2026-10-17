@@ -20,6 +20,7 @@ def make_mock_connector() -> MagicMock:
     passing this mock as the constructor argument.
     """
     c = MagicMock()
+    c._register_authenticated_identity = AsyncMock()
     from app.config.constants.arangodb import Connectors
 
     c.connector_id = "github-conn-1"
@@ -34,6 +35,7 @@ def make_mock_connector() -> MagicMock:
 
     c.logger = MagicMock()
     c.data_source = MagicMock()
+    c.display_name = "GitHub"
 
     dep = MagicMock()
     dep.org_id = "org-1"
@@ -45,13 +47,18 @@ def make_mock_connector() -> MagicMock:
     dep.on_records_moved = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.on_record_group_deleted = AsyncMock()
-    dep.on_records_deleted_cascade = AsyncMock()
+    dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "failed_records": []})
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.ensure_team_app_edge = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
+    dep.batch_update_nodes = AsyncMock(return_value=True)
     c.data_entities_processor = dep
 
     runtime = MagicMock()
@@ -59,6 +66,13 @@ def make_mock_connector() -> MagicMock:
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
     runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+
+    # The real one caches; the mock goes straight through ds_call so a test
+    # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.
+    async def _get_repo_by_id(repo_id: int) -> object:
+        return await runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+
+    runtime.get_repo_by_id = AsyncMock(side_effect=_get_repo_by_id)
     c.runtime = runtime
 
     rsp = MagicMock()
@@ -70,14 +84,10 @@ def make_mock_connector() -> MagicMock:
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()
-    tx_store.get_user_by_source_id = AsyncMock(return_value=None)
     tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_records_by_status = AsyncMock(return_value=[])
-    tx_store.get_nodes_by_filters = AsyncMock(return_value=[])
     tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-    tx_store.batch_update_nodes = AsyncMock(return_value=True)
-    tx_store.ensure_team_app_edge = AsyncMock()
 
     class _TxCtx:
         async def __aenter__(self) -> MagicMock:
@@ -180,4 +190,5 @@ def failed_response(error: str = "error", status_code: int | None = None) -> Mag
     # Real GitHubResponse carries the HTTP status; callers distinguish a
     # structural 403/404 from a transient failure by it.
     res.status_code = status_code
+    res.retry_after_seconds = None
     return res

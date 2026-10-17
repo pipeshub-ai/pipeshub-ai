@@ -16,6 +16,10 @@ class SlackResponse:
     data: Optional[dict[str, Any]] = None
     error: Optional[str] = None
     message: Optional[str] = None
+    # Slack reports most failures in a 200 body, but not all: rate limiting is a
+    # real HTTP 429 with Retry-After, and only the transport carries that.
+    status_code: Optional[int] = None
+    retry_after: Optional[str] = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert to dictionary for JSON serialization"""
@@ -55,18 +59,30 @@ class SlackRESTClientViaApiKey:
     def get_web_client(self) -> WebClient:
         raise NotImplementedError("Username/Password authentication is not yet implemented.")
 
+# Apps with token rotation turned on get access tokens prefixed "xoxe.". A bare
+# "xoxe-" token is the refresh token, which cannot call the API.
+_ACCESS_TOKEN_PREFIXES = ("xoxb-", "xoxp-", "xoxe.xoxb-", "xoxe.xoxp-")
+
+
+def _check_token(token: str) -> None:
+    if not token:
+        raise ValueError("Slack token cannot be empty")
+    if not token.startswith(_ACCESS_TOKEN_PREFIXES):
+        raise ValueError(
+            "Invalid Slack token format. Paste a bot token (starts with 'xoxb-' or "
+            "'xoxe.xoxb-') or a user token (starts with 'xoxp-' or 'xoxe.xoxp-'), "
+            "from your app's OAuth & Permissions page in the Slack app console. "
+            f"Got a token starting with: {token[:10]}..."
+        )
+
+
 class SlackRESTClientViaToken:
     """Slack REST client via token
     Args:
         token: The token to use for authentication
     """
     def __init__(self, token: str) -> None:
-        if not token:
-            raise ValueError("Slack token cannot be empty")
-
-        if not (token.startswith(('xoxb-', 'xoxp-'))):
-            raise ValueError(f"Invalid Slack token format. Token should start with 'xoxb-' (bot token) or 'xoxp-' (user token), got: {token[:10]}...")
-
+        _check_token(token)
         self.client = WebClient(token=token)
 
     def get_web_client(self) -> WebClient:
@@ -76,6 +92,7 @@ class SlackRESTClientViaToken:
         return self.client.token
 
     def set_token(self, token: str) -> None:
+        _check_token(token)
         self.client = WebClient(token=token)
 
 @dataclass

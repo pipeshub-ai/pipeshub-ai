@@ -1,0 +1,14 @@
+{
+  "source": "en-US",
+  "gated": [
+    "de-DE",
+    "es-ES",
+    "hi-IN",
+    "en-IN",
+    "ko-KR",
+    "zh-CN",
+    "zh-TW",
+    "zh-SG",
+    "cs-CZ"
+  ]
+}

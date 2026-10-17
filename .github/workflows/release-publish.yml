@@ -1,0 +1,467 @@
+name: Release — build, publish, verify
+
+# The app images on Docker Hub are built and pushed by hand today. That is the
+# slowest and least reproducible step in a release, and it is why nothing can
+# gate on the artifact: there is no point in CI where the published image
+# exists and has not yet been announced.
+#
+# This workflow closes that. On a tag it builds both variants, pushes them under
+# a candidate tag only, runs the first-run smoke against the pushed images, and
+# promotes to the release tags only if the smoke passes. A build that cannot
+# install is never reachable as :latest or :slim.
+#
+# Manual runs are supported for rehearsal: workflow_dispatch with promote=false
+# builds and verifies without touching any tag that already exists. The one
+# thing it may publish is a prerelease version (1.2.3-rc.1) whose tags are not
+# on Docker Hub yet, so a build for someone to try is a single run; :latest and
+# :slim move only with promote=true, and never for a prerelease.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build, e.g. 0.7.1 (no leading v)'
+        required: true
+        type: string
+      promote:
+        description: 'Move :latest / :slim to this build after the smoke passes'
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  # One key per version for both triggers (v1.2.3 from a tag push, or
+  # inputs.version with a v prefix on dispatch), so two builds of one version
+  # queue whatever branch they come from and cannot both pass the "tags
+  # absent" check. The publish job adds a single group across all versions.
+  group: release-publish-${{ inputs.version && format('v{0}', inputs.version) || github.ref_name }}
+  # `queue: max` keeps every waiting run; the default keeps only the newest
+  # pending one and cancels the rest.
+  queue: max
+  cancel-in-progress: false
+
+env:
+  IMAGE: pipeshubai/pipeshub-ai
+  BASE_IMAGE: pipeshubai/pipeshub-ai-base
+  # The code-execution sandbox the app pulls at install time, tagged in step
+  # with the app image (docker-compose.yml, sandbox-image). It was pushed by
+  # hand for every release before this workflow built it.
+  SANDBOX_IMAGE: pipeshubai/pipeshub-sandbox
+
+jobs:
+  # ---------------------------------------------------------------------------
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      candidate: ${{ steps.v.outputs.candidate }}
+      promote: ${{ steps.v.outputs.promote }}
+    steps:
+      - id: v
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+            promote="${{ inputs.promote }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+            promote="true"
+          fi
+          # A tag must look like a version. Refuse anything else rather than
+          # publishing an image called ":oops".
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'; then
+            echo "::error::'$version' is not a semver version (expected 1.2.3 or 1.2.3-beta.1)"
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "candidate=${version}-rc.${GITHUB_RUN_ID}"
+            echo "promote=$promote"
+          } >> "$GITHUB_OUTPUT"
+          echo "version=$version candidate=${version}-rc.${GITHUB_RUN_ID} promote=$promote"
+
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build ${{ matrix.variant }}
+    needs: resolve
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: full
+            python_deps: python-deps
+          - variant: slim
+            python_deps: python-deps-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # The base images are rebuilt deliberately, not on every release — see the
+      # header of Dockerfile.base. Pull whatever is published and fail loudly if
+      # it is absent, rather than silently building a 40-minute base layer here.
+      - name: Pull base images
+        run: |
+          set -euo pipefail
+          for tag in ${{ matrix.python_deps }} runtime; do
+            if ! docker pull "${BASE_IMAGE}:${tag}"; then
+              echo "::error::${BASE_IMAGE}:${tag} is not published. Build it from Dockerfile.base first (see its header)."
+              exit 1
+            fi
+          done
+
+      - name: Build and push candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          build-args: |
+            PYTHON_DEPS_IMAGE=${{ env.BASE_IMAGE }}:${{ matrix.python_deps }}
+            RUNTIME_BASE_IMAGE=${{ env.BASE_IMAGE }}:runtime
+            APP_VERSION=${{ needs.resolve.outputs.version }}
+            GIT_COMMIT=${{ github.sha }}
+          tags: |
+            ${{ env.IMAGE }}:${{ needs.resolve.outputs.candidate }}${{ matrix.variant == 'slim' && '-slim' || '' }}
+          cache-from: type=gha,scope=${{ matrix.variant }}
+          cache-to: type=gha,scope=${{ matrix.variant }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # install.sh pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}, so the candidate
+  # needs a sandbox image under both its tags (slim installs use the -slim
+  # tag). Without it compose tries to build the sandbox from source, which a
+  # standalone install does not have, and every verify job fails.
+  build-sandbox:
+    name: Build sandbox
+    needs: resolve
+    runs-on: runs-on=${{ github.run_id }}/runner=8cpu-linux-x64/volume=200gb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push the sandbox candidate
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: deployment/sandbox
+          file: deployment/sandbox/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}
+            ${{ env.SANDBOX_IMAGE }}:${{ needs.resolve.outputs.candidate }}-slim
+          cache-from: type=gha,scope=sandbox
+          cache-to: type=gha,scope=sandbox,mode=max
+
+  # ---------------------------------------------------------------------------
+  # The gate. These images are on Docker Hub but no published tag points at them
+  # yet, so this runs against exactly what a user would install.
+  verify:
+    name: Verify ${{ matrix.deploy }} candidate (${{ matrix.arch }}${{ matrix.graph && format(', {0}', matrix.graph) || '' }})
+    needs: [resolve, build, build-sandbox]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The build publishes linux/amd64 and linux/arm64. Docker resolves a
+          # multi-arch tag to the runner's own architecture, so verifying only on
+          # x64 would promote an arm64 image that nothing had ever started.
+          - deploy: slim
+            suffix: '-slim'
+            arch: amd64
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+          - deploy: full
+            suffix: ''
+            arch: amd64
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+          - deploy: slim
+            suffix: '-slim'
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - deploy: full
+            suffix: ''
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          # Customers can install on ArangoDB instead of Neo4j. Every other row
+          # takes the installer's default (Neo4j), so without this one a release
+          # that cannot start or upgrade on ArangoDB would still be promoted.
+          - deploy: slim
+            suffix: '-slim'
+            arch: amd64
+            graph: arango
+            runner: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      # The GitHub-hosted arm64 runners have a much smaller disk than the
+      # RunsOn x64 ones, and the full image is large. Reclaim what the image
+      # ships with but this job never uses.
+      - name: Reclaim disk space
+        if: matrix.arch == 'arm64'
+        run: |
+          set -uo pipefail
+          before=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          # ${VAR:-} matters here: under `set -u` an unset variable aborts the
+          # step before `|| true` can apply, which would fail the release.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+          after=$(df -BG --output=avail / | tail -1 | tr -dc '0-9')
+          echo "free disk: ${before}G -> ${after}G"
+
+      - name: Confirm the runner is really ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          actual="$(dpkg --print-architecture)"
+          echo "runner architecture: ${actual}"
+          [ "$actual" = "${{ matrix.arch }}" ] || {
+            echo "expected ${{ matrix.arch }} — this job would silently re-test the wrong image"
+            exit 1
+          }
+
+      - name: First-run smoke against the candidate image
+        env:
+          PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_GRAPH_DB: ${{ matrix.graph }}
+          PIPESHUB_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PIPESHUB_EXPECT_VERSION: ${{ needs.resolve.outputs.version }}
+          PIPESHUB_EXPECT_COMMIT: ${{ github.sha }}
+          PUBLISHED_HUB_SMOKE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/docker-compose/tests/published_hub_smoke.sh
+
+      - name: Upgrade from the previous release
+        env:
+          PIPESHUB_TARGET_VERSION: ${{ needs.resolve.outputs.candidate }}${{ matrix.suffix }}
+          PIPESHUB_DEPLOY_TYPE: ${{ matrix.deploy }}
+          PIPESHUB_GRAPH_DB: ${{ matrix.graph }}
+          PIPESHUB_UPGRADE_DIAG: ${{ runner.temp }}/diag
+        run: bash deployment/docker-compose/tests/upgrade_smoke.sh
+
+      - name: Upload diagnostics
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-verify-${{ matrix.deploy }}-${{ matrix.arch }}${{ matrix.graph && format('-{0}', matrix.graph) || '' }}
+          path: ${{ runner.temp }}/diag
+          if-no-files-found: ignore
+
+  # ---------------------------------------------------------------------------
+  # With promote=true the version tags are written (overwriting if present)
+  # and, for a stable version, :latest and :slim move. With promote=false a
+  # prerelease version is published only onto tags that do not exist yet, and
+  # a stable version is a rehearsal that publishes nothing. crane copy
+  # overwrites, so an existing tag is never replaced without promote.
+  promote:
+    name: Publish release tags
+    needs: [resolve, verify]
+    runs-on: ubuntu-latest
+    # Every publisher of the shared tags queues here, across versions and
+    # triggers, so two runs cannot interleave their copies of :latest/:slim
+    # or undo each other's moves.
+    concurrency:
+      group: release-publish-tags
+      # A waiting publish has already passed verify; the default queue would
+      # cancel it when a third arrives, and its version would get no tags.
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Install crane
+        # Pinned by commit: a tag can be moved, and this step is what
+        # promotes images to the tags users pull.
+        uses: imjasonh/setup-crane@31b88efe9de28ae0ffa220711af4b60be9435f6e # v0.4
+
+      # Copy by digest rather than rebuilding, so the tag a user pulls is
+      # byte-identical to the image the smoke and upgrade tests just passed.
+      # The sandbox moves with the app: install.sh pulls both under one tag.
+      - name: Point release tags at the verified images
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          PROMOTE: ${{ needs.resolve.outputs.promote }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          prerelease=false
+          if printf '%s' "$VERSION" | grep -q -- '-'; then prerelease=true; fi
+          if [ "$PROMOTE" != "true" ] && [ "$prerelease" != "true" ]; then
+            echo "rehearsal of ${VERSION}: verified, publishing nothing"
+            exit 0
+          fi
+          # One answer for "what is at this tag": present with its digest,
+          # absent (the registry said not-found), or unknown (anything else).
+          # Unknown is never treated as absent: both the pre-check and the
+          # undo snapshot stop before a copy instead of guessing.
+          # crane logs a "HEAD request failed, falling back on GET" line on
+          # stderr before the GET's own error, so only the final error line
+          # decides, and only the registry's not-found codes mean absent.
+          tag_state() {
+            local digest err
+            if digest="$(crane digest "$1" 2>"${RUNNER_TEMP}/digest.err")"; then
+              echo "present $digest"
+              return
+            fi
+            err="$(grep -v 'falling back on GET' "${RUNNER_TEMP}/digest.err" | tail -n 1)"
+            if printf '%s' "$err" | grep -Eq 'MANIFEST_UNKNOWN|NAME_UNKNOWN'; then
+              echo "absent"
+            else
+              echo "unknown ${err:-no error output}"
+            fi
+          }
+          # Docker Hub removes a tag by name through its own API; the registry
+          # API deletes manifests only by digest. Used to undo a half-written
+          # set below and by the candidate cleanup step.
+          hub_delete_tag() {
+            local jwt
+            jwt="$(curl -fsS -H 'Content-Type: application/json' \
+              -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+              https://hub.docker.com/v2/users/login | jq -r .token)"
+            curl -sS -o /dev/null -w "delete $1:$2 -> HTTP %{http_code}\n" -X DELETE \
+              -H "Authorization: JWT ${jwt}" "https://hub.docker.com/v2/repositories/$1/tags/$2/"
+          }
+          # install.sh pulls the app and the sandbox under one tag, so the four
+          # version tags are published as a set. Without promote: all absent
+          # means copy them all, all present means leave them, a confirmed mix
+          # means an earlier run stopped halfway (never papered over with
+          # images that were not verified together), and a lookup that fails
+          # for any reason other than not-found stops the step before any
+          # copy, since "absent" must never be a guess.
+          if [ "$PROMOTE" != "true" ]; then
+            present=0; absent=0
+            for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+              for suffix in "" "-slim"; do
+                ref="${repo}:${VERSION}${suffix}"
+                state="$(tag_state "$ref")"
+                case "$state" in
+                  present*) present=$((present + 1)) ;;
+                  absent)   absent=$((absent + 1)) ;;
+                  *) echo "::error::could not tell whether ${ref} exists (${state#unknown }). Nothing was published; re-run once Docker Hub answers."; exit 1 ;;
+                esac
+              done
+            done
+            if [ "$present" -eq 4 ]; then
+              echo "${VERSION}: all four tags already exist, left as they are (promote is off)"
+              exit 0
+            elif [ "$absent" -ne 4 ]; then
+              echo "::error::${VERSION}: ${present} of the 4 version tags exist. A previous run stopped partway; delete the partial set on Docker Hub or re-run with promote=true."
+              exit 1
+            fi
+            clobber=(--no-clobber)
+          else
+            clobber=()
+          fi
+          # Each set of tags is published as a unit. Every destination's
+          # current digest is recorded first; if any copy in the set fails,
+          # the tags this step already moved are pointed back at those
+          # digests (or deleted if they did not exist), so an install that
+          # pulls the app and the sandbox under one tag never gets one new
+          # and one old.
+          publish_set() {
+            local -a prev=() written=() prevw=()
+            local pair src dst state i=0 j
+            for pair in "$@"; do
+              dst="${pair#* }"
+              state="$(tag_state "$dst")"
+              case "$state" in
+                present*) prev+=("${state#present }") ;;
+                absent)   prev+=("") ;;
+                *) echo "::error::could not read the current digest of ${dst} (${state#unknown }); nothing in this set was moved. Re-run once Docker Hub answers."; return 1 ;;
+              esac
+            done
+            for pair in "$@"; do
+              src="${pair% *}"; dst="${pair#* }"
+              if ! crane copy "${clobber[@]}" "$src" "$dst"; then
+                echo "::error::copy of ${dst} failed; putting back the ${#written[@]} tag(s) this step had already moved"
+                for j in "${!written[@]}"; do
+                  if [ -n "${prevw[$j]}" ]; then
+                    crane tag "${written[$j]%%:*}@${prevw[$j]}" "${written[$j]#*:}" || true
+                  else
+                    hub_delete_tag "${written[$j]%%:*}" "${written[$j]#*:}" || true
+                  fi
+                done
+                return 1
+              fi
+              written+=("$dst"); prevw+=("${prev[$i]}"); i=$((i + 1))
+              echo "published ${dst}"
+            done
+          }
+          publish_set \
+            "${IMAGE}:${CANDIDATE} ${IMAGE}:${VERSION}" \
+            "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:${VERSION}-slim" \
+            "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:${VERSION}" \
+            "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:${VERSION}-slim"
+          if [ "$prerelease" = "true" ]; then
+            echo "prerelease ${VERSION}: leaving :latest and :slim untouched"
+          elif [ "$PROMOTE" != "true" ]; then
+            echo "promote is off: leaving :latest and :slim untouched"
+          else
+            clobber=()
+            publish_set \
+              "${IMAGE}:${CANDIDATE} ${IMAGE}:latest" \
+              "${IMAGE}:${CANDIDATE}-slim ${IMAGE}:slim" \
+              "${SANDBOX_IMAGE}:${CANDIDATE} ${SANDBOX_IMAGE}:latest" \
+              "${SANDBOX_IMAGE}:${CANDIDATE}-slim ${SANDBOX_IMAGE}:slim"
+            echo "moved :latest and :slim to ${VERSION}"
+          fi
+
+      # Docker Hub deletes a manifest only by digest, so `crane delete` of a tag
+      # fails there and the candidate tags used to linger. Its own API removes
+      # a tag without touching the manifest the release tags share.
+      - name: Remove candidate tags
+        continue-on-error: true
+        env:
+          CANDIDATE: ${{ needs.resolve.outputs.candidate }}
+          HUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          HUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          jwt="$(curl -fsS -H 'Content-Type: application/json' \
+            -d "$(jq -cn --arg u "$HUB_USERNAME" --arg p "$HUB_TOKEN" '{username:$u,password:$p}')" \
+            https://hub.docker.com/v2/users/login | jq -r .token)"
+          for repo in "$IMAGE" "$SANDBOX_IMAGE"; do
+            for tag in "${CANDIDATE}" "${CANDIDATE}-slim"; do
+              code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+                -H "Authorization: JWT ${jwt}" \
+                "https://hub.docker.com/v2/repositories/${repo}/tags/${tag}/")"
+              echo "delete ${repo}:${tag} -> HTTP ${code}"
+            done
+          done

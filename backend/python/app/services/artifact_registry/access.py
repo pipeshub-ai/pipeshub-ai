@@ -21,7 +21,51 @@ from .models import Actor
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AccessPolicy", "AccessDeniedError", "ArtifactNotFoundError"]
+__all__ = [
+    "ARTIFACT_SHARE_GRANT",
+    "AccessPolicy",
+    "AccessDeniedError",
+    "ArtifactNotFoundError",
+    "is_direct_share",
+    "reader_edge",
+]
+
+# A user's READER edge on an artifact can come from a shared conversation, from
+# the owner sharing the artifact itself, or both, and there is only one edge per
+# (user, record). An untagged READER edge is a conversation grant alone. A direct
+# share sets `grantedVia` to this value, and `chatGranted` when a conversation
+# grant covers the same pair too, so taking either grant away keeps the other.
+ARTIFACT_SHARE_GRANT = "ARTIFACT_SHARE"
+
+
+def is_direct_share(edge: dict | None) -> bool:
+    return bool(edge) and edge.get("role") == "READER" and edge.get("grantedVia") == ARTIFACT_SHARE_GRANT
+
+
+def reader_edge(
+    user_key: str,
+    record_id: str,
+    *,
+    direct: bool,
+    chat: bool,
+    now: int,
+    created_at: int | None = None,
+) -> dict[str, Any]:
+    """The READER edge for whichever grants remain. Unset flags are written as
+    None, not left out: Arango merges an upserted edge's properties, so an omitted
+    flag would keep its old value."""
+    return {
+        "from_id": user_key,
+        "from_collection": CollectionNames.USERS.value,
+        "to_id": record_id,
+        "to_collection": CollectionNames.RECORDS.value,
+        "type": "USER",
+        "role": "READER",
+        "grantedVia": ARTIFACT_SHARE_GRANT if direct else None,
+        "chatGranted": True if direct and chat else None,
+        "createdAtTimestamp": created_at or now,
+        "updatedAtTimestamp": now,
+    }
 
 
 class AccessDeniedError(PermissionError):
@@ -60,21 +104,18 @@ class AccessPolicy:
 
     async def authorize_read(self, actor: Actor, artifact_id: str) -> dict:
         """Verify `actor` may read `artifact_id`'s base record. Returns the
-        base `records` document on success.
-
-        Owner (`role=OWNER` on a `USER -> RECORD` PERMISSION edge) is the
-        only role artifacts support today — there is no share/collaborator
-        flow yet, so read and write authorization are identical. Kept as
-        two methods (not one) so a future share model only needs to change
-        `authorize_read`'s edge-role check, not every call site."""
-        return await self._authorize(actor, artifact_id)
+        base `records` document on success. Any `USER -> RECORD` PERMISSION
+        edge suffices: OWNER for the creator, READER for users a conversation
+        was shared with."""
+        return await self._authorize(actor, artifact_id, require_owner=False)
 
     async def authorize_write(self, actor: Actor, artifact_id: str) -> dict:
-        """Verify `actor` may create a new version of `artifact_id`. See
-        `authorize_read`'s docstring for why this is currently identical."""
-        return await self._authorize(actor, artifact_id)
+        """Verify `actor` may create a new version of, or promote, `artifact_id`.
+        Requires an OWNER edge, so a READER from a shared conversation cannot
+        overwrite the owner's artifact through `update_artifact` and friends."""
+        return await self._authorize(actor, artifact_id, require_owner=True)
 
-    async def _authorize(self, actor: Actor, artifact_id: str) -> dict:
+    async def _authorize(self, actor: Actor, artifact_id: str, *, require_owner: bool) -> dict:
         record = await self._graph_provider.get_document(artifact_id, CollectionNames.RECORDS.value)
         if not record:
             raise ArtifactNotFoundError(f"Artifact not found: {artifact_id}")
@@ -96,6 +137,12 @@ class AccessPolicy:
                 actor.user_id, artifact_id,
             )
             raise AccessDeniedError(f"Not authorized for artifact: {artifact_id}")
+        if require_owner and edge.get("role") != "OWNER":
+            logger.warning(
+                "Write denied: user=%s holds role=%s (not OWNER) on artifact=%s",
+                actor.user_id, edge.get("role"), artifact_id,
+            )
+            raise AccessDeniedError(f"Not authorized to modify artifact: {artifact_id}")
         return record
 
     async def grant_owner_permission(self, actor: Actor, artifact_id: str, *, now: int) -> dict:

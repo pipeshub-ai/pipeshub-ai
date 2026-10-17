@@ -166,7 +166,12 @@ class TestStreamRecord:
             mock_create.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_create.assert_called_once()
-            mock_stream.assert_called_once_with("https://signed.url/file.docx")
+            mock_stream.assert_called_once_with(
+                "https://signed.url/file.docx",
+                record_id=record.id,
+                file_name=record.record_name,
+                connector=connector.display_name,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_file_record_no_signed_url(self):
@@ -272,8 +277,10 @@ class TestGetSignedUrl:
         connector._reinitialize_credential_if_needed = AsyncMock()
 
         record = _make_file_record(external_record_group_id=None)
-        result = await connector.get_signed_url(record)
-        assert result is None
+        # A local metadata gap, not a file deleted in SharePoint.
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_get_signed_url_raises_on_error(self):
@@ -283,8 +290,25 @@ class TestGetSignedUrl:
         connector.msgraph_client.get_signed_url = AsyncMock(side_effect=Exception("token expired"))
 
         record = _make_file_record()
-        with pytest.raises(Exception, match="token expired"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_get_signed_url_expired_token_is_not_reported_as_deleted(self):
+        connector = _make_connector()
+        connector._reinitialize_credential_if_needed = AsyncMock()
+        connector.msgraph_client = MagicMock()
+
+        class _ODataError(Exception):
+            response_status_code = 401
+
+        connector.msgraph_client.get_signed_url = AsyncMock(side_effect=_ODataError("401"))
+
+        record = _make_file_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -858,8 +882,33 @@ class TestHandleRecordUpdates:
             content_changed=False,
             permissions_changed=False,
         )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="rec-key-1")
+        )
         await connector._handle_record_updates(update)
-        connector.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="ext-1")
+        # Deleted by the record's key, not by the Graph item id.
+        connector.data_entities_processor.get_record_by_external_id.assert_awaited_once_with(
+            connector.connector_id, "ext-1"
+        )
+        connector.data_entities_processor.on_record_deleted.assert_called_once_with(record_id="rec-key-1")
+
+    @pytest.mark.asyncio
+    async def test_deleted_record_never_indexed(self):
+        connector = _make_connector()
+        from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
+        update = RecordUpdate(
+            record=None,
+            external_record_id="ext-unknown",
+            is_new=False,
+            is_updated=False,
+            is_deleted=True,
+            metadata_changed=False,
+            content_changed=False,
+            permissions_changed=False,
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        await connector._handle_record_updates(update)
+        connector.data_entities_processor.on_record_deleted.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_metadata_changed(self):
@@ -2163,8 +2212,8 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        # An anonymous link names no grantee, so it yields no permission.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link(self):
@@ -2239,7 +2288,9 @@ class TestConvertToPermissions:
 
         with patch("app.connectors.sources.microsoft.sharepoint_online.connector.map_msgraph_role_to_permission_type", return_value=PermissionType.READ):
             result = await connector._convert_to_permissions([perm_bad, perm_good])
-        assert len(result) == 1
+        # The bad permission must not abort the batch. Neither input yields a
+        # permission: one raises, and an anonymous link names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_empty_permissions(self):

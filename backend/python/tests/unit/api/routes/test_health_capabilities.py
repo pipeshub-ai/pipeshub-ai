@@ -10,13 +10,14 @@ that a failed image probe means what the message says it means.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from fastapi.responses import JSONResponse
 
@@ -141,6 +142,75 @@ class TestToolCallingProbe:
             resp = await perform_llm_health_check(_llm_config(isMultimodal=False), MagicMock())
 
         assert '"tool_calling":true' in resp.body.decode().replace(" ", "")
+
+
+_AZURE_TOOLS_REFUSAL = (
+    "Function tools with reasoning_effort are not supported for this model in "
+    "/v1/chat/completions. To use function tools, use /v1/responses or set "
+    "reasoning_effort to 'none'."
+)
+
+
+class _ApiShapeModel:
+    """An OpenAI-family model that refuses tools on Chat Completions the way
+    Azure does for gpt-6 models, and accepts them on the Responses API unless
+    `refuse_responses` is set."""
+
+    def __init__(self, use_responses_api=None, reasoning=None, reasoning_effort=None,
+                 refuse_responses: bool = False) -> None:
+        self.use_responses_api = use_responses_api
+        self.reasoning = reasoning
+        self.reasoning_effort = reasoning_effort
+        self.refuse_responses = refuse_responses
+        self.copies: list[_ApiShapeModel] = []
+
+    def bind_tools(self, tools: list) -> _ApiShapeModel:
+        return self
+
+    async def ainvoke(self, messages: list, config: object = None) -> str:
+        if not self.use_responses_api or self.refuse_responses:
+            raise _error(_AZURE_TOOLS_REFUSAL, 400)
+        return "ok"
+
+    def model_copy(self, update: dict) -> _ApiShapeModel:
+        copy = _ApiShapeModel(
+            use_responses_api=update.get("use_responses_api", self.use_responses_api),
+            reasoning=update.get("reasoning", self.reasoning),
+            reasoning_effort=update.get("reasoning_effort", self.reasoning_effort),
+            refuse_responses=self.refuse_responses,
+        )
+        self.copies.append(copy)
+        return copy
+
+
+class TestToolCallingProbeTriesResponsesApi:
+    """Azure refuses tools for gpt-6 models on Chat Completions, even with no
+    reasoning setting, and accepts them on the Responses API. The agent loop
+    switches on that refusal, so the setup check must not report "cannot be
+    used for agents" for a model the agent loop can use."""
+
+    async def test_refused_on_chat_completions_accepted_on_responses(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel()
+
+        assert await _check_tool_calling(model, MagicMock()) is True
+        assert len(model.copies) == 1
+        assert model.copies[0].use_responses_api is True
+        assert model.copies[0].reasoning is None
+
+    async def test_refused_on_both_is_reported(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+
+    async def test_a_model_already_on_responses_is_not_retried(self) -> None:
+        from app.api.routes.health import _check_tool_calling
+        model = _ApiShapeModel(use_responses_api=True, reasoning={"effort": "high"},
+                               refuse_responses=True)
+
+        assert await _check_tool_calling(model, MagicMock()) is False
+        assert model.copies == []
 
 
 class TestVisionVerdict:
@@ -296,6 +366,80 @@ class TestImageEmbeddingProbe:
         assert resp.status_code == 400
         assert "512" in resp.body.decode()
 
+    async def test_a_provider_that_cannot_be_set_up_is_not_called_incapable(
+        self, mock_request,
+    ) -> None:
+        """A missing or refused endpoint is a settings problem; the uncheck
+        hint would have the admin switch off a capability over it."""
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.side_effect = ValueError("base_url (endpoint) is required sk-secret")
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config("openAICompatible", isMultimodal=True), MagicMock(),
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == (
+            "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+            "and API key in Workspace → AI Models, then try again."
+        )
+        assert "hint" not in body["details"]
+        assert "sk-secret" not in resp.body.decode()
+
+    async def test_a_model_that_refuses_images_gets_fixed_text(self, mock_request) -> None:
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(
+            side_effect=ValueError("image input is not supported by deployment sk-secret"),
+        )
+
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.return_value = provider
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config(isMultimodal=True), MagicMock(),
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == "Model cannot embed images."
+        assert body["details"]["hint"].startswith("Uncheck Multimodal")
+        assert "sk-secret" not in resp.body.decode()
+
+    async def test_an_empty_image_embedding_keeps_the_provider_error_in_the_log(
+        self, mock_request,
+    ) -> None:
+        """Several providers put `str(e)` in the result's error field."""
+        provider = MagicMock()
+        provider.supports_multimodal.return_value = True
+        provider.embed_images = AsyncMock(return_value=[MagicMock(
+            embedding=None, error="401 Unauthorized: invalid api key sk-secret",
+        )])
+        logger = MagicMock()
+
+        with self._patch_text_embedding(), \
+             patch(FACTORY) as factory:
+            factory.create.return_value = provider
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(
+                mock_request, _embedding_config(isMultimodal=True), logger,
+            )
+
+        body = json.loads(resp.body)
+        assert resp.status_code == 400
+        assert body["message"] == (
+            "The model returned no embedding for a test image, so images wouldn't be "
+            "indexed. Check its API key and endpoint and that it accepts images, then try again."
+        )
+        # The error is a key/endpoint failure; unchecking Multimodal would not fix it.
+        assert "hint" not in body["details"]
+        assert "sk-secret" not in resp.body.decode()
+        logged = " ".join(str(arg) for c in logger.warning.call_args_list for arg in c.args)
+        assert "sk-secret" in logged
+
     async def test_a_text_only_model_is_not_probed_for_images(self, mock_request) -> None:
         with self._patch_text_embedding(), \
              patch(FACTORY) as factory:
@@ -342,6 +486,40 @@ class TestEmbeddingDimensionChecks:
         assert resp.status_code == 400
         assert "asked for 256" in body
 
+
+
+class TestCollectionGuardFollowsTheActiveModel:
+    """The guard rebuilds an empty store at the checked model's size, so it may
+    run only for the model that embeds once saved. Adding a model that is not
+    the default used to rebuild the store at a size the default never writes."""
+
+    async def _check(self, mock_request, config: dict) -> tuple[JSONResponse, AsyncMock]:
+        with patch(f"{MODULE}.get_embedding_model", return_value=MagicMock()), \
+             patch(f"{MODULE}._embed_with_timeout", new_callable=AsyncMock,
+                   return_value=[[0.1] * 384]), \
+             patch(f"{MODULE}._check_collection_compatibility",
+                   new_callable=AsyncMock, return_value=None) as guard:
+            from app.api.routes.health import perform_embedding_health_check
+            resp = await perform_embedding_health_check(mock_request, config, MagicMock())
+        return resp, guard
+
+    async def test_a_model_that_will_not_embed_leaves_the_store_alone(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=False))
+
+        assert resp.status_code == 200
+        guard.assert_not_awaited()
+
+    async def test_the_model_that_will_embed_is_checked_against_the_store(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config(becomesActive=True))
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
+
+    async def test_a_caller_that_does_not_say_is_still_checked(self, mock_request) -> None:
+        resp, guard = await self._check(mock_request, _embedding_config())
+
+        assert resp.status_code == 200
+        guard.assert_awaited_once()
 
 class TestConfigurationWarnings:
     """A setting that is wrong but no longer fatal still has to be reported —
@@ -462,6 +640,32 @@ class TestContextLength:
         assert (await _run_llm_check(_llm_config(contextLength=value))).status_code == 200
 
 
+class TestDefaultReasoningEffort:
+    """A model-level default the factory would refuse is caught at save time,
+    with a message the admin can act on, rather than as a provider failure."""
+
+    async def test_an_unknown_default_is_rejected_with_the_choices(self) -> None:
+        config = _llm_config(isReasoning=True)
+        config["configuration"]["defaultReasoningEffort"] = "extreme"
+
+        with patch(f"{MODULE}._check_one_llm", new=AsyncMock()) as probe:
+            response = await _run_llm_check(config)
+
+        assert response.status_code == 400
+        assert _body(response)["message"] == (
+            "This model's default reasoning effort is 'extreme', which isn't a valid "
+            "choice. Set it to low, medium, high or max, or remove it to use the "
+            "platform default."
+        )
+        probe.assert_not_awaited()
+
+    async def test_a_valid_default_passes(self) -> None:
+        config = _llm_config(isReasoning=True)
+        config["configuration"]["defaultReasoningEffort"] = "low"
+
+        assert (await _run_llm_check(config)).status_code == 200
+
+
 class TestStreamingProbe:
     """Every answer reaches the user through `astream`. A model that only
     supports a blocking call still works, but the whole reply lands at once
@@ -496,3 +700,84 @@ class TestStreamingProbe:
         body = _body(await _run_llm_check(_llm_config(), model=model))
 
         assert body["capabilities"]["streaming"] is True
+
+
+@pytest.mark.asyncio
+async def test_follow_up_probes_run_together_after_the_text_probe() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    started: set[str] = set()
+    all_started = asyncio.Event()
+
+    def probe(name: str, result: object) -> Callable[..., Awaitable[object]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            started.add(name)
+            if len(started) == 3:
+                all_started.set()
+            # Run one at a time and this never returns.
+            await asyncio.wait_for(all_started.wait(), timeout=2)
+            return result
+
+        return run
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=probe("vision", None)),
+        patch(f"{MODULE}._check_tool_calling", new=probe("tools", True)),
+        patch(f"{MODULE}._check_streaming", new=probe("streaming", False)),
+    ):
+        result = await _check_one_llm(
+            {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+            "m",
+            MagicMock(),
+        )
+
+    assert result == {
+        "model": "m",
+        "sample": "ok",
+        "tool_calling": True,
+        "streaming": False,
+    }
+
+
+@pytest.mark.asyncio
+async def test_a_raising_probe_cancels_the_others_and_keeps_its_exception() -> None:
+    from app.api.routes.health import _check_one_llm
+
+    cancelled: list[str] = []
+
+    def slow(name: str) -> Callable[..., Awaitable[None]]:
+        async def run(*_args: object, **_kwargs: object) -> object:
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                cancelled.append(name)
+                raise
+
+        return run
+
+    async def vision_fails(*_args: object, **_kwargs: object) -> None:
+        await asyncio.sleep(0)
+        raise asyncio.TimeoutError
+
+    with (
+        patch(f"{MODULE}.get_generator_model", return_value=MagicMock()),
+        patch(f"{MODULE}._invoke_with_timeout", new=AsyncMock(return_value="ok")),
+        patch(f"{MODULE}._response_text", return_value="ok"),
+        patch(f"{MODULE}._probe_vision", new=vision_fails),
+        patch(f"{MODULE}._check_tool_calling", new=slow("tools")),
+        patch(f"{MODULE}._check_streaming", new=slow("streaming")),
+    ):
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(
+                _check_one_llm(
+                    {"provider": "openAI", "isMultimodal": True, "configuration": {}},
+                    "m",
+                    MagicMock(),
+                ),
+                timeout=5,
+            )
+
+    assert sorted(cancelled) == ["streaming", "tools"]

@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 import base64
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -23,13 +23,21 @@ from app.utils.chat_helpers import (
     create_record_instance_from_dict,
     enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
-    extract_start_end_text,
     generate_text_fragment_url,
     get_message_content,
     get_flattened_results,
     is_base64_image,
     record_to_message_content,
 )
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+def _all_live(record_ids: list[str], org_id: str, visibility: object = None) -> list[dict]:
+    """``get_records_by_record_ids`` when every related table is live."""
+    return [{"_key": rid, "orgId": org_id} for rid in record_ids]
 
 
 def _run(coro):
@@ -195,9 +203,17 @@ class TestRecursiveBlockHelpers:
 
 
 class TestEnrichFkChildrenDeep:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> Iterator[None]:
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_fetches_related_blob_and_appends_table_ddl(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_child", "childTable": "child_t"}]
         )
@@ -276,6 +292,7 @@ class TestEnrichFkChildrenDeep:
     @pytest.mark.asyncio
     async def test_child_and_parent_fetch_exceptions_are_handled(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             side_effect=RuntimeError("child boom")
         )
@@ -423,24 +440,19 @@ class TestRecordToMessageMultimodalAndFk:
 
 
 # ---------------------------------------------------------------------------
-# extract_start_end_text / generate_text_fragment_url
+# generate_text_fragment_url
 # ---------------------------------------------------------------------------
 
 
-class TestExtractStartEndAndFragmentUrl:
-    def test_end_text_fallback_when_no_second_match_but_long_first(self):
-        # One long alphabetic run; FRAGMENT_WORD_COUNT is 4 — forces elif branch on end_text
-        s = "one two three four five six seven eight"
-        start, end = extract_start_end_text(s)
-        assert start
-        assert end  # last four words subset
+class TestFragmentUrlFallback:
+    def test_generation_failure_falls_back_to_base_url(self, monkeypatch):
+        from app.utils.text_fragments import TextFragmentGenerator
 
-    def test_generate_fragment_url_exception_falls_back(self, monkeypatch):
-        def boom(_snippet):
+        def boom(self, snippet, source_format=None):
             raise RuntimeError("fail")
 
-        monkeypatch.setattr("app.utils.chat_helpers.extract_start_end_text", boom)
-        url = generate_text_fragment_url("https://ex.com/page", "one two three four")
+        monkeypatch.setattr(TextFragmentGenerator, "build_directive", boom)
+        url = generate_text_fragment_url("https://ex.com/page", "unique fallback snippet words")
         assert url == "https://ex.com/page"
 
 
@@ -515,7 +527,6 @@ async def test_get_flattened_results_prefetch_recon_resolves_block_id():
         "org-1",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=False,
         graph_provider=None,
     )
@@ -603,7 +614,6 @@ async def test_get_flattened_results_image_from_retrieval_service():
         "org",
         is_multimodal_llm=False,
         virtual_record_id_to_result={},
-        from_tool=False,
         from_retrieval_service=True,
     )
     imgs = [x for x in out if x.get("block_type") == BlockType.IMAGE.value]
@@ -642,13 +652,6 @@ class TestBuildGroupBlocksSkipsImages:
         assert isinstance(out, list)
 
 
-class TestExtractStartEndEmptyEndText:
-    def test_two_word_fragment_yields_blank_end_segment(self):
-        start, end = extract_start_end_text("Alpha Beta")
-        assert start == "Alpha Beta"
-        assert end == ""
-
-
 class TestBuildFkInfoOnlyChild:
     def test_child_relation_without_parents(self):
         s = build_fk_info(
@@ -669,9 +672,17 @@ class TestBuildFkInfoOnlyChild:
 
 
 class TestEnrichFkChildrenEdgeBranches:
+    @pytest.fixture(autouse=True)
+    def _access_unfiltered(self) -> Iterator[None]:
+        """These cover blob and DDL handling; the access filter has its own tests,
+        so every asked table is admitted."""
+        with patch("app.utils.chat_helpers.accessible_node_ids", AsyncMock(side_effect=lambda _provider, ids, *_args, **_kwargs: set(ids))):
+            yield
+
     @pytest.mark.asyncio
     async def test_related_vrid_skipped_when_already_flattened(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_known"}],
         )
@@ -704,6 +715,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_related_blob_missing_sets_none_placeholder(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_x"}],
         )
@@ -736,6 +748,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_graph_metadata_merge_failure_is_soft(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_y"}],
         )
@@ -774,6 +787,7 @@ class TestEnrichFkChildrenEdgeBranches:
     @pytest.mark.asyncio
     async def test_blob_fetch_exception_sets_none_placeholder(self):
         graph = MagicMock()
+        graph.get_records_by_record_ids = AsyncMock(side_effect=_all_live)
         graph.get_child_record_ids_by_relation_type = AsyncMock(
             return_value=[{"record_id": "rec_z"}],
         )

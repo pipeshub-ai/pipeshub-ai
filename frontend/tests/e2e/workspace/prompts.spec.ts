@@ -12,11 +12,7 @@ test.describe('Workspace Prompts', () => {
   });
 
   test('displays editable prompt textarea', async ({ page }) => {
-    const textarea = page.locator('textarea');
-    if (await textarea.first().isVisible()) {
-      const value = await textarea.first().inputValue();
-      expect(value.length).toBeGreaterThanOrEqual(0);
-    }
+    await expect(page.locator('textarea').first()).toBeEditable({ timeout: 5_000 });
   });
 
   test('displays Agent mode section', async ({ page }) => {
@@ -31,24 +27,34 @@ test.describe('Workspace Prompts', () => {
   });
 
   test('can edit prompt and save', async ({ page }) => {
-    const textarea = page.locator('textarea');
-    if ((await textarea.count()) === 0) return;
+    const textarea = page.getByTestId('prompt-section-agent').locator('textarea');
+    await expect(textarea, 'the agent prompt box should be shown').toBeVisible({ timeout: 5_000 });
+    const original = await textarea.inputValue();
+    const probe = `E2E test system prompt ${Date.now()}`;
 
-    const original = await textarea.first().inputValue();
-    await textarea.first().clear();
-    await textarea.first().fill('E2E test system prompt');
+    // The save bar only appears once there are unsaved edits.
+    const save = page.getByRole('button', { name: 'Save', exact: true });
 
-    const saveButton = page.locator('button').filter({ hasText: /Save|Update/i });
-    if (await saveButton.first().isVisible()) {
-      await saveButton.first().click();
-      await page.waitForTimeout(2_000);
-    }
+    try {
+      await textarea.fill(probe);
+      await expect(save).toBeVisible({ timeout: 5_000 });
+      await save.click();
+      await expect(page.getByText('Prompt saved').first()).toBeVisible({ timeout: 10_000 });
 
-    // Restore
-    await textarea.first().clear();
-    await textarea.first().fill(original);
-    if (await saveButton.first().isVisible()) {
-      await saveButton.first().click();
+      await page.reload();
+      await expect(textarea, 'the saved prompt should persist after a reload').toHaveValue(probe, {
+        timeout: 10_000,
+      });
+    } finally {
+      // Put the original prompt back, and check that saved too.
+      await textarea.fill(original);
+      // The bar shows only if this differs from what is saved (it won't if saving the probe failed).
+      if (await save.isVisible()) {
+        await save.click();
+        await expect(page.getByText('Prompt saved').first()).toBeVisible({ timeout: 10_000 });
+      }
+      await page.reload();
+      await expect(textarea).toHaveValue(original, { timeout: 10_000 });
     }
   });
 

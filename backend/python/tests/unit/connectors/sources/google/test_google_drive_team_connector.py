@@ -83,7 +83,10 @@ from app.connectors.sources.google.common.impersonation import (
     get_impersonation_candidates,
     resolve_explicit_user,
 )
-from app.connectors.sources.google.drive.utils.folder_filter_utils import pass_folder_filter
+from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    is_directory_refusal_403,
+    pass_folder_filter,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -157,6 +160,7 @@ def _make_connector(existing_record=None, user_with_permission=None, user_by_id=
         dep.org_id = "org-123"
         dep.on_new_records = AsyncMock()
         dep.on_new_app_users = AsyncMock()
+        dep.on_external_app_users = AsyncMock()
         dep.on_new_record_groups = AsyncMock()
         dep.on_new_user_groups = AsyncMock()
         dep.on_record_deleted = AsyncMock()
@@ -723,8 +727,10 @@ class TestProcessGroup:
             "members": [{"type": "USER", "id": "u1", "email": ""}],
         })
         await conn._process_group(group)
-        # No user members with email -> on_new_user_groups not called
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_found_in_synced_users(self):
@@ -791,7 +797,10 @@ class TestProcessGroup:
             ],
         })
         await conn._process_group(group)
-        conn.data_entities_processor.on_new_user_groups.assert_not_called()
+        # Stored all the same, with no direct user members.
+        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = conn.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_error_propagates(self):
@@ -868,7 +877,7 @@ class TestPermissionMapping:
 
     def test_commenter_role(self):
         conn = _make_connector()
-        assert conn._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert conn._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader_role(self):
         conn = _make_connector()
@@ -891,19 +900,16 @@ class TestEntityTypeMapping:
 
     def test_domain(self):
         conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
+        assert conn._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_anyone(self):
-        conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
+        _make_connector()
 
     def test_anyone_with_link(self):
-        conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
+        _make_connector()
 
     def test_anyone_with_link_underscore(self):
-        conn = _make_connector()
-        assert conn._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        _make_connector()
 
     def test_unknown_defaults_to_user(self):
         conn = _make_connector()
@@ -1067,7 +1073,14 @@ class TestFetchPermissions:
         assert perms[0].email == "u@x.com"
 
     @pytest.mark.asyncio
-    async def test_anyone_permission_user_already_has_permission(self):
+    async def test_anyone_permission_alongside_a_real_grant_is_not_stored(self):
+        """Decision 59: link sharing names no grantee, so it is not a grant.
+
+        The `anyone` entry only decides whether the syncing user needs a
+        fallback grant; storing it would hand everyone the permission it
+        describes. Here the user already has a real grant, so there is no
+        fallback and that grant is the only permission the file carries.
+        """
         conn = _make_connector()
         conn.drive_data_source.permissions_list = AsyncMock(return_value={
             "permissions": [
@@ -1076,9 +1089,8 @@ class TestFetchPermissions:
             ],
         })
         perms, is_fallback, _ = await conn._fetch_permissions("file-1", is_drive=False, user_email="u@x.com")
-        # User already has permission, so no fallback
         assert is_fallback is False
-        assert len(perms) == 2
+        assert [p.email for p in perms] == ["u@x.com"]
 
     @pytest.mark.asyncio
     async def test_uses_custom_drive_data_source(self):
@@ -1983,7 +1995,7 @@ class TestProcessDriveItem:
                 {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
                 {
                     "id": "p2", "role": "reader", "type": "user", "emailAddress": "member@x.com",
-                    "permissionDetails": [{"permissionType": "file"}],
+                    "permissionDetails": [{"permissionType": "file", "inherited": False}],
                 },
             ],
         })
@@ -2003,7 +2015,7 @@ class TestProcessDriveItem:
                 {"id": "p1", "role": "writer", "type": "user", "emailAddress": "u@x.com"},
                 {
                     "id": "p2", "role": "reader", "type": "user", "emailAddress": "external@x.com",
-                    "permissionDetails": [{"permissionType": "file"}],
+                    "permissionDetails": [{"permissionType": "file", "inherited": False}],
                 },
             ],
         })
@@ -2530,6 +2542,7 @@ class TestSyncPersonalDrive:
         mock_ds.files_list = AsyncMock(side_effect=[
             {"files": [_make_file_metadata()], "nextPageToken": "next"},
             {"files": []},
+            {"files": []},  # the full sync's trash sweep
         ])
 
         with patch.object(conn, "_process_drive_files_batch", new_callable=AsyncMock,
@@ -2538,6 +2551,7 @@ class TestSyncPersonalDrive:
                               return_value=([], 0)):
                 with patch.object(conn, "sync_shared_with_me", new_callable=AsyncMock):
                     await conn.sync_personal_drive(user, mock_ds, "perm-id", "drive-id")
+        assert mock_ds.files_list.await_args_list[-1].kwargs["q"] == "trashed = true"
 
     @pytest.mark.asyncio
     async def test_full_sync_no_start_token(self):
@@ -3289,8 +3303,38 @@ class TestGetFileMetadataFromDrive:
         mock_files.get = MagicMock(return_value=mock_get)
         mock_service.files = MagicMock(return_value=mock_files)
 
-        with pytest.raises(HTTPException):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_file_metadata_from_drive("f1", mock_service)
+        assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "drive_status,expected",
+        [
+            (HttpStatusCode.UNAUTHORIZED.value, HttpStatusCode.CONFLICT.value),
+            (HttpStatusCode.FORBIDDEN.value, HttpStatusCode.FORBIDDEN.value),
+            (HttpStatusCode.TOO_MANY_REQUESTS.value, HttpStatusCode.TOO_MANY_REQUESTS.value),
+        ],
+    )
+    async def test_drive_status_is_mapped_not_collapsed_to_500(self, drive_status, expected):
+        from fastapi import HTTPException
+        from googleapiclient.errors import HttpError
+
+        conn = _make_connector()
+        mock_resp = MagicMock()
+        mock_resp.status = drive_status
+
+        mock_service = MagicMock()
+        mock_files = MagicMock()
+        mock_get = MagicMock()
+        mock_get.execute = MagicMock(side_effect=HttpError(mock_resp, b"denied"))
+        mock_files.get = MagicMock(return_value=mock_get)
+        mock_service.files = MagicMock(return_value=mock_files)
+
+        with pytest.raises(HTTPException) as exc_info:
+            await conn._get_file_metadata_from_drive("f1", mock_service)
+        assert exc_info.value.status_code == expected
+        assert "http" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_generic_error(self):
@@ -3667,7 +3711,7 @@ class TestStreamRecord:
                               return_value={"mimeType": "text/plain"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()) as mock_stream:
-                    result = await conn.stream_record(record, user_id=None)
+                    await conn.stream_record(record, user_id=None)
                     mock_stream.assert_called_once()
 
     @pytest.mark.asyncio
@@ -3695,7 +3739,7 @@ class TestStreamRecord:
                               return_value={"mimeType": "application/vnd.google-apps.document"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()):
-                    result = await conn.stream_record(record, user_id="uid-1", convertTo=MimeTypes.PDF.value)
+                    await conn.stream_record(record, user_id="uid-1", convertTo=MimeTypes.PDF.value)
 
     @pytest.mark.asyncio
     async def test_google_workspace_regular_export(self):
@@ -3722,7 +3766,7 @@ class TestStreamRecord:
                               return_value={"mimeType": "application/vnd.google-apps.spreadsheet"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()):
-                    result = await conn.stream_record(record, user_id=None)
+                    await conn.stream_record(record, user_id=None)
 
     @pytest.mark.asyncio
     async def test_user_id_none_string(self):
@@ -3749,7 +3793,7 @@ class TestStreamRecord:
                               return_value={"mimeType": "text/plain"}):
                 with patch("app.connectors.sources.google.drive.team.connector.create_stream_record_response",
                            return_value=MagicMock()):
-                    result = await conn.stream_record(record, user_id="None")
+                    await conn.stream_record(record, user_id="None")
 
     @pytest.mark.asyncio
     async def test_no_user_found_for_user_id_raises(self):
@@ -4196,7 +4240,7 @@ class TestCheckAndFetchUpdatedRecord:
             with patch("app.connectors.sources.google.drive.team.connector.GoogleDriveDataSource",
                        return_value=mock_ds):
                 with patch.object(conn, "_process_drive_item", new_callable=AsyncMock, return_value=mock_update) as mock_process:
-                    result = await conn._check_and_fetch_updated_record("org-1", record)
+                    await conn._check_and_fetch_updated_record("org-1", record)
                     # Verify is_shared_drive was True
                     call_kwargs = mock_process.call_args
                     assert call_kwargs[1].get("is_shared_drive") is True or call_kwargs[0][4] is True
@@ -4233,7 +4277,6 @@ class TestCleanup:
     async def test_cleanup_with_error(self):
         conn = _make_connector()
         # Simulate error by making hasattr fail - use a property that raises
-        original_drive_data_source = conn.drive_data_source
 
         class ErrorProp:
             @property
@@ -4614,7 +4657,7 @@ class TestFolderScopeReconciliation:
 
         assert items == []
         conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
-            ["rec-folder"], conn.connector_id
+            ["rec-folder"], conn.connector_id, include_trashed_roots=True
         )
         conn.data_entities_processor.on_record_deleted.assert_not_called()
 
@@ -4631,6 +4674,38 @@ class TestFolderScopeReconciliation:
 
         assert items == []
         conn.data_entities_processor.on_record_deleted.assert_awaited_once_with(record_id="rec-1")
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.parametrize("parents", [None, []], ids=["no-parents-field", "empty-parents"])
+    @pytest.mark.asyncio
+    async def test_file_shared_with_a_user_who_cannot_see_its_folder_is_kept(self, parents) -> None:
+        """The sharee's changes feed reports a shared file without the parent they cannot
+        see; that is not a move out of scope, and the owner's copy must survive it."""
+        existing = _make_existing_record(
+            record_id="rec-1", external_record_id="f1", parent_external_record_id="folder-a"
+        )
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="f1", parents=parents)
+        items = await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
+        assert items == []
+        conn.data_entities_processor.on_record_deleted.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_folder_shared_with_a_user_who_cannot_see_its_parent_keeps_its_subtree(self) -> None:
+        existing = _make_existing_record(
+            record_id="rec-folder", external_record_id="folder-b", parent_external_record_id="folder-a"
+        )
+        existing.mime_type = MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        conn = _make_connector(existing_record=existing)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
+
+        meta = _make_file_metadata(file_id="folder-b", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value)
+        await conn._apply_folder_scope_to_change(meta, {"folder-a"}, set(), AsyncMock())
+
         conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
     @pytest.mark.asyncio
@@ -4857,3 +4932,129 @@ class TestSweepPlaceholderRecords:
         submitted = conn.data_entities_processor.on_new_records.await_args.args[0]
         assert submitted == [(stub, [])]
         assert stub.is_placeholder is True
+
+
+class TestExternalCollaborators:
+    """Phase 3 -- identifying collaborators outside the Workspace domain and giving them
+    flagged app membership so their shared records surface in browse."""
+
+    def test_members_excluded_outsiders_normalised_and_deduped(self):
+        from app.models.permission import EntityType
+
+        conn = _make_connector()
+        conn.synced_user_emails = {"a@corp.com", "b@corp.com"}
+        conn._external_emails = set()
+
+        for email in ["a@corp.com", "A@Corp.com", "out@gmail.com", "Out@Gmail.com", "two@x.io"]:
+            conn._track_external_collaborator(EntityType.USER, email)
+
+        assert conn._external_emails == {"out@gmail.com", "two@x.io"}
+
+    def test_non_user_grants_and_missing_emails_are_ignored(self):
+        """Group grants resolve through the group node, and a permission with no email
+        cannot be resolved to anyone."""
+        from app.models.permission import EntityType
+
+        conn = _make_connector()
+        conn.synced_user_emails = {"a@corp.com"}
+        conn._external_emails = set()
+
+        conn._track_external_collaborator(EntityType.GROUP, "grp@external.com")
+        conn._track_external_collaborator(EntityType.USER, None)
+        conn._track_external_collaborator(EntityType.USER, "")
+
+        assert conn._external_emails == set()
+
+    def test_empty_membership_set_flags_nobody(self):
+        """An empty set means user sync produced nothing. Treating that as "everyone is
+        external" would flag the entire domain and hoist every record to app level."""
+        from app.models.permission import EntityType
+
+        conn = _make_connector()
+        conn.synced_user_emails = set()
+        conn._external_emails = set()
+
+        conn._track_external_collaborator(EntityType.USER, "anyone@corp.com")
+
+        assert conn._external_emails == set()
+
+    @pytest.mark.asyncio
+    async def test_flush_hands_the_deduped_set_to_the_processor_once(self):
+        """One membership write per collaborator per run, however many files carried the
+        grant."""
+        conn = _make_connector()
+        conn._external_emails = {"out@gmail.com", "two@x.io"}
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_awaited_once()
+        emails, connector_id = (
+            conn.data_entities_processor.on_external_app_users.await_args.args
+        )
+        assert sorted(emails) == ["out@gmail.com", "two@x.io"]
+        assert connector_id == conn.connector_id
+
+    @pytest.mark.asyncio
+    async def test_flush_is_a_no_op_when_nothing_was_collected(self):
+        conn = _make_connector()
+        conn._external_emails = set()
+
+        await conn._flush_external_app_users()
+
+        conn.data_entities_processor.on_external_app_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_flush_failure_does_not_fail_the_sync(self):
+        """A run that indexed every record must not be reported as failed because a
+        visibility edge could not be written; the next run re-derives the set."""
+        conn = _make_connector()
+        conn._external_emails = {"out@gmail.com"}
+        conn.data_entities_processor.on_external_app_users = AsyncMock(
+            side_effect=RuntimeError("db down")
+        )
+
+        await conn._flush_external_app_users()  # must not raise
+
+    def test_fetch_permissions_collects_outsiders(self):
+        """The single choke point where every Permission for this connector is built, so
+        both the full-sync and changes paths are covered by one hook."""
+        import inspect
+
+        src = inspect.getsource(_make_connector().__class__._fetch_permissions)
+        assert "self._track_external_collaborator(entity_type, email)" in src
+
+    def test_run_sync_resets_and_flushes(self):
+        """The set is per run, and the flush has to come after every permission edge is
+        committed -- it resolves principals rather than creating them."""
+        import inspect
+
+        src = inspect.getsource(_make_connector().__class__.run_sync)
+        assert "self._external_emails = set()" in src
+        assert "await self._flush_external_app_users()" in src
+        assert src.index("self._external_emails = set()") < src.index(
+            "await self._flush_external_app_users()"
+        )
+        assert src.index("_process_users_in_batches") < src.index(
+            "await self._flush_external_app_users()"
+        )
+
+
+@pytest.mark.parametrize(
+    ("status", "details", "refused"),
+    [
+        (403, [{"reason": "forbidden"}], True),
+        (403, [{"reason": "forbidden"}, {"reason": "rateLimitExceeded"}], False),
+        (403, [{"reason": "aReasonGoogleAddsLater"}], False),
+        (403, [], False),
+        (403, "Forbidden", False),
+        (404, [{"reason": "forbidden"}], False),
+    ],
+)
+def test_only_an_explicit_directory_forbidden_is_a_refusal(status: int, details: object, refused: bool) -> None:
+    from googleapiclient.errors import HttpError
+
+    resp = MagicMock()
+    resp.status = status
+    error = HttpError(resp, b"{}")
+    error.error_details = details
+    assert is_directory_refusal_403(error) is refused

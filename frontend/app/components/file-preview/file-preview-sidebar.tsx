@@ -38,6 +38,10 @@ export function FilePreviewSidebar({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
 }: FilePreviewProps) {
   const isMobile = useIsMobile();
   const hasCitations = citations && citations.length > 0;
@@ -103,6 +107,10 @@ export function FilePreviewSidebar({
         initialCitationId={initialCitationId}
         hideFileDetails={hideFileDetails}
         showDownload={showDownload}
+        onDownload={onDownload}
+        latestVersion={latestVersion}
+        onVersionChange={onVersionChange}
+        isSwitchingVersion={isSwitchingVersion}
       />
     );
   }
@@ -155,6 +163,10 @@ export function FilePreviewSidebar({
           initialCitationId={initialCitationId}
           hideFileDetails={hideFileDetails}
           showDownload={showDownload}
+          onDownload={onDownload}
+          latestVersion={latestVersion}
+          onVersionChange={onVersionChange}
+          isSwitchingVersion={isSwitchingVersion}
           showLeftEdgeResizeHandle
           onPointerDownLeftEdgeResize={beginPanelEdgeResize}
           style={{

@@ -1,67 +1,57 @@
 import asyncio
 import json
 import logging
-import os
 import random
 import re
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Callable, Mapping
 from typing import (
     Any,
     TypeVar,
 )
 
 import aiohttp
-from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 from langchain_anthropic import ChatAnthropic
 from langchain_aws import ChatBedrock, ChatBedrockConverse
 from langchain_core.language_models.chat_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_mistralai import ChatMistralAI
 from langchain_openai import AzureChatOpenAI, ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
-from app.config.constants.http_status_code import HttpStatusCode
-from app.modules.agents.qna.reference_data import normalize_reference_data_items
-from app.modules.parsers.excel.prompt_template import RowDescriptions
-from app.modules.retrieval.retrieval_service import RetrievalService
-from app.modules.transformers.blob_storage import BlobStorage
-from app.utils.aimodels import coerce_message_content_to_text
-from app.utils.chat_helpers import (
-    CitationRefMapper,
-    build_message_content_array,
-    count_tokens,
-    flattened_result_sort_key,
-    get_flattened_results,
-    record_to_message_content,
+from app.agent_loop_lib.transport.provider_conflicts import (
+    is_prompt_cache_param_conflict,
 )
+from app.agents.agent_loop.prompt_cache import (
+    CacheStrategy,
+    forget_cache_params,
+    without_cache_markers,
+)
+from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import map_source_status
+from app.exceptions.non_retryable import NonRetryableError
+from app.modules.parsers.excel.prompt_template import RowDescriptions
+from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.citations import (
     detect_hallucinated_citation_urls,
     normalize_citations_and_chunks,
-    normalize_citations_and_chunks_for_agent,
+    normalize_citations_and_chunks_for_agent,  # noqa: F401  # tests patch this module attribute
 )
-from app.utils.concurrency import indexing_llm_slot
+from app.utils.concurrency import indexing_llm_slot, note_indexing_llm_rate_limit
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.indexing_metrics import note_llm_call, note_rate_limit_retry
 from app.utils.logger import create_logger
-from app.utils.tool_handlers import ContentHandler, ToolHandlerRegistry
+from app.utils.message_chunks import merge_message_chunks_off_loop
+from app.utils.opik import get_llm_invoke_config, get_opik_tracer
 
 CITE_BLOCK_RE = re.compile(r'(?:\s*\[[^\]]*\]\([^\)]*\))+')
 INCOMPLETE_CITE_RE = re.compile(r'\[[^\]]*(?:\]\([^\)]*)?$')
 logger = create_logger("streaming")
 
-opik_tracer = None
-api_key = os.getenv("OPIK_API_KEY")
-workspace = os.getenv("OPIK_WORKSPACE")
-if api_key and workspace:
-    try:
-        from opik.integrations.langchain import OpikTracer
-        opik_tracer = OpikTracer()
-    except Exception as e:
-        logger.warning(f"Error configuring Opik: {e}")
-else:
-    logger.info("OPIK_API_KEY and/or OPIK_WORKSPACE not set. Skipping Opik configuration.")
+# Re-export for tests that patch app.utils.streaming.opik_tracer
+opik_tracer = get_opik_tracer()
+
 
 MAX_TOKENS_THRESHOLD = 80000
 TOOL_EXECUTION_TOKEN_RATIO = 0.5
@@ -79,24 +69,42 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return any(marker in message for marker in _RATE_LIMIT_MARKERS)
 
 
-async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  # noqa: ANN401
+async def _ainvoke_throttled(
+    llm: BaseChatModel,
+    messages: list[Any],
+    config: dict | None = None,
+    *,
+    call_timeout: float | None = None,
+    call_kwargs: Mapping[str, Any] | None = None,
+) -> Any:  # noqa: ANN401
     """Invoke *llm*, holding a slot in the process-wide indexing budget.
 
     Retries rate-limit errors with jittered backoff. The jitter matters more than the
     retry: LangChain's own ``max_retries`` has none, so concurrent row batches that get
     429ed all retry in lockstep.
+
+    ``call_timeout`` bounds each provider call once the slot is held; waiting
+    for the slot is backpressure, not a hung call, so it is never timed. A
+    timeout is raised, not retried.
     """
     delay = 0.0
     for attempt in range(MAX_RATE_LIMIT_RETRIES):
         async with indexing_llm_slot():
             try:
-                result = await llm.ainvoke(messages)
+                kwargs = dict(call_kwargs or {})
+                if config:
+                    kwargs["config"] = config
+                call = llm.ainvoke(messages, **kwargs)
+                result = await (
+                    asyncio.wait_for(call, timeout=call_timeout) if call_timeout else call
+                )
                 note_llm_call()
                 return result
             except Exception as e:
                 if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
                     raise
                 note_rate_limit_retry()
+                note_indexing_llm_rate_limit()
                 delay = 2 ** attempt + random.uniform(0, 1)
         logger.warning(
             f"Rate limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
@@ -104,6 +112,7 @@ async def _ainvoke_throttled(llm: BaseChatModel, messages: list[Any]) -> Any:  #
         )
         # Sleep outside the slot so a backing-off call does not occupy the budget.
         await asyncio.sleep(delay)
+    return None
 
 def _build_citation_reflection_message(
     hallucinated_urls: list[str],
@@ -147,7 +156,12 @@ ANTHROPIC_LEGACY_MODEL_PATTERNS = [
 ]
 
 
-async def stream_content(signed_url: str, record_id: str | None = None, file_name: str | None = None) -> AsyncGenerator[bytes, None]:
+async def stream_content(
+    signed_url: str,
+    record_id: str | None = None,
+    file_name: str | None = None,
+    connector: str | None = None,
+) -> AsyncGenerator[bytes, None]:
     # Validate that signed_url is actually a string, not a coroutine
     if not isinstance(signed_url, str):
         error_msg = f"Expected signed_url to be a string, but got {type(signed_url).__name__}"
@@ -222,52 +236,95 @@ async def stream_content(signed_url: str, record_id: str | None = None, file_nam
                         logger.error(
                             f"❌ HTTP {response.status}: Failed to fetch file content. {log_prefix}{error_details}"
                         )
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail=f"Failed to fetch file content: {response.status}{error_details}"
+                    # error_details stays in the log: it can contain presigned
+                    # URL internals and bucket names.
+                    raise map_source_status(
+                        response.status,
+                        connector=connector,
+                        retry_after=response.headers.get("Retry-After")
+                        if response.status == HttpStatusCode.TOO_MANY_REQUESTS.value
+                        else None,
                     )
                 async for chunk in response.content.iter_chunked(8192):
                     yield chunk
+    except asyncio.TimeoutError as e:
+        logger.error(f"❌ TIMEOUT: Fetching file content timed out | {log_prefix}")
+        raise map_source_status(
+            HttpStatusCode.GATEWAY_TIMEOUT.value, connector=connector
+        ) from e
     except aiohttp.ClientError as e:
         logger.error(
             f"❌ NETWORK ERROR: Failed to fetch file content from signed URL: {str(e)} | {log_prefix}"
         )
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail=f"Failed to fetch file content from signed URL {str(e)}"
-        )
+        raise map_source_status(
+            HttpStatusCode.BAD_GATEWAY.value, connector=connector
+        ) from e
+
+
+async def start_streaming_response(response: StreamingResponse) -> StreamingResponse:
+    """Pull the first chunk before the response starts.
+
+    Starlette sends ``http.response.start`` — committing the status code —
+    before it asks the body iterator for anything. Connectors that call the
+    source API lazily inside that iterator (Slack file downloads, Confluence
+    attachments) would otherwise fail after a 200 was already on the wire,
+    leaving the client with a truncated body that looks like success.
+
+    Draining one chunk here moves that call ahead of the status commit. A
+    failure *after* the first chunk still cannot change the status; those
+    abort the response instead.
+    """
+    response.body_iterator = await stream_with_eager_first_chunk(response.body_iterator)
+    return response
+
+
+async def _aclose(source: object) -> None:
+    """Close *source* if it is a generator. Starlette wraps a sync iterable in
+    `iterate_in_threadpool`, which has no `aclose`, so this cannot assume one."""
+    closer = getattr(source, "aclose", None)
+    if closer is None:
+        return
+    try:
+        await closer()
+    except Exception:
+        logger.debug("Failed to close stream source", exc_info=True)
 
 
 async def stream_with_eager_first_chunk(
-    source: AsyncGenerator[bytes, None],
-) -> AsyncGenerator[bytes, None]:
+    source: AsyncGenerator[bytes | str, None],
+) -> AsyncGenerator[bytes | str, None]:
     """Return a streaming generator after eagerly pulling its first chunk.
 
     Reading the first chunk before returning lets upstream auth / 404 / network
-    errors surface here, where they can still be converted to a clean HTTP 5xx,
+    errors surface here, where they can still be converted to a real HTTP status,
     rather than after ``StreamingResponse`` has already committed the status line
     and can only produce a truncated chunked body.
+
+    Chunks may be `str` as well as `bytes` — Starlette encodes either.
     """
-    aiter = source.__aiter__()
+    source_iter = source.__aiter__()
     try:
-        first = await aiter.__anext__()
+        first = await source_iter.__anext__()
     except StopAsyncIteration:
-        await source.aclose()
-        async def _empty() -> AsyncGenerator[bytes, None]:
+        await _aclose(source)
+        async def _empty() -> AsyncGenerator[bytes | str, None]:
             return
-            yield b""  # noqa: unreachable — marks function as async generator
+            yield b""  # unreachable; makes this an async generator
         return _empty()
     except Exception:
-        await source.aclose()
+        await _aclose(source)
         raise
 
-    async def _gen() -> AsyncGenerator[bytes, None]:
+    async def _gen() -> AsyncGenerator[bytes | str, None]:
+        # `finally` (not just falling off the end) so an abandoned download —
+        # the client disconnecting mid-file — still releases the upstream
+        # session. Starlette never closes `body_iterator` itself.
         try:
             yield first
-            async for chunk in aiter:
+            async for chunk in source_iter:
                 yield chunk
         finally:
-            await source.aclose()
+            await _aclose(source)
 
     return _gen()
 
@@ -370,7 +427,9 @@ def _stringify_content(content: str | list | dict | None) -> str:
         # Fallback to stringification for other types
         return str(content)
 
-async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dict, None]:
+async def aiter_llm_stream(
+    llm: BaseChatModel, messages: list[Any], parts: list[Any] | None = None,
+) -> AsyncGenerator[str | dict, None]:
     """Async iterator for LLM streaming that normalizes content to text.
 
     The LLM provider may return content as a string or a list of content parts
@@ -379,7 +438,13 @@ async def aiter_llm_stream(llm, messages,parts=None) -> AsyncGenerator[str | dic
     """
     if parts is None:
         parts = []
-    config = {"callbacks": [opik_tracer]} if opik_tracer is not None else {}
+    config = get_llm_invoke_config(llm)
+    # Keep streaming.opik_tracer in sync for tests that patch this module attr.
+    if opik_tracer is not None:
+        callbacks = list(config.get("callbacks") or [])
+        if all(cb is not opik_tracer for cb in callbacks):
+            callbacks.append(opik_tracer)
+        config = {"callbacks": callbacks}
     try:
         if hasattr(llm, "astream"):
             # Fix #1710: Manual iteration to catch per-chunk ValidationError
@@ -716,8 +781,7 @@ def _strip_llm_authored_markers(answer: str) -> str:
     stripped = _LLM_ARTIFACT_NO_URL_MARKER_RE.sub("", stripped)
     stripped = _LLM_ARTIFACT_SHORT_MARKER_RE.sub("", stripped)
     stripped = _LLM_DOWNLOAD_MARKER_RE.sub("", stripped)
-    stripped = _flatten_unusable_markdown_links(stripped)
-    return stripped
+    return _flatten_unusable_markdown_links(stripped)
 
 
 def strip_llm_authored_markers_in_parts(parts: list | None) -> None:
@@ -840,10 +904,10 @@ def _initialize_answer_parser_regex() -> tuple[re.Pattern, re.Pattern, re.Patter
     return answer_key_re, cite_block_re, incomplete_cite_re, word_iter
 
 async def call_aiter_llm_stream_simple(
-    llm,
-    messages,
-    final_results,
-    records=None,
+    llm: BaseChatModel,
+    messages: list[Any],
+    final_results: list[dict[str, Any]],
+    records: list[dict[str, Any]] | None = None,
     target_words_per_chunk: int = 1,
     citation_reflection_retry_count: int = 0,
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None = None,
@@ -925,13 +989,8 @@ async def call_aiter_llm_stream_simple(
 
 
         # Tool call detection
-        ai = None
         tool_calls_happened = True
-        for part in parts:
-            if ai is None:
-                ai = part
-            else:
-                ai += part
+        ai = await merge_message_chunks_off_loop(parts) if parts else None
 
         if tool_calls_happened and ai is not None:
             tool_calls = getattr(ai, 'tool_calls', [])
@@ -996,7 +1055,7 @@ async def call_aiter_llm_stream_simple(
         yield {"event": "error", "data": {"error": f"Error in LLM streaming: {exc}"}}
         return
 
-def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
+def _apply_structured_output(llm: BaseChatModel, schema: type[BaseModel], *, include_raw: bool = False) -> BaseChatModel:
     if isinstance(llm, (ChatGoogleGenerativeAI,ChatAnthropic,ChatOpenAI,ChatMistralAI,AzureChatOpenAI,ChatBedrock,ChatBedrockConverse)):
 
         additional_kwargs = {}
@@ -1014,6 +1073,8 @@ def _apply_structured_output(llm: BaseChatModel,schema) -> BaseChatModel:
 
         if not isinstance(llm, (ChatBedrock, ChatBedrockConverse)):
             additional_kwargs["method"] = "json_schema"
+        if include_raw:
+            additional_kwargs["include_raw"] = True
 
         try:
             model_with_structure = llm.with_structured_output(
@@ -1087,6 +1148,12 @@ async def invoke_with_structured_output_and_reflection(
     messages: list,
     schema: type[SchemaT],
     max_retries: int = MAX_REFLECTION_RETRIES_DEFAULT,
+    *,
+    enable_opik_tracing: bool = True,
+    call_timeout: float | None = None,
+    raise_call_errors: bool = False,
+    prompt_cache: CacheStrategy | None = None,
+    on_cache_rejected: Callable[[], None] | None = None,
 ) -> SchemaT | None:
     """
     Invoke LLM with structured output and automatic reflection on parse failure.
@@ -1096,20 +1163,78 @@ async def invoke_with_structured_output_and_reflection(
         messages: List of messages to send to the LLM
         schema: Pydantic model class to validate the response against
         max_retries: Maximum number of reflection retries on parse failure
+        enable_opik_tracing: When False, skip Opik callbacks even if configured
+            (the model's own callbacks still run)
+        call_timeout: Optional bound, in seconds, on each provider call (the
+            first and every reflection retry), excluding the wait for an
+            indexing slot. A timed-out call counts as a failed attempt.
+        raise_call_errors: Raise the first call's error (a timeout, an outage),
+            and the last reflection call's timeout, instead of returning None,
+            so a caller can tell a starved call from a reply that did not fit
+            the schema.
+        prompt_cache: The cache strategy ``messages`` were built with (its
+            ``system`` block); its ``finalize`` is applied here. If the provider
+            refuses a cache parameter or marker, that call (the first or a
+            reflection) is resent without any of them, in the kwargs or on the
+            messages, and so is every later call: the cache is off for this
+            model, as ``LangChainTransport`` falls back to no strategy.
+        on_cache_rejected: Called once when the provider refuses a cache
+            parameter. Pass the callback that records the refusal under the
+            identity the cache strategy was chosen with; by default it is
+            recorded for ``llm`` with no model name.
 
     Returns:
         Validated Pydantic model instance, or None if parsing fails after all retries
     """
     llm_with_structured_output = _apply_structured_output(llm, schema=schema)
+    # Use the base llm: structured-output wrappers drop constructor callbacks;
+    # get_llm_invoke_config reattaches them with Opik.
+    invoke_config = get_llm_invoke_config(llm, include_opik=enable_opik_tracing)
+    kwargs: dict[str, Any] = {}
+    cache_params: frozenset[str] = frozenset()
+    if prompt_cache is not None:
+        messages, kwargs = prompt_cache.finalize(list(messages))
+        cache_params = prompt_cache.sent_params | frozenset(kwargs)
+    refused = False
+
+    async def _call(request: list) -> Any:  # noqa: ANN401 - whatever the structured model returns
+        nonlocal refused
+        if refused:
+            return await _ainvoke_throttled(
+                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
+                call_timeout=call_timeout,
+            )
+        try:
+            return await _ainvoke_throttled(
+                llm_with_structured_output, request, config=invoke_config,
+                call_timeout=call_timeout, call_kwargs=kwargs,
+            )
+        except Exception as exc:
+            if not is_prompt_cache_param_conflict(exc, cache_params):
+                raise
+            logger.warning("Prompt-cache parameters rejected; resending without them: %s", exc)
+            if on_cache_rejected is not None:
+                on_cache_rejected()
+            else:
+                forget_cache_params(llm)
+            refused = True
+            return await _ainvoke_throttled(
+                llm_with_structured_output, without_cache_markers(request), config=invoke_config,
+                call_timeout=call_timeout,
+            )
 
     try:
-        response = await _ainvoke_throttled(llm_with_structured_output, messages)
+        response = await _call(messages)
+    except NonRetryableError:
+        raise
     except Exception as e:
         recovered = _recover_structured_json_from_exception(e, schema)
         if recovered is not None:
             logger.info("Recovered schema-valid structured output from invocation error")
             return recovered
-        logger.error(f"LLM invocation failed: {e}")
+        logger.error(f"LLM invocation failed: {type(e).__name__}: {e}")
+        if raise_call_errors:
+            raise
         return None
 
     # Try to parse the response
@@ -1172,8 +1297,11 @@ Respond only with valid JSON that matches the schema."""
         reflection_messages.append(HumanMessage(content=reflection_prompt))
 
         for attempt in range(max_retries):
+            # Unset when the call itself fails (timeout, network): there is no
+            # reply to show the model on the next attempt.
+            reflection_content = None
             try:
-                reflection_response = await _ainvoke_throttled(llm_with_structured_output, reflection_messages)
+                reflection_response = await _call(reflection_messages)
                 if isinstance(reflection_response, dict):
                     if 'content' in reflection_response:
                         # Response is a dict with 'content' key (e.g., Bedrock non-structured response)
@@ -1203,6 +1331,8 @@ Respond only with valid JSON that matches the schema."""
                 logger.info(f"Reflection successful on attempt {attempt + 1}")
                 return parsed_response
 
+            except NonRetryableError:
+                raise
             except Exception as reflection_error:
                 recovered = _recover_structured_json_from_exception(reflection_error, schema)
                 if recovered is not None:
@@ -1210,9 +1340,17 @@ Respond only with valid JSON that matches the schema."""
                         "Recovered schema-valid structured output from reflection invocation error"
                     )
                     return recovered
-                logger.warning(f"Reflection attempt {attempt + 1} failed: {reflection_error}")
-                if attempt < max_retries - 1:
-                    # Update messages for next retry
+                logger.warning(
+                    f"Reflection attempt {attempt + 1} failed: "
+                    f"{type(reflection_error).__name__}: {reflection_error}"
+                )
+                # An earlier timeout still leaves a retry; one that ends the loop means the
+                # last word was a starved call, not a reply that did not fit the schema.
+                if raise_call_errors and isinstance(reflection_error, TimeoutError) and attempt == max_retries - 1:
+                    raise
+                # A call that failed outright left no reply to correct, and
+                # the pending request already asks for valid JSON.
+                if attempt < max_retries - 1 and reflection_content is not None:
                     reflection_messages.append(AIMessage(content=reflection_content))
                     reflection_messages.append(HumanMessage(content=f"Still incorrect. Error: {str(reflection_error)}. Please try again."))
 

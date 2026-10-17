@@ -13,6 +13,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.agent_loop_lib.tools.decorators import tool
+from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
 from app.agents.agent_loop.context import AgentContext
 from app.agents.agent_loop.tool_loader import PipesHubToolLoader, _build_dynamic_tools
 
@@ -91,6 +92,24 @@ class TestKnowledgeToolsetGate:
 
         assert not any("search_internal_knowledge" in name for name in registry.names())
 
+    async def test_skipping_a_knowledge_toolset_is_logged_at_info(self) -> None:
+        """The skip is the condition behind "the agent answered as if it had
+        searched and found nothing". At `debug` it was invisible in a running
+        system; `info` makes it greppable without turning on debug logging
+        everywhere."""
+        context = _make_context(has_knowledge=False, conversation_id="conv-1")
+        state_logger = MagicMock()
+        context.tool_state["logger"] = state_logger
+        registry_patch, factory_patch = _patch_retrieval_toolset_registry()
+        with registry_patch, factory_patch:
+            await PipesHubToolLoader().load(context)
+
+        messages = [call.args[0] % call.args[1:] for call in state_logger.info.call_args_list]
+        assert any(
+            "retrieval" in m and "no knowledge sources attached" in m and "conv-1" in m
+            for m in messages
+        ), messages
+
 
 class TestBuildDynamicToolsWebSearchGate:
     """`web_search`/`agent` set `state["web_search_config"]`; `internal_search`
@@ -113,11 +132,11 @@ class TestBuildDynamicToolsWebSearchGate:
         fake_fetch_tool = MagicMock(name="fu_tool")
         with (
             patch(
-                "app.utils.web_search_tool.create_web_search_tool",
+                "app.web.tools.web_search.create_web_search_tool",
                 return_value=fake_web_tool,
             ),
             patch(
-                "app.utils.fetch_url_tool.create_fetch_url_tool",
+                "app.web.tools.fetch_url.create_fetch_url_tool",
                 return_value=fake_fetch_tool,
             ),
             patch(
@@ -157,6 +176,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
                 "config_service": MagicMock(),
                 "has_sql_connector": True,
                 "has_sql_knowledge": True,
+                "allowed_sql_connector_ids": frozenset({"pg-1"}),
             }
         )
         fake_tool = MagicMock(name="sql_tool")
@@ -164,7 +184,7 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             patch(
                 "app.utils.execute_query.create_execute_query_tool",
                 return_value=fake_tool,
-            ),
+            ) as mock_factory,
             patch(
                 "app.agents.agent_loop.tool_loader.split_original_tool_name",
                 return_value=("sql", "execute_sql_query"),
@@ -173,6 +193,24 @@ class TestBuildDynamicToolsConnectorKnowledgeGate:
             tools = _build_dynamic_tools(context)
 
         assert len(tools) == 1
+        assert mock_factory.call_args.kwargs["allowed_connector_ids"] == {"pg-1"}
+
+    def test_sql_flags_without_connector_allowlist_yield_no_sql_tool(self) -> None:
+        """Fails closed: the flags alone don't say WHICH connector the tool may
+        query, so without an allowlist it is not registered at all."""
+        context = _make_context()
+        context.tool_state.update(
+            {
+                "config_service": MagicMock(),
+                "has_sql_connector": True,
+                "has_sql_knowledge": True,
+            }
+        )
+        with patch("app.utils.execute_query.create_execute_query_tool") as mock_factory:
+            tools = _build_dynamic_tools(context)
+
+        assert tools == []
+        mock_factory.assert_not_called()
 
     def test_slack_connector_without_knowledge_flag_yields_no_slack_tools(self) -> None:
         context = _make_context()
@@ -203,8 +241,8 @@ class TestModePolicyEndToEndGating:
         with registry_patch, factory_patch:
             if web_search_config:
                 with (
-                    patch("app.utils.web_search_tool.create_web_search_tool", return_value=MagicMock()),
-                    patch("app.utils.fetch_url_tool.create_fetch_url_tool", return_value=MagicMock()),
+                    patch("app.web.tools.web_search.create_web_search_tool", return_value=MagicMock()),
+                    patch("app.web.tools.fetch_url.create_fetch_url_tool", return_value=MagicMock()),
                     patch(
                         "app.agents.agent_loop.tool_loader.split_original_tool_name",
                         side_effect=[("web_search", "search"), ("fetch_url", "fetch")],
@@ -227,3 +265,42 @@ class TestModePolicyEndToEndGating:
     async def test_agent_mode_has_both_retrieval_and_web_tools(self) -> None:
         names = await self._load_for(has_knowledge=True, web_search_config={"provider": "tavily"})
         assert any("search_internal_knowledge" in n for n in names)
+
+
+class _FakeInteractiveToolset:
+    @tool(path="/tools/internaltools/ask_user_question", short_description="Ask", description="Ask the user", tags=[TAG_UI_ONLY])
+    async def ask_user_question(self, question: str) -> str:
+        return question
+
+    @tool(path="/tools/internaltools/calculator", short_description="Calc", description="Calculate")
+    async def calculator(self, expression: str) -> str:
+        return expression
+
+
+class TestUiOnlyToolGate:
+    """A UI-only tool asks the human watching the chat. With no UI client
+    (an API caller) nobody can answer: the run ended on the model's filler
+    text ("I'll verify ...") as if it were the answer."""
+
+    async def _load(self, has_ui_client: bool) -> list[str]:
+        fake_registry = MagicMock()
+        fake_registry.get_all_toolsets.return_value = {
+            "internaltools": {"class": _FakeInteractiveToolset, "isInternal": True, "description": ""},
+        }
+        with (
+            patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=fake_registry),
+            patch("app.agents.agent_loop.tool_loader.ClientFactoryRegistry.get_factory", return_value=None),
+        ):
+            registry = await PipesHubToolLoader().load(_make_context(has_ui_client=has_ui_client))
+        return registry.names()
+
+    async def test_without_a_ui_client_ui_only_tools_are_withheld(self) -> None:
+        names = await self._load(has_ui_client=False)
+
+        assert not any("ask_user_question" in n for n in names)
+        assert any("calculator" in n for n in names)
+
+    async def test_with_a_ui_client_ui_only_tools_are_offered(self) -> None:
+        names = await self._load(has_ui_client=True)
+
+        assert any("ask_user_question" in n for n in names)

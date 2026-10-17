@@ -37,8 +37,9 @@ from app.modules.parsers.markdown.mdx_parser import MDXParser
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import PDFPlumberOpenCVProcessor
 from app.modules.parsers.pptx.ppt_parser import PPTParser
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.chat_helpers import count_tokens_text
-from app.utils.llm import get_llm_for_role
+from app.utils.llm import LLMNotConfiguredError, get_llm_for_role
 
 # ---------------------------------------------------------------------------
 # Supported extensions (OOXML, OLE2, and text/markup as specified)
@@ -71,8 +72,6 @@ _OLE2_EXTENSIONS: Final[frozenset[str]] = frozenset({"doc", "xls", "ppt"})
 _MAGIC_VALIDATED_EXTENSIONS: Final[frozenset[str]] = frozenset(
     {"pdf", *_OOXML_EXTENSIONS, *_OLE2_EXTENSIONS}
 )
-_TEXT_FILE_ENCODINGS: Final[tuple[str, ...]] = ("utf-8", "utf-8-sig", "latin-1", "iso-8859-1")
-_DELIMITED_FILE_ENCODINGS: Final[list[str]] = ["utf-8", "latin1", "cp1252", "iso-8859-1"]
 _TOKEN_LIMIT_SAFETY_FACTOR = 0.8
 
 
@@ -230,6 +229,9 @@ class FileContentParser:
 
             try:
                 blocks = await self.parse_to_block_container(file_record, raw)
+            except LLMNotConfiguredError as exc:
+                # Spreadsheets need the model while parsing; its message already says what to do.
+                return (False, _error_list(str(exc)))
             except Exception as exc:
                 self._logger.exception("parse_to_block_container failed")
                 return (False, _error_list(f"Parse failed: {exc}"))
@@ -249,6 +251,8 @@ class FileContentParser:
                     configuration_service=configuration_service,
                     data=llm_context,
                 )
+            except LLMNotConfiguredError as exc:
+                return (False, _error_list(str(exc)))
             except Exception as exc:
                 self._logger.exception("Token check failed")
                 return (False, _error_list(f"Token check failed: {exc}"))
@@ -314,21 +318,11 @@ class FileContentParser:
         file_name: str,
         parser: CSVParser,
     ) -> BlocksContainer:
-        all_rows = None
-        for encoding in _DELIMITED_FILE_ENCODINGS:
-            try:
-                text = raw.decode(encoding)
-                stream = io.StringIO(text)
-                all_rows = parser.read_raw_rows(stream)
-                break
-            except UnicodeDecodeError:
-                continue
-            except Exception as exc:
-                self._logger.warning(
-                    "Unexpected error parsing %s with encoding %s: %s",
-                    file_name, encoding, exc,
-                )
-                raise
+        try:
+            all_rows = parser.read_raw_rows(io.StringIO(decode_text(raw)))
+        except Exception as exc:
+            self._logger.warning("Unexpected error parsing %s: %s", file_name, exc)
+            raise
 
         if not all_rows:
             self._logger.info(
@@ -342,28 +336,10 @@ class FileContentParser:
         return await parser.get_blocks_from_csv_with_multiple_tables(tables, llm)
 
     async def handle_md(self, raw: bytes, file_name: str) -> BlocksContainer:
-        md_content = None
-        for encoding in _TEXT_FILE_ENCODINGS:
-            try:
-                md_content = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if md_content is None:
-            raise ValueError("Unable to decode Markdown with any supported encoding")
-        return await self._markdown_string_to_blocks(md_content, file_name)
+        return await self._markdown_string_to_blocks(decode_text(raw), file_name)
 
     async def handle_txt(self, raw: bytes, file_name: str) -> BlocksContainer:
-        text_content = None
-        for encoding in _TEXT_FILE_ENCODINGS:
-            try:
-                text_content = raw.decode(encoding)
-                break
-            except UnicodeDecodeError:
-                continue
-        if text_content is None:
-            raise ValueError("Unable to decode text file with any supported encoding")
-        return await self._markdown_string_to_blocks(text_content, file_name)
+        return await self._markdown_string_to_blocks(decode_text(raw), file_name)
 
     async def handle_mdx(self, raw: bytes, file_name: str) -> BlocksContainer:
         md_bytes = self._mdx_parser.convert_mdx_to_md(raw)

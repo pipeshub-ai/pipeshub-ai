@@ -7,7 +7,7 @@ Requires a configured local credentials file from ``./scripts/setup.sh``:
 Safe by default:
   - never prints tokens
   - download is only attempted when search returns a recordId
-  - chat uses a tiny internal_search query
+  - chat asks one short question
 
 Exit codes:
   0  all exercised tools succeeded (or download skipped with reason)
@@ -377,10 +377,7 @@ def main() -> int:
                 token,
                 session_id,
                 "pipeshub_chat",
-                {
-                    "query": "Reply with one short sentence: what is PipesHub?",
-                    "chatMode": "internal_search",
-                },
+                {"query": "Reply with one short sentence: what is PipesHub?"},
                 rpc_id=15,
             )
             text = _tool_text(result)

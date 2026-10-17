@@ -5,6 +5,8 @@ Tests for messaging config:
   - REQUIRED_TOPICS constant
 """
 
+import logging
+
 import pytest
 
 from app.services.messaging.config import (
@@ -317,3 +319,54 @@ class TestEmptyEnvVarsFallBackToDefaults:
         """A typo must degrade to the default, not crash the service at import."""
         monkeypatch.setenv(env_var, "not-a-number")
         assert getattr(messaging_env, attribute) == expected
+
+
+class TestStrandedRecordRepublishDefault:
+    """The sweep that rescues a record whose indexing event was lost or never
+    published is the only recovery path that covers it (the stale scan is
+    IN_PROGRESS-only). It used to default to 0 = off, so such records sat
+    QUEUED forever unless an operator knew to enable it."""
+
+    def test_is_on_by_default(self, monkeypatch) -> None:
+        monkeypatch.delenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", raising=False)
+        assert messaging_env.stranded_record_republish_after_seconds == 3600.0
+
+    def test_zero_still_disables_it(self, monkeypatch) -> None:
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "0")
+        assert messaging_env.stranded_record_republish_after_seconds == 0.0
+
+    def test_operator_override_wins(self, monkeypatch) -> None:
+        monkeypatch.setenv("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", "600")
+        assert messaging_env.stranded_record_republish_after_seconds == 600.0
+
+
+class TestLaneAssignmentSwitch:
+    def test_assigned_lanes_are_on_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.delenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", raising=False)
+
+        assert messaging_env.fair_scheduling_lane_assignment == "assigned"
+
+    @pytest.mark.parametrize("raw", ["hash", "HASH", " Hash "])
+    def test_hash_switches_them_off(self, monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", raw)
+
+        assert messaging_env.fair_scheduling_lane_assignment == "hash"
+
+    def test_a_mistyped_value_is_said_out_loud_once(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A typo in the rollback must not leave one service silently on assigned lanes."""
+        from app.services.messaging.config import messaging_env
+
+        monkeypatch.setenv("FAIR_SCHEDULING_LANE_ASSIGNMENT", "hashed-typo-1")
+
+        with caplog.at_level(logging.WARNING):
+            values = {messaging_env.fair_scheduling_lane_assignment for _ in range(3)}
+
+        assert values == {"assigned"}
+        warnings = [r for r in caplog.records if "FAIR_SCHEDULING_LANE_ASSIGNMENT" in r.getMessage()]
+        assert len(warnings) == 1

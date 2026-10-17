@@ -16,7 +16,10 @@ import {
   TextField,
 } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
+import { SERVICE_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
 import {
   ToolsetsApi,
   type BuilderSidebarToolset,
@@ -33,6 +36,7 @@ import {
   stableStringifyRecord,
 } from '@/app/(main)/agents/agent-builder/components/toolset-agent-auth-helpers';
 import { toolNamesFromSchema } from '../utils/tool-names-from-schema';
+import { ToolsetToolRulesDialog } from './toolset-tool-rules-dialog';
 import { isNoneAuthType, isOAuthType } from '@/app/(main)/workspace/connectors/utils/auth-helpers';
 import { toolsetRedirectUri } from '../utils/toolset-redirect-uri';
 import { useToolsetOauthPopupFlow } from '@/app/(main)/agents/agent-builder/hooks/use-toolset-oauth-popup-flow';
@@ -102,6 +106,7 @@ export function AdminManageActionPanel({
 
   const [schemaRaw, setSchemaRaw] = useState<unknown>(null);
   const [schemaLoading, setSchemaLoading] = useState(false);
+  const [toolRulesOpen, setToolRulesOpen] = useState(false);
   const [oauthConfigs, setOauthConfigs] = useState<ToolsetOauthConfigListRow[]>([]);
   const [oauthConfigsLoading, setOauthConfigsLoading] = useState(false);
 
@@ -353,6 +358,86 @@ export function AdminManageActionPanel({
     [selectedOauthRow, t]
   );
 
+  const revealAvailable = useSecretRevealAvailable();
+  const [revealing, setRevealing] = useState(false);
+  const [revealedConfigId, setRevealedConfigId] = useState('');
+  // The instance GET only carries the OAuth app it is linked to, so a different
+  // app picked in the dropdown has nothing to reveal until it is saved.
+  const canReveal =
+    revealAvailable &&
+    !!selectedOauthRow &&
+    (selectedOauthRow as { inherited?: boolean }).inherited !== true &&
+    selectedOauthRow._id === instance.oauthConfigId &&
+    revealedConfigId !== selectedOauthRow._id;
+  const beginReveal = useRevealScope(`${instanceId}:${selectedOauthConfigId}`);
+
+  const handleReveal = async () => {
+    if (!selectedOauthRow) return;
+    const stillCurrent = beginReveal();
+    setRevealing(true);
+    try {
+      const doc = await ToolsetsApi.getToolsetInstance(instanceId, { reveal: true });
+      const stored = asAuthRecord(doc.oauthConfig);
+      if (!stillCurrent() || !stored || stored._id !== selectedOauthRow._id) return;
+      const next = { ...oauthFieldValues };
+      for (const field of oauthFields) {
+        const current = next[field.name];
+        const value = stored[field.name];
+        const isBlank =
+          current === undefined || current === null || current === '' || current === SERVICE_SECRET_PLACEHOLDER;
+        if (isBlank && typeof value === 'string' && value) next[field.name] = value;
+      }
+      // Showing what is stored is not an edit: keep an untouched form clean.
+      if (stableStringifyRecord(oauthFieldValues) === initialOauthSnapshot) {
+        setInitialOauthSnapshot(stableStringifyRecord(next));
+      }
+      setOauthFieldValues(next);
+      setRevealedConfigId(selectedOauthRow._id);
+    } catch {
+      // The fields stay blank, which still saves as "keep the stored value".
+    } finally {
+      setRevealing(false);
+    }
+  };
+
+  const [inlineRevealed, setInlineRevealed] = useState(false);
+  const canRevealInline =
+    revealAvailable &&
+    !oauth &&
+    !inlineRevealed &&
+    Object.values(nonOauthValues).some((value) => value === SERVICE_SECRET_PLACEHOLDER);
+  const beginInlineReveal = useRevealScope(instanceId);
+
+  useEffect(() => {
+    setInlineRevealed(false);
+  }, [instanceId]);
+
+  // Swaps the masked inline credentials (API tokens, passwords) for the stored values.
+  const handleRevealInline = async () => {
+    const stillCurrent = beginInlineReveal();
+    setRevealing(true);
+    try {
+      const doc = await ToolsetsApi.getToolsetInstance(instanceId, { reveal: true });
+      const stored = asAuthRecord(doc.auth);
+      if (!stillCurrent() || !stored) return;
+      const next = { ...nonOauthValues };
+      for (const [name, value] of Object.entries(nonOauthValues)) {
+        if (value === SERVICE_SECRET_PLACEHOLDER && typeof stored[name] === 'string') {
+          next[name] = stored[name];
+        }
+      }
+      if (stableStringifyRecord(nonOauthValues) === initialNonOauthSnapshot) {
+        setInitialNonOauthSnapshot(stableStringifyRecord(next));
+      }
+      setNonOauthValues(next);
+      setInlineRevealed(true);
+    } catch {
+      // The fields keep their placeholders, which still save as "keep the stored value".
+    } finally {
+      setRevealing(false);
+    }
+  };
+
   const showOauthImpactCallout =
     oauth && oauthFields.length > 0 && stableStringifyRecord(oauthFieldValues) !== initialOauthSnapshot;
   const credentialsSectionLoading =
@@ -592,6 +677,7 @@ export function AdminManageActionPanel({
   const handleAuthenticate = useCallback(async () => {
     setError(null);
     await beginOAuth(
+      'oauth_admin_toolset',
       async () => {
         const result = await ToolsetsApi.getInstanceOAuthAuthorizationUrl(
           instanceId,
@@ -600,10 +686,7 @@ export function AdminManageActionPanel({
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));
         }
-        return {
-          authorizationUrl: result.authorizationUrl,
-          windowName: 'oauth_admin_toolset',
-        };
+        return result.authorizationUrl;
       },
       {
         onTimeout: () => setError(t('agentBuilder.authTimeout')),
@@ -716,6 +799,14 @@ export function AdminManageActionPanel({
             </Flex>
           ) : oauthFields.length > 0 ? (
             <Flex direction="column" gap="3" mt="1">
+              {canReveal ? (
+                <Flex justify="end">
+                  <ShowStoredValuesButton
+                    loading={revealing}
+                    onClick={() => void handleReveal()}
+                  />
+                </Flex>
+              ) : null}
               {oauthFields.map((field) => (
                 <SchemaFormField
                   key={field.name}
@@ -732,6 +823,7 @@ export function AdminManageActionPanel({
                   }}
                   error={fieldErrors[field.name]}
                   selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+                  revealed={Boolean(selectedOauthRow) && revealedConfigId === selectedOauthRow?._id}
                 />
               ))}
             </Flex>
@@ -747,9 +839,14 @@ export function AdminManageActionPanel({
         </Flex>
       ) : nonOauthConfigureFields.length > 0 ? (
         <Flex direction="column" gap="3" mt="1">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.actions.configurationHeading')}
-          </Text>
+          <Flex align="center" justify="between" gap="3">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.configurationHeading')}
+            </Text>
+            {canRevealInline ? (
+              <ShowStoredValuesButton loading={revealing} onClick={() => void handleRevealInline()} />
+            ) : null}
+          </Flex>
           {nonOauthConfigureFields.map((field) => (
             <SchemaFormField
               key={field.name}
@@ -766,6 +863,7 @@ export function AdminManageActionPanel({
               }}
               error={fieldErrors[field.name]}
               selectPortalZIndex={WORKSPACE_DRAWER_POPPER_Z_INDEX}
+              revealed={inlineRevealed}
             />
           ))}
         </Flex>
@@ -789,9 +887,17 @@ export function AdminManageActionPanel({
 
       {toolNames.length > 0 ? (
         <Flex direction="column" gap="2">
-          <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
-            {t('workspace.actions.availableActions')} ({toolNames.length})
-          </Text>
+          <Flex align="center" justify="between" gap="3" wrap="wrap">
+            <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
+              {t('workspace.actions.availableActions')} ({toolNames.length})
+            </Text>
+            {instanceId ? (
+              <Button type="button" size="1" variant="soft" color="gray" onClick={() => setToolRulesOpen(true)}>
+                <MaterialIcon name="rule" size={16} color="var(--gray-11)" />
+                {t('workspace.actions.toolRules.open')}
+              </Button>
+            ) : null}
+          </Flex>
           <Flex gap="2" wrap="wrap">
             {toolNames.map((n) => (
               <Badge key={n} size="1" variant="soft" color="gray">
@@ -902,6 +1008,17 @@ export function AdminManageActionPanel({
             </Flex>
           </AlertDialog.Content>
         </AlertDialog.Root>
+      ) : null}
+
+      {instanceId ? (
+        <ToolsetToolRulesDialog
+          open={toolRulesOpen}
+          onOpenChange={setToolRulesOpen}
+          instanceId={instanceId}
+          instanceName={instance.instanceName || instance.displayName || toolsetType}
+          toolsetType={toolsetType}
+          container={nestedModalHost}
+        />
       ) : null}
     </Flex>
   );

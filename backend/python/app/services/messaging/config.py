@@ -5,6 +5,7 @@ from enum import Enum
 from pydantic import BaseModel, Field, JsonValue
 
 from app.services.resource_governor.models import ParseTier
+from app.utils.env_config import env_choice as _env_choice
 from app.utils.env_config import env_int as _env_int
 from app.utils.env_config import env_seconds as _env_seconds
 
@@ -337,6 +338,36 @@ class MessagingEnvConfig:
         return int(os.getenv("STALE_INDEXING_RECOVERY_PAGE_SIZE", "100"))
 
     @property
+    def stranded_record_republish_after_seconds(self) -> float:
+        """The youngest a waiting record can be before the stranded sweep looks at it.
+
+        Zero disables the sweep. Guards the gap no other recovery path covers:
+        a record on a live connector whose event was lost or never published is
+        invisible to the stale scan (which only looks at IN_PROGRESS) and to the
+        inactive-connector sweep.
+
+        This is a minimum age, not a promise to re-send at that age, so it does
+        not need to be sized to the backlog: a record older than this is still
+        left alone while the broker shows older work waiting on its lane, and
+        each re-send doubles the wait before the next (see
+        ``indexing_main._republish_stranded_records``).
+        """
+        return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
+
+    @property
+    def rate_limit_defer_max_seconds(self) -> float:
+        """How long a record may wait in total on its source's rate limit.
+
+        A content fetch the source answers with 429 and a Retry-After is put
+        back in line until then, and the stranded sweep re-sends it (see
+        ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
+        such wait; a limit that would carry the record past this ends it FAILED
+        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        which is what re-sends the record.
+        """
+        return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
+
+    @property
     def vector_membership_backfill_interval_seconds(self) -> float:
         return float(os.getenv("VECTOR_MEMBERSHIP_BACKFILL_INTERVAL_SECONDS", "30"))
 
@@ -459,11 +490,34 @@ class MessagingEnvConfig:
 
         On Kafka a lane *is* a partition, so this only switches key-based
         routing on; the real lane count is the topic's partition count
-        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service). On
+        (``KAFKA_TOPIC_PARTITIONS``, applied by the Node admin service: 32
+        for a topic it creates, and an existing topic grown only when that is
+        set explicitly). On
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
+
+    @property
+    def fair_scheduling_lane_assignment(self) -> str:
+        """How a Redis Streams producer picks a connector's lane.
+
+        ``assigned`` (the default): each connector is given the least-loaded
+        lane once and the choice is recorded in Redis
+        (``lanes/assignment.py``), so connectors stop sharing a lane by
+        chance. ``hash``: the lane is a hash of the connector id, as before
+        the lane map; set it on every service to switch the feature off.
+        Kafka always places by key. Anything else is treated as ``assigned``,
+        with a warning, so a mistyped rollback does not pass silently.
+        """
+        return _env_choice("FAIR_SCHEDULING_LANE_ASSIGNMENT", "assigned", ("assigned", "hash"))
+
+    @property
+    def fair_scheduling_lane_cache_seconds(self) -> float:
+        """How long a producer trusts a connector's looked-up lane before
+        reading it from Redis again. A lane only changes when a connector is
+        moved, and a move waits out this long before it is fenced."""
+        return _env_seconds("FAIR_SCHEDULING_LANE_CACHE_SECONDS", 60.0)
 
     @property
     def fair_scheduling_lane_key_field(self) -> str:
@@ -485,12 +539,50 @@ class MessagingEnvConfig:
         return topics or (Topic.RECORD_EVENTS.value,)
 
     @property
+    def fair_scheduling_metrics_per_connector(self) -> bool:
+        """Label the dispatch counter by connector as well as org.
+
+        Off by default because it multiplies that metric's series count by
+        the number of connector instances, which is unbounded. Worth turning
+        on for a single-org install, where labelling by org alone collapses
+        every connector into one series and the per-connector share -- the
+        thing fair scheduling exists to produce -- becomes invisible.
+        """
+        return (
+            os.getenv("FAIR_SCHEDULING_METRICS_PER_CONNECTOR", "false").lower()
+            == "true"
+        )
+
+    @property
+    def fair_scheduling_max_remembered_positions(self) -> int:
+        """Kafka: how many messages the consumer may read past connectors at
+        their cap, remembering only each one's partition and offset (about
+        200 bytes apiece with its commit-watermark entry, so ~40 MB at the
+        default). Past it, a lane whose next message belongs to such a
+        connector stops until it drains. ``0`` turns reading past off.
+        Redis Streams ignores it."""
+        return max(0, _env_int("FAIR_SCHEDULING_MAX_REMEMBERED_POSITIONS", 200_000))
+
+    @property
     def fair_scheduling_max_dwell_seconds(self) -> float:
         """How long a buffered offset may go unresolved before the consumer
         force-commits past it. Bounds the damage from a dispatch path that
         fails to settle its watermark claim: without it, one such offset
-        stalls every later commit on its partition until a restart."""
+        stalls every later commit on its partition until a restart. Kafka
+        only: Redis Streams ignores it and keeps a held entry for as long as
+        its ownership refresh works."""
         return _env_seconds("FAIR_SCHEDULING_MAX_DWELL_SECONDS", 900.0)
+
+    @property
+    def connector_state_refresh_seconds(self) -> float:
+        """How long the indexing consumer trusts that a connector is on before
+        reading it again, when it settles the queued events of turned-off and
+        removed connectors as they are read. Only "on" is remembered: "off" or
+        "removed" is read afresh for every batch before anything is settled,
+        so turning a connector back on takes effect at once. A connector
+        turned off less than this long ago has its events skipped by the
+        handler one by one, as before. ``0`` turns read-time settling off."""
+        return _env_seconds("INDEXING_CONNECTOR_STATE_REFRESH_SECONDS", 15.0)
 
 
 messaging_env = MessagingEnvConfig()
@@ -531,6 +623,11 @@ class RedisConfig(BaseModel):
     port: int = 6379
     password: str | None = None
     db: int = 0
+    # Set through the admin UI and stored in the encrypted KV config. Kept on
+    # the model so it reaches `RedisConnectionConfig.from_host_port(tls=...)`:
+    # an install that enabled TLS there has no `REDIS_TLS_ENABLED` env var,
+    # and dropping the flag connects it in plaintext.
+    tls: bool = False
 
 
 class RedisStreamsConfig(RedisConfig):

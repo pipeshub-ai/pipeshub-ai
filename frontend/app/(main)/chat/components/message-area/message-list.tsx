@@ -1,23 +1,27 @@
 'use client';
 
-import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
 import { debugLog } from '../../debug-logger';
 import { ASK_MORE_QUESTION_SETS, chatContentColumnStyle } from '../../constants';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AppliedFilters, AskUserQuestionPayload, AttachmentRef, ChatArtifact, MessagePart } from '../../types';
-import type { ConfidenceLevel, ModelInfo } from '../../types';
+import type { ChatArtifact, MessagePart } from '../../types';
 import type { CitationMaps } from './response-tabs/citations';
 import { emptyCitationMaps, useCitationActions, isCitationPopoverKeyStillValid } from './response-tabs/citations';
 import { useInlineCitationPopoverStore } from './response-tabs/citations/citation-popover-store';
 import { InlineCitationPopoverHost } from './response-tabs/citations/inline-citation-popover-host';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { loadOlderMessagesForSlot } from '../../streaming';
 import { parseArtifactMarkers } from '../../utils/parse-download-markers';
+import { buildMessagePairs, extractTextContent } from './message-pairs';
+import type { MessagePair } from './message-pairs';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { shouldShowJumpToNewest } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -50,42 +54,10 @@ function isStreamingFlushWithBottom(el: HTMLElement): boolean {
 const EMPTY_STRING = '';
 const EMPTY_CITATION_MAPS: CitationMaps = emptyCitationMaps();
 
-/**
- * Extract text content from assistant-ui message content array
- */
-function extractTextContent(content: readonly { type: string; text?: string }[]): string {
-  return content
-    .filter((part) => part.type === 'text' && part.text)
-    .map((part) => part.text)
-    .join('');
-}
+/** Same band the design hangs behind its composer group; a taller one stretches the ramp thin. */
+const COMPOSER_BLUR_HEIGHT_PX = 180;
 
-
-interface MessagePair {
-  key: string;
-  /** Backend _id of the bot_response message (used for regenerate) */
-  messageId?: string;
-  question: string;
-  answer: string;
-  citationMaps: CitationMaps;
-  confidence?: ConfidenceLevel;
-  isStreaming: boolean;
-  modelInfo?: ModelInfo;
-  feedbackInfo?: { value?: 'like' | 'dislike' };
-  /** Collections attached to this message (from user message metadata) */
-  collections?: Array<{ id: string; name: string }>;
-  appliedFilters?: AppliedFilters;
-  /** ISO timestamp of when the user sent this query */
-  createdAt?: string;
-  /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
-  attachments?: AttachmentRef[];
-  /** Persisted ask_user_question payload from a historical tool_call (read-only display) */
-  persistedAskUserQuestion?: AskUserQuestionPayload;
-  /** Persisted agent-activity transcript (absent for older / legacy-protocol messages) */
-  persistedParts?: MessagePart[];
-}
-
-export function MessageList() {
+export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
@@ -150,6 +122,7 @@ export function MessageList() {
 
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const spacerRef = useRef<HTMLDivElement>(null);
+  const composerDockRef = useRef<HTMLDivElement>(null);
   const citationCallbacks = useCitationActions();
   const messageRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const prevPairCountRef = useRef(0);
@@ -212,7 +185,7 @@ export function MessageList() {
     streamingScrollTopRef.current = scrollContainerRef.current.scrollTop;
   }
 
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
   // Use useThread to get reactive thread state
@@ -236,98 +209,17 @@ export function MessageList() {
   }, []);
 
   // Build message pairs (user question + assistant answer) in chronological order
-  const messagePairs = useMemo<MessagePair[]>(() => {
-    const pairs: MessagePair[] = [];
-    const messages = thread.messages;
-    // Only the *last* assistant in the thread can be the live SSE target for a
-    // new send. (Never use `!content` alone: agent threads can retain empty
-    // `content` on older rows after a bad load or edge case, which would paint
-    // the current stream + citations onto every such row.)
-    let lastAssistantIndex = -1;
-    for (let j = 0; j < messages.length; j += 1) {
-      if (messages[j].role === 'assistant') {
-        lastAssistantIndex = j;
-      }
-    }
-
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (msg.role === 'assistant') {
-        const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-
-        const metadata = (msg as { metadata?: { custom?: {
-          messageId?: string;
-          citationMaps?: CitationMaps;
-          confidence?: ConfidenceLevel;
-          modelInfo?: ModelInfo;
-          feedbackInfo?: { value?: 'like' | 'dislike' };
-          persistedAskUserQuestion?: AskUserQuestionPayload;
-          persistedParts?: MessagePart[];
-        } } }).metadata?.custom as {
-          messageId?: string;
-          citationMaps?: CitationMaps;
-          confidence?: ConfidenceLevel;
-          modelInfo?: ModelInfo;
-          feedbackInfo?: { value?: 'like' | 'dislike' };
-          persistedAskUserQuestion?: AskUserQuestionPayload;
-          persistedParts?: MessagePart[];
-        } | undefined;
-
-        // Find preceding user message
-        const prevMsg = i > 0 ? messages[i - 1] : null;
-        const question = prevMsg?.role === 'user'
-          ? extractTextContent(prevMsg.content as { type: string; text?: string }[])
-          : 'Question';
-
-        // Check if this message is being regenerated
-        const isBeingRegenerated = !!regenerateMessageId && metadata?.messageId === regenerateMessageId;
-
-        // Live stream attaches only to the last assistant in the thread when
-        // its user message matches the query we sent (see placeholder assistant
-        // in `streamMessageForSlot`).
-        const isLastAssistant = i === lastAssistantIndex;
-        const isCurrentlyStreaming =
-          isStreaming && isLastAssistant && question === streamingQuestion;
-
-        // appliedFilters from the preceding user message metadata
-        const userMsgCustom = prevMsg?.metadata?.custom as {
-          collections?: Array<{ id: string; name: string }>;
-          appliedFilters?: AppliedFilters;
-          createdAt?: string;
-          attachments?: AttachmentRef[];
-        } | undefined;
-        const userMessageCollections = userMsgCustom?.collections as Array<{ id: string; name: string }> | undefined;
-        const userMessageAppliedFilters = userMsgCustom?.appliedFilters as AppliedFilters | undefined;
-        const userCreatedAt = userMsgCustom?.createdAt;
-        const userMessageAttachments = userMsgCustom?.attachments as AttachmentRef[] | undefined;
-
-
-        pairs.push({
-          key: msg.id ?? `asst-${i}`,
-          messageId: metadata?.messageId,
-          question,
-          answer: isBeingRegenerated ? '' : content,
-          citationMaps: (isCurrentlyStreaming || isBeingRegenerated)
-            ? EMPTY_CITATION_MAPS
-            : (metadata?.citationMaps || EMPTY_CITATION_MAPS),
-          confidence: metadata?.confidence,
-          isStreaming: isCurrentlyStreaming || isBeingRegenerated,
-          modelInfo: metadata?.modelInfo,
-          feedbackInfo: metadata?.feedbackInfo,
-          collections: isCurrentlyStreaming
-            ? (pendingCollections.length > 0 ? pendingCollections : userMessageCollections)
-            : userMessageCollections,
-          appliedFilters: userMessageAppliedFilters,
-          createdAt: userCreatedAt,
-          attachments: userMessageAttachments,
-          persistedAskUserQuestion: metadata?.persistedAskUserQuestion,
-          persistedParts: metadata?.persistedParts,
-        });
-      }
-    }
-
-    return pairs;
-  }, [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]);
+  const messagePairs = useMemo<MessagePair[]>(
+    () =>
+      buildMessagePairs(thread.messages, {
+        isStreaming,
+        streamingQuestion,
+        pendingCollections,
+        regenerateMessageId,
+        emptyCitationMaps: EMPTY_CITATION_MAPS,
+      }),
+    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+  );
 
   // The highest version any message in this conversation has shown for a
   // given artifact `recordId`. Every version bump re-registers the SAME
@@ -357,11 +249,31 @@ export function MessageList() {
     return versions;
   }, [thread.messages, isStreaming, streamingArtifacts]);
 
+  const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
+
   // Ref-mirror of messagePairs — lets scroll effects read the latest pairs
   // without having the full array in their dependency list (which would cause
   // effect #2 to re-run and cancel its rAF on every render during streaming).
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
+
+  // ── Jump to newest ─────────────────────────────────────────────────
+  const [showJumpToNewest, setShowJumpToNewest] = useState(false);
+  const updateJumpToNewestVisibility = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) {
+      setShowJumpToNewest(false);
+      return;
+    }
+    setShowJumpToNewest(
+      shouldShowJumpToNewest(
+        lastEl.getBoundingClientRect().bottom,
+        container.getBoundingClientRect().bottom,
+      ),
+    );
+  }, []);
 
   // Clear orphaned inline-citation key when a message row is replaced (e.g. after stream complete)
   const citationOpenKey = useInlineCitationPopoverStore((s) => s.activeKey);
@@ -402,6 +314,7 @@ export function MessageList() {
     lastMessageHeight: number;
     scrollHeight: number;
     scrollTop: number;
+    composerHeight: number;
   }) => {
     if (messageRefs.current.size === 0 || !lastMessageKeyRef.current || !scrollContainerRef.current) {
       if (spacerRef.current) spacerRef.current.style.minHeight = '0';
@@ -426,6 +339,9 @@ export function MessageList() {
     const lastMessageHeight = measured?.lastMessageHeight ?? element.getBoundingClientRect().height;
     const totalScrollHeight = measured?.scrollHeight ?? container.scrollHeight;
     const scrollTop = measured?.scrollTop ?? container.scrollTop;
+    // The composer dock is in this scroller's flow (sticky at the bottom), so
+    // it already pads the tail; the spacer only makes up the rest.
+    const composerHeight = measured?.composerHeight ?? composerDockRef.current?.offsetHeight ?? 0;
     const isOverflowing = totalScrollHeight > containerHeight;
 
     let needed = 0;
@@ -435,7 +351,7 @@ export function MessageList() {
     // On desktop: add spacer only when content overflows or user has scrolled
     // away from the top (avoids unnecessary scrollbar on short conversations).
     if (!isMobileRef.current && (isOverflowing || scrollTop > 0)) {
-      needed = Math.max(0, containerHeight - lastMessageHeight);
+      needed = Math.max(0, containerHeight - composerHeight - lastMessageHeight);
     }
 
     if (spacerRef.current) {
@@ -444,7 +360,7 @@ export function MessageList() {
         spacerRef.current.style.minHeight = next;
       }
     }
-    debugLog.spacer(`containerH=${containerHeight} lastMsgH=${Math.round(lastMessageHeight)} overflow=${isOverflowing} → spacer=${needed}`);
+    debugLog.spacer(`containerH=${containerHeight} composerH=${composerHeight} lastMsgH=${Math.round(lastMessageHeight)} overflow=${isOverflowing} → spacer=${needed}`);
   }, []);
 
   /**
@@ -559,17 +475,18 @@ export function MessageList() {
     const containerHeight = container.clientHeight;
     const scrollTop = container.scrollTop;
     const scrollHeight = container.scrollHeight;
+    const composerHeight = composerDockRef.current?.offsetHeight ?? 0;
 
     recalcSpacerHeight({
       containerHeight,
       lastMessageHeight: elementRect.height,
       scrollHeight,
       scrollTop,
+      composerHeight,
     });
 
-    // Composer sits outside this scroll container (flex sibling), so clientHeight
-    // is already the visible message viewport — do not subtract input height again.
-    const visibleHeight = containerHeight;
+    // The composer dock overlays the bottom of this scroller.
+    const visibleHeight = containerHeight - composerHeight;
 
     let nextTop: number;
     if (elementRect.height <= visibleHeight) {
@@ -644,6 +561,8 @@ export function MessageList() {
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distFromBottom = scrollHeight - scrollTop - clientHeight;
 
+    updateJumpToNewestVisibility();
+
     if (isStreamingRef.current) {
       const flushWithBottom = isStreamingFlushWithBottom(container);
 
@@ -688,7 +607,7 @@ export function MessageList() {
     ) {
       triggerLoadOlderMessages();
     }
-  }, [runStreamingBottomResume, triggerLoadOlderMessages]);
+  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -728,9 +647,10 @@ export function MessageList() {
         } else {
           recalcSpacerHeight();
         }
+        updateJumpToNewestVisibility();
       });
     };
-  }, [recalcSpacerHeight, syncStreamingMessageTail]);
+  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility]);
 
   // ── Cleanup auto-scroll timeout on unmount ──
   useEffect(() => {
@@ -903,6 +823,13 @@ export function MessageList() {
   // this effect would re-run on every render, its cleanup would cancel the
   // pending rAF each time, and the ResizeObserver would never be connected.
   // We read the latest pairs via `messagePairsRef.current` inside the effect.
+  //
+  // The last pair's key IS a dep, and by value, so it costs nothing during
+  // streaming (the placeholder assistant's key does not change while it
+  // streams). It is needed because the last row can be replaced without the
+  // count moving: Stop before the first token swaps the placeholder row for
+  // the unanswered-question row, and without this the observer would stay on
+  // the element that just left the DOM.
   useEffect(() => {
     // Clean up previous observer
     if (lastMessageObserverRef.current) {
@@ -957,9 +884,14 @@ export function MessageList() {
         lastMessageObserverRef.current = null;
       }
     };
-  }, [messagePairs.length, recalcSpacerHeight, throttledResize]);
+  }, [messagePairs.length, lastPairKey, recalcSpacerHeight, throttledResize]);
 
-  // ── 3. ResizeObserver on scroll container (window resize) ─────────
+  useEffect(() => {
+    if (messagePairs.length === 0) setShowJumpToNewest(false);
+  }, [messagePairs.length]);
+
+  // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
+  const hasComposer = composer != null;
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -968,9 +900,10 @@ export function MessageList() {
       recalcSpacerHeight();
     });
     observer.observe(container);
+    if (composerDockRef.current) observer.observe(composerDockRef.current);
 
     return () => observer.disconnect();
-  }, [recalcSpacerHeight]);
+  }, [recalcSpacerHeight, hasComposer]);
 
   // ── 3b. Streaming→final scroll-position guard ────────────────────
   // When the assistant-ui runtime atomically swaps the streaming message for
@@ -1110,7 +1043,19 @@ export function MessageList() {
     [threadRuntime]
   );
 
+  // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
+  const handleJumpToNewest = useCallback(() => {
+    lastTailSyncScrollTopRef.current = -1;
+    executeScroll({
+      target: 'bottom-of-container',
+      behavior: 'smooth',
+      chatBecameActive: true,
+    });
+  }, [executeScroll]);
+
+  // The button belongs to the viewport, so it sits beside the scroller, not inside it.
   return (
+    <Box style={{ position: 'relative', flex: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column' }}>
     <Box
       ref={scrollContainerRef}
       onScroll={handleScroll}
@@ -1129,11 +1074,15 @@ export function MessageList() {
         // writes scrollTop every frame) — native scroll anchoring would otherwise
         // fight those writes whenever streamed table/content geometry shifts.
         overflowAnchor: isStreaming ? 'none' : 'auto',
+        // Column so the composer dock can sit at the bottom of a short transcript.
+        display: 'flex',
+        flexDirection: 'column',
       }}
     >
       <Box
         style={{
           ...chatContentColumnStyle(isMobile),
+          flexShrink: 0,
           margin: '0 auto',
           paddingTop: 'var(--space-4)',
           paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-5)',
@@ -1173,6 +1122,7 @@ export function MessageList() {
                   attachments={pair.attachments}
                   messageId={pair.messageId}
                   isLastMessage={isLast}
+                  rowId={pair.key}
                   citationMessageRowKey={pair.key}
                   createdAt={pair.createdAt}
                   streamingContent={pair.isStreaming ? streamingContent : undefined}
@@ -1183,7 +1133,11 @@ export function MessageList() {
                   latestArtifactVersions={latestArtifactVersions}
                   persistedParts={pair.persistedParts}
                   persistedAskUserQuestion={pair.persistedAskUserQuestion}
+                  persistedAskUserQuestionAnswers={pair.persistedAskUserQuestionAnswers}
                   feedbackInfo={pair.feedbackInfo}
+                  status={pair.status}
+                  streamError={pair.streamError}
+                  unanswered={pair.unanswered}
                 />
 
                 {/* Ask More — follow-up suggestions after the last bot response.
@@ -1223,10 +1177,71 @@ export function MessageList() {
         aria-hidden="true"
       />
 
+      {/* Inside the scroller, not a sibling: the scrollbar runs to the bottom of
+          the pane, the transcript passes behind the composer, and a wheel over
+          the composer scrolls the transcript. */}
+      {hasComposer && (
+        <Box
+          ref={composerDockRef}
+          style={{
+            position: 'sticky',
+            bottom: 0,
+            marginTop: 'auto',
+            flexShrink: 0,
+            zIndex: 2,
+            overflowAnchor: 'none',
+            // Only the composer column takes clicks; the gutters on either side
+            // leave the transcript underneath selectable.
+            pointerEvents: 'none',
+          }}
+        >
+          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          <Flex
+            direction="column"
+            align="center"
+            style={{ position: 'relative', paddingBottom: isMobile ? 'var(--space-2)' : 0 }}
+          >
+            {composer}
+          </Flex>
+        </Box>
+      )}
+
       {/* Single inline-citation popover host for the whole message list. It's
           driven by the zustand store so only one popover is ever rendered,
           even when the answer contains many citation badges. */}
       <InlineCitationPopoverHost />
+    </Box>
+
+    {showJumpToNewest && (
+      <Box
+        style={{
+          position: 'absolute',
+          bottom: 'var(--space-3)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 2,
+        }}
+      >
+        <IconButton
+          type="button"
+          variant="soft"
+          color="gray"
+          radius="full"
+          size="3"
+          title={t('chat.jumpToNewest')}
+          aria-label={t('chat.jumpToNewest')}
+          onClick={handleJumpToNewest}
+          style={{
+            cursor: 'pointer',
+            background: 'var(--color-panel-solid)',
+            boxShadow: 'var(--shadow-3)',
+            ...(isMobile ? { minWidth: 44, minHeight: 44 } : {}),
+          }}
+        >
+          <MaterialIcon name="arrow_downward" size={20} />
+        </IconButton>
+      </Box>
+    )}
     </Box>
   );
 }

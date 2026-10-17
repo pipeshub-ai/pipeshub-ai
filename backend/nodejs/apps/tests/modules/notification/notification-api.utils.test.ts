@@ -9,6 +9,7 @@ import {
   encodeCursor,
   InvalidNotificationCursorError,
   paginateResults,
+  resolveNotificationAuthContext,
   retentionCutoff,
   DEFAULT_PAGE_SIZE,
   MAX_PAGE_SIZE,
@@ -23,11 +24,13 @@ describe('notification/notification-api.utils', () => {
     expect(cutoff.toISOString()).to.equal(expected.toISOString());
   });
 
-  it('buildRetentionFilter scopes to user and retention window', () => {
+  it('buildRetentionFilter scopes to org, user and retention window', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
     const before = retentionCutoff().getTime();
-    const filter = buildRetentionFilter(userOid, null);
+    const filter = buildRetentionFilter(orgOid, userOid, null);
     const after = retentionCutoff().getTime();
+    expect(filter.orgId).to.equal(orgOid);
     expect(filter.assignedTo).to.equal(userOid);
     expect(filter.isDeleted).to.equal(false);
     const createdAtFilter = filter.createdAt as { $gte: Date };
@@ -40,15 +43,41 @@ describe('notification/notification-api.utils', () => {
   });
 
   it('buildRetentionFilter includes all statuses when includeArchived=true', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(userOid, null, true);
+    const filter = buildRetentionFilter(orgOid, userOid, null, true);
     expect(filter.status).to.be.undefined;
   });
 
   it('buildRetentionFilter includes status when provided', () => {
+    const orgOid = new mongoose.Types.ObjectId();
     const userOid = new mongoose.Types.ObjectId();
-    const filter = buildRetentionFilter(userOid, 'unread');
+    const filter = buildRetentionFilter(orgOid, userOid, 'unread');
     expect(filter.status).to.equal('unread');
+  });
+
+  it('resolveNotificationAuthContext returns ObjectIds for a valid user', () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const orgId = new mongoose.Types.ObjectId().toString();
+    const context = resolveNotificationAuthContext({ userId, orgId });
+    if (!context) {
+      throw new Error('expected resolveNotificationAuthContext to return a context');
+    }
+    expect(context.userOid.toString()).to.equal(userId);
+    expect(context.orgOid.toString()).to.equal(orgId);
+  });
+
+  it('resolveNotificationAuthContext returns null when userId is missing or invalid', () => {
+    const orgId = new mongoose.Types.ObjectId().toString();
+    expect(resolveNotificationAuthContext(undefined)).to.be.null;
+    expect(resolveNotificationAuthContext({ orgId })).to.be.null;
+    expect(resolveNotificationAuthContext({ userId: 'not-an-id', orgId })).to.be.null;
+  });
+
+  it('resolveNotificationAuthContext returns null when orgId is missing or invalid', () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    expect(resolveNotificationAuthContext({ userId })).to.be.null;
+    expect(resolveNotificationAuthContext({ userId, orgId: 'not-an-id' })).to.be.null;
   });
 
   it('clampPageSize defaults and caps', () => {

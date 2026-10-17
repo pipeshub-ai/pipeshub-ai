@@ -138,6 +138,43 @@ async def sync_until_names_visible(
     return await graph_provider.count_records(connector_id)
 
 
+
+async def sync_until_names_absent(
+    pipeshub_client: "PipeshubClient",
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    names: list[str],
+    *,
+    max_attempts: int = DEFAULT_MAX_SYNC_ATTEMPTS,
+    sync_timeout: int = DEFAULT_SYNC_TIMEOUT_SEC,
+    name_grace_timeout: int = DEFAULT_NAME_GRACE_TIMEOUT_SEC,
+) -> None:
+    """Restart sync until no record carries any of *names*; the mirror of sync_until_names_visible."""
+
+    async def _all_absent() -> bool:
+        for name in names:
+            if await graph_provider.get_record_by_name(connector_id, name) is not None:
+                return False
+        return True
+
+    for _ in range(max_attempts):
+        restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(
+            pipeshub_client,
+            graph_provider,
+            connector_id,
+            timeout=sync_timeout,
+        )
+        if await _all_absent():
+            return
+    await wait_until_graph_condition(
+        connector_id,
+        check=_all_absent,
+        timeout=name_grace_timeout,
+        poll_interval=5,
+        description=f"removal of {names}",
+    )
+
 async def assert_incremental_new_files(
     graph_provider: "GraphProviderProtocol",
     connector_id: str,
@@ -152,3 +189,39 @@ async def assert_incremental_new_files(
         f"before={before_count}, after={after_count} (connector {connector_id})"
     )
     await graph_provider.assert_record_paths_or_names_contain(connector_id, new_names)
+
+
+async def wait_for_record_reindex(
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    record_name: str,
+    before_version: object,
+    *,
+    timeout: int = 180,
+    poll_interval: int = 5,
+) -> dict:
+    """Wait until *record_name*'s version differs from *before_version*.
+
+    An in-place update leaves the record count unchanged, so waiting on the
+    count returns immediately and a version read straight afterwards races the
+    re-index — a connector that is merely slow looks identical to one that
+    ignored the change. This waits for the thing the caller is about to assert.
+
+    Returns the record once its version has moved; raises on timeout.
+    """
+    async def _reindexed() -> bool:
+        record = await graph_provider.get_record_by_name(connector_id, record_name)
+        return record is not None and record.get("version") != before_version
+
+    await wait_until_graph_condition(
+        connector_id,
+        check=_reindexed,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        description=f"re-index of {record_name}",
+    )
+    record = await graph_provider.get_record_by_name(connector_id, record_name)
+    assert record is not None, (
+        f"{record_name} vanished between the re-index check and reading it back"
+    )
+    return record

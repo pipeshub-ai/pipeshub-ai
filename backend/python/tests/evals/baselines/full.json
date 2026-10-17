@@ -1,0 +1,24 @@
+{
+  "placeholder": true,
+  "note": "No real run has happened yet: the CI AI account was out of credit when this landed. The first scheduled 'full' run writes the numbers; replace this file with that run's JSON to start comparing.",
+  "schema_version": 1,
+  "benchmark": "answer_quality",
+  "environment": {
+    "case_set": "full",
+    "provider": "openai",
+    "model": "gpt-4o-mini",
+    "max_turns": 8
+  },
+  "metrics": {
+    "cases_total": 0,
+    "cases_ran": 0,
+    "cases_passed": 0,
+    "cases_skipped": 0,
+    "pass_rate": 0.0,
+    "requests": 0,
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "cost_usd": null
+  },
+  "cases": []
+}

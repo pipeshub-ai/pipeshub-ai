@@ -14,7 +14,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from fastapi import HTTPException
 
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.github_teams.comments import CommentsHelper
 from app.connectors.sources.github_teams.common.utils import epoch_ms_or_now
 from app.connectors.sources.github_teams.pull_requests import PullRequestsSync
@@ -183,6 +185,20 @@ class TestProcessPullRequest:
 
         assert ru.record.creator_name == "author-carol"
         assert ru.record.review_name == ["rev-dave", "rev-erin"]
+
+    async def test_names_the_issues_and_addresses_in_its_text(self) -> None:
+        """A PR is joined to the Jira issue its title names and the records its
+        description links to, in whichever connector holds them."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        sync = PullRequestsSync(c)
+        pr = _pr(number=5, title="PA-1844: fix the export")
+        pr.body = "Follow-up of https://acme.atlassian.net/browse/PA-1718"
+        ru = await sync.process_pull_request(repo, pr)
+
+        related = ru.record.related_external_records
+        assert [r.weburl for r in related if r.weburl] == ["https://acme.atlassian.net/browse/PA-1718"]
+        assert [r.issue_key for r in related if r.issue_key] == ["PA-1844"]
 
     async def test_maps_fields_for_open_pr(self) -> None:
         c = make_mock_connector()
@@ -389,19 +405,25 @@ class TestPrMappingAndFetchEdges:
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="10/pull/5",
         )
-        with pytest.raises(Exception, match="Repository id not found"):
+        with pytest.raises(HTTPException) as exc:
             await PullRequestsSync(make_mock_connector()).build_pull_request_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
 
     async def test_build_blocks_repo_failure_raises(self) -> None:
         c = make_mock_connector()
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_repo_by_id": failed_response("404")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "get_repo_by_id": failed_response(
+                "rate limited", status_code=HttpStatusCode.TOO_MANY_REQUESTS.value
+            ),
+        })
         record = PullRequestRecord(
             id="r1", org_id="org-1", record_name="x", record_type="PULL_REQUEST",
             version=0, origin="CONNECTOR", connector_name="GITHUB TEAMS", connector_id="c-1",
             external_record_id="10/pull/5", external_record_group_id="10-pull-requests",
         )
-        with pytest.raises(Exception, match="Failed to resolve repo"):
+        with pytest.raises(HTTPException) as exc:
             await PullRequestsSync(c).build_pull_request_blocks(record)
+        assert exc.value.status_code == HttpStatusCode.TOO_MANY_REQUESTS.value
 
 
 class TestBuildPullRequestBlocks:

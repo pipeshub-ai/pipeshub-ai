@@ -5,6 +5,12 @@ import {
   BadRequestError,
   InternalServerError,
 } from '../../../libs/errors/http.errors';
+import { HttpError } from '../../../libs/errors/http.errors';
+import {
+  keepDeliberateWording,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 
@@ -12,6 +18,8 @@ interface SendMailResponse {
   statusCode: number;
   data: any;
 }
+
+const SEND_MAIL_TIMEOUT_MS = 30_000;
 
 @injectable()
 export class MailService {
@@ -67,6 +75,7 @@ export class MailService {
           'Content-Type': 'application/json',
         },
         data,
+        timeout: SEND_MAIL_TIMEOUT_MS,
       };
 
       const response = await axios(config);
@@ -81,8 +90,10 @@ export class MailService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Sending the email failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('send that email')),
       );
     }
   }

@@ -1,8 +1,16 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
+import type { McpToolRules } from '@/app/(main)/workspace/mcp-servers/types';
 
 const PAGE_SIZE = 20;
+
+/** A toolset instance's tool approval rules, the same for everyone in the organization. */
+export interface ToolsetToolRules extends McpToolRules {
+  /** Whether the caller may change them (an admin). */
+  canEdit: boolean;
+}
 
 /** Backend caps `limit` on my-toolsets and agents toolsets list routes (`le=200` on connector). */
 export const MAX_TOOLSETS_LIST_LIMIT = 200;
@@ -460,6 +468,23 @@ export const ToolsetsApi = {
     return data;
   },
 
+  /** GET /api/v1/toolsets/instances/:instanceId/tool-rules — set by an admin, read by everyone. */
+  async getToolRules(instanceId: string): Promise<ToolsetToolRules> {
+    const { data } = await apiClient.get<ToolsetToolRules>(
+      `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`
+    );
+    return data;
+  },
+
+  /** PUT /api/v1/toolsets/instances/:instanceId/tool-rules — admins only. */
+  async updateToolRules(instanceId: string, rules: McpToolRules): Promise<ToolsetToolRules> {
+    const { data } = await apiClient.put<ToolsetToolRules>(
+      `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`,
+      rules
+    );
+    return data;
+  },
+
   /**
    * GET /api/v1/toolsets/registry — paginated toolset types from the Python registry.
    * Use `group_by_category: false` so results respect `page` / `limit`.
@@ -511,11 +536,16 @@ export const ToolsetsApi = {
    * GET /api/v1/toolsets/instances/:id — full org instance (includes `auth` / authConfig stored on instance).
    * Use for admin hydrate; list rows from my-toolsets may omit or null `auth` for non-OAuth.
    */
-  async getToolsetInstance(instanceId: string): Promise<Record<string, unknown>> {
+  async getToolsetInstance(
+    instanceId: string,
+    options?: { reveal?: boolean }
+  ): Promise<Record<string, unknown>> {
     const { data } = await apiClient.get<{
       status?: string;
       instance?: Record<string, unknown>;
-    }>(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`);
+    }>(`/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`, {
+      params: options?.reveal ? REVEAL_PARAMS : undefined,
+    });
     const body = data ?? {};
     const inst = body.instance;
     if (inst && typeof inst === 'object' && !Array.isArray(inst)) {

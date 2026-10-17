@@ -12,7 +12,7 @@ import tempfile
 
 import pytest
 
-from app.agent_loop_lib.modules.providers.skills.base import SkillSource
+from app.agent_loop_lib.modules.providers.skills.base import SkillSource, SkillStatus, SkillFilter
 from app.agents.agent_loop.skills.builtin_seeder import SEED_IDENTITY, BuiltinSkillSeeder
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from tests.unit.agents.adapter.test_skills_graph_store import FakeGraphProvider
@@ -178,6 +178,58 @@ class TestForkSkip:
         assert skill.metadata.pack_version == "3.0.0"
 
 
+class TestDisableSurvivesUpgrade:
+    async def test_disabled_unmodified_pack_keeps_status_after_upgrade(
+        self, packs_root_v1: str, packs_root_v2: str,
+    ) -> None:
+        """An admin mute is not an org content fork (`updatedBy` stays the
+        seeder), so the next pack upgrade still applies — but must not
+        silently flip the skill back to active."""
+        graph = FakeGraphProvider()
+        seed_store = _seed_store(graph)
+        await BuiltinSkillSeeder(packs_root_v1).sync(seed_store)
+
+        assert await seed_store.set_skill_status("pack-a", SkillStatus.DISABLED) is True
+
+        await BuiltinSkillSeeder(packs_root_v2).sync(seed_store)
+
+        skill = await seed_store.get_skill("pack-a")
+        assert skill.metadata.pack_version == "2.0.0"
+        assert "version 2" in skill.body
+        assert skill.metadata.status == SkillStatus.DISABLED
+
+    async def test_concurrent_enable_is_not_overwritten_by_upgrade(
+        self, packs_root_v1: str, packs_root_v2: str,
+    ) -> None:
+        """If an admin re-enables after the seeder listed the skill as
+        disabled, the upgrade CAS must miss rather than restore DISABLED
+        over the enable."""
+        graph = FakeGraphProvider()
+        seed_store = _seed_store(graph)
+        await BuiltinSkillSeeder(packs_root_v1).sync(seed_store)
+        assert await seed_store.set_skill_status("pack-a", SkillStatus.DISABLED) is True
+
+        class ListThenEnableStore:
+            def __init__(self, inner: GraphSkillStore) -> None:
+                self._inner = inner
+
+            def __getattr__(self, name: str):
+                return getattr(self._inner, name)
+
+            async def list_skills(self, filter: SkillFilter | None = None):
+                listed = await self._inner.list_skills(filter)
+                await self._inner.set_skill_status(
+                    "pack-a", SkillStatus.ACTIVE, from_status=SkillStatus.DISABLED,
+                )
+                return listed
+
+        await BuiltinSkillSeeder(packs_root_v2).sync(ListThenEnableStore(seed_store))  # type: ignore[arg-type]
+
+        skill = await seed_store.get_skill("pack-a")
+        assert skill.metadata.status == SkillStatus.ACTIVE
+        assert skill.metadata.pack_version == "1.0.0"
+
+
 class TestValidationOnLoad:
     def test_pack_with_invalid_frontmatter_is_silently_skipped_by_the_loader(self, tmp_path) -> None:
         """A malformed `name`/`description` never reaches `BuiltinSkillSeeder`
@@ -209,3 +261,75 @@ class TestValidationOnLoad:
         _write_pack(root, "bad-pack", "---\nname: bad-pack\ndescription: x\n---\n\n")
         with pytest.raises(Exception):
             BuiltinSkillSeeder(root)
+
+
+def _write_resource(root: str, pack_name: str, rel_path: str, content: str) -> None:
+    full = os.path.join(root, pack_name, *rel_path.split("/"))
+    os.makedirs(os.path.dirname(full), exist_ok=True)
+    with open(full, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+class TestResourceSeeding:
+    """Regression coverage for the bug fixed in this plan: `BuiltinSkillSeeder`
+    must write a pack's bundled files (`office-utils/scripts/*`,
+    `xlsx/scripts/*` in the real repo) to the graph, not just its SKILL.md
+    text — otherwise SKILL.md instructions like `python skills/office-utils/
+    scripts/unpack.py` fail in every sandbox."""
+
+    async def test_first_sync_writes_bundled_scripts_to_the_graph(self, packs_root_v1: str) -> None:
+        _write_resource(packs_root_v1, "pack-a", "scripts/unpack.py", "print('unpack')")
+        _write_resource(packs_root_v1, "pack-a", "scripts/pack.py", "print('pack')")
+        graph = FakeGraphProvider()
+        seeder = BuiltinSkillSeeder(packs_root_v1)
+        store = _seed_store(graph)
+
+        await seeder.sync(store)
+
+        resources = await store.get_resources("pack-a")
+        assert resources == {
+            "scripts/unpack.py": "print('unpack')",
+            "scripts/pack.py": "print('pack')",
+        }
+
+    async def test_root_level_and_nested_directory_files_are_both_seeded(self, packs_root_v1: str) -> None:
+        """Mirrors the real `docx`/`pdf` pack layout: a root-level reference
+        file plus a non-conventional (not scripts/references/assets)
+        subdirectory of scripts."""
+        _write_resource(packs_root_v1, "pack-a", "forms.md", "# extra reference")
+        _write_resource(packs_root_v1, "pack-a", "ooxml/schema.xsd", "<xsd/>")
+        graph = FakeGraphProvider()
+        seeder = BuiltinSkillSeeder(packs_root_v1)
+        store = _seed_store(graph)
+
+        await seeder.sync(store)
+
+        resources = await store.get_resources("pack-a")
+        assert resources == {"forms.md": "# extra reference", "ooxml/schema.xsd": "<xsd/>"}
+
+    async def test_pycache_and_dotfiles_are_never_seeded(self, packs_root_v1: str) -> None:
+        _write_resource(packs_root_v1, "pack-a", "scripts/run.py", "print(1)")
+        _write_resource(packs_root_v1, "pack-a", "scripts/__pycache__/run.cpython-312.pyc", "\x00binary")
+        _write_resource(packs_root_v1, "pack-a", ".gitignore", "*.pyc")
+        graph = FakeGraphProvider()
+        seeder = BuiltinSkillSeeder(packs_root_v1)
+        store = _seed_store(graph)
+
+        await seeder.sync(store)
+
+        resources = await store.get_resources("pack-a")
+        assert resources == {"scripts/run.py": "print(1)"}
+
+    async def test_unmodified_upgrade_refreshes_bundled_resources_too(
+        self, packs_root_v1: str, packs_root_v2: str,
+    ) -> None:
+        _write_resource(packs_root_v1, "pack-a", "scripts/unpack.py", "print('v1')")
+        _write_resource(packs_root_v2, "pack-a", "scripts/unpack.py", "print('v2')")
+        graph = FakeGraphProvider()
+        store = _seed_store(graph)
+        await BuiltinSkillSeeder(packs_root_v1).sync(store)
+        assert await store.get_resources("pack-a") == {"scripts/unpack.py": "print('v1')"}
+
+        await BuiltinSkillSeeder(packs_root_v2).sync(store)
+
+        assert await store.get_resources("pack-a") == {"scripts/unpack.py": "print('v2')"}

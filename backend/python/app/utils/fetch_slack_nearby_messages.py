@@ -11,7 +11,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Literal, Optional, TYPE_CHECKING, Union
+from typing import Any, Literal, Optional, TYPE_CHECKING, Union
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from langchain_core.tools import tool
@@ -23,6 +23,7 @@ from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = create_logger("fetch_slack_nearby_messages")
 
@@ -430,6 +431,62 @@ def _new_anchor_iso_timestamp(
     return messages[-1].iso_timestamp
 
 
+async def _user_can_read_channel(
+    graph_provider: "IGraphDBProvider",
+    *,
+    connector_id: str,
+    channel_id: str,
+    user_id: str | None,
+    org_id: str,
+    scope_state: dict[str, Any] | None = None,
+) -> bool:
+    """True only if the chat user can access this connector's indexed channel,
+    and the channel lies inside what the turn is limited to (``scope_state``).
+
+    ``connector_id`` and ``channel_id`` come from the model, and the Slack
+    client is built with that connector's token, so the channel must be an
+    indexed group of that connector, in the caller's org, that the user may
+    access, before any live call is made. That also covers the connector: the
+    check admits nothing of an App the user cannot reach.
+    """
+    from app.utils.chat_helpers import accessible_node_ids
+    from app.utils.fetch_slack_thread import resolve_user_key, user_can_access_node
+
+    user_key = await resolve_user_key(graph_provider, user_id)
+    if not user_key:
+        return False
+    try:
+        record_group = await graph_provider.get_record_group_by_external_id(
+            connector_id=connector_id,
+            external_id=channel_id,
+        )
+    except Exception as e:
+        logger.warning(
+            "Channel lookup failed for connector %s channel %s: %s",
+            connector_id, channel_id, e,
+        )
+        return False
+    if not record_group:
+        return False
+    if isinstance(record_group, dict):
+        rg_id = record_group.get("id") or record_group.get("_key")
+        rg_org = record_group.get("org_id") or record_group.get("orgId")
+    else:
+        rg_id = getattr(record_group, "id", None)
+        rg_org = getattr(record_group, "org_id", None)
+    if not rg_id or rg_org != org_id:
+        return False
+    if not await user_can_access_node(graph_provider, rg_id, user_key, org_id):
+        return False
+    if rg_id not in await accessible_node_ids(graph_provider, {rg_id}, user_id or "", org_id):
+        return False
+    if scope_state is None:
+        return True
+    from app.agents.actions.knowledge_graph.ops.scope import ids_within_scope
+
+    return rg_id in await ids_within_scope(scope_state, graph_provider, user_key, org_id, [rg_id])
+
+
 async def _fetch_nearby_messages_impl(
     timestamp: str,
     direction: NearbyDirection,
@@ -439,6 +496,10 @@ async def _fetch_nearby_messages_impl(
     timezone_name: str | None = None,
     limit: int = _DEFAULT_NEARBY_MESSAGE_LIMIT,
     config_service: Optional["ConfigurationService"] = None,
+    graph_provider: "IGraphDBProvider | None" = None,
+    org_id: str | None = None,
+    user_id: str | None = None,
+    scope_state: dict[str, Any] | None = None,
 ) -> FetchSlackNearbyMessagesResult:
     """Core implementation: resolve Slack client and fetch nearby messages."""
     if not config_service:
@@ -446,6 +507,16 @@ async def _fetch_nearby_messages_impl(
             error=(
                 "Slack nearby-messages tool requires config_service to build a Slack client."
             ),
+        )
+    if not graph_provider:
+        return FetchSlackNearbyMessagesError(
+            error="Slack nearby-messages tool requires graph_provider to check access.",
+        )
+
+    effective_org = (org_id or "").strip()
+    if not effective_org:
+        return FetchSlackNearbyMessagesError(
+            error="Slack nearby-messages tool could not determine org_id from the chat.",
         )
 
     effective_connector_id = (connector_id or "").strip()
@@ -460,6 +531,22 @@ async def _fetch_nearby_messages_impl(
     channel = (channel_id or "").strip()
     if not channel:
         return FetchSlackNearbyMessagesError(error="channel_id is required.")
+
+    if not await _user_can_read_channel(
+        graph_provider,
+        connector_id=effective_connector_id,
+        channel_id=channel,
+        user_id=user_id,
+        org_id=effective_org,
+        scope_state=scope_state,
+    ):
+        return FetchSlackNearbyMessagesError(
+            error=(
+                f"Channel '{channel}' was not found for connector "
+                f"'{effective_connector_id}' or you don't have access to it. "
+                "Use the channel and Connector ID from a Slack record in context."
+            ),
+        )
 
     try:
         anchor_ts = _iso_to_slack_ts(timestamp, timezone_name)
@@ -512,8 +599,17 @@ async def _fetch_nearby_messages_impl(
 
 def create_fetch_slack_nearby_messages_tool(
     config_service: Optional["ConfigurationService"] = None,
+    graph_provider: "IGraphDBProvider | None" = None,
+    org_id: str | None = None,
+    user_id: str | None = None,
+    tool_state: dict[str, Any] | None = None,
 ) -> Callable:
-    """Return a LangChain tool with Slack client dependencies bound."""
+    """Return a LangChain tool with Slack client dependencies bound.
+
+    ``graph_provider``, ``org_id`` and ``user_id`` are required for the
+    per-user channel access check; without them every call fails.
+    ``tool_state`` carries the turn's filters, which bound the channels.
+    """
 
     @tool("fetch_slack_nearby_messages", args_schema=FetchSlackNearbyMessagesArgs)
     async def fetch_slack_nearby_messages_tool(
@@ -550,6 +646,10 @@ def create_fetch_slack_nearby_messages_tool(
                 timezone_name=timezone,
                 limit=limit,
                 config_service=config_service,
+                graph_provider=graph_provider,
+                org_id=org_id,
+                user_id=user_id,
+                scope_state=tool_state,
             )
         except Exception as e:
             logger.exception("fetch_slack_nearby_messages_tool failed")

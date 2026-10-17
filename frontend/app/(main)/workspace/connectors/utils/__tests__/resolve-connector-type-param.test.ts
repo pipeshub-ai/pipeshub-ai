@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it } from 'vitest';
 import {
   normalizeConnectorTypeKey,
   resolveConnectorTypeParam,
@@ -33,6 +33,13 @@ describe('resolveConnectorTypeParam', () => {
       resolveConnectorTypeParam('sharepoint online', registry, []),
       'SharePoint Online',
     );
+  });
+
+  it('resolves hyphenated and enum-style params for spaced names', () => {
+    // Links like ?connectorType=sharepoint-online never matched before the
+    // key stripped hyphens, underscores and spaces.
+    assert.equal(resolveConnectorTypeParam('sharepoint-online', registry, []), 'SharePoint Online');
+    assert.equal(resolveConnectorTypeParam('SHAREPOINT_ONLINE', registry, []), 'SharePoint Online');
   });
 
   it('falls back to active connectors when not in registry', () => {

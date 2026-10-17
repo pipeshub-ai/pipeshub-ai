@@ -24,6 +24,7 @@ from app.agents.agent_loop.domain_agents import (
     compose_domain_agents,
 )
 from app.agents.agent_loop.tool_loader import _KNOWLEDGE_TOOLSETS
+from app.modules.agents.context.source_catalog import SourceCatalog
 
 
 # ---------------------------------------------------------------------------
@@ -167,6 +168,7 @@ class TestNavigationToolsInTopLevelResidual:
         context = MagicMock()
         context.agent_knowledge = []
         context.connector_configs = {}
+        context.get_source_catalog.return_value = SourceCatalog.from_state({})
 
         top_names = compose_domain_agents(
             registry, runtime, context,
@@ -185,6 +187,7 @@ class TestNavigationToolsSharedWithChildren:
         context = MagicMock()
         context.agent_knowledge = []
         context.connector_configs = {}
+        context.get_source_catalog.return_value = SourceCatalog.from_state({})
 
         nav_tool_names = frozenset({
             "knowledgegraph__navigate",

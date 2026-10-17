@@ -3,9 +3,11 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 
 import {
+  AI_PUBLIC_CONFIG_KEYS,
   CONFIG_SECRET_PLACEHOLDER,
-  maskAiModelEntry,
-  maskAiModelsStoredConfig,
+  mergeAiModelCredentials,
+  stripAiModelSecrets,
+  stripAiModelsStoredConfig,
   maskSmtpConfig,
   mergeSmtpConfigPlaceholders,
   maskGoogleAuthConfig,
@@ -13,90 +15,136 @@ import {
   maskOAuthConfig,
   maskGithubAuthConfig,
   maskWebSearchProvider,
+  maskWebSearchProviderForMember,
   mergeWebSearchProviderPlaceholders,
+  maskSlackBotConfig,
+  mergeSlackBotConfigPlaceholders,
 } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 
+const strip = (entry: unknown) => stripAiModelSecrets(entry as any) as any
+
 describe('maskConfigSecrets', () => {
-  describe('maskAiModelEntry', () => {
-    it('should mask secret fields but keep model/modelName/modelFriendlyName', () => {
+  describe('stripAiModelSecrets', () => {
+    it('should return only the public allowlist keys, as stored', () => {
       const entry = {
-        provider: 'openai',
+        provider: 'azureOpenAI',
         configuration: {
-          model: 'gpt-4o', modelName: 'GPT-4o', modelFriendlyName: 'GPT 4o',
-          apiKey: 'sk-secret123', endpoint: 'https://api.openai.com', organizationId: 'org-abc',
+          model: 'text-embedding-3-small', modelName: 'GPT-4o', modelFriendlyName: 'abc',
+          region: 'us-east-1', dimensions: '', defaultReasoningEffort: 'low',
+          apiKey: 'sk-secret123', endpoint: 'https://api.openai.com',
+          deploymentName: 'my-deployment', awsAccessKeyId: 'AKIA', awsAccessSecretKey: 'shh',
+          serviceAccountJson: '{"private_key":"x"}',
         },
         modelKey: 'mk-1',
+        isDefault: true,
       }
-      const result = maskAiModelEntry(entry as any)
-      expect(result.configuration.model).to.equal('gpt-4o')
-      expect(result.configuration.modelName).to.equal('GPT-4o')
-      expect(result.configuration.modelFriendlyName).to.equal('GPT 4o')
-      expect(result.configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
-      expect(result.configuration.endpoint).to.equal(CONFIG_SECRET_PLACEHOLDER)
-      expect(result.provider).to.equal('openai')
-      expect(result.modelKey).to.equal('mk-1')
+      const result = strip(entry).configuration as Record<string, unknown>
+      expect(result).to.deep.equal({
+        model: 'text-embedding-3-small',
+        modelFriendlyName: 'abc',
+        dimensions: '',
+        defaultReasoningEffort: 'low',
+      })
+      expect(Object.keys(result)).to.have.members([...AI_PUBLIC_CONFIG_KEYS])
+      expect(strip(entry).provider).to.equal('azureOpenAI')
+      expect(strip(entry).modelKey).to.equal('mk-1')
+      expect(strip(entry).isDefault).to.equal(true)
+      expect(strip(entry).configuredFields).to.include('apiKey')
+      expect(strip(entry).configuredFields).to.include('endpoint')
+      expect(JSON.stringify(strip(entry).configuredFields)).to.not.include('sk-secret')
     })
 
-    it('should not mask empty string values', () => {
+    it('should omit an allowlist key that was never stored', () => {
       const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: '' } }
-      const result = maskAiModelEntry(entry as any)
-      expect(result.configuration.apiKey).to.equal('')
+      const result = strip(entry).configuration as Record<string, unknown>
+      expect(result).to.deep.equal({ model: 'gpt-4' })
     })
 
-    it('should not mask non-string values', () => {
-      const entry = { provider: 'openai', configuration: { model: 'gpt-4', maxTokens: 4096, streaming: true } }
-      const result = maskAiModelEntry(entry as any)
-      expect(result.configuration.maxTokens).to.equal(4096)
+    it('should drop provider-specific and credential keys', () => {
+      const entry = { provider: 'new', configuration: { model: 'm', clientSecret: 'shh', accessToken: 't', voice: 'alloy' } }
+      const result = strip(entry).configuration as Record<string, unknown>
+      expect(result).to.deep.equal({ model: 'm' })
     })
 
     it('should return entry unchanged when configuration is null', () => {
       const entry = { provider: 'openai', configuration: null }
-      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
+      expect(strip(entry)).to.deep.equal(entry)
     })
 
     it('should return entry unchanged when configuration is not object', () => {
       const entry = { provider: 'openai', configuration: 'invalid' }
-      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
+      expect(strip(entry)).to.deep.equal(entry)
     })
 
     it('should return entry unchanged when configuration is array', () => {
       const entry = { provider: 'openai', configuration: [1, 2, 3] }
-      expect(maskAiModelEntry(entry as any)).to.deep.equal(entry)
-    })
-
-    it('should be case-insensitive for non-secret keys', () => {
-      const entry = { provider: 'openai', configuration: { MODEL: 'gpt-4', MODELFRIENDLYNAME: 'GPT' } }
-      const result = maskAiModelEntry(entry as any)
-      expect(result.configuration.MODEL).to.equal('gpt-4')
-      expect(result.configuration.MODELFRIENDLYNAME).to.equal('GPT')
+      expect(strip(entry)).to.deep.equal(entry)
     })
 
     it('should not mutate the original entry', () => {
       const entry = { provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'secret' } }
-      maskAiModelEntry(entry as any)
+      strip(entry)
       expect(entry.configuration.apiKey).to.equal('secret')
     })
   })
 
-  describe('maskAiModelsStoredConfig', () => {
-    it('should mask all entries across buckets', () => {
+  describe('stripAiModelsStoredConfig', () => {
+    it('should strip all entries across buckets', () => {
       const config = {
         llm: [{ provider: 'openai', configuration: { model: 'gpt-4', apiKey: 'sk-1' } }],
         embedding: [{ provider: 'openai', configuration: { model: 'ada', apiKey: 'sk-3' } }],
       }
-      const result = maskAiModelsStoredConfig(config as any)
-      expect(result.llm[0].configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
-      expect(result.embedding[0].configuration.apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      const result = stripAiModelsStoredConfig(config as any)
+      expect(result.llm[0].configuration).to.not.have.property('apiKey')
+      expect(result.llm[0].configuration.model).to.equal('gpt-4')
+      expect(result.embedding[0].configuration).to.not.have.property('apiKey')
     })
 
-    it('should return null as-is', () => { expect(maskAiModelsStoredConfig(null as any)).to.be.null })
-    it('should return non-object as-is', () => { expect(maskAiModelsStoredConfig('s' as any)).to.equal('s') })
+    it('should return null as-is', () => { expect(stripAiModelsStoredConfig(null as any)).to.be.null })
+    it('should return non-object as-is', () => { expect(stripAiModelsStoredConfig('s' as any)).to.equal('s') })
     it('should pass through non-array bucket values', () => {
-      expect(maskAiModelsStoredConfig({ version: '1.0' } as any).version).to.equal('1.0')
+      expect(stripAiModelsStoredConfig({ modelRoles: { indexing: 'x' } } as any).modelRoles).to.deep.equal({ indexing: 'x' })
     })
     it('should skip non-object array items', () => {
-      const result = maskAiModelsStoredConfig({ llm: ['str', 42, null] } as any)
+      const result = stripAiModelsStoredConfig({ llm: ['str', 42, null] } as any)
       expect(result.llm).to.deep.equal(['str', 42, null])
+    })
+  })
+
+  describe('mergeAiModelCredentials', () => {
+    it('should restore a stored credential the client omitted', () => {
+      const result = mergeAiModelCredentials(
+        { model: 'gpt-4o' },
+        { model: 'gpt-4', apiKey: 'sk-stored', endpoint: 'https://old' },
+      )
+      expect(result.apiKey).to.equal('sk-stored')
+      expect(result.endpoint).to.equal('https://old')
+      expect(result.model).to.equal('gpt-4o')
+    })
+
+    it('should honour a credential the client actually sent', () => {
+      const result = mergeAiModelCredentials({ apiKey: 'sk-new' }, { apiKey: 'sk-stored' })
+      expect(result.apiKey).to.equal('sk-new')
+    })
+
+    it('should leave an explicitly cleared credential empty', () => {
+      const result = mergeAiModelCredentials(
+        { awsAccessKeyId: '' },
+        { awsAccessKeyId: 'AKIA', region: 'us-east-1' },
+      )
+      expect(result.awsAccessKeyId).to.equal('')
+    })
+
+    it('should restore an omitted non-credential key from storage', () => {
+      const result = mergeAiModelCredentials({ model: 'gpt-4o' }, { model: 'gpt-4', region: 'us-east-1' })
+      expect(result.region).to.equal('us-east-1')
+      expect(result.model).to.equal('gpt-4o')
+    })
+
+    it('should return incoming as-is when there is no stored config', () => {
+      const incoming = { apiKey: 'sk-1' }
+      expect(mergeAiModelCredentials(incoming, null)).to.deep.equal(incoming)
+      expect(mergeAiModelCredentials(incoming, undefined)).to.deep.equal(incoming)
     })
   })
 
@@ -176,6 +224,19 @@ describe('maskConfigSecrets', () => {
     })
     it('should not mask empty apiKey', () => { expect(maskWebSearchProvider({ apiKey: '' }).apiKey).to.equal('') })
     it('should return null as-is', () => { expect(maskWebSearchProvider(null as any)).to.be.null })
+    it('should leave the server address for admins', () => {
+      expect(maskWebSearchProvider({ baseUrl: 'http://crawl4ai:11235' }).baseUrl).to.equal('http://crawl4ai:11235')
+    })
+  })
+
+  describe('maskWebSearchProviderForMember', () => {
+    it('should mask the API key and the server address', () => {
+      const result = maskWebSearchProviderForMember({ apiKey: 'k', baseUrl: 'http://crawl4ai:11235', other: 'x' })
+      expect(result).to.deep.equal({ apiKey: CONFIG_SECRET_PLACEHOLDER, baseUrl: CONFIG_SECRET_PLACEHOLDER, other: 'x' })
+    })
+    it('should leave an unset address unset', () => {
+      expect(maskWebSearchProviderForMember({ apiKey: 'k' })).to.not.have.property('baseUrl')
+    })
   })
 
   describe('mergeWebSearchProviderPlaceholders', () => {
@@ -188,6 +249,41 @@ describe('maskConfigSecrets', () => {
     })
     it('should return incoming when existing is null', () => {
       expect(mergeWebSearchProviderPlaceholders({ apiKey: CONFIG_SECRET_PLACEHOLDER }, null).apiKey).to.equal(CONFIG_SECRET_PLACEHOLDER)
+    })
+  })
+
+  describe('maskSlackBotConfig', () => {
+    it('should mask botToken and signingSecret but keep the rest readable', () => {
+      const result = maskSlackBotConfig({
+        id: 'bot-1',
+        name: 'Support',
+        botToken: 'xoxb-real-token',
+        signingSecret: 'real-signing-secret',
+      })
+      expect(result.botToken).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.signingSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      expect(result.id).to.equal('bot-1')
+      expect(result.name).to.equal('Support')
+    })
+  })
+
+  describe('mergeSlackBotConfigPlaceholders', () => {
+    it('should keep the stored credential when the form resubmits the mask', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: CONFIG_SECRET_PLACEHOLDER, signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-real-token')
+      expect(result.signingSecret).to.equal('real-signing-secret')
+    })
+
+    it('should accept a genuinely rotated credential', () => {
+      const result = mergeSlackBotConfigPlaceholders(
+        { botToken: 'xoxb-rotated', signingSecret: CONFIG_SECRET_PLACEHOLDER },
+        { botToken: 'xoxb-real-token', signingSecret: 'real-signing-secret' },
+      )
+      expect(result.botToken).to.equal('xoxb-rotated')
+      expect(result.signingSecret).to.equal('real-signing-secret')
     })
   })
 })

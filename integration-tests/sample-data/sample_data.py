@@ -6,12 +6,18 @@ helpers to locate and enumerate the sample data files.
 """
 
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List, Tuple
 
 
 DEFAULT_REPO_URL = "https://github.com/pipeshub-ai/integration-test.git"
+
+# Bound the git calls. An unreachable host or a stalled transfer would otherwise
+# block the session fixture that needs this data, and with it the whole test
+# job, until the workflow's job-level timeout.
+GIT_TIMEOUT_SECONDS = 300
 
 
 def _find_repo_root(start: Path) -> Path:
@@ -49,7 +55,16 @@ def _ensure_repo_cloned() -> Path:
             subprocess.run(
                 ["git", "clone", "--depth", "1", repo_url, str(repo_dir)],
                 check=True,
+                timeout=GIT_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            # A killed clone can leave a partial checkout whose .git would make the
+            # next run skip the clone and pull into a broken repo.
+            shutil.rmtree(repo_dir, ignore_errors=True)
+            raise RuntimeError(
+                f"Timed out after {GIT_TIMEOUT_SECONDS}s cloning integration-test repo "
+                f"from {repo_url}"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 f"Failed to clone integration-test repo from {repo_url}: {exc}"
@@ -59,9 +74,10 @@ def _ensure_repo_cloned() -> Path:
             subprocess.run(
                 ["git", "-C", str(repo_dir), "pull", "--ff-only"],
                 check=True,
+                timeout=GIT_TIMEOUT_SECONDS,
             )
-        except subprocess.CalledProcessError:
-            pass  # non-fatal
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            pass  # non-fatal: keep using the cached copy
 
     return repo_dir
 
@@ -76,6 +92,21 @@ def ensure_sample_data_files_root() -> Path:
     if not files_root.exists():
         raise RuntimeError(
             f"sample-data/entities/files not found in integration-test repo at {files_root}"
+        )
+    return files_root
+
+
+def ensure_sample_data_google_drive_it_files_root() -> Path:
+    """
+    Return the path to sample-data/entities/google-drive-it-files inside the
+    integration-test repo, cloning on demand if necessary.
+    """
+    repo_dir = _ensure_repo_cloned()
+    files_root = repo_dir / "sample-data" / "entities" / "google-drive-it-files"
+    if not files_root.exists():
+        raise RuntimeError(
+            "sample-data/entities/google-drive-it-files not found in "
+            f"integration-test repo at {files_root}"
         )
     return files_root
 

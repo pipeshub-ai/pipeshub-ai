@@ -2,6 +2,7 @@
 
 import React, { useState } from 'react';
 import { Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { formatConversationDateForSearch } from '@/lib/utils/formatters';
 import type { Conversation } from '@/chat/types';
 
@@ -12,8 +13,14 @@ interface ChatRowProps {
 }
 
 export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
   const dateLabel = formatConversationDateForSearch(conversation.createdAt, conversation.updatedAt);
+  const sharedByName = conversation.sharedBy?.name?.trim();
+  const sharedByLabel =
+    conversation.isOwner === false && sharedByName
+      ? t('chat.sharedBy', { name: sharedByName })
+      : undefined;
 
   return (
     <Flex
@@ -41,6 +48,19 @@ export function ChatRow({ conversation, onClick, showDate }: ChatRowProps) {
       >
         {conversation.title}
       </Text>
+      {sharedByLabel && (
+      <Text
+        size="1"
+        style={{
+          color: 'var(--slate-a9)',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {sharedByLabel}
+      </Text>
+      )}
       {showDate && (
       <Text
         size="1"

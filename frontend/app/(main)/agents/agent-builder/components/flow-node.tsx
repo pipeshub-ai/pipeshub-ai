@@ -2,7 +2,7 @@
 
 import React, { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton, Badge } from '@radix-ui/themes';
+import { Box, Flex, Text, IconButton, Badge, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import type { FlowNodeData } from '../types';
@@ -20,6 +20,12 @@ import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import { McpFlowNode } from './mcp-flow-node';
+import {
+  hasSourceLimit,
+  KnowledgeSourceLimitButton,
+  KnowledgeSourceLimitList,
+  KnowledgeSourceLimitNote,
+} from './knowledge-source-limit';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
 export type FlowNodeProps = {
@@ -63,8 +69,9 @@ function NodeCardShell(props: {
   header: React.ReactNode;
   body?: React.ReactNode;
   children?: React.ReactNode;
+  warning?: boolean;
 }) {
-  const { selected, header, body, children } = props;
+  const { selected, header, body, children, warning } = props;
   return (
     <Box
       className="flow-node-surface"
@@ -72,7 +79,11 @@ function NodeCardShell(props: {
         width: 276,
         boxSizing: 'border-box',
         borderRadius: FLOW_NODE_CARD.radius,
-        border: selected ? '1px solid var(--gray-11)' : FLOW_NODE_CARD.borderIdle,
+        border: warning
+          ? '1px solid var(--amber-8)'
+          : selected
+            ? '1px solid var(--gray-11)'
+            : FLOW_NODE_CARD.borderIdle,
         background: FLOW_NODE_PANEL_BG,
         boxShadow: selected ? FLOW_NODE_CARD.shadowSelected : FLOW_NODE_CARD.shadow,
         position: 'relative',
@@ -242,12 +253,15 @@ export const FlowNode = React.memo(function FlowNode({
         </Box>
       );
     }
+  } else if (hasSourceLimit(data)) {
+    groupBody = <KnowledgeSourceLimitList data={data} />;
   }
 
   return (
     <div className="flow-node-card">
       <NodeCardShell
         selected={selected}
+        warning={Boolean(data.warning)}
         body={groupBody}
         header={
           <Flex align="center" justify="between" gap="2" px="3" py="2">
@@ -296,21 +310,37 @@ export const FlowNode = React.memo(function FlowNode({
                     {subtitle}
                   </Text>
                 ) : null}
+                <KnowledgeSourceLimitNote data={data} />
               </Flex>
+              {data.warning ? (
+                <Tooltip content={data.warning}>
+                  <span
+                    data-testid="flow-node-warning"
+                    style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}
+                  >
+                    <MaterialIcon name="warning" size={16} color="var(--amber-11)" />
+                  </span>
+                </Tooltip>
+              ) : null}
             </Flex>
-            {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
-              <span className="flow-node-delete" style={{ flexShrink: 0 }}>
-                <IconButton
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={() => onDelete(id)}
-                  aria-label={t('agentBuilder.removeNodeAriaLabel')}
-                >
-                  <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
-                </IconButton>
-              </span>
-            ) : null}
+            {/* Ghost buttons pull in by their padding (-4px each side), so the 8px gap only
+                makes them touch: the icons sit about 7px apart instead of about 17px. */}
+            <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+              {!readOnly ? <KnowledgeSourceLimitButton nodeId={id} data={data} /> : null}
+              {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
+                <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    onClick={() => onDelete(id)}
+                    aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                  >
+                    <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                  </IconButton>
+                </span>
+              ) : null}
+            </Flex>
           </Flex>
         }
       >

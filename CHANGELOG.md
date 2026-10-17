@@ -6,6 +6,11 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 | Version | Date | Channel | Theme |
 |---|---|---|---|
+| [0.10.0](#0100--2026-10-12) | Oct 12, 2026 | Stable | Trash, knowledge-graph entity tools, security sweep |
+| [0.9.1](#091--2026-09-28) | Sep 28, 2026 | Stable | OAuth and PKCE hardening, Kafka fix, SDK 1.7.0 |
+| [0.9.0](#090--2026-09-28) | Sep 28, 2026 | Stable | Projects, service accounts, SMB and Drupal Wiki connectors |
+| [0.8.0](#080--2026-09-14) | Sep 14, 2026 | Stable | Fair connector scheduling, indexing under load, Redis Cluster |
+| [0.7.0](#070--2026-08-26) | Aug 26, 2026 | Stable | PATs, GitHub connector, Bedrock, one-command installer |
 | [0.6.0](#060--2026-08-10) | Aug 10, 2026 | Stable | New agent loop ships stable; query service ~1.8× faster |
 | [0.6.0-beta](#060-beta--2026-08-01) | Aug 1, 2026 | Beta | New agent loop, standalone parsing & extraction, OpenSearch |
 | [0.5.0](#050--2026-07-01) | Jul 1, 2026 | Stable | Atlassian Data Center, agent action tools, open model layer |
@@ -26,13 +31,155 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 ## Unreleased
 
-Changes merged to `main` since the last release: [`v0.6.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.6.0...HEAD).
+Changes merged to `main` since the last release: [`v0.10.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.10.0...HEAD).
+
+### Added
+- **Granular search: scope a chat or a search to any part of the hierarchy.** The source picker in chat is a tree: an app or a collection can be ticked as a whole, or opened to tick record groups, folders and records, and a ticked node covers everything under it. The same selection can be started from the "Chat" action on ticked rows in All Records and Collections, applies in search mode and in saved-agent and project chats, and comes back with a conversation. `filters` on `POST /api/v1/search` and on the chat stream routes accepts `recordGroups`, `records` (a folder or a record with everything under it) and `recordsExact` (that record alone) beside `apps`; `kb` is still accepted and means the same as `apps`. A request may name at most 200 ids, and a selection covering more than 50,000 nested groups and records is refused with a message (`SEARCH_SELECTION_MAX_NODES`). A selected node the user cannot read contributes nothing; a selection with nothing readable in it returns nothing, never everything. In a chat the selection holds for every knowledge tool, not only for content search: finding a record by name, opening one by id and the entity tools stay inside it too. A selection that is too large, or that touches a source not yet ready for folder-level search, answers 422 on `/search` and on the non-streaming chat routes, and ends a chat stream with an error frame (`selection_too_large` / `selection_not_ready`) before any model call.
+- **A saved agent's source and a project's scope can be limited to record groups, folders and records.** In the agent builder each knowledge node has a control that limits it; project settings pick inside a connector. Chats then search only those nodes, and a selection made in the chat has to lie under them. A source's `filters` are checked when the agent is saved: `recordGroups` and `records` must be lists of ids (at most 200 per source), and a value that cannot be read, or a limit that covers more than one search may, is refused with 400 instead of being stored as "no limit".
+
+### Fixed
+- **`POST /api/v1/search` answered 500 when a hit was a code block.** A plain code block and a code group share the type name `code`, so a top-level code hit was unpacked as if it were a group (`ValueError: too many values to unpack`). It failed the whole search, most visibly app-level and group-level searches on GitHub, Jira and Slack.
 
 ### Breaking changes & upgrade notes
-- **Connector deletion is now "an administrator, or whoever created it", for both team and personal connectors.** Previously a team connector could only be removed by an admin (not its creator) and a personal one only by its creator (not an admin) — so a connector whose creator had left the org could not be deleted by anyone. Reading and updating are unchanged: an admin still cannot open or alter another user's personal connector.
-- **Connector access is now scoped to the caller's organization.** Instances were looked up by id with no org filter, so for a team connector the check reduced to "is an admin" — an admin of one org who learned an id from another would have passed it.
-- **MD5 deduplication is now scoped to a single organization.** It previously matched across every org in the deployment, so two orgs uploading byte-identical content shared one `virtualRecordId`, one `summaryDocumentId`, and a copied set of graph relationships. On upgrade, content that was deduplicated across orgs re-indexes once per org: expect a one-off rise in indexing volume and vector-store size proportional to how much content your orgs genuinely share. Existing records are not rewritten, and no migration is required.
-- **New `VECTOR_COLLECTION_STRATEGY` setting** (default `single`, which is the existing behaviour; `per_connector_type` groups records into one collection per connector type). It is read only on the first startup that finds nothing persisted; after that the stored value wins, and a value that contradicts it fails startup rather than silently resolving to collections that hold no data. Changing it on a live deployment is the embedding-rebuild procedure, not a config edit.
+- **A saved agent whose knowledge source lists `filters.recordGroups` or `filters.records` now searches only those nodes.** The lists were stored but not applied before, so an agent saved with non-empty lists becomes narrower on upgrade. To keep searching the whole source, tick the whole source again on that node in the agent builder, or clear the lists. A source whose stored `filters` cannot be read (text that is not JSON, or lists that are not lists of ids) is no longer searched at all, and the query service logs a warning naming it; re-save the agent to repair it. An id that is itself one of the agent's sources is not read as a limit (agents saved before each collection became its own source listed the collection there).
+- **Permissions and the Knowledge Hub read a reworked graph model, and an existing graph is migrated when the connector service starts. The upgrade is one-way: take a backup of the graph database first.** Hierarchy now lives on one edge (`NODE_RELATION` on Neo4j, `nodeRelations` on ArangoDB; relationship types `PARENT_CHILD` and `ATTACHMENT`), links between records moved to their own edge (`RECORD_LINK` / `recordLinks`), and a nested record inherits from its hierarchy parent instead of from its record group. One batch check (`check_access`) now decides record open, search filtering and the agent tools, and the Knowledge Hub lists by walking that hierarchy with per-node access rules (`accessRule`: `OPEN`, `STRICT`, `RESTRICTED`). Migrations, all idempotent and each recorded under `/migrations/*` in the KV store: the edge rename runs before schema init and is the only fatal one (a failure stops the service with the data untouched, and the next start retries); the App `orgId` stamp runs next; the link split, the folder mime type rewrite, the hierarchy backfill and the listing-state stamp run in the background after the service is up, in that order, each retried with backoff until it succeeds, because on a large graph they outlast the 120 s the image's process monitor allows a service to become healthy. Until they finish an upgraded deployment lists less than it should, never more. What an old graph does not record is completed by the connector's next full sync, not by a migration: records nested under a record that carries its own grants (or under one below it) stay hidden until then, and `accessRule` values and a top-level group's inheritance from its connector are written by that sync. Run a full sync of each connector after upgrading. A release older than this one cannot read the migrated graph.
+- **Access results that differ from the previous release.** A record whose parent is in another record group (a Jira story under an epic of another project) keeps its own project's audience and no longer takes the parent's. An item shared with a user on its own, whose containers the user cannot open, is listed directly under its connector for that user. A grant on one connector never admits a record of another connector. The Collection roles `ORGANIZER` and `FILEORGANIZER` are read as `READER`; re-grant `WRITER` where those users must still create folders or delete files. A SharePoint item whose permission scope cannot be read during a sync keeps its stored access (a new one is stored without inheritance) instead of being treated as inheriting. Deleting a chat attachment answers 404 for every id that is not the caller's own attachment. A search whose permission check cannot run answers "permission check unavailable" instead of an empty result.
+- **Knowledge Hub listings page by cursor.** `GET /api/v1/knowledgeBase/knowledge-hub/nodes` and `.../nodes/{parentType}/{parentId}` accept `cursor` and return `pagination.nextCursor` / `prevCursor`; cursors are signed, bound to the user, the organisation, the place and the listing mode, and a refused cursor is a 400. `page` still works up to page 50 (it is served by reading the pages before it); deeper paging needs the cursor. On a cursor-paged request `pagination.page` and `totalPages` are null. Records carry `accessRule`. Removed from the connector service, with no gateway caller: `GET /api/v1/records`, `GET /api/v1/kb/records`, `POST /api/v1/kb/{kbId}/records`, `POST /api/v1/kb/{kbId}/folder/{folderId}/records` and `GET /api/v1/kb/{kbId}/folder/{folderId}/user/{userId}`.
+- **Connector sync writes each batch of records in real transactions of 100.** A record batch now asks for an explicit transaction itself (the `NEO4J_EXPLICIT_TRANSACTIONS` default is unchanged for everything else), node schema validators are built once per collection instead of once per node, and repeated group and user lookups are asked once per slice. A deadlock inside a slice re-runs the batch; events, membership refreshes and blob moves are sent per committed slice. New optional settings: `KH_PLAN_KEEPER_SECONDS` (default 600, Neo4j: keeps the browse statements planned) and `KH_SCOPE_MODE`; the Labs flag `ENABLE_KH_SCOPE_LISTING` (off) serves the All records listing from scopes precomputed after each sync. The Python image gains `neo4j-rust-ext` (compiled PackStream for the Neo4j driver).
+
+---
+
+## 0.10.0 — 2026-10-12
+
+**Deleted records go to the trash, agents search the knowledge graph, and a broad security sweep** · Stable · [`v0.10.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.10.0) · [Full changelog](changelog/0.10.0.md)
+
+A large release, 373 PRs since 0.9.1. It adds recoverable trash, knowledge-graph tools for agents, AI model discovery and prompt caching, and a security sweep that locks down the code sandbox and MCP.
+
+### Added
+- Deleted records can go to the trash, be restored, and are purged after the retention period, behind the Labs setting `ENABLE_SOFT_DELETE` ([#3718](https://github.com/pipeshub-ai/pipeshub-ai/pull/3718), [#3799](https://github.com/pipeshub-ai/pipeshub-ai/pull/3799), [#3847](https://github.com/pipeshub-ai/pipeshub-ai/pull/3847))
+- Agents get knowledge-graph entity tools, backed by a new permission-checked entity index ([#3308](https://github.com/pipeshub-ai/pipeshub-ai/pull/3308))
+- AI models can be discovered from a provider and added several at a time, and configured models are listed at `GET /v1/models` ([#4012](https://github.com/pipeshub-ai/pipeshub-ai/pull/4012))
+- Provider prompt caching for the agent loop's prompt and tool definitions ([#4038](https://github.com/pipeshub-ai/pipeshub-ai/pull/4038))
+- An All Artifacts (Beta) gallery ([#3427](https://github.com/pipeshub-ai/pipeshub-ai/pull/3427))
+
+### Changed
+- Each connector gets its own Redis Streams indexing lane ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
+- Invite emails are queued through the message broker and sent in the background ([#2906](https://github.com/pipeshub-ai/pipeshub-ai/pull/2906))
+
+### Fixed
+- Nine connector families (BookStack, Confluence, Zammad, Nextcloud, object stores, Drive Workspace, Web, Jira, Snowflake) now remove items deleted at the source or left out by a narrowed filter ([#3705](https://github.com/pipeshub-ai/pipeshub-ai/pull/3705), [#3709](https://github.com/pipeshub-ai/pipeshub-ai/pull/3709), [#3708](https://github.com/pipeshub-ai/pipeshub-ai/pull/3708))
+
+### Security
+- The code sandbox reaches Docker only through a policy proxy, its network is off by default, and the app runs as non-root ([#3782](https://github.com/pipeshub-ai/pipeshub-ai/pull/3782), [#3780](https://github.com/pipeshub-ai/pipeshub-ai/pull/3780))
+- Three GitHub security advisories are fixed: signed download URLs, `SANDBOX_MODE` fail-closed, and id encoding in service URLs ([#3723](https://github.com/pipeshub-ai/pipeshub-ai/pull/3723), [#3725](https://github.com/pipeshub-ai/pipeshub-ai/pull/3725), [#3728](https://github.com/pipeshub-ai/pipeshub-ai/pull/3728))
+
+### Breaking changes & upgrade notes
+- `SANDBOX_MODE` must be set. `local` needs `SANDBOX_ALLOW_LOCAL=true`, and `SANDBOX_ALLOW_NETWORK` now defaults to `false` ([#3725](https://github.com/pipeshub-ai/pipeshub-ai/pull/3725), [#3803](https://github.com/pipeshub-ai/pipeshub-ai/pull/3803), [#3780](https://github.com/pipeshub-ai/pipeshub-ai/pull/3780))
+- Custom STDIO MCP servers need `MCP_ALLOW_CUSTOM_STDIO=true` ([#3887](https://github.com/pipeshub-ai/pipeshub-ai/pull/3887))
+- The parsing and extraction services require a service token, and the query and connector services drop wildcard credentialed CORS ([#3818](https://github.com/pipeshub-ai/pipeshub-ai/pull/3818), [#3890](https://github.com/pipeshub-ai/pipeshub-ai/pull/3890))
+- `FAIR_SCHEDULING_LANE_ASSIGNMENT` defaults to `assigned` on Redis. Set it to `hash` to go back ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
+- Some status codes and fields change, for example `403` for member calls to admin routes and `blockedRecordId` on restore refusals. The full list is in the [full changelog](changelog/0.10.0.md#breaking-changes--upgrade-notes)
+
+---
+
+## 0.9.1 — 2026-09-28
+
+**OAuth and PKCE hardening, a path-traversal fix, a Kafka consumer that stops losing messages, and SDK 1.7.0** · Stable · [`v0.9.1`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.1) · [Full changelog](changelog/0.9.1.md)
+
+A 20-PR security and reliability patch on top of 0.9.0, published the same day. The 1.7.0 SDKs, released on October 12, 2026, are compatible with 0.9.1. Upgrade from 0.9.0 is recommended.
+
+### Fixed
+- The Kafka consumer used by the connectors and query services no longer loses messages after a temporary failure ([#3515](https://github.com/pipeshub-ai/pipeshub-ai/pull/3515))
+- Graph enrichment permission-checks the related records it adds to a chat prompt ([#3590](https://github.com/pipeshub-ai/pipeshub-ai/pull/3590))
+
+### Security
+- OAuth app, personal access token, consent and device-flow routes require a user's sign-in session ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- PKCE is enforced where the authorization code is issued and redeemed; only `S256` is accepted ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
+- The record convert API no longer writes files outside its temp folder ([#3628](https://github.com/pipeshub-ai/pipeshub-ai/pull/3628))
+
+### Breaking changes & upgrade notes
+- OAuth access tokens and personal access tokens get `403` on the OAuth app, PAT, consent and device-flow routes ([#3626](https://github.com/pipeshub-ai/pipeshub-ai/pull/3626))
+- PKCE `plain` is rejected, and public clients must send an `S256` challenge on the consent `POST` ([#3630](https://github.com/pipeshub-ai/pipeshub-ai/pull/3630))
+- **SDK 1.7.0 is a minor version with breaking changes** for TypeScript, Python and Go. The fix for each change, in each language, is in the [full changelog](changelog/0.9.1.md#sdks--170-typescript-python-go)
+
+---
+
+## 0.9.0 — 2026-09-28
+
+**Projects, service accounts and device-code login arrive, with SMB and Drupal Wiki connectors** · Stable · [`v0.9.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.9.0) · [Full changelog](changelog/0.9.0.md)
+
+About 290 PRs since 0.8.0. Projects, identities for automation and three new connectors arrive; the rest makes failures visible instead of silent.
+
+### Added
+- **Projects**: a shared workspace for chats with members, its own knowledge base, pinning and archiving ([#3304](https://github.com/pipeshub-ai/pipeshub-ai/pull/3304), [#3426](https://github.com/pipeshub-ai/pipeshub-ai/pull/3426))
+- **Service accounts and service tokens**, so automation reads with its own permissions, and a **device-code login** for coding agents ([#3420](https://github.com/pipeshub-ai/pipeshub-ai/pull/3420), [#3422](https://github.com/pipeshub-ai/pipeshub-ai/pull/3422), [#3197](https://github.com/pipeshub-ai/pipeshub-ai/pull/3197))
+- **SMB 2/3, SMB1/CIFS and Drupal Wiki connectors**; PAT setup for GitHub Teams and GitLab; a "Folders" filter for the object stores ([#3533](https://github.com/pipeshub-ai/pipeshub-ai/pull/3533), [#3466](https://github.com/pipeshub-ai/pipeshub-ai/pull/3466), [#3325](https://github.com/pipeshub-ai/pipeshub-ai/pull/3325), [#3340](https://github.com/pipeshub-ai/pipeshub-ai/pull/3340))
+
+### Changed
+- Search filters on the user's accessible containers inside the vector query instead of listing every visible record, and BM25 keyword scoring applies IDF ([#3230](https://github.com/pipeshub-ai/pipeshub-ai/pull/3230), [#3488](https://github.com/pipeshub-ai/pipeshub-ai/pull/3488))
+
+### Fixed
+- A failed read is no longer treated as "nothing there", so a database restart cannot look like a deletion, and domain events go through an outbox so a broker outage delays them instead of losing them ([#3445](https://github.com/pipeshub-ai/pipeshub-ai/pull/3445), [#3444](https://github.com/pipeshub-ai/pipeshub-ai/pull/3444), [#3474](https://github.com/pipeshub-ai/pipeshub-ai/pull/3474), [#3521](https://github.com/pipeshub-ai/pipeshub-ai/pull/3521))
+
+### Breaking changes & upgrade notes
+- Each GitHub and GitLab connector instance syncs exactly one repository; split an instance that syncs several ([#3251](https://github.com/pipeshub-ai/pipeshub-ai/pull/3251))
+- Each organization is limited to 5 admins, counting pending invites ([#3284](https://github.com/pipeshub-ai/pipeshub-ai/pull/3284))
+- Sign-in no longer reveals whether an email has an account; clients that matched on the old answers need to change ([#3529](https://github.com/pipeshub-ai/pipeshub-ai/pull/3529))
+
+---
+
+## 0.8.0 — 2026-09-14
+
+**Fair scheduling across connectors, an indexing pipeline that holds up under load, and Redis Cluster readiness** · Stable · [`v0.8.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.8.0) · [Full changelog](changelog/0.8.0.md)
+
+103 PRs since 0.7.0, centred on the indexing pipeline and on Redis. Several Redis, TLS and vector-store settings now fail at startup instead of being ignored.
+
+### Added
+- Fair scheduling: each connector gets its own lane into indexing ([#3126](https://github.com/pipeshub-ai/pipeshub-ai/pull/3126))
+- One Redis connection provider per backend, with Redis Cluster and AWS MemoryDB support ([#3155](https://github.com/pipeshub-ai/pipeshub-ai/pull/3155), [#3254](https://github.com/pipeshub-ai/pipeshub-ai/pull/3254))
+- `VECTOR_COLLECTION_STRATEGY`, and S3 authentication with an instance IAM role ([#3112](https://github.com/pipeshub-ai/pipeshub-ai/pull/3112), [#3143](https://github.com/pipeshub-ai/pipeshub-ai/pull/3143))
+
+### Changed
+- Indexing concurrency follows what downstream services can take, and backs off when they struggle ([#3170](https://github.com/pipeshub-ai/pipeshub-ai/pull/3170), [#3174](https://github.com/pipeshub-ai/pipeshub-ai/pull/3174))
+- Chat messages move into their own collections through a one-time migration ([#3148](https://github.com/pipeshub-ai/pipeshub-ai/pull/3148))
+
+### Fixed
+- Records no longer stay in `QUEUED` forever when their event is lost or abandoned ([#3163](https://github.com/pipeshub-ai/pipeshub-ai/pull/3163), [#3140](https://github.com/pipeshub-ai/pipeshub-ai/pull/3140))
+
+### Breaking changes & upgrade notes
+- Redis TLS is enforced in every client, TLS values parse strictly, `REDIS_DB` is deprecated, and the crawling queue moves to the `{crawling}` prefix ([#3155](https://github.com/pipeshub-ai/pipeshub-ai/pull/3155))
+- MD5 deduplication is per organization, so content shared across orgs re-indexes once per org ([#3112](https://github.com/pipeshub-ai/pipeshub-ai/pull/3112))
+- Python services accept scoped-secret tokens only as service tokens with service scopes ([#3283](https://github.com/pipeshub-ai/pipeshub-ai/pull/3283))
+
+---
+
+## 0.7.0 — 2026-08-26
+
+**Personal access tokens, a GitHub connector, AWS Bedrock, and a one-command installer** · Stable · [`v0.7.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v0.7.0) · [Full changelog](changelog/0.7.0.md)
+
+~100 PRs since 0.6.0. PipesHub opens up to external tooling: scoped personal access tokens for the API and MCP server, an MCP server on the new agent loop, and a one-command Docker installer for self-hosting, alongside a GitHub teams connector, a code parser, multimodal embeddings, and AWS Bedrock.
+
+### Added
+- Personal access tokens: scoped, revocable, `phpat_`-prefixed credentials any member can mint for MCP and API access ([#2933](https://github.com/pipeshub-ai/pipeshub-ai/pull/2933), [#2971](https://github.com/pipeshub-ai/pipeshub-ai/pull/2971)).
+- GitHub teams connector ([#2989](https://github.com/pipeshub-ai/pipeshub-ai/pull/2989)), HackerNews datasource ([#3060](https://github.com/pipeshub-ai/pipeshub-ai/pull/3060)), and a code parser with correct citations into source files ([#3014](https://github.com/pipeshub-ai/pipeshub-ai/pull/3014)).
+- Multimodal embeddings and an EPUB parser ([#2919](https://github.com/pipeshub-ai/pipeshub-ai/pull/2919)), AWS Bedrock as a model provider ([#3062](https://github.com/pipeshub-ai/pipeshub-ai/pull/3062)), and pasted text as a chat attachment ([#2889](https://github.com/pipeshub-ai/pipeshub-ai/pull/2889)).
+- One-command Docker installer (`curl | bash` or `./install.sh`) with image refresh, host checks, and clearer first-run failures ([#2634](https://github.com/pipeshub-ai/pipeshub-ai/pull/2634)).
+
+### Changed
+- MCP server runs on the new agent loop ([#2830](https://github.com/pipeshub-ai/pipeshub-ai/pull/2830)); Docling processing split into stateless services with adaptive parsing ([#2950](https://github.com/pipeshub-ai/pipeshub-ai/pull/2950), [#2980](https://github.com/pipeshub-ai/pipeshub-ai/pull/2980)).
+- Query service throughput phase two: cached accessible-record IDs, batched graph/storage lookups, optional direct provider transports; p50 turn latency 34.4 s → 27.9 s, Node gateway p50 2,738 ms → 573 ms ([#2963](https://github.com/pipeshub-ai/pipeshub-ai/pull/2963)).
+
+### Fixed
+- Vector cleanup no longer lost on record delete when the broker publish fails ([#3013](https://github.com/pipeshub-ai/pipeshub-ai/pull/3013)); Drive/Gmail record streaming covers all permissioned users ([#2965](https://github.com/pipeshub-ai/pipeshub-ai/pull/2965)); Gmail shared-mailbox links point at the right account ([#3011](https://github.com/pipeshub-ai/pipeshub-ai/pull/3011)).
+- Notion reindexing and API resilience, MCP tool-argument schema loss, streamed-table flicker, and a long tail of parsing and UI fixes.
+
+### Security
+- `x-is-admin` header injection closed; admin status derives from the JWT role ([#2985](https://github.com/pipeshub-ai/pipeshub-ai/pull/2985)). Prompt-injection guard on sub-agent execution ([#2987](https://github.com/pipeshub-ai/pipeshub-ai/pull/2987)).
+
+### Breaking changes & upgrade notes
+- Admin privilege migrates from admin user groups to `User.role` on first boot; users without a role in their JWT must re-login ([#2939](https://github.com/pipeshub-ai/pipeshub-ai/pull/2939)). A storage-record `orgId` backfill also runs at startup ([#3059](https://github.com/pipeshub-ai/pipeshub-ai/pull/3059)).
+- Compose containers are recreated and renamed to `{project}-{service}-1`; `docker exec pipeshub-ai` becomes `docker compose -p pipeshub-ai exec -T pipeshub-ai …` ([#2634](https://github.com/pipeshub-ai/pipeshub-ai/pull/2634)).
+- MCP is toggled from Labs only (`PIPESHUB_ENABLE_MCP` removed), code execution is env-only, and Actions sit behind a new `ENABLE_ACTIONS` flag ([#3044](https://github.com/pipeshub-ai/pipeshub-ai/pull/3044), [#3045](https://github.com/pipeshub-ai/pipeshub-ai/pull/3045)). Legacy Docling PDF/block endpoints were removed ([#2950](https://github.com/pipeshub-ai/pipeshub-ai/pull/2950)).
 
 ---
 

@@ -17,6 +17,7 @@ from app.sources.external.servicenow.models import (
     TableAPIRecord,
     TableAPIResponse,
 )
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -134,7 +135,8 @@ class TestServiceNowInit:
         connector.config_service.get_config = AsyncMock(return_value={
             "auth": {},
         })
-        assert await connector.init() is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id", new_callable=AsyncMock)
@@ -198,15 +200,17 @@ class TestGetFreshDatasource:
     @pytest.mark.asyncio
     async def test_no_client_raises(self, connector):
         connector.servicenow_client = None
-        with pytest.raises(Exception, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_config_raises(self, connector):
         connector.servicenow_client = MagicMock()
         connector.config_service.get_config = AsyncMock(return_value=None)
-        with pytest.raises(Exception, match="not found"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_token_raises(self, connector):
@@ -214,8 +218,9 @@ class TestGetFreshDatasource:
         connector.config_service.get_config = AsyncMock(return_value={
             "credentials": {}
         })
-        with pytest.raises(Exception, match="No access token"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_updates_token_when_changed(self, connector):
@@ -226,7 +231,9 @@ class TestGetFreshDatasource:
         })
         with patch("app.connectors.sources.servicenow.servicenow.connector.ServiceNowDataSource"):
             ds = await connector._get_fresh_datasource()
-        assert connector.servicenow_client.access_token == "new-token"
+        # The transport authenticates from headers, so a refreshed token that
+        # only reaches the attribute leaves every request on the stale one.
+        connector.servicenow_client.set_access_token.assert_called_once_with("new-token")
 
 
 # ===========================================================================

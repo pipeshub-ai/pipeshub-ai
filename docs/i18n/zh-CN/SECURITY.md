@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · **简体中文** · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md)
+**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · **简体中文** · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md) · [Čeština](../cs/SECURITY.md)
 
 </div>
 
@@ -14,7 +14,7 @@
 
 **请勿为安全漏洞创建公开的 GitHub issue。**
 
-请改为通过电子邮件报告安全漏洞：**abhishek@pipeshub.com**
+请改为通过电子邮件报告安全漏洞：**security@pipeshub.com**
 
 ### 应包含的内容
 

@@ -325,13 +325,17 @@ export function ModelRolesSection({
           gap="2"
           style={{
             padding: '8px 16px',
-            background: highlighted ? 'var(--amber-3)' : 'var(--amber-2)',
-            borderTop: highlighted ? '1px solid var(--amber-6)' : '1px solid var(--amber-4)',
+            background: highlighted ? 'var(--amber-3)' : 'var(--gray-2)',
+            borderTop: highlighted ? '1px solid var(--amber-6)' : '1px solid var(--gray-4)',
             transition: 'background 0.2s',
           }}
         >
-          <MaterialIcon name="lightbulb" size={13} style={{ color: 'var(--amber-10)' }} />
-          <Text size="1" style={{ color: 'var(--amber-11)', lineHeight: '1.5' }}>
+          <MaterialIcon
+            name="lightbulb"
+            size={13}
+            style={{ color: highlighted ? 'var(--amber-10)' : 'var(--gray-10)' }}
+          />
+          <Text size="1" style={{ color: highlighted ? 'var(--amber-11)' : 'var(--gray-11)', lineHeight: '1.5' }}>
             {t('workspace.aiModels.roles.onboardingTip')}
           </Text>
         </Flex>

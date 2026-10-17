@@ -41,6 +41,50 @@ def _result(success: bool, payload: dict[str, Any]) -> tuple[bool, str]:
     return success, json.dumps(payload, default=str)
 
 
+# Ceiling on artifact text returned to the model in one call. Generous enough
+# for a whole generator program (the case this exists for) while keeping a
+# single read from crowding out the rest of the turn's context; `offset` pages
+# past it when a file really is larger.
+_MAX_ARTIFACT_CONTENT_CHARS = 40_000
+
+# Refuse to FETCH an artifact bigger than this. `registry.get_content()` pulls
+# the whole blob into memory before anything is decoded or sliced, so
+# `_MAX_ARTIFACT_CONTENT_CHARS` bounds the response but not the read — without
+# this, returning 40 000 characters of a 500 MB file would still load 500 MB.
+# Checked against `ArtifactMetadata.size_bytes`, which is known before the
+# fetch. Deliberately far above the response cap so `offset` can still page
+# through a legitimately long program.
+_MAX_ARTIFACT_FETCH_BYTES = 5_000_000
+
+# Binary document formats a model can name but cannot write as text: their
+# files must start with these bytes, or the saved file will not open.
+_ZIP_MAGIC = b"PK\x03\x04"
+_BINARY_DOCUMENT_FORMATS: dict[str, tuple[str, bytes, str, str]] = {
+    ".docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", _ZIP_MAGIC, "Word", "docx"),
+    ".xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", _ZIP_MAGIC, "Excel", "exceljs"),
+    ".pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", _ZIP_MAGIC, "PowerPoint", "pptxgenjs"),
+    ".pdf": ("application/pdf", b"%PDF-", "PDF", "pdfkit"),
+}
+
+
+def _not_a_real_document(name: str | None, mime_type: str | None, raw: bytes) -> str | None:
+    """The error for content that is not every binary document its name and MIME type claim."""
+    lowered = (name or "").lower()
+    media_type = (mime_type or "").split(";", 1)[0].strip().lower()
+    for extension, (document_mime, magic, label, library) in _BINARY_DOCUMENT_FORMATS.items():
+        if not (lowered.endswith(extension) or media_type == document_mime):
+            continue
+        if raw.startswith(magic):
+            continue
+        return (
+            f"This content is not a real {label} file, so it would not open in {label}. "
+            f"To make a {extension} file, generate it with run_code (language='typescript', "
+            f"packages=['{library}']); the file it writes is attached automatically. To save "
+            "the text itself, use a .md or .txt name with mime_type 'text/markdown' or 'text/plain'."
+        )
+    return None
+
+
 @ToolsetBuilder("Artifact Manager")\
     .in_group("Internal Tools")\
     .with_description("Save, update, list, and share versioned artifacts generated in this conversation - always available, no authentication required")\
@@ -142,6 +186,10 @@ class ArtifactManager:
         raw = self._decode(content, is_base64)
         if isinstance(raw, str):
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
+
+        refusal = _not_a_real_document(name, mime_type, raw)
+        if refusal:
+            return _result(False, {"success": False, "error": refusal})
 
         try:
             vis = ArtifactVisibility(visibility.upper())
@@ -246,6 +294,10 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
 
         try:
+            current = await registry.resolve(actor=self._actor(), ref=artifact_id)
+            refusal = _not_a_real_document(current.name, mime_type or current.mime_type, raw)
+            if refusal:
+                return _result(False, {"success": False, "error": refusal})
             version, metadata = await registry.add_version(
                 actor=self._actor(),
                 artifact_id=artifact_id,
@@ -254,7 +306,7 @@ class ArtifactManager:
                 expected_version=expected_version,
             )
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to update this artifact"})
         except VersionConflictError as e:
@@ -316,7 +368,7 @@ class ArtifactManager:
         try:
             url = await registry.get_download_url(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to access this artifact"})
         except Exception:
@@ -327,6 +379,126 @@ class ArtifactManager:
             "artifact_id": artifact_id,
             "download_url": url,
             "note": "This link is short-lived and permission-scoped to this user; request a fresh one if it expires.",
+        })
+
+    @tool(
+        path="/tools/artifacts/get_artifact_content",
+        short_description="Read a text artifact's content back into your context so you can build on it",
+        description=(
+            "Read the TEXT content of an existing artifact — most often the source code that "
+            "produced an earlier deliverable. Use this whenever the user asks to update, extend, "
+            "restyle, or 'keep the same style as' something you produced in an earlier turn: read "
+            "the previous program, modify it, and re-run it, instead of writing a new one from "
+            "memory (which loses the original's layout, fonts, colours, and structure). "
+            "To find the source of a deliverable, take its `derived_from_code_artifact_id` and "
+            "pass that here. Accepts an artifact_id or a logical name. "
+            "Text only — for PDFs, images, and other binary artifacts use get_artifact_download_url. "
+            "Large files are truncated; the response reports `truncated` and `total_chars`, and you "
+            "can page through the rest with `offset`. When the user wants something genuinely new "
+            "rather than a variation, skip this and write fresh code."
+        ),
+        parameters=[
+            ToolParameter(
+                name="artifact_id", type=ParameterType.STRING, required=True,
+                description=(
+                    "The artifact's ID (e.g. a deliverable's derived_from_code_artifact_id), "
+                    "or its logical name within this conversation."
+                ),
+            ),
+            ToolParameter(
+                name="max_chars", type=ParameterType.INTEGER, required=False,
+                default=_MAX_ARTIFACT_CONTENT_CHARS,
+                description="Maximum characters to return. Lower this when you only need a glance at the file.",
+            ),
+            ToolParameter(
+                name="offset", type=ParameterType.INTEGER, required=False, default=0,
+                description="Character offset to start reading from — use with max_chars to page through a long file.",
+            ),
+        ],
+        tags=[Tag(key="category", value="utility"), Tag(key="type", value="action")],
+    )
+    async def get_artifact_content(
+        self,
+        artifact_id: str,
+        max_chars: int = _MAX_ARTIFACT_CONTENT_CHARS,
+        offset: int = 0,
+    ) -> tuple[bool, str]:
+        registry = self._registry()
+        if registry is None:
+            return _result(False, {"success": False, "error": "Artifact storage is unavailable in this context"})
+
+        actor = self._actor()
+        try:
+            # `resolve` takes an id OR a logical name, so the model can pass
+            # a `derived_from_code_artifact_id` straight through without
+            # first having to look up the code artifact's generated name.
+            metadata = await registry.resolve(
+                actor=actor, ref=artifact_id,
+                conversation_id=self.chat_state.get("conversation_id"),
+            )
+            # Size is known from metadata, so an oversized artifact is
+            # rejected before the blob is read rather than after. A 0/absent
+            # size means "not recorded" (artifacts predating the field), not
+            # "empty" — refusing on that would make them unreadable forever.
+            if metadata.size_bytes and metadata.size_bytes > _MAX_ARTIFACT_FETCH_BYTES:
+                return _result(False, {
+                    "success": False,
+                    "artifact_id": metadata.artifact_id,
+                    "name": metadata.name,
+                    "size_bytes": metadata.size_bytes,
+                    "error": (
+                        f"{metadata.name!r} is too large to read into context "
+                        f"({metadata.size_bytes} bytes, limit {_MAX_ARTIFACT_FETCH_BYTES}). "
+                        "Use get_artifact_download_url for a link, or pass its name to "
+                        "run_code's input_artifacts to process it inside the sandbox."
+                    ),
+                })
+            raw = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
+        except ArtifactNotFoundError:
+            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}; it may have been deleted"})
+        except AccessDeniedError:
+            return _result(False, {"success": False, "error": "You do not have permission to read this artifact"})
+        except Exception:
+            logger.exception("[get_artifact_content] failed for %s", artifact_id)
+            return _result(False, {"success": False, "error": "Failed to read artifact content"})
+
+        try:
+            text = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            # Binary in the context window is wasted tokens at best and can
+            # wedge the turn at worst; the download URL is the right handle.
+            return _result(False, {
+                "success": False,
+                "artifact_id": metadata.artifact_id,
+                "name": metadata.name,
+                "mime_type": metadata.mime_type,
+                "error": (
+                    f"{metadata.name!r} is binary ({metadata.mime_type}), not text. "
+                    "Use get_artifact_download_url for a link, or pass its name to run_code's "
+                    "input_artifacts to work on the bytes inside the sandbox."
+                ),
+            })
+
+        total = len(text)
+        start = max(0, offset)
+        limit = max(1, min(max_chars, _MAX_ARTIFACT_CONTENT_CHARS))
+        chunk = text[start:start + limit]
+        truncated = start + len(chunk) < total
+
+        return _result(True, {
+            "success": True,
+            "artifact_id": metadata.artifact_id,
+            "name": metadata.name,
+            "version": metadata.version,
+            "mime_type": metadata.mime_type,
+            "content": chunk,
+            "total_chars": total,
+            "offset": start,
+            "truncated": truncated,
+            **({"note": (
+                f"Showing {len(chunk)} of {total} characters. Continue with "
+                f"offset={start + len(chunk)} if you need the rest before editing."
+            )} if truncated else {}),
         })
 
     @tool(
@@ -358,12 +530,40 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] lookup failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to look up record"})
+        # Missing, another org's and denied read the same: the id comes from the
+        # model, and the answer must not say which ids exist.
+        not_found = _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
         if record is None:
-            return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
-        if record.org_id != org_id:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+            return not_found
 
+        from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
         from app.config.constants.arangodb import OriginTypes
+        from app.services.record_content import (
+            RecordAccessDeniedError,
+            RecordNotFoundError,
+            TieredRecordAuthorizer,
+        )
+
+        # A signed URL needs no bearer token, so this is the only permission
+        # check between the caller and the bytes.
+        try:
+            await TieredRecordAuthorizer(graph_provider).authorize(self._actor(), record)
+        except RecordNotFoundError:
+            return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
+        except RecordAccessDeniedError:
+            return not_found
+        except Exception:
+            logger.exception("[get_record_download_url] access check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        try:
+            outside = await ids_outside_scope(
+                self.chat_state, graph_provider, self.chat_state.get("user_id", ""), org_id, [record_id],
+            )
+        except Exception:
+            logger.exception("[get_record_download_url] scope check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        if outside:
+            return not_found
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:
@@ -373,14 +573,27 @@ class ArtifactManager:
             except Exception:
                 logger.exception("[get_record_download_url] signed URL failed for %s", record_id)
                 return _result(False, {"success": False, "error": "Failed to generate a download URL"})
+            if url:
+                return _result(True, {
+                    "success": True,
+                    "record_id": record_id,
+                    "download_url": url,
+                    "file_name": record.record_name,
+                    "mime_type": record.mime_type,
+                    "url_type": "direct_download",
+                    "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
+                })
             return _result(True, {
                 "success": True,
                 "record_id": record_id,
-                "download_url": url,
+                "download_url": await blob_store.get_record_stream_url(record_id),
                 "file_name": record.record_name,
                 "mime_type": record.mime_type,
-                "url_type": "direct_download",
-                "note": "Short-lived signed URL for an uploaded file. Can be embedded directly in artifacts.",
+                "url_type": "authenticated_link",
+                "note": (
+                    "Link opens only for signed-in users with access to this record. "
+                    "Do not use it as an image or iframe src inside an artifact; it will not render."
+                ),
             })
 
         return _result(False, {
@@ -477,7 +690,7 @@ class ArtifactManager:
         try:
             metadata = await registry.promote_to_visible(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to promote this artifact"})
         except Exception:

@@ -1,7 +1,8 @@
 import { useChatStore, ASSISTANT_CTX } from '@/chat/store';
 import { ChatApi } from '@/chat/api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import type { AvailableLlmModel, ModelOverride } from '@/chat/types';
+import type { AvailableLlmModel, ModelOverride, ReasoningEffort } from '@/chat/types';
+import { normalizeReasoningEffort } from '@/chat/types';
 import type { AgentConfiguredModel } from '@/app/(main)/agents/types';
 
 /**
@@ -28,6 +29,7 @@ export function mapAgentModelToAvailable(model: AgentConfiguredModel): Available
     isReasoning: model.isReasoning,
     isMultimodal: model.isMultimodal,
     modelType: model.modelType,
+    ...(model.defaultReasoningEffort && { defaultReasoningEffort: model.defaultReasoningEffort }),
   };
 }
 
@@ -133,6 +135,10 @@ export async function fetchModelsForContext(
           throw new OrgModelsFetchError(err);
         }
       }
+      const agentDefaultEffort = normalizeReasoningEffort(
+        (agent?.defaultReasoningEffort as ReasoningEffort | undefined) ?? null,
+      );
+      useChatStore.getState().setAgentDefaultReasoningEffort(ctxKey, agentDefaultEffort);
     }
 
     const s = useChatStore.getState();

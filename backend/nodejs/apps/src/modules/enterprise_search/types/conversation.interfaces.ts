@@ -78,6 +78,18 @@ export interface IAppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  mentioned?: boolean;
+}
+
+/** The nodes a user selected for a turn, by the filter key each is sent under. */
+export interface IAppliedFilters {
+  apps?: IAppliedFilterNode[];
+  kb?: IAppliedFilterNode[];
+  recordGroups?: IAppliedFilterNode[];
+  records?: IAppliedFilterNode[];
+  recordsExact?: IAppliedFilterNode[];
 }
 
 export interface IChatAttachmentRef {
@@ -122,32 +134,52 @@ export interface IReasoningTurn {
  * discriminated union) since Mongoose persists this as `Schema.Types.Mixed`
  * and every field beyond `type` is optional depending on the part kind.
  *
- * Only ever carries a bounded preview of any external tool result (see
- * that module's docstring) — never the full tool payload.
+ * Only ever carries a bounded preview of any external tool result, plus a
+ * small view of it within a per-reply budget (see that module's docstring) —
+ * never the full tool payload.
  */
 export interface IMessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
+  /** Human-readable past-tense label for this tool call, computed server-side (see `Tool.display_name`); falls back to a generic humanized `toolName` on the frontend when absent (e.g. chats persisted before this field existed). */
+  displayName?: string;
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  /** The call a person approved, run when they answered. */
+  approved?: boolean;
+  /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
+  approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
+  /** A call waiting for a person's approval: what the approval card shows (Python `tool_approvals.py`). */
+  approval?: Record<string, unknown>;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
   resultSummary?: string;
+  /** A small table or field list of the result for the tool card (Python `result_view.py`); the UI checks its shape. */
+  resultView?: unknown;
   /** Blob-backed artifact ID for the full tool result (recoverable on follow-up turns). */
   artifactId?: string;
   runId?: string;
   roleName?: string;
   parts?: IMessagePart[];
+  /** On an `mcp_sign_in` part: the MCP servers to sign in to again, for more permission (Python `mcp_sign_in.py`). */
+  servers?: Array<{
+    instanceId: string;
+    serverName: string;
+    scopes: string[];
+    agentKey?: string;
+  }>;
 }
 
 export interface IMessage {
   messageType: 'user_query' | 'bot_response' | 'error' | 'feedback' | 'system' | 'tool_call';
   content: string;
   contentFormat?: 'MARKDOWN' | 'JSON' | 'HTML';
+  /** Set on a `bot_response` persisted from a cancelled/disconnected run. */
+  status?: 'stopped';
   citations?: IMessageCitation[];
   confidence?: string;
   followUpQuestions?: IFollowUpQuestion[];
@@ -156,10 +188,7 @@ export interface IMessage {
   createdAt?: Date;
   updatedAt?: Date;
   modelInfo?: IAIModel;
-  appliedFilters?: {
-    apps?: IAppliedFilterNode[];
-    kb?: IAppliedFilterNode[];
-  };
+  appliedFilters?: IAppliedFilters;
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
@@ -201,6 +230,8 @@ export interface IConversation {
   conversationSourceRecordType?: string;
   createdAt?: Date;
   updatedAt?: Date;
+  /** Phase 2 migration bookkeeping — see chat_sessions.migration.ts. Legacy schema/model only. */
+  isMigrated?: boolean;
   failReason?: String;
   status?: String;
   // Model information used for this conversation
@@ -237,18 +268,121 @@ export interface IConversationModel extends Model<IConversationDocument> {
   // Static methods go here
 }
 
+/**
+ * A single row in the `chatSessions` collection — the Phase 1 replacement
+ * for the separate `conversations` and `agentConversations` collections.
+ * `sessionType` is the discriminator ('chat' | 'agent'); the agent-only
+ * fields below are undefined on plain chat sessions. `messages` moved out
+ * entirely — see IChatSessionMessage — so this interface intentionally does
+ * NOT extend IConversation (which still declares `messages` as required,
+ * for the legacy schema/model kept around for the kb-filters migration).
+ *
+ * `conversationSource` here is deliberately narrower than IConversation's
+ * (which conflates a semantic "how was this conversation started" enum with
+ * the agent.conversation.schema.ts override `enum: ['agent_chat']`) — this
+ * type only ever needs the latter, written on agent sessions.
+ */
+export interface IChatSession {
+  userId: Types.ObjectId;
+  orgId: Types.ObjectId;
+  title?: string;
+  initiator: Types.ObjectId;
+  isShared?: boolean;
+  shareLink?: string;
+  sharedWith?: Array<{
+    userId: Types.ObjectId;
+    accessLevel: 'read' | 'write';
+  }>;
+  isDeleted?: boolean;
+  deletedBy?: Types.ObjectId;
+  isArchived?: boolean;
+  archivedBy?: Types.ObjectId;
+  lastActivityAt?: Number;
+  activeRunId?: string;
+  tags?: Types.ObjectId[];
+  createdAt?: Date;
+  updatedAt?: Date;
+  failReason?: String;
+  status?: String;
+  modelInfo?: IAIModel;
+  conversationErrors?: Array<{
+    message: string;
+    errorType?: string;
+    timestamp?: Date;
+    messageId?: Types.ObjectId;
+    stack?: string;
+    metadata?: Map<string, any>;
+  }>;
+  metadata?: Map<string, any>;
+
+  /** Discriminator. Internal (`select: false` in the schema) — never returned in a response. */
+  sessionType: 'chat' | 'agent';
+  /** Seq allocation counter. Internal (`select: false` in the schema) — never returned in a response. */
+  nextSeq?: number;
+
+  // ---- Agent-only fields, present only when sessionType === 'agent' ----
+  agentKey?: string;
+  conversationSource?: 'agent_chat';
+  compactedSummary?: string;
+  compactedAtTurnIndex?: number;
+  compactedAtTimestamp?: number;
+
+  // ---- Project linking (optional on both chat and agent sessions) ----
+  /** Reference to `projects` collection — see modules/projects/types/project.interfaces.ts. */
+  projectId?: Types.ObjectId;
+  /** Per-conversation override of the project's default chat-sharing visibility. */
+  projectVisibility?: 'private' | 'project';
+}
+
+export interface IChatSessionDocument extends Document, IChatSession {
+  // Document methods are inherited
+}
+
+/**
+ * A single row in the `chatSessionMessages` collection — the unwound,
+ * separately-stored `messages[]` entry that used to live embedded inside a
+ * conversation/agentConversation document. `IMessage` remains the shared,
+ * response-facing shape (see buildConversationResponse / attachMessages);
+ * this adds only the internal addressing fields, all stripped before a
+ * message reaches a response.
+ */
+export interface IChatSessionMessage extends IMessage {
+  /** Internal addressing field — never returned in a response. */
+  sessionId: Types.ObjectId;
+  /** Internal addressing field — never returned in a response. */
+  orgId: Types.ObjectId;
+  /** Internal sort key — never returned in a response; gaps are legal. */
+  seq: number;
+}
+
+export interface IChatSessionMessageDocument
+  extends Document,
+    IChatSessionMessage {
+  // Document methods are inherited
+}
+
 export interface AIServiceResponse<T> {
   statusCode: number;
   data?: T;
   msg?: string;
+  // Only the response headers a caller passes on, such as `retry-after`.
+  headers?: Record<string, string>;
 }
 
-export type AnswerMatchType = 'Exact Match' | 'Partial Match' | 'No Match';
+export type AnswerMatchType =
+  | 'Exact Match'
+  | 'Partial Match'
+  | 'No Match'
+  | 'Error';
 
 export interface IAIResponse {
   answer: string;
   citations: ICitation[];
   confidence?: ConfidenceLevel;
+  /** Set by Python's `AnswerFinalizer` cancelled branch (Phase 3) — `RUN_FINISHED`/
+   * `complete` payload for a cooperatively-stopped run carries the partial answer.
+   * `waiting_input` is an ask_user_question pause: empty answer is expected. */
+  status?: 'stopped' | 'waiting_input';
   reason: string;
   answerMatchType: AnswerMatchType;
   documentIndexes: string[];
@@ -267,6 +401,8 @@ export interface IAIResponse {
   reasoning?: IReasoningTurn[];
   /** Ordered agent-activity transcript (`agui` protocol only) — see IMessagePart. */
   parts?: IMessagePart[];
+  /** Set by Python `classify_error` on a graceful failure answer (`auth_error`, …). */
+  errorCode?: string;
 }
 
 export interface IAIModel {

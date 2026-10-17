@@ -23,7 +23,12 @@ from app.connectors.core.registry.filters import (
     NumberOperator,
     OptionSourceType,
     StringOperator,
+    SelectOperator,
     SyncFilterKey,
+    extension_passes_filter,
+    included_names,
+    name_passes_filter,
+    sync_filter_selection_problems,
     TYPE_OPERATORS,
     get_operator_enum_class,
     get_operators_for_type,
@@ -351,10 +356,31 @@ class TestFilterField:
         assert schema["displayName"] == "Modified Date"
         assert schema["filterType"] == "datetime"
         assert schema["category"] == "sync"
-        assert schema["required"] is True
         assert "operators" in schema
         assert "is_after" in schema["operators"]
         assert "noImplicitOperatorDefault" not in schema
+
+    def test_to_schema_dict_fallback_operator(self) -> None:
+        ff = FilterField(
+            name="sync_window",
+            display_name="Sync Messages From",
+            filter_type=FilterType.DATETIME,
+            fallback_operator="last_30_days",
+        )
+        assert ff.to_schema_dict()["fallbackOperator"] == "last_30_days"
+
+    def test_to_schema_dict_omits_fallback_operator_when_unset(self) -> None:
+        ff = FilterField(name="modified", display_name="Modified", filter_type=FilterType.DATETIME)
+        assert "fallbackOperator" not in ff.to_schema_dict()
+
+    def test_fallback_operator_must_be_a_field_operator(self) -> None:
+        with pytest.raises(ValueError, match="fallback_operator"):
+            FilterField(
+                name="sync_window",
+                display_name="Sync Messages From",
+                filter_type=FilterType.DATETIME,
+                fallback_operator="in",
+            )
 
     def test_to_schema_dict_no_implicit_operator_default(self):
         ff = FilterField(
@@ -729,6 +755,48 @@ class TestFilter:
         )
         assert f.value == 3.14
 
+    def test_number_empty_string_normalizes_to_none(self) -> None:
+        """UI sends "" (not omitted) when a number field is cleared/unset -
+        this must not raise, it should be treated as "no value"."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value is None
+        assert f.is_empty() is True
+
+    def test_number_numeric_string_coerced(self) -> None:
+        """Numeric strings (common from form inputs) are coerced to real numbers."""
+        f = Filter.model_validate({
+            "key": "max_items",
+            "value": "1000",
+            "type": "number",
+            "operator": "less_than_or_equal",
+        })
+        assert f.value == 1000
+        assert isinstance(f.value, int)
+
+    def test_number_invalid_string_raises(self) -> None:
+        """Non-numeric strings still raise a clear validation error."""
+        with pytest.raises(ValueError, match="Invalid value type"):
+            Filter.model_validate({
+                "key": "max_items",
+                "value": "not-a-number",
+                "type": "number",
+                "operator": "less_than_or_equal",
+            })
+
+    def test_boolean_empty_string_normalizes_to_none(self) -> None:
+        f = Filter.model_validate({
+            "key": "flag",
+            "value": "",
+            "type": "boolean",
+            "operator": "is",
+        })
+        assert f.value is None
+
     def test_multiselect_filter(self):
         """Multiselect filter with IN operator."""
         f = Filter(
@@ -1095,3 +1163,134 @@ class TestIndexingFilterKeySlackValues:
     def test_pre_existing_values_intact(self):
         assert IndexingFilterKey.COMMENTS == "comments"
         assert IndexingFilterKey.ATTACHMENTS == "attachments"
+
+
+class TestSelectFilterType:
+    def test_select_has_the_single_in_operator(self) -> None:
+        assert FilterType.SELECT == "select"
+        assert [op.value for op in SelectOperator] == [FilterOperator.IN]
+
+    def test_select_field_accepts_dynamic_options_and_defaults(self) -> None:
+        field = FilterField(
+            name="repo_ids", display_name="Repository", filter_type=FilterType.SELECT,
+            option_source_type=OptionSourceType.DYNAMIC, required=True,
+        )
+        schema = field.to_schema_dict()
+        assert schema["required"] is True
+        assert schema["operators"] == [FilterOperator.IN]
+        assert field._get_default_for_type() == []
+        assert field._get_default_operator() == FilterOperator.IN
+
+    def test_select_value_parses_like_a_list(self) -> None:
+        col = FilterCollection.from_dict({
+            "repo_ids": {"type": "select", "operator": "in", "value": [{"id": "o/r", "label": "o/r"}]},
+        })
+        assert col.get_value("repo_ids") == ["o/r"]
+
+
+REPO_FIELD = {"name": "repo_ids", "displayName": "Repository", "filterType": "select", "required": True}
+ORG_FIELD = {"name": "org_ids", "displayName": "Organizations", "filterType": "multiselect"}
+
+
+class TestExtensionPassesFilter:
+    @staticmethod
+    def extensions(operator: MultiselectOperator, value: list[str]) -> FilterCollection:
+        return FilterCollection(filters=[
+            Filter(key="file_extensions", value=value, type=FilterType.MULTISELECT, operator=operator),
+        ])
+
+    def test_not_in_excludes_the_listed_extensions(self) -> None:
+        filters = self.extensions(MultiselectOperator.NOT_IN, ["log", ".TMP"])
+        assert not extension_passes_filter(filters, "log")
+        assert not extension_passes_filter(filters, "tmp")
+        assert extension_passes_filter(filters, "pdf")
+        assert extension_passes_filter(filters, None)
+
+    def test_in_includes_only_the_listed_extensions(self) -> None:
+        filters = self.extensions(MultiselectOperator.IN, ["pdf"])
+        assert extension_passes_filter(filters, "PDF")
+        assert not extension_passes_filter(filters, "log")
+        assert not extension_passes_filter(filters, None)
+
+    def test_no_filter_keeps_everything(self) -> None:
+        assert extension_passes_filter(FilterCollection(), "log")
+        assert extension_passes_filter(None, None)
+
+
+class TestNamePassesFilter:
+    @staticmethod
+    def buckets(operator: MultiselectOperator, value: list[str]) -> FilterCollection:
+        return FilterCollection(filters=[
+            Filter(key="buckets", value=value, type=FilterType.MULTISELECT, operator=operator),
+        ])
+
+    def test_not_in_keeps_every_name_but_the_listed_ones(self) -> None:
+        filters = self.buckets(MultiselectOperator.NOT_IN, ["logs"])
+        assert not name_passes_filter(filters, "buckets", "logs")
+        assert name_passes_filter(filters, "buckets", "docs")
+        assert included_names(filters, "buckets") == []
+
+    def test_in_keeps_only_the_listed_names(self) -> None:
+        filters = self.buckets(MultiselectOperator.IN, ["docs", "Docs2"])
+        assert name_passes_filter(filters, "buckets", "docs")
+        assert not name_passes_filter(filters, "buckets", "docs2")
+        assert included_names(filters, "buckets") == ["docs", "Docs2"]
+
+    def test_no_filter_keeps_every_name(self) -> None:
+        assert name_passes_filter(FilterCollection(), "buckets", "docs")
+        assert included_names(None, "buckets") == []
+
+
+class TestSyncFilterSelectionProblems:
+    def test_one_value_is_fine(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["o/r"]}}
+        assert sync_filter_selection_problems([REPO_FIELD, ORG_FIELD], values) == []
+
+    @pytest.mark.parametrize(
+        "entry", [None, {"operator": "in", "value": []}, {"operator": "in", "value": ""}, "junk"]
+    )
+    def test_required_field_without_a_value_blocks_enable(self, entry: object) -> None:
+        values = {} if entry is None else {"repo_ids": entry}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]
+        assert sync_filter_selection_problems([REPO_FIELD], values, "saving") == [
+            "Select a repository before saving. "
+            "Each connector instance syncs exactly one repository."
+        ]
+
+    def test_legacy_multi_value_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["a/b", "c/d"]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Repository has 2 selections. Narrow it down to one to continue, "
+            "as each connector instance syncs exactly one repository."
+        ]
+
+    def test_optional_multiselect_is_not_constrained(self) -> None:
+        values = {"org_ids": {"operator": "in", "value": ["a", "b"]}}
+        assert sync_filter_selection_problems([ORG_FIELD], values) == []
+
+    def test_required_non_list_field_is_not_flagged(self) -> None:
+        """A set datetime value is not a list, so it must not read as a missing selection."""
+        field = {"name": "modified", "displayName": "Modified", "filterType": "datetime", "required": True}
+        values = {"modified": {"operator": "is_after", "value": {"start": 1700000000000}}}
+        assert sync_filter_selection_problems([field], values) == []
+
+    def test_legacy_not_in_select_blocks_enable(self) -> None:
+        values = {"repo_ids": {"operator": "not_in", "value": [{"id": "o/r", "label": "o/r"}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Re-select the repository to continue. The saved configuration "
+            "uses an unsupported 'not_in' rule."
+        ]
+
+    def test_blank_ids_do_not_count_as_a_selection(self) -> None:
+        values = {"repo_ids": {"operator": "in", "value": ["", {"id": "  "}]}}
+        problems = sync_filter_selection_problems([REPO_FIELD], values)
+        assert problems == [
+            "Select a repository before enabling this connector. "
+            "Each connector instance syncs exactly one repository."
+        ]

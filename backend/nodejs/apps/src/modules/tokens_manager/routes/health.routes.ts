@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import { Container } from 'inversify';
 import { MongoService } from '../../../libs/services/mongo.service';
-import { RedisService } from '../../../libs/services/redis.service';
+import { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { TokenEventProducer } from '../services/token-event.producer';
 import { Logger }  from '../../../libs/services/logger.service';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
+import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -30,7 +31,12 @@ export interface HealthStatus {
     messageBrokerType: string;
     graphDbType: string;
     vectorDbType: string;
+    // Not written to the KV deployment config -- REDIS_MODE is a
+    // process-env setting (R21/R22), so it is read directly rather than
+    // via getDeploymentConfig()'s KV-store fresh/fallback path.
+    redisMode: string;
   };
+  build: BuildInfo;
 }
 
 export function createHealthRouter(
@@ -38,7 +44,7 @@ export function createHealthRouter(
   configurationManagerContainer: Container
 ): Router {
   const router = Router();
-  const redis = container.get<RedisService>(TYPES.RedisService);
+  const redis = container.get<ICacheService>(TYPES.RedisService);
   const tokenEventProducer = container.get<TokenEventProducer>(TYPES.TokenEventProducer);
   const mongooseService = container.get<MongoService>(TYPES.MongoService);
   const keyValueStoreService = configurationManagerContainer.get<KeyValueStoreService>(
@@ -47,6 +53,8 @@ export function createHealthRouter(
 
   const appConfig = container.get<AppConfig>('AppConfig');
   const configService = ConfigService.getInstance();
+  // Resolved here, at startup: from source it shells out to git once.
+  const build = getBuildInfo();
 
   async function getDeploymentConfig() {
     try {
@@ -90,8 +98,14 @@ export function createHealthRouter(
       };
       const vectorDbName = vectorDbNames[deployment.vectorDbType || ''] || 'VectorDB';
 
+      const redisMode = process.env.REDIS_MODE || 'standalone';
+      const redisDisplayName =
+        redisMode === 'cluster' ? 'Redis (Cluster)'
+        : redisMode === 'memorydb' ? 'Redis (MemoryDB)'
+        : 'Redis';
+
       const serviceNames: Record<string, string> = {
-        redis: 'Redis',
+        redis: redisDisplayName,
         messageBroker: brokerName,
         mongodb: 'MongoDB',
         graphDb: graphDbName,
@@ -156,15 +170,32 @@ export function createHealthRouter(
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
+          // Stay at 5s. Helm startup, readiness, and liveness probes call this
+          // route with timeoutSeconds 5; a longer wait here fails the probe
+          // and restarts the pod. The connector probe returns before this.
           const graphDbResp = await axios.get(
             `${appConfig.connectorBackend}/health/graph-db`,
             { timeout: 5000, validateStatus: () => true },
           );
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (graphDbResp.status !== 200) overallHealthy = false;
-        } catch (error) {
+          if (graphDbResp.status !== 200) {
+            overallHealthy = false;
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              'graph-db health check returned non-200',
+              { status: graphDbResp.status },
+            );
+          }
+        } catch (error: unknown) {
           services.graphDb = 'unhealthy';
           overallHealthy = false;
+          const axiosErr = error as { code?: string; message?: string };
+          const timedOut = axiosErr?.code === 'ECONNABORTED';
+          Logger.getInstance({ service: 'HealthStatus' }).error(
+            timedOut
+              ? 'graph-db health check timed out'
+              : 'graph-db health check failed',
+            axiosErr?.message ?? error,
+          );
         }
       }
 
@@ -197,7 +228,9 @@ export function createHealthRouter(
           messageBrokerType: deployment.messageBrokerType,
           graphDbType: deployment.dataStoreType || 'pending',
           vectorDbType: deployment.vectorDbType || 'pending',
+          redisMode: process.env.REDIS_MODE || 'standalone',
         },
+        build,
       };
 
       res.status(200).json(health);

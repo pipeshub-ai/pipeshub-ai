@@ -1,7 +1,7 @@
 from logging import Logger
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import Connectors
+from app.config.constants.arangodb import Connectors, PermissionModel
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -52,6 +52,7 @@ CONNECTOR_NOTION_PERSONAL_INFO = (
         max_delay=60.0,
     )\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Notion Personal",
@@ -136,11 +137,10 @@ class NotionPersonalConnector(NotionConnector):
         ``inherit_permissions=True``, so all of them resolve through that one
         edge.
 
-    The team connector instead grants direct READ to every person in the Notion
-    workspace, because Notion's API exposes no per-page sharing and a team
-    instance has to be readable by the team. Here the token is one user's own
-    OAuth grant covering only the pages they picked during authorization, so the
-    creator is the correct and complete audience.
+    The team connector inherits the workspace from the app, because Notion's API
+    exposes no per-page sharing and the user sync is the whole audience. Here the
+    token is one user's own OAuth grant covering only the pages they picked
+    during authorization, so the creator's ConnectorGroup grant is the audience.
     """
 
     def __init__(
@@ -207,15 +207,7 @@ class NotionPersonalConnector(NotionConnector):
             raise
 
     async def _apply_creator_workspace_permission(self) -> None:
-        """Upsert the workspace record group carrying only the ConnectorGroup grant."""
-        group_permission = self._connector_group_permission
-        if group_permission is None:
-            self.logger.warning(
-                "Notion Personal connector %s: no ConnectorGroup permission — workspace "
-                "records will sync without user permissions",
-                self.connector_id,
-            )
-
+        """Upsert the workspace record group. It inherits the app and carries no grant."""
         async with self.data_store_provider.transaction() as tx_store:
             record_group = await tx_store.get_record_group_by_external_id(
                 connector_id=self.connector_id,
@@ -230,19 +222,22 @@ class NotionPersonalConnector(NotionConnector):
                 connector_name=self.connector_name,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.NOTION_WORKSPACE,
+                inherit_permissions=True,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
             )
 
-        await self.data_entities_processor.on_new_record_groups(
-            [(record_group, [group_permission] if group_permission else [])]
-        )
+        record_group.inherit_permissions = True
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
     async def run_sync(self) -> None:
         """Sync the pages this user shared with the integration; access via ConnectorGroup."""
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Notion Personal sync for org: {org_id}")
+
+            datasource = await self._get_fresh_datasource()
+            await self._assert_required_capabilities(datasource)
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "notionpersonal", self.connector_id, self.logger
@@ -267,7 +262,7 @@ class NotionPersonalConnector(NotionConnector):
                 # record-group write, so the GROUP-permission lookup in
                 # on_new_record_groups resolves on the first write instead of
                 # silently dropping the permission.
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             await self._sync_users()
             await self._sync_objects_by_type("data_source")
@@ -280,6 +275,13 @@ class NotionPersonalConnector(NotionConnector):
                 await self._sweep_placeholder_records()
             except Exception as e:
                 self.logger.error(f"Placeholder sweep failed: {e}", exc_info=True)
+
+            try:
+                await self._retire_leftover_database_records()
+            except Exception as e:
+                self.logger.error(
+                    f"Leftover database pass failed: {e}", exc_info=True
+                )
 
             self.logger.info("✅ Notion Personal sync completed successfully")
 

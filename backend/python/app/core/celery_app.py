@@ -1,3 +1,4 @@
+import os
 import threading
 from typing import Any, Dict, Optional
 
@@ -7,9 +8,9 @@ from celery.signals import task_postrun, task_prerun
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import (
     CeleryConfig,
-    config_node_constants,
 )
-from app.utils.redis_util import build_redis_url
+from app.services.redis.config import RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.request_context import (
     context_from_envelope,
     new_system_root,
@@ -61,24 +62,69 @@ class CeleryApp:
         # await self.setup_schedules()
 
     async def configure_app(self) -> None:
-        """Configure Celery application"""
+        """Configure Celery application.
+
+        kombu (Celery's Redis transport) has no Redis Cluster support (R7):
+        every broker/backend operation would fail with MOVED against
+        MemoryDB or a Redis Cluster. ``CELERY_BROKER_URL`` /
+        ``CELERY_RESULT_BACKEND`` let an operator point Celery at a
+        separate, non-cluster broker; without them, cluster mode fails
+        fast here with an actionable message instead of failing on the
+        first task.
+        """
         try:
-            redis_config = await self.config_service.get_config(
-                config_node_constants.REDIS.value
-            )
-            if not redis_config or not isinstance(redis_config, dict):
-                raise ValueError("Redis configuration not found")
-            redis_url = build_redis_url(redis_config)
+            broker_url = os.getenv("CELERY_BROKER_URL")
+            result_backend = os.getenv("CELERY_RESULT_BACKEND")
+
+            if not (broker_url and result_backend):
+                redis_config = await self.config_service.get_redis_config()
+                provider = get_redis_provider(
+                    RedisConnectionConfig.from_host_port(
+                        host=redis_config.host,
+                        port=redis_config.port,
+                        password=redis_config.password,
+                        db=redis_config.db,
+                        tls=redis_config.tls,
+                    )
+                )
+                if provider.is_cluster:
+                    raise ValueError(
+                        "REDIS_MODE=cluster has no Celery transport (kombu does not "
+                        "support Redis Cluster). Set CELERY_BROKER_URL and "
+                        "CELERY_RESULT_BACKEND to a separate, non-cluster broker."
+                    )
+                default_url = provider.connection_url()
+                broker_url = broker_url or default_url
+                result_backend = result_backend or default_url
+                key_namespace = provider.key_namespace
+            else:
+                # CELERY_BROKER_URL / CELERY_RESULT_BACKEND point at a
+                # separate broker outside this provider's config, so its
+                # namespace does not apply -- use REDIS_KEY_NAMESPACE
+                # directly if the operator still wants one on that broker.
+                key_namespace = os.getenv("REDIS_KEY_NAMESPACE", "")
 
             celery_config = {
-                "broker_url": redis_url,
-                "result_backend": redis_url,
+                "broker_url": broker_url,
+                "result_backend": result_backend,
                 "task_serializer": CeleryConfig.TASK_SERIALIZER.value,
                 "result_serializer": CeleryConfig.RESULT_SERIALIZER.value,
                 "accept_content": CeleryConfig.ACCEPT_CONTENT.value,
                 "timezone": CeleryConfig.TIMEZONE.value,
                 "enable_utc": CeleryConfig.ENABLE_UTC.value,
             }
+            if key_namespace:
+                # REDIS_KEY_NAMESPACE (R9): kombu's own `global_keyprefix`
+                # transport option -- never applied as an ioredis-style
+                # client prefix, which kombu's Redis transport does not
+                # support anyway.
+                prefix = f"{key_namespace}:"
+                celery_config["broker_transport_options"] = {
+                    "global_keyprefix": prefix,
+                }
+                celery_config["result_backend_transport_options"] = {
+                    "global_keyprefix": prefix,
+                }
 
             self.app.conf.update(celery_config)
             self.start_worker()

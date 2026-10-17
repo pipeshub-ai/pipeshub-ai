@@ -1192,7 +1192,7 @@ class TestProcessCellDeep:
 # ---------------------------------------------------------------------------
 # ExcelParser.process_sheet_with_summaries — integration
 # ---------------------------------------------------------------------------
-class TestProcessSheetWithSummaries:
+class TestProcessSheetWithSummariesEdgeCases:
     """Tests for ExcelParser.process_sheet_with_summaries."""
 
     @pytest.mark.asyncio

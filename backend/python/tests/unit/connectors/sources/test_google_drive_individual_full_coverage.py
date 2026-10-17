@@ -335,6 +335,7 @@ class TestPerformFullSync:
         )
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         connector.data_entities_processor.on_new_records.assert_not_awaited()
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -772,7 +773,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_stream_chunk_error(self, connector):
@@ -902,6 +903,8 @@ class TestGetFileMetadataFromDrive:
 
         result = await connector._get_file_metadata_from_drive("f1")
         assert result["id"] == "f1"
+        assert mock_files.get.call_args.kwargs["supportsAllDrives"] is True
+        assert mock_files.get.call_args.kwargs["fileId"] == "f1"
 
     @pytest.mark.asyncio
     async def test_not_found_error(self, connector):
@@ -931,7 +934,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -1045,6 +1049,10 @@ class TestStreamRecord:
 
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
@@ -1062,6 +1070,10 @@ class TestStreamRecord:
             mock_stream.return_value = MagicMock()
             result = await connector.stream_record(record)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_stream_record_http_exception_passthrough(self, connector):
@@ -1114,7 +1126,9 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_other(self, connector):
@@ -1145,7 +1159,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
 
 # ===================================================================
@@ -1733,7 +1747,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -1773,7 +1787,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise RuntimeError("no access")
             yield  # pragma: no cover - makes this an async generator
 
@@ -1796,7 +1810,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(500)
             yield  # pragma: no cover - makes this an async generator
 

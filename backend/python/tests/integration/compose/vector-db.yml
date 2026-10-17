@@ -1,0 +1,80 @@
+# Stores for the vector-DB provider integration suite.
+#
+#   docker compose -f tests/integration/compose/vector-db.yml up -d
+#   pytest tests/integration/vector_db/ -m integration --timeout=120
+#
+# Host ports default to what tests/integration/vector_db/conftest.py expects and
+# are deliberately off the main compose file's ports, so this can run alongside a
+# development stack -- with the exception of Qdrant's gRPC port, see below.
+#
+# The Redis provider needs the query engine and refuses anything below 8.4
+# (FT.HYBRID), so this pins the 8.x line, which ships the modules in the base
+# image. redis-stack-server is still on 7.4 and every test skips against it.
+
+# Published on the loopback interface only: these carry throwaway or absent
+# credentials, and a test store reachable from the network is a standing
+# invitation on any shared or cloud host.
+
+services:
+  redis-vector:
+    image: redis:8.4
+    ports:
+      - "127.0.0.1:${REDIS_VECTOR_HOST_PORT:-6399}:6379"
+    # MAXSEARCHRESULTS bounds FT.SEARCH offsets. Left at the 10k default on
+    # purpose: raising it here would hide the paging behaviour the delete path
+    # has to cope with in a stock deployment.
+    command: >
+      redis-server
+      --save ""
+      --appendonly no
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  opensearch:
+    image: opensearchproject/opensearch:2.19.0
+    environment:
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g
+      # Plain HTTP with no auth, matching the conftest fixture (use_ssl=False).
+      - DISABLE_SECURITY_PLUGIN=true
+      - DISABLE_INSTALL_DEMO_CONFIG=true
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "127.0.0.1:${OPENSEARCH_HOST_PORT:-9299}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fs http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.15
+    environment:
+      - QDRANT__SERVICE__GRPC_PORT=6334
+      - QDRANT__SERVICE__HTTP_PORT=6333
+    ports:
+      # QDRANT_PORT in the conftest is the REST port. gRPC is NOT derived from
+      # it: QdrantConfig has no grpc_port, so the provider leaves the client on
+      # its 6334 default and prefer_grpc sends every call there. That makes
+      # 6334 the one port this service cannot be moved off, and the one that
+      # collides with a running dev stack -- stop that stack's qdrant, or point
+      # the tests at this container over the compose network instead.
+      - "127.0.0.1:${QDRANT_GRPC_HOST_PORT:-6334}:6334"
+      - "127.0.0.1:${QDRANT_HTTP_HOST_PORT:-6333}:6333"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c ':> /dev/tcp/127.0.0.1/6333' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s

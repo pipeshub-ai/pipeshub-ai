@@ -26,6 +26,7 @@ from app.services.messaging.distributed_concurrency import (
 )
 from app.services.messaging.lease import LeaseRenewer
 from app.services.messaging.redis_client import RedisClientRegistry
+from app.services.redis.standalone_provider import StandaloneRedisProvider
 
 fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 
@@ -36,11 +37,19 @@ def logger() -> logging.Logger:
 
 
 def _fake_backed() -> "patch":
-    """Patch the registry to hand out fakeredis clients, one per loop."""
-    return patch.object(
-        RedisClientRegistry,
-        "_build_client",
-        lambda self: fakeredis_aioredis.FakeRedis(decode_responses=True),
+    """Patch the connection provider to hand out one shared fakeredis
+    instance for every client, standalone or per-loop registry alike.
+
+    ``create_client`` and ``get_client`` (the latter used internally by
+    ``load_script``) are pinned to the same fake instance so SCRIPT LOAD
+    and EVALSHA/other commands see one shared keyspace, exactly as they
+    would against one real Redis node.
+    """
+    fake = fakeredis_aioredis.FakeRedis(decode_responses=True)
+    return patch.multiple(
+        StandaloneRedisProvider,
+        create_client=lambda self, *a, **k: fake,
+        get_client=lambda self: fake,
     )
 
 
@@ -208,9 +217,7 @@ class TestWorkerThreadRestart:
         )
         seen: list[object] = []
 
-        with patch.object(
-            RedisClientRegistry, "_build_client", lambda self: MagicMock()
-        ):
+        with patch.object(registry._provider, "create_client", lambda *a, **k: MagicMock()):
             async def use() -> None:
                 seen.append(registry.client())
 
@@ -219,27 +226,35 @@ class TestWorkerThreadRestart:
 
         assert seen[0] is not seen[1]
 
-    def test_scripts_are_not_reused_across_a_replaced_client(self, logger) -> None:
-        """The subtle one: the script cache used to be keyed by id(client), so
-        a client allocated at a freed address inherited Script objects still
-        bound to the closed client and every lease op went to a dead pool."""
+    @pytest.mark.asyncio
+    async def test_noscript_after_a_client_replacement_reloads_once(
+        self, logger
+    ) -> None:
+        """SHAs are loaded once via the provider (R6), not cached per client,
+        so a client replaced after a restart still finds a valid SHA. The one
+        remaining failure mode -- a NOSCRIPT reply (e.g. a master that never
+        saw the original SCRIPT LOAD) -- must reload and retry exactly once,
+        not loop or raise."""
+        from redis.exceptions import NoScriptError
+
         manager = DistributedConcurrencyManager(
             logger, RedisConfig(host="redis", port=6379)
         )
-        clients = [MagicMock(name="c1"), MagicMock(name="c2")]
-        for c in clients:
-            c.register_script = MagicMock(side_effect=lambda _s: MagicMock())
-
         registry = MagicMock()
-        registry.client = MagicMock(side_effect=clients)
+        registry.provider.load_script = AsyncMock(return_value="acquire-sha-2")
+        client = AsyncMock()
+        client.evalsha = AsyncMock(side_effect=[NoScriptError("NOSCRIPT"), 1])
+        registry.client = MagicMock(return_value=client)
         manager._registry = registry
+        manager._acquire_sha = "acquire-sha"
+        manager._renew_sha = "renew-sha"
 
-        first = manager._scripts()
-        second = manager._scripts()
+        assert await manager.try_acquire("indexing", "w1", 4, 60) is True
 
-        assert first != second
-        assert clients[0].register_script.call_count == 2
-        assert clients[1].register_script.call_count == 2
+        assert client.evalsha.call_count == 2
+        assert manager._acquire_sha == "acquire-sha-2"
+        # The reload only re-loads the script that NOSCRIPT'd, not both.
+        registry.provider.load_script.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_a_restarted_renewer_does_not_inherit_stale_handles(
@@ -485,3 +500,170 @@ class TestConsumerLifecycle:
             assert consumer.lease_renewer is None
         finally:
             consumer._stop_worker_thread()
+
+
+class TestRenewErrorsReachTheDeadlineLogic:
+    """A Redis blip must NOT read as "every lease was lost".
+
+    ``LeaseRenewer`` deliberately tolerates failed renew rounds until its
+    safety deadline (``_note_failure``) -- a round that raises is expected
+    during a blip. If ``renew_many`` instead maps the failure to
+    ``renewed=False`` for each lease, ``_renew_once`` marks every handle lost
+    on the very first blip *and* refreshes ``_last_success``, so the deadline
+    it was supposed to protect never comes into play.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_connection_error_propagates_instead_of_reporting_not_renewed(
+        self, logger
+    ) -> None:
+        with _fake_backed():
+            manager = await _manager(logger)
+            try:
+                assert await manager.try_acquire("indexing", "w1", 4, 60) is True
+
+                client = manager._client()
+                with patch.object(
+                    client,
+                    "pipeline",
+                    side_effect=ConnectionError("connection reset by peer"),
+                ):
+                    with pytest.raises(ConnectionError):
+                        await manager.renew_many([("indexing", "w1")], 60)
+            finally:
+                await manager.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_the_renewer_does_not_drop_leases_on_a_failed_round(
+        self, logger
+    ) -> None:
+        manager = MagicMock()
+        manager.renew_many = AsyncMock(
+            side_effect=ConnectionError("connection reset by peer")
+        )
+        now = [0.0]
+        renewer = LeaseRenewer(
+            logger,
+            manager,
+            lease_seconds=60,
+            interval_seconds=1,
+            clock=lambda: now[0],
+        )
+        renewer.add("w1", "record:abc")
+        handle = renewer.register("w1")
+
+        with pytest.raises(ConnectionError):
+            await renewer._renew_once()
+
+        assert not handle.lost.is_set(), (
+            "a single failed renew round must not declare the lease lost"
+        )
+        assert renewer.seconds_since_success == 0.0
+
+        # ...and the deadline still fires once the blip outlasts it.
+        now[0] = 120.0
+        renewer._note_failure(ConnectionError("still down"))
+        assert handle.lost.is_set()
+
+    @pytest.mark.asyncio
+    async def test_a_genuine_zero_reply_still_reports_the_lease_lost(
+        self, logger
+    ) -> None:
+        """The failure path above must not swallow real "not renewed" replies:
+        a lease taken over by another owner returns 0, not an exception."""
+        with _fake_backed():
+            manager = await _manager(logger)
+            try:
+                assert await manager.try_acquire("indexing", "w1", 4, 60) is True
+                results = await manager.renew_many(
+                    [("indexing", "w1"), ("indexing", "never-acquired")], 60
+                )
+                assert results[("indexing", "w1")] is True
+                assert results[("indexing", "never-acquired")] is False
+            finally:
+                await manager.cleanup()
+
+
+class TestRenewManyTransportShape:
+    """`renew_many` renews the whole batch, but how differs by transport.
+
+    Standalone pipelines the lot into one round trip. Cluster cannot --
+    redis-py's `ClusterPipeline` rejects EVALSHA outright -- so it fans out,
+    and that fan-out must stay inside the connection pool it was given or it
+    queues behind itself until the pool wait times out (which is how a
+    renewal round starts failing under exactly the load it was added for).
+    """
+
+    @pytest.mark.asyncio
+    async def test_standalone_uses_a_single_pipeline(self, logger) -> None:
+        with _fake_backed():
+            manager = await _manager(logger)
+            try:
+                for owner in ("w1", "w2", "w3"):
+                    assert await manager.try_acquire("indexing", owner, 8, 60) is True
+
+                client = manager._client()
+                real_pipeline = client.pipeline
+                calls = []
+
+                def _counting_pipeline(*args, **kwargs):
+                    calls.append(1)
+                    return real_pipeline(*args, **kwargs)
+
+                with patch.object(client, "pipeline", _counting_pipeline):
+                    results = await manager.renew_many(
+                        [("indexing", "w1"), ("indexing", "w2"), ("indexing", "w3")],
+                        60,
+                    )
+
+                assert len(calls) == 1
+                assert all(results.values())
+            finally:
+                await manager.cleanup()
+
+    @pytest.mark.asyncio
+    async def test_cluster_never_exceeds_the_pool_size_in_flight(self, logger) -> None:
+        with _fake_backed():
+            # A pool smaller than the batch makes the semaphore the binding
+            # constraint: at the default 32 connections for 20 leases it
+            # never blocks, so peak <= pool_size would hold even if the
+            # semaphore were removed entirely.
+            manager = DistributedConcurrencyManager(
+                logger, RedisConfig(host="redis", port=6379), max_connections=4
+            )
+            await manager.initialize()
+            try:
+                leases = [("indexing", f"w{i}") for i in range(20)]
+                for pool, owner in leases:
+                    await manager.try_acquire(pool, owner, 64, 60)
+
+                # Pretend the transport is a cluster so the fan-out path runs.
+                manager._is_cluster = lambda: True  # type: ignore[method-assign]
+                pool_size = manager._registry.max_connections
+
+                client = manager._client()
+                in_flight = 0
+                peak = 0
+                real_evalsha = client.evalsha
+
+                async def _tracking_evalsha(*args, **kwargs):
+                    nonlocal in_flight, peak
+                    in_flight += 1
+                    peak = max(peak, in_flight)
+                    try:
+                        await asyncio.sleep(0)
+                        return await real_evalsha(*args, **kwargs)
+                    finally:
+                        in_flight -= 1
+
+                with patch.object(client, "evalsha", _tracking_evalsha):
+                    results = await manager.renew_many(leases, 60)
+
+                assert len(results) == len(leases)
+                assert peak > 1, "the cluster path must fan out, not serialize"
+                assert peak <= pool_size, (
+                    f"{peak} concurrent EVALSHA against a pool of {pool_size}: "
+                    "the fan-out queues behind itself and times out under load"
+                )
+            finally:
+                await manager.cleanup()

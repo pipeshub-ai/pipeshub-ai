@@ -2,11 +2,13 @@
 
 import base64
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.connector_builder import ConnectorScope
@@ -562,12 +564,20 @@ class TestProcessAzureBlob:
     async def test_move_detected(self, azure_connector):
         existing = MagicMock()
         existing.id = "moved-id"
+        existing.external_record_group_id = "container"
         existing.external_record_id = "container/old/file.txt"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         azure_connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         azure_connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+
+        async def no_blobs() -> AsyncIterator[dict]:
+            for blob in ():
+                yield blob
+
+        # The old blob is gone from the container, so equal content at the new name is a move.
+        azure_connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data=no_blobs())))
         azure_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock()
         azure_connector.scope = ConnectorScope.TEAM.value
         azure_connector.account_name = "testacc"
@@ -682,22 +692,26 @@ class TestGetSignedUrl:
     @pytest.mark.asyncio
     async def test_not_initialized(self, azure_connector):
         azure_connector.data_source = None
-        result = await azure_connector.get_signed_url(MagicMock())
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_container(self, azure_connector):
+        """422, not the 404 "no longer exists" that a None used to become."""
         azure_connector.data_source = MagicMock()
         record = MagicMock(id="r1", external_record_group_id=None)
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_external_record_id(self, azure_connector):
         azure_connector.data_source = MagicMock()
         record = MagicMock(id="r1", external_record_group_id="container", external_record_id=None)
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_success(self, azure_connector):
@@ -722,8 +736,11 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        # SAS generation is local signing, so a failure means the credential cannot
+        # sign, not that the blob is gone.
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
@@ -733,8 +750,9 @@ class TestGetSignedUrl:
             id="r1", external_record_group_id="container",
             external_record_id="container/blob.txt", record_name="blob.txt"
         )
-        result = await azure_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await azure_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
     async def test_key_without_container_prefix(self, azure_connector):

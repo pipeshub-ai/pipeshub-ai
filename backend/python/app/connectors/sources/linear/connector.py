@@ -3,6 +3,7 @@ import asyncio
 import base64
 import re
 from collections import defaultdict
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from logging import Logger
 from typing import (
@@ -16,6 +17,7 @@ from typing import (
 )
 from uuid import uuid4
 
+from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
@@ -25,12 +27,18 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    not_downloadable,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -85,6 +93,7 @@ from app.models.entities import (
     LinkRecord,
     MimeTypes,
     OriginTypes,
+    PermissionModel,
     ProjectRecord,
     Record,
     RecordGroup,
@@ -96,6 +105,11 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import (
+    NotificationSeverity,
+    NotificationType,
+)
+from app.sources.client.graphql.response import GraphQLResponse
 from app.sources.client.linear.linear import LinearClient
 from app.sources.external.linear.linear import LinearDataSource
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -108,6 +122,25 @@ PLACEHOLDER_SWEEP_BATCH: int = 50
 PLACEHOLDER_SWEEP_MAX_DEPTH: int = 10
 PLACEHOLDER_SWEEP_CONCURRENCY: int = 10
 PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
+# One page failing a sync loop drops the rest of that loop until the next sync, so a
+# timeout, rate limit or 5xx gets a few more tries: waits of 2, 4 and 8 seconds.
+LINEAR_TRANSIENT_RETRIES: int = 3
+LINEAR_RETRY_BASE_DELAY_SEC: float = 2.0
+
+
+def _is_transient_linear_failure(response: GraphQLResponse) -> bool:
+    """A failed Linear response worth asking again: rate limited, a 5xx, or nothing came back."""
+    errors = getattr(response, "errors", None)
+    if isinstance(errors, list) and any(
+        (getattr(error, "extensions", None) or {}).get("code") == "RATELIMITED" for error in errors
+    ):
+        return True
+    status = getattr(response, "status_code", None)
+    if isinstance(status, int):
+        return status == HttpStatusCode.TOO_MANY_REQUESTS.value or status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value
+    # The data source turns a transport failure, a read timeout among them, into a
+    # response with neither a status nor errors.
+    return status is None and errors is None
 
 
 @ConnectorBuilder("Linear")\
@@ -124,7 +157,7 @@ PLACEHOLDER_REVISION_PREFIX: str = "placeholder:"
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=["read"],
-                agent=["read","write","admin"]
+                agent=[]
             ),
             fields=[
                 AuthField(
@@ -318,6 +351,9 @@ class LinearConnector(BaseConnector):
         self.sync_filters = None
         self.indexing_filters = None
 
+    def _notification_title(self, event: str) -> str:
+        return f"{self.connector_instance_name or 'Linear'} connector {event}"
+
     async def init(self) -> bool:
         """
         Initialize Linear client using proper Client + DataSource architecture
@@ -337,7 +373,7 @@ class LinearConnector(BaseConnector):
             self.data_source = LinearDataSource(client)
 
             # Validate connection by fetching organization info
-            org_response = await self.data_source.organization()
+            org_response = await self._with_transient_retry("organization", self.data_source.organization)
             if not org_response.success:
                 raise Exception(f"Failed to connect to Linear: {org_response.message}")
 
@@ -354,7 +390,27 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Linear client: {e}")
-            return False
+            raise ConnectorInitError(str(e)) from e
+
+    async def _with_transient_retry(
+        self,
+        description: str,
+        request: Callable[..., Awaitable[GraphQLResponse]],
+        **arguments: object,
+    ) -> GraphQLResponse:
+        """Run one Linear request, asking again while it fails transiently."""
+        response = await request(**arguments)
+        for attempt in range(LINEAR_TRANSIENT_RETRIES):
+            if response.success or not _is_transient_linear_failure(response):
+                break
+            delay = LINEAR_RETRY_BASE_DELAY_SEC * (2 ** attempt)
+            self.logger.warning(
+                "Linear %s failed (attempt %d/%d), retrying in %.0fs: %s",
+                description, attempt + 1, LINEAR_TRANSIENT_RETRIES + 1, delay, response.message,
+            )
+            await asyncio.sleep(delay)
+            response = await request(**arguments)
+        return response
 
     async def _get_fresh_datasource(self) -> LinearDataSource:
         """
@@ -506,6 +562,27 @@ class LinearConnector(BaseConnector):
             self.logger.error(f"❌ Error fetching teams: {e}", exc_info=True)
             raise RuntimeError(f"Failed to fetch team options: {str(e)}")
 
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        if not self.data_source:
+            return
+        viewer = {}
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.viewer()
+            if response.success and response.data:
+                viewer = response.data.get("viewer") or {}
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Linear account: %s", e)
+            return
+        if not isinstance(viewer, dict):
+            return
+        email = viewer.get("email")
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None, viewer.get("id")
+        )
+
     async def run_sync(self) -> None:
         """
         Main sync orchestration method.
@@ -514,9 +591,14 @@ class LinearConnector(BaseConnector):
         try:
             self.logger.info(f"🚀 Starting Linear sync for connector {self.connector_id}")
 
-            # Ensure data source is initialized
             if not self.data_source:
-                await self.init()
+                init_error = RuntimeError(
+                    f"Linear connector {self.connector_id} not initialized. Call init() first."
+                )
+                init_error._notification_sent = True
+                raise init_error
+
+            await self._register_authenticated_identity()
 
             # Load sync and indexing filters (loaded in run_sync to ensure latest values)
             self.sync_filters, self.indexing_filters = await load_connector_filters(
@@ -583,7 +665,21 @@ class LinearConnector(BaseConnector):
                 self.logger.info(f"📁 Synced {len(team_record_groups)} Linear teams as RecordGroups")
 
             # Step 7: Sync issues for teams
-            full_sync_team_ids = await self._sync_issues_for_teams(team_record_groups)
+            full_sync_team_ids, failed_issue_team_keys = await self._sync_issues_for_teams(team_record_groups)
+
+            if failed_issue_team_keys:
+                preview = ", ".join(failed_issue_team_keys[:5])
+                if len(failed_issue_team_keys) > 5:
+                    preview += f" (+{len(failed_issue_team_keys) - 5} more)"
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("couldn't sync some teams"),
+                    message=(
+                        f"Couldn't sync issues for {len(failed_issue_team_keys)} team(s): {preview}. "
+                        "Retry sync; check Linear access if it keeps failing."
+                    ),
+                )
 
             # Step 8: Sync attachments separately (Linear doesn't update issue.updatedAt when attachments are added)
             await self._sync_attachments(team_record_groups)
@@ -616,6 +712,17 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error during Linear sync: {e}", exc_info=True)
+            if not isinstance(e, ConnectorInitError) and not getattr(e, "_notification_sent", False):
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=self._notification_title("sync failed"),
+                    message=(
+                        f"The sync stopped due to an error: {str(e)[:200]}. Recent Linear changes "
+                        "may not be reflected yet. Run the sync again; if it keeps failing, "
+                        "check the connector's configuration."
+                    ),
+                )
             raise
 
     async def _fetch_users(self) -> List[AppUser]:
@@ -634,7 +741,10 @@ class LinearConnector(BaseConnector):
 
         # Fetch all users with cursor-based pagination
         while True:
-            response = await datasource.users(first=page_size, after=cursor)
+            response = await self._with_transient_retry(
+                "users page",
+                datasource.users, first=page_size, after=cursor,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch users: {response.message}")
@@ -753,7 +863,10 @@ class LinearConnector(BaseConnector):
         # Fetch all teams with cursor-based pagination
         # Note: filter_dict is sent on every request - Linear applies filter first, then paginates
         while True:
-            response = await datasource.teams(first=page_size, after=cursor, filter=filter_dict)
+            response = await self._with_transient_retry(
+                "teams page",
+                datasource.teams, first=page_size, after=cursor, filter=filter_dict,
+            )
 
             if not response.success:
                 raise RuntimeError(f"Failed to fetch teams: {response.message}")
@@ -780,6 +893,11 @@ class LinearConnector(BaseConnector):
         # Convert teams to both UserGroups and RecordGroups
         user_groups: List[Tuple[AppUserGroup, List[AppUser]]] = []
         record_groups: List[Tuple[RecordGroup, List[Permission]]] = []
+        # Linear has no per-issue access, so a team's audience is everything in it.
+        # A team with sub-teams is not declared: a private sub-team is hidden from the
+        # parent's members, and a declared group admits every group below it. A
+        # filtered sync may not list a team's sub-teams, so it declares none.
+        parent_team_ids = {str((t.get("parent") or {}).get("id")) for t in all_teams if t.get("parent")}
 
         for team in all_teams:
             team_id = team.get("id")
@@ -842,27 +960,28 @@ class LinearConnector(BaseConnector):
                 group_type=RecordGroupType.PROJECT,
                 web_url=web_url,
                 parent_external_group_id=parent_external_group_id,
+                permission_model=(
+                    PermissionModel.RECORD_GROUP_LEVEL
+                    if not team_ids and str(team_id) not in parent_team_ids
+                    else None
+                ),
             )
 
-            # 3. Handle permissions based on team privacy
+            visibility = (team.get("visibility") or ("private" if is_private else "public")).lower()
             permissions: List[Permission] = []
 
-            if is_private:
-                # For private teams: Grant access via UserGroup
-                permissions.append(Permission(
-                    entity_type=EntityType.GROUP,
-                    external_id=team_id,
-                    type=PermissionType.READ,
-                ))
-                self.logger.info(f"Team {team_key} is private - added UserGroup permission (external_id={team_id})")
-            else:
-                # For public teams: All org members can access
+            if visibility == "public":
                 permissions.append(Permission(
                     entity_type=EntityType.ORG,
                     type=PermissionType.READ,
                     external_id=None
                 ))
-                self.logger.info(f"Team {team_key} is public - added org-level permission for all org members")
+            else:
+                permissions.append(Permission(
+                    entity_type=EntityType.GROUP,
+                    external_id=team_id,
+                    type=PermissionType.READ,
+                ))
 
             record_groups.append((record_group, permissions))
 
@@ -875,7 +994,7 @@ class LinearConnector(BaseConnector):
     async def _sync_issues_for_teams(
         self,
         team_record_groups: List[Tuple[RecordGroup, List[Permission]]]
-    ) -> set[str]:
+    ) -> Tuple[set[str], List[str]]:
         """
         Sync issues for all teams with batch processing and incremental sync.
         Uses simple team-level sync points.
@@ -883,20 +1002,21 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time
         - Query: Fetch issues with updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max issue updated_at (fault tolerance)
-        - After all batches: Update last_sync_time to current time
+        - After the whole scan was read: Update last_sync_time to max issue updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
 
         Returns:
-            Team external ids that ran a full issue sync (no prior checkpoint).
+            Tuple of (full_sync_team_ids, failed_team_keys).
         """
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync issues for")
-            return set()
+            return set(), []
 
         full_sync_team_ids: set[str] = set()
+        failed_team_keys: List[str] = []
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -949,9 +1069,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    if max_issue_updated_at:
-                        await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
+                if max_issue_updated_at:
+                    await self._update_team_sync_checkpoint(team_key, max_issue_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
@@ -968,9 +1087,10 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing issues for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
 
-        return full_sync_team_ids
+        return full_sync_team_ids, failed_team_keys
 
     async def _sweep_placeholder_records(
         self,
@@ -1275,21 +1395,17 @@ class LinearConnector(BaseConnector):
         # Apply date filters to team_filter
         self._apply_date_filters_to_linear_filter(team_filter, last_sync_time)
 
-        # This ensures each batch's max updatedAt >= previous batches, so checkpoint
-        order_by = {"updatedAt": "ASC"}
-
         while True:
-            # Fetch issues batch ordered by updatedAt ASC
-            response = await datasource.issues(
+            response = await self._with_transient_retry(
+                f"issues page for team {team_key}",
+                datasource.issues,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=order_by
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch issues for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch issues for team {team_key}: {response.message}")
 
             issues_data = response.data.get("issues", {}) if response.data else {}
             issues_list = issues_data.get("nodes", [])
@@ -1306,6 +1422,11 @@ class LinearConnector(BaseConnector):
             for issue_data in issues_list:
                 try:
                     issue_id = issue_data.get("id", "")
+
+                    # Linear's team filter also returns sub-team issues; each is synced in its own team's pass.
+                    issue_team_id = (issue_data.get("team") or {}).get("id")
+                    if issue_team_id and issue_team_id != team_id:
+                        continue
 
                     # Look up existing record to handle versioning
                     existing_record = await self.data_entities_processor.get_record_by_external_id(
@@ -1431,15 +1552,16 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(attachment_filter, last_sync_time)
 
             while True:
-                response = await datasource.attachments(
+                response = await self._with_transient_retry(
+                    "attachments page",
+                    datasource.attachments,
                     first=50,
                     after=after_cursor,
-                    filter=attachment_filter if attachment_filter else None
+                    filter=attachment_filter if attachment_filter else None,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch attachments: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch attachments: {response.message}")
 
                 attachments_data = response.data.get("attachments", {}) if response.data else {}
                 attachments_list = attachments_data.get("nodes", [])
@@ -1525,15 +1647,15 @@ class LinearConnector(BaseConnector):
                 if batch_records:
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                # Update sync point after each batch
-                if max_attachment_updated_at:
-                    await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_attachment_updated_at:
+                await self._update_attachments_sync_checkpoint(max_attachment_updated_at)
 
             if total_attachments > 0:
                 self.logger.info(f"✅ Synced {total_attachments} attachments")
@@ -1542,6 +1664,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing attachments: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync attachments"),
+                message=(
+                    f"Attachment sync failed: {str(e)[:200]}. "
+                    "Existing attachments are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_documents(
         self,
@@ -1579,15 +1710,16 @@ class LinearConnector(BaseConnector):
             self._apply_date_filters_to_linear_filter(document_filter, last_sync_time)
 
             while True:
-                response = await datasource.documents(
+                response = await self._with_transient_retry(
+                    "documents page",
+                    datasource.documents,
                     first=50,
                     after=after_cursor,
-                    filter=document_filter if document_filter else None
+                    filter=document_filter if document_filter else None,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch documents: {response.message}")
-                    break
+                    raise RuntimeError(f"Failed to fetch documents: {response.message}")
 
                 documents_data = response.data.get("documents", {}) if response.data else {}
                 documents_list = documents_data.get("nodes", [])
@@ -1687,15 +1819,15 @@ class LinearConnector(BaseConnector):
                         self.logger.debug("✅ Batch processed successfully")
                         batch_records = []  # Clear batch after processing
 
-                # Update sync point after each batch
-                if max_document_updated_at:
-                    await self._update_documents_sync_checkpoint(max_document_updated_at)
-
                 # Check for more pages
                 if page_info.get("hasNextPage") and page_info.get("endCursor"):
                     after_cursor = page_info.get("endCursor")
                 else:
                     break
+
+            # Pages are not ordered by updatedAt, so only a fully read scan may move the checkpoint
+            if max_document_updated_at:
+                await self._update_documents_sync_checkpoint(max_document_updated_at)
 
             if total_documents > 0:
                 self.logger.info(f"✅ Synced {total_documents} documents")
@@ -1704,6 +1836,15 @@ class LinearConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Error syncing documents: {e}", exc_info=True)
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("couldn't sync documents"),
+                message=(
+                    f"Document sync failed: {str(e)[:200]}. "
+                    "Existing documents are preserved; they'll retry on the next sync."
+                ),
+            )
 
     async def _sync_projects_for_teams(
         self,
@@ -1716,7 +1857,8 @@ class LinearConnector(BaseConnector):
         Sync point logic:
         - Before sync: Read last_sync_time for each team
         - Query: Fetch projects with teams filter and updatedAt > last_sync_time
-        - After EACH batch: Update last_sync_time to max project updated_at (fault tolerance)
+        - After the whole scan was read: Update last_sync_time to max project updated_at.
+          Pages are not ordered by updatedAt, so a partial scan must not move it.
 
         Args:
             team_record_groups: List of (RecordGroup, permissions) tuples for teams to sync
@@ -1724,6 +1866,9 @@ class LinearConnector(BaseConnector):
         if not team_record_groups:
             self.logger.info("ℹ️ No teams to sync projects for")
             return
+
+        failed_team_keys: List[str] = []
+        synced_team_ids = {str(rg.external_group_id) for rg, _ in team_record_groups if rg.external_group_id}
 
         for team_record_group, team_perms in team_record_groups:
             try:
@@ -1752,7 +1897,8 @@ class LinearConnector(BaseConnector):
                 async for batch_records in self._fetch_projects_for_team_batch(
                     team_id=team_id,
                     team_key=team_key,
-                    last_sync_time=last_sync_time
+                    last_sync_time=last_sync_time,
+                    synced_team_ids=synced_team_ids,
                 ):
                     if not batch_records:
                         continue
@@ -1770,10 +1916,8 @@ class LinearConnector(BaseConnector):
                     total_records_processed += len(batch_records)
                     await self.data_entities_processor.on_new_records(batch_records)
 
-                    # Update sync point after each batch for fault tolerance
-                    # Uses max from PROJECTS ONLY (we query by project.updatedAt)
-                    if max_project_updated_at:
-                        await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
+                if max_project_updated_at:
+                    await self._update_team_project_sync_checkpoint(team_key, max_project_updated_at)
 
                 # Log final status
                 if total_records_processed > 0:
@@ -1784,14 +1928,30 @@ class LinearConnector(BaseConnector):
             except Exception as e:
                 team_name = team_record_group.name or team_record_group.short_name or "unknown"
                 self.logger.error(f"❌ Error syncing projects for team {team_name}: {e}", exc_info=True)
+                failed_team_keys.append(team_name)
                 continue
+
+        if failed_team_keys:
+            preview = ", ".join(failed_team_keys[:5])
+            if len(failed_team_keys) > 5:
+                preview += f" (+{len(failed_team_keys) - 5} more)"
+            await self.notify(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=self._notification_title("couldn't sync projects for some teams"),
+                message=(
+                    f"Couldn't sync projects for {len(failed_team_keys)} team(s): {preview}. "
+                    "Retry sync; check Linear access if it keeps failing."
+                ),
+            )
 
     async def _fetch_projects_for_team_batch(
         self,
         team_id: str,
         team_key: str,
         last_sync_time: Optional[int] = None,
-        batch_size: int = 10
+        batch_size: int = 10,
+        synced_team_ids: set[str] | None = None,
     ) -> AsyncGenerator[List[Tuple[Record, List[Permission]]], None]:
         """
         Fetch projects for a team with pagination and incremental sync, yielding batches.
@@ -1823,16 +1983,17 @@ class LinearConnector(BaseConnector):
 
         while True:
             # Fetch projects batch
-            response = await datasource.projects(
+            response = await self._with_transient_retry(
+                f"projects page for team {team_key}",
+                datasource.projects,
                 first=batch_size,
                 after=after_cursor,
                 filter=team_filter,
-                orderBy=None
+                orderBy=None,
             )
 
             if not response.success:
-                self.logger.error(f"❌ Failed to fetch projects for team {team_key}: {response.message}")
-                break
+                raise RuntimeError(f"Failed to fetch projects for team {team_key}: {response.message}")
 
             projects_data = response.data.get("projects", {}) if response.data else {}
             projects_list = projects_data.get("nodes", [])
@@ -1860,6 +2021,17 @@ class LinearConnector(BaseConnector):
                     else:
                         full_project_data = full_project_response.data.get("project", {}) if full_project_response.data else project_data
 
+                    # accessibleTeams returns a project once per team it has. Write it only in its first
+                    # synced team's pass, or it and its documents and links change team on every pass.
+                    project_team_ids = sorted(
+                        str(node.get("id"))
+                        for node in ((full_project_data.get("teams") or {}).get("nodes") or [])
+                        if isinstance(node, dict) and node.get("id")
+                        and (not synced_team_ids or str(node.get("id")) in synced_team_ids)
+                    )
+                    if project_team_ids and project_team_ids[0] != str(team_id):
+                        continue
+
                     # Look up existing record to handle versioning
                     existing_record = await self.data_entities_processor.get_record_by_external_id(
                         connector_id=self.connector_id,
@@ -1879,8 +2051,8 @@ class LinearConnector(BaseConnector):
                         team_id=team_id,
                     )
 
-                    # Add project-related records to batch
-                    batch_records.extend(project_batch_records)
+                    # Written after the project below: a child written first finds no parent in its team.
+                    child_records = list(project_batch_records)
 
                     # Set indexing status based on filters
                     if self.indexing_filters and not self.indexing_filters.is_enabled(IndexingFilterKey.PROJECTS):
@@ -1916,10 +2088,11 @@ class LinearConnector(BaseConnector):
                             indexing_filter_key=IndexingFilterKey.PROJECTS,
                             is_full_sync=(last_sync_time is None),
                         )
-                        batch_records.extend(new_file_records)
+                        child_records.extend(new_file_records)
 
                     # Records inherit permissions from RecordGroup (team), so pass empty list
                     batch_records.append((project_record, []))
+                    batch_records.extend(child_records)
 
                 except Exception as e:
                     project_id = project_data.get("id", "unknown")
@@ -3032,6 +3205,14 @@ class LinearConnector(BaseConnector):
             is_dependent_node=False,
             parent_node_id=None,
         )
+        team_nodes = (project_data.get("teams") or {}).get("nodes") or []
+        other_teams = [
+            str(node.get("id"))
+            for node in team_nodes
+            if isinstance(node, dict) and node.get("id") and str(node.get("id")) != str(team_id)
+        ]
+        project.shared_with_me_record_group_ids = other_teams
+        project.shared_groups_complete = "teams" in project_data
 
 
         return project
@@ -3439,16 +3620,19 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular issues query with includeArchived=true, then filter for trashed in code
-                response = await datasource.issues(
+                response = await self._with_transient_retry(
+                    "issues page for deletion sync",
+                    datasource.issues,
                     first=50,
                     after=after_cursor,
                     filter=issue_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch issues for deletion sync: {response.message}")
-                    break
+                    # The scan is unordered: a trashed issue on the unread pages may carry an
+                    # earlier archivedAt than the max seen, so the checkpoint must stay put.
+                    raise RuntimeError(f"Failed to fetch issues for deletion sync: {response.message}")
 
                 issues_data = response.data.get("issues", {}) if response.data else {}
                 issues_list = issues_data.get("nodes", [])
@@ -3561,16 +3745,18 @@ class LinearConnector(BaseConnector):
 
             while True:
                 # Use regular projects query with includeArchived=true, then filter for trashed in code
-                response = await datasource.projects(
+                response = await self._with_transient_retry(
+                    "projects page for deletion sync",
+                    datasource.projects,
                     first=50,
                     after=after_cursor,
                     filter=project_filter,
-                    includeArchived=True
+                    includeArchived=True,
                 )
 
                 if not response.success:
-                    self.logger.error(f"❌ Failed to fetch projects for deletion sync: {response.message}")
-                    break
+                    # Same as the issues scan: unordered, so a failed page leaves the checkpoint alone.
+                    raise RuntimeError(f"Failed to fetch projects for deletion sync: {response.message}")
 
                 projects_data = response.data.get("projects", {}) if response.data else {}
                 projects_list = projects_data.get("nodes", [])
@@ -3662,9 +3848,7 @@ class LinearConnector(BaseConnector):
         when the parent record is deleted.
         """
         try:
-            # Use transaction to delete parent and all children
             async with self.data_store_provider.transaction() as tx_store:
-                # Get the parent record within transaction
                 parent_record = await tx_store.get_record_by_external_id(
                     connector_id=self.connector_id,
                     external_id=external_record_id
@@ -3674,36 +3858,26 @@ class LinearConnector(BaseConnector):
                     self.logger.debug(f"Record {external_record_id} not found in DB, skipping deletion")
                     return
 
-                # Get and delete all child records first (recursively)
+                # Children, and their children (e.g. files attached to comments)
                 child_records = await tx_store.get_records_by_parent(
                     connector_id=self.connector_id,
                     parent_external_record_id=external_record_id
                 )
-
+                doomed_ids = [parent_record.id]
                 for child_record in child_records:
-                    # Recursively delete grandchildren (e.g., files attached to comments)
                     grandchild_records = await tx_store.get_records_by_parent(
                         connector_id=self.connector_id,
                         parent_external_record_id=child_record.external_record_id
                     )
-                    for grandchild in grandchild_records:
-                        # Delete grandchild record and all its relations
-                        await tx_store.delete_records_and_relations(
-                            record_key=grandchild.id,
-                            hard_delete=True
-                        )
+                    doomed_ids += [child_record.id] + [g.id for g in grandchild_records]
 
-                    # Delete child record and all its relations
-                    await tx_store.delete_records_and_relations(
-                        record_key=child_record.id,
-                        hard_delete=True
-                    )
-
-                # Finally, delete the parent record and all its relations
-                await tx_store.delete_records_and_relations(
-                    record_key=parent_record.id,
-                    hard_delete=True
-                )
+            # Through the processor, so anything deeper that survives is re-pointed
+            # at the nearest record left above it, or its group, and the vectors
+            # are cleaned up.
+            await self.data_entities_processor.on_records_deleted_cascade(
+                doomed_ids, self.connector_id, cascade_children=False,
+                include_trashed_roots=True,
+            )
 
             self.logger.debug(
                 f"Marked {external_record_id} and {len(child_records)} children as deleted"
@@ -4521,12 +4695,25 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         project_response = await datasource.project(id=record_id)
 
-        if not project_response.success:
-            raise Exception(f"Failed to fetch project content: {project_response.message}")
+        if not project_response.success or not (
+            project_response.data and project_response.data.get("project")
+        ):
+            self.logger.warning(
+                "Failed to fetch project %s for streaming: %s",
+                record_id,
+                project_response.message if not project_response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=project_response.success,
+                has_payload=bool(
+                    project_response.data and project_response.data.get("project")
+                ),
+                connector=self.display_name,
+                status=project_response.status_code,
+                message=project_response.message,
+            )
 
-        project_data = project_response.data.get("project", {}) if project_response.data else {}
-        if not project_data:
-            raise Exception(f"No project data found for ID: {record_id}")
+        project_data = project_response.data.get("project", {})
 
         # Get project weburl for BlockGroup
         project_weburl = project_data.get("url") or f"https://linear.app/project/{record_id}"
@@ -4626,12 +4813,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.issue(id=issue_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch issue content: {response.message}")
+        if not response.success or not (response.data and response.data.get("issue")):
+            self.logger.warning(
+                "Failed to fetch issue %s for streaming: %s",
+                issue_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("issue")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        issue_data = response.data.get("issue", {}) if response.data else {}
-        if not issue_data:
-            raise Exception(f"No issue data found for ID: {issue_id}")
+        issue_data = response.data.get("issue", {})
 
         issue_weburl = issue_data.get("url")
         issue_description = issue_data.get("description", "")
@@ -4721,12 +4917,21 @@ class LinearConnector(BaseConnector):
         datasource = await self._get_fresh_datasource()
         response = await datasource.document(id=document_id)
 
-        if not response.success:
-            raise Exception(f"Failed to fetch document content: {response.message}")
+        if not response.success or not (response.data and response.data.get("document")):
+            self.logger.warning(
+                "Failed to fetch document %s for streaming: %s",
+                document_id,
+                response.message if not response.success else "empty payload",
+            )
+            raise_for_stream_fetch(
+                success=response.success,
+                has_payload=bool(response.data and response.data.get("document")),
+                connector=self.display_name,
+                status=response.status_code,
+                message=response.message,
+            )
 
-        document_data = response.data.get("document", {}) if response.data else {}
-        if not document_data:
-            raise Exception(f"No document data found for ID: {document_id}")
+        document_data = response.data.get("document", {})
 
         # Get the content field (markdown)
         content = document_data.get("content", "")
@@ -4759,9 +4964,10 @@ class LinearConnector(BaseConnector):
                 await self.init()
 
             if getattr(record, "is_placeholder", False) is True:
-                raise ValueError(
+                raise not_downloadable(
                     f"Cannot stream placeholder record {record.external_record_id}: "
-                    "it is a stub for an out-of-scope ancestor and has no content"
+                    "it is a stub for an out-of-scope ancestor and has no content",
+                    connector=self.display_name,
                 )
 
             if record.record_type == RecordType.PROJECT:
@@ -4792,7 +4998,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.LINK:
                 # Stream attachment/link as markdown (clickable link format)
                 if not record.weburl:
-                    raise ValueError(f"LinkRecord {record.external_record_id} missing weburl")
+                    raise not_downloadable(
+                        f"LinkRecord {record.external_record_id} has no URL to open.",
+                        connector=self.display_name,
+                    )
 
                 # Return simple markdown link format (same as issue/comment descriptions)
                 link_name = record.record_name or 'Link'
@@ -4822,7 +5031,10 @@ class LinearConnector(BaseConnector):
             elif record.record_type == RecordType.FILE:
                 # Stream file content from external_record_id (file URL)
                 if not record.external_record_id:
-                    raise ValueError(f"FileRecord {record.id} missing external_record_id (file URL)")
+                    raise not_downloadable(
+                        f"FileRecord {record.id} has no source URL to download from.",
+                        connector=self.display_name,
+                    )
 
                 # Download file content and stream it with authentication
                 async def file_stream() -> AsyncGenerator[bytes, None]:
@@ -4856,11 +5068,16 @@ class LinearConnector(BaseConnector):
                 )
 
             else:
-                raise ValueError(f"Unsupported record type for streaming: {record.record_type}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_REQUEST.value,
+                    detail=f"Unsupported record type for streaming: {record.record_type}",
+                )
 
+        except HTTPException:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error streaming record {record.external_record_id} ({record.record_type}): {e}", exc_info=True)
-            raise
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def run_incremental_sync(self) -> None:
         """
@@ -4878,7 +5095,7 @@ class LinearConnector(BaseConnector):
 
             # Test by fetching organization info (simple API call)
             datasource = await self._get_fresh_datasource()
-            response = await datasource.organization()
+            response = await self._with_transient_retry("organization", datasource.organization)
 
             if response.success and response.data is not None:
                 self.logger.info("✅ Linear connection test successful")

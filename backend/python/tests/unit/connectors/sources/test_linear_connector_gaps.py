@@ -4,6 +4,7 @@ from uuid import uuid4
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import IndexingFilterKey, SyncFilterKey
@@ -364,6 +365,37 @@ class TestIssueBatchCommentFiles:
         assert batches
 
     @pytest.mark.asyncio
+    async def test_fetch_issues_batch_skips_sub_team_issues(self) -> None:
+        conn = _make_connector()
+        conn.data_source = MagicMock()
+        conn.indexing_filters = None
+        conn.organization_url_key = "org"
+
+        own = _make_issue_payload(id="iss-own", identifier="SAL-1", description="", team={"id": "team-1"})
+        sub_team = _make_issue_payload(id="iss-sub", identifier="MAR-1", description="", team={"id": "team-child"})
+
+        mock_ds = MagicMock()
+        mock_ds.issues = AsyncMock(return_value=_issues_resp([own, sub_team], has_next=False))
+
+        with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
+            batches = [batch async for batch in conn._fetch_issues_for_team_batch("team-1", "SAL")]
+
+        records = [record for batch in batches for record, _ in batch]
+        assert [r.external_record_id for r in records] == ["iss-own"]
+        assert records[0].external_record_group_id == "team-1"
+
+    def test_sub_issue_inherits_from_its_parent_issue(self) -> None:
+        conn = _make_connector()
+        conn.organization_url_key = "org"
+
+        sub_issue = _make_issue_payload(id="iss-sub", parent={"id": "iss-parent"})
+        ticket = conn._transform_issue_to_ticket_record(sub_issue, "team-1")
+
+        assert ticket.parent_external_record_id == "iss-parent"
+        assert ticket.inherit_permissions is True
+        assert ticket.inherit_permissions_from_group is False
+
+    @pytest.mark.asyncio
     async def test_fetch_issues_batch_skips_empty_comment_body(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
@@ -404,18 +436,16 @@ class TestIssueBatchCommentFiles:
         assert batches
 
     @pytest.mark.asyncio
-    async def test_fetch_issues_batch_api_failure_yields_nothing(self):
+    async def test_fetch_issues_batch_api_failure_raises(self):
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
         mock_ds.issues = AsyncMock(return_value=MagicMock(success=False, message="rate limited"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            batches = []
-            async for batch in conn._fetch_issues_for_team_batch("team-1", "ENG"):
-                batches.append(batch)
-
-        assert batches == []
+            with pytest.raises(RuntimeError, match="rate limited"):
+                async for _ in conn._fetch_issues_for_team_batch("team-1", "ENG"):
+                    pass
 
 
 class TestParseProjectUpdates:
@@ -530,7 +560,7 @@ class TestProjectStreaming:
         mock_ds.project = AsyncMock(return_value=MagicMock(success=False, message="not found"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="Failed to fetch project"):
+            with pytest.raises(RuntimeError, match="not found"):
                 await conn._process_project_blockgroups_for_streaming(record)
 
     @pytest.mark.asyncio
@@ -825,7 +855,7 @@ class TestIssueStreaming:
         mock_ds.issue = AsyncMock(return_value=MagicMock(success=False, message="not found"))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="Failed to fetch issue"):
+            with pytest.raises(RuntimeError, match="not found"):
                 await conn._process_issue_blockgroups_for_streaming(record)
 
 
@@ -1423,7 +1453,7 @@ class TestRunSyncFilterLogging:
         )
         conn._fetch_users = AsyncMock(return_value=[])
         conn._fetch_teams = AsyncMock(return_value=([], []))
-        conn._sync_issues_for_teams = AsyncMock(return_value=set())
+        conn._sync_issues_for_teams = AsyncMock(return_value=(set(), []))
         conn._sync_attachments = AsyncMock()
         conn._sync_documents = AsyncMock()
         conn._sync_projects_for_teams = AsyncMock()
@@ -1889,10 +1919,12 @@ class TestMarkDeletedExtended:
 
         conn._tx_store.get_record_by_external_id = AsyncMock(return_value=parent)
         conn._tx_store.get_records_by_parent = AsyncMock(side_effect=[[child], [grandchild]])
-        conn._tx_store.delete_records_and_relations = AsyncMock()
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await conn._mark_record_and_children_deleted("ext-parent", "issue")
-        assert conn._tx_store.delete_records_and_relations.await_count == 3
+        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id", "grand-id"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 class TestParseBlocksExtended:
@@ -2541,8 +2573,9 @@ class TestCoverageBoostFinal:
         mock_ds.issue = AsyncMock(return_value=MagicMock(success=True, data={"issue": {}}))
 
         with patch.object(conn, "_get_fresh_datasource", new=AsyncMock(return_value=mock_ds)):
-            with pytest.raises(Exception, match="No issue data found"):
+            with pytest.raises(HTTPException) as exc_info:
                 await conn._process_issue_blockgroups_for_streaming(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_fetch_document_content_empty_returns_blank(self):

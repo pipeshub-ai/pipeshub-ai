@@ -8,22 +8,29 @@ docstrings).
 Uses a minimal in-memory `FakeGraphProvider` implementing only the
 `IGraphDBProvider` surface `GraphSkillStore`/`GraphUsageTracker` actually
 call (`get_document`, `get_nodes_by_filters`, `batch_upsert_nodes`,
-`update_node`, `delete_nodes`, `delete_nodes_and_edges`,
+`update_node`, `update_node_if_match`, `delete_nodes`, `delete_nodes_and_edges`,
 `batch_create_edges`, `delete_edges_from`) — not the full interface.
 """
 
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 from app.agent_loop_lib.core.exceptions import RegistryError
-from app.agent_loop_lib.modules.providers.skills.base import SkillCandidate
+from app.agent_loop_lib.modules.providers.skills.base import SkillCandidate, SkillStatus
 from app.agent_loop_lib.modules.providers.skills.evaluator import RubricSkillEvaluator
 from app.agent_loop_lib.modules.providers.skills.governor import AutoApproveGovernor
-from app.agent_loop_lib.modules.providers.skills.manager import SkillManager, SkillManagerConfig
-from app.agent_loop_lib.modules.providers.skills.validator import SkillValidator
+from app.agent_loop_lib.modules.providers.skills.manager import (
+    SkillManager,
+    SkillManagerConfig,
+)
+from app.agent_loop_lib.modules.providers.skills.validator import (
+    SkillFormatError,
+    SkillValidator,
+)
 from app.agents.agent_loop.skills.audit_governor import AuditGovernor
 from app.agents.agent_loop.skills.graph_store import GraphSkillStore
 from app.agents.agent_loop.skills.graph_tracker import GraphUsageTracker
@@ -87,6 +94,23 @@ class FakeGraphProvider:
         col[key].update(node_updates)
         return True
 
+    async def update_node_if_match(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        match_field: str,
+        match_value: object,
+        transaction: str | None = None,
+    ) -> bool:
+        _assert_neo4j_safe(node, f"update_node_if_match({collection})")
+        col = self._col(collection)
+        existing = col.get(key)
+        if existing is None or existing.get(match_field) != match_value:
+            return False
+        col[key] = dict(node)
+        return True
+
     async def delete_nodes(self, keys: list[str], collection: str, transaction: str | None = None) -> bool:
         col = self._col(collection)
         for key in keys:
@@ -107,6 +131,39 @@ class FakeGraphProvider:
         before = len(edges)
         self._edges[collection] = [e for e in edges if e.get("from_id") != from_id]
         return before - len(self._edges[collection])
+
+    async def get_edges_to_node(
+        self, node_id: str, edge_collection: str, transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        target_key = str(node_id).split("/", 1)[-1]
+        matches: list[dict[str, Any]] = []
+        for edge in self._edges.get(edge_collection, []):
+            to_id = str(edge.get("to_id") or "")
+            to_arango = str(edge.get("_to") or "")
+            candidates = {to_id, to_arango, to_id.split("/", 1)[-1], to_arango.split("/", 1)[-1]}
+            candidates.discard("")
+            if node_id in candidates or target_key in candidates:
+                matches.append(dict(edge))
+        return matches
+
+    async def batch_delete_edges(
+        self, edges: list[dict[str, Any]], collection: str, transaction: str | None = None,
+    ) -> int:
+        existing = self._edges.setdefault(collection, [])
+        to_remove = {
+            (str(e.get("from_id") or ""), str(e.get("to_id") or ""))
+            for e in edges
+        }
+        kept: list[dict[str, Any]] = []
+        deleted = 0
+        for edge in existing:
+            key = (str(edge.get("from_id") or ""), str(edge.get("to_id") or ""))
+            if key in to_remove:
+                deleted += 1
+                continue
+            kept.append(edge)
+        self._edges[collection] = kept
+        return deleted
 
 
 _SKILL_MD = """---
@@ -274,6 +331,71 @@ class TestNeo4jSafeEncoding:
         migrated = graph._col("agentSkills")["org-1_deploy-service"]
         assert migrated["resourcePaths"] == ["scripts/new.py", "scripts/old.py"]
         assert await store.get_resource("deploy-service", "scripts/old.py") == "legacy content"
+
+    async def test_write_resource_with_a_traversal_path_raises_and_writes_nothing(self) -> None:
+        """`SkillValidator.validate_resource_path` is called before the doc
+        is touched — a traversal path must never reach `_upload_staged_files`
+        at sandbox-upload time (see `bundle-path-validator` in the plan)."""
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+
+        with pytest.raises(SkillFormatError):
+            await store.write_resource("deploy-service", "../../etc/passwd", "malicious")
+
+        skill = await store.get_skill("deploy-service")
+        assert skill.resources == {}
+
+    async def test_create_skill_with_resources_persists_parallel_arrays(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+
+        await store.create_skill(
+            "deploy-service", _SKILL_MD,
+            resources={"scripts/run.py": "print('hi')", "references/notes.md": "# notes"},
+        )
+
+        assert await store.get_resource("deploy-service", "scripts/run.py") == "print('hi')"
+        doc = graph._col("agentSkills")["org-1_deploy-service"]
+        assert sorted(doc["resourcePaths"]) == ["references/notes.md", "scripts/run.py"]
+
+    async def test_create_skill_rejects_a_resource_that_exceeds_the_budget(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+
+        with pytest.raises(SkillFormatError):
+            await store.create_skill(
+                "deploy-service", _SKILL_MD,
+                resources={"assets/big.bin": "x" * (3 * 1024 * 1024)},
+            )
+
+        assert await store.get_skill("deploy-service") is None
+
+    async def test_get_resources_bulk_reads_the_full_map_in_one_document_call(self) -> None:
+        """`GraphSkillStore.get_resources` overrides `SkillReader`'s N+1
+        default loop — it must resolve from a single `get_document` call,
+        not one per resource path (see `SkillBundleResolver`, the caller
+        this exists for)."""
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill(
+            "deploy-service", _SKILL_MD,
+            resources={"scripts/a.py": "a", "scripts/b.py": "b", "references/c.md": "c"},
+        )
+        call_count = 0
+        original_get_document = graph.get_document
+
+        async def _counting_get_document(*args: Any, **kwargs: Any) -> dict | None:
+            nonlocal call_count
+            call_count += 1
+            return await original_get_document(*args, **kwargs)
+
+        graph.get_document = _counting_get_document  # type: ignore[method-assign]
+
+        resources = await store.get_resources("deploy-service")
+
+        assert resources == {"scripts/a.py": "a", "scripts/b.py": "b", "references/c.md": "c"}
+        assert call_count == 1
 
     async def test_audit_governor_appends_parallel_arrays(self) -> None:
         graph = FakeGraphProvider()
@@ -445,6 +567,268 @@ class TestSkillManagerCandidateDelegation:
 
         assert len(await org1_manager.get_pending_candidates()) == 1
         assert len(await org2_manager.get_pending_candidates()) == 0
+
+
+class TestOptimisticConcurrency:
+    @pytest.fixture(autouse=True)
+    def _ticking_clock(self) -> None:
+        clock = {"t": 1_700_000_000_000}
+
+        def now() -> int:
+            clock["t"] += 1
+            return clock["t"]
+
+        with patch("app.agents.agent_loop.skills.graph_store.get_epoch_timestamp_in_ms", side_effect=now):
+            yield
+
+    async def test_stale_expected_updated_at_raises_conflict(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        stale = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it now."),
+        )
+        with pytest.raises(SkillConflictError) as exc:
+            await store.update_skill(
+                "deploy-service",
+                _SKILL_MD.replace("Push it.", "Push it later."),
+                expected_updated_at=stale,
+            )
+        assert exc.value.name == "deploy-service"
+        assert exc.value.current_updated_at != stale
+
+    async def test_none_expected_updated_at_is_last_write_wins(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        updated = await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it now."),
+            expected_updated_at=None,
+        )
+        assert updated.version == "1.0.1"
+
+    async def test_resource_write_bumps_token_so_stale_update_conflicts(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        stale = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        ok = await store.write_resource("deploy-service", "scripts/run.sh", "echo hi")
+        assert ok is True
+        with pytest.raises(SkillConflictError):
+            await store.update_skill(
+                "deploy-service",
+                _SKILL_MD.replace("Push it.", "Push it now."),
+                expected_updated_at=stale,
+            )
+
+    async def test_matching_token_succeeds(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        current = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        updated = await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it now."),
+            expected_updated_at=current,
+        )
+        assert updated.version == "1.0.1"
+
+    async def test_write_time_cas_rejects_a_concurrent_timestamp_change(self) -> None:
+        from app.agent_loop_lib.modules.providers.skills.base import SkillConflictError
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        current = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        inner = graph.update_node_if_match
+
+        async def concurrent_writer(
+            key: str,
+            collection: str,
+            node: dict[str, Any],
+            match_field: str,
+            match_value: object,
+            transaction: str | None = None,
+        ) -> bool:
+            graph._col(collection)[key][match_field] = int(match_value) + 1
+            return await inner(key, collection, node, match_field, match_value, transaction)
+
+        graph.update_node_if_match = concurrent_writer  # type: ignore[method-assign]
+
+        with pytest.raises(SkillConflictError) as exc:
+            await store.update_skill(
+                "deploy-service",
+                _SKILL_MD.replace("Push it.", "Push it later."),
+                expected_updated_at=current,
+            )
+        assert exc.value.current_updated_at == current + 1
+        stored = graph._col("agentSkills")["org-1_deploy-service"]
+        assert "Push it later" not in stored["content"]
+
+    async def test_get_skill_exposes_graph_updated_at_token(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        token = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        skill = await store.get_skill("deploy-service")
+        assert skill is not None
+        assert skill.metadata.updated_at == str(token)
+
+
+class TestMonotonicUpdatedAt:
+    async def test_same_millisecond_updates_advance_if_match_token(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        import app.agents.agent_loop.skills.graph_store as graph_store_module
+
+        monkeypatch.setattr(graph_store_module, "get_epoch_timestamp_in_ms", lambda: 1_000_000)
+
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        created = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+
+        await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it now."),
+        )
+        first = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        assert first > created
+
+        await store.update_skill(
+            "deploy-service",
+            _SKILL_MD.replace("Push it.", "Push it later."),
+            expected_updated_at=first,
+        )
+        second = graph._col("agentSkills")["org-1_deploy-service"]["updatedAtTimestamp"]
+        assert second > first
+
+
+class TestSetSkillStatus:
+    """Enable/disable primitive — writes only the `status` column, unlike
+    `deprecate_skill`'s `update_skill` round-trip: no version bump, no
+    content re-render, `updatedAtTimestamp` still moves so `If-Match`
+    stays meaningful."""
+
+    async def test_writes_status_without_bumping_version_or_content(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+
+        ok = await store.set_skill_status("deploy-service", SkillStatus.DISABLED)
+        assert ok is True
+
+        skill = await store.get_skill("deploy-service")
+        assert skill.metadata.status == SkillStatus.DISABLED
+        assert skill.metadata.version == "1.0.0"  # unlike deprecate_skill, no bump
+        doc = graph._col("agentSkills")["org-1_deploy-service"]
+        assert doc["status"] == "disabled"
+        assert "Build the image" in doc["content"]  # content untouched
+
+    async def test_unknown_skill_returns_false(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        assert await store.set_skill_status("nope", SkillStatus.DISABLED) is False
+
+    async def test_round_trips_back_to_active(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        await store.set_skill_status("deploy-service", SkillStatus.DISABLED)
+
+        ok = await store.set_skill_status("deploy-service", SkillStatus.ACTIVE)
+        assert ok is True
+        skill = await store.get_skill("deploy-service")
+        assert skill.metadata.status == SkillStatus.ACTIVE
+
+
+    async def test_from_status_mismatch_does_not_overwrite(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        await store.set_skill_status("deploy-service", SkillStatus.DISABLED)
+
+        ok = await store.set_skill_status(
+            "deploy-service", SkillStatus.ACTIVE, from_status=SkillStatus.ACTIVE,
+        )
+        assert ok is False
+        skill = await store.get_skill("deploy-service")
+        assert skill.metadata.status == SkillStatus.DISABLED
+
+    async def test_from_status_cas_loses_to_concurrent_lifecycle_change(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        inner = graph.update_node_if_match
+
+        async def concurrent_writer(
+            key: str,
+            collection: str,
+            node: dict[str, Any],
+            match_field: str,
+            match_value: object,
+            transaction: str | None = None,
+        ) -> bool:
+            graph._col(collection)[key][match_field] = int(match_value) + 1
+            graph._col(collection)[key]["status"] = "deprecated"
+            return await inner(key, collection, node, match_field, match_value, transaction)
+
+        graph.update_node_if_match = concurrent_writer  # type: ignore[method-assign]
+
+        ok = await store.set_skill_status(
+            "deploy-service", SkillStatus.DISABLED, from_status=SkillStatus.ACTIVE,
+        )
+        assert ok is False
+        assert graph._col("agentSkills")["org-1_deploy-service"]["status"] == "deprecated"
+
+
+class TestReferentialUsage:
+    async def test_reports_assigned_agents_and_detach_removes_edges(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        graph._col("agentInstances")["agent-1"] = {"id": "agent-1", "name": "Support Bot"}
+        graph._edges.setdefault("agentHasSkill", []).append({
+            "from_id": "agent-1",
+            "from_collection": "agentInstances",
+            "to_id": "org-1_deploy-service",
+            "to_collection": "agentSkills",
+        })
+
+        usage = await store.get_referential_usage("deploy-service")
+        assert usage.used_by_agents == [{"id": "agent-1", "name": "Support Bot"}]
+        assert usage.required_by_skills == []
+
+        await store.detach_from_agents("deploy-service")
+        after = await store.get_referential_usage("deploy-service")
+        assert after.used_by_agents == []
+        assert graph._edges["agentHasSkill"] == []
+
+    async def test_reports_skills_that_require_this_one(self) -> None:
+        graph = FakeGraphProvider()
+        store = _store(graph)
+        await store.create_skill("deploy-service", _SKILL_MD)
+        wrapper = """---
+name: wrapper
+description: Use when wrapping deploy
+metadata:
+  agent-loop:
+    requires:
+      - deploy-service
+---
+
+Call deploy-service first.
+"""
+        await store.create_skill("wrapper", wrapper)
+        usage = await store.get_referential_usage("deploy-service")
+        assert usage.required_by_skills == ["wrapper"]
 
 
 class _NullIndex:

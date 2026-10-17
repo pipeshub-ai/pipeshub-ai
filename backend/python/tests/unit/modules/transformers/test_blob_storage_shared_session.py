@@ -79,6 +79,41 @@ class TestConnectionLimit:
 
 class TestSharedSession:
     @pytest.mark.asyncio
+    async def test_every_request_has_a_socket_read_timeout_but_no_total(self) -> None:
+        """aiohttp's default is a 5-minute *total* per call: too short for a
+        large upload, and long enough for a hung gateway to sit on a record's
+        processing budget. A per-read stall bound is the right shape."""
+        fake = MagicMock()
+        fake.closed = False
+        with patch.object(bs_mod.aiohttp, "ClientSession", return_value=fake) as ctor:
+            get_shared_session()
+
+        timeout = ctor.call_args.kwargs["timeout"]
+        assert timeout.total is None
+        assert timeout.sock_read == bs_mod.BLOB_HTTP_SOCK_READ_TIMEOUT_SECONDS
+        assert timeout.sock_connect == bs_mod.BLOB_HTTP_SOCK_CONNECT_TIMEOUT_SECONDS
+
+    @pytest.mark.asyncio
+    async def test_borrowed_session_is_the_shared_one_and_is_not_closed(self) -> None:
+        fake = MagicMock()
+        fake.closed = False
+        fake.close = AsyncMock()
+        with patch.object(bs_mod.aiohttp, "ClientSession", return_value=fake):
+            async with bs_mod._borrowed_session() as session:
+                assert session is get_shared_session()
+
+        fake.close.assert_not_awaited()
+
+    def test_no_upload_path_opens_its_own_session(self) -> None:
+        """Every per-call ``aiohttp.ClientSession()`` built its own connector
+        with no timeout and no connection limit, sidestepping the pool."""
+        import inspect
+
+        source = inspect.getsource(bs_mod)
+        # The one construction is get_shared_session's own.
+        assert source.count("aiohttp.ClientSession(") == 1
+
+    @pytest.mark.asyncio
     async def test_same_session_returned_within_a_loop(self) -> None:
         fake = MagicMock()
         fake.closed = False

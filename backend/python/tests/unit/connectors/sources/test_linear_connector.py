@@ -3,8 +3,10 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
     LinearConnector,
@@ -20,9 +22,9 @@ from app.models.permission import EntityType, Permission, PermissionType
 import json
 from collections import defaultdict
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock
 from uuid import uuid4
-from app.config.constants.arangodb import Connectors, ProgressStatus, RecordRelations
+from app.config.constants.arangodb import ProgressStatus, RecordRelations
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperatorType,
@@ -40,43 +42,19 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.entities import (
-    AppUser,
     AppUserGroup,
     FileRecord,
     ItemType,
     LinkPublicStatus,
     LinkRecord,
     MimeTypes,
-    OriginTypes,
     ProjectRecord,
     Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
     RelatedExternalRecord,
     Status,
-    TicketRecord,
     WebpageRecord,
 )
 import base64
-from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    ItemType,
-    LinkPublicStatus,
-    LinkRecord,
-    MimeTypes,
-    ProjectRecord,
-    Record,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-    RelatedExternalRecord,
-    Status,
-    TicketRecord,
-    WebpageRecord,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -215,8 +193,8 @@ class TestLinearConnectorInit:
             MockClient.build_from_services = AsyncMock(
                 side_effect=Exception("Auth failed")
             )
-            result = await connector.init()
-            assert result is False
+            with pytest.raises(ConnectorInitError, match="Auth failed"):
+                await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_org_fetch_fails(self):
@@ -236,8 +214,8 @@ class TestLinearConnectorInit:
                 "app.connectors.sources.linear.connector.LinearDataSource"
             ) as MockDS:
                 MockDS.return_value = mock_ds
-                result = await connector.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="Unauthorized"):
+                    await connector.init()
 
 
 # ===================================================================
@@ -475,6 +453,33 @@ class TestLinearConnectorTeams:
             rg, _ = record_groups[0]
             assert rg.parent_external_group_id == "team-parent"
 
+
+    @pytest.mark.asyncio
+    async def test_only_a_team_without_sub_teams_is_declared(self) -> None:
+        """A declared group admits every group below it, and a private sub-team
+        is hidden from its parent team's members."""
+        from app.models.entities import PermissionModel
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        team = lambda tid, parent=None: {  # noqa: E731
+            "id": tid, "name": tid, "key": tid.upper(), "private": False,
+            "parent": {"id": parent, "name": parent} if parent else None, "members": {"nodes": []},
+        }
+        mock_ds = MagicMock()
+        mock_ds.teams = AsyncMock(return_value=_mock_teams_response(
+            [team("eng"), team("fe", parent="eng"), team("ops")], has_next=False,
+        ))
+
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            _, record_groups = await connector._fetch_teams()
+            models = {rg.external_group_id: rg.permission_model for rg, _ in record_groups}
+            assert models == {"eng": None, "fe": PermissionModel.RECORD_GROUP_LEVEL,
+                              "ops": PermissionModel.RECORD_GROUP_LEVEL}
+
+            _, record_groups = await connector._fetch_teams(team_ids=["ops"])
+            assert all(rg.permission_model is None for rg, _ in record_groups)
 
 # ===================================================================
 # LinearConnector - Sync orchestration
@@ -1395,7 +1400,8 @@ class TestLinearRunSync:
                     return_value=[MagicMock(email="alice@test.com")]
                 )
                 with patch.object(
-                    c, "_sync_issues_for_teams", new_callable=AsyncMock, return_value=set()
+                    c, "_sync_issues_for_teams", new_callable=AsyncMock,
+                    return_value=(set(), [])
                 ):
                     with patch.object(c, "_sync_attachments", new_callable=AsyncMock):
                         with patch.object(c, "_sync_documents", new_callable=AsyncMock):
@@ -1807,8 +1813,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
     @pytest.mark.asyncio
     async def test_init_none_org_data(self):
@@ -1824,8 +1830,8 @@ class TestLinearInitOrgData:
             MockClient.build_from_services = AsyncMock(return_value=mock_client)
             with patch("app.connectors.sources.linear.connector.LinearDataSource") as MockDS:
                 MockDS.return_value = mock_ds
-                result = await c.init()
-                assert result is False
+                with pytest.raises(ConnectorInitError, match="No organization data"):
+                    await c.init()
 
 
 # ===================================================================
@@ -1964,8 +1970,9 @@ class TestLinearStreamRecord:
         record.record_type = RecordType.LINK
         record.weburl = None
         record.external_record_id = "att-1"
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage_record(self):
@@ -1986,8 +1993,9 @@ class TestLinearStreamRecord:
         record = MagicMock()
         record.record_type = "UNKNOWN"
         record.external_record_id = "x"
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await c.stream_record(record)
+        assert exc_info.value.status_code == 400
 
 
 # ===================================================================
@@ -2371,7 +2379,7 @@ class TestLinearFetchDocumentContent:
         mock_ds.document = AsyncMock(return_value=resp)
 
         with patch.object(c, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await c._fetch_document_content("doc-1")
 
     @pytest.mark.asyncio
@@ -2757,6 +2765,35 @@ class TestFetchProjectsForTeamBatch:
             assert has_project
 
     @pytest.mark.asyncio
+    async def test_multi_team_project_is_written_once_before_its_children(self) -> None:
+        """A project in two teams comes back in both passes. Only its first synced team writes it,
+        and it is written before its documents and links so they find their parent in that team."""
+        project_data = _make_project_data_fullcov(content="")
+        project_data["teams"] = {"nodes": [{"id": "team-b"}, {"id": "team-a"}]}
+        child = MagicMock(name="project-document")
+
+        async def run(team_id: str) -> list:
+            connector = _make_connector_fullcov()
+            connector.data_source = MagicMock()
+            connector.sync_filters = None
+            connector.indexing_filters = None
+            mock_ds = MagicMock()
+            mock_ds.projects = AsyncMock(return_value=_mock_paginated("projects", [project_data]))
+            mock_ds.project = AsyncMock(return_value=_mock_response(data={"project": project_data}))
+            connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+            connector._prepare_project_related_records = AsyncMock(return_value=[(child, [])])
+            with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+                batches = [b async for b in connector._fetch_projects_for_team_batch(
+                    team_id=team_id, team_key=team_id, synced_team_ids={"team-a", "team-b"})]
+            return [record for batch in batches for record, _ in batch]
+
+        assert await run("team-b") == []
+        written = await run("team-a")
+        assert isinstance(written[0], ProjectRecord) and written[1] is child
+        assert written[0].external_record_group_id == "team-a"
+        assert written[0].shared_with_me_record_group_ids == ["team-b"]
+
+    @pytest.mark.asyncio
     async def test_empty_project_list(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
@@ -2793,12 +2830,11 @@ class TestFetchProjectsForTeamBatch:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 0
+            with pytest.raises(RuntimeError, match="Error"):
+                async for _ in connector._fetch_projects_for_team_batch(
+                    team_id="team-1", team_key="ENG"
+                ):
+                    pass
 
     @pytest.mark.asyncio
     async def test_project_with_pagination(self):
@@ -3207,8 +3243,9 @@ class TestStreamRecord:
         record.external_record_id = "link-1"
         record.weburl = None
 
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage(self):
@@ -3263,8 +3300,9 @@ class TestStreamRecord:
         record.external_record_id = None
         record.id = "rec-1"
 
-        with pytest.raises(ValueError, match="missing external_record_id"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self):
@@ -3275,8 +3313,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN_TYPE"
         record.external_record_id = "unknown-1"
 
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_inits_datasource_if_none(self):
@@ -4311,10 +4350,12 @@ class TestMarkRecordDeleted:
         connector._tx_store.get_records_by_parent = AsyncMock(
             side_effect=[[child], []]
         )
-        connector._tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        assert connector._tx_store.delete_records_and_relations.call_count == 2
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 # ===================================================================
@@ -5295,7 +5336,7 @@ class TestFetchDocumentContent:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await connector._fetch_document_content("doc-missing")
 
     @pytest.mark.asyncio
@@ -5575,7 +5616,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
@@ -5646,7 +5687,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,

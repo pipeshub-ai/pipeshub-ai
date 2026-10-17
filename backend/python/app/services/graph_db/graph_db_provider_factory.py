@@ -20,7 +20,7 @@ from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 if TYPE_CHECKING:
-    from app.services.cache.accessible_records_cache import AccessibleRecordsCache
+    from app.services.cache.interface import IAccessibleRecordsCache
 
 
 class GraphDBProviderFactory:
@@ -43,7 +43,7 @@ class GraphDBProviderFactory:
     async def create_provider(
         logger: Logger,
         config_service: ConfigurationService,
-        accessible_records_cache: "AccessibleRecordsCache | None" = None,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> IGraphDBProvider:
         """
         Create and initialize a graph database provider.
@@ -149,7 +149,7 @@ class GraphDBProviderFactory:
     async def _create_neo4j_provider(
         logger: Logger,
         config_service: ConfigurationService,
-        accessible_records_cache: "AccessibleRecordsCache | None" = None,
+        accessible_records_cache: "IAccessibleRecordsCache | None" = None,
     ) -> IGraphDBProvider:
         """
         Create and connect a Neo4j provider.

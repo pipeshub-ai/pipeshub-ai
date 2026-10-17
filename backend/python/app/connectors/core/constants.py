@@ -1,5 +1,7 @@
 """Constants shared across all connectors (config paths, OAuth keys, batch sizes)."""
 
+from enum import Enum
+
 
 class ConfigPaths:
     """Configuration path templates for etcd / configuration service."""
@@ -31,6 +33,7 @@ class AuthFieldKeys:
     CLIENT_SECRET = "clientSecret"
     CLIENT_SECRET_ALT = "client_secret"
     INSTANCE_URL = "instanceUrl"
+    LOGIN_URL = "loginUrl"
     HAS_ADMIN_CONSENT = "hasAdminConsent"
     AUTHORIZE_URL = "authorizeUrl"
     TOKEN_URL = "tokenUrl"
@@ -95,6 +98,23 @@ class ConnectorRegistryAuthMetadataKeys:
     OAUTH_CONFIGS = "oauthConfigs"
 
 
+class ConnectorErrorCodes:
+    """Stable codes shared with Node and the web client."""
+
+    DESKTOP_OFFLINE = "DESKTOP_OFFLINE"
+    DESKTOP_UNCLAIMED = "DESKTOP_UNCLAIMED"
+    DESKTOP_OWNED_BY_OTHER_DEVICE = "DESKTOP_OWNED_BY_OTHER_DEVICE"
+
+
+class SyncRunOutcome(str, Enum):
+    """How the last sync run ended, stored on the app doc as ``lastSyncOutcome``."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    SKIPPED = "skipped"
+
+
 class ConnectorStateKeys:
     """Keys for connector state/status fields (typically in connector documents)."""
     IS_CONFIGURED = "isConfigured"
@@ -107,10 +127,19 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_ATTEMPTS = "vectorMembershipBackfillAttempts"
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
+    ROOT_MEMBERSHIP_REQUESTED = "rootMembershipRequested"
+    PENDING_RESYNC = "pendingResync"
+    LAST_SYNC_STARTED_AT = "lastSyncStartedAtTimestamp"
+    LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
+    LAST_SYNC_OUTCOME = "lastSyncOutcome"
+    LAST_SYNC_SUMMARY = "lastSyncSummary"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
     CREATED_BY = "createdBy"
+    OWNER_DEVICE_ID = "ownerDeviceId"
+    OWNER_DEVICE_NAME = "ownerDeviceName"
+    AUTHENTICATED_BY = "authenticatedBy"
 
 
 CONNECTOR_EMAIL_IDENTITY_INFO = (

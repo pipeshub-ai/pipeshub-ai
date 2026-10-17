@@ -139,6 +139,7 @@ MinIODataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             option_source_type=OptionSourceType.MANUAL,
             default_operator=ListOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
@@ -313,6 +314,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
         **kwargs,
     ) -> "MinIOConnector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         # Get endpoint URL from config for initial console URL setup.
         # Note: The actual config will be loaded again in init() to set up the client,
         # but we need endpoint_url here to initialize data_entities_processor correctly.
@@ -330,7 +332,7 @@ class MinIOConnector(S3CompatibleBaseConnector):
             logger, data_store_provider, config_service,
             base_console_url=base_console_url
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         connector = cls(
             logger,

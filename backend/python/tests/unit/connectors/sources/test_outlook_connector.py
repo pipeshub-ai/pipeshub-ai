@@ -31,17 +31,12 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 import base64
 import uuid
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import PropertyMock
 from fastapi import HTTPException
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
+from app.config.constants.arangodb import MimeTypes, OriginTypes
 from app.models.entities import (
-    AppUser,
-    AppUserGroup,
     FileRecord,
     MailRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
 )
 
 
@@ -926,8 +921,8 @@ class TestDownloadGroupPostAttachment:
         connector.external_outlook_client.groups_threads_posts_get_attachments = AsyncMock(
             return_value=_make_graph_response(success=False)
         )
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(RuntimeError):
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
 
 
 # ===========================================================================
@@ -2061,7 +2056,7 @@ class TestExtractEmailPermissions:
         connector._extract_email_from_recipient = MagicMock(return_value="owner@test.com")
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_owner_not_in_recipients_added(self):
@@ -2076,9 +2071,7 @@ class TestExtractEmailPermissions:
         connector._extract_email_from_recipient = MagicMock(return_value="other@test.com")
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        owner_perms = [p for p in perms if p.type == PermissionType.OWNER]
-        assert len(owner_perms) == 1
-        assert owner_perms[0].email == "owner@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_empty_recipients(self):
@@ -2091,9 +2084,7 @@ class TestExtractEmailPermissions:
         msg.from_ = None
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        # Owner should be added
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
 
 # ===========================================================================
@@ -2483,7 +2474,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing group_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -2499,7 +2490,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
         assert "Missing thread_id" in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
@@ -2521,6 +2512,27 @@ class TestStreamRecord:
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
         assert exc_info.value.status_code == 500
+
+    @pytest.mark.asyncio
+    async def test_stream_group_mail_no_post_raises_not_found(self):
+        """Graph answered 200 with no post: must 404, not stream an empty body."""
+        connector = _make_connector()
+        connector.external_outlook_client = MagicMock()
+
+        record = _make_mail_record(
+            record_type=RecordType.GROUP_MAIL,
+            external_record_group_id="group-1",
+            thread_id="thread-1",
+            external_record_id="post-1",
+        )
+
+        connector.external_outlook_client.groups_threads_get_post = AsyncMock(
+            return_value=_make_graph_response(success=True, data=None)
+        )
+
+        with pytest.raises(HTTPException) as exc_info:
+            await connector.stream_record(record)
+        assert exc_info.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_stream_group_post_attachment(self):
@@ -2579,7 +2591,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_user_attachment(self):
@@ -2621,7 +2633,7 @@ class TestStreamRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_record_type_raises(self):
@@ -3329,16 +3341,17 @@ class TestGetMessageByIdExternal:
             return_value=_make_graph_response(success=False, error="Not found")
         )
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(RuntimeError):
+            await connector._get_message_by_id_external("su1", "m1")
 
     @pytest.mark.asyncio
     async def test_no_client_returns_empty(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._get_message_by_id_external("su1", "m1")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_exception_returns_empty(self):
@@ -3348,8 +3361,8 @@ class TestGetMessageByIdExternal:
             side_effect=Exception("Network error")
         )
 
-        result = await connector._get_message_by_id_external("su1", "m1")
-        assert result is None
+        with pytest.raises(Exception, match="Network error"):
+            await connector._get_message_by_id_external("su1", "m1")
 
 
 # ===========================================================================
@@ -3402,11 +3415,16 @@ class TestDownloadAttachmentExternal:
             return_value=_make_graph_response(success=False)
         )
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(RuntimeError):
+            await connector._download_attachment_external("su1", "m1", "a1")
 
     @pytest.mark.asyncio
-    async def test_no_content_returns_empty_bytes(self):
+    async def test_item_attachment_raises_instead_of_streaming_empty(self):
+        """An itemAttachment comes back 200 with no contentBytes.
+
+        Streaming b'' would hand the client a zero-byte file at HTTP 200 it
+        cannot tell apart from a real empty attachment.
+        """
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
@@ -3418,16 +3436,18 @@ class TestDownloadAttachmentExternal:
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("su1", "m1", "a1")
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_no_client(self):
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._download_attachment_external("su1", "m1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_attachment_external("su1", "m1", "a1")
+        assert exc_info.value.status_code == 409
 
 
 # ===========================================================================
@@ -4925,11 +4945,12 @@ class TestDownloadGroupPostAttachmentAdditional:
         connector = _make_connector()
         connector.external_outlook_client = None
 
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_no_content_bytes(self):
+    async def test_no_content_bytes_raises_instead_of_streaming_empty(self):
         connector = _make_connector()
         connector.external_outlook_client = MagicMock()
 
@@ -4941,8 +4962,9 @@ class TestDownloadGroupPostAttachmentAdditional:
             return_value=_make_graph_response(success=True, data=mock_data)
         )
 
-        result = await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
-        assert result == b''
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._download_group_post_attachment("g1", "t1", "p1", "a1")
+        assert exc_info.value.status_code == 422
 
 
 # ===========================================================================

@@ -44,6 +44,7 @@ interface SkillsState {
 
 interface SkillsActions {
   setSkills: (skills: SkillMetadata[]) => void;
+  updateSkillMetadata: (name: string, patch: Partial<SkillMetadata>) => void;
   setCandidates: (candidates: SkillCandidate[]) => void;
   setLoading: (loading: boolean) => void;
   setError: (error: string | null) => void;
@@ -96,6 +97,15 @@ export const useSkillsStore = create<SkillsState & SkillsActions>()(
       setSkills: (skills) =>
         set((state) => {
           state.skills = skills;
+        }),
+
+      /** In-place patch (used by the card/editor availability Switch — optimistic update + rollback on failure, without a full catalog refetch). */
+      updateSkillMetadata: (name, patch) =>
+        set((state) => {
+          const index = state.skills.findIndex((s) => s.name === name);
+          if (index !== -1) {
+            state.skills[index] = { ...state.skills[index], ...patch };
+          }
         }),
 
       setCandidates: (candidates) =>

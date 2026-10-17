@@ -208,6 +208,9 @@ export const MAX_VISIBLE_AGENTS_IN_SIDEBAR = 3;
 /** Fetch at least this many agents to decide if "More" is needed. */
 export const SIDEBAR_AGENTS_PREVIEW_FETCH_LIMIT = 20;
 
+/** Page size for GET /api/v1/projects/:id/conversations in the project-scoped sidebar. */
+export const SIDEBAR_PROJECT_CONVERSATIONS_PAGE_SIZE = 10;
+
 /** Page size for the initial agent sidebar conversations fetch (page 1). */
 export const SIDEBAR_AGENT_CONVERSATIONS_PAGE_SIZE = 10;
 
@@ -223,11 +226,11 @@ export const CONVERSATION_MESSAGES_PAGE_SIZE = 20;
  * stays full-pane width (scrollbar on the pane edge); only the inner content
  * and the composer use this style so their edges match.
  */
-export const CHAT_CONTENT_MAX_WIDTH = '50rem';
+export const CHAT_CONTENT_MAX_WIDTH = '800px';
 
 export const CHAT_CONTENT_PADDING_X = {
   mobile: 'var(--space-4)',
-  desktop: 'var(--space-5)',
+  desktop: '0px',
 } as const;
 
 export function chatContentColumnStyle(isMobile: boolean): {

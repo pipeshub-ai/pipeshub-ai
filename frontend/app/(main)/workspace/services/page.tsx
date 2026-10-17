@@ -43,9 +43,23 @@ interface Deployment {
   messageBrokerType: string;
   graphDbType: string;
   vectorDbType?: string;
+  // Process-env setting (REDIS_MODE), not tied to kvStoreType -- 'standalone'
+  // (default), 'cluster', or an EE-registered mode like 'memorydb'.
+  redisMode?: string;
 }
 
 const LOGO_SIZE = 22;
+
+function redisLabel(mode: string | undefined, t: TFunction): string {
+  const baseLabel = t('workspace.services.infra.redis.label');
+  if (mode === 'cluster') {
+    return `${baseLabel} (${t('workspace.services.infra.redis.modeCluster')})`;
+  }
+  if (mode === 'memorydb') {
+    return `${baseLabel} (${t('workspace.services.infra.redis.modeMemorydb')})`;
+  }
+  return baseLabel;
+}
 
 function buildInfraServices(deployment: Deployment | null, t: TFunction): ServiceMeta[] {
   const services: ServiceMeta[] = [];
@@ -53,7 +67,12 @@ function buildInfraServices(deployment: Deployment | null, t: TFunction): Servic
   const redisDesc = deployment?.kvStoreType === 'redis'
     ? t('workspace.services.infra.redis.descriptionWithKvStore')
     : t('workspace.services.infra.redis.description');
-  services.push({ key: 'redis', logoSlug: 'redis', label: t('workspace.services.infra.redis.label'), description: redisDesc });
+  services.push({
+    key: 'redis',
+    logoSlug: 'redis',
+    label: redisLabel(deployment?.redisMode, t),
+    description: redisDesc,
+  });
 
   services.push({ key: 'mongodb', logoSlug: 'mongodb', label: t('workspace.services.infra.mongodb.label'), description: t('workspace.services.infra.mongodb.description') });
 

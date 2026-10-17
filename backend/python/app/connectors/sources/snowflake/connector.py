@@ -24,12 +24,23 @@ from app.config.constants.arangodb import (
     PermissionModel,
     RecordRelations,
 )
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
 from app.connectors.core.base.connector.connector_service import BaseConnector
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.sql_stream_errors import (
+    to_sql_response_error,
+    to_sql_stream_error,
+)
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -57,8 +68,11 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.snowflake.apps import SnowflakeApp
 from app.connectors.sources.snowflake.data_fetcher import (
+    UNREADABLE_ALL,
+    unreadable_key,
     SnowflakeDataFetcher,
     SnowflakeDatabase,
+    SnowflakeFetchError,
     SnowflakeFile,
     SnowflakeSchema,
     SnowflakeStage,
@@ -81,9 +95,10 @@ from app.sources.client.snowflake.snowflake import (
     SnowflakeClient,
     SnowflakeOAuthConfig,
     SnowflakePATConfig,
+    SnowflakeResponse,
 )
 from app.sources.external.snowflake.snowflake_ import SnowflakeDataSource
-from app.utils.streaming import create_stream_record_response
+from app.utils.streaming import create_stream_record_response, stream_content
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
@@ -117,6 +132,38 @@ SNOWFLAKE_OAUTH_BASE_URL = f"https://{SNOWFLAKE_ACCOUNT_IDENTIFIER}.snowflakecom
 # Row limit for streaming table data (prevents memory issues with large tables)
 SNOWFLAKE_TABLE_ROW_LIMIT = int(os.getenv("SNOWFLAKE_TABLE_ROW_LIMIT", "50"))
 
+# SQLSTATE classes that mean the statement never got a fair chance: connection
+# exception, insufficient resources, operator intervention (a suspended
+# warehouse, a tripped resource monitor, a statement killed mid-flight).
+_UNAVAILABLE_SQLSTATE_CLASSES = frozenset({"08", "53", "57"})
+
+
+def to_snowflake_stream_error(exc: BaseException, *, connector: str) -> HTTPException:
+    """Map a Snowflake streaming failure, preferring SQLSTATE over HTTP status.
+
+    The SQL API returns HTTP 422 for every statement-level failure alike, so
+    ``map_source_status`` can only be trusted where no SQLSTATE came back —
+    that is, where the request failed before Snowflake ran anything.
+    """
+    sqlstate = getattr(exc, "sqlstate", None)
+    if not isinstance(sqlstate, str) or not sqlstate:
+        return to_stream_error(exc, connector=connector)
+    if sqlstate[:2] in _UNAVAILABLE_SQLSTATE_CLASSES:
+        return map_source_status(
+            HttpStatusCode.SERVICE_UNAVAILABLE.value, connector=connector
+        )
+    mapped = to_sql_stream_error(exc, connector=connector)
+    if mapped.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value:
+        # No SQLSTATE table hit; Snowflake's own message is the last signal left.
+        return to_sql_response_error(str(exc), connector=connector)
+    return mapped
+
+
+SYNC_STATE_VERSION = 1
+SYNC_STATE_KINDS = ("tables", "views", "files")
+# kind -> external id -> revision the last completed sync upserted
+SyncState = Dict[str, Dict[str, Optional[str]]]
+
 
 # ============================================================================
 # Sync Statistics for Tracking Progress
@@ -132,8 +179,6 @@ class SyncStats:
     tables_updated: int = 0
     tables_unchanged: int = 0
     tables_deleted: int = 0
-    tables_schema_changed: int = 0  # Schema version changes detected
-    tables_stream_changes: int = 0  # Tables with Snowflake Stream changes
     views_new: int = 0
     views_updated: int = 0
     views_unchanged: int = 0
@@ -142,8 +187,6 @@ class SyncStats:
     files_updated: int = 0
     files_unchanged: int = 0
     files_deleted: int = 0
-    records_reindexed: int = 0  # Selective re-indexing count
-    checkpoint_resumed: bool = False  # Whether sync resumed from checkpoint
     errors: int = 0
 
     def to_dict(self) -> Dict[str, int]:
@@ -155,8 +198,6 @@ class SyncStats:
             'tables_updated': self.tables_updated,
             'tables_unchanged': self.tables_unchanged,
             'tables_deleted': self.tables_deleted,
-            'tables_schema_changed': self.tables_schema_changed,
-            'tables_stream_changes': self.tables_stream_changes,
             'views_new': self.views_new,
             'views_updated': self.views_updated,
             'views_unchanged': self.views_unchanged,
@@ -165,22 +206,25 @@ class SyncStats:
             'files_updated': self.files_updated,
             'files_unchanged': self.files_unchanged,
             'files_deleted': self.files_deleted,
-            'records_reindexed': self.records_reindexed,
-            'checkpoint_resumed': 1 if self.checkpoint_resumed else 0,
             'errors': self.errors,
         }
 
+    def count(self, kind: str, outcome: str) -> None:
+        name = f"{kind}_{outcome}"
+        setattr(self, name, getattr(self, name) + 1)
+
     def log_summary(self, logger) -> None:
         """Log a summary of sync statistics."""
-        resume_note = " (resumed from checkpoint)" if self.checkpoint_resumed else ""
         logger.info(
-            f"📊 Sync Stats{resume_note}: "
+            "📊 Sync Stats: "
             f"DBs={self.databases_synced}, Schemas={self.schemas_synced}, Stages={self.stages_synced} | "
-            f"Tables(new={self.tables_new}, updated={self.tables_updated}, schema_changed={self.tables_schema_changed}, "
-            f"stream_changes={self.tables_stream_changes}, unchanged={self.tables_unchanged}, deleted={self.tables_deleted}) | "
-            f"Views(new={self.views_new}, updated={self.views_updated}, deleted={self.views_deleted}) | "
-            f"Files(new={self.files_new}, updated={self.files_updated}, deleted={self.files_deleted}) | "
-            f"Reindexed={self.records_reindexed} | Errors={self.errors}"
+            f"Tables(new={self.tables_new}, updated={self.tables_updated}, "
+            f"unchanged={self.tables_unchanged}, deleted={self.tables_deleted}) | "
+            f"Views(new={self.views_new}, updated={self.views_updated}, "
+            f"unchanged={self.views_unchanged}, deleted={self.views_deleted}) | "
+            f"Files(new={self.files_new}, updated={self.files_updated}, "
+            f"unchanged={self.files_unchanged}, deleted={self.files_deleted}) | "
+            f"Errors={self.errors}"
         )
 
 
@@ -407,13 +451,7 @@ class SnowflakeConnector(BaseConnector):
         # Sync statistics for tracking progress
         self.sync_stats: SyncStats = SyncStats()
         
-        # Sync state keys for incremental sync and checkpoint/resume
         self._sync_state_key = "snowflake_sync_state"
-        self._checkpoint_key = "snowflake_sync_checkpoint"
-        
-        # Snowflake Streams configuration
-        self._enable_streams = True  # Enable Snowflake Streams for CDC
-        self._stream_prefix = "PIPESHUB_CDC_"  # Prefix for managed streams
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         """Convert User objects to AppUser objects for Snowflake connector."""
@@ -510,13 +548,11 @@ class SnowflakeConnector(BaseConnector):
 
     async def run_sync(self) -> None:
         """
-        Run full synchronization for Snowflake.
-        
-        Always performs a full sync (like S3 pattern) because Snowflake lacks a
-        reliable change/activity API. The upsert behavior ensures:
-        - New records are created
-        - Existing records are updated if changed
-        - No false deletions from comparing local sync state
+        Sync Snowflake against the state the last completed sync saved.
+
+        With no usable saved state every object is upserted. With one, only new
+        and changed objects are upserted, and objects gone from Snowflake are
+        deleted.
         """
         try:
             self.logger.info("📦 [Sync] Starting Snowflake sync...")
@@ -524,19 +560,16 @@ class SnowflakeConnector(BaseConnector):
             if not self.data_fetcher:
                 raise ConnectionError("Snowflake connector not initialized")
 
-            # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "snowflake", self.connector_id, self.logger
             )
 
-            # Reset sync stats
             self.sync_stats = SyncStats()
 
-            # Always run full sync - Snowflake has no change API like Drive or Box
-            # The on_new_records() uses upsert behavior, so this is safe and reliable
-            await self._run_full_sync_internal()
+            # Raises on a failed read, so a store outage is never taken for a first sync.
+            stored_state = await self.record_sync_point.read_sync_point(self._sync_state_key)
+            await self._sync_objects(self._parse_sync_state(stored_state))
 
-            # Log final stats
             self.sync_stats.log_summary(self.logger)
 
         except Exception as e:
@@ -568,32 +601,25 @@ class SnowflakeConnector(BaseConnector):
 
         return selected_dbs, selected_schemas, selected_tables, selected_views, selected_stages, selected_files
 
-    async def _run_full_sync_internal(self) -> None:
+    async def _sync_objects(self, previous: Optional[SyncState]) -> None:
         """
-        Internal method for full synchronization.
-        
-        Syncs all objects from Snowflake using upsert behavior:
-        - Creates new records if they don't exist
-        - Updates existing records if they've changed
-        - Does NOT delete records (Snowflake lacks reliable change API for deletion detection)
+        Upsert new and changed objects, delete the ones gone since ``previous``,
+        then save the state the next sync compares against.
+
+        With no previous state every object is upserted and nothing is deleted.
+        An object under a scope Snowflake failed to list keeps its saved
+        revision and is neither deleted nor marked unchanged for good: the next
+        sync compares it again. The state is saved last, so a failed write
+        leaves the previous state in place and the next sync redoes this work.
         """
+        label = "Full Sync" if previous is None else "Incremental Sync"
         try:
-            self.logger.info("📦 [Full Sync] Starting full sync...")
+            self.logger.info(f"📦 [{label}] Starting...")
             self._record_id_cache.clear()
 
-            # Create AppUser for this connector
             await self._create_app_user()
 
-            # Get filter values
             selected_dbs, selected_schemas, selected_tables, selected_views, selected_stages, selected_files = self._get_filter_values()
-
-            # Debug: Log filter values
-            self.logger.debug(f"Filter values - databases: {selected_dbs}")
-            self.logger.debug(f"Filter values - schemas: {selected_schemas}")
-            self.logger.debug(f"Filter values - tables: {selected_tables}")
-            self.logger.debug(f"Filter values - views: {selected_views}")
-            self.logger.debug(f"Filter values - stages: {selected_stages}")
-            self.logger.debug(f"Filter values - files: {selected_files}")
 
             hierarchy = await self.data_fetcher.fetch_all(
                 database_filter=selected_dbs,
@@ -601,41 +627,25 @@ class SnowflakeConnector(BaseConnector):
                 include_relationships=True,
             )
             self.logger.info(f"Fetched hierarchy: {hierarchy.summary()}")
-            # Debug: Log hierarchy details for stages and files
-            self.logger.debug(f"Hierarchy stages keys: {list(hierarchy.stages.keys())}")
-            self.logger.debug(f"Hierarchy files keys: {list(hierarchy.files.keys())}")
-            for stage_key, stage_files in hierarchy.files.items():
-                self.logger.debug(f"Files in {stage_key}: {len(stage_files)} files")
+            unreadable = hierarchy.unreadable
+            if unreadable:
+                self.logger.warning(
+                    f"Snowflake could not list {sorted(unreadable)}; objects under them "
+                    f"keep their saved state until a later sync can read them"
+                )
 
-            # Initialize sync state for tracking (used for future incremental syncs)
-            new_sync_state = {
-                "last_sync_time": get_epoch_timestamp_in_ms(),
-                "databases": [],
-                "schemas": {},
-                "stages": {},
-                "tables": {},
-                "views": {},
-                "files": {},
-                "streams": {},  # Track Snowflake Streams for CDC
-            }
+            prior: SyncState = previous or {kind: {} for kind in SYNC_STATE_KINDS}
+            next_state: SyncState = {kind: {} for kind in SYNC_STATE_KINDS}
+            listed: Dict[str, Set[str]] = {kind: set() for kind in SYNC_STATE_KINDS}
 
             await self._sync_databases(hierarchy.databases)
             self.sync_stats.databases_synced = len(hierarchy.databases)
-            new_sync_state["databases"] = [db.name for db in hierarchy.databases]
 
             for db in hierarchy.databases:
                 schemas = hierarchy.schemas.get(db.name, [])
-                
-                # Debug: Log all schemas in hierarchy before filtering
-                all_schema_names = [f"{db.name}.{s.name}" for s in schemas]
-                self.logger.info(f"All schemas in {db.name}: {all_schema_names}")
-                
-                # Apply schema filter if specified
                 if selected_schemas:
-                    self.logger.info(f"Schema filter values: {selected_schemas}")
                     schemas = [s for s in schemas if f"{db.name}.{s.name}" in selected_schemas]
-                    self.logger.info(f"Filtered to {len(schemas)} schemas in {db.name}: {[s.name for s in schemas]}")
-                
+
                 await self._sync_namespaces(db.name, schemas)
                 self.sync_stats.schemas_synced += len(schemas)
 
@@ -645,59 +655,223 @@ class SnowflakeConnector(BaseConnector):
                     views = hierarchy.views.get(schema_key, [])
                     stages = hierarchy.stages.get(schema_key, [])
 
-                    # Apply table filter if specified
                     if selected_tables:
                         tables = [t for t in tables if t.fqn in selected_tables]
-                        self.logger.info(f"Filtered to {len(tables)} tables in {schema_key} based on table filter")
-
-                    # Apply view filter if specified
                     if selected_views:
                         views = [v for v in views if v.fqn in selected_views]
-                        self.logger.info(f"Filtered to {len(views)} views in {schema_key} based on view filter")
-
-                    # Apply stage filter if specified
                     if selected_stages:
-                        self.logger.debug(f"Stages before filter in {schema_key}: {[s.fqn for s in stages]}")
                         stages = [s for s in stages if s.fqn in selected_stages]
-                        self.logger.info(f"Filtered to {len(stages)} stages in {schema_key} based on stage filter")
-                    else:
-                        self.logger.debug(f"No stage filter, processing {len(stages)} stages in {schema_key}")
-
-                    await self._sync_tables(db.name, schema.name, tables)
-                    self.sync_stats.tables_new += len(tables)
-
-                    await self._sync_views(db.name, schema.name, views)
-                    self.sync_stats.views_new += len(views)
 
                     await self._sync_stages(db.name, schema.name, stages)
                     self.sync_stats.stages_synced += len(stages)
 
-                    self.logger.debug(f"Processing files for {len(stages)} stages in {schema_key}")
+                    changed = self._select_changed(
+                        "tables",
+                        {
+                            t.fqn: (
+                                t,
+                                self._table_revision(
+                                    t, prior["tables"].get(t.fqn), self._unread_parts(t, unreadable)
+                                ),
+                            )
+                            for t in tables
+                        },
+                        prior, next_state, listed, unreadable,
+                    )
+                    synced = await self._sync_tables(
+                        db.name, schema.name, [t for t, _ in changed.values()],
+                        revisions={key: revision for key, (_, revision) in changed.items()},
+                    )
+                    self._keep_synced("tables", changed, synced, prior, next_state)
+
+                    changed = self._select_changed(
+                        "views",
+                        {v.fqn: (v, self._view_revision(v)) for v in views},
+                        prior, next_state, listed, unreadable,
+                    )
+                    synced = await self._sync_views(
+                        db.name, schema.name, [v for v, _ in changed.values()]
+                    )
+                    self._keep_synced("views", changed, synced, prior, next_state)
+
                     for stage in stages:
                         stage_key = f"{db.name}.{schema.name}.{stage.name}"
-                        files = hierarchy.files.get(stage_key, [])
-                        
-                        self.logger.debug(f"Stage {stage_key}: found {len(files)} files in hierarchy")
-                        
-                        # Apply file filter if specified
+                        files = [f for f in hierarchy.files.get(stage_key, []) if not f.is_folder]
                         if selected_files:
-                            # Log the file paths for debugging
-                            file_paths = [f"{db.name}.{schema.name}.{stage.name}/{f.relative_path}" for f in files]
-                            self.logger.debug(f"File paths before filter: {file_paths}")
-                            self.logger.debug(f"Selected files filter: {selected_files}")
-                            files = [f for f in files if f"{db.name}.{schema.name}.{stage.name}/{f.relative_path}" in selected_files]
-                            self.logger.info(f"Filtered to {len(files)} files in {stage_key} based on file filter")
-                        
-                        await self._sync_stage_files(
-                            db.name, schema.name, stage.name, files
-                        )
-                        self.sync_stats.files_new += len([f for f in files if not f.is_folder])
+                            files = [f for f in files if f"{stage_key}/{f.relative_path}" in selected_files]
 
-            self.logger.info("✅ [Full Sync] Snowflake full sync completed")
+                        changed = self._select_changed(
+                            "files",
+                            {f"{stage_key}/{f.relative_path}": (f, self._file_revision(f)) for f in files},
+                            prior, next_state, listed, unreadable,
+                        )
+                        synced = await self._sync_stage_files(
+                            db.name, schema.name, stage.name, [f for f, _ in changed.values()]
+                        )
+                        self._keep_synced("files", changed, synced, prior, next_state)
+
+            if previous is not None:
+                await self._delete_unlisted(prior, next_state, listed, unreadable)
+
+            await self._save_sync_state(next_state)
+            self.logger.info(f"✅ [{label}] Snowflake sync completed")
         except Exception as e:
             self.sync_stats.errors += 1
-            self.logger.error(f"❌ [Full Sync] Error: {e}", exc_info=True)
+            self.logger.error(f"❌ [{label}] Error: {e}", exc_info=True)
             raise
+
+    def _select_changed(
+        self,
+        kind: str,
+        current: Dict[str, Tuple[Any, Optional[str]]],
+        prior: SyncState,
+        next_state: SyncState,
+        listed: Dict[str, Set[str]],
+        unreadable: Set[str],
+    ) -> Dict[str, Tuple[Any, Optional[str]]]:
+        """The listed objects to upsert: new ones, and ones whose revision moved or is unknown."""
+        known = prior[kind]
+        changed: Dict[str, Tuple[Any, Optional[str]]] = {}
+        for key, (obj, revision) in current.items():
+            listed[kind].add(key)
+            if key in known and (
+                self._in_unreadable_scope(kind, key, unreadable)
+                or (revision is not None and known[key] == revision)
+            ):
+                next_state[kind][key] = known[key]
+                self.sync_stats.count(kind, "unchanged")
+            else:
+                changed[key] = (obj, revision)
+                self.sync_stats.count(kind, "updated" if key in known else "new")
+        return changed
+
+    @staticmethod
+    def _keep_synced(
+        kind: str,
+        changed: Dict[str, Tuple[Any, Optional[str]]],
+        synced: Set[str],
+        prior: SyncState,
+        next_state: SyncState,
+    ) -> None:
+        """Record the new revision of each object upserted; one that was skipped keeps its old one."""
+        for key, (_, revision) in changed.items():
+            if key in synced:
+                next_state[kind][key] = revision
+            elif key in prior[kind]:
+                next_state[kind][key] = prior[kind][key]
+
+    async def _delete_unlisted(
+        self,
+        prior: SyncState,
+        next_state: SyncState,
+        listed: Dict[str, Set[str]],
+        unreadable: Set[str],
+    ) -> None:
+        """Delete the records of objects Snowflake no longer lists, or the filters now leave out."""
+        all_listed = set().union(*listed.values())
+        for kind in SYNC_STATE_KINDS:
+            for key, revision in prior[kind].items():
+                # A key listed as another kind now is that object's record, upserted this run.
+                if key in all_listed:
+                    continue
+                if self._in_unreadable_scope(kind, key, unreadable):
+                    next_state[kind][key] = revision
+                    continue
+                try:
+                    record = await self.data_entities_processor.get_record_by_external_id(
+                        connector_id=self.connector_id,
+                        external_record_id=key,
+                    )
+                    if record:
+                        await self.data_entities_processor.on_record_deleted(record_id=record.id)
+                    self.sync_stats.count(kind, "deleted")
+                except Exception as e:
+                    self.sync_stats.errors += 1
+                    self.logger.warning(f"Failed to delete record for {key}; retrying next sync: {e}")
+                    next_state[kind][key] = revision
+
+    @staticmethod
+    def _in_unreadable_scope(kind: str, key: str, unreadable: Set[str]) -> bool:
+        """Whether Snowflake failed to list objects of ``kind`` under a scope containing ``key``."""
+        if UNREADABLE_ALL in unreadable:
+            return True
+        prefix = unreadable_key(kind, "")
+        return any(
+            key.startswith(f"{entry[len(prefix):]}.") or key.startswith(f"{entry[len(prefix):]}/")
+            for entry in unreadable
+            if entry.startswith(prefix)
+        )
+
+    @staticmethod
+    def _unread_parts(table: SnowflakeTable, unreadable: set[str]) -> set[str]:
+        """The revision parts of ``table`` that Snowflake failed to read, for its schema or for it alone."""
+        scopes = (f"{table.database_name}.{table.schema_name}", table.fqn)
+        return {
+            part for part in ("columns", "last_altered")
+            if any(unreadable_key(part, scope) in unreadable for scope in scopes)
+        }
+
+    def _table_revision(
+        self,
+        table: SnowflakeTable,
+        saved: Optional[str] = None,
+        carry: Optional[set[str]] = None,
+    ) -> str:
+        parts = {
+            "rows": str(table.row_count),
+            "bytes": str(table.bytes),
+            "last_altered": str(table.last_altered),
+            "columns": self._compute_column_signature(table.columns),
+        }
+        saved_parts = saved.split("|") if saved else []
+        if len(saved_parts) == len(parts):
+            # A failed read of the columns or of LAST_ALTERED leaves that part empty.
+            # Reusing the saved part keeps the gap from looking like a change, while
+            # the other parts still count; and since the saved value is kept, the
+            # first sync that can read it again compares against it.
+            for index, name in enumerate(parts):
+                if carry and name in carry:
+                    parts[name] = saved_parts[index]
+        return "|".join(parts.values())
+
+    def _view_revision(self, view: SnowflakeView) -> Optional[str]:
+        # None when the listing carries no definition: such a view is re-read every
+        # sync, and the record's revision (its GET_DDL hash) decides whether to reindex.
+        return self._compute_definition_hash(view.definition) if view.definition else None
+
+    @staticmethod
+    def _file_revision(file: SnowflakeFile) -> str:
+        return f"{file.md5 or ''}|{file.last_modified or ''}|{file.size}"
+
+    def _parse_sync_state(self, stored: Optional[Dict[str, Any]]) -> Optional[SyncState]:
+        """The object revisions the last completed sync saved, or None when there is no usable state."""
+        if not stored or stored.get("state_version") != SYNC_STATE_VERSION:
+            return None
+        try:
+            objects = json.loads(stored.get("objects") or "")
+        except (TypeError, ValueError):
+            objects = None
+        if not isinstance(objects, dict) or not all(
+            isinstance(objects.get(kind, {}), dict) for kind in SYNC_STATE_KINDS
+        ):
+            self.logger.warning("Saved Snowflake sync state is unreadable; running a full sync")
+            return None
+        return {kind: dict(objects.get(kind, {})) for kind in SYNC_STATE_KINDS}
+
+    async def _save_sync_state(self, state: SyncState) -> None:
+        # One JSON string: Neo4j stores only primitives and flat lists as properties.
+        await self.record_sync_point.update_sync_point(
+            self._sync_state_key,
+            {
+                "state_version": SYNC_STATE_VERSION,
+                "last_sync_time": get_epoch_timestamp_in_ms(),
+                "objects": json.dumps(state, sort_keys=True),
+            },
+        )
+        self.logger.info(
+            "⚓ Saved Snowflake sync state: "
+            + ", ".join(f"{kind}={len(state[kind])}" for kind in SYNC_STATE_KINDS)
+        )
 
     def _compute_definition_hash(self, definition: Optional[str]) -> str:
         """Compute MD5 hash of a view definition for change detection."""
@@ -720,707 +894,6 @@ class SnowflakeConnector(BaseConnector):
         )
         return hashlib.md5(sig.encode()).hexdigest()
 
-
-    async def _ensure_stream_exists(self, table_fqn: str) -> Optional[str]:
-        """
-        Create or verify a Snowflake Stream exists for a table.
-        
-        Streams provide true CDC (Change Data Capture) tracking for row-level changes.
-        Returns the stream name if successful, None if stream creation failed.
-        """
-        if not self.data_source or not self.warehouse:
-            return None
-        
-        # Build stream name from table FQN (e.g., DB.SCHEMA.TABLE -> PIPESHUB_CDC_DB_SCHEMA_TABLE)
-        stream_name = f"{self._stream_prefix}{table_fqn.replace('.', '_').upper()}"
-        parts = table_fqn.split(".")
-        if len(parts) != 3:
-            return None
-        
-        database, schema, table = parts
-        full_stream_name = f"{database}.{schema}.{stream_name}"
-        
-        try:
-            # Check if stream already exists
-            check_sql = f"SHOW STREAMS LIKE '{stream_name}' IN SCHEMA {database}.{schema}"
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=check_sql,
-                    database=database,
-                    warehouse=self.warehouse,
-                )
-            
-            if response.success and response.data:
-                rows = response.data.get("data", [])
-                if rows:
-                    self.logger.debug(f"Stream {full_stream_name} already exists")
-                    return full_stream_name
-            
-            # Create the stream if it doesn't exist
-            create_sql = f"""
-                CREATE STREAM IF NOT EXISTS {full_stream_name}
-                ON TABLE {table_fqn}
-                SHOW_INITIAL_ROWS = FALSE
-                APPEND_ONLY = FALSE
-            """
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=create_sql,
-                    database=database,
-                    warehouse=self.warehouse,
-                )
-            
-            if response.success:
-                self.logger.info(f"✅ Created Snowflake Stream: {full_stream_name}")
-                return full_stream_name
-            else:
-                self.logger.warning(f"Failed to create stream {full_stream_name}: {response.error}")
-                return None
-                
-        except Exception as e:
-            self.logger.warning(f"Error managing stream for {table_fqn}: {e}")
-            return None
-
-    async def _check_stream_has_changes(self, stream_name: str) -> Tuple[bool, int]:
-        """
-        Check if a Snowflake Stream has any pending changes.
-        
-        Returns:
-            Tuple of (has_changes: bool, change_count: int)
-        """
-        if not self.data_source or not self.warehouse:
-            return False, 0
-        
-        parts = stream_name.split(".")
-        if len(parts) != 3:
-            return False, 0
-        
-        database = parts[0]
-        
-        try:
-            # Use SYSTEM$STREAM_HAS_DATA for efficient check
-            check_sql = f"SELECT SYSTEM$STREAM_HAS_DATA('{stream_name}') as HAS_DATA"
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=check_sql,
-                    database=database,
-                    warehouse=self.warehouse,
-                )
-            
-            if response.success and response.data:
-                rows = response.data.get("data", [])
-                if rows and len(rows) > 0:
-                    has_data = rows[0][0] if isinstance(rows[0], list) else rows[0].get("HAS_DATA", False)
-                    if has_data in (True, "TRUE", "true", 1, "1"):
-                        # Get count of changes
-                        count_sql = f"SELECT COUNT(*) as CNT FROM {stream_name}"
-                        async with self.rate_limiter:
-                            count_response = await self.data_source.execute_sql(
-                                statement=count_sql,
-                                database=database,
-                                warehouse=self.warehouse,
-                            )
-                        count = 0
-                        if count_response.success and count_response.data:
-                            count_rows = count_response.data.get("data", [])
-                            if count_rows:
-                                count = int(count_rows[0][0]) if isinstance(count_rows[0], list) else int(count_rows[0].get("CNT", 0))
-                        return True, count
-            
-            return False, 0
-            
-        except Exception as e:
-            self.logger.warning(f"Error checking stream {stream_name}: {e}")
-            return False, 0
-
-    async def _consume_stream_changes(self, stream_name: str) -> List[Dict[str, Any]]:
-        """
-        Consume changes from a Snowflake Stream.
-        
-        Returns list of changed rows with metadata (METADATA$ACTION, METADATA$ISUPDATE, METADATA$ROW_ID).
-        Note: Reading from a stream advances the stream offset, so changes are only returned once.
-        """
-        if not self.data_source or not self.warehouse:
-            return []
-        
-        parts = stream_name.split(".")
-        if len(parts) != 3:
-            return []
-        
-        database = parts[0]
-        
-        try:
-            sql = f"""
-                SELECT *, METADATA$ACTION, METADATA$ISUPDATE, METADATA$ROW_ID
-                FROM {stream_name}
-                LIMIT 10000
-            """
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=sql,
-                    database=database,
-                    warehouse=self.warehouse,
-                )
-            
-            if response.success and response.data:
-                # Parse result into list of dicts
-                meta = response.data.get("resultSetMetaData", {})
-                row_type = meta.get("rowType", [])
-                columns = [col.get("name", f"col_{i}") for i, col in enumerate(row_type)]
-                
-                changes = []
-                for row in response.data.get("data", []):
-                    if isinstance(row, list):
-                        changes.append(dict(zip(columns, row)))
-                    elif isinstance(row, dict):
-                        changes.append(row)
-                return changes
-            
-            return []
-            
-        except Exception as e:
-            self.logger.warning(f"Error consuming stream {stream_name}: {e}")
-            return []
-
-
-    async def _save_checkpoint(self, checkpoint_data: Dict[str, Any]) -> None:
-        """Save checkpoint for resumable sync."""
-        try:
-            await self.record_sync_point.update_sync_point(
-                self._checkpoint_key,
-                checkpoint_data
-            )
-            self.logger.debug(f"📍 Checkpoint saved: {checkpoint_data.get('current_database', 'unknown')}.{checkpoint_data.get('current_schema', 'unknown')}")
-        except Exception as e:
-            self.logger.warning(f"Failed to save checkpoint: {e}")
-
-    async def _load_checkpoint(self) -> Optional[Dict[str, Any]]:
-        """Load checkpoint for resuming sync."""
-        try:
-            checkpoint = await self.record_sync_point.read_sync_point(self._checkpoint_key)
-            return checkpoint
-        except Exception:
-            return None
-
-    async def _clear_checkpoint(self) -> None:
-        """Clear checkpoint after successful sync completion."""
-        try:
-            await self.record_sync_point.update_sync_point(self._checkpoint_key, {})
-            self.logger.debug("📍 Checkpoint cleared")
-        except Exception as e:
-            self.logger.warning(f"Failed to clear checkpoint: {e}")
-
-    def _should_skip_to_checkpoint(
-        self, 
-        checkpoint: Optional[Dict[str, Any]], 
-        current_db: str, 
-        current_schema: Optional[str] = None
-    ) -> bool:
-        """Check if we should skip this database/schema based on checkpoint."""
-        if not checkpoint:
-            return False
-        
-        checkpoint_db = checkpoint.get("current_database")
-        checkpoint_schema = checkpoint.get("current_schema")
-        
-        if not checkpoint_db:
-            return False
-        
-        # Skip databases that come before checkpoint
-        if current_db < checkpoint_db:
-            return True
-        
-        # If same database, check schema
-        if current_db == checkpoint_db and current_schema and checkpoint_schema:
-            if current_schema < checkpoint_schema:
-                return True
-        
-        return False
-
-
-    async def _batch_get_records_by_external_ids(
-        self, 
-        external_ids: List[str]
-    ) -> Dict[str, Record]:
-        """
-        Batch fetch records by external IDs for optimized deletion detection.
-        
-        Returns a dict mapping external_id -> Record for found records.
-        """
-        if not external_ids:
-            return {}
-        
-        result: Dict[str, Record] = {}
-        
-        # Process in batches to avoid query size limits
-        batch_size = 100
-        for i in range(0, len(external_ids), batch_size):
-            batch = external_ids[i:i + batch_size]
-            for ext_id in batch:
-                try:
-                    record = await self.data_entities_processor.get_record_by_external_id(
-                        connector_id=self.connector_id,
-                        external_record_id=ext_id
-                    )
-                    if record:
-                        result[ext_id] = record
-                except Exception as e:
-                    self.logger.warning(f"Error fetching record {ext_id}: {e}")
-        
-        return result
-
-
-    async def _mark_records_for_reindex(self, external_ids: List[str], reason: str = "content_changed") -> None:
-        """
-        Mark records for selective re-indexing based on detected changes.
-        
-        This triggers re-indexing only for affected records rather than full re-sync.
-        """
-        if not external_ids:
-            return
-        
-        self.logger.info(f"🔄 Marking {len(external_ids)} records for re-indexing (reason: {reason})")
-        
-        records_to_reindex: List[Record] = []
-        records_map = await self._batch_get_records_by_external_ids(external_ids)
-        
-        for ext_id, record in records_map.items():
-            records_to_reindex.append(record)
-        
-        if records_to_reindex:
-            await self.data_entities_processor.reindex_existing_records(records_to_reindex)
-            self.sync_stats.records_reindexed += len(records_to_reindex)
-            self.logger.info(f"✅ Queued {len(records_to_reindex)} records for re-indexing")
-
-    async def _run_incremental_sync_internal(self, prev_state: Dict[str, Any]) -> None:
-        """
-        Internal method for incremental synchronization with enhanced features:
-        
-        - Checkpoint/Resume: Saves progress and resumes from last checkpoint on failure
-        - Snowflake Streams: Uses CDC streams for accurate row-level change detection
-        - Enhanced change detection: Uses last_altered, column_signature, and last_modified
-        - Batch deletion: Optimized deletion detection with batch queries
-        - Selective re-indexing: Only re-indexes changed content
-        
-        Compares current state with previous state to detect:
-        - New objects (in current but not in previous)
-        - Updated objects (metadata/schema/content changed)
-        - Deleted objects (in previous but not in current)
-        """
-        try:
-            self.logger.info("🔄 [Incremental Sync] Starting incremental sync...")
-            self._record_id_cache.clear()
-
-            # Check for existing checkpoint (resume support)
-            checkpoint = await self._load_checkpoint()
-            if checkpoint and checkpoint.get("current_database"):
-                self.logger.info(f"📍 [Checkpoint] Resuming from: {checkpoint.get('current_database')}.{checkpoint.get('current_schema', '*')}")
-                self.sync_stats.checkpoint_resumed = True
-
-            # Get filter values
-            selected_dbs, selected_schemas, selected_tables, selected_views, selected_stages, selected_files = self._get_filter_values()
-
-            # Fetch current hierarchy
-            hierarchy = await self.data_fetcher.fetch_all(
-                database_filter=selected_dbs,
-                include_files=True,
-                include_relationships=True,
-            )
-            self.logger.info(f"Fetched hierarchy: {hierarchy.summary()}")
-
-            # Build new sync state (dict structure for next incremental sync)
-            new_sync_state = {
-                "last_sync_time": get_epoch_timestamp_in_ms(),
-                "databases": [],
-                "schemas": {},
-                "stages": {},
-                "tables": {},
-                "views": {},
-                "files": {},
-                "streams": {},  # Track Snowflake Streams for CDC
-            }
-
-            # Previous state data
-            prev_databases = set(prev_state.get("databases", []))
-            prev_schemas = set(prev_state.get("schemas", {}).keys())
-            prev_stages = set(prev_state.get("stages", {}).keys())
-            prev_tables = prev_state.get("tables", {})
-            prev_views = prev_state.get("views", {})
-            prev_files = prev_state.get("files", {})
-            prev_streams = prev_state.get("streams", {})
-
-            # Log previous state for debugging
-            self.logger.info(
-                f"📋 [Incremental Sync] Previous state: databases={len(prev_databases)}, "
-                f"tables={len(prev_tables)}, views={len(prev_views)}, files={len(prev_files)}"
-            )
-
-            # NOTE: We don't track current state for deletion detection anymore.
-            # Snowflake doesn't have a reliable change API, so comparing previous vs current
-            # state is risky - if fetch fails or state is corrupted, we'd falsely delete records.
-            # Instead, incremental sync only handles additions and updates.
-
-            # Process databases (always sync all - they're small)
-            await self._sync_databases(hierarchy.databases)
-            self.sync_stats.databases_synced = len(hierarchy.databases)
-            new_sync_state["databases"] = [db.name for db in hierarchy.databases]
-
-            # Lists to collect records for batch processing
-            tables_to_sync: List[Tuple[str, str, SnowflakeTable]] = []
-            tables_to_reindex: List[str] = []  # For selective re-indexing (stream changes)
-            views_to_sync: List[Tuple[str, str, SnowflakeView]] = []
-            files_to_sync: List[Tuple[str, str, str, SnowflakeFile]] = []
-
-            for db in hierarchy.databases:
-                # Checkpoint/Resume: Skip databases before checkpoint
-                if self._should_skip_to_checkpoint(checkpoint, db.name):
-                    self.logger.debug(f"⏭️ Skipping database {db.name} (before checkpoint)")
-                    continue
-                
-                schemas = hierarchy.schemas.get(db.name, [])
-                
-                # Apply schema filter if specified
-                if selected_schemas:
-                    schemas = [s for s in schemas if f"{db.name}.{s.name}" in selected_schemas]
-                
-                # Always sync namespaces (they're small)
-                await self._sync_namespaces(db.name, schemas)
-
-                for schema in schemas:
-                    # Checkpoint/Resume: Skip schemas before checkpoint
-                    if self._should_skip_to_checkpoint(checkpoint, db.name, schema.name):
-                        self.logger.debug(f"⏭️ Skipping schema {db.name}.{schema.name} (before checkpoint)")
-                        continue
-                    
-                    # Save checkpoint for resume
-                    await self._save_checkpoint({
-                        "current_database": db.name,
-                        "current_schema": schema.name,
-                    })
-                    
-                    schema_fqn = f"{db.name}.{schema.name}"
-                    new_sync_state["schemas"][schema_fqn] = {}
-                    self.sync_stats.schemas_synced += 1
-
-                    schema_key = f"{db.name}.{schema.name}"
-                    tables = hierarchy.tables.get(schema_key, [])
-                    views = hierarchy.views.get(schema_key, [])
-                    stages = hierarchy.stages.get(schema_key, [])
-
-                    # Apply filters
-                    if selected_tables:
-                        tables = [t for t in tables if t.fqn in selected_tables]
-                    if selected_views:
-                        views = [v for v in views if v.fqn in selected_views]
-                    if selected_stages:
-                        stages = [s for s in stages if s.fqn in selected_stages]
-
-                    # Process tables - enhanced change detection with streams
-                    for table in tables:
-                        # Compute column signature for schema change detection
-                        column_sig = self._compute_column_signature(table.columns) if table.columns else ""
-                        
-                        # Store enhanced sync state
-                        new_sync_state["tables"][table.fqn] = {
-                            "row_count": table.row_count,
-                            "bytes": table.bytes,
-                            "last_altered": table.last_altered,
-                            "column_signature": column_sig,
-                        }
-
-                        prev_table = prev_tables.get(table.fqn)
-                        if prev_table is None:
-                            # New table - create stream for future CDC
-                            tables_to_sync.append((db.name, schema.name, table))
-                            self.sync_stats.tables_new += 1
-                            
-                            # Create Snowflake Stream for new table
-                            if self._enable_streams:
-                                stream_name = await self._ensure_stream_exists(table.fqn)
-                                if stream_name:
-                                    new_sync_state["streams"][table.fqn] = stream_name
-                        else:
-                            # Check for schema changes (column structure changed)
-                            prev_col_sig = prev_table.get("column_signature", "")
-                            if column_sig and prev_col_sig and column_sig != prev_col_sig:
-                                self.logger.info(f"📐 Schema change detected for {table.fqn}")
-                                tables_to_sync.append((db.name, schema.name, table))
-                                self.sync_stats.tables_schema_changed += 1
-                                continue
-                            
-                            # Check Snowflake Stream for row-level changes (if stream exists)
-                            stream_name = prev_streams.get(table.fqn)
-                            if stream_name and self._enable_streams:
-                                has_changes, change_count = await self._check_stream_has_changes(stream_name)
-                                if has_changes:
-                                    self.logger.info(f"🌊 Stream detected {change_count} changes for {table.fqn}")
-                                    # Mark for re-indexing (content changed, not structure)
-                                    tables_to_reindex.append(table.fqn)
-                                    self.sync_stats.tables_stream_changes += 1
-                                    # Consume stream to advance offset
-                                    await self._consume_stream_changes(stream_name)
-                                new_sync_state["streams"][table.fqn] = stream_name
-                            
-                            # Fallback: Check metadata changes (last_altered, row_count, bytes)
-                            elif self._is_table_changed(table, prev_table):
-                                tables_to_sync.append((db.name, schema.name, table))
-                                self.sync_stats.tables_updated += 1
-                            else:
-                                self.sync_stats.tables_unchanged += 1
-
-                    # Process views - check for changes
-                    for view in views:
-                        definition_hash = self._compute_definition_hash(view.definition)
-                        new_sync_state["views"][view.fqn] = {
-                            "definition_hash": definition_hash,
-                        }
-
-                        prev_view = prev_views.get(view.fqn)
-                        if prev_view is None:
-                            # New view
-                            views_to_sync.append((db.name, schema.name, view))
-                            self.sync_stats.views_new += 1
-                        elif prev_view.get("definition_hash") != definition_hash:
-                            # Updated view
-                            views_to_sync.append((db.name, schema.name, view))
-                            self.sync_stats.views_updated += 1
-                        else:
-                            self.sync_stats.views_unchanged += 1
-
-                    # Always sync stages (they're small)
-                    await self._sync_stages(db.name, schema.name, stages)
-                    for stage in stages:
-                        new_sync_state["stages"][stage.fqn] = {}
-                        self.sync_stats.stages_synced += 1
-
-                    # Process files - check for changes (using last_modified with MD5 fallback)
-                    for stage in stages:
-                        stage_key = f"{db.name}.{schema.name}.{stage.name}"
-                        files = hierarchy.files.get(stage_key, [])
-
-                        # Apply file filter if specified
-                        if selected_files:
-                            files = [f for f in files if f"{stage_key}/{f.relative_path}" in selected_files]
-
-                        for file in files:
-                            if file.is_folder:
-                                continue
-
-                            file_id = f"{stage_key}/{file.relative_path}"
-                            
-                            # Store enhanced sync state with last_modified for faster change detection
-                            new_sync_state["files"][file_id] = {
-                                "md5": file.md5,
-                                "size": file.size,
-                                "last_modified": file.last_modified,  # Primary change indicator
-                            }
-
-                            prev_file = prev_files.get(file_id)
-                            if prev_file is None:
-                                # New file
-                                files_to_sync.append((db.name, schema.name, stage.name, file))
-                                self.sync_stats.files_new += 1
-                            elif self._is_file_changed(file, prev_file):
-                                # Updated file
-                                files_to_sync.append((db.name, schema.name, stage.name, file))
-                                self.sync_stats.files_updated += 1
-                            else:
-                                self.sync_stats.files_unchanged += 1
-
-            # Sync changed/new tables
-            if tables_to_sync:
-                self.logger.info(f"📝 [Incremental Sync] Syncing {len(tables_to_sync)} new/updated tables")
-                for db_name, schema_name, table in tables_to_sync:
-                    await self._sync_tables(db_name, schema_name, [table])
-
-            # Sync changed/new views
-            if views_to_sync:
-                self.logger.info(f"📝 [Incremental Sync] Syncing {len(views_to_sync)} new/updated views")
-                for db_name, schema_name, view in views_to_sync:
-                    await self._sync_views(db_name, schema_name, [view])
-
-            # Sync changed/new files
-            if files_to_sync:
-                self.logger.info(f"📝 [Incremental Sync] Syncing {len(files_to_sync)} new/updated files")
-                # Group by stage
-                files_by_stage: Dict[str, List[SnowflakeFile]] = {}
-                
-                for db_name, schema_name, stage_name, file in files_to_sync:
-                    key = f"{db_name}.{schema_name}.{stage_name}"
-                    if key not in files_by_stage:
-                        files_by_stage[key] = []
-                    files_by_stage[key].append(file)
-                
-                for stage_key, files in files_by_stage.items():
-                    parts = stage_key.split(".")
-                    if len(parts) == 3:
-                        await self._sync_stage_files(
-                            parts[0], parts[1], parts[2], files
-                        )
-
-            # NOTE: Deletion detection is disabled for Snowflake incremental sync.
-            # Unlike Google Drive or Nextcloud which have change/activity APIs that explicitly
-            # report deletions, Snowflake doesn't have such an API. Comparing "previous state"
-            # vs "current state" is risky because:
-            # 1. If previous sync state is corrupted/empty, all records appear as "deleted"
-            # 2. If current fetch fails partially, unfetched items appear as "deleted"
-            # 
-            # To handle deletions safely, users should:
-            # - Run a manual full re-sync periodically, OR
-            # - Use Snowflake Streams (CDC) for true change tracking when available
-            self.logger.info("📋 [Incremental Sync] Deletion detection skipped (Snowflake lacks change API)")
-
-            # Selective re-indexing for tables with stream changes (content changed, not structure)
-            if tables_to_reindex:
-                await self._mark_records_for_reindex(tables_to_reindex, reason="stream_cdc_changes")
-
-            # Save new sync state
-            await self.record_sync_point.update_sync_point(
-                self._sync_state_key,
-                new_sync_state
-            )
-            self.logger.info(f"⚓ [Incremental Sync] Updated sync state with {len(new_sync_state['streams'])} streams tracked")
-
-            # Clear checkpoint on successful completion
-            await self._clear_checkpoint()
-
-            self.logger.info("✅ [Incremental Sync] Completed")
-
-        except Exception as e:
-            self.sync_stats.errors += 1
-            self.logger.error(f"❌ [Incremental Sync] Error: {e}", exc_info=True)
-            self.logger.info("📍 Checkpoint preserved for resume on next sync")
-            raise
-
-    def _is_table_changed(self, table: SnowflakeTable, prev_state: Dict[str, Any]) -> bool:
-        """
-        Check if a table has changed based on multiple indicators.
-        
-        Priority order:
-        1. last_altered timestamp (most reliable)
-        2. row_count changes
-        3. bytes changes (size)
-        """
-        # Check last_altered first (most reliable for structural changes)
-        prev_last_altered = prev_state.get("last_altered")
-        if table.last_altered and prev_last_altered:
-            if table.last_altered != prev_last_altered:
-                return True
-        
-        # Fallback to row_count and bytes comparison
-        return (
-            table.row_count != prev_state.get("row_count") or
-            table.bytes != prev_state.get("bytes")
-        )
-
-    def _is_file_changed(self, file: SnowflakeFile, prev_state: Dict[str, Any]) -> bool:
-        """
-        Check if a file has changed using last_modified with MD5 as fallback.
-        
-        Priority order:
-        1. last_modified timestamp (fast comparison)
-        2. md5 hash (fallback for content verification)
-        """
-        # Check last_modified first (faster)
-        prev_last_modified = prev_state.get("last_modified")
-        if file.last_modified and prev_last_modified:
-            if file.last_modified != prev_last_modified:
-                return True
-            # If timestamps match, no change
-            return False
-        
-        # Fallback to MD5 hash comparison
-        return file.md5 != prev_state.get("md5")
-
-        #not used
-    async def _process_deletions_batch(
-        self,
-        deleted_databases: Set[str],
-        deleted_schemas: Set[str],
-        deleted_stages: Set[str],
-        deleted_tables: Set[str],
-        deleted_views: Set[str],
-        deleted_files: Set[str],
-    ) -> None:
-        """
-        Process deleted objects using batch queries for optimized deletion detection.
-        
-        Uses batch fetching to reduce N+1 query problems.
-        Deletion is cascaded: if a database is deleted, all its children are also deleted.
-        """
-        total_deletions = (
-            len(deleted_databases) + len(deleted_schemas) + len(deleted_stages) +
-            len(deleted_tables) + len(deleted_views) + len(deleted_files)
-        )
-        
-        if total_deletions == 0:
-            self.logger.info("🗑️  [Deletions] No deletions detected")
-            return
-
-        self.logger.info(
-            f"🗑️  [Deletions] Processing {total_deletions} deletions: "
-            f"DBs={len(deleted_databases)}, Schemas={len(deleted_schemas)}, "
-            f"Stages={len(deleted_stages)}, Tables={len(deleted_tables)}, "
-            f"Views={len(deleted_views)}, Files={len(deleted_files)}"
-        )
-
-        # Batch fetch all records to delete (optimized - single query per type)
-        all_external_ids = list(deleted_tables) + list(deleted_views) + list(deleted_files)
-        records_map = await self._batch_get_records_by_external_ids(all_external_ids)
-        
-        self.logger.debug(f"🗑️  Found {len(records_map)} records to delete out of {len(all_external_ids)} requested")
-
-        # Process deletions by type
-        for table_fqn in deleted_tables:
-            record = records_map.get(table_fqn)
-            if record:
-                try:
-                    await self.data_entities_processor.on_record_deleted(record_id=record.id)
-                    self.sync_stats.tables_deleted += 1
-                except Exception as e:
-                    self.logger.error(f"Error deleting table {table_fqn}: {e}")
-                    self.sync_stats.errors += 1
-
-        for view_fqn in deleted_views:
-            record = records_map.get(view_fqn)
-            if record:
-                try:
-                    await self.data_entities_processor.on_record_deleted(record_id=record.id)
-                    self.sync_stats.views_deleted += 1
-                except Exception as e:
-                    self.logger.error(f"Error deleting view {view_fqn}: {e}")
-                    self.sync_stats.errors += 1
-
-        for file_id in deleted_files:
-            record = records_map.get(file_id)
-            if record:
-                try:
-                    await self.data_entities_processor.on_record_deleted(record_id=record.id)
-                    self.sync_stats.files_deleted += 1
-                except Exception as e:
-                    self.logger.error(f"Error deleting file {file_id}: {e}")
-                    self.sync_stats.errors += 1
-
-        self.logger.info(
-            f"✅ [Deletions] Completed: Tables={self.sync_stats.tables_deleted}, "
-            f"Views={self.sync_stats.views_deleted}, Files={self.sync_stats.files_deleted}"
-        )
-
-    # Keep legacy method for backwards compatibility
-    async def _process_deletions(
-        self,
-        deleted_databases: Set[str],
-        deleted_schemas: Set[str],
-        deleted_stages: Set[str],
-        deleted_tables: Set[str],
-        deleted_views: Set[str],
-        deleted_files: Set[str],
-    ) -> None:
-        """Legacy deletion processing - redirects to batch version."""
-        await self._process_deletions_batch(
-            deleted_databases, deleted_schemas, deleted_stages,
-            deleted_tables, deleted_views, deleted_files
-        )
 
     async def _ensure_scope_app_edges(self) -> None:
         """Ensure connector app edges are created according to connector scope."""
@@ -1485,6 +958,7 @@ class SnowflakeConnector(BaseConnector):
         database_name: str,
         schema_name: str,
         tables: List[SnowflakeTable],
+        revisions: Optional[Dict[str, str]] = None,
     ) -> AsyncGenerator[Tuple[Record, List[Permission]], None]:
         """
         Async generator for processing tables in a memory-efficient manner.
@@ -1528,6 +1002,7 @@ class SnowflakeConnector(BaseConnector):
                     size_in_bytes=table.bytes or 0,
                     size_bytes=table.bytes,
                     row_count=table.row_count,
+                    external_revision_id=(revisions or {}).get(fqn) or self._table_revision(table),
                     version=1,
                     inherit_permissions=True,  # Inherit from parent namespace
                 )
@@ -1593,7 +1068,13 @@ class SnowflakeConnector(BaseConnector):
                 self._record_id_cache[fqn] = record_id
 
                 # Fetch view definition
-                definition = await self._fetch_view_definition(database_name, schema_name, view.name)
+                # Strict, so a failed GET_DDL skips the view: upserting it would blank the
+                # stored definition, and leaving it out of the synced set keeps its saved
+                # revision so the next sync retries. Without a warehouse (unset or blank)
+                # GET_DDL can never run, so such views sync without a definition as before.
+                definition = await self._fetch_view_definition(
+                    database_name, schema_name, view.name, strict=bool(self.warehouse)
+                )
                 source_tables = self._parse_source_tables(definition)
                 frontend_url = os.getenv("FRONTEND_PUBLIC_URL", "").rstrip("/")
                 weburl = f"{frontend_url}/record/{record_id}" if frontend_url else ""
@@ -1613,6 +1094,7 @@ class SnowflakeConnector(BaseConnector):
                     source_updated_at=get_epoch_timestamp_in_ms(),
                     definition=definition,
                     source_tables=source_tables,
+                    external_revision_id=self._compute_definition_hash(definition) or None,
                     version=1,
                     inherit_permissions=True,
                 )
@@ -1698,6 +1180,7 @@ class SnowflakeConnector(BaseConnector):
                     parent_external_record_id=stage_fqn,
                     parent_record_type=None,
                     etag=file.md5,
+                    external_revision_id=self._file_revision(file),
                     version=1,
                     inherit_permissions=True,  # Inherit from parent stage
                 )
@@ -1779,26 +1262,34 @@ class SnowflakeConnector(BaseConnector):
         self.logger.info(f"Synced {len(groups)} stages in {parent_fqn}")
 
     async def _sync_tables(
-        self, database_name: str, schema_name: str, tables: List[SnowflakeTable]
-    ) -> None:
+        self,
+        database_name: str,
+        schema_name: str,
+        tables: List[SnowflakeTable],
+        revisions: Optional[Dict[str, str]] = None,
+    ) -> Set[str]:
         """
         Sync tables using async generator for memory-efficient processing.
+
+        Returns the external ids of the tables upserted.
         
         Processes tables in batches, yielding to the event loop between items
         to prevent blocking on large datasets.
         Tables inherit permissions from parent namespace via inheritPermissions edge.
         """
+        synced: Set[str] = set()
         if not tables:
-            return
+            return synced
         # Tables inherit permissions from parent namespace - no direct permissions needed
         batch: List[Tuple[Record, List[Permission]]] = []
         parent_fqn = f"{database_name}.{schema_name}"
         total_synced = 0
 
         async for record, perms in self._process_tables_generator(
-            database_name, schema_name, tables
+            database_name, schema_name, tables, revisions
         ):
             batch.append((record, perms))
+            synced.add(record.external_record_id)
             total_synced += 1
 
             if len(batch) >= self.batch_size:
@@ -1810,6 +1301,7 @@ class SnowflakeConnector(BaseConnector):
             await self.data_entities_processor.on_new_records(batch)
             
         self.logger.info(f"Synced {total_synced} tables in {parent_fqn}")
+        return synced
 
     async def _fetch_table_rows(
         self, database_name: str, schema_name: str, table_name: str,
@@ -1826,25 +1318,31 @@ class SnowflakeConnector(BaseConnector):
         
         Returns:
             List of rows as lists
+
+        Raises:
+            SnowflakeFetchError / HTTPException: its only caller streams these
+            rows to the user, so a refused SELECT must not come back as an
+            empty table.
         """
         if not self.data_source or not self.warehouse:
-            return []
-        
+            raise connector_not_ready(self.display_name)
+
         row_limit = limit if limit is not None else SNOWFLAKE_TABLE_ROW_LIMIT
         sql = f"SELECT * FROM {database_name}.{schema_name}.{table_name} LIMIT {row_limit}"
-        
-        try:
-            async with self.rate_limiter:
-                response = await self.data_source.execute_sql(
-                    statement=sql,
-                    database=database_name,
-                    warehouse=self.warehouse,
-                )
-            if response.success and response.data:
-                return response.data.get("data", [])
-        except Exception as e:
-            self.logger.warning(f"Failed to fetch rows for {table_name}: {e}")
-        return []
+
+        async with self.rate_limiter:
+            response = await self.data_source.execute_sql(
+                statement=sql,
+                database=database_name,
+                warehouse=self.warehouse,
+            )
+        if not response.success:
+            raise SnowflakeFetchError.from_response(
+                response, f"Failed to fetch rows for {table_name}"
+            )
+        if not response.data:
+            raise not_found_at_source(self.display_name)
+        return response.data.get("data", [])
 
     async def _fetch_table_metadata(
         self, database_name: str, schema_name: str, table_name: str
@@ -1867,16 +1365,21 @@ class SnowflakeConnector(BaseConnector):
 
     async def _sync_views(
         self, database_name: str, schema_name: str, views: List[SnowflakeView]
-    ) -> None:
+    ) -> Set[str]:
         """
         Sync views using async generator for memory-efficient processing.
+
+        Returns the external ids of the views upserted with a definition. One
+        upserted without (no warehouse to run GET_DDL) is left out, so its
+        listing's hash is not saved and the first sync that can run GET_DDL reads it.
         
         Processes views in batches, fetching definitions one at a time and
         yielding to the event loop to prevent blocking on large datasets.
         Views inherit permissions from parent namespace via inheritPermissions edge.
         """
+        synced: Set[str] = set()
         if not views:
-            return
+            return synced
         # Views inherit permissions from parent namespace - no direct permissions needed
         batch: List[Tuple[Record, List[Permission]]] = []
         parent_fqn = f"{database_name}.{schema_name}"
@@ -1887,6 +1390,8 @@ class SnowflakeConnector(BaseConnector):
             database_name, schema_name, views
         ):
             batch.append((record, perms))
+            if record.definition:
+                synced.add(record.external_record_id)
             total_synced += 1
             
             # Log view enrichment for debugging
@@ -1906,19 +1411,29 @@ class SnowflakeConnector(BaseConnector):
             await self.data_entities_processor.on_new_records(batch)
             
         self.logger.info(f"Synced {total_synced} views in {parent_fqn} ({views_with_sources} have source tables)")
+        return synced
 
     async def _fetch_view_definition(
-        self, database_name: str, schema_name: str, view_name: str
+        self, database_name: str, schema_name: str, view_name: str,
+        strict: bool = False,
     ) -> Optional[str]:
         """
         Fetch view definition using GET_DDL() SQL function.
-        
+
         The REST API get_view() endpoint doesn't reliably return the view definition,
         especially for secure views. Using GET_DDL() ensures we get the full definition.
+
+        ``strict`` propagates a failed GET_DDL instead of returning None: sync can
+        carry on without one view's definition, but streaming one to the user
+        cannot pass off a refusal as a view with no body. A *successful* GET_DDL
+        that returned nothing still yields None either way — only the caller
+        knows whether the view is secure, which is what makes that case a 403.
         """
         if not self.data_source or not self.warehouse:
+            if strict:
+                raise connector_not_ready(self.display_name)
             return None
-        
+
         try:
             # Use GET_DDL to get the full view definition
             sql = f"SELECT GET_DDL('VIEW', '{database_name}.{schema_name}.{view_name}') as DDL"
@@ -1929,6 +1444,11 @@ class SnowflakeConnector(BaseConnector):
                 warehouse=self.warehouse,
             )
             
+            if strict and not response.success:
+                raise SnowflakeFetchError.from_response(
+                    response, f"Failed to fetch definition for view {view_name}"
+                )
+
             if response.success and response.data:
                 # Parse SQL result to extract DDL
                 meta = response.data.get("resultSetMetaData", {})
@@ -1953,6 +1473,8 @@ class SnowflakeConnector(BaseConnector):
             
         except Exception as e:
             self.logger.warning(f"Failed to get view definition for {view_name} using GET_DDL: {e}")
+            if strict:
+                raise
             return None
 
     def _parse_source_tables(self, definition: Optional[str]) -> List[str]:
@@ -2011,9 +1533,11 @@ class SnowflakeConnector(BaseConnector):
         schema_name: str,
         stage_name: str,
         files: List[SnowflakeFile],
-    ) -> None:
+    ) -> Set[str]:
         """
         Sync stage files using async generators for memory-efficient processing.
+
+        Returns the external ids of the files upserted.
         
         Uses generators to yield to the event loop between items.
         Files inherit permissions from parent stage via inheritPermissions edge.
@@ -2022,11 +1546,13 @@ class SnowflakeConnector(BaseConnector):
         stage_fqn = f"{database_name}.{schema_name}.{stage_name}"
         
         total_files = 0
+        synced: Set[str] = set()
         batch: List[Tuple[FileRecord, List[Permission]]] = []
 
         # Sync files using generator
         async for record, perms in self._process_stage_files_generator(stage_fqn, files):
             batch.append((record, perms))
+            synced.add(record.external_record_id)
             total_files += 1
 
             if len(batch) >= self.batch_size:
@@ -2038,6 +1564,7 @@ class SnowflakeConnector(BaseConnector):
             await self.data_entities_processor.on_new_records(batch)
 
         self.logger.info(f"Synced {total_files} files in stage {stage_fqn}")
+        return synced
 
     async def stream_record(
         self,
@@ -2063,51 +1590,82 @@ class SnowflakeConnector(BaseConnector):
         """
         try:
             if not self.data_source:
-                raise HTTPException(status_code=500, detail="Snowflake data source not initialized")
+                raise connector_not_ready(self.display_name)
 
             # Handle Snowflake Files (Unstructured)
             if record.record_type == RecordType.FILE:
+                if not self.warehouse:
+                    raise connector_not_ready(self.display_name)
+
                 stage_fqn = record.external_record_group_id  # database.schema.stage
-                file_path = record.external_record_id.replace(f"{stage_fqn}/", "")
-                parts = stage_fqn.split(".")
+                parts = stage_fqn.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid stage FQN")
                 database, schema, stage = parts[0], parts[1], parts[2]
 
-                response = await self.data_source.get_stage_file_stream(
-                    database=database, schema=schema, stage=stage, relative_path=file_path
+                # `record.path` is the stage-relative path as synced; deriving it
+                # with str.replace would strip the stage prefix wherever it recurs
+                # deeper in the path, not just at the front.
+                file_path = (
+                    getattr(record, "path", None)
+                    or record.external_record_id[len(stage_fqn) + 1:]
                 )
 
-                async def file_iterator():
-                    async with response as resp:
-                        if resp.status >= 400:
-                            raise HTTPException(status_code=resp.status, detail="Failed to fetch file")
-                        async for chunk in resp.content.iter_any():
-                            yield chunk
+                url_response = await self.data_source.generate_presigned_url(
+                    database=database,
+                    schema=schema,
+                    stage=stage,
+                    file_path=file_path,
+                    warehouse=self.warehouse,
+                )
+                if not url_response.success:
+                    raise SnowflakeFetchError.from_response(
+                        url_response,
+                        f"Could not get a download URL for {record.record_name}",
+                    )
+                signed_url = self._extract_presigned_url(url_response)
+                if not signed_url:
+                    raise not_found_at_source(self.display_name)
 
                 return create_stream_record_response(
-                    file_iterator(), filename=record.record_name, mime_type=record.mime_type
+                    stream_content(
+                        signed_url,
+                        record.id,
+                        record.record_name,
+                        connector=self.display_name,
+                    ),
+                    filename=record.record_name,
+                    mime_type=record.mime_type,
                 )
 
             # Handle Snowflake Tables (Structured)
             elif record.record_type == RecordType.SQL_TABLE:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid table FQN")
                 database, schema, table = parts[0], parts[1], parts[2]
 
-                if not self.data_fetcher:
-                    raise HTTPException(status_code=500, detail="Data fetcher not ready")
+                if not self.data_fetcher or not self.warehouse:
+                    raise connector_not_ready(self.display_name)
 
-                # Fetch Columns
-                all_cols = await self.data_fetcher._fetch_all_columns_in_schema(database, schema)
+                # The COLUMNS projection is fetched for the whole schema and is
+                # read from partition 0 only, so a table missing from it may
+                # simply have sorted past the cut. Absence at the source is the
+                # row fetch's answer to give, not this map's.
+                all_cols = await self.data_fetcher._fetch_all_columns_in_schema(
+                    database, schema, strict=True
+                )
                 columns = all_cols.get(table, [])
 
                 # Fetch Keys
-                pks = await self.data_fetcher._fetch_primary_keys_in_schema(database, schema)
+                pks = await self.data_fetcher._fetch_primary_keys_in_schema(
+                    database, schema, strict=True
+                )
                 primary_keys = [pk["column"] for pk in pks if pk["table"] == table]
 
-                fks_list = await self.data_fetcher._fetch_foreign_keys_in_schema(database, schema)
+                fks_list = await self.data_fetcher._fetch_foreign_keys_in_schema(
+                    database, schema, strict=True
+                )
                 foreign_keys = []
                 for fk in fks_list:
                     if fk.source_table == table:
@@ -2121,9 +1679,13 @@ class SnowflakeConnector(BaseConnector):
 
                 # Fetch Rows
                 rows = await self._fetch_table_rows(database, schema, table)
-                
-                # Fetch Real DDL
-                ddl = await self.data_fetcher.get_table_ddl(database, schema, table)
+
+                # GET_DDL is decorative once the columns and rows are in hand;
+                # only when there is nothing else to stream does a refusal here
+                # decide the response.
+                ddl = await self.data_fetcher.get_table_ddl(
+                    database, schema, table, strict=not (columns or rows)
+                )
 
                 # Construct JSON Data
                 data = {
@@ -2149,31 +1711,56 @@ class SnowflakeConnector(BaseConnector):
 
             # Handle Snowflake Views (Structured Logic)
             elif record.record_type == RecordType.SQL_VIEW:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     raise HTTPException(status_code=500, detail="Invalid view FQN")
                 database, schema, view_name = parts[0], parts[1], parts[2]
 
                 # Fetch view definition using GET_DDL (reliable method)
-                definition = await self._fetch_view_definition(database, schema, view_name)
-                
+                definition = await self._fetch_view_definition(
+                    database, schema, view_name, strict=True
+                )
+
                 # Fetch metadata (is_secure, comment) from API
                 view_response = await self.data_source.get_view(
                     database=database, schema=schema, name=view_name
                 )
-                view_data = view_response.data if view_response.success else {}
-                
+                if not view_response.success:
+                    # This endpoint refuses names that need quoting and roles
+                    # without REST privileges, and supplies only is_secure and
+                    # comment — nothing worth discarding a view body already in
+                    # hand for. Without a body, is_secure is what tells a 403
+                    # from a genuinely empty view, so then it does decide.
+                    if not definition:
+                        raise map_source_status(
+                            view_response.status_code, connector=self.display_name
+                        )
+                    self.logger.warning(
+                        f"get_view failed for {view_name}; streaming its DDL without metadata"
+                    )
+                view_data = (
+                    view_response.data
+                    if view_response.success and isinstance(view_response.data, dict)
+                    else {}
+                )
+
                 # Parse source tables from definition
                 source_tables = self._parse_source_tables(definition)
                 is_secure = view_data.get("is_secure", False) or view_data.get("isSecure", False)
                 comment = view_data.get("comment") or ""
-                
-                # Log if definition is empty (could be a secure view or API issue)
+
+                # GET_DDL succeeds but returns nothing for a secure view the role
+                # does not own. Streaming `"definition": null` would index the
+                # view as if it genuinely had no body.
                 if not definition:
                     self.logger.warning(
-                        f"View {view_name} has no definition. is_secure={is_secure}. "
-                        f"This may be a secure view or GET_DDL may have failed."
+                        f"View {view_name} has no definition. is_secure={is_secure}."
                     )
+                    if is_secure:
+                        raise map_source_status(
+                            HttpStatusCode.FORBIDDEN.value, connector=self.display_name
+                        )
+                    raise RuntimeError(f"GET_DDL returned no definition for view {view_name}")
 
                 # Fetch DDLs for source tables (for blob storage context)
                 source_table_ddls: Dict[str, str] = {}
@@ -2227,8 +1814,22 @@ class SnowflakeConnector(BaseConnector):
         except HTTPException:
             raise
         except Exception as e:
+            # Never `detail=str(e)`: a Snowflake driver message carries the
+            # account identifier, warehouse and role names, the full statement
+            # and *.snowflakecomputing.com hostnames.
             self.logger.error(f"Error streaming record: {e}", exc_info=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise to_snowflake_stream_error(e, connector=self.display_name) from e
+
+    @staticmethod
+    def _extract_presigned_url(response: SnowflakeResponse) -> Optional[str]:
+        """Read the single scalar GET_PRESIGNED_URL returns out of a statement result."""
+        data = response.data if isinstance(response.data, dict) else {}
+        rows = data.get("data") or []
+        if not rows:
+            return None
+        first = rows[0]
+        url = first[0] if isinstance(first, list) and first else first
+        return url if isinstance(url, str) and url else None
 
     def get_signed_url(self, record: Record) -> Optional[str]:
         return None
@@ -2248,35 +1849,8 @@ class SnowflakeConnector(BaseConnector):
             return False
 
     async def run_incremental_sync(self) -> None:
-        """
-        Run incremental sync for Snowflake.
-
-        Uses hybrid change detection:
-        - Tables: Compare row_count and bytes metadata
-        - Views: Compare MD5 hash of view definition
-        - Staged files: Compare md5 hash from Snowflake
-
-        Only changed objects are re-indexed. Deleted objects are detected
-        by comparing current objects with previously synced objects.
-        """
-        self.logger.info("Starting Snowflake incremental sync")
-        
-        # Check if we have previous sync state
-        previous_state = await self.get_sync_point(self._sync_state_key)
-        
-        if not previous_state or not previous_state.get("cursor"):
-            self.logger.info("No previous sync state found, performing full sync")
-            await self._run_full_sync_internal()
-        else:
-            await self._run_incremental_sync_internal(previous_state["cursor"])
-        
-        self.logger.info(
-            f"Snowflake incremental sync completed - "
-            f"Tables: {self.sync_stats.tables_synced} synced, {self.sync_stats.tables_skipped} skipped | "
-            f"Views: {self.sync_stats.views_synced} synced, {self.sync_stats.views_skipped} skipped | "
-            f"Files: {self.sync_stats.files_synced} synced, {self.sync_stats.files_skipped} skipped | "
-            f"Deletions: {self.sync_stats.deletions_processed}"
-        )
+        """Run a sync; it is incremental whenever a usable saved state exists."""
+        await self.run_sync()
 
     def handle_webhook_notification(self, notification: Dict) -> None:
         """
@@ -2387,7 +1961,7 @@ class SnowflakeConnector(BaseConnector):
         try:
             # For tables and views, check if they still exist
             if record.record_type in [RecordType.SQL_TABLE, RecordType.SQL_VIEW]:
-                parts = record.external_record_id.split(".")
+                parts = record.external_record_id.split(".", 2)
                 if len(parts) != 3:
                     return False
                 database, schema, name = parts[0], parts[1], parts[2]
@@ -2414,11 +1988,14 @@ class SnowflakeConnector(BaseConnector):
             # For files, check if file still exists in stage
             elif record.record_type == RecordType.FILE:
                 stage_fqn = record.external_record_group_id
-                file_path = record.external_record_id.replace(f"{stage_fqn}/", "")
-                parts = stage_fqn.split(".")
+                parts = stage_fqn.split(".", 2)
                 if len(parts) != 3:
                     return False
                 database, schema, stage = parts[0], parts[1], parts[2]
+                file_path = (
+                    getattr(record, "path", None)
+                    or record.external_record_id[len(stage_fqn) + 1:]
+                )
 
                 response = await self.data_source.list_stage_files(
                     database=database, schema=schema, stage=stage

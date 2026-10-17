@@ -42,8 +42,32 @@ class EmbeddingError(IndexingError):
     pass
 
 
+class EmbeddingModelUnavailableError(IndexingError):
+    """The embedding model could not be built or did not answer a probe."""
+
+    pass
+
+
+class EmbeddingNotConfiguredError(EmbeddingModelUnavailableError):
+    """No embedding model is configured and the local fallback is unavailable."""
+
+    pass
+
+
 class VectorStoreError(IndexingError):
     """Raised when there's an error interacting with the vector store"""
+
+    pass
+
+
+class EntityLookupUnavailableError(IndexingError):
+    """An entity-resolution lookup (vector or graph) could not run.
+
+    Never the same as "no match": answering it with a new node is how
+    duplicates are minted. Always retryable, whatever the underlying cause,
+    since the record's content is fine; the record's resolution runs again on
+    redelivery.
+    """
 
     pass
 

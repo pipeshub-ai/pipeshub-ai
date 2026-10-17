@@ -88,6 +88,12 @@ class TestStopReason:
         response = SimpleNamespace(incomplete_details=None, status="completed")
         assert stop_reason_from_responses(response, True) == StopReason.TOOL_USE
 
+    def test_a_content_filter_stop_ends_the_turn_rather_than_truncating(self) -> None:
+        response = SimpleNamespace(
+            incomplete_details=SimpleNamespace(reason="content_filter"), status="incomplete"
+        )
+        assert stop_reason_from_responses(response, False) == StopReason.END_TURN
+
     def test_plain_completion_ends_the_turn(self) -> None:
         response = SimpleNamespace(incomplete_details=None, status="completed")
         assert stop_reason_from_responses(response, False) == StopReason.END_TURN

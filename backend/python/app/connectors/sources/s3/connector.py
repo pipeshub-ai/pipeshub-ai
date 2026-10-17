@@ -103,6 +103,7 @@ S3DataSourceEntitiesProcessor = S3CompatibleDataSourceEntitiesProcessor
             option_source_type=OptionSourceType.DYNAMIC,
             default_operator=MultiselectOperator.IN.value
         ))
+        .add_filter_field(CommonFields.folder_paths_filter("bucket"))
         .add_filter_field(CommonFields.file_extension_filter())
         .add_filter_field(CommonFields.modified_date_filter("Filter files and folders by modification date."))
         .add_filter_field(CommonFields.created_date_filter("Filter files and folders by creation date."))
@@ -238,6 +239,7 @@ class S3Connector(S3CompatibleBaseConnector):
         **kwargs,
     ) -> "S3Connector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         base_console_url = "https://s3.console.aws.amazon.com"
 
         # Create processor with default S3 URL generation (will be updated after connector creation)
@@ -245,7 +247,7 @@ class S3Connector(S3CompatibleBaseConnector):
             logger, data_store_provider, config_service,
             base_console_url=base_console_url
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         connector = cls(
             logger,

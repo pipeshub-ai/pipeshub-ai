@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · **Türkçe** · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md)
+**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · **Türkçe** · [Tiếng Việt](../vi/SECURITY.md) · [Italiano](../it/SECURITY.md) · [Čeština](../cs/SECURITY.md)
 
 </div>
 
@@ -14,7 +14,7 @@ Güvenlik açıklarını ciddiye alıyoruz ve bulduğunuz sorunları sorumlu bir
 
 **Lütfen güvenlik açıkları için herkese açık GitHub issue'ları OLUŞTURMAYIN.**
 
-Bunun yerine, güvenlik açıklarını şu adrese e-posta göndererek bildirin: **abhishek@pipeshub.com**
+Bunun yerine, güvenlik açıklarını şu adrese e-posta göndererek bildirin: **security@pipeshub.com**
 
 ### Nelerin Dahil Edilmesi Gerekir
 

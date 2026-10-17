@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
@@ -315,12 +316,11 @@ class TestFetchProjectsForTeamBatch:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            batches = []
-            async for batch in connector._fetch_projects_for_team_batch(
-                team_id="team-1", team_key="ENG"
-            ):
-                batches.append(batch)
-            assert len(batches) == 0
+            with pytest.raises(RuntimeError, match="Error"):
+                async for _ in connector._fetch_projects_for_team_batch(
+                    team_id="team-1", team_key="ENG"
+                ):
+                    pass
 
     @pytest.mark.asyncio
     async def test_project_with_pagination(self):
@@ -729,8 +729,9 @@ class TestStreamRecord:
         record.external_record_id = "link-1"
         record.weburl = None
 
-        with pytest.raises(ValueError, match="missing weburl"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_webpage(self):
@@ -785,8 +786,9 @@ class TestStreamRecord:
         record.external_record_id = None
         record.id = "rec-1"
 
-        with pytest.raises(ValueError, match="missing external_record_id"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_unsupported_type(self):
@@ -797,8 +799,9 @@ class TestStreamRecord:
         record.record_type = "UNKNOWN_TYPE"
         record.external_record_id = "unknown-1"
 
-        with pytest.raises(ValueError, match="Unsupported record type"):
+        with pytest.raises(HTTPException) as exc_info:
             await connector.stream_record(record)
+        assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
     async def test_stream_inits_datasource_if_none(self):
@@ -1833,10 +1836,12 @@ class TestMarkRecordDeleted:
         connector._tx_store.get_records_by_parent = AsyncMock(
             side_effect=[[child], []]
         )
-        connector._tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        assert connector._tx_store.delete_records_and_relations.call_count == 2
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 # ===================================================================
@@ -2815,7 +2820,7 @@ class TestFetchDocumentContent:
             connector, "_get_fresh_datasource", new_callable=AsyncMock
         ) as mock_fresh:
             mock_fresh.return_value = mock_ds
-            with pytest.raises(Exception, match="Failed to fetch document"):
+            with pytest.raises(RuntimeError, match="Not found"):
                 await connector._fetch_document_content("doc-missing")
 
     @pytest.mark.asyncio
@@ -3095,7 +3100,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,
@@ -3166,7 +3171,7 @@ class TestRunSync:
                             connector,
                             "_sync_issues_for_teams",
                             new_callable=AsyncMock,
-                            return_value=set(),
+                            return_value=(set(), []),
                         ):
                             with patch.object(
                                 connector,

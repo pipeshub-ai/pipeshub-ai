@@ -6,9 +6,12 @@ import { Flex, Grid, Heading, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { WorkspaceHeaderIconButton } from '../../../components';
+import { McpAddServerButton } from '../../components';
 import type { McpMyServerEntry, McpServerTemplate } from '../../types';
+import { isOfferedForNewServers, replacementFor } from '../../catalog-replacement';
 import { McpInstanceCard } from './mcp-instance-card';
 import { McpServerCard } from './mcp-server-card';
+import { EnterpriseFeatureNotice } from '@/app/components/ui/enterprise-badge';
 
 // ========================================
 // Types
@@ -96,8 +99,9 @@ export function McpCatalogLayout({
     const active = rows
       .filter((r) => r.instances.length > 0)
       .sort((a, b) => byName(a.template.displayName, b.template.displayName));
+    // A replaced entry appears only where servers made from it still exist.
     const inactive = rows
-      .filter((r) => r.instances.length === 0)
+      .filter((r) => r.instances.length === 0 && isOfferedForNewServers(r.template))
       .sort((a, b) => byName(a.template.displayName, b.template.displayName));
 
     const custom = (!q
@@ -146,8 +150,8 @@ export function McpCatalogLayout({
         </Flex>
 
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
-          <AddServerButton onClick={onAddCustom} />
-          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} />
+          <McpAddServerButton onClick={onAddCustom} />
+          <WorkspaceHeaderIconButton icon="refresh" onClick={onRefresh} aria-label={t('action.refresh')} />
         </Flex>
       </Flex>
 
@@ -188,6 +192,14 @@ export function McpCatalogLayout({
               onSetup={() => onSetupTemplate(template)}
               onAddInstance={() => onAddInstanceForTemplate(template)}
               onManage={() => onManageTemplate(template)}
+              canAddInstance={isOfferedForNewServers(template)}
+              notice={
+                isOfferedForNewServers(template)
+                  ? null
+                  : t('workspace.mcpServers.replacedNotice', {
+                      name: replacementFor(template, templates)?.displayName ?? template.replacedBy,
+                    })
+              }
             />
           ))}
           {filteredCustomInstances.map((instance) => (
@@ -213,6 +225,13 @@ export function McpCatalogLayout({
           ))}
         </Grid>
       )}
+
+      {!isLoading && (
+        <EnterpriseFeatureNotice
+          title={t('workspace.mcpServers.enterprise.userServersTitle')}
+          description={t('workspace.mcpServers.enterprise.userServersDescription')}
+        />
+      )}
     </Flex>
   );
 }
@@ -220,36 +239,6 @@ export function McpCatalogLayout({
 // ========================================
 // Sub-components
 // ========================================
-
-function AddServerButton({ onClick }: { onClick: () => void }) {
-  const { t } = useTranslation();
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        font: 'inherit',
-        outline: 'none',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6,
-        height: 'var(--space-6)',
-        padding: '0 12px',
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: 'var(--accent-9)',
-        cursor: 'pointer',
-      }}
-    >
-      <MaterialIcon name="add" size={16} color="white" />
-      <span style={{ fontSize: 14, fontWeight: 500, color: 'white' }}>
-        {t('workspace.mcpServers.addServer')}
-      </span>
-    </button>
-  );
-}
 
 function EmptyState({ onAdd }: { onAdd: () => void }) {
   const { t } = useTranslation();
@@ -262,7 +251,7 @@ function EmptyState({ onAdd }: { onAdd: () => void }) {
       <Text size="2" style={{ color: 'var(--gray-11)' }}>
         {t('workspace.mcpServers.team.emptyDescription')}
       </Text>
-      <AddServerButton onClick={onAdd} />
+      <McpAddServerButton onClick={onAdd} />
     </Flex>
   );
 }

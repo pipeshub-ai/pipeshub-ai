@@ -61,10 +61,10 @@ export function AgentBuilderWebSearchSection({
   }, [configuredProviders]);
 
   const visibleProviders = useMemo(() => {
-    if (isAdmin) return WEB_SEARCH_PROVIDER_META;
-    return WEB_SEARCH_PROVIDER_META.filter(
-      (meta) => !meta.configurable || providerMap.has(meta.type),
-    );
+    // An agent attaches a search provider; one that only reads pages (Crawl4AI) can't search.
+    const searchers = WEB_SEARCH_PROVIDER_META.filter((meta) => meta.searches);
+    if (isAdmin) return searchers;
+    return searchers.filter((meta) => !meta.configurable || providerMap.has(meta.type));
   }, [isAdmin, providerMap]);
 
   const handleToggle = useCallback(() => {
@@ -109,7 +109,7 @@ export function AgentBuilderWebSearchSection({
   return (
     <>
       <SidebarCategoryRow
-        groupLabel={t('Web Search')}
+        groupLabel={t('agentBuilder.webSearch')}
         groupMaterialIcon="public"
         groupMaterialIconColor="var(--blue-9)"
         itemCount={visibleProviders.length}
@@ -156,7 +156,7 @@ export function AgentBuilderWebSearchSection({
                       }),
                     );
                   } else if (attached) {
-                    onNotify(t('Only One Web Search Provider Allowed'));
+                    onNotify(t('agentBuilder.webSearchOnlyOne'));
                   }
                 }}
                 isAdmin={Boolean(isAdmin)}
@@ -276,7 +276,7 @@ function ProviderRow({
         </Text>
 
         {isAttached ? (
-          <Tooltip content={t('Attached')}>
+          <Tooltip content={t('agentBuilder.attached')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -292,7 +292,7 @@ function ProviderRow({
             </span>
           </Tooltip>
         ) : isConfigured ? (
-          <Tooltip content={t('Configured')}>
+          <Tooltip content={t('workspace.webSearch.badges.configured')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -322,8 +322,8 @@ function ProviderRow({
             <Tooltip
               content={
                 isConfigured
-                  ? t('Edit')
-                  : t('Configure')
+                  ? t('action.edit')
+                  : t('agentBuilder.configureShort')
               }
             >
               <IconButton

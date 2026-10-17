@@ -8,6 +8,10 @@ import {
   saveFileToStorageAndGetDocumentId,
 } from '../../../../src/modules/knowledge_base/utils/utils'
 
+import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import axios from 'axios'
+
 const STORAGE_URL = 'http://localhost:19191'
 
 function makeKVS(endpoint: string | null = STORAGE_URL) {
@@ -138,7 +142,116 @@ describe('knowledge_base/utils - functional tests', () => {
       expect(result.upload).to.be.a('function')
     })
 
-    it('should throw on non-redirect error from storage', async () => {
+    it('should refuse a redirect that does not say where to upload', async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(301, {}, { 'x-document-name': 'nowhere.pdf' })
+
+      try {
+        await createPlaceholderDocument(
+          makeReq(),
+          makeFile('nowhere.pdf'),
+          'nowhere.pdf',
+          false,
+          makeKVS() as any,
+          defaultStorageConfig,
+          'service-token',
+        )
+        expect.fail('expected the malformed redirect to surface')
+      } catch (error: any) {
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+      }
+      // Nothing was uploaded and nothing was aborted, so no stray requests.
+      expect(nock.pendingMocks()).to.deep.equal([])
+    })
+
+    it('should refuse a redirect that gives a link but no document id', async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(301, {}, { location: 'https://s3.test/put-orphan' })
+
+      try {
+        await createPlaceholderDocument(
+          makeReq(),
+          makeFile('orphan.pdf'),
+          'orphan.pdf',
+          false,
+          makeKVS() as any,
+          defaultStorageConfig,
+          'service-token',
+        )
+        expect.fail('expected the malformed redirect to surface')
+      } catch (error: any) {
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+      }
+    })
+
+    it('should ask storage to abort the placeholder and report plainly when the direct upload fails', async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(301, {}, {
+          location: 'https://s3.test/put-fail?sig=abc',
+          'x-document-id': 'doc-fail-001',
+          'x-document-name': 'fail.pdf',
+        })
+      nock('https://s3.test')
+        .put('/put-fail')
+        .query({ sig: 'abc' })
+        .reply(403, '<Error><Code>AccessDenied</Code></Error>')
+      const cleanup = nock(STORAGE_URL, { reqheaders: { authorization: 'Bearer service-token' } })
+        .post('/api/v1/document/internal/doc-fail-001/abortDirectUpload')
+        .reply(200, { deleted: true })
+
+      const result = await createPlaceholderDocument(
+        makeReq(),
+        makeFile('fail.pdf'),
+        'fail.pdf',
+        false,
+        makeKVS() as any,
+        defaultStorageConfig,
+        'service-token',
+      )
+
+      try {
+        await result.upload!()
+        expect.fail('expected the failed upload to surface')
+      } catch (error: any) {
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+        expect(error.message).to.not.include('AccessDenied')
+      }
+      expect(cleanup.isDone()).to.be.true
+    })
+
+    it('should still report the failed direct upload when removing the placeholder fails', async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(301, {}, {
+          location: 'https://s3.test/put-fail-2',
+          'x-document-id': 'doc-fail-002',
+          'x-document-name': 'fail2.pdf',
+        })
+      nock('https://s3.test').put('/put-fail-2').reply(500, 'InternalError')
+      nock(STORAGE_URL).post('/api/v1/document/internal/doc-fail-002/abortDirectUpload').reply(503, {})
+
+      const result = await createPlaceholderDocument(
+        makeReq(),
+        makeFile('fail2.pdf'),
+        'fail2.pdf',
+        false,
+        makeKVS() as any,
+        defaultStorageConfig,
+        'service-token',
+      )
+
+      try {
+        await result.upload!()
+        expect.fail('expected the failed upload to surface')
+      } catch (error: any) {
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
+      }
+    })
+
+    it('should report a plain failure when storage errors without a message of its own', async () => {
       nock(STORAGE_URL)
         .post('/api/v1/document/internal/upload')
         .reply(500, { error: 'Internal Server Error' })
@@ -155,9 +268,31 @@ describe('knowledge_base/utils - functional tests', () => {
         )
         expect.fail('Should have thrown')
       } catch (error: any) {
-        expect(error).to.exist
-        expect(error.response?.status).to.equal(500)
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
       }
+    })
+
+    it("should keep storage's own error so its words reach the uploader", async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(400, { error: { code: 'BAD_REQUEST', message: 'This file is empty.' } })
+
+      const failure: unknown = await createPlaceholderDocument(
+        makeReq(),
+        makeFile(),
+        'test.pdf',
+        false,
+        makeKVS() as unknown as KeyValueStoreService,
+        defaultStorageConfig,
+        'service-token',
+      ).then(
+        () => expect.fail('Should have thrown'),
+        (error: unknown) => error,
+      )
+      expect(axios.isAxiosError(failure) && failure.response?.status).to.equal(400)
+      expect(axios.isAxiosError(failure) && failure.response?.data).to.deep.equal({
+        error: { code: 'BAD_REQUEST', message: 'This file is empty.' },
+      })
     })
 
     it('should throw on 404 error from storage', async () => {

@@ -37,6 +37,7 @@ from validation.graph_edge_validator import (  # noqa: E402
     build_record_edge_expectations,
     build_record_group_edge_expectations,
     build_user_edge_expectations,
+    resolve_parent_record,
 )
 
 _SCHEMA_DIR: Final = Path(__file__).resolve().parent / "schemas"
@@ -45,6 +46,8 @@ _SCHEMA_DIR: Final = Path(__file__).resolve().parent / "schemas"
 _ENTITY_SCHEMA_LAYERS: Final[dict[str, tuple[str, ...]]] = {
     "ticket_record": ("record.yaml", "ticket_record.yaml"),
     "file_record": ("record.yaml", "file_record.yaml"),
+    "pull_request_record": ("record.yaml", "pull_request_record.yaml"),
+    "code_file_record": ("record.yaml", "code_file_record.yaml"),
     "link_record": ("record.yaml", "link_record.yaml"),
     "webpage_record": ("record.yaml", "webpage_record.yaml"),
     "record_group": ("record_group.yaml",),
@@ -56,6 +59,8 @@ _ENTITY_SCHEMA_LAYERS: Final[dict[str, tuple[str, ...]]] = {
 GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entity_matches``.
     "ticket_record",
     "file_record",
+    "pull_request_record",
+    "code_file_record",
     "link_record",
     "webpage_record",
     "record_group",
@@ -64,18 +69,29 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
     "app_metadata",
 ]
 
+# Things integration tests often cannot know ahead of time or that change after sync.
+# indexing_status, parsing_status, queued_at and processing_started_at belong to the
+# indexing pipeline, which keeps moving them after the connector hands the record over.
+# parent_record_type and record_group_type are write-time hints (edge creation, record-group
+# linkage); Record.to_arango_base_record never serializes them, so they always read back None.
+_RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
+    "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
+    "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+})
+
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
-    # Things integration tests often cannot know ahead of time or that change after sync.
-    # parent_record_type and record_group_type are write-time hints (edge creation, record-group
-    # resolution) that are never persisted on the record node, so they always read back as None.
-    "ticket_record": frozenset[str]({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "file_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "link_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
-    "webpage_record": frozenset({"id", "org_id", "indexing_status", "parsing_status", "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type"}),
+    "ticket_record": _RECORD_DEFAULT_SKIP,
+    "file_record": _RECORD_DEFAULT_SKIP,
+    "pull_request_record": _RECORD_DEFAULT_SKIP,
+    "code_file_record": _RECORD_DEFAULT_SKIP,
+    "link_record": _RECORD_DEFAULT_SKIP,
+    "webpage_record": _RECORD_DEFAULT_SKIP,
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),
-    "app_metadata": frozenset(),
+    # Which user supplied the connector credentials is decided by whoever ran the
+    # setup, so no test can know it up front.
+    "app_metadata": frozenset({"authenticated_by"}),
 }
 
 
@@ -150,6 +166,7 @@ def assert_graph_entity_matches(
 
 _ENTITY_KINDS_WITH_RECORD_EDGES: Final[frozenset[str]] = frozenset({
     "ticket_record", "file_record", "link_record", "webpage_record",
+    "pull_request_record", "code_file_record",
 })
 
 
@@ -169,7 +186,7 @@ async def assert_graph_entity_with_edges(
     automatically builds and asserts the expected edges based on entity kind:
 
     - ``ticket_record`` / ``file_record`` → record edges (belongsTo, inheritPermissions,
-      isOfType, parent recordRelations)
+      isOfType, parent nodeRelations)
     - ``record_group`` → record group edges (belongsTo app, parent group hierarchy)
     - Other kinds → fields-only (no automatic edges)
     """
@@ -180,6 +197,7 @@ async def assert_graph_entity_with_edges(
     if entity in _ENTITY_KINDS_WITH_RECORD_EDGES:
         edges = build_record_edge_expectations(
             actual, connector_id, parent_relation_type=parent_relation_type,
+            parent=await resolve_parent_record(graph_provider, actual, connector_id),
         )
         await assert_graph_edges(graph_provider, edges)
     elif entity == "record_group":

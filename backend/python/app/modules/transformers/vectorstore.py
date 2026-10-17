@@ -14,10 +14,12 @@ No LangChain QdrantVectorStore is imported or used.
 """
 
 import asyncio
+import codecs
+import logging
 import os
 import time
 import uuid
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from langchain_core.documents import Document
 
@@ -26,23 +28,30 @@ from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     EmbeddingError,
+    EmbeddingModelUnavailableError,
+    EmbeddingNotConfiguredError,
     IndexingError,
     VectorStoreError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import Block, BlocksContainer, BlockType, SemanticMetadata
 from app.models.entities import Record
+from app.modules.parsers.link_text import anchor_text_only
 from app.modules.parsers.text_splitting import detect_language, split_into_sentences
 from app.modules.transformers.transformer import TransformContext, Transformer
 from app.services.embeddings.multimodal.config import MultimodalProviderConfig
 from app.services.embeddings.multimodal.factory import MultimodalEmbeddingFactory
 from app.services.embeddings.multimodal.interface import ImageEmbeddingResult
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.backpressure import get_default_backpressure_coordinator
+from app.services.messaging.error_classifier import format_exception_chain
+from app.services.resource_governor.feedback import get_default_downstream_feedback
 from app.services.vector_db.collection_locator import VirtualRecordCollectionLocator
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.interface.vector_db import IVectorDBService
 from app.services.vector_db.membership import (
     reset_membership_context,
-    resolve_vector_membership,
+    resolve_virtual_record_state,
     rewrite_or_delete_virtual_record,
     set_membership_context,
     sync_vector_membership,
@@ -53,11 +62,18 @@ from app.services.vector_db.sparse_embeddings import SparseEmbedder
 from app.services.vector_db.strategy import RecordContext
 from app.utils.aimodels import (
     EmbeddingProvider,
+    embedding_config_hash,
     get_default_embedding_model,
     get_embedding_model,
     is_local_cpu_embedding_provider,
 )
+from app.utils.embedding_retry import (
+    is_retriable_embedding_error,
+    retry_delay_seconds,
+    signal_backpressure_if_rate_limited,
+)
 from app.utils.image_utils import normalize_image_to_base64
+from app.utils.indexing_timing import stage
 
 RECORD_SUMMARY_BLOCK_ID_SUFFIX = "_summary"
 
@@ -84,6 +100,44 @@ def _resolve_batch_concurrency(env_value: str | None, *, default: int = 5) -> in
 _DEFAULT_CONCURRENCY_LIMIT = _resolve_batch_concurrency(os.getenv("EMBEDDING_BATCH_CONCURRENCY"))
 _LOCAL_CPU_DOCUMENT_BATCH_SIZE = 20
 
+# A batch is bounded by characters as well as document count: one Document is
+# anywhere from a single sentence to a whole text block capped only by
+# text_splitting.MAX_TEXT_BLOCK_CHARS (50k), or an uncapped code symbol. Sized
+# by count alone, the same "batch of 50" carries ~2KB on one record and
+# megabytes on the next, and no fixed per-batch timeout can hold for both.
+# The remote budget also keeps a batch under langchain_openai's
+# MAX_TOKENS_PER_REQUEST, above which it silently splits one aembed_documents
+# call into several *sequential* HTTP requests inside that one timeout.
+_DEFAULT_DOCUMENT_BATCH_CHARS = 100_000
+_LOCAL_CPU_DOCUMENT_BATCH_CHARS = 40_000
+
+# OpenAI and Azure OpenAI batches are bounded by tokens instead of by document
+# count. Records are mostly many small documents (every sentence of a long
+# block is embedded on its own as well as the block), so the 50-document cap,
+# not the size budget, decided how many requests a record made: a typical pull
+# request's diffs came to about 11 requests of roughly 1,000 tokens each.
+# These two providers take far larger requests (langchain_openai packs up to
+# 1,000 inputs per request for OpenAI and 2,048 for Azure, within 300k
+# tokens), and their tokenizer is the one ``_token_len`` counts with.
+# The budget is about what the 100k-character cap allowed for prose, so the
+# largest request is no bigger than before; only small documents pack tighter.
+# Fewer requests also means fewer vector upserts and record-presence checks,
+# which run once per batch.
+_TOKEN_BATCHED_EMBEDDING_PROVIDERS = frozenset({
+    EmbeddingProvider.OPENAI.value,
+    EmbeddingProvider.AZURE_OPENAI.value,
+})
+_TOKEN_BATCH_MAX_DOCUMENTS = 1000
+_TOKEN_BATCH_MAX_TOKENS = 25_000
+
+# One positive answer to "does the record still exist" covers the batches of
+# that record starting within this many seconds. Each check is a graph read on
+# the indexing loop (about 1 ms of driver CPU on Neo4j), and a large record
+# runs one per batch: 160 for 8,000 blocks remotely, 400 on local CPU. A record
+# deleted inside the window costs at most that much extra embedding; its
+# points are still removed by _cleanup_orphaned_embeddings_if_needed.
+_RECORD_PRESENCE_MAX_AGE_S = 2.0
+
 # Blocks are already capped at this size by the parsers (text_splitting.MAX_TEXT_BLOCK_CHARS),
 # but connector-authored blocks can bypass that path — guard defensively here too.
 _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT = 50_000
@@ -102,6 +156,89 @@ _TEXT_PROCESSING_TIMEOUT_S = 300  # 5 min for sentence-splitting a full record
 # batch than hosted API embedding providers, so they get a much longer allowance.
 _LOCAL_EMBEDDING_BATCH_TIMEOUT_S = 600  # 10 min per embedding batch on local CPU
 _REMOTE_EMBEDDING_BATCH_TIMEOUT_S = 120  # 2 min per embedding batch via hosted API
+
+# Attempts per batch. Bounds the blast radius of a transient provider failure to
+# the batch rather than the record: without this one 429 or dropped connection
+# discards the embeddings of every other batch already upserted for the record,
+# which only a full re-index restores.
+_EMBEDDING_BATCH_MAX_ATTEMPTS = 3
+
+
+def _batch_documents_by_size(
+    documents: List[Document], max_documents: int, max_chars: int
+) -> List[Tuple[int, List[Document]]]:
+    """Pack *documents* into ``(start_index, batch)`` pairs bounded by both limits.
+
+    A single document over *max_chars* gets a batch to itself rather than being
+    split or dropped — the provider's own context handling decides what to do
+    with it, but it must not drag a batch of ordinary documents past the budget.
+    ``start_index`` indexes into *documents* so batch failures stay locatable.
+    """
+    batches: List[Tuple[int, List[Document]]] = []
+    current: List[Document] = []
+    current_start = 0
+    current_chars = 0
+
+    for index, document in enumerate(documents):
+        size = len(document.page_content)
+        if current and (
+            len(current) >= max_documents or current_chars + size > max_chars
+        ):
+            batches.append((current_start, current))
+            current = []
+            current_start = index
+            current_chars = 0
+        current.append(document)
+        current_chars += size
+
+    if current:
+        batches.append((current_start, current))
+    return batches
+
+
+_OPENAI_API_HOST = "api.openai.com"
+
+
+def _is_openai_api(endpoint: str) -> bool:
+    """True for no endpoint (the SDK's default) or OpenAI's own API host."""
+    if not endpoint:
+        return True
+    from urllib.parse import urlparse
+
+    return (urlparse(endpoint).hostname or "").lower() == _OPENAI_API_HOST
+
+
+def _batch_documents_by_tokens(
+    documents: list[Document], max_documents: int, max_tokens: int
+) -> list[tuple[int, list[Document]]]:
+    """Pack *documents* into ``(start_index, batch)`` pairs of at most
+    *max_tokens* tokens and *max_documents* documents.
+
+    The token-counted counterpart of ``_batch_documents_by_size``, with the
+    same contract: order is kept, a single document over the budget gets a
+    batch to itself, and ``start_index`` indexes into *documents*. Counting
+    tokens is CPU work, so async callers should run this in a thread.
+    """
+    batches: list[tuple[int, list[Document]]] = []
+    current: list[Document] = []
+    current_start = 0
+    current_tokens = 0
+
+    for index, document in enumerate(documents):
+        tokens = _token_len(document.page_content)
+        if current and (
+            len(current) >= max_documents or current_tokens + tokens > max_tokens
+        ):
+            batches.append((current_start, current))
+            current = []
+            current_start = index
+            current_tokens = 0
+        current.append(document)
+        current_tokens += tokens
+
+    if current:
+        batches.append((current_start, current))
+    return batches
 
 
 def _detect_record_language(text_blocks: List) -> str:
@@ -137,6 +274,165 @@ def _min_words_for_sentence_embeddings() -> int:
         return max(0, int(raw))
     except (TypeError, ValueError):
         return _DEFAULT_SENTENCE_EMBED_MIN_WORDS
+
+
+# Token-aware sizing for the embedder's context limit.
+#
+# Every character constant above bounds *characters*, but the limit that
+# actually rejects input is the embedding model's, in *tokens*. The two are not
+# proportional: English prose runs ~4 chars/token while base64 or dense code can
+# run under 2, so no single characters-per-token constant is correct for both.
+# These helpers make the decision in the unit the limit is expressed in.
+_module_logger = logging.getLogger(__name__)
+
+_EMBED_TOKEN_LIMIT_DEFAULT = 8191  # text-embedding-3-{small,large}; ada-002 is 2048
+_EMBED_TOKEN_ENV = "PIPESHUB_EMBED_TOKEN_LIMIT"
+# Halving from the ceiling, this reaches a step of 1 for any realistic limit.
+_MAX_SPLIT_ATTEMPTS = 16
+# Used only when no tokenizer resolves. A BPE token encodes at least one byte,
+# so the UTF-8 byte length is a guaranteed upper bound on the token count for
+# any input -- unlike a characters-per-token ratio, which is unsafe in exactly
+# the cases that matter: measured against cl100k_base, one character is ~0.17
+# tokens for ASCII prose but ~1.1 for CJK and ~3 for emoji.
+
+
+def _embed_token_ceiling() -> int:
+    """Maximum tokens the embedding model accepts in one input.
+
+    Overridable so a deployment on a smaller model can lower it. A malformed
+    value falls back to the default rather than disabling the ceiling.
+    """
+    raw = os.getenv(_EMBED_TOKEN_ENV)
+    if raw:
+        try:
+            value = int(raw)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    return _EMBED_TOKEN_LIMIT_DEFAULT
+
+
+def _token_encoder() -> object | None:
+    """A tiktoken encoding, or None when tiktoken is unavailable.
+
+    Cached, so indexing a corpus does not re-resolve it per block. None is a
+    supported state rather than an error -- callers fall back to a character
+    estimate.
+    """
+    cached = getattr(_token_encoder, "_cached", False)
+    if cached is not False:
+        return cached
+    encoder = None
+    try:
+        import tiktoken
+
+        encoder = tiktoken.get_encoding("cl100k_base")
+    except Exception:
+        # tiktoken absent or the encoding unavailable; the character estimate
+        # below is the documented fallback.
+        encoder = None
+    _token_encoder._cached = encoder
+    return encoder
+
+
+def _token_len(text: str) -> int:
+    """Exact token count, or a guaranteed upper bound when no tokenizer exists."""
+    encoder = _token_encoder()
+    if encoder is None:
+        return len(text.encode("utf-8"))
+    # disallowed_special=(): this counts text, it does not prompt a model.
+    # By default tiktoken raises on any text that spells a special token such
+    # as "<|endoftext|>", which source code and chat logs about models do.
+    return len(encoder.encode(text, disallowed_special=()))
+
+
+def _exceeds_token_ceiling(text: str, ceiling: int) -> bool:
+    """True when *text* will not embed as a single input.
+
+    The length check first is a cheap guard, not an approximation: a token
+    encodes at least one byte, so text of at most *ceiling* BYTES cannot exceed
+    it and the common case never pays for tokenization.
+
+    The guard must measure bytes, not characters. A character count is not an
+    upper bound on tokens -- one emoji is a single character and three tokens
+    against cl100k_base -- so a character-based guard would wave through exactly
+    the dense input this function exists to catch.
+    """
+    if len(text) <= ceiling and text.isascii():
+        return False  # ASCII: one byte per character, so chars bound tokens
+    if len(text.encode("utf-8")) <= ceiling:
+        return False
+    return _token_len(text) > ceiling
+
+
+def _slice_on_character_boundaries(text: str, step: int) -> List[str]:
+    """Cut *text* into pieces of at most *step* tokens (or bytes) each.
+
+    Slices on tokens when an encoder is available and on UTF-8 bytes otherwise,
+    but reassembles on CHARACTER boundaries either way: neither cut is
+    guaranteed to fall between characters, and decoding a partial sequence
+    substitutes U+FFFD, which corrupts the text and stops the pieces joining
+    back to the source. An incremental decoder carries an incomplete trailing
+    sequence into the next piece instead.
+    """
+    encoder = _token_encoder()
+    if encoder is None:
+        raw = text.encode("utf-8")
+        chunks = (raw[i : i + step] for i in range(0, len(raw), step))
+    else:
+        # disallowed_special=(), as in _token_len: "<|endoftext|>" in the
+        # text is text to split, not a reason to fail the record.
+        tokens = encoder.encode(text, disallowed_special=())
+        chunks = (
+            encoder.decode_bytes(tokens[i : i + step])
+            for i in range(0, len(tokens), step)
+        )
+
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    pieces: List[str] = []
+    for chunk in chunks:
+        piece = decoder.decode(chunk)
+        if piece:
+            pieces.append(piece)
+    tail = decoder.decode(b"", True)
+    if tail:
+        pieces.append(tail)
+    return pieces
+
+
+def _split_to_token_ceiling(text: str, ceiling: int) -> List[str]:
+    """Split *text* so every piece embeds. Last line of defence.
+
+    Applies to input the sentence splitter could not break up -- a table row, a
+    base64 payload, a minified line, or text in a script whose delimiters it
+    does not recognise.
+
+    The result is *verified* rather than assumed. Two effects make a slice of
+    ``ceiling`` units come back over ``ceiling`` tokens: carrying an incomplete
+    character forward can add a few bytes to the following piece, and
+    re-encoding a decoded slice does not always reproduce its original token
+    count, because BPE merges differ once the text is cut. Both are small, but
+    "small" is not a bound -- so each attempt is measured and the step halved
+    until every piece fits.
+    """
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [text]
+
+    step = ceiling
+    pieces = [text]
+    for _ in range(_MAX_SPLIT_ATTEMPTS):
+        pieces = _slice_on_character_boundaries(text, step)
+        if all(not _exceeds_token_ceiling(p, ceiling) for p in pieces):
+            return pieces
+        step = max(1, step // 2)
+
+    _module_logger.warning(
+        "Could not split a %d-character block under the %d-token ceiling after "
+        "%d attempts; emitting %d piece(s) anyway.",
+        len(text), ceiling, _MAX_SPLIT_ATTEMPTS, len(pieces),
+    )
+    return pieces or [text]
 
 
 def _word_count(text: str) -> int:
@@ -184,6 +480,20 @@ def _chunk_oversized_text(
     return chunks or [text]
 
 
+def _bounded_documents(text: str, metadata: dict) -> list[Document]:
+    """Documents for one piece of table or SQL text, split to the model's token
+    ceiling. Table rows, summaries, DDL and view text are otherwise unbounded,
+    and an over-long one is rejected by the embedding API only after the full
+    retry budget."""
+    ceiling = _embed_token_ceiling()
+    if not _exceeds_token_ceiling(text, ceiling):
+        return [Document(page_content=text, metadata=metadata)]
+    return [
+        Document(page_content=piece, metadata={**metadata})
+        for piece in _split_to_token_ceiling(text, ceiling)
+    ]
+
+
 def _build_text_documents(
     text_blocks: List,
     virtual_record_id: str,
@@ -203,7 +513,9 @@ def _build_text_documents(
         # shows up on the blob-backed reindex path and not during normal
         # indexing. There is nothing to embed either way: an empty document would
         # just be a useless retrieval unit.
-        block_text = block.data or ""
+        # Links stay in the stored block for citations; only the embedded
+        # text loses their targets.
+        block_text = anchor_text_only(block.data or "")
         if not block_text.strip():
             continue
         metadata = {
@@ -215,21 +527,33 @@ def _build_text_documents(
             "blockType": BlockType.TEXT.value,
         }
 
-        if len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT:
+        # The character cap stays as a cheap upper guard for pathological
+        # blocks; the ceiling that decides whether this can embed as one
+        # document is the model's, in tokens.
+        if (
+            len(block_text) > _MAX_BLOCK_CHARS_FOR_SENTENCE_SPLIT
+            or _exceeds_token_ceiling(block_text, _embed_token_ceiling())
+        ):
             # Too large to also embed as one whole-block document (would be a
             # useless retrieval unit) — pack into overlapping windows instead.
+            ceiling = _embed_token_ceiling()
             documents.extend(
-                Document(page_content=chunk, metadata={**metadata, "isBlock": False})
+                Document(page_content=piece, metadata={**metadata, "isBlock": False})
                 for chunk in _chunk_oversized_text(block_text, language)
+                # A sentence longer than the window is emitted whole by
+                # _chunk_oversized_text; bound it rather than let it be rejected.
+                for piece in _split_to_token_ceiling(chunk, ceiling)
             )
             continue
 
         if _word_count(block_text) > _min_words_for_sentence_embeddings():
             sentences = split_into_sentences(block_text, language=language)
             if len(sentences) > 1:
+                ceiling = _embed_token_ceiling()
                 documents.extend(
-                    Document(page_content=sentence, metadata={**metadata, "isBlock": False})
+                    Document(page_content=piece, metadata={**metadata, "isBlock": False})
                     for sentence in sentences
+                    for piece in _split_to_token_ceiling(sentence, ceiling)
                 )
         documents.append(
             Document(
@@ -297,6 +621,39 @@ def _storage_reconcile_enabled() -> bool:
     )
 
 
+class _RecordPresence:
+    """Whether one record still exists, shared by the batches that index it.
+
+    A positive answer is reused for ``max_age_s`` from when its read began, and
+    batches that start while a read is in flight wait for it instead of issuing
+    their own. A negative answer is never reused, so each later batch asks again
+    exactly as it did before this was shared.
+    """
+
+    def __init__(
+        self, graph_provider: IGraphDBProvider, record_id: str, *, max_age_s: float
+    ) -> None:
+        self._graph_provider = graph_provider
+        self._record_id = record_id
+        self._max_age_s = max_age_s
+        self._lock = asyncio.Lock()
+        self._present_since: float | None = None
+
+    async def check(self) -> bool:
+        async with self._lock:
+            started = time.monotonic()
+            if (
+                self._present_since is not None
+                and started - self._present_since < self._max_age_s
+            ):
+                return True
+            record_doc = await self._graph_provider.get_document(
+                self._record_id, CollectionNames.RECORDS.value
+            )
+            self._present_since = started if record_doc is not None else None
+            return record_doc is not None
+
+
 class VectorStore(Transformer):
 
     def __init__(
@@ -317,9 +674,12 @@ class VectorStore(Transformer):
             strategy=collection_registry.strategy,
             manifest_store=collection_registry.manifest_store,
             logger=logger,
+            list_managed=collection_registry.list_managed_collections,
         )
 
         self.dense_embeddings = None
+        self._embedding_config_hash: str | None = None
+        self._embedding_model_lock = asyncio.Lock()
         self.api_key = None
         self.embedding_endpoint = None
         self.model_name = None
@@ -358,9 +718,9 @@ class VectorStore(Transformer):
                     await embedder._ensure_initialized()
                 except Exception as e:
                     raise IndexingError(
-                        "Failed to initialise sparse embeddings: " + str(e),
+                        "Failed to initialise sparse embeddings",
                         details={"error": str(e)},
-                    )
+                    ) from e
                 self._sparse_embedder = embedder
         return self._sparse_embedder
 
@@ -471,20 +831,29 @@ class VectorStore(Transformer):
 
         Prefers the description `ImageDescriber` wrote before the record was
         stored, since parser-captured captions are empty for most PDFs; falls
-        back to caption/footnote/annotation metadata (e.g. markdown/HTML alt
-        text), then to an empty string.
+        back to caption/footnote/annotation metadata, then to an empty string.
+        The author's alt text (``media_metadata.alt_text``) is added to either.
         """
         image_metadata = getattr(block, "image_metadata", None)
         if image_metadata is None:
             return ""
+        alt_text = getattr(getattr(block, "media_metadata", None), "alt_text", None)
+        alt_text = alt_text.strip() if isinstance(alt_text, str) else ""
         described = getattr(image_metadata, "description", None)
         if isinstance(described, str) and described.strip():
-            return described.strip()
+            described = described.strip()
+            # The author's alt names what a generated description can only
+            # depict ("Revenue FY26" vs "a bar chart").
+            if alt_text and alt_text.lower() not in described.lower():
+                return f"{described} {alt_text}"
+            return described
         parts: List[str] = []
         for field in ("captions", "footnotes", "annotations"):
             values = getattr(image_metadata, field, None)
             if values:
                 parts.extend(v for v in values if v)
+        if alt_text and alt_text not in parts:
+            parts.append(alt_text)
         return " ".join(parts).strip()
 
     async def _normalize_image_to_base64(self, image_uri: str) -> str | None:
@@ -518,19 +887,21 @@ class VectorStore(Transformer):
         # self.dense_embeddings is still None and the first use surfaces as an
         # AttributeError far from its cause, after the delete below has already
         # dropped the old summary block.
-        if self.dense_embeddings is None:
-            try:
-                await self.get_embedding_model_instance()
-            except Exception as e:
-                raise IndexingError(
-                    "Failed to get embedding model instance: " + str(e),
-                    details={"error": str(e)},
-                )
+        with stage("embed.setup"):
+            if self.dense_embeddings is None:
+                try:
+                    await self.get_embedding_model_instance()
+                except Exception as e:
+                    raise IndexingError(
+                        "Failed to get embedding model instance",
+                        details={"error": str(e)},
+                    ) from e
 
-        collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
 
         summary_block_id_set = {f"{virtual_record_id}{RECORD_SUMMARY_BLOCK_ID_SUFFIX}"}
-        await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_blocks_by_ids(summary_block_id_set, virtual_record_id, collection_name)
         tokens = await self._bind_membership(virtual_record_id)
         try:
             await self._process_document_chunks([summary_doc], record_id, collection_name)
@@ -573,7 +944,6 @@ class VectorStore(Transformer):
         org_id: str,
         record: Optional["Record"],
         embedding_size: int,
-        sparse_idf: bool = False,
     ) -> str:
         """Resolve + create (if needed) the collection this record's points belong in.
 
@@ -585,13 +955,13 @@ class VectorStore(Transformer):
         """
         ctx = self._record_context(org_id, record)
         collection_name = await self.collection_registry.ensure_collection(
-            ctx, embedding_size, sparse_idf
+            ctx, embedding_size
         )
-        await self._reconcile_storage_layout(collection_name, embedding_size, sparse_idf)
+        await self._reconcile_storage_layout(collection_name, embedding_size)
         return collection_name
 
     async def _reconcile_storage_layout(
-        self, collection_name: str, embedding_size: int, sparse_idf: bool
+        self, collection_name: str, embedding_size: int
     ) -> None:
         """Nudge a pre-existing collection toward the current storage layout.
 
@@ -603,8 +973,9 @@ class VectorStore(Transformer):
         grow the collection until it can no longer be loaded at all.
 
         Operators enable it once, with headroom confirmed, via
-        VECTOR_STORAGE_RECONCILE_ENABLED. Collections created after the on-disk
-        defaults need nothing; this exists only to migrate older ones.
+        VECTOR_STORAGE_RECONCILE_ENABLED. Collections created with the current
+        layout need nothing; this exists only to migrate older ones (Qdrant's
+        on-disk defaults, an OpenSearch index that predates stemmed text).
         """
         if not _storage_reconcile_enabled():
             return
@@ -612,7 +983,7 @@ class VectorStore(Transformer):
             await self.vector_db_service.reconcile_storage_layout(
                 collection_name=collection_name,
                 config=self.collection_registry.build_collection_config(
-                    embedding_size, sparse_idf
+                    embedding_size
                 ),
             )
         except Exception as e:
@@ -718,9 +1089,12 @@ class VectorStore(Transformer):
         instead so it retries.
         """
         try:
-            connector_ids, record_group_ids = await resolve_vector_membership(
+            state = await resolve_virtual_record_state(
                 self.graph_provider, virtual_record_id, current_record=record
             )
+            connector_ids = state.connector_ids
+            record_group_ids = state.record_group_ids
+            root_record_group_ids = state.root_record_group_ids
         except Exception as e:
             self.logger.error(
                 "Failed to resolve vector membership for %s: %s",
@@ -738,7 +1112,9 @@ class VectorStore(Transformer):
                 "vector filters until backfilled",
                 virtual_record_id,
             )
-        return set_membership_context(connector_ids, record_group_ids)
+        return set_membership_context(
+            connector_ids, record_group_ids, root_record_group_ids
+        )
 
     # ------------------------------------------------------------------
     # Embedding model initialisation
@@ -758,14 +1134,42 @@ class VectorStore(Transformer):
         ai_models = await self.config_service.get_config(
             config_node_constants.AI_MODELS.value, use_cache=False
         )
-        embedding_configs = ai_models["embedding"]
+        embedding_configs = ai_models.get("embedding") if ai_models else None
+        config_hash = embedding_config_hash(embedding_configs)
+
+        # The config is re-read every record so an admin-UI change takes effect
+        # immediately, but rebuilding the client is not free: it opens a fresh
+        # HTTP connection pool that the previous one never gets to reuse, and
+        # the dimension probe costs an extra embed round trip per record.
+        if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+            return self.is_multimodal_embedding
+
+        async with self._embedding_model_lock:
+            if self.dense_embeddings is not None and self._embedding_config_hash == config_hash:
+                return self.is_multimodal_embedding
+            return await self._build_embedding_model(embedding_configs, config_hash)
+
+    async def _build_embedding_model(
+        self, embedding_configs: List[dict] | None, config_hash: str
+    ) -> bool:
+        """Construct the dense embedding client and publish it on ``self``."""
         is_multimodal = False
         provider = None
         configuration = None
 
         if not embedding_configs:
-            dense_embeddings = get_default_embedding_model()
-            self.logger.info("Using default embedding model")
+            self.logger.info(
+                "No embedding model configured for this organisation; "
+                "falling back to the local embedding service."
+            )
+            try:
+                dense_embeddings = get_default_embedding_model()
+            except Exception as e:
+                raise EmbeddingNotConfiguredError(
+                    "No embedding model is configured for this organisation "
+                    "and the local fallback embedding service is unavailable.",
+                    details={"error": str(e)},
+                ) from e
         else:
             config = next(
                 (c for c in embedding_configs if c.get("isDefault")), embedding_configs[0]
@@ -779,10 +1183,10 @@ class VectorStore(Transformer):
             sample = await dense_embeddings.aembed_query("test")
             embedding_size = len(sample)
         except Exception as e:
-            raise IndexingError(
-                "Failed to get embedding model: " + str(e),
+            raise EmbeddingModelUnavailableError(
+                "Failed to get embedding model",
                 details={"error": str(e)},
-            )
+            ) from e
 
         model_name = (
             getattr(dense_embeddings, "model_name", None)
@@ -814,6 +1218,7 @@ class VectorStore(Transformer):
             self.aws_access_key_id = configuration.get("awsAccessKeyId")
             self.aws_secret_access_key = configuration.get("awsAccessSecretKey")
         self.is_multimodal_embedding = bool(is_multimodal)
+        self._embedding_config_hash = config_hash
         return self.is_multimodal_embedding
 
     # ------------------------------------------------------------------
@@ -898,7 +1303,9 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting blocks by IDs: {e}")
-            raise EmbeddingError(f"Failed to delete blocks by IDs: {e}")
+            raise VectorStoreError(
+                "Failed to delete blocks by IDs", details={"error": str(e)}
+            ) from e
 
     # ------------------------------------------------------------------
     # Embeddings deletion (full record)
@@ -915,7 +1322,17 @@ class VectorStore(Transformer):
             )
         except Exception as e:
             self.logger.error(f"Error deleting embeddings: {e}")
-            raise EmbeddingError(f"Failed to delete embeddings: {e}")
+            raise VectorStoreError(
+                "Failed to delete embeddings", details={"error": str(e)}
+            ) from e
+
+    async def purge_record_vectors(
+        self, org_id: str, virtual_record_id: str, record: Optional["Record"] = None
+    ) -> None:
+        """Delete all vector points for a record, resolving the collection internally."""
+        ctx = self._record_context(org_id, record)
+        collection_name = self.collection_registry.resolve_write_collection(ctx)
+        await self.delete_embeddings(virtual_record_id, collection_name)
 
     # ------------------------------------------------------------------
     # Image embedding (provider dispatch via MultimodalEmbeddingFactory)
@@ -1034,7 +1451,35 @@ class VectorStore(Transformer):
     # ------------------------------------------------------------------
 
     def _is_local_cpu_embedding(self) -> bool:
-        return is_local_cpu_embedding_provider(self.embedding_provider)
+        return is_local_cpu_embedding_provider(
+            self.embedding_provider, self.embedding_endpoint
+        )
+
+    def _batches_by_tokens(self) -> bool:
+        """Whether this provider's batches are bounded by tokens (see
+        ``_TOKEN_BATCHED_EMBEDDING_PROVIDERS``). OpenAI only on its own API: a
+        custom endpoint may be any OpenAI-shaped server, with its own limit
+        on inputs per request."""
+        if self.embedding_provider not in _TOKEN_BATCHED_EMBEDDING_PROVIDERS:
+            return False
+        if self.embedding_provider == EmbeddingProvider.OPENAI.value:
+            return _is_openai_api(self._effective_openai_endpoint())
+        return True
+
+    def _effective_openai_endpoint(self) -> str:
+        """Where the OpenAI client actually sends requests. With no endpoint
+        configured, LangChain still takes one from ``OPENAI_API_BASE`` and
+        the OpenAI SDK from ``OPENAI_BASE_URL``, so those count too."""
+        candidates = (
+            self.embedding_endpoint,
+            getattr(self.dense_embeddings, "openai_api_base", None),
+            os.getenv("OPENAI_API_BASE"),
+            os.getenv("OPENAI_BASE_URL"),
+        )
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return ""
 
     async def _compute_sparse_embeddings(
         self, texts: List[str]
@@ -1045,19 +1490,85 @@ class VectorStore(Transformer):
             return [None] * len(texts)
         return await embedder.embed_documents(texts)
 
+    async def _embed_documents_with_retry(
+        self, texts: List[str], record_id: str
+    ) -> List[List[float]]:
+        """Dense-embed one batch, retrying transient provider failures.
+
+        Each attempt is bounded separately rather than the sequence as a whole:
+        the timeout exists to stop one batch blocking the pipeline, and a budget
+        shared across attempts would let a slow first attempt leave the retry no
+        time to run. A 429 also pauses the whole consumer through the shared
+        coordinator, since retrying a saturated provider harder is what made it
+        rate-limit us in the first place.
+        """
+        attempt_timeout = (
+            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
+            if self._is_local_cpu_embedding()
+            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
+        )
+        service_name = self.embedding_provider or EmbeddingProvider.DEFAULT.value
+        total_chars = sum(len(text) for text in texts)
+        last_error: BaseException | None = None
+
+        for attempt in range(1, _EMBEDDING_BATCH_MAX_ATTEMPTS + 1):
+            try:
+                return await asyncio.wait_for(
+                    self.dense_embeddings.aembed_documents(texts),
+                    timeout=attempt_timeout,
+                )
+            except asyncio.TimeoutError as e:
+                last_error = e
+                get_default_downstream_feedback().report_timeout(service_name)
+            except Exception as e:
+                signal_backpressure_if_rate_limited(
+                    e,
+                    service_name=service_name,
+                    coordinator=get_default_backpressure_coordinator(),
+                )
+                if not is_retriable_embedding_error(e):
+                    raise
+                last_error = e
+
+            if attempt >= _EMBEDDING_BATCH_MAX_ATTEMPTS:
+                break
+            delay = retry_delay_seconds(attempt)
+            # The chain, not str(): the OpenAI SDK reports every transport
+            # failure as "Connection error." and keeps the httpx exception that
+            # says which one as __cause__; a bare timeout's message is empty.
+            self.logger.warning(
+                f"Dense embedding attempt {attempt}/{_EMBEDDING_BATCH_MAX_ATTEMPTS} "
+                f"failed for batch of {len(texts)} texts / {total_chars} chars "
+                f"(record {record_id}); retrying in {delay:.1f}s: "
+                f"{format_exception_chain(last_error)}"
+            )
+            await asyncio.sleep(delay)
+
+        raise EmbeddingError(
+            f"Dense embedding failed after {_EMBEDDING_BATCH_MAX_ATTEMPTS} attempts "
+            f"({attempt_timeout}s each) for batch of {len(texts)} texts / "
+            f"{total_chars} chars (record {record_id}): {format_exception_chain(last_error)}"
+        ) from last_error
+
     async def _embed_and_upsert_documents(
-        self, documents: List[Document], record_id: str, collection_name: str
+        self,
+        documents: List[Document],
+        record_id: str,
+        collection_name: str,
+        presence: Optional["_RecordPresence"] = None,
     ) -> None:
         """Embed a batch of LangChain Documents and upsert to the vector DB.
 
         Guard: aborts if the record was deleted mid-flight (race condition fix
-        restored from commit 839a29499).
+        restored from commit 839a29499). ``presence`` shares that check across
+        one record's batches.
         """
+        if presence is None:
+            presence = _RecordPresence(self.graph_provider, record_id, max_age_s=0.0)
         # Record-existence guard before upsert
-        record_doc = await self.graph_provider.get_document(
-            record_id, CollectionNames.RECORDS.value
-        )
-        if record_doc is None:
+        with stage("graph.read"):
+            present = await presence.check()
+        if not present:
             self.logger.warning(
                 f"Record {record_id} not found before upsert — skipping batch"
             )
@@ -1065,24 +1576,15 @@ class VectorStore(Transformer):
 
         texts = [doc.page_content for doc in documents]
 
-        embedding_timeout = (
-            _LOCAL_EMBEDDING_BATCH_TIMEOUT_S
-            if self._is_local_cpu_embedding()
-            else _REMOTE_EMBEDDING_BATCH_TIMEOUT_S
-        )
-        try:
-            dense_embeddings = await asyncio.wait_for(
-                self.dense_embeddings.aembed_documents(texts),
-                timeout=embedding_timeout,
-            )
-        except asyncio.TimeoutError:
-            raise EmbeddingError(
-                f"Dense embedding timed out after {embedding_timeout}s "
-                f"for batch of {len(texts)} texts (record {record_id})"
-            )
+        with stage(
+            "embed.dense",
+            detail=f"batch of {len(texts)} texts / {sum(len(t) for t in texts)} chars",
+        ):
+            dense_embeddings = await self._embed_documents_with_retry(texts, record_id)
 
         # Sparse embeddings (provider-dependent)
-        sparse_embeddings = await self._compute_sparse_embeddings(texts)
+        with stage("embed.sparse", detail=f"batch of {len(texts)} texts"):
+            sparse_embeddings = await self._compute_sparse_embeddings(texts)
 
         points: List[VectorPoint] = [
             VectorPoint(
@@ -1093,9 +1595,10 @@ class VectorStore(Transformer):
             )
             for doc, dense, sparse in zip(documents, dense_embeddings, sparse_embeddings)
         ]
-        await self.vector_db_service.upsert_points(
-            collection_name=collection_name, points=points
-        )
+        with stage("vector.upsert", detail=f"{len(points)} points"):
+            await self.vector_db_service.upsert_points(
+                collection_name=collection_name, points=points
+            )
 
     async def _process_document_chunks(
         self,
@@ -1107,32 +1610,49 @@ class VectorStore(Transformer):
             f"⏱️ Embedding {len(langchain_document_chunks)} document chunks"
         )
         use_local_sequential = self._is_local_cpu_embedding()
-        batch_size = (
-            _LOCAL_CPU_DOCUMENT_BATCH_SIZE if use_local_sequential else _DEFAULT_DOCUMENT_BATCH_SIZE
+        max_documents, max_chars = (
+            (_LOCAL_CPU_DOCUMENT_BATCH_SIZE, _LOCAL_CPU_DOCUMENT_BATCH_CHARS)
+            if use_local_sequential
+            else (_DEFAULT_DOCUMENT_BATCH_SIZE, _DEFAULT_DOCUMENT_BATCH_CHARS)
+        )
+
+        presence = _RecordPresence(
+            self.graph_provider, record_id, max_age_s=_RECORD_PRESENCE_MAX_AGE_S
         )
 
         async def process_batch(batch_start: int, batch: List[Document]) -> int:
             try:
-                await self._embed_and_upsert_documents(batch, record_id, collection_name)
+                await self._embed_and_upsert_documents(
+                    batch, record_id, collection_name, presence
+                )
                 return len(batch)
             except Exception as e:
                 self.logger.warning(f"Batch at {batch_start} failed: {e}")
                 raise
 
-        batches = [
-            (i, langchain_document_chunks[i:i + batch_size])
-            for i in range(0, len(langchain_document_chunks), batch_size)
-        ]
+        if not use_local_sequential and self._batches_by_tokens():
+            batches = await asyncio.to_thread(
+                _batch_documents_by_tokens,
+                langchain_document_chunks,
+                _TOKEN_BATCH_MAX_DOCUMENTS,
+                _TOKEN_BATCH_MAX_TOKENS,
+            )
+        else:
+            batches = _batch_documents_by_size(
+                langchain_document_chunks, max_documents, max_chars
+            )
 
         if use_local_sequential:
             for idx, (start, batch) in enumerate(batches):
                 try:
                     await process_batch(start, batch)
+                except NonRetryableError:
+                    raise
                 except Exception as e:
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {e}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(e), "batch_index": idx},
-                    )
+                    ) from e
         else:
             semaphore = asyncio.Semaphore(_DEFAULT_CONCURRENCY_LIMIT)
 
@@ -1144,11 +1664,13 @@ class VectorStore(Transformer):
                 *[limited(s, b) for s, b in batches], return_exceptions=True
             )
             for idx, result in enumerate(results):
+                if isinstance(result, NonRetryableError):
+                    raise result
                 if isinstance(result, Exception):
                     raise VectorStoreError(
-                        f"Failed to store batch {idx}: {result}",
+                        f"Failed to store batch {idx}",
                         details={"error": str(result), "batch_index": idx},
-                    )
+                    ) from result
 
     # ------------------------------------------------------------------
     # Embedding creation entry point
@@ -1174,7 +1696,8 @@ class VectorStore(Transformer):
                 image_chunks.append(chunk)
 
         # Delete existing embeddings first (full replace, non-reconciliation path)
-        await self.delete_embeddings(virtual_record_id, collection_name)
+        with stage("vector.delete"):
+            await self.delete_embeddings(virtual_record_id, collection_name)
 
         self.logger.debug(
             f"📊 Processing {len(langchain_docs)} text + {len(image_chunks)} image chunks"
@@ -1182,17 +1705,21 @@ class VectorStore(Transformer):
 
         if image_chunks:
             image_base64s = [c.get("image_uri") for c in image_chunks]
-            points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
-            await self._store_image_points(points, collection_name)
+            with stage("embed.image", detail=f"{len(image_chunks)} images"):
+                points = await self._process_image_embeddings(image_chunks, image_base64s, record_id)
+            with stage("vector.upsert", detail=f"{len(points)} image points"):
+                await self._store_image_points(points, collection_name)
 
         if langchain_docs:
             try:
                 await self._process_document_chunks(langchain_docs, record_id, collection_name)
+            except NonRetryableError:
+                raise
             except Exception as e:
                 raise VectorStoreError(
-                    "Failed to store documents in vector store: " + str(e),
+                    "Failed to store documents in vector store",
                     details={"error": str(e)},
-                )
+                ) from e
 
         self.logger.info(f"✅ Embeddings created and stored for record '{record_id}'")
 
@@ -1211,13 +1738,14 @@ class VectorStore(Transformer):
         record: Optional["Record"] = None,
     ) -> bool | None:
         try:
-            is_multimodal_embedding = await self.get_embedding_model_instance()
-            collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
+            with stage("embed.setup"):
+                is_multimodal_embedding = await self.get_embedding_model_instance()
+                collection_name = await self._ensure_collection(org_id, record, self.embedding_size)
         except Exception as e:
             raise IndexingError(
-                "Failed to get embedding model instance: " + str(e),
+                "Failed to get embedding model instance",
                 details={"error": str(e)},
-            )
+            ) from e
 
         # No LLM is resolved here any more: the only thing it was used for was
         # describing images, which now happens before the record is stored
@@ -1310,12 +1838,13 @@ class VectorStore(Transformer):
             # ── Text blocks ──
             if text_blocks:
                 try:
-                    text_documents = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            _process_text_blocks, text_blocks, virtual_record_id, org_id
-                        ),
-                        timeout=_TEXT_PROCESSING_TIMEOUT_S,
-                    )
+                    with stage("chunk", detail=f"{len(text_blocks)} text blocks"):
+                        text_documents = await asyncio.wait_for(
+                            asyncio.to_thread(
+                                _process_text_blocks, text_blocks, virtual_record_id, org_id
+                            ),
+                            timeout=_TEXT_PROCESSING_TIMEOUT_S,
+                        )
                     documents_to_embed.extend(text_documents)
                     self.logger.debug("✅ Added text documents for embedding")
                 except asyncio.TimeoutError:
@@ -1326,9 +1855,9 @@ class VectorStore(Transformer):
                     )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create text document objects: " + str(e),
+                        "Failed to create text document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Image blocks ──
             if image_blocks:
@@ -1370,9 +1899,9 @@ class VectorStore(Transformer):
                                 )
                 except Exception as e:
                     raise DocumentProcessingError(
-                        "Failed to create image document objects: " + str(e),
+                        "Failed to create image document objects",
                         details={"error": str(e)},
-                    )
+                    ) from e
 
             # ── Block groups (SQL tables/views and regular tables) ──
             for block_group in block_groups:
@@ -1397,6 +1926,7 @@ class VectorStore(Transformer):
                     sql_base_metadata = {
                         "virtualRecordId": virtual_record_id,
                         "blockId": block_group.id,
+                        "blockGroupIndex": block_group.index,
                         "orgId": org_id,
                         "isBlock": False,
                         "isBlockGroup": True,
@@ -1411,12 +1941,9 @@ class VectorStore(Transformer):
                             if table_summary:
                                 parts.append(f"/* Table Description:\n{table_summary}\n*/")
                             parts.append(ddl)
-                            documents_to_embed.append(
-                                Document(
-                                    page_content="\n\n".join(parts),
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                "\n\n".join(parts), sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL TABLE DDL+Summary for embedding: {fqn}"
                             )
@@ -1451,12 +1978,9 @@ class VectorStore(Transformer):
 
                         view_context = "\n".join(view_context_parts)
                         if len(view_context.strip()) > len(f"-- View: {fqn}"):
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=view_context,
-                                    metadata=sql_base_metadata,
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                view_context, sql_base_metadata,
+                            ))
                             self.logger.info(
                                 f"📊 Added SQL VIEW for embedding: {fqn}"
                             )
@@ -1468,21 +1992,20 @@ class VectorStore(Transformer):
                 elif block_group_type == "table":
                     table_data = block_group.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block_group.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block_group.id,
+                                    "blockGroupIndex": block_group.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    "isBlockGroup": True,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
 
             # ── SQL row blocks ──
             sql_rows_embedded = 0
@@ -1490,19 +2013,18 @@ class VectorStore(Transformer):
                 block_data = block.data or {}
                 row_text = block_data.get("row_natural_language_text", "")
                 if row_text:
-                    documents_to_embed.append(
-                        Document(
-                            page_content=row_text,
-                            metadata={
-                                "virtualRecordId": virtual_record_id,
-                                "blockId": block.id,
-                                "orgId": org_id,
-                                "isBlock": True,
-                                "isBlockGroup": False,
-                                "blockType": BlockType.TABLE_ROW.value,
-                            },
-                        )
-                    )
+                    documents_to_embed.extend(_bounded_documents(
+                        row_text,
+                        {
+                            "virtualRecordId": virtual_record_id,
+                            "blockId": block.id,
+                            "blockIndex": block.index,
+                            "orgId": org_id,
+                            "isBlock": True,
+                            "isBlockGroup": False,
+                            "blockType": BlockType.TABLE_ROW.value,
+                        },
+                    ))
                     sql_rows_embedded += 1
             if sql_rows_embedded > 0:
                 self.logger.debug(f"📊 Added {sql_rows_embedded} SQL row(s) for embedding")
@@ -1517,39 +2039,41 @@ class VectorStore(Transformer):
                 if block_type == "table":
                     table_data = block.data
                     if table_data:
-                        table_summary = table_data.get("table_summary", "")
+                        table_summary = anchor_text_only(table_data.get("table_summary", ""))
                         if table_summary:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=table_summary,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": False,
-                                        "isBlockGroup": True,
-                                        "blockType": BlockType.TABLE.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                table_summary,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": False,
+                                    # A block, not a group: readers index
+                                    # block_groups with a group point's index.
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE.value,
+                                },
+                            ))
                 elif block_type == "table_row":
                     table_data = block.data
                     if table_data:
-                        row_text = table_data.get("row_natural_language_text", "")
+                        row_text = anchor_text_only(
+                            table_data.get("row_natural_language_text", "")
+                        )
                         if row_text:
-                            documents_to_embed.append(
-                                Document(
-                                    page_content=row_text,
-                                    metadata={
-                                        "virtualRecordId": virtual_record_id,
-                                        "blockId": block.id,
-                                        "orgId": org_id,
-                                        "isBlock": True,
-                                        "isBlockGroup": False,
-                                        "blockType": BlockType.TABLE_ROW.value,
-                                    },
-                                )
-                            )
+                            documents_to_embed.extend(_bounded_documents(
+                                row_text,
+                                {
+                                    "virtualRecordId": virtual_record_id,
+                                    "blockId": block.id,
+                                    "blockIndex": block.index,
+                                    "orgId": org_id,
+                                    "isBlock": True,
+                                    "isBlockGroup": False,
+                                    "blockType": BlockType.TABLE_ROW.value,
+                                },
+                            ))
 
             # Record summary (only on fresh full index, not reconciliation/partial update)
             if record is not None and not (is_reconciliation or block_ids_to_delete):
@@ -1584,25 +2108,27 @@ class VectorStore(Transformer):
 
             if block_ids_to_delete:
                 self.logger.debug(f"📊 Deleting {len(block_ids_to_delete)} removed blocks")
-                await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
+                with stage("vector.delete"):
+                    await self.delete_blocks_by_ids(block_ids_to_delete, virtual_record_id, collection_name)
 
             self.logger.debug(
                 f"✅ Indexing complete for record {record_id}: "
                 f"{len(documents_to_embed)} documents"
             )
 
-            await self._cleanup_orphaned_embeddings_if_needed(
-                record_id, virtual_record_id, org_id, record
-            )
-            await self._resync_membership_after_write(virtual_record_id, record_id)
+            with stage("vector.cleanup"):
+                await self._cleanup_orphaned_embeddings_if_needed(
+                    record_id, virtual_record_id, org_id, record
+                )
+                await self._resync_membership_after_write(virtual_record_id, record_id)
             return True
 
-        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError):
+        except (IndexingError, VectorStoreError, DocumentProcessingError, EmbeddingError, NonRetryableError):
             raise
         except Exception as e:
             raise IndexingError(
-                f"Unexpected error during indexing: {str(e)}",
-                details={"error_type": type(e).__name__},
-            )
+                "Unexpected error during indexing",
+                details={"error_type": type(e).__name__, "error": str(e)},
+            ) from e
         finally:
             reset_membership_context(tokens)

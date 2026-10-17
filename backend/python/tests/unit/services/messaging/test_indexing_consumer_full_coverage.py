@@ -17,6 +17,13 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.indexing_consumer import (
     IndexingKafkaConsumer,
 )
+from app.services.resource_governor.models import ParseTier
+
+
+def _fill_gate_waiters(consumer, count: int, tier: ParseTier = ParseTier.HEAVY) -> None:
+    """Stand in for `count` spawned tasks still queued for an index gate."""
+    for _ in range(count):
+        consumer.gate_waiters.add(tier)
 
 
 @pytest.fixture
@@ -284,7 +291,7 @@ class TestApplyBackpressure:
         assigned = {MagicMock(), MagicMock()}
         consumer.consumer.assignment.return_value = assigned
         consumer.consumer.paused.return_value = set()
-        consumer._gate_waiters = messaging_env.max_pending_indexing_tasks + 1
+        _fill_gate_waiters(consumer, messaging_env.max_pending_indexing_tasks + 1)
         consumer._IndexingKafkaConsumer__apply_backpressure()
         consumer.consumer.pause.assert_called()
         assert consumer._backpressure_logged is True

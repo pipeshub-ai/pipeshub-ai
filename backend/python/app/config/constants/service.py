@@ -30,6 +30,7 @@ class config_node_constants(Enum):
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
+    NAMED_ENTITIES = "/services/namedEntities"
 
 
     # Non-service paths
@@ -48,6 +49,20 @@ class TokenScopes(Enum):
     # Deliberately separate from STORAGE_TOKEN so a leaked storage token
     # cannot also grant connector record reads.
     RECORD_CONTENT = "record:content"
+    # Indexing's admin-level read of record bytes from the connectors service
+    # (the name predates the route; it is not tied to signed URLs).
+    CONNECTOR_SIGNED_URL = "connector:signedUrl"
+    CONVERSATION_CREATE = "conversation:create"
+    # Node -> query: grant/revoke permission edges on a conversation's attachments
+    # and artifacts, after Node has checked ownership/sharing in Mongo.
+    CONVERSATION_PERMISSIONS = "conversation:permissions"
+    # Python -> Node caller-role lookups, so Node's rate limiter can tell them from
+    # client traffic. Never accepted by the Python services.
+    CALLER_ROLE = "caller:role"
+    DOCUMENT_PARSE = "document:parse"
+    DOCUMENT_CLASSIFY = "document:classify"
+    # Node -> connectors: write verified profile email onto the graph user.
+    ENTITY_USER_WRITE = "entity:user:write"
 
 
 class OAuthScopes(str, Enum):
@@ -72,6 +87,11 @@ class OAuthScopes(str, Enum):
     SKILL_READ = "skill:read"
     SKILL_WRITE = "skill:write"
 
+    # MCP Servers
+    MCP_READ = "mcp:read"
+    MCP_WRITE = "mcp:write"
+    MCP_DELETE = "mcp:delete"
+
     # Knowledge Base
     KB_READ = "kb:read"
     KB_WRITE = "kb:write"
@@ -87,7 +107,6 @@ class OAuthScopes(str, Enum):
     # Teams
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"
-
 
 class DefaultEndpoints(Enum):
     """Constants for default endpoints"""
@@ -118,9 +137,18 @@ class Routes(Enum):
     STORAGE_UPLOAD = "/api/v1/document/internal/upload"
     STORAGE_UPLOAD_NEXT_VERSION = "/api/v1/document/internal/{documentId}/uploadNextVersion"
     STORAGE_DOWNLOAD = "/api/v1/document/internal/{documentId}/download"
-    STORAGE_DOWNLOAD_EXTERNAL = "/api/v1/document/{documentId}/download"
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
+    STORAGE_PURGE_DOCUMENT = "/api/v1/document/internal/{documentId}/purge"
+    STORAGE_PURGE_VIRTUAL_RECORD = "/api/v1/document/internal/records/{virtualRecordId}/purge"
+    STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
+    STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
+    STORAGE_CONNECTOR_VIRTUAL_RECORDS = "/api/v1/document/internal/connector/{connector_id}/virtual-records"
+    STORAGE_RELOCATE_RECORDS = "/api/v1/document/internal/records/relocate"
+    STORAGE_MISSING_DOCUMENTS = "/api/v1/document/internal/missing"
+
+    # User-facing, permission-checked record bytes
+    KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"
 
 
 class WebhookConfig(Enum):

@@ -1,21 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 from enum import Enum
 from threading import Lock
 from typing import TYPE_CHECKING
-from weakref import WeakKeyDictionary
 
+from redis.exceptions import NoScriptError
+
+from app.services.distributed.interface import IDistributedLeaseManager
 from app.services.messaging.redis_client import RedisClientRegistry
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from logging import Logger
 
-    from redis.asyncio import Redis
-    from redis.commands.core import AsyncScript
-
     from app.services.messaging.config import RedisConfig
     from app.services.messaging.lease import LeaseRenewer
+    from app.services.redis.connection_provider import RedisClient as Redis
 
 
 _ACQUIRE_SCRIPT = """
@@ -135,7 +136,7 @@ class DistributedLeaseSet:
             return list(self._leases.items())
 
 
-class DistributedConcurrencyManager:
+class DistributedConcurrencyManager(IDistributedLeaseManager):
     """Redis-backed expiring leases shared by all indexing replicas."""
 
     KEY_PREFIX = "pipeshub:indexing:concurrency"
@@ -154,19 +155,20 @@ class DistributedConcurrencyManager:
         self.operation_timeout_seconds = max(0.1, operation_timeout_seconds)
         self.max_connections = max(1, max_connections)
         self._registry: RedisClientRegistry | None = None
-        # Scripts are registered against the client that will run them, so a
-        # second event loop's client gets its own registration rather than
-        # reusing a Script object bound to another loop's connection pool.
-        #
-        # Keyed weakly by the client object, not by id(): the registry drops a
-        # client whose loop has closed (a worker thread restarted between a
-        # stop() and a start()), and a fresh client allocated at that same
-        # address would otherwise be handed Scripts still bound to the closed
-        # one. Weak keys also let the entry disappear with the client instead
-        # of accumulating one per restart.
-        self._scripts_by_client: "WeakKeyDictionary[Redis, tuple[AsyncScript, AsyncScript]]" = (
-            WeakKeyDictionary()
-        )
+        # SHAs, not registered Script objects (R6): `renew_many` pipelines
+        # these scripts across keys that can land on different cluster
+        # nodes, and redis-py's `ClusterPipeline` does not implement the
+        # NOSCRIPT-then-reload recovery that a `Script` object relies on
+        # (that recovery lives in the standalone `Pipeline` only). Loading
+        # explicitly through the provider -- which loads onto every master
+        # in cluster mode -- and issuing raw EVALSHA sidesteps that gap; a
+        # NOSCRIPT hit (a master added after the initial load, or a
+        # resharding mid-flight) is handled explicitly below instead.
+        self._acquire_sha: str | None = None
+        self._renew_sha: str | None = None
+        # REDIS_KEY_NAMESPACE (R9): resolved once the provider is known, in
+        # `initialize()`.
+        self._key_namespace = ""
 
     async def initialize(self) -> None:
         if self._registry is not None:
@@ -180,20 +182,26 @@ class DistributedConcurrencyManager:
         client = registry.client()
         try:
             await client.ping()
+            self._acquire_sha = await registry.provider.load_script(_ACQUIRE_SCRIPT)
+            self._renew_sha = await registry.provider.load_script(_RENEW_SCRIPT)
         except BaseException:
             await registry.aclose()
             raise
         self._registry = registry
+        self._key_namespace = registry.provider.key_namespace
 
     async def cleanup(self) -> None:
         registry = self._registry
         self._registry = None
-        self._scripts_by_client.clear()
+        self._acquire_sha = None
+        self._renew_sha = None
+        self._key_namespace = ""
         if registry is not None:
             await registry.aclose()
 
     def _key(self, pool: str) -> str:
-        return f"{self.key_prefix}:{pool}"
+        namespace = f"{self._key_namespace}:" if self._key_namespace else ""
+        return f"{namespace}{self.key_prefix}:{pool}"
 
     def _client(self) -> Redis:
         """The Redis client bound to the calling event loop.
@@ -208,22 +216,13 @@ class DistributedConcurrencyManager:
             )
         return self._registry.client()
 
-    def _scripts(self) -> tuple[AsyncScript, AsyncScript]:
-        """``(acquire, renew)`` registered against this loop's client.
-
-        ``register_script`` caches the SHA and calls EVALSHA (falling back to
-        EVAL once on NOSCRIPT) instead of re-sending the script body on every
-        call, which happens on every consumed message.
-        """
-        client = self._client()
-        scripts = self._scripts_by_client.get(client)
-        if scripts is None:
-            scripts = (
-                client.register_script(_ACQUIRE_SCRIPT),
-                client.register_script(_RENEW_SCRIPT),
-            )
-            self._scripts_by_client[client] = scripts
-        return scripts
+    async def _ensure_scripts_loaded(self) -> tuple[str, str]:
+        if self._acquire_sha is None or self._renew_sha is None:
+            if self._registry is None:
+                raise RuntimeError("DistributedConcurrencyManager is not initialized")
+            self._acquire_sha = await self._registry.provider.load_script(_ACQUIRE_SCRIPT)
+            self._renew_sha = await self._registry.provider.load_script(_RENEW_SCRIPT)
+        return self._acquire_sha, self._renew_sha
 
     async def try_acquire(
         self,
@@ -235,11 +234,14 @@ class DistributedConcurrencyManager:
         if limit < 1:
             raise ValueError("Distributed concurrency limit must be positive")
         lease_ms = max(1, int(lease_seconds * 1000))
-        acquire_script, _ = self._scripts()
-        result = await acquire_script(
-            keys=[self._key(pool)],
-            args=[owner, lease_ms, limit, lease_ms * 2],
-        )
+        acquire_sha, _ = await self._ensure_scripts_loaded()
+        client = self._client()
+        args = [self._key(pool), owner, lease_ms, limit, lease_ms * 2]
+        try:
+            result = await client.evalsha(acquire_sha, 1, *args)
+        except NoScriptError:
+            acquire_sha = await self._reload(_ACQUIRE_SCRIPT, is_acquire=True)
+            result = await client.evalsha(acquire_sha, 1, *args)
         return bool(result)
 
     async def renew(
@@ -249,49 +251,114 @@ class DistributedConcurrencyManager:
         lease_seconds: float,
     ) -> bool:
         lease_ms = max(1, int(lease_seconds * 1000))
-        _, renew_script = self._scripts()
-        result = await renew_script(
-            keys=[self._key(pool)],
-            args=[owner, lease_ms, lease_ms * 2],
-        )
+        _, renew_sha = await self._ensure_scripts_loaded()
+        client = self._client()
+        args = [self._key(pool), owner, lease_ms, lease_ms * 2]
+        try:
+            result = await client.evalsha(renew_sha, 1, *args)
+        except NoScriptError:
+            renew_sha = await self._reload(_RENEW_SCRIPT, is_acquire=False)
+            result = await client.evalsha(renew_sha, 1, *args)
         return bool(result)
+
+    async def _reload(self, body: str, *, is_acquire: bool) -> str:
+        if self._registry is None:
+            raise RuntimeError("DistributedConcurrencyManager is not initialized")
+        sha = await self._registry.provider.load_script(body)
+        if is_acquire:
+            self._acquire_sha = sha
+        else:
+            self._renew_sha = sha
+        return sha
 
     async def renew_many(
         self,
         leases: "Sequence[tuple[str, str]]",
         lease_seconds: float,
     ) -> dict[tuple[str, str], bool]:
-        """Renew every ``(pool, owner)`` in one pipelined round trip.
+        """Renew every ``(pool, owner)`` in one batch instead of one renew
+        call per background task.
 
         The renewal loop used to run per-message, so N in-flight records meant
         N background tasks each issuing their own renew every interval. At the
-        in-flight widths this pipeline runs at that is a standing load on
-        Redis proportional to how busy the node is — precisely when it can
-        least afford it. One round trip for the whole set is O(1) instead.
+        in-flight widths this runs at that is a standing load on Redis
+        proportional to how busy the node is — precisely when it can least
+        afford it.
+
+        On standalone that batch is still one pipelined round trip. On cluster
+        it cannot be: redis-py's ``ClusterPipeline`` rejects EVALSHA outright
+        (``RedisClusterException: Calling pipelined function evalsha is blocked
+        when running redis in cluster mode``, confirmed against a live 3-master
+        cluster), so leases are renewed with ``asyncio.gather`` bounded by the
+        registry's pool size — an unbounded gather would exhaust the
+        ``BlockingConnectionPool`` and time out waiting on itself.
+
+        Errors propagate. A transient Redis failure must reach
+        ``LeaseRenewer._run``, which has a deadline before it gives up on the
+        held leases; mapping the failure to ``renewed=False`` here would make
+        ``_renew_once`` drop every lease on the first blip.
         """
         if not leases:
             return {}
         lease_ms = max(1, int(lease_seconds * 1000))
-        _, renew_script = self._scripts()
+        _, renew_sha = await self._ensure_scripts_loaded()
         client = self._client()
-        async with client.pipeline(transaction=False) as pipe:
-            for pool, owner in leases:
-                # Awaited even though it only buffers: AsyncScript.__call__ is
-                # a coroutine, and leaving it unawaited silently queues
-                # nothing, so execute() would come back empty.
-                await renew_script(
-                    keys=[self._key(pool)],
-                    args=[owner, lease_ms, lease_ms * 2],
-                    client=pipe,
-                )
-            results = await pipe.execute()
+
+        try:
+            results = await self._run_renewals(client, renew_sha, leases, lease_ms)
+        except NoScriptError:
+            renew_sha = await self._reload(_RENEW_SCRIPT, is_acquire=False)
+            results = await self._run_renewals(client, renew_sha, leases, lease_ms)
+
         # strict: a reply shorter than the batch would otherwise drop leases
         # from the map, and a missing entry reads as "renewed" in
         # _renew_once — fail-open for an exclusivity lease. Redis returns one
         # result per queued command, so a mismatch is a bug worth raising.
         return {
-            lease: bool(result) for lease, result in zip(leases, results, strict=True)
+            lease: bool(result)
+            for lease, result in zip(leases, results, strict=True)
         }
+
+    async def _run_renewals(
+        self,
+        client: "Redis",
+        sha: str,
+        leases: "Sequence[tuple[str, str]]",
+        lease_ms: int,
+    ) -> list:
+        args = [
+            (self._key(pool), owner, lease_ms, lease_ms * 2) for pool, owner in leases
+        ]
+        if not self._is_cluster():
+            async with client.pipeline(transaction=False) as pipe:
+                for key, owner, ms, ttl in args:
+                    pipe.evalsha(sha, 1, key, owner, ms, ttl)
+                return await pipe.execute()
+
+        # Cluster: EVALSHA cannot be pipelined, so issue them concurrently but
+        # never more at once than the pool can hand out connections.
+        limit = asyncio.Semaphore(
+            self._registry.max_connections if self._registry is not None else 1
+        )
+
+        async def _one(key: str, owner: str, ms: int, ttl: int) -> object:
+            async with limit:
+                return await client.evalsha(sha, 1, key, owner, ms, ttl)
+
+        # `return_exceptions=True` so every EVALSHA finishes before this
+        # returns. Without it, a single failure (e.g. NOSCRIPT) makes
+        # `gather` raise while sibling calls are still in flight; the caller
+        # then reloads the script and issues a *second* concurrent batch
+        # on top of the first, doubling the in-flight EVALSHA count past
+        # the pool-sized semaphore this fan-out exists to respect.
+        results = await asyncio.gather(*(_one(*a) for a in args), return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        return list(results)
+
+    def _is_cluster(self) -> bool:
+        return self._registry is not None and self._registry.provider.is_cluster
 
     async def release(self, pool: str, owner: str) -> None:
         # Plain ZREM is already atomic; no Lua script needed here.

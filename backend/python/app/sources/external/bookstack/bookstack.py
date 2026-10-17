@@ -13,6 +13,8 @@ from typing import Dict, List, Optional, Union
 from app.sources.client.bookstack.bookstack import BookStackClient, BookStackResponse
 from app.sources.client.http.http_request import HTTPRequest
 
+HTTP_ERROR_THRESHOLD = 400
+
 
 class BookStackDataSource:
     """Comprehensive BookStack API client wrapper.
@@ -1367,7 +1369,21 @@ class BookStackDataSource:
         try:
             response = await self.http.execute(request)
             response_text = response.text()
-            return BookStackResponse(success=True, data={'markdown': response_text})
+            # httpx does not raise on 4xx/5xx and HTTPClient.execute never calls
+            # raise_for_status, so without this check BookStack's error page body
+            # is returned to the caller as the page's markdown.
+            if response.status >= HTTP_ERROR_THRESHOLD:
+                return BookStackResponse(
+                    success=False,
+                    error=f"HTTP {response.status}",
+                    message=response_text,
+                    status_code=response.status,
+                )
+            return BookStackResponse(
+                success=True,
+                data={'markdown': response_text},
+                status_code=response.status,
+            )
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -1909,7 +1925,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2002,7 +2018,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2146,7 +2162,7 @@ class BookStackDataSource:
 
         try:
             response = await self.http.execute(request)
-            return BookStackResponse(success=True, data=response.json())
+            return BookStackResponse(success=True, data=response.json(), status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 
@@ -2235,9 +2251,9 @@ class BookStackDataSource:
 
             if 'error' in response_data:
                 error_message = response_data.get('error', {}).get('message', 'Unknown API error')
-                return BookStackResponse(success=False, error=error_message)
+                return BookStackResponse(success=False, error=error_message, status_code=response.status)
 
-            return BookStackResponse(success=True, data=response_data)
+            return BookStackResponse(success=True, data=response_data, status_code=response.status)
         except Exception as e:
             return BookStackResponse(success=False, error=str(e))
 

@@ -1,5 +1,6 @@
-"""Unit tests for embedding server HTTP client retries."""
+"""Unit tests for the shared embedding retry policy and the embedding server client."""
 
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
@@ -12,14 +13,18 @@ from app.config.constants.ai_models import (
     EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
 )
 from app.services.messaging.backpressure import BackpressureCoordinator
+from app.utils.embedding_retry import (
+    await_with_retry,
+    call_with_retry,
+    is_retriable_embedding_error,
+    retry_delay_seconds,
+    signal_backpressure_if_rate_limited,
+)
 from app.utils.embedding_server_client import (
     EmbeddingServerEmbeddings,
     _embedding_server_base_url,
     _embedding_server_max_retries,
     _embedding_server_timeout,
-    _is_retriable_embedding_error,
-    _retry_delay_seconds,
-    _signal_backpressure_if_rate_limited,
     get_embedding_server_embeddings,
 )
 
@@ -32,29 +37,69 @@ def _rate_limit_error(retry_after: str | None) -> openai.RateLimitError:
 
 class TestRetriableErrors:
     def test_connection_error_is_retriable(self):
-        assert _is_retriable_embedding_error(openai.APIConnectionError(request=MagicMock()))
+        assert is_retriable_embedding_error(openai.APIConnectionError(request=MagicMock()))
 
     def test_timeout_is_retriable(self):
-        assert _is_retriable_embedding_error(openai.APITimeoutError(request=MagicMock()))
+        assert is_retriable_embedding_error(openai.APITimeoutError(request=MagicMock()))
+
+    def test_a_callers_own_attempt_deadline_is_retriable(self) -> None:
+        assert is_retriable_embedding_error(TimeoutError())
+
+    @pytest.mark.asyncio
+    async def test_a_retried_timeout_is_named_in_the_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        """A bare TimeoutError has no message, so the warning names its type instead."""
+        attempts = []
+
+        async def fn() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TimeoutError()
+            return "ok"
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0), \
+                caplog.at_level(logging.WARNING, logger="app.utils.embedding_retry"):
+            assert await await_with_retry(
+                fn, max_retries=2, operation="aembed_query", service_name="retrieval"
+            ) == "ok"
+
+        assert "failed (attempt 1/2): TimeoutError;" in caplog.text
+
+    def test_a_retried_timeout_is_named_in_the_sync_warning(self, caplog: pytest.LogCaptureFixture) -> None:
+        attempts = []
+
+        def fn() -> str:
+            attempts.append(1)
+            if len(attempts) == 1:
+                raise TimeoutError()
+            return "ok"
+
+        with patch("app.utils.embedding_retry.retry_delay_seconds", return_value=0), \
+                patch("app.utils.embedding_retry.time.sleep"), \
+                caplog.at_level(logging.WARNING, logger="app.utils.embedding_retry"):
+            assert call_with_retry(
+                fn, max_retries=2, operation="embed_query", service_name="embedding-server"
+            ) == "ok"
+
+        assert "failed (attempt 1/2): TimeoutError;" in caplog.text
 
     def test_503_is_retriable(self):
         response = MagicMock()
         response.status_code = 503
-        assert _is_retriable_embedding_error(
+        assert is_retriable_embedding_error(
             openai.APIStatusError("service unavailable", response=response, body=None)
         )
 
     def test_400_is_not_retriable(self):
         response = MagicMock()
         response.status_code = 400
-        assert not _is_retriable_embedding_error(
+        assert not is_retriable_embedding_error(
             openai.BadRequestError("bad request", response=response, body=None)
         )
 
     def test_500_is_not_retriable(self):
         response = MagicMock()
         response.status_code = 500
-        assert not _is_retriable_embedding_error(
+        assert not is_retriable_embedding_error(
             openai.InternalServerError(
                 "Failed to generate embeddings: trust_remote_code required",
                 response=response,
@@ -65,7 +110,7 @@ class TestRetriableErrors:
     def test_502_is_retriable(self):
         response = MagicMock()
         response.status_code = 502
-        assert _is_retriable_embedding_error(
+        assert is_retriable_embedding_error(
             openai.APIStatusError("bad gateway", response=response, body=None)
         )
 
@@ -80,13 +125,13 @@ class TestEmbeddingServerEmbeddingsRetry:
                 raise openai.APIConnectionError(request=MagicMock())
             return [0.1, 0.2, 0.3]
 
-        from app.utils.embedding_server_client import _call_with_retry
 
         with patch("time.sleep", return_value=None):
-            result = _call_with_retry(
+            result = call_with_retry(
                 _fn,
                 max_retries=3,
                 operation="embed_query",
+                service_name="EmbeddingServer",
             )
 
         assert result == [0.1, 0.2, 0.3]
@@ -102,16 +147,16 @@ class TestEmbeddingServerEmbeddingsRetry:
                 raise openai.APITimeoutError(request=MagicMock())
             return [0.4, 0.5, 0.6]
 
-        from app.utils.embedding_server_client import _await_with_retry
 
         with patch(
-            "app.utils.embedding_server_client.asyncio.sleep",
+            "app.utils.embedding_retry.asyncio.sleep",
             new_callable=AsyncMock,
         ):
-            result = await _await_with_retry(
+            result = await await_with_retry(
                 _fn,
                 max_retries=3,
                 operation="aembed_query",
+                service_name="EmbeddingServer",
             )
 
         assert result == [0.4, 0.5, 0.6]
@@ -125,10 +170,9 @@ class TestEmbeddingServerEmbeddingsRetry:
                 "bad request", response=response, body={"detail": "invalid"}
             )
 
-        from app.utils.embedding_server_client import _call_with_retry
 
         with pytest.raises(openai.BadRequestError):
-            _call_with_retry(_fn, max_retries=3, operation="embed_query")
+            call_with_retry(_fn, max_retries=3, operation="embed_query", service_name="EmbeddingServer")
 
     def test_call_with_retry_does_not_retry_500_application_errors(self):
         calls = {"count": 0}
@@ -143,10 +187,9 @@ class TestEmbeddingServerEmbeddingsRetry:
                 body={"detail": "trust_remote_code=True required"},
             )
 
-        from app.utils.embedding_server_client import _call_with_retry
 
         with pytest.raises(openai.InternalServerError):
-            _call_with_retry(_fn, max_retries=5, operation="embed_documents")
+            call_with_retry(_fn, max_retries=5, operation="embed_documents", service_name="EmbeddingServer")
 
         assert calls["count"] == 1
 
@@ -199,41 +242,41 @@ class TestEmbeddingServerConfig:
 
 class TestRetryDelaySeconds:
     def test_exponential_backoff(self):
-        assert _retry_delay_seconds(1) == 2.0
-        assert _retry_delay_seconds(2) == 4.0
-        assert _retry_delay_seconds(3) == 8.0
+        assert retry_delay_seconds(1) == 2.0
+        assert retry_delay_seconds(2) == 4.0
+        assert retry_delay_seconds(3) == 8.0
 
     def test_backoff_capped_at_thirty_seconds(self):
-        assert _retry_delay_seconds(10) == 30.0
+        assert retry_delay_seconds(10) == 30.0
 
 
 class TestRetriableErrorsExtended:
     def test_rate_limit_is_retriable(self):
-        assert _is_retriable_embedding_error(openai.RateLimitError(
+        assert is_retriable_embedding_error(openai.RateLimitError(
             "rate limited", response=MagicMock(), body=None
         ))
 
     def test_429_is_retriable(self):
         response = MagicMock()
         response.status_code = 429
-        assert _is_retriable_embedding_error(
+        assert is_retriable_embedding_error(
             openai.APIStatusError("too many requests", response=response, body=None)
         )
 
     def test_504_is_retriable(self):
         response = MagicMock()
         response.status_code = 504
-        assert _is_retriable_embedding_error(
+        assert is_retriable_embedding_error(
             openai.APIStatusError("gateway timeout", response=response, body=None)
         )
 
     def test_non_openai_exception_is_not_retriable(self):
-        assert not _is_retriable_embedding_error(RuntimeError("boom"))
+        assert not is_retriable_embedding_error(RuntimeError("boom"))
 
     def test_api_status_error_with_non_retriable_code(self):
         response = MagicMock()
         response.status_code = 404
-        assert not _is_retriable_embedding_error(
+        assert not is_retriable_embedding_error(
             openai.APIStatusError("not found", response=response, body=None)
         )
 
@@ -246,20 +289,18 @@ class TestRetryExhaustion:
             calls["count"] += 1
             raise openai.APIConnectionError(request=MagicMock())
 
-        from app.utils.embedding_server_client import _call_with_retry
 
         with patch("time.sleep", return_value=None):
             with pytest.raises(openai.APIConnectionError):
-                _call_with_retry(_fn, max_retries=2, operation="embed_query")
+                call_with_retry(_fn, max_retries=2, operation="embed_query", service_name="EmbeddingServer")
 
         assert calls["count"] == 2
 
     def test_call_with_retry_runtime_error_when_loop_skipped(self):
-        from app.utils.embedding_server_client import _call_with_retry
 
-        with patch("app.utils.embedding_server_client.range", return_value=iter([])):
+        with patch("app.utils.embedding_retry.range", return_value=iter([])):
             with pytest.raises(RuntimeError, match="failed without exception"):
-                _call_with_retry(lambda: None, max_retries=3, operation="embed_query")
+                call_with_retry(lambda: None, max_retries=3, operation="embed_query", service_name="EmbeddingServer")
 
     @pytest.mark.asyncio
     async def test_await_with_retry_raises_after_all_attempts_exhausted(self):
@@ -271,27 +312,29 @@ class TestRetryExhaustion:
                 "rate limited", response=MagicMock(), body=None
             )
 
-        from app.utils.embedding_server_client import _await_with_retry
 
         with patch(
-            "app.utils.embedding_server_client.asyncio.sleep",
+            "app.utils.embedding_retry.asyncio.sleep",
             new_callable=AsyncMock,
         ):
             with pytest.raises(openai.RateLimitError):
-                await _await_with_retry(_fn, max_retries=2, operation="aembed_query")
+                await await_with_retry(
+                    _fn, max_retries=2, operation="aembed_query",
+                    service_name="EmbeddingServer",
+                )
 
         assert calls["count"] == 2
 
     @pytest.mark.asyncio
     async def test_await_with_retry_runtime_error_when_loop_skipped(self):
-        from app.utils.embedding_server_client import _await_with_retry
 
-        with patch("app.utils.embedding_server_client.range", return_value=iter([])):
+        with patch("app.utils.embedding_retry.range", return_value=iter([])):
             with pytest.raises(RuntimeError, match="failed without exception"):
-                await _await_with_retry(
+                await await_with_retry(
                     AsyncMock(return_value=None),
                     max_retries=3,
                     operation="aembed_query",
+                    service_name="EmbeddingServer",
                 )
 
 
@@ -300,14 +343,14 @@ class TestSignalBackpressureIfRateLimited:
         coordinator = BackpressureCoordinator()
         exc = _rate_limit_error("12")
 
-        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+        signal_backpressure_if_rate_limited(exc, service_name="EmbeddingServer", coordinator=coordinator)
 
         assert coordinator.is_paused() is True
         assert coordinator.paused_services == frozenset({"EmbeddingServer"})
 
     def test_no_coordinator_is_a_noop(self):
         exc = _rate_limit_error("12")
-        _signal_backpressure_if_rate_limited(exc, coordinator=None)  # must not raise
+        signal_backpressure_if_rate_limited(exc, service_name="EmbeddingServer", coordinator=None)  # must not raise
 
     def test_non_rate_limit_error_does_not_signal(self):
         coordinator = BackpressureCoordinator()
@@ -315,7 +358,7 @@ class TestSignalBackpressureIfRateLimited:
         response.status_code = 503
         exc = openai.APIStatusError("service unavailable", response=response, body=None)
 
-        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+        signal_backpressure_if_rate_limited(exc, service_name="EmbeddingServer", coordinator=coordinator)
 
         assert coordinator.is_paused() is False
 
@@ -323,7 +366,7 @@ class TestSignalBackpressureIfRateLimited:
         coordinator = BackpressureCoordinator()
         exc = _rate_limit_error(None)
 
-        _signal_backpressure_if_rate_limited(exc, coordinator=coordinator)
+        signal_backpressure_if_rate_limited(exc, service_name="EmbeddingServer", coordinator=coordinator)
 
         assert coordinator.is_paused() is False
 
@@ -339,11 +382,10 @@ class TestCallWithRetrySignalsBackpressure:
                 raise _rate_limit_error("9")
             return [0.1]
 
-        from app.utils.embedding_server_client import _call_with_retry
 
         with patch("time.sleep", return_value=None):
-            result = _call_with_retry(
-                _fn, max_retries=3, operation="embed_query",
+            result = call_with_retry(
+                _fn, max_retries=3, operation="embed_query", service_name="EmbeddingServer",
                 backpressure_coordinator=coordinator,
             )
 
@@ -361,14 +403,13 @@ class TestCallWithRetrySignalsBackpressure:
                 raise _rate_limit_error("9")
             return [0.2]
 
-        from app.utils.embedding_server_client import _await_with_retry
 
         with patch(
-            "app.utils.embedding_server_client.asyncio.sleep",
+            "app.utils.embedding_retry.asyncio.sleep",
             new_callable=AsyncMock,
         ):
-            result = await _await_with_retry(
-                _fn, max_retries=3, operation="aembed_query",
+            result = await await_with_retry(
+                _fn, max_retries=3, operation="aembed_query", service_name="EmbeddingServer",
                 backpressure_coordinator=coordinator,
             )
 
@@ -379,7 +420,9 @@ class TestCallWithRetrySignalsBackpressure:
 class TestEmbeddingServerEmbeddingsBackpressure:
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
     def test_uses_default_coordinator_when_none_passed(self, mock_openai_cls):
-        from app.services.messaging.backpressure import get_default_backpressure_coordinator
+        from app.services.messaging.backpressure import (
+            get_default_backpressure_coordinator,
+        )
 
         client = EmbeddingServerEmbeddings(max_retries=1)
 
@@ -420,15 +463,21 @@ class TestEmbeddingServerEmbeddings:
         assert client.max_retries == EMBEDDING_SERVER_MAX_RETRIES
         assert client.timeout == EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS
         assert client.trust_remote_code is False
-        mock_openai_cls.assert_called_once_with(
-            model=DEFAULT_EMBEDDING_MODEL,
-            api_key="not-needed",
-            base_url=_embedding_server_base_url(),
-            check_embedding_ctx_length=False,
-            max_retries=0,
-            timeout=EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
-            extra_body=None,
-        )
+        documents_call, query_call = mock_openai_cls.call_args_list
+        expected = {
+            "model": DEFAULT_EMBEDDING_MODEL,
+            "api_key": "not-needed",
+            "base_url": _embedding_server_base_url(),
+            "check_embedding_ctx_length": False,
+            "max_retries": 0,
+            "timeout": EMBEDDING_SERVER_REQUEST_TIMEOUT_SECONDS,
+            "extra_body": None,
+        }
+        assert documents_call.kwargs == expected
+        assert query_call.kwargs == {
+            **expected,
+            "default_headers": {"X-Embedding-Priority": "query"},
+        }
 
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
     def test_init_with_explicit_params_and_trust_remote_code(self, mock_openai_cls):
@@ -443,15 +492,49 @@ class TestEmbeddingServerEmbeddings:
         assert client.max_retries == 4
         assert client.timeout == 120.0
         assert client.trust_remote_code is True
-        mock_openai_cls.assert_called_once_with(
-            model="custom-model",
-            api_key="not-needed",
-            base_url=_embedding_server_base_url(),
-            check_embedding_ctx_length=False,
-            max_retries=0,
-            timeout=120.0,
-            extra_body={"trust_remote_code": True},
-        )
+        documents_call, query_call = mock_openai_cls.call_args_list
+        expected = {
+            "model": "custom-model",
+            "api_key": "not-needed",
+            "base_url": _embedding_server_base_url(),
+            "check_embedding_ctx_length": False,
+            "max_retries": 0,
+            "timeout": 120.0,
+            "extra_body": {"trust_remote_code": True},
+        }
+        assert documents_call.kwargs == expected
+        assert query_call.kwargs == {
+            **expected,
+            "default_headers": {"X-Embedding-Priority": "query"},
+        }
+
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    def test_queries_are_marked_and_documents_are_not(self, mock_openai_cls) -> None:
+        """The server encodes marked requests ahead of indexing batches."""
+        documents_client, query_client = MagicMock(), MagicMock()
+        mock_openai_cls.side_effect = [documents_client, query_client]
+        documents_client.embed_documents.return_value = [[0.1]]
+        query_client.embed_query.return_value = [0.2]
+
+        client = EmbeddingServerEmbeddings(max_retries=1)
+        client.embed_documents(["a passage"])
+        client.embed_query("a question")
+
+        documents_client.embed_documents.assert_called_once_with(["a passage"])
+        query_client.embed_query.assert_called_once_with("a question")
+        documents_client.embed_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
+    async def test_async_queries_are_marked_too(self, mock_openai_cls) -> None:
+        documents_client, query_client = MagicMock(), MagicMock()
+        mock_openai_cls.side_effect = [documents_client, query_client]
+        query_client.aembed_query = AsyncMock(return_value=[0.2])
+        documents_client.aembed_query = AsyncMock()
+
+        client = EmbeddingServerEmbeddings(max_retries=1)
+        assert await client.aembed_query("a question") == [0.2]
+        documents_client.aembed_query.assert_not_awaited()
 
     @patch("app.utils.embedding_server_client.OpenAIEmbeddings")
     def test_embed_documents_delegates_to_inner(self, mock_openai_cls):

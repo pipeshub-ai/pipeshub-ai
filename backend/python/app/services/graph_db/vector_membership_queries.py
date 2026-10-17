@@ -1,4 +1,5 @@
-"""AQL and Cypher for vector membership backfill scans.
+"""AQL and Cypher for vector membership backfill scans, and the gate that says
+whether a connector's points can be found by their membership arrays at all.
 
 Paged by ``connectorId`` and a stable record key so a crash can resume.
 Does not join ``IS_OF_TYPE`` or load whole collections.
@@ -11,7 +12,25 @@ from app.config.constants.arangodb import CollectionNames
 _APPS = CollectionNames.APPS.value
 _RECORDS = CollectionNames.RECORDS.value
 _FLAG = "vectorMembershipBackfilled"
+_EXHAUSTED_FLAG = "vectorMembershipBackfillExhausted"
 _STATUS_DELETING = "DELETING"
+# What a page row carries; the stored-content heal skips on status and deletion.
+PAGE_RECORD_FIELDS = ("_key", "virtualRecordId", "orgId", "indexingStatus", "isDeleted")
+
+
+def can_use_membership_cleanup(app: dict) -> bool:
+    """Whether this app's vector points can be found by their membership arrays.
+
+    Both flags matter. The backfill sets ``vectorMembershipBackfilled`` when it
+    *gives up* as well as when it succeeds, so the completion flag alone cannot
+    tell a healthy connector from one whose points it never managed to tag —
+    and cleaning the latter by membership filter would silently orphan them.
+
+    Single source of truth for that decision: the graph providers use it to skip
+    collecting a VRID list nothing will read, and the connector services use it
+    to choose the cleanup event. Those two must never disagree.
+    """
+    return bool(app.get(_FLAG, False)) and not bool(app.get(_EXHAUSTED_FLAG, False))
 
 
 def build_app_needing_vector_membership_backfill_aql() -> str:
@@ -32,7 +51,10 @@ def build_page_records_for_vector_membership_backfill_aql(*, has_after_key: bool
         {after_key_clause}
         SORT record._key
         LIMIT @limit
-        RETURN {{ _key: record._key, virtualRecordId: record.virtualRecordId }}
+        RETURN {{
+            _key: record._key, virtualRecordId: record.virtualRecordId,
+            orgId: record.orgId, indexingStatus: record.indexingStatus, isDeleted: record.isDeleted
+        }}
     """
 
 
@@ -60,7 +82,8 @@ def build_page_records_for_vector_membership_backfill_cypher(
     MATCH (r:Record)
     WHERE r.connectorId = $connector_id
       {after_key_clause}
-    RETURN r.id AS _key, r.virtualRecordId AS virtualRecordId
+    RETURN r.id AS _key, r.virtualRecordId AS virtualRecordId,
+           r.orgId AS orgId, r.indexingStatus AS indexingStatus, r.isDeleted AS isDeleted
     ORDER BY r.id
     LIMIT $limit
     """

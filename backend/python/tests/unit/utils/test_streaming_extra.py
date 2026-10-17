@@ -366,6 +366,70 @@ class TestCallAiterLlmStreamSimpleToolCalls:
         tool_call_events = [e for e in events if e.get("event") == "tool_calls"]
         assert len(tool_call_events) == 1
 
+    @pytest.mark.asyncio
+    async def test_long_streamed_tool_call_is_assembled_in_one_pass(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Adding the parts one at a time re-parsed the arguments received so
+        far for every part, on the event loop."""
+        from langchain_core.messages import AIMessageChunk
+        from langchain_core.messages import ai as langchain_ai
+
+        from app.utils.streaming import call_aiter_llm_stream_simple
+
+        fragments = 5_000
+
+        def piece(args: str, name: str | None = None, call_id: str | None = None) -> AIMessageChunk:
+            return AIMessageChunk(
+                content="", tool_call_chunks=[{"name": name, "args": args, "id": call_id, "index": 0}],
+            )
+
+        chunks = [
+            piece("", name="search", call_id="c1"),
+            piece('{"query": "'),
+            *(piece("word ") for _ in range(fragments)),
+            piece('"}'),
+        ]
+        arguments_chars = len('{"query": "') + 5 * fragments + len('"}')
+        parsed_chars = 0
+        real_parse = langchain_ai.parse_partial_json
+
+        class _ReparsedTheWholeCall(BaseException):
+            """Not an `Exception`, which LangChain swallows while parsing."""
+
+        def counting_parse(text: str, **kwargs: object) -> object:
+            nonlocal parsed_chars
+            parsed_chars += len(text)
+            if parsed_chars > 4 * arguments_chars:
+                raise _ReparsedTheWholeCall
+            return real_parse(text, **kwargs)
+
+        monkeypatch.setattr(langchain_ai, "parse_partial_json", counting_parse)
+
+        async def mock_aiter(llm, messages, parts=None):  # noqa: ANN202
+            parts.extend(chunks)
+            if False:
+                yield ""
+
+        with patch("app.utils.streaming.aiter_llm_stream", side_effect=mock_aiter):
+            events = [
+                event
+                async for event in call_aiter_llm_stream_simple(
+                    llm=MagicMock(),
+                    messages=[HumanMessage(content="q")],
+                    final_results=[],
+                    records=[],
+                    target_words_per_chunk=1,
+                    original_llm=MagicMock(),
+                )
+            ]
+
+        [tool_call_event] = [e for e in events if e.get("event") == "tool_calls"]
+        assert tool_call_event["data"]["ai"].tool_calls == [
+            {"name": "search", "args": {"query": "word " * fragments}, "id": "c1", "type": "tool_call"},
+        ]
+        assert arguments_chars <= parsed_chars <= 2 * arguments_chars
+
 
 # ---------------------------------------------------------------------------
 # stream_content urlparse exception fallback (lines 160-162)
@@ -484,7 +548,6 @@ class TestVirtualRecordIdMapForwarding:
 
     @pytest.mark.asyncio
     async def test_handle_simple_mode_fast_path_forwards_vrid_map(self):
-        from langchain_core.messages import AIMessage
         from app.utils.streaming import handle_simple_mode
 
         vrid_map = {"vr2": {"id": "rec-2"}}
@@ -830,7 +893,7 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/signed?token=xyz"):
                     pass
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_400_empty_body_raises_http_exception(self) -> None:
@@ -845,7 +908,7 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/signed?token=xyz"):
                     pass
 
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_404_empty_body_raises_http_exception(self) -> None:
@@ -861,8 +924,9 @@ class TestStreamContentEmptyErrorBody:
                     pass
 
     @pytest.mark.asyncio
-    async def test_403_with_body_includes_error_details(self) -> None:
-        """403 with non-empty body → error_details are populated (positive coverage)."""
+    async def test_403_body_is_logged_but_not_returned(self) -> None:
+        """The source's error body can carry presigned-URL internals and bucket
+        names, so it must stay in the log and out of the response detail."""
         from app.utils.streaming import stream_content
         from fastapi import HTTPException
 
@@ -873,8 +937,8 @@ class TestStreamContentEmptyErrorBody:
                 async for _ in stream_content("https://example.com/file"):
                     pass
 
-        assert exc_info.value.status_code == 500
-        assert "Access denied by policy" in str(exc_info.value.detail)
+        assert exc_info.value.status_code == 403
+        assert "Access denied by policy" not in str(exc_info.value.detail)
 
     @pytest.mark.asyncio
     async def test_non_string_signed_url_raises_type_error(self) -> None:

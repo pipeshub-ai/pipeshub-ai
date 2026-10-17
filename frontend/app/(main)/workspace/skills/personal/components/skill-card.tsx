@@ -2,9 +2,11 @@
 
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Badge, Flex, Text } from '@radix-ui/themes';
+import { Badge, Flex, Switch, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import type { SkillMetadata } from '../types';
+import { canToggleSkillAvailability } from '../skill-availability';
 
 // ========================================
 // Status -> badge color
@@ -14,6 +16,7 @@ const STATUS_COLOR: Record<string, 'green' | 'gray' | 'amber'> = {
   active: 'green',
   deprecated: 'gray',
   candidate: 'amber',
+  disabled: 'gray',
 };
 
 const SOURCE_ICON: Record<string, string> = {
@@ -30,16 +33,24 @@ const SOURCE_ICON: Record<string, string> = {
 interface SkillCardProps {
   skill: SkillMetadata;
   onManage: () => void;
+  /** Omitted for deprecated/candidate skills, and for builtins unless the
+   *  caller is an org admin — see `canToggleSkillAvailability`. */
+  onToggleAvailability?: (skill: SkillMetadata, nextEnabled: boolean) => void;
 }
 
 // ========================================
 // SkillCard
 // ========================================
 
-export function SkillCard({ skill, onManage }: SkillCardProps) {
+export function SkillCard({ skill, onManage, onToggleAvailability }: SkillCardProps) {
   const { t } = useTranslation();
+  const isAdmin = useUserStore(selectIsAdmin) === true;
   const [isHovered, setIsHovered] = useState(false);
+  const [toggling, setToggling] = useState(false);
   const isBuiltin = skill.source === 'builtin';
+  const isDisabled = skill.status === 'disabled';
+  const canToggleAvailability =
+    canToggleSkillAvailability(skill, isAdmin) && !!onToggleAvailability;
 
   return (
     <Flex
@@ -54,7 +65,8 @@ export function SkillCard({ skill, onManage }: SkillCardProps) {
         padding: 'var(--space-3)',
         gap: 'var(--space-6)',
         cursor: 'pointer',
-        transition: 'background-color 150ms ease',
+        opacity: isDisabled ? 0.72 : 1,
+        transition: 'background-color 150ms ease, opacity 150ms ease',
       }}
     >
       <Flex direction="column" gap="3" style={{ width: '100%', flex: 1 }}>
@@ -73,7 +85,26 @@ export function SkillCard({ skill, onManage }: SkillCardProps) {
           >
             <MaterialIcon name={SOURCE_ICON[skill.source] ?? 'psychology'} size={16} color="var(--gray-10)" />
           </Flex>
-          <Flex gap="1">
+          <Flex align="center" gap="2">
+            {canToggleAvailability && (
+              <Switch
+                checked={!isDisabled}
+                disabled={toggling}
+                size="1"
+                aria-label={t('workspace.skills.availability.label')}
+                style={{ cursor: toggling ? 'default' : 'pointer' }}
+                onClick={(e) => e.stopPropagation()}
+                onCheckedChange={async (nextEnabled) => {
+                  if (toggling) return;
+                  setToggling(true);
+                  try {
+                    await onToggleAvailability?.(skill, nextEnabled);
+                  } finally {
+                    setToggling(false);
+                  }
+                }}
+              />
+            )}
             {skill.status !== 'active' && (
               <Badge color={STATUS_COLOR[skill.status] ?? 'gray'} size="1">
                 {t(`workspace.skills.status.${skill.status}`)}

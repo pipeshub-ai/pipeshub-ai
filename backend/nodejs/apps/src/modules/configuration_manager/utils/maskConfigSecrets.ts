@@ -22,55 +22,53 @@ export function omitInheritedSecrets<T extends Record<string, unknown>>(
 }
 
 /**
- * Keys inside an AI model `configuration` object that are NOT secrets and
- * should always be returned to the client as-is.
+ * User-facing GET `configuration` is an allowlist. Provider-specific keys
+ * (region, voice, credentials, …) stay out of the response; values are copied
+ * as stored. Top-level entry fields are left untouched.
  */
-const AI_CONFIG_NON_SECRET_KEYS = new Set([
+export const AI_PUBLIC_CONFIG_KEYS = [
   'model',
-  'modelname',
-  'modelfriendlyname',
-]);
+  'modelFriendlyName',
+  'dimensions',
+  'defaultReasoningEffort',
+] as const;
 
-/**
- * Mask every string field inside an AI model entry's `configuration` object,
- * except for the model-name fields (`model`, `modelName`, `modelFriendlyName`).
- * All other top-level entry fields (provider, modelKey, isMultimodal, isDefault,
- * isReasoning, contextLength, …) are left completely untouched.
- *
- * Exported so callers that hold a single entry (e.g. update/delete responses)
- * can mask it directly without going through maskAiModelsStoredConfig.
- */
-export function maskAiModelEntry(entry: AIModelConfiguration): AIModelConfiguration {
+export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
   const cfg = entry.configuration;
   if (!cfg || typeof cfg !== 'object' || Array.isArray(cfg)) {
     return entry;
   }
 
-  const maskedCfg: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(cfg as Record<string, unknown>)) {
-    if (AI_CONFIG_NON_SECRET_KEYS.has(key.toLowerCase())) {
-      maskedCfg[key] = value;
-    } else if (typeof value === 'string' && value.length > 0) {
-      maskedCfg[key] = CONFIG_SECRET_PLACEHOLDER;
-    } else {
-      maskedCfg[key] = value;
+  const src = cfg as Record<string, unknown>;
+  const safeCfg: Record<string, unknown> = {};
+  for (const key of AI_PUBLIC_CONFIG_KEYS) {
+    if (key in src) {
+      safeCfg[key] = src[key];
     }
   }
 
-  return { ...entry, configuration: maskedCfg as AIModelConfiguration['configuration'] };
+  return {
+    ...entry,
+    configuration: safeCfg as AIModelConfiguration['configuration'],
+    configuredFields: configuredFieldNames(src),
+  };
+}
+
+/** Names of stored configuration keys that have a value. Never the values. */
+export function configuredFieldNames(configuration: Record<string, unknown>): string[] {
+  return Object.entries(configuration)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key]) => key)
+    .sort();
 }
 
 /**
- * Mask all AI model entries in the stored config object.
+ * Apply the public `configuration` allowlist to every AI model entry.
  *
  * The stored shape is:
- *   { llm: [...entries], embedding: [...entries], ocr: [...], … }
- *
- * Each entry looks like:
- *   { provider, configuration: { model, modelFriendlyName, apiKey, … }, modelKey,
- *     isMultimodal, isDefault, isReasoning, contextLength }
+ *   { llm: [...entries], embedding: [...entries], ocr: [...], modelRoles: {…} }
  */
-export function maskAiModelsStoredConfig<T extends Record<string, unknown>>(
+export function stripAiModelsStoredConfig<T extends object>(
   config: T,
 ): T {
   if (!config || typeof config !== 'object') {
@@ -85,12 +83,59 @@ export function maskAiModelsStoredConfig<T extends Record<string, unknown>>(
     }
     result[bucket] = entries.map((entry: unknown) => {
       if (entry && typeof entry === 'object' && !Array.isArray(entry)) {
-        return maskAiModelEntry(entry as AIModelConfiguration);
+        return stripAiModelSecrets(entry as AIModelConfiguration);
       }
       return entry;
     });
   }
   return result as T;
+}
+
+/**
+ * GET only returns the public allowlist, so an update legitimately omits
+ * credentials and other provider keys the user did not retype. Carry those
+ * forward from storage.
+ *
+ * Only *absent* keys are restored. A key present but empty is an explicit clear
+ * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
+ * alone.
+ */
+/** Fields a credential rotation may replace. Endpoints and model settings are not credentials. */
+export const AI_MODEL_CREDENTIAL_KEYS = [
+  'apiKey',
+  'awsAccessKeyId',
+  'awsAccessSecretKey',
+  'serviceAccountJson',
+] as const;
+
+/** Keep only credential keys. A present empty string is an explicit clear. */
+export function pickAiModelCredentials(
+  incoming: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const key of AI_MODEL_CREDENTIAL_KEYS) {
+    if (!(key in incoming)) continue;
+    const value = incoming[key];
+    if (typeof value !== 'string') continue;
+    out[key] = value;
+  }
+  return out;
+}
+
+export function mergeAiModelCredentials<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object' || Array.isArray(existing)) {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  for (const key of Object.keys(existing)) {
+    if (!(key in out)) {
+      out[key] = existing[key];
+    }
+  }
+  return out as T;
 }
 
 /**
@@ -135,6 +180,34 @@ export function mergeSmtpConfigPlaceholders<T extends Record<string, unknown>>(
   return out as T;
 }
 
+export const SLACK_BOT_SECRET_KEYS = ['botToken', 'signingSecret'] as const;
+
+/**
+ * Admin-facing Slack bot responses must not echo the workspace credentials
+ * back over HTTP. The bot process reads the real values from the internal
+ * route instead.
+ */
+export function maskSlackBotConfig<T extends Record<string, unknown>>(config: T): T {
+  return maskKeys(config, SLACK_BOT_SECRET_KEYS);
+}
+
+/** An edit form that never saw the real value re-submits the placeholder. */
+export function mergeSlackBotConfigPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+): T {
+  if (!existing || typeof existing !== 'object') {
+    return incoming;
+  }
+  const out = { ...incoming } as Record<string, unknown>;
+  for (const key of SLACK_BOT_SECRET_KEYS) {
+    if (out[key] === CONFIG_SECRET_PLACEHOLDER && typeof existing[key] === 'string') {
+      out[key] = existing[key];
+    }
+  }
+  return out as T;
+}
+
 export const GOOGLE_AUTH_SECRET_KEYS = ['clientId'] as const;
 
 
@@ -145,6 +218,30 @@ export const OAUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
 export const GITHUB_AUTH_SECRET_KEYS = ['clientId', 'clientSecret'] as const;
 
 export const WEB_SEARCH_SECRET_KEYS = ['apiKey'] as const;
+
+/**
+ * An edit form that never revealed a secret sends the placeholder back. Swap
+ * each placeholder for the stored value; returns the keys that had no stored
+ * value to restore, so the caller can refuse to save a literal placeholder.
+ */
+export function restoreSecretPlaceholders<T extends Record<string, unknown>>(
+  incoming: T,
+  existing: Record<string, unknown> | null | undefined,
+  keys: readonly string[],
+): { config: T; unrestored: string[] } {
+  const out = { ...incoming } as Record<string, unknown>;
+  const unrestored: string[] = [];
+  for (const key of keys) {
+    if (out[key] !== CONFIG_SECRET_PLACEHOLDER) continue;
+    const stored = existing?.[key];
+    if (typeof stored === 'string' && stored.length > 0) {
+      out[key] = stored;
+    } else {
+      unrestored.push(key);
+    }
+  }
+  return { config: out as T, unrestored };
+}
 
 function maskKeys<T extends Record<string, unknown>>(config: T, keys: readonly string[]): T {
   if (!config || typeof config !== 'object') {
@@ -178,6 +275,17 @@ export function maskGithubAuthConfig<T extends Record<string, unknown>>(config: 
 
 export function maskWebSearchProvider<T extends Record<string, unknown>>(configuration: T): T {
   return maskKeys(configuration, WEB_SEARCH_SECRET_KEYS);
+}
+
+/**
+ * What a member who is not an admin sees of a provider: no API key, and no server address either,
+ * since a self-hosted server's URL names an internal host. Members only list providers (the agent
+ * builder does); every write is admin-only, so a masked address is never sent back to be saved.
+ */
+export function maskWebSearchProviderForMember<
+  T extends Record<string, unknown>,
+>(configuration: T): T {
+  return maskKeys(configuration, [...WEB_SEARCH_SECRET_KEYS, 'baseUrl']);
 }
 
 export function mergeWebSearchProviderPlaceholders<T extends Record<string, unknown>>(

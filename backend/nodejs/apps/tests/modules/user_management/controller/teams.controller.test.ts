@@ -134,10 +134,12 @@ describe('TeamsController', () => {
 
   describe('getTeam', () => {
     it('should get a team by id', async () => {
-      const mockTeam = { id: 'team1', name: 'Engineering' };
+      // The entity service wraps the team as { team: {...} } — the real shape.
+      const team = { id: 'team1', name: 'Engineering', orgId: '507f1f77bcf86cd799439012' };
+      const payload = { status: 'success', team };
       executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
         statusCode: 200,
-        data: mockTeam,
+        data: payload,
       });
 
       req.params.teamId = 'team1';
@@ -145,7 +147,25 @@ describe('TeamsController', () => {
       await controller.getTeam(req, res, next);
 
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.calledWith(mockTeam)).to.be.true;
+      expect(res.json.calledWith(payload)).to.be.true;
+    });
+
+    it('reports a team from another org as not found', async () => {
+      // Even if the service returned a foreign team (wrapped shape), the
+      // controller must not relay it. Mimics requesting all_<otherOrgId>.
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: { status: 'success', team: { id: 'all_507f1f77bcf86cd799439099', name: 'All', orgId: '507f1f77bcf86cd799439099' } },
+      });
+
+      req.params.teamId = 'all_507f1f77bcf86cd799439099';
+
+      await controller.getTeam(req, res, next);
+
+      expect(res.status.calledWith(200)).to.be.false;
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('Team not found');
     });
 
     it('should enrich createdByUser.profilePicture when getting team', async () => {
@@ -155,6 +175,7 @@ describe('TeamsController', () => {
         data: {
           id: 'team1',
           name: 'Engineering',
+          orgId: '507f1f77bcf86cd799439012',
           createdByUser: { id: 'graph-creator-key', userId: creatorId, name: 'Alice', email: 'alice@test.com' },
         },
       });
@@ -297,6 +318,19 @@ describe('TeamsController', () => {
       expect(responseArg.teams).to.deep.equal([]);
     });
 
+    it('passes a 503 on instead of answering an empty team list', async () => {
+      executeStub = sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 503,
+        data: { detail: "We couldn't reach PipesHub's database just now. Please try again in a few seconds." },
+      });
+
+      await controller.getUserTeams(req, res, next);
+
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].statusCode).to.equal(503);
+    });
+
     it('should call next with error when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011' };
 
@@ -393,7 +427,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
 
     it('should handle fetch failed error message', async () => {
@@ -406,7 +440,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
 
     it('should handle error with statusCode 400', async () => {
@@ -518,7 +552,7 @@ describe('TeamsController', () => {
 
       expect(next.calledOnce).to.be.true;
       const err = next.firstCall.args[0];
-      expect(err.message).to.include('unavailable');
+      expect(err.message).to.include('trouble reaching one of its services');
     });
   });
 
@@ -912,7 +946,9 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Internal error');
+      // A 5xx describes our internals, so the reader gets the plain sentence.
+      expect(next.firstCall.args[0].message).to.include('Something went wrong');
+      expect(next.firstCall.args[0].message).to.not.include('Internal error');
     });
 
     it('should handle default unknown status code', async () => {
@@ -926,7 +962,8 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('Backend error');
+      expect(next.firstCall.args[0].message).to.include('Something went wrong');
+      expect(next.firstCall.args[0].message).to.not.include('Backend error');
     });
 
     it('should handle fetch failed error without ECONNREFUSED cause', async () => {
@@ -938,7 +975,9 @@ describe('TeamsController', () => {
       await controller.createTeam(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0].message).to.include('AI Service is currently unavailable');
+      expect(next.firstCall.args[0].message).to.include('trouble reaching one of its services');
+      // The fault is on the server, so it never asks the reader to check their network.
+      expect(next.firstCall.args[0].message).to.not.match(/your (network|internet)/i);
     });
   });
 

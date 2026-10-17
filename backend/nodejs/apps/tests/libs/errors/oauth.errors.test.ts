@@ -13,6 +13,7 @@ import {
   AccessDeniedError,
   UnauthorizedClientError,
   ServerError,
+  DeviceGrantError,
 } from '../../../src/libs/errors/oauth.errors';
 
 describe('OAuth Errors', () => {
@@ -632,5 +633,23 @@ describe('OAuth Errors', () => {
       expect(json).to.have.property('code', 'OAUTH_SERVER_ERROR');
       expect(json).to.have.property('statusCode', 500);
     });
+  });
+
+  describe('DeviceGrantError', () => {
+    it('should keep the RFC oauthError on the instance', () => {
+      const error = new DeviceGrantError(
+        'authorization_pending',
+        'authorization is still pending',
+      )
+      expect(error.oauthError).to.equal('authorization_pending')
+      expect(error.statusCode).to.equal(400)
+      expect(error.code).to.equal('OAUTH_AUTHORIZATION_PENDING')
+    })
+
+    it('should map hyphenated RFC errors to uppercase codes', () => {
+      const error = new DeviceGrantError('slow_down', 'polling too frequently')
+      expect(error.oauthError).to.equal('slow_down')
+      expect(error.code).to.equal('OAUTH_SLOW_DOWN')
+    })
   });
 });

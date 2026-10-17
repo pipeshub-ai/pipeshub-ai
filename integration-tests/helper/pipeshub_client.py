@@ -148,6 +148,22 @@ class PipeshubClient:
         user_id = claims.get("userId")
         return str(user_id) if user_id else None
 
+    @property
+    def acting_user_id(self) -> Optional[str]:
+        """The user this token acts as, the way the backend resolves it.
+
+        A client_credentials token has no user: Node puts the app's client id
+        (a UUID) in ``userId`` and the account it acts as in ``createdBy``.
+        The Python auth middleware swaps them the same way. Anything that must
+        name a real user, such as the ``userId`` of a minted service token,
+        needs this rather than ``user_id``.
+        """
+        claims = self._claims()
+        user_id = claims.get("userId")
+        if user_id and user_id == claims.get("client_id") and claims.get("createdBy"):
+            user_id = claims["createdBy"]
+        return str(user_id) if user_id else None
+
     # --------------------------------------------------------------------- #
     # Internal helpers
     # --------------------------------------------------------------------- #
@@ -414,6 +430,36 @@ class PipeshubClient:
             )
         return data.get("connector") or {}
 
+    def get_filter_options(
+        self,
+        connector_id: str,
+        filter_key: str,
+        *,
+        limit: int = 20,
+        cursor: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of a dynamic filter's options (``options``, ``hasMore``, ``cursor``).
+
+        The same call the filter picker in the UI makes, e.g. ``filter_key="drive_ids"``
+        for Drive Workspace's Shared Drive list.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        if search:
+            params["search"] = search
+        data = self._request_json(
+            "GET",
+            f"/api/v1/connectors/{connector_id}/filters/{filter_key}/options",
+            params=params,
+        )
+        if not data.get("success"):
+            raise PipeshubClientError(
+                f"Filter options {filter_key!r} for {connector_id} returned success=false: {data}"
+            )
+        return data
+
     def toggle_sync(self, connector_id: str, enable: bool = True) -> Dict[str, Any]:
         """
         Toggle sync on or off for the connector.
@@ -648,12 +694,14 @@ class PipeshubClient:
             
         Example:
             # Update space filter for Confluence connector
+            # Filters nest under ``sync.values``; a top-level key is ignored.
             client.update_connector_filters_sync_safe(
                 connector_id,
                 filters={
-                    "space_keys": {
-                        "operator": "IN",
-                        "values": ["MYSPACE"]
+                    "sync": {
+                        "values": {
+                            "space_keys": {"operator": "in", "type": "list", "value": ["MYSPACE"]}
+                        }
                     }
                 }
             )
@@ -731,12 +779,13 @@ class PipeshubClient:
     # --------------------------------------------------------------------- #
     # Public API - Stream Content
     # --------------------------------------------------------------------- #
-    def stream_record(self, record_id: str) -> requests.Response:
+    def stream_record(self, record_id: str, timeout: float | None = None) -> requests.Response:
         """
         Stream record content (for testing streaming responses).
         
         Args:
             record_id: Internal record ID (_key)
+            timeout: Seconds to wait for the response; defaults to ``timeout_seconds``.
             
         Returns:
             Response object (caller can iterate over response.iter_content())
@@ -747,7 +796,7 @@ class PipeshubClient:
             resp = requests.get(
                 url,
                 headers=self._headers(),
-                timeout=self.timeout_seconds,
+                timeout=timeout or self.timeout_seconds,
                 stream=True,
             )
             if resp.status_code == 401 and attempt == 0:

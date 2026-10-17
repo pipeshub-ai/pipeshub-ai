@@ -6,6 +6,8 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
 
 import pytest
+
+from app.connectors.sources.google.common.connector_google_exceptions import GoogleAuthError
 from fastapi import HTTPException
 from googleapiclient.errors import HttpError
 
@@ -27,6 +29,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 def _make_logger():
@@ -214,13 +217,15 @@ class TestInit:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_init_no_oauth_config_id(self, connector):
+    @pytest.mark.parametrize("auth", [{}, None], ids=["empty", "null"])
+    async def test_init_no_oauth_config_id(self, connector, auth):
+        # A null or missing "auth" must give the same clear error, not AttributeError.
         connector.config_service.get_config = AsyncMock(return_value={
-            "auth": {},
+            "auth": auth,
             "credentials": {},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     async def test_init_oauth_config_not_found(self, connector):
@@ -637,7 +642,7 @@ class TestStreamFromDrive:
                 )
 
     @pytest.mark.asyncio
-    async def test_stream_from_drive_client_failure_with_service_account(self, connector):
+    async def test_stream_from_drive_client_failure_is_reported_not_retried_as_service_account(self, connector):
         connector.config = {"credentials": {"auth": {"type": "service_account"}}}
         record = MagicMock()
         record.id = "rec-1"
@@ -645,21 +650,17 @@ class TestStreamFromDrive:
         with patch(
             "app.connectors.sources.google.gmail.individual.connector.GoogleClient.build_from_services",
             new_callable=AsyncMock,
-            side_effect=Exception("auth fail"),
+            side_effect=GoogleAuthError("auth fail"),
         ), patch(
             "google.oauth2.service_account.Credentials.from_service_account_info",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.build",
-            return_value=MagicMock(),
-        ), patch(
-            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
-        ) as mock_stream:
-            mock_stream.return_value = MagicMock()
-            result = await connector._stream_from_drive(
-                "drive-id", record, "file.txt", "text/plain"
-            )
-            mock_stream.assert_called_once()
+        ) as from_info:
+            with pytest.raises(HTTPException) as exc:
+                await connector._stream_from_drive(
+                    "drive-id", record, "file.txt", "text/plain"
+                )
+        assert exc.value.status_code == 409
+        assert "Reconnect the Gmail connector" in exc.value.detail
+        from_info.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_stream_from_drive_no_service_account_creds(self, connector):
@@ -723,7 +724,19 @@ class TestStreamMailRecord:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._stream_mail_record(gmail_service, "msg-1", record)
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        assert exc_info.value.status_code == HttpStatusCode.BAD_GATEWAY.value
+
+    @pytest.mark.asyncio
+    async def test_stream_mail_http_error_401_maps_to_reconnect(self, connector):
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.side_effect = _make_http_error(401, "Unauthorized")
+        record = MagicMock()
+        record.id = "rec-1"
+        record.record_name = "Test"
+
+        with pytest.raises(HTTPException) as exc_info:
+            await connector._stream_mail_record(gmail_service, "msg-1", record)
+        assert exc_info.value.status_code == HttpStatusCode.CONFLICT.value
 
     @pytest.mark.asyncio
     async def test_stream_mail_general_exception(self, connector):
@@ -976,7 +989,8 @@ class TestStreamAttachmentRecord:
         assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
 
     @pytest.mark.asyncio
-    async def test_gmail_attachment_failure_fallback_to_drive(self, connector):
+    async def test_gmail_attachment_failure_does_not_fall_back_to_drive(self, connector):
+        """Drive cannot resolve a `messageId~partId` id, so Gmail's status stands."""
         gmail_service = MagicMock()
         gmail_service.users().messages().attachments().get().execute.side_effect = _make_http_error(403)
         gmail_service.users().messages().get().execute.return_value = {
@@ -1000,10 +1014,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.FORBIDDEN.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_gmail_and_drive_both_fail(self, connector):
@@ -1054,10 +1070,13 @@ class TestStreamAttachmentRecord:
 
         with patch.object(
             connector, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
-        ):
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
-            )
+        ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "file.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_attachment_with_pdf_conversion(self, connector):
@@ -1133,6 +1152,7 @@ class TestStreamAttachmentRecord:
 
     @pytest.mark.asyncio
     async def test_message_not_found_during_part_lookup(self, connector):
+        """A deleted message is a 404, not a fall-through to a Drive lookup that cannot work."""
         gmail_service = MagicMock()
         gmail_service.users().messages().get().execute.side_effect = _make_http_error(404)
 
@@ -1149,10 +1169,12 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
-            await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
-            )
-            mock_drive.assert_called_once()
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_part_id_not_found(self, connector):
@@ -1178,10 +1200,77 @@ class TestStreamAttachmentRecord:
         with patch.object(
             connector, "_stream_from_drive", new_callable=AsyncMock, return_value=MagicMock()
         ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+            assert exc_info.value.status_code == HttpStatusCode.NOT_FOUND.value
+            mock_drive.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_attachment_in_a_nested_part_is_downloaded(self, connector) -> None:
+        """Sync records attachments at any depth (partId `0.1`), so download must find them there."""
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {
+                "parts": [
+                    {"partId": "0", "mimeType": "multipart/related", "parts": [
+                        {"partId": "0.0", "body": {"data": "aGk="}},
+                        {"partId": "0.1", "filename": "logo.png", "body": {"attachmentId": "nested-att"}},
+                    ]},
+                ]
+            }
+        }
+        gmail_service.users().messages().attachments().get().execute.return_value = {
+            "data": base64.urlsafe_b64encode(b"png").decode(),
+        }
+
+        parent_record = MagicMock()
+        parent_record.external_record_id = "msg-1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
+
+        record = MagicMock()
+        record.id = "rec-1"
+        record.connector_id = "gmail-ind-1"
+        record.parent_external_record_id = "msg-1"
+
+        with patch(
+            "app.connectors.sources.google.gmail.individual.connector.create_stream_record_response"
+        ) as mock_stream, patch.object(
+            connector, "_stream_from_drive", new_callable=AsyncMock
+        ) as mock_drive:
             await connector._stream_attachment_record(
-                gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                gmail_service, "msg-1~0.1", record, "logo.png", "image/png"
             )
-            mock_drive.assert_called_once()
+        mock_drive.assert_not_called()
+        assert list(mock_stream.call_args.args[0]) == [b"png"]
+        assert gmail_service.users().messages().attachments().get.call_args.kwargs["id"] == "nested-att"
+
+    @pytest.mark.asyncio
+    async def test_part_without_attachment_id_is_not_downloadable(self, connector) -> None:
+        gmail_service = MagicMock()
+        gmail_service.users().messages().get().execute.return_value = {
+            "payload": {"parts": [{"partId": "1", "body": {"data": "aGk="}}]}
+        }
+
+        parent_record = MagicMock()
+        parent_record.external_record_id = "msg-1"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=parent_record)
+
+        record = MagicMock()
+        record.id = "rec-1"
+        record.connector_id = "gmail-ind-1"
+        record.parent_external_record_id = "msg-1"
+
+        with patch.object(
+            connector, "_stream_from_drive", new_callable=AsyncMock
+        ) as mock_drive:
+            with pytest.raises(HTTPException) as exc_info:
+                await connector._stream_attachment_record(
+                    gmail_service, "msg-1~1", record, "f.pdf", "application/pdf"
+                )
+        assert exc_info.value.status_code == HttpStatusCode.UNPROCESSABLE_ENTITY.value
+        mock_drive.assert_not_called()
 
 
 class TestStreamRecord:

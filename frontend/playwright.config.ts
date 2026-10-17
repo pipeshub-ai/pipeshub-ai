@@ -5,6 +5,13 @@ dotenv.config({ path: '.env.test' });
 
 const COVERAGE_ENABLED = process.env.COVERAGE === 'true';
 
+// Tests that need a real AI model; they run in the `ai` project below.
+const AI_SPECS = [/chat\/chat-cited-answer\.spec\.ts/, /agents\/.*\.spec\.ts/];
+
+// Sign-up and onboarding need a stack with no organization, so they run only
+// when asked for, before CI creates the org every other test signs in to.
+const FIRST_RUN = process.env.E2E_FIRST_RUN === 'true';
+
 const defaultReporter: any[] = [['html', { open: 'never' }]];
 const ciReporter: any[] = process.env.CI
   ? [['junit', { outputFile: 'test-results/playwright-junit.xml' }]]
@@ -72,13 +79,46 @@ export default defineConfig({
     {
       name: 'authenticated',
       testMatch: /.*\.spec\.ts/,
-      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//],
+      testIgnore: [/auth\/login\.spec\.ts/, /setup\//, /seed\//, /first-run\//, ...AI_SPECS],
       dependencies: ['setup'],
       use: {
         ...devices['Desktop Chrome'],
         storageState: '.auth/user.json',
       },
     },
+
+    // Adds the AI models the answering tests need once, and removes them once
+    // after all of them finish, so no test deletes a model another is using.
+    {
+      name: 'ai-models',
+      testMatch: /setup\/ai-models\.provision\.ts/,
+      dependencies: ['setup'],
+      teardown: 'ai-models-cleanup',
+    },
+    {
+      name: 'ai-models-cleanup',
+      testMatch: /setup\/ai-models\.cleanup\.ts/,
+    },
+    {
+      name: 'ai',
+      testMatch: AI_SPECS,
+      dependencies: ['setup', 'ai-models'],
+      use: {
+        ...devices['Desktop Chrome'],
+        storageState: '.auth/user.json',
+      },
+    },
+
+    // A fresh install's first admin; see FIRST_RUN above.
+    ...(FIRST_RUN
+      ? [{
+          name: 'first-run',
+          testMatch: /first-run\/.*\.spec\.ts/,
+          // A retry would find the org the first attempt created.
+          retries: 0,
+          use: { ...devices['Desktop Chrome'] },
+        }]
+      : []),
 
     // Unauthenticated tests — no dependencies, no saved state
     {

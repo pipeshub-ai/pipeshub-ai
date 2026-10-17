@@ -3,7 +3,7 @@
 import base64
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
@@ -13,8 +13,6 @@ from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    IndexingFilterKey,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.connectors.sources.azure_files.connector import (
@@ -22,10 +20,8 @@ from app.connectors.sources.azure_files.connector import (
     AzureFilesDataSourceEntitiesProcessor,
     get_file_extension,
     get_mimetype_for_azure_files,
-    get_parent_path,
 )
 from app.models.entities import FileRecord, RecordGroupType, RecordType, User
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_response(success=True, data=None, error=None):
@@ -912,8 +908,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -921,8 +916,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -930,8 +924,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):
@@ -1092,7 +1085,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_no_path_info_raises(self, conn):
@@ -1101,7 +1094,8 @@ class TestStreamRecord:
         record = _make_file_record(external_record_group_id=None)
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 404
+        # Local metadata gap, not a deleted file.
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.azure_files.connector.create_stream_record_response")
@@ -1135,17 +1129,36 @@ class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_stream_fallback_not_found(self, conn):
         from fastapi import HTTPException
+
+        class _AzureNotFound(Exception):
+            status_code = 404
+
         conn.data_source = MagicMock()
         conn.data_source.generate_file_sas_url = AsyncMock(
             return_value=_make_response(False, error="no key")
         )
-        conn.data_source.download_file = AsyncMock(
-            return_value=_make_response(False, error="not found in share")
-        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureNotFound("gone"))
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
         assert exc_info.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_stream_fallback_auth_error_is_not_reported_as_deleted(self, conn):
+        from fastapi import HTTPException
+
+        class _AzureUnauthorized(Exception):
+            status_code = 401
+
+        conn.data_source = MagicMock()
+        conn.data_source.generate_file_sas_url = AsyncMock(
+            return_value=_make_response(False, error="no key")
+        )
+        conn.data_source.download_file = AsyncMock(side_effect=_AzureUnauthorized("401"))
+        record = _make_file_record()
+        with pytest.raises(HTTPException) as exc_info:
+            await conn.stream_record(record)
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_stream_fallback_other_error(self, conn):
@@ -1175,7 +1188,7 @@ class TestStreamRecord:
         record = _make_file_record()
         with pytest.raises(HTTPException) as exc_info:
             await conn.stream_record(record)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_stream_fallback_exception(self, conn):

@@ -220,6 +220,9 @@ class OutlookHTTPDetails:
         "connector to update group posts with required metadata."
     )
     USER_CONTEXT_UNKNOWN = "Could not determine user context for this record."
+    # itemAttachment and referenceAttachment carry no contentBytes, so Graph
+    # answers 200 with an attachment object that has nothing to download.
+    ATTACHMENT_NOT_DOWNLOADABLE = "This attachment has no downloadable content."
 
 
 class OutlookMediaTypes:

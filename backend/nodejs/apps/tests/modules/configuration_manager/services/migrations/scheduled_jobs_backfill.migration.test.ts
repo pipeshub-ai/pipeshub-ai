@@ -5,6 +5,10 @@ import { ScheduledJobsBackfillMigration } from '../../../../../src/modules/confi
 import { configPaths } from '../../../../../src/modules/configuration_manager/paths/paths';
 import * as connectorUtils from '../../../../../src/modules/tokens_manager/utils/connector.utils';
 import * as createJwt from '../../../../../src/libs/utils/createJwt';
+import { Logger } from '../../../../../src/libs/services/logger.service';
+import { KeyValueStoreService } from '../../../../../src/libs/services/keyValueStore.service';
+import { CrawlingSchedulerService } from '../../../../../src/modules/crawling_manager/services/crawling_service';
+import { createFakeRedisProvider, stubGetRedisProvider } from '../../../../helpers/fake-redis-provider';
 
 const makeLogger = () => ({
   info: sinon.stub(),
@@ -22,6 +26,9 @@ const makeScheduler = (overrides: Partial<any> = {}) => ({
   scheduleJob: sinon.stub().resolves({ id: 'job-1' }),
   removeJob: sinon.stub().resolves(),
   getJobStatus: sinon.stub().resolves(null),
+  listReconcilesPending: sinon.stub().resolves([]),
+  clearReconcilePending: sinon.stub().resolves(),
+  removeJobsForConnector: sinon.stub().resolves(),
   ...overrides,
 });
 
@@ -66,6 +73,42 @@ describe('ScheduledJobsBackfillMigration', () => {
   afterEach(() => sinon.restore());
 
   // ------------------------------------------------------------
+  // Legacy BullMQ key sweep
+  // ------------------------------------------------------------
+  describe('legacy queue-prefix sweep', () => {
+    it('only scans this queue, never every bull: key in the database', async () => {
+      // `bull:` is BullMQ's *default* prefix, shared by every queue in the
+      // database. A wildcard sweep would delete another service's jobs,
+      // delayed work, and queue metadata if it shares this Redis.
+      const provider = createFakeRedisProvider();
+      stubGetRedisProvider(provider);
+      const logger = makeLogger();
+      const kv = makeKvStore(undefined);
+      executeStub.resolves(okEnumerationResponse([]));
+
+      // The shared fixture has no `redis` block; the sweep needs one, and
+      // its best-effort try/catch would otherwise swallow the TypeError and
+      // silently skip -- which is how this test first passed vacuously.
+      const appConfig = {
+        ...makeAppConfig(),
+        redis: { host: 'localhost', port: 6379 },
+      };
+
+      await new ScheduledJobsBackfillMigration(
+        logger as unknown as Logger,
+        kv as unknown as KeyValueStoreService,
+        makeScheduler() as unknown as CrawlingSchedulerService,
+        appConfig,
+      ).run();
+
+      expect(provider.scanKeys.called).to.equal(true);
+      const pattern = provider.scanKeys.firstCall.args[0];
+      expect(pattern).to.equal('bull:crawling-scheduler:*');
+      expect(pattern).to.not.equal('bull:*');
+    });
+  });
+
+  // ------------------------------------------------------------
   // Flag-based skip
   // ------------------------------------------------------------
   describe('migration flag', () => {
@@ -81,7 +124,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       );
       await m.run();
 
-      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigration)).to.equal(true);
+      expect(kv.get.calledOnceWith(configPaths.connectorSyncScheduledJobsMigrationV2)).to.equal(true);
       expect(executeStub.called).to.equal(false);
       expect(scheduler.scheduleJob.called).to.equal(false);
       expect(kv.set.called).to.equal(false);
@@ -125,6 +168,111 @@ describe('ScheduledJobsBackfillMigration', () => {
   // ------------------------------------------------------------
   // Successful schedule
   // ------------------------------------------------------------
+  describe('repair pass (ignoreDoneFlag)', () => {
+    it('recreates a missing job even after the migration has completed', async () => {
+      const kv = makeKvStore('true');
+      const scheduler = makeScheduler();
+      executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+      const m = new ScheduledJobsBackfillMigration(
+        makeLogger() as any, kv as any, scheduler as any, makeAppConfig(), noBackoff,
+      );
+
+      const result = await m.run({ ignoreDoneFlag: true });
+
+      expect(kv.get.called).to.equal(false);
+      expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+      expect(result.scheduled).to.equal(1);
+    });
+
+    it('leaves a connector that still has its job alone', async () => {
+      const scheduler = makeScheduler({ getJobStatus: sinon.stub().resolves({ id: 'existing-job' }) });
+      executeStub.resolves(okEnumerationResponse([sampleScheduledItem]));
+      const m = new ScheduledJobsBackfillMigration(
+        makeLogger() as any, makeKvStore('true') as any, scheduler as any, makeAppConfig(), noBackoff,
+      );
+
+      await m.run({ ignoreDoneFlag: true });
+
+      expect(scheduler.scheduleJob.called).to.equal(false);
+    });
+
+    describe('a connector whose settings could not be read after a save', () => {
+      const owed = (connectorId: string) =>
+        makeScheduler({
+          listReconcilesPending: sinon.stub().resolves([{ connectorId, orgId: 'org-1', at: 1 }]),
+          getJobStatus: sinon.stub().resolves({ id: 'old-job' }),
+        });
+      const byId = (item: object) => ({ statusCode: 200, data: { success: true, items: [item], hasMore: false } });
+      const run = (scheduler: any) =>
+        new ScheduledJobsBackfillMigration(
+          makeLogger() as any, makeKvStore('true') as any, scheduler, makeAppConfig(), noBackoff,
+        ).run({ ignoreDoneFlag: true });
+
+      it('has its existing job rewritten from its own settings, asked for by id', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId(sampleScheduledItem));
+
+        await run(scheduler);
+
+        expect(executeStub.secondCall.args[0]).to.contain('connectorIds=conn-1');
+        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+        expect(scheduler.scheduleJob.firstCall.args[2].scheduleConfig.intervalMinutes).to.equal(30);
+        expect(scheduler.clearReconcilePending.calledOnceWith('conn-1')).to.equal(true);
+      });
+
+      it('loses its job when its settings say sync is off', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ ...sampleScheduledItem, isActive: false }));
+
+        await run(scheduler);
+
+        expect(scheduler.removeJob.calledOnceWith('Confluence', 'conn-1', 'org-1')).to.equal(true);
+        expect(scheduler.clearReconcilePending.calledOnce).to.equal(true);
+      });
+
+      it('keeps its job and stays owed when its settings cannot be read', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ connectorId: 'conn-1', unreadable: true }));
+
+        await run(scheduler);
+
+        expect(scheduler.removeJob.called || scheduler.removeJobsForConnector.called).to.equal(false);
+        expect(scheduler.scheduleJob.called).to.equal(false);
+        expect(scheduler.clearReconcilePending.called).to.equal(false);
+      });
+
+      it('still applies later batches when one batch cannot be read', async () => {
+        const owedIds = Array.from({ length: 51 }, (_, i) => `conn-${i}`)
+        const scheduler = makeScheduler({
+          listReconcilesPending: sinon.stub().resolves(owedIds.map((connectorId) => ({ connectorId, orgId: 'org-1', at: 1 }))),
+        });
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().rejects(new Error('connector service busy'));
+        executeStub.onThirdCall().resolves(byId({ ...sampleScheduledItem, connectorId: 'conn-50' }));
+
+        const result = await run(scheduler);
+
+        expect(executeStub.thirdCall.args[0]).to.contain('connectorIds=conn-50');
+        expect(scheduler.scheduleJob.calledOnce).to.equal(true);
+        expect(scheduler.clearReconcilePending.calledOnceWith('conn-50')).to.equal(true);
+        expect(result.errored).to.equal(1);
+      });
+
+      it('loses its job when the connector no longer exists', async () => {
+        const scheduler = owed('conn-1');
+        executeStub.onFirstCall().resolves(okEnumerationResponse([]));
+        executeStub.onSecondCall().resolves(byId({ connectorId: 'conn-1', missing: true }));
+
+        await run(scheduler);
+
+        expect(scheduler.removeJobsForConnector.calledOnceWith('conn-1', 'org-1')).to.equal(true);
+      });
+    });
+  });
+
   describe('successful schedule', () => {
     it('schedules each SCHEDULED+active connector and sets the flag', async () => {
       const logger = makeLogger();
@@ -161,7 +309,7 @@ describe('ScheduledJobsBackfillMigration', () => {
       // Flag set after success
       expect(
         kv.set.calledOnceWith(
-          configPaths.connectorSyncScheduledJobsMigration,
+          configPaths.connectorSyncScheduledJobsMigrationV2,
           'true',
         ),
       ).to.equal(true);

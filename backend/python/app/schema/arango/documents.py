@@ -1,6 +1,8 @@
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     ConnectorScopes,
+    DeleteSource,
     OriginTypes,
     PermissionModel,
 )
@@ -25,6 +27,18 @@ orgs_schema = {
             "updatedAtTimestamp": {"type": "number"},
             "sourceCreatedAtTimestamp": {"type": ["number", "null"]},
             "sourceLastModifiedTimestamp": {"type": ["number", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
+            "entityIndexSweptAt": {"type": ["number", "null"]},
+            "entityIndexSweepOffset": {"type": ["string", "null"]},
+            "entityIndexSweepFailures": {"type": ["integer", "null"]},
         },
         "required": ["accountType", "isActive"],
         "additionalProperties": False,
@@ -156,26 +170,75 @@ app_schema = {
             "isConfigured": {"type": "boolean", "default": False},
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
+            "pendingResync": {"type": ["boolean", "null"]},
+            # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
+            "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncOutcome": {"type": ["string", "null"]},
+            "lastSyncSummary": {"type": ["string", "null"]},
+            "queuedAtTimestamp": {"type": ["number", "null"]},
+            # Set when sync is turned on; see toggle_connector_instance.
+            "enabledAtTimestamp": {"type": ["number", "null"]},
             "vectorMembershipBackfilled": {"type": "boolean", "default": False},
             "vectorMembershipBackfillAfterKey": {"type": ["string", "null"]},
             "vectorMembershipBackfillFailures": {"type": ["integer", "null"]},
             "vectorMembershipBackfillAttempts": {"type": ["integer", "null"]},
             "vectorMembershipBackfillVrids": {"type": ["integer", "null"]},
             "vectorMembershipBackfillExhausted": {"type": ["boolean", "null"]},
+            # app.modules.indexing.entity_index_rebuild
+            "entityIndexState": {"type": ["string", "null"]},
+            "entityIndexPhase": {"type": ["string", "null"]},
+            "entityIndexAfterKey": {"type": ["string", "null"]},
+            "entityIndexAttempts": {"type": ["integer", "null"]},
+            "entityIndexFailures": {"type": ["integer", "null"]},
+            "entityIndexExhausted": {"type": ["boolean", "null"]},
+            "entityIndexTarget": {"type": ["string", "null"]},
+            "entityIndexErrors": {"type": ["integer", "null"]},
+            # app.modules.indexing.record_label_repair
+            "recordLabelRepairState": {"type": ["string", "null"]},
+            "recordLabelRepairAfterKey": {"type": ["string", "null"]},
+            "recordLabelRepairRepaired": {"type": ["integer", "null"]},
+            "recordLabelRepairSkipped": {"type": ["integer", "null"]},
+            "recordLabelRepairMissing": {"type": ["integer", "null"]},
+            "recordLabelRepairFailures": {"type": ["integer", "null"]},
+            "recordLabelRepairAttempts": {"type": ["integer", "null"]},
+            "recordLabelRepairExhausted": {"type": ["boolean", "null"]},
+            # app.connectors.services.stored_content_heal
+            "storedContentHealState": {"type": ["string", "null"]},
+            "storedContentHealAfterKey": {"type": ["string", "null"]},
+            "storedContentHealChecked": {"type": ["integer", "null"]},
+            "storedContentHealMissing": {"type": ["integer", "null"]},
+            "storedContentHealHealed": {"type": ["integer", "null"]},
+            "storedContentHealOrphaned": {"type": ["integer", "null"]},
+            "storedContentHealFailures": {"type": ["integer", "null"]},
+            "storedContentHealAttempts": {"type": ["integer", "null"]},
+            "storedContentHealExhausted": {"type": ["boolean", "null"]},
+            "rootMembershipRequested": {"type": ["boolean", "null"]},
             "createdBy": {"type": ["string", "null"]},
             "updatedBy": {"type": ["string", "null"]},
+            "authenticatedBy": {"type": ["string", "null"]},
+            "lastSyncedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
             "status": {"type": ["string", "null"]},
             "isLocked": {"type": ["boolean", "null"]},
+            "ownerDeviceId": {"type": ["string", "null"]},
+            "ownerDeviceName": {"type": ["string", "null"]},
             "permissionModel": {
                 "type": ["string", "null"],
-                "enum": [m.value for m in PermissionModel] + [None],
+                "enum": [
+                    PermissionModel.APP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
             },
             # KB-specific optional fields
             "orgId": {"type": ["string", "null"]},
             "description": {"type": ["string", "null"]},
             "hideConnector": {"type": ["boolean", "null"]},
+            # Excludes this KB from list/browse/unscoped-search surfaces even
+            # though it is a normal KB app; explicit filters.kb still resolves it.
+            "isHidden": {"type": ["boolean", "null"]},
         },
         "required": [
             "name",
@@ -206,6 +269,7 @@ record_schema = {
             "externalRevisionId": {"type": ["string", "null"], "default": None},
             "externalRootGroupId": {"type": ["string", "null"]},
             "recordGroupId": {"type": ["string", "null"]},
+            "rootRecordGroupId": {"type": ["string", "null"]},
             "recordType": {
                 "type": "string",
                 "enum": [record_type.value for record_type in RecordType],
@@ -229,7 +293,31 @@ record_schema = {
             "isArchived": {"type": "boolean", "default": False},
             "isVLMOcrProcessed": {"type": "boolean", "default": False},
             "deletedByUserId": {"type": ["string", "null"]},
+            # Soft delete: when the record entered the trash, who put it there,
+            # the batch a restore brings back together, and the purge's retries.
+            "deletedAtTimestamp": {"type": ["number", "null"]},
+            "deleteSource": {
+                "type": ["string", "null"],
+                "enum": [source.value for source in DeleteSource] + [None],
+            },
+            "deleteBatchId": {"type": ["string", "null"]},
+            "purgeAttempts": {"type": ["number", "null"]},
+            "purgeLastError": {"type": ["string", "null"]},
+            # The source id a trashed record gave up when a live record moved onto it.
+            "trashedExternalRecordId": {"type": ["string", "null"]},
+            # When a restore brought the record back; see RESTORED_AT_FIELD.
+            "restoredAtTimestamp": {"type": ["number", "null"]},
             "processingStartedAt": {"type": ["number", "null"]},
+            # Clocks the stranded-record sweep in indexing_main ages rows on,
+            # and how many times it has re-sent the record since it was queued.
+            "queuedAtTimestamp": {"type": ["number", "null"]},
+            "lastRepublishedAt": {"type": ["number", "null"]},
+            "republishCount": {"type": ["number", "null"]},
+            # A record whose source rate-limited its content fetch: when it may
+            # be sent again, and when this run of waits began (see
+            # app/modules/indexing/rate_limit_deferral.py).
+            "retryNotBefore": {"type": ["number", "null"]},
+            "rateLimitedSince": {"type": ["number", "null"]},
             "parsingStatus": {
                 "type": "string",
                 "enum": [
@@ -275,8 +363,21 @@ record_schema = {
             "isLatestVersion": {"type": "boolean", "default": True},
             "isDirty": {"type": "boolean", "default": False},  # needs re indexing
             "reason": {"type": ["string", "null"]},  # fail reason, didn't index reason
+            # Promoted duplicates of this record still need its taxonomy copied.
+            "duplicateReconcilePending": {"type": "boolean"},
+            # app.modules.indexing.duplicate_reconcile
+            "duplicateReconcileAttempts": {"type": ["integer", "null"]},
+            "duplicateReconcileDueAt": {"type": ["number", "null"]},
+            "uploadedBy": {"type": ["string", "null"]},  # uploader userId
             "lastIndexTimestamp": {"type": ["number", "null"]},
+            "hasIndexedCopy": {"type": "boolean"},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
+            # A pattern, not an enum: widening an enum on this strict schema is a
+            # release that must ship before any writer of the new value.
+            "entityExtractionStatus": {"type": "string", "pattern": "^[A-Z_]{1,32}$"},
+            "lastEntityExtractionTimestamp": {"type": ["number", "null"]},
+            "entityExtractionStrategy": {"type": ["string", "null"]},
+            "entityExtractorVersion": {"type": ["string", "null"]},
             "summaryDocumentId": {"type": ["string", "null"]},
             "virtualRecordId": {"type": ["string", "null"], "default": None},
             "previewRenderable": {"type": ["boolean", "null"], "default": True},
@@ -286,6 +387,15 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Permission traversal input, read per visited node. Per node and
+            # mixable within a connector; RESTRICTED applies to the node it is
+            # on and is never inherited by its children. Absent reads as OPEN,
+            # so it stays out of "required".
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "storageDocumentId": {"type": ["string", "null"]},
@@ -470,6 +580,7 @@ ticket_record_schema = {
         "properties": {
             "orgId": {"type": "string"},
             "status": {"type": ["string", "null"]},
+            "sourceStatus": {"type": ["string", "null"]},
             "priority": {"type": ["string", "null"]},
             "type": {"type": ["string", "null"]},
             "deliveryStatus": {"type": ["string", "null"]},
@@ -728,6 +839,25 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Permission traversal input, as on records: per node, and
+            # RESTRICTED never cascades to children.
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
+            # Whether container-filtered search may trust this group's grant
+            # instead of checking each record. Null means "verify" — the safe
+            # state, and the only one until a connector proves otherwise.
+            # APP_LEVEL is excluded: it describes a connector, not a group.
+            "permissionModel": {
+                "type": ["string", "null"],
+                "enum": [
+                    PermissionModel.RECORD_GROUP_LEVEL.value,
+                    PermissionModel.RECORD_LEVEL.value,
+                    None,
+                ],
+            },
             "connectorId": {"type": ["string", "null"]},
             "parentExternalGroupId": {"type": ["string", "null"]},
             "webUrl": {"type": ["string", "null"]},
@@ -752,6 +882,118 @@ record_group_schema = {
     },
     "level": "strict",
     "message": "Document does not match the record group schema.",
+}
+
+named_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "kind": {"type": "string"},
+            "category": {"type": "string"},
+            "tags": {"type": "array", "items": {"type": "string"}},
+            "name": {"type": "string"},
+            "normKey": {"type": "string"},
+            "aliases": {"type": "array", "items": {"type": "string"}},
+            "normalizedAliases": {"type": "array", "items": {"type": "string"}},
+            "schemaVersion": {"type": "integer"},
+            # Reserved: a field added to this strict schema later would break rollback.
+            "keyScheme": {"type": ["integer", "null"]},
+            "mergedInto": {"type": ["string", "null"]},
+            "orphanedAt": {"type": ["number", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mergedAt": {"type": ["number", "null"]},
+            "types": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["orgId", "kind", "name", "normKey"],
+        # Open: a field a later release adds must not make this release's schema,
+        # reapplied on rollback, reject updates to the documents that carry it.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity schema.",
+}
+
+# One typed value (date, amount, quantity, percentage, duration, age) a record
+# mentions. Keyed by record, never shared between records: a shared value node
+# such as "2026" or "USD" becomes a hub every record write locks.
+value_mention_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            "kind": {"type": "string"},
+            "normKey": {"type": "string"},
+            "name": {"type": "string"},
+            "startMs": {"type": ["number", "null"]},
+            "endMs": {"type": ["number", "null"]},
+            "granularity": {"type": ["string", "null"]},
+            "timex": {"type": ["string", "null"]},
+            "amount": {"type": ["string", "null"]},
+            "amountFloat": {"type": ["number", "null"]},
+            "currency": {"type": ["string", "null"]},
+            "numericValue": {"type": ["number", "null"]},
+            "unit": {"type": ["string", "null"]},
+            "dimension": {"type": ["string", "null"]},
+            "siValue": {"type": ["number", "null"]},
+            "durationIso": {"type": ["string", "null"]},
+            "durationSeconds": {"type": ["number", "null"]},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "schemaVersion": {"type": "integer"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "kind", "normKey"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the value mention schema.",
+}
+
+# A record whose named-entity graph write failed after its retries. Keyed by the
+# record; the recovery pass writes the record's stored extraction again when due.
+named_entity_persist_retry_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "orgId": {"type": "string"},
+            "recordId": {"type": "string"},
+            # AQL arithmetic yields a double, so a count it increments is a number.
+            "attempts": {"type": "number"},
+            "dueAt": {"type": "number"},
+            "lastError": {"type": ["string", "null"]},
+            # The job extracts again from the stored blocks instead of re-writing
+            # the stored extraction (app.modules.indexing.named_entity_completion).
+            "reextract": {"type": ["boolean", "null"]},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["orgId", "recordId", "attempts", "dueAt"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the named entity persist retry schema.",
 }
 
 department_schema = {
@@ -866,6 +1108,7 @@ agent_schema = {
             },
             "isActive": {"type": "boolean", "default": True},
             "isServiceAccount": {"type": "boolean", "default": False},
+            "sendUserContext": {"type": "boolean", "default": True},
             "createdBy": {"type": "string"},
             "updatedBy": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
@@ -1177,10 +1420,14 @@ people_schema = {
     "rule": {
         "type": "object",
         "properties": {
-            "_key": {"type": "string"},  # deterministic UUID based on email
+            "_key": {"type": "string"},  # uuid4; (orgId, email) is the business key (composite unique index)
             "email": {"type": "string"},
+            # Not in "required": pre-existing documents written before org-scoping
+            # was added have no orgId and must stay schema-valid.
+            "orgId": {"type": ["string", "null"]},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
+            "fullName": {"type": ["string", "null"]},
             "firstName": {"type": ["string", "null"]},
             "lastName": {"type": ["string", "null"]},
             "phone": {"type": ["string", "null"]},
@@ -1271,6 +1518,7 @@ mcp_server_schema = {
             "displayName": {"type": "string"},
             "typeId": {"type": ["string", "null"]},  # Catalog type id, null for custom servers
             "instanceId": {"type": "string"},  # /services/mcp/instances/{orgId}/{instanceId}
+            "allTools": {"type": "boolean"},  # every tool the server offers at chat time, not just the saved list
             "userId": {"type": "string"},  # Executing user (used for etcd auth path lookup)
             "createdBy": {"type": "string"},
             "createdAtTimestamp": {"type": "number"},
@@ -1314,7 +1562,7 @@ agent_skills_schema = {
             "concepts": {"type": "array", "items": {"type": "string"}, "default": []},
             "related": {"type": "array", "items": {"type": "string"}, "default": []},
             "requires": {"type": "array", "items": {"type": "string"}, "default": []},
-            "status": {"type": "string", "enum": ["active", "deprecated"]},
+            "status": {"type": "string", "enum": ["active", "deprecated", "disabled"]},
             "source": {"type": "string"},
             "version": {"type": "string"},
             "deprecatedReason": {"type": ["string", "null"]},

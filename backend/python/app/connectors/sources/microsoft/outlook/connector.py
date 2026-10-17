@@ -19,6 +19,7 @@ from msgraph.generated.models.user import User  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     CollectionNames,
     Connectors,
     MimeTypes,
@@ -32,6 +33,13 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    not_downloadable,
+    not_found_at_source,
+    raise_for_stream_fetch,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
@@ -951,6 +959,11 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.GROUP_MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                # The group grant is the audience. Posts and attachments inherit
+                # it; an inherit edge to the app would open the mailbox to everyone
+                # who can open the connector.
+                inherit_permissions=False,
                 web_url=None,
                 source_created_at=created_at,
                 source_updated_at=created_at,
@@ -1171,7 +1184,9 @@ class OutlookConnector(BaseConnector):
 
             # Save batch
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(
+                    batch_records, replace_permissions=True
+                )
 
             return len(batch_records)
 
@@ -1273,6 +1288,7 @@ class OutlookConnector(BaseConnector):
                 mime_type=MimeTypes.HTML.value,
                 external_record_group_id=group_id,
                 record_group_type=RecordGroupType.GROUP_MAILBOX,
+                inherit_permissions=True,
                 subject=thread_topic,
                 from_email=sender_email,
                 to_emails=to_emails,
@@ -1288,13 +1304,8 @@ class OutlookConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.GROUP_CONVERSATIONS, default=True):
                 mail_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Create group-level permission
-            permission = Permission(
-                external_id=group.source_user_group_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.GROUP,
-            )
-
+            # The group mailbox already holds the grant. A copy on the post
+            # would be a second path to the same people.
             return RecordUpdate(
                 record=mail_record,
                 is_new=is_new,
@@ -1302,8 +1313,8 @@ class OutlookConnector(BaseConnector):
                 is_deleted=False,
                 metadata_changed=False,
                 content_changed=is_updated,
-                permissions_changed=True,
-                new_permissions=[permission],
+                permissions_changed=False,
+                new_permissions=[],
                 external_record_id=post_id,
             )
 
@@ -1317,7 +1328,7 @@ class OutlookConnector(BaseConnector):
         group: AppUserGroup,
         thread: ConversationThread,
         post: Post,
-        post_permissions: list[Permission],
+        _post_permissions: list[Permission],
         parent_post_record_id: str,
     ) -> list[tuple[Record, list[Permission]]]:
         """Process attachments for a group post.
@@ -1379,6 +1390,7 @@ class OutlookConnector(BaseConnector):
                         parent_record_type=RecordType.GROUP_MAIL,
                         external_record_group_id=group_id,
                         record_group_type=RecordGroupType.GROUP_MAILBOX,
+                        inherit_permissions=True,
                         weburl=None,
                         is_file=True,
                         size_in_bytes=attachment.size or 0,
@@ -1390,7 +1402,7 @@ class OutlookConnector(BaseConnector):
                     if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                         attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                    attachment_records.append((attachment_record, post_permissions))
+                    attachment_records.append((attachment_record, []))
 
                 except Exception as e:
                     self.logger.error(f"Error processing group post attachment: {e}")
@@ -1449,35 +1461,40 @@ class OutlookConnector(BaseConnector):
     async def _download_group_post_attachment(
         self, group_id: str, thread_id: str, post_id: str, attachment_id: str
     ) -> bytes:
-        """Download attachment content from a group post."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content from a group post.
 
-            response = await self.external_outlook_client.groups_threads_posts_get_attachments(
-                group_id=group_id,
-                conversationThread_id=thread_id,
-                post_id=post_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response = await self.external_outlook_client.groups_threads_posts_get_attachments(
+            group_id=group_id,
+            conversationThread_id=thread_id,
+            post_id=post_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download group post attachment {attachment_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-
-            # Extract content_bytes from Pydantic object
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading group post attachment: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
     async def _process_users(self, org_id: str, users: list[AppUser]) -> AsyncGenerator[str, None]:
         """Process users sequentially."""
@@ -1592,7 +1609,7 @@ class OutlookConnector(BaseConnector):
                             "from_collection": CollectionNames.RECORDS.value,
                             "to_id": record.id,
                             "to_collection": CollectionNames.RECORDS.value,
-                            "relationType": RecordRelations.SIBLING.value
+                            "relationshipType": RecordRelations.SIBLING.value
                         }
                         edges.append(edge)
                         processed_count += 1
@@ -1601,7 +1618,7 @@ class OutlookConnector(BaseConnector):
             if edges:
                 try:
                     async with self.data_store_provider.transaction() as tx_store:
-                        await tx_store.batch_create_edges(edges, collection=CollectionNames.RECORD_RELATIONS.value)
+                        await tx_store.batch_create_edges(edges, collection=CollectionNames.NODE_RELATIONS.value)
                 except Exception as e:
                     self.logger.error(f"Error creating thread edges batch for user {user.email}: {e}")
                     processed_count = 0
@@ -1833,11 +1850,39 @@ class OutlookConnector(BaseConnector):
             self.logger.error(f"Error getting folders for user {user_id}: {e}")
             return [], set()
 
+    def _mailbox_external_id(self, user: AppUser) -> str:
+        """Stable id for the one record group that represents this user's mailbox."""
+        return f"mailbox:{user.source_user_id}"
+
+    def _transform_to_mailbox_record_group(self, user: AppUser) -> RecordGroup:
+        """The permission root for one user mailbox.
+
+        Exchange can grant another person a single folder, but Graph mail does
+        not return those ACLs and this connector does not read them. The owner
+        is the only audience, so the grant sits on this group and every folder,
+        mail and attachment inherits it.
+        """
+        label = user.email or user.full_name or "Mailbox"
+        return RecordGroup(
+            org_id=self.data_entities_processor.org_id,
+            name=label,
+            short_name=label,
+            description=f"Mailbox for {label}",
+            external_group_id=self._mailbox_external_id(user),
+            parent_external_group_id=None,
+            connector_name=Connectors.OUTLOOK,
+            connector_id=self.connector_id,
+            group_type=RecordGroupType.MAILBOX,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+            inherit_permissions=False,
+        )
+
     def _transform_folder_to_record_group(
         self,
         folder: MailFolder,
         user: AppUser,
-        is_top_level: bool = False
+        is_top_level: bool = False,
+        mailbox_external_id: str | None = None,
     ) -> RecordGroup | None:
         """
         Transform Outlook mail folder to RecordGroup entity.
@@ -1845,7 +1890,7 @@ class OutlookConnector(BaseConnector):
         Args:
             folder: MailFolder Pydantic object from Microsoft Graph API
             user: AppUser who owns this mailbox
-            is_top_level: Whether this is a top-level folder (no parent should be stored)
+            is_top_level: Whether this folder hangs directly under the mailbox
 
         Returns:
             RecordGroup object or None if transformation fails
@@ -1858,9 +1903,9 @@ class OutlookConnector(BaseConnector):
             if not folder_id:
                 return None
 
-            # Get parent folder ID for hierarchy
-            # Top-level folders should not store parent_external_group_id even if API returns it
-            parent_folder_id = None if is_top_level else folder.parent_folder_id
+            # A top-level folder hangs under the mailbox. Graph also returns a
+            # parent id for those, which is the message-root and not a folder we sync.
+            parent_folder_id = mailbox_external_id if is_top_level else folder.parent_folder_id
 
             # Create simple description
             description = f"{folder_name} folder for {user.email}"
@@ -1875,6 +1920,8 @@ class OutlookConnector(BaseConnector):
                 connector_name=Connectors.OUTLOOK,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.MAILBOX,
+                permission_model=PermissionModel.RECORD_GROUP_LEVEL,
+                inherit_permissions=True,
                 web_url=None,
                 source_created_at=None,
                 source_updated_at=None,
@@ -1909,31 +1956,32 @@ class OutlookConnector(BaseConnector):
                 self.logger.debug(f"No folders to sync for user {user.email}")
                 return []
 
-            # Transform folders to RecordGroups
+            mailbox_external_id = self._mailbox_external_id(user)
+            owner_permission = Permission(
+                email=user.email,
+                type=PermissionType.OWNER,
+                entity_type=EntityType.USER,
+            )
+
+            # Transform folders to RecordGroups. They inherit the mailbox grant.
             record_groups = []
             for folder in folders:
                 is_top_level = folder.id in top_level_folder_ids
-                record_group = self._transform_folder_to_record_group(folder, user, is_top_level)
+                record_group = self._transform_folder_to_record_group(
+                    folder, user, is_top_level, mailbox_external_id
+                )
                 if record_group:
                     record_groups.append(record_group)
 
             self.logger.info(f"Syncing {len(record_groups)} folders for user {user.email}")
 
-            # Sync to database with owner permission for mailbox owner
             if record_groups:
-                # Create owner permission for the mailbox owner
-                owner_permission = Permission(
-                    email=user.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER
+                # The mailbox is written first so a top-level folder's parent exists
+                # in the same call. [] on a folder drops a grant an older sync stored.
+                await self.data_entities_processor.on_new_record_groups(
+                    [(self._transform_to_mailbox_record_group(user), [owner_permission])]
+                    + [(rg, []) for rg in record_groups]
                 )
-
-                # Apply owner permission to all folders for this user
-                record_groups_with_permissions = [
-                    (rg, [owner_permission]) for rg in record_groups
-                ]
-
-                await self.data_entities_processor.on_new_record_groups(record_groups_with_permissions)
 
             # Return raw folder data for email processing
             return folders
@@ -1990,13 +2038,17 @@ class OutlookConnector(BaseConnector):
                         mail_records.append(update.record)
 
                 if len(batch_records) >= batch_size:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(
+                    batch_records, replace_permissions=True
+                )
                     processed_count += len(batch_records)
                     batch_records = []
 
             # Process remaining records
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(
+                    batch_records, replace_permissions=True
+                )
                 processed_count += len(batch_records)
 
             # Update folder-specific sync point only if all batches were processed successfully
@@ -2235,6 +2287,7 @@ class OutlookConnector(BaseConnector):
                 parent_external_record_id=None,
                 external_record_group_id=folder_id,
                 record_group_type=RecordGroupType.MAILBOX,
+                inherit_permissions=True,
                 subject=message.subject or OutlookDefaults.SUBJECT,
                 from_email=self._extract_email_from_recipient(message.from_),
                 to_emails=[self._extract_email_from_recipient(r) for r in (message.to_recipients or [])],
@@ -2269,72 +2322,14 @@ class OutlookConnector(BaseConnector):
             return None
 
     async def _extract_email_permissions(self, message: Message, record_id: str | None, inbox_owner_email: str) -> list[Permission]:
-        """Extract permissions from email recipients.
+        """Mails inherit the mailbox grant. Recipients are not a second audience.
 
-        Args:
-            message: Pydantic Message object
-
-        Note: This method is for PERSONAL mailbox emails only.
+        A recipient has their own copy in their own mailbox. A grant here would
+        let them read this mailbox's copy, and it would duplicate the owner
+        grant the mailbox record group already carries.
         """
-        permissions = []
-
-        try:
-            # message is a Pydantic Message object
-            # Process all recipients (existing logic)
-            all_recipients = []
-            all_recipients.extend(message.to_recipients or [])
-            all_recipients.extend(message.cc_recipients or [])
-            all_recipients.extend(message.bcc_recipients or [])
-
-            # Add sender
-            from_recipient = message.from_
-            if from_recipient:
-                all_recipients.append(from_recipient)
-
-            # Track unique emails
-            processed_emails = set()
-            inbox_owner_email_lower = inbox_owner_email.lower()
-            owner_found = False
-
-            # Process individual recipients
-            for recipient in all_recipients:
-                try:
-                    email_address = self._extract_email_from_recipient(recipient)
-                    if email_address and email_address not in processed_emails:
-                        processed_emails.add(email_address)
-
-                        # Inbox owner always gets OWNER permission, others get READ
-                        if email_address.lower() == inbox_owner_email_lower:
-                            permission_type = PermissionType.OWNER
-                            owner_found = True
-                        else:
-                            permission_type = PermissionType.READ
-
-                        permission = Permission(
-                            email=email_address,
-                            type=permission_type,
-                            entity_type=EntityType.USER,
-                        )
-                        permissions.append(permission)
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to extract email from recipient {recipient}: {e}")
-                    continue
-
-            # If inbox owner not found in recipients, add OWNER permission
-            if not owner_found and inbox_owner_email:
-                owner_permission = Permission(
-                    email=inbox_owner_email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-                permissions.append(owner_permission)
-
-            return permissions
-
-        except Exception as e:
-            self.logger.error(f"Error extracting permissions: {e}")
-            return []
+        del message, record_id, inbox_owner_email
+        return []
 
     async def _create_attachment_record(
         self,
@@ -2400,6 +2395,7 @@ class OutlookConnector(BaseConnector):
             parent_record_type=RecordType.MAIL,
             external_record_group_id=folder_id,
             record_group_type=RecordGroupType.MAILBOX,
+            inherit_permissions=True,
             weburl=parent_weburl,
             is_file=True,
             size_in_bytes=attachment.size or 0,
@@ -2569,10 +2565,7 @@ class OutlookConnector(BaseConnector):
         """Stream record content (email or attachment)."""
         try:
             if not self.external_outlook_client:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail=OutlookHTTPDetails.CLIENT_NOT_INITIALIZED,
-                )
+                raise connector_not_ready(self.display_name)
 
             # Recover from an idle-closed HTTP transport before the first Graph call.
             await self._reinitialize_client_if_needed()
@@ -2602,16 +2595,23 @@ class OutlookConnector(BaseConnector):
                 )
 
                 if not response.success:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.NOT_FOUND.value,
-                        detail=f"Post not found: {response.error}",
+                    self.logger.warning(
+                        "Failed to fetch group post %s: %s",
+                        post_id,
+                        response.error,
+                    )
+                    # MSGraphResponse has no HTTP status — do not invent a 404.
+                    raise RuntimeError(
+                        response.error or f"Failed to fetch group post {post_id}"
                     )
 
                 # response.data is a Pydantic Post object
                 post = response.data
+                if not post:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Post object
-                post_body = post.body.content or '' if post and post.body else ''
+                post_body = post.body.content or '' if post.body else ''
 
                 # Augment with metadata for indexing
                 if isinstance(record, MailRecord):
@@ -2670,9 +2670,11 @@ class OutlookConnector(BaseConnector):
             if record.record_type == RecordType.MAIL:
                 # User email - message is a Pydantic Message object
                 message = await self._get_message_by_id_external(user_id, record.external_record_id)
+                if not message:
+                    raise not_found_at_source(self.display_name)
 
                 # Extract body content from Pydantic Message object
-                if message and message.body:
+                if message.body:
                     email_body = message.body.content or ''
                 else:
                     email_body = ''
@@ -2714,64 +2716,70 @@ class OutlookConnector(BaseConnector):
                     detail=OutlookHTTPDetails.UNSUPPORTED_RECORD_TYPE,
                 )
 
+        except HTTPException:
+            raise
         except Exception as e:
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}",
-            ) from e
+            self.logger.error(
+                f"❌ Error streaming record {record.id}: {e}", exc_info=True
+            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _get_message_by_id_external(self, user_id: str, message_id: str) -> Message | None:
         """Get a specific message by ID using external Outlook API.
 
-        Returns:
-            Pydantic Message object or None
+        Returns None only when Graph succeeded but returned no message. Every
+        failure raises: the caller turns None into a 404, and an expired token
+        or a 429 must not be reported to the user as a deleted email.
         """
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
-                user_id=user_id,
-                message_id=message_id
-            )
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_get_messages(
+            user_id=user_id,
+            message_id=message_id
+        )
 
-            if not response.success:
-                self.logger.error(f"Failed to get message {message_id}: {response.error}")
-                return None
+        if not response.success:
+            self.logger.error(f"Failed to get message {message_id}: {response.error}")
+            # MSGraphResponse has no HTTP status — do not invent a 404.
+            raise RuntimeError(response.error or f"Failed to get message {message_id}")
 
-            return response.data
-
-        except Exception as e:
-            self.logger.error(f"Error getting message {message_id}: {e}")
-            return None
+        return response.data
 
     async def _download_attachment_external(self, user_id: str, message_id: str, attachment_id: str) -> bytes:
-        """Download attachment content using external Outlook API."""
-        try:
-            if not self.external_outlook_client:
-                raise Exception("External Outlook client not initialized")
+        """Download attachment content using external Outlook API.
 
-            response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
-                user_id=user_id,
-                message_id=message_id,
-                attachment_id=attachment_id
+        Raises rather than returning empty bytes: a failed download that returns
+        ``b''`` streams a zero-byte file with a 200 the client cannot detect.
+        """
+        if not self.external_outlook_client:
+            raise connector_not_ready(self.display_name)
+
+        response: OutlookCalendarContactsResponse = await self.external_outlook_client.users_messages_get_attachments(
+            user_id=user_id,
+            message_id=message_id,
+            attachment_id=attachment_id
+        )
+
+        if not response.success:
+            self.logger.error(
+                f"Failed to download attachment {attachment_id} for message {message_id}: {response.error}"
+            )
+        raise_for_stream_fetch(
+            success=response.success,
+            has_payload=response.data is not None,
+            connector=self.display_name,
+            message=response.error,
+        )
+
+        content_bytes = getattr(response.data, "content_bytes", None)
+        if not content_bytes:
+            raise not_downloadable(
+                OutlookHTTPDetails.ATTACHMENT_NOT_DOWNLOADABLE,
+                connector=self.display_name,
             )
 
-            if not response.success or not response.data:
-                return b''
-
-            # response.data is a Pydantic FileAttachment object
-            attachment_data = response.data
-            content_bytes = attachment_data.content_bytes if attachment_data else None
-
-            if not content_bytes:
-                return b''
-
-            return self._decode_content_bytes(content_bytes)
-
-        except Exception as e:
-            self.logger.error(f"Error downloading attachment {attachment_id} for message {message_id}: {e}")
-            return b''
+        return self._decode_content_bytes(content_bytes)
 
 
     def get_signed_url(self, record: Record) -> str | None:
@@ -2878,7 +2886,9 @@ class OutlookConnector(BaseConnector):
 
             # Update DB and publish events for updated records
             if all_updated_records_with_permissions:
-                await self.data_entities_processor.on_new_records(all_updated_records_with_permissions)
+                await self.data_entities_processor.on_new_records(
+                    all_updated_records_with_permissions, replace_permissions=True
+                )
                 self.logger.info(f"Updated {len(all_updated_records_with_permissions)} records in DB that changed at source")
 
             # Publish reindex events for non-updated records
@@ -3457,23 +3467,6 @@ class OutlookConnector(BaseConnector):
                 self.logger.debug(f"GROUP_MAIL attachment {attachment_id} has not changed at source")
                 return None
 
-            # Get group info for permissions
-            group_data = await self.data_entities_processor.get_user_group_by_external_id(
-                connector_id=self.connector_id,
-                external_id=group_id
-            )
-
-            if not group_data:
-                self.logger.warning(f"Group {group_id} not found in database")
-                return None
-
-            # Create group permission (same as sync)
-            permission = Permission(
-                external_id=group_id,
-                type=PermissionType.READ,
-                entity_type=EntityType.GROUP,
-            )
-
             content_type = attachment.content_type
             if not content_type:
                 return None
@@ -3501,6 +3494,7 @@ class OutlookConnector(BaseConnector):
                 parent_record_type=RecordType.GROUP_MAIL,
                 external_record_group_id=group_id,
                 record_group_type=RecordGroupType.GROUP_MAILBOX,
+                inherit_permissions=True,
                 weburl=None,
                 is_file=True,
                 size_in_bytes=attachment.size or 0,
@@ -3513,7 +3507,7 @@ class OutlookConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            return (attachment_record, [permission])
+            return (attachment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching GROUP_MAIL attachment {record.external_record_id}: {e}")

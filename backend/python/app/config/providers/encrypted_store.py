@@ -14,10 +14,16 @@ from app.config.key_value_store import KeyValueStore
 from app.config.key_value_store_factory import KeyValueStoreFactory, StoreConfig
 from app.utils.encryption.encryption_service import EncryptionService
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 # Constants
-ENCRYPTED_KEY_PARTS_COUNT = 2  # Number of colons in encrypted format: "iv:ciphertext:authTag"
+
+UNENCRYPTED_KEYS = (
+    config_node_constants.ENDPOINTS.value,
+    config_node_constants.STORAGE.value,
+    config_node_constants.MIGRATIONS.value,
+    config_node_constants.DEPLOYMENT.value,
+)
 
 T = TypeVar("T")
 
@@ -147,7 +153,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             raise ValueError("ETCD_URL environment variable is required")
 
         self.logger.debug("ETCD URL: %s", etcd_url)
-        self.logger.debug("ETCD Timeout: %s", os.getenv("ETCD_TIMEOUT", "5.0"))
+        self.logger.debug("ETCD Timeout (ms): %s", os.getenv("ETCD_TIMEOUT", "5000"))
 
         # Remove protocol if present
         if "://" in etcd_url:
@@ -179,7 +185,12 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     async def create_key(
         self, key: str, value: T, overwrite: bool = True, ttl: Optional[int] = None
     ) -> bool:
-        """Create a new key with optional encryption."""
+        """Create a new key with optional encryption.
+
+        Returns False when ``overwrite`` is False and the key already exists, or
+        when the store did not keep the value. Raises when the store fails, so
+        "already exists" is never how an outage is reported.
+        """
         try:
             # Check if key exists
             existing_value = await self.store.get_key(key)
@@ -191,13 +202,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
             # Use datetime-safe encoder to handle any datetime objects that may have leaked into the config
             value_json = json.dumps(value, cls=_DatetimeSafeEncoder)
 
-            EXCLUDED_KEYS = [
-                config_node_constants.ENDPOINTS.value,
-                config_node_constants.STORAGE.value,
-                config_node_constants.MIGRATIONS.value,
-                config_node_constants.DEPLOYMENT.value,
-            ]
-            encrypt_value = key not in EXCLUDED_KEYS
+            encrypt_value = key not in UNENCRYPTED_KEYS
 
             if encrypt_value:
                 # Encrypt the value
@@ -240,63 +245,33 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 "Failed to store config value for key %s: %s", key, str(e)
             )
             self.logger.exception("Detailed error:")
-            return False
+            raise
 
     async def update_value(
         self, key: str, value: T, ttl: Optional[int] = None
     ) -> None:
         return await self.create_key(key, value, True, ttl)
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         try:
-            encrypted_value = await self.store.get_key(key)
+            # Forwarded, or the backend's own swallow of an unreadable value
+            # answers None here and reads as a missing key.
+            if raise_on_error:
+                encrypted_value = await self.store.get_key(key, raise_on_error=True)
+            else:
+                encrypted_value = await self.store.get_key(key)
 
             if encrypted_value is not None:
                 try:
-                    if isinstance(encrypted_value, (dict, list, int, float)):
-                        return encrypted_value
-                        
-                    # Determine if value needs decryption
-                    UNENCRYPTED_KEYS = [
-                        config_node_constants.ENDPOINTS.value,
-                        config_node_constants.STORAGE.value,
-                        config_node_constants.MIGRATIONS.value,
-                        config_node_constants.DEPLOYMENT.value,
-                    ]
-                    needs_decryption = key not in UNENCRYPTED_KEYS
-
-                    # Get decrypted or raw value
-                    value = (
-                        self.encryption_service.decrypt(encrypted_value)
-                        if needs_decryption
-                        else encrypted_value
-                    )
-
-                    # Parse value — already-deserialized types pass through
-                    if isinstance(value, (dict, list, int, float)):
-                        result = value
-                    elif not needs_decryption:
-                        try:
-                            result = json.loads(value)
-                        except (json.JSONDecodeError, TypeError):
-                            try:
-                                # Legacy fallback: unencrypted values may have been
-                                # stored via Python's str() (single quotes,
-                                # True/False/None) instead of json.dumps().
-                                # Read-only: the next create_key() call will
-                                # overwrite with proper JSON, upgrading in place.
-                                result = ast.literal_eval(value)
-                            except (ValueError, SyntaxError):
-                                result = value
-                    else:
-                        result = json.loads(value)
-
-                    return result
-
+                    return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
                         f"Failed to process value for key {key}: {str(e)}"
                     )
+                    # A value came back and could not be read: not the same as
+                    # no value, so a caller that asked must not see None.
+                    if raise_on_error:
+                        raise
                     return None
             else:
                 self.logger.debug(f"No value found for key: {key}")
@@ -305,7 +280,39 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         except Exception as e:
             self.logger.error("Failed to get config %s: %s", key, str(e))
             self.logger.exception("Detailed error:")
+            if raise_on_error:
+                raise
             return None
+
+    def _decode_value(self, key: str, stored: object) -> T | None:
+        """Turn what the inner store returned for ``key`` into the caller's value."""
+        if isinstance(stored, (dict, list, int, float)):
+            return stored
+
+        needs_decryption = key not in UNENCRYPTED_KEYS
+        value = (
+            self.encryption_service.decrypt(stored)
+            if needs_decryption
+            else stored
+        )
+
+        # Parse value — already-deserialized types pass through
+        if isinstance(value, (dict, list, int, float)):
+            return value
+        if needs_decryption:
+            return json.loads(value)
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            try:
+                # Legacy fallback: unencrypted values may have been
+                # stored via Python's str() (single quotes,
+                # True/False/None) instead of json.dumps().
+                # Read-only: the next create_key() call will
+                # overwrite with proper JSON, upgrading in place.
+                return ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                return value
 
     async def delete_key(self, key: str) -> bool:
         return await self.store.delete_key(key)
@@ -319,67 +326,36 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         callback: Callable[[Optional[T]], None],
         error_callback: Optional[Callable[[Exception], None]] = None,
     ) -> None:
-        return await self.store.watch_key(key, callback, error_callback)
+        def on_change(stored: object) -> None:
+            if stored is None:
+                callback(None)
+                return
+            try:
+                value = self._decode_value(key, stored)
+            except Exception as e:
+                # Delivered here rather than raised: the Redis store ignores
+                # error_callback and only logs a callback's exception.
+                self.logger.error(
+                    "Failed to process watched value for key %s (%s)", key, type(e).__name__
+                )
+                if error_callback is None:
+                    raise
+                error_callback(e)
+                return
+            callback(value)
+
+        return await self.store.watch_key(key, on_change, error_callback)
 
     async def list_keys_in_directory(self, directory: str) -> List[str]:
-        """
-        List all keys in a directory, decrypting encrypted keys.
-
-        Args:
-            directory: Directory path to filter keys. If empty or "/", returns all keys.
-                      Otherwise, returns keys starting with this path.
-
-        Returns:
-            List of decrypted keys matching the directory prefix.
-        """
+        """Keys under `directory`. Only values are encrypted, never key names, so a directory
+        (ending in "/") is listed by the backend's own prefix scan instead of reading every key.
+        The root ("" or "/") lists every key; a prefix without the trailing slash is matched
+        as given, so "/a/b" still finds "/a/b-2/..." as it always has."""
         try:
-            # Get all keys from etcd (they are stored encrypted)
-            encrypted_keys = await self.store.get_all_keys()
-
-            if not encrypted_keys:
-                return []
-
-            # Normalize directory prefix for matching
-            directory_prefix = directory.rstrip("/") if directory and directory != "/" else ""
-
-            UNENCRYPTED_PREFIXES = [
-                config_node_constants.ENDPOINTS.value,
-                config_node_constants.STORAGE.value,
-                config_node_constants.MIGRATIONS.value,
-                config_node_constants.DEPLOYMENT.value,
-            ]
-
-            decrypted_keys = []
-            for encrypted_key in encrypted_keys:
-                try:
-                    # Check if key is unencrypted (excluded from encryption)
-                    is_unencrypted = any(encrypted_key.startswith(prefix) for prefix in UNENCRYPTED_PREFIXES)
-
-                    if is_unencrypted:
-                        decrypted_key = encrypted_key
-                    else:
-                        # Try to decrypt the key
-                        # Encrypted format: "iv:ciphertext:authTag" (3 parts)
-                        if encrypted_key.count(":") == ENCRYPTED_KEY_PARTS_COUNT:
-                            try:
-                                decrypted_key = self.encryption_service.decrypt(encrypted_key)
-                            except Exception:
-                                # Decryption failed, use as-is (might be unencrypted)
-                                decrypted_key = encrypted_key
-                        else:
-                            # Not in encrypted format, use as-is
-                            decrypted_key = encrypted_key
-
-                    # Filter by directory prefix if provided
-                    if not directory_prefix or decrypted_key.startswith(directory_prefix):
-                        decrypted_keys.append(decrypted_key)
-
-                except Exception as e:
-                    self.logger.debug(f"Skipping key due to error: {e}")
-                    continue
-
-            return decrypted_keys
-
+            if directory not in ("", "/") and directory.endswith("/"):
+                return await self.store.list_keys_in_directory(directory)
+            keys = await self.store.get_all_keys() or []
+            return keys if directory in ("", "/") else [key for key in keys if key.startswith(directory)]
         except Exception as e:
             self.logger.error(
                 "Failed to list keys in directory (%s)", type(e).__name__
@@ -398,37 +374,25 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
     # -------------------------------------------------------------------------
 
     async def publish_cache_invalidation(self, key: str) -> None:
-        """Publish a cache invalidation message for the given key.
-
-        Only works when using Redis as the backend.
-        """
-        if hasattr(self.store, 'publish_cache_invalidation'):
-            await self.store.publish_cache_invalidation(key)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support publish_cache_invalidation"
-            )
+        """Deprecated alias; use ``publish_change`` (KeyValueStore interface, R15)."""
+        await self.publish_change(key)
 
     async def subscribe_cache_invalidation(
         self, callback: Callable[[str], None]
-    ) -> asyncio.Task:
-        """Subscribe to cache invalidation messages.
+    ) -> Optional[Any]:
+        """Deprecated alias; use ``subscribe_changes`` (KeyValueStore interface, R15)."""
+        return await self.subscribe_changes(callback)
 
-        Only works when using Redis as the backend.
+    # -- KeyValueStore cross-process notification interface (R15) -----------
+    # Delegates to whatever the underlying store implements (Redis Pub/Sub,
+    # etcd's native watch, or the in-memory no-op) so this wrapper never
+    # branches on backend type.
 
-        Args:
-            callback: Function to call with the invalidated key when a message is received.
+    async def subscribe_changes(self, callback: Callable[[str], None]) -> Optional[Any]:
+        return await self.store.subscribe_changes(callback)
 
-        Returns:
-            The subscription task that can be cancelled to stop listening.
-        """
-        if hasattr(self.store, 'subscribe_cache_invalidation'):
-            return await self.store.subscribe_cache_invalidation(callback)
-        else:
-            self.logger.debug(
-                "Underlying store doesn't support subscribe_cache_invalidation"
-            )
-            # Return a no-op task for stores that don't support Pub/Sub
-            async def noop()  -> None:
-                pass
-            return asyncio.create_task(noop())
+    async def publish_change(self, key: str) -> None:
+        await self.store.publish_change(key)
+
+    async def unsubscribe_changes(self, handle: Any) -> None:  # noqa: ANN401
+        await self.store.unsubscribe_changes(handle)

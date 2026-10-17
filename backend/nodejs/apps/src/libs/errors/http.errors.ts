@@ -39,6 +39,12 @@ export class LargePayloadError extends HttpError {
   }
 }
 
+export class PaymentRequiredError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super('PAYMENT_REQUIRED', message, HTTP_STATUS.PAYMENT_REQUIRED, metadata);
+  }
+}
+
 export class ForbiddenError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('FORBIDDEN', message, HTTP_STATUS.FORBIDDEN, metadata);

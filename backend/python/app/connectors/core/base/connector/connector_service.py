@@ -4,6 +4,7 @@ from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
@@ -14,6 +15,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.thread_pool import (
     SharedConnectorThreadPool,
     ThreadPoolLease,
@@ -21,7 +23,7 @@ from app.connectors.core.thread_pool import (
 )
 from app.models.entities import AppUser, AppUserGroup, Record
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole
+from app.services.notification.types import NotificationSeverity, NotificationType, NotificationOrigin, NotificationRecipientRole, NotificationOutcome
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.services.notification.notification_service import NotificationService
 from app.sources.client.resilience import ResiliencePolicy
@@ -43,6 +45,35 @@ class ConnectorInitError(Exception):
     as a failure, so raising it there is safe."""
 
 
+def oauth_app_not_linked_error() -> ConnectorInitError:
+    """The error for a sign-in connector whose saved settings name no OAuth app.
+
+    Some connectors read their client ID and secret only from a linked OAuth app,
+    never from client credentials saved on the connector itself. Without the link
+    they cannot start, even when sign-in already succeeded."""
+    return ConnectorInitError(
+        "This connector is not linked to an OAuth app, so it cannot start. "
+        "An admin can fix this on the connector's Authenticate Instance tab: choose "
+        "or create an OAuth app and save, then sign in again on the Authorize tab."
+    )
+
+
+class ConnectionCheckResult(BaseModel):
+    """Outcome of trying credentials before they are saved. ``message`` is shown to the user."""
+
+    success: bool
+    message: str
+
+
+class ConnectorSyncSkippedError(Exception):
+    """Sync could not run now. Callers log ``code`` and treat the task as
+    skipped, not crashed; nothing is persisted."""
+
+    def __init__(self, code: str, message: str = "") -> None:
+        super().__init__(message or code)
+        self.code = code
+
+
 class BaseConnector(ABC):
     """Base abstract class for all connectors"""
     logger: Logger
@@ -55,11 +86,16 @@ class BaseConnector(ABC):
     scope: str
     created_by: str
     creator_email: Optional[str]
+    last_synced_by: Optional[str]
     _notification_service: NotificationService | None
     _notification_cache: dict[str, tuple[int, int]] = {}
     # Set by ConnectorFactory after construction, before init(). Connectors built
     # directly (tests, scripts) fall back to the process-wide pool.
     _shared_thread_pool: SharedConnectorThreadPool | None = None
+    # When True, ConnectorFactory hands every instance in an org the same processor
+    # (and so one messaging producer), instead of building one per instance. Only
+    # safe for connectors whose processor carries no per-instance state.
+    shares_org_processor: bool = False
 
     def __init__(
         self,
@@ -81,6 +117,13 @@ class BaseConnector(ABC):
         self.connector_id = connector_id
         self.scope = scope
         self.created_by = created_by
+        # User-given instance name from the connector's apps doc (e.g. "Engineering Jira").
+        # Injected post-construction by ConnectorFactory, same as _notification_service.
+        self.connector_instance_name: Optional[str] = None
+        self.last_synced_by: Optional[str] = None
+        # What the last run did, in the connector's own terms (counts, why it stopped); stored on
+        # the app doc with the run's outcome so the UI can show it. Flat JSON values only.
+        self.last_sync_summary: dict[str, object] | None = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -92,6 +135,7 @@ class BaseConnector(ABC):
         self._resilience: Optional[ResiliencePolicy] = None
         self._resilience_loaded = False
         self._thread_pool_lease: ThreadPoolLease | None = None
+        self.instance_name: Optional[str] = None
 
     @property
     def connector_metadata(self) -> Dict[str, Any]:
@@ -147,6 +191,33 @@ class BaseConnector(ABC):
         except Exception as e:
             self.logger.warning(f"Thread lease drain raised; ignoring: {e}")
 
+    @property
+    def display_name(self) -> str:
+        """The connector's name as shown to the user.
+
+        User-facing errors must use this: they tell the user to go to Connector
+        Settings, so the name has to match what they will find there. Prefers
+        the specific instance name ("Engineering Docs") over the connector type
+        ("Collections"), falling back to the ``@ConnectorBuilder`` metadata —
+        which also makes shared base classes (e.g. S3 vs MinIO) report their
+        own concrete name.
+
+        Every lookup is defensive: this feeds error messages, so it must never
+        raise and mask the failure it is describing.
+        """
+        instance_name = getattr(self, "instance_name", None)
+        if instance_name:
+            return str(instance_name)
+        metadata = getattr(type(self), "_connector_metadata", None)
+        if metadata and metadata.get("name"):
+            return str(metadata["name"])
+        # Fallback for classes registered without the decorator. `Connectors`
+        # is not a str-Enum, so str() on a member yields "Connectors.S3".
+        connector_name = getattr(self, "connector_name", None)
+        if connector_name is None:
+            return "the source"
+        return getattr(connector_name, "value", None) or str(connector_name)
+
     @abstractmethod
     async def init(self) -> bool:
         pass
@@ -154,6 +225,19 @@ class BaseConnector(ABC):
     @abstractmethod
     def test_connection_and_access(self) -> bool:
         NotImplementedError("This method should be implemented by the subclass")
+
+    @classmethod
+    async def check_connection(
+        cls, auth_config: dict[str, Any], logger: Logger
+    ) -> ConnectionCheckResult:
+        """Try auth settings the user has typed but not saved, without creating an instance.
+
+        Connectors that override this get a connection check in the setup form."""
+        raise NotImplementedError(f"{cls.__name__} has no connection check")
+
+    @classmethod
+    def supports_connection_check(cls) -> bool:
+        return cls.check_connection.__func__ is not BaseConnector.check_connection.__func__
 
     @abstractmethod
     def get_signed_url(self, record: Record) -> Optional[str]:
@@ -170,6 +254,17 @@ class BaseConnector(ABC):
     @abstractmethod
     def run_incremental_sync(self) -> None:
         NotImplementedError("This method is not supported")
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """How much of the source the full sync that just returned read.
+
+        Asked once ``run_sync`` has returned from a full sync. The links of the
+        records and groups that sync did not write are then removed, except what
+        this says it did not read. The default says it read everything, so a node
+        it did not write is gone from the source. A connector whose sync reads
+        only a date window, or that carries on past errors, should say so here.
+        """
+        return FullSyncCoverage()
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
@@ -272,6 +367,43 @@ class BaseConnector(ABC):
         helper without a one-off migration.
         """
         return f"internal-{self.connector_id}"
+
+    async def ensure_creator_user_app_relation(self) -> None:
+        """Upsert only the creator's user-to-app edge.
+
+        Personal connectors reach every record by inheriting up to the app, so
+        the creator is linked to the app and nowhere else.
+        """
+        if not self.creator_email:
+            self.logger.warning(
+                "Cannot link creator to app for connector %s: no creator email resolved",
+                self.connector_id,
+            )
+            return
+
+        app_name_enum = (
+            self.connector_name
+            if isinstance(self.connector_name, Connectors)
+            else Connectors(self.connector_name)
+        )
+        creator_member = AppUser(
+            app_name=app_name_enum,
+            connector_id=self.connector_id,
+            source_user_id=f"creator_{self.created_by or self.creator_email}",
+            email=self.creator_email,
+            full_name=self.creator_email,
+            org_id=self.data_entities_processor.org_id,
+            is_active=True,
+        )
+        try:
+            await self.data_entities_processor.on_new_app_users([creator_member])
+        except Exception as e:
+            self.logger.warning(
+                "USER_APP_RELATION upsert failed for connector %s creator %s: %s.",
+                self.connector_id,
+                self.creator_email,
+                e,
+            )
 
     async def ensure_connector_group_permission(self) -> Optional[Permission]:
         """Upsert the creator's ``USER_APP_RELATION`` edge and a pseudo
@@ -415,6 +547,39 @@ class BaseConnector(ABC):
         )
         return self._connector_group_permission
 
+    async def register_authenticated_source_user(
+        self, email: str | None, source_user_id: str | None
+    ) -> None:
+        """Record which source account this connector is authenticated as, so the user who
+        authenticated it resolves that account's permissions for this connector instance.
+        Connectors call this at the start of ``run_sync`` with the email and id of the
+        source "me" account; the id must be the one their user sync stores as sourceUserId.
+        Never aborts the sync."""
+        if not self.created_by:
+            return
+        if not email or not source_user_id:
+            self.logger.warning(
+                "Connector %s: the authenticated source account's email or id could not be read "
+                "(email=%s, id=%s); the user who authenticated it will only see what their own "
+                "email is granted",
+                self.connector_id, email, source_user_id,
+            )
+            return
+        try:
+            app_name = (
+                self.connector_name
+                if isinstance(self.connector_name, Connectors)
+                else Connectors(self.connector_name)
+            )
+            await self.data_entities_processor.link_authenticator_to_source_user(
+                self.connector_id, self.created_by, email, source_user_id, app_name
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not link the user who authenticated connector %s to source account %s: %s",
+                self.connector_id, email, e,
+            )
+
     async def notify(
         self,
         type: NotificationType,
@@ -426,6 +591,72 @@ class BaseConnector(ABC):
         recipient_roles: list[NotificationRecipientRole] | None = None,
     ) -> None:
         """Fire-and-forget: publish a user-visible connector notification to the broker."""
+        prepared = self._prepare_notification(
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+        )
+        if isinstance(prepared, NotificationOutcome):
+            return
+        svc, publish_kwargs = prepared
+
+        async def _run() -> None:
+            await svc.publish_notification(**publish_kwargs)
+
+        try:
+            loop = asyncio.get_running_loop()
+            task = loop.create_task(_run())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except RuntimeError:
+            # No running loop (e.g. sync tests) — skip scheduling
+            self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
+
+    async def notify_and_wait(
+        self,
+        type: NotificationType,  # noqa: A002 - the same keywords as notify()
+        severity: NotificationSeverity,
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None = None,
+        recipient_user_ids: list[str] | None = None,
+        recipient_roles: list[NotificationRecipientRole] | None = None,
+    ) -> NotificationOutcome:
+        """Like ``notify``, but waits for the broker and says what happened.
+
+        For a caller that records a notice as delivered: only SENT means it was.
+        A notice that failed to publish does not hold back the next attempt.
+        """
+        key = self._notification_key(title, message)
+        reservation_before = self._notification_cache.get(key)
+        prepared = self._prepare_notification(
+            type, severity, title, message, payload, recipient_user_ids, recipient_roles
+        )
+        if isinstance(prepared, NotificationOutcome):
+            return prepared
+        svc, publish_kwargs = prepared
+        try:
+            published = await svc.publish_notification(**publish_kwargs) is True
+        except Exception as e:
+            self.logger.warning("Notification \"%s\" was not published for connector %s: %s", title, self.connector_id, e)
+            published = False
+        if published:
+            return NotificationOutcome.SENT
+        # The suppression check reserved this notice's backoff before publishing.
+        if reservation_before is None:
+            self._notification_cache.pop(key, None)
+        else:
+            self._notification_cache[key] = reservation_before
+        return NotificationOutcome.FAILED
+
+    def _prepare_notification(
+        self,
+        notification_type: NotificationType,
+        severity: NotificationSeverity,
+        title: str,
+        message: str,
+        payload: dict[str, Any] | None,
+        recipient_user_ids: list[str] | None,
+        recipient_roles: list[NotificationRecipientRole] | None,
+    ) -> NotificationOutcome | tuple[NotificationService, dict[str, Any]]:
         svc = self._notification_service
         if not svc or not self.created_by:
             self.logger.debug(
@@ -437,12 +668,12 @@ class BaseConnector(ABC):
                 self.created_by,
                 bool(self._notification_service),
             )
-            return
+            return NotificationOutcome.SKIPPED
         org_id = getattr(self.data_entities_processor, "org_id", None) or ""
 
         if self._suppress_notification(title, message, severity):
-            return
-        
+            return NotificationOutcome.SUPPRESSED
+
         connector_type = self.connector_name.value if isinstance(self.connector_name, Connectors) else self.connector_name
         if payload and "redirect_link" in payload:
             redirect_link = payload["redirect_link"]
@@ -450,37 +681,33 @@ class BaseConnector(ABC):
             redirect_link = DEFAULT_CONNECTOR_NOTIFICATION_LINK + f"{self.scope}/?connectorType={connector_type}"
 
         if not recipient_user_ids and not recipient_roles:
-            recipient_user_ids = [self.created_by]
+            ids = [self.created_by]
+            if self.last_synced_by and self.last_synced_by != self.created_by:
+                ids.append(self.last_synced_by)
+            recipient_user_ids = ids
 
-        async def _run() -> None:
-            await svc.publish_notification(
-                org_id=str(org_id),
-                origin=NotificationOrigin.CONNECTOR,
-                type=type,
-                severity=severity,
-                title=title,
-                message=message,
-                payload=payload,
-                redirect_link=redirect_link,
-                recipient_user_ids=recipient_user_ids,
-                recipient_roles=recipient_roles,
-            )
+        return svc, {
+            "org_id": str(org_id),
+            "origin": NotificationOrigin.CONNECTOR,
+            "type": notification_type,
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "payload": payload,
+            "redirect_link": redirect_link,
+            "recipient_user_ids": recipient_user_ids,
+            "recipient_roles": recipient_roles,
+        }
 
-        try:
-            loop = asyncio.get_running_loop()
-            task = loop.create_task(_run())
-            self._background_tasks.add(task)
-            task.add_done_callback(self._background_tasks.discard)
-        except RuntimeError:
-            # No running loop (e.g. sync tests) — skip scheduling
-            self.logger.debug("notify skipped: no running asyncio loop for connector: %s, connector id: %s", self.connector_name, self.connector_id)
+    def _notification_key(self, title: str, message: str) -> str:
+        return f"{self.connector_id}:{title}:{message}"
 
     def _suppress_notification(self, title: str, message: str, severity: NotificationSeverity) -> bool:
 
         if severity in [NotificationSeverity.INFO, NotificationSeverity.SUCCESS]:
             return False
 
-        key = f"{self.connector_id}:{title}:{message}"
+        key = self._notification_key(title, message)
         now = get_epoch_timestamp_in_ms()
 
         if key in self._notification_cache:

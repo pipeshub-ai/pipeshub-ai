@@ -7,6 +7,7 @@ import { ConnectorIcon } from '@/app/components/ui/ConnectorIcon';
 import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/local-fs-helpers';
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig, formatSyncLabel } from './utils';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { renderInlineMarkdown } from '@/app/components/ui/inline-markdown';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
@@ -54,7 +55,7 @@ export function ReferenceCard({
   const isCitationsTab = currentTab === 'citation';
   const isMobile = useIsMobile();
 
-  const config = getConnectorConfig(citation.connector);
+  const config = getConnectorConfig(citation.connector, citation.connectorInstanceName);
 
   // Determine if this is a collection (UPLOAD) or external connector source
   const isCollectionSource = citation.origin === 'UPLOAD';
@@ -132,8 +133,9 @@ export function ReferenceCard({
                 whiteSpace: 'nowrap',
               }}
             >
-              {config.label}
+              {config.sourceLabel}
             </Text>
+            <DemoSourceBadge connectorId={citation.connectorId} />
           </Flex>
 
           {/* Right: sync badge + action buttons (desktop).

@@ -1,7 +1,8 @@
 'use client';
 
 import { useState, useEffect, useRef } from 'react';
-import { Flex, Box, Text } from '@radix-ui/themes';
+import { createPortal } from 'react-dom';
+import { Theme, Flex, Box, Text } from '@radix-ui/themes';
 import { logoutFromWorkspaceMenu, SettingsSection } from '@/config';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
 import type { OrgInfo } from './types';
@@ -88,92 +89,95 @@ export function WorkspaceMenu({ isOpen, onClose, org, triggerRef }: WorkspaceMen
     setActivePanel((prev) => (prev === panel ? null : panel));
   };
 
-  return (
-    <Box
-      ref={menuRef}
-      style={{
-        position: 'absolute',
-        bottom: 60, // above the footer button
-        left: 8,
-        width: POPUP_WIDTH,
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid var(--olive-3)',
-        backgroundColor: 'var(--effects-translucent)',
-        backdropFilter: 'blur(25px)',
-        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
-        padding: '16px 8px',
-        zIndex: 50,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 16,
-        fontFamily: 'Manrope, sans-serif',
-      }}
-    >
-      {/* ── Section 1: Settings ── */}
-      <SettingsSection
-        onWorkspaceSettings={onClose}
-        onAppearanceToggle={() => togglePanel('appearance')}
-        isAppearanceActive={activePanel === 'appearance'}
-        onLanguageToggle={() => togglePanel('language')}
-        isLanguageActive={activePanel === 'language'}
-        onLogout={() => {
-          onClose();
-          logoutFromWorkspaceMenu();
+  return createPortal(
+    <Theme>
+      <Box
+        ref={menuRef}
+        style={{
+          position: 'absolute',
+          bottom: 60, // above the footer button
+          left: 8,
+          width: POPUP_WIDTH,
+          borderRadius: 'var(--radius-1)',
+          border: '1px solid var(--olive-3)',
+          backgroundColor: 'var(--effects-translucent)',
+          backdropFilter: 'blur(25px)',
+          boxShadow: '0 8px 24px rgba(0, 0, 0, 0.15)',
+          padding: '16px 8px',
+          // The portal is a sibling of the root theme's stacking context
+          // (z-index: 0), so any positive value paints above the app.
+          zIndex: 50,
+          display: 'flex',
+          flexDirection: 'column',
+          gap: 16,
+          fontFamily: 'Manrope, sans-serif',
         }}
-      />
+      >
+        {/* ── Section 1: Settings ── */}
+        <SettingsSection
+          onWorkspaceSettings={onClose}
+          onAppearanceToggle={() => togglePanel('appearance')}
+          isAppearanceActive={activePanel === 'appearance'}
+          onLanguageToggle={() => togglePanel('language')}
+          isLanguageActive={activePanel === 'language'}
+          onLogout={() => {
+            onClose();
+            logoutFromWorkspaceMenu();
+          }}
+        />
 
-      <Divider />
+        <Divider />
 
-      {/* ── Section 2: External Links ── */}
-      <ExternalLinksSection />
+        {/* ── Section 2: External Links ── */}
+        <ExternalLinksSection />
 
-      <Divider />
+        <Divider />
 
-      {/* ── Section 3: Current Organisation ── */}
-      {org && (
-        <Flex direction="column" gap="3">
-          {/* Org badge */}
-          <Flex
-            align="center"
-            gap="2"
-            style={{
-              height: 40,
-              padding: '0 8px',
-              // backgroundColor: 'var(--olive-2)',
-              // border: '1px solid var(--olive-3)',
-              borderRadius: 'var(--radius-1)',
-              flexShrink: 0,
-            }}
-          >
-          {/* Org avatar badge */}
-          <UserAvatar
-            fullName={org?.shortName || org?.registeredName}
-            src={orgLogoUrl}
-            size={24}
-            radius="small"
-          />
+        {/* ── Section 3: Current Organisation ── */}
+        {org && (
+          <Flex direction="column" gap="3">
+            {/* Org badge */}
+            <Flex
+              align="center"
+              gap="2"
+              style={{
+                height: 40,
+                padding: '0 8px',
+                borderRadius: 'var(--radius-1)',
+                flexShrink: 0,
+              }}
+            >
+              {/* Org avatar badge */}
+              <UserAvatar
+                fullName={org?.shortName || org?.registeredName}
+                src={orgLogoUrl}
+                size={24}
+                radius="small"
+              />
 
-          {/* Org name */}
-          <Text
-            size="2"
-            weight="medium"
-            style={{
-              flex: 1,
-              color: 'var(--accent-12)',
-              overflow: 'hidden',
-              textOverflow: 'ellipsis',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {org?.shortName || org?.registeredName}
-          </Text>
-        </Flex>
-        </Flex>
-      )}
+              {/* Org name */}
+              <Text
+                size="2"
+                weight="medium"
+                style={{
+                  flex: 1,
+                  color: 'var(--accent-12)',
+                  overflow: 'hidden',
+                  textOverflow: 'ellipsis',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                {org?.shortName || org?.registeredName}
+              </Text>
+            </Flex>
+          </Flex>
+        )}
 
-      {/* ── Sub-panels — float to the right, top-aligned ── */}
-      <AppearancePanel isOpen={activePanel === 'appearance'} />
-      <LanguagePanel isOpen={activePanel === 'language'} />
-    </Box>
+        {/* ── Sub-panels — float to the right, top-aligned ── */}
+        <AppearancePanel isOpen={activePanel === 'appearance'} />
+        <LanguagePanel isOpen={activePanel === 'language'} />
+      </Box>
+    </Theme>,
+    document.body
   );
 }

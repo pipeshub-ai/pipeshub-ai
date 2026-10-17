@@ -2,12 +2,13 @@
 
 Connector instances are fetched by id alone (`_get_connector_instance_from_db`
 issues a plain `get_document`), so every isolation guarantee lives in
-`_can_access_connector`. Without an org comparison there, a TEAM connector's
-gate reduces to `is_admin` — and an administrator is an administrator of *an*
-organization, not of all of them.
+`_can_access_connector`.  The tenant check uses the instance's ``orgId``
+field — without it a TEAM connector's gate reduces to `is_admin`, and an
+administrator of one organization who learns an id belonging to another
+would pass it.
 """
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -18,6 +19,7 @@ pytestmark = pytest.mark.asyncio
 
 ORG = "org-acme"
 OTHER_ORG = "org-globex"
+CONN_ID = "conn-1"
 
 
 def _registry() -> ConnectorRegistry:
@@ -26,11 +28,8 @@ def _registry() -> ConnectorRegistry:
     return registry
 
 
-def _instance(*, scope: str, created_by: str = "user-a", org_id: str | None = ORG) -> dict:
-    doc = {"_key": "conn-1", "scope": scope, "createdBy": created_by}
-    if org_id is not None:
-        doc["orgId"] = org_id
-    return doc
+def _instance(*, scope: str, created_by: str = "user-a", org_id: str = ORG) -> dict:
+    return {"_key": CONN_ID, "scope": scope, "createdBy": created_by, "orgId": org_id}
 
 
 class TestTenantIsolation:
@@ -56,18 +55,7 @@ class TestTenantIsolation:
 
     async def test_matching_org_still_allows_admin(self):
         allowed = await _registry()._can_access_connector(
-            _instance(scope=ConnectorScope.TEAM.value, org_id=ORG),
-            "admin-of-acme",
-            ORG,
-            is_admin=True,
-        )
-        assert allowed is True
-
-    async def test_an_instance_without_an_org_is_not_blocked(self):
-        """Legacy documents predating the field must stay reachable; the role
-        checks below still apply to them."""
-        allowed = await _registry()._can_access_connector(
-            _instance(scope=ConnectorScope.TEAM.value, org_id=None),
+            _instance(scope=ConnectorScope.TEAM.value),
             "admin-of-acme",
             ORG,
             is_admin=True,
@@ -83,6 +71,86 @@ class TestTenantIsolation:
             is_admin=True,
         )
         registry.logger.warning.assert_called()
+
+
+def _registry_with_org_edges(edges: list[dict]) -> tuple[ConnectorRegistry, AsyncMock]:
+    registry = _registry()
+    graph_provider = AsyncMock()
+    graph_provider.get_edges_to_node = AsyncMock(return_value=edges)
+    registry._graph_provider = graph_provider
+    return registry, graph_provider
+
+
+def _legacy_instance(*, scope: str, created_by: str = "user-a") -> dict:
+    """Shaped like an instance created before ``orgId`` was stamped on apps."""
+    return {"_key": CONN_ID, "scope": scope, "createdBy": created_by}
+
+
+class TestLegacyInstancesWithoutOrgId:
+    """Without ``orgId`` the org edge decides, rather than letting the instance through."""
+
+    async def test_admin_cannot_reach_another_orgs_legacy_team_connector(self) -> None:
+        registry, graph_provider = _registry_with_org_edges(
+            [{"_from": f"organizations/{OTHER_ORG}", "_to": f"apps/{CONN_ID}"}]
+        )
+
+        allowed = await registry._can_access_connector(
+            _legacy_instance(scope=ConnectorScope.TEAM.value),
+            "admin-of-acme",
+            ORG,
+            is_admin=True,
+        )
+
+        assert allowed is False
+        graph_provider.get_edges_to_node.assert_awaited_once_with(
+            f"apps/{CONN_ID}", "orgAppRelation"
+        )
+
+    async def test_admin_of_another_org_cannot_delete_a_legacy_connector(self) -> None:
+        registry, _ = _registry_with_org_edges([{"from_id": OTHER_ORG, "to_id": CONN_ID}])
+
+        allowed = await registry._can_delete_connector(
+            _legacy_instance(scope=ConnectorScope.TEAM.value),
+            "admin-of-acme",
+            ORG,
+            is_admin=True,
+        )
+
+        assert allowed is False
+
+    async def test_a_legacy_connector_with_no_org_edge_is_refused(self) -> None:
+        registry, _ = _registry_with_org_edges([])
+
+        allowed = await registry._can_access_connector(
+            _legacy_instance(scope=ConnectorScope.TEAM.value),
+            "admin-of-acme",
+            ORG,
+            is_admin=True,
+        )
+
+        assert allowed is False
+
+    async def test_own_orgs_legacy_connector_is_still_reachable(self) -> None:
+        """Neo4j edges carry a bare id, Arango edges a document handle; both count."""
+        for edge in ({"from_id": ORG}, {"_from": f"organizations/{ORG}"}):
+            registry, _ = _registry_with_org_edges([edge])
+
+            allowed = await registry._can_access_connector(
+                _legacy_instance(scope=ConnectorScope.TEAM.value),
+                "admin-of-acme",
+                ORG,
+                is_admin=True,
+            )
+
+            assert allowed is True
+
+    async def test_an_instance_with_org_id_needs_no_edge_lookup(self) -> None:
+        registry, graph_provider = _registry_with_org_edges([])
+
+        assert await registry._can_access_connector(
+            _instance(scope=ConnectorScope.TEAM.value), "admin-of-acme", ORG, is_admin=True
+        )
+        graph_provider.get_edges_to_node.assert_not_awaited()
 
 
 class TestRoleScopingUnchanged:
@@ -151,7 +219,7 @@ class TestDeletionGate:
 
     async def test_admin_may_delete_another_users_personal_connector(self):
         """The case the read gate refuses; the whole reason this gate exists."""
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
             "admin-b",
             ORG,
@@ -173,7 +241,7 @@ class TestDeletionGate:
         assert allowed is False
 
     async def test_creator_may_delete_their_own_personal_connector(self):
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
             "user-a",
             ORG,
@@ -183,7 +251,7 @@ class TestDeletionGate:
         assert allowed is True
 
     async def test_creator_may_delete_their_own_team_connector(self):
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
             "user-a",
             ORG,
@@ -193,7 +261,7 @@ class TestDeletionGate:
         assert allowed is True
 
     async def test_a_non_admin_stranger_may_not_delete(self):
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
             "user-c",
             ORG,
@@ -205,7 +273,7 @@ class TestDeletionGate:
     async def test_admin_of_another_org_may_not_delete(self):
         """Tenant isolation is checked before the role, so the wider deletion
         allowance never becomes a cross-tenant one."""
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
             "admin-b",
             OTHER_ORG,
@@ -216,7 +284,7 @@ class TestDeletionGate:
 
     async def test_creator_in_another_org_may_not_delete(self):
         """A createdBy match must not defeat the tenant check either."""
-        allowed = _registry()._can_delete_connector(
+        allowed = await _registry()._can_delete_connector(
             _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
             "user-a",
             OTHER_ORG,
@@ -224,3 +292,64 @@ class TestDeletionGate:
         )
 
         assert allowed is False
+
+
+class TestCanUserViewConnector:
+    """Stats visibility: only admin or creator, never arbitrary team members."""
+
+    async def test_personal_creator_can_view(self):
+        assert await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "user-a",
+            is_admin=False,
+        )
+
+    async def test_personal_non_creator_denied(self):
+        assert not await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "user-b",
+            is_admin=False,
+        )
+
+    async def test_personal_admin_non_creator_denied(self):
+        assert not await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.PERSONAL.value, created_by="user-a"),
+            "admin",
+            is_admin=True,
+        )
+
+    async def test_team_admin_can_view(self):
+        assert await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "admin",
+            is_admin=True,
+        )
+
+    async def test_team_creator_can_view(self):
+        assert await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "user-a",
+            is_admin=False,
+        )
+
+    async def test_team_member_denied(self):
+        """A non-admin, non-creator org member must not see team connector stats."""
+        assert not await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope=ConnectorScope.TEAM.value, created_by="user-a"),
+            "user-b",
+            is_admin=False,
+        )
+
+    async def test_unknown_scope_denied(self):
+        assert not await _registry().can_user_view_connector(
+            CONN_ID,
+            _instance(scope="SOMETHING_ELSE"),
+            "user-a",
+            is_admin=True,
+        )

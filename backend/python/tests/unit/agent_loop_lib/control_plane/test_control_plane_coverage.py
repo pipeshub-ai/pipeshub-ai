@@ -196,14 +196,44 @@ class TestCodingSandboxBackends:
             assert cp.tool_registry.has(name)
 
     async def test_e2b_backend_registers_factory_and_auto_guard_hook(self) -> None:
+        from unittest.mock import patch
+
+        from app.agent_loop_lib.sandbox.coding.factories.e2b import (
+            E2BCodingSandboxFactory,
+        )
+
         cfg = ControlPlaneConfig(
             tools=[],
             coding_sandbox=CodingSandboxConfig(enabled=True, backend="e2b"),
         )
-        cp = ControlPlane(cfg)
-        await cp.start()
+        # The e2b SDK is an optional dependency and is not installed in CI.
+        # Selecting a backend whose dependencies are missing now fails at
+        # startup by design, so pretend it is present to exercise the WIRING
+        # (factory + auto-added metered guard), which is what this covers.
+        with patch.object(E2BCodingSandboxFactory, "is_installed", return_value=True):
+            cp = ControlPlane(cfg)
+            await cp.start()
+
         assert cp.sandbox_manager is not None
         assert cp.tool_registry.has("run_code")
+        # A metered backend gets the billing guard without anyone listing it.
+        assert [s.name for s in cp._sandbox_factory_middleware] == ["metered_sandbox_guard"]
+
+    async def test_backend_with_missing_dependencies_fails_at_startup(self) -> None:
+        """Better here, with an actionable message, than at the first user
+        request — and the old behaviour reported it as an unknown backend,
+        which sent operators looking for a typo instead of a missing package."""
+        cfg = _minimal_cfg(coding_sandbox=CodingSandboxConfig(enabled=True, backend="e2b"))
+        cp = ControlPlane(cfg)
+        try:
+            import e2b_code_interpreter  # noqa: F401
+        except ImportError:
+            pass
+        else:
+            pytest.skip("e2b SDK installed; nothing uninstalled to assert on")
+
+        with pytest.raises(ValueError, match="dependencies are not installed"):
+            await cp.start()
 
     async def test_docker_backend_registers_factory(self, tmp_path) -> None:
         cfg = _minimal_cfg(
@@ -217,7 +247,7 @@ class TestCodingSandboxBackends:
     async def test_unknown_backend_raises(self) -> None:
         cfg = _minimal_cfg(coding_sandbox=CodingSandboxConfig(enabled=True, backend="daytona"))
         cp = ControlPlane(cfg)
-        with pytest.raises(ValueError, match="Unknown coding_sandbox backend"):
+        with pytest.raises(ValueError, match="unknown sandbox backend 'daytona'"):
             await cp.start()
 
     async def test_lazy_toolsets_group_sandbox_toolsets_when_present(self, tmp_path) -> None:

@@ -307,12 +307,15 @@ async def select_loop_and_goal(
             graph_provider=context.graph_provider,
             is_multimodal_llm=context.is_multimodal_llm,
             org_id=context.org_id,
+            user_id=context.user_id,
+            is_service_account=context.is_service_account,
             transport_registry=transport_registry,
             opik_active=opik_active,
             opik_project_name=opik_project_name,
         )
         goal = _build_goal(query, decision, attachments=attachments)
-        clarifying_questions = list(decision.clarifying_questions)
+        # A turn that answers an approval card always runs: the approved call runs in it.
+        clarifying_questions = [] if context.tool_approval is not None else list(decision.clarifying_questions)
 
         # Propagate the whole-document bit from the intent result.
         # When the model emitted the WHOLE_DOCUMENT marker, use it directly;

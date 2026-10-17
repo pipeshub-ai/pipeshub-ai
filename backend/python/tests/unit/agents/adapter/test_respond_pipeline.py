@@ -7,6 +7,7 @@ completion_data shape and the empty-answer / agent-failure fallback paths."""
 
 from __future__ import annotations
 
+from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
 from tests.unit.agents.adapter.conftest import make_context
@@ -29,7 +30,7 @@ class TestErrorPath:
 
         result = await finalizer.run(agent_success=False, agent_error="tool exploded", event_sink=sink)
 
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
         assert result["answerMatchType"] == "Error"
         assert result["errorCode"] == "unknown"
         event_types = [e["event"] for e in sink.events]
@@ -44,7 +45,7 @@ class TestErrorPath:
         result = await finalizer.run(agent_success=False, agent_error=None, event_sink=sink)
 
         assert result["errorCode"] == "unknown"
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
 
     async def test_agent_failure_classifies_rate_limit_error(self) -> None:
         """LLM 429s (see `error_classification.py`) must surface as a
@@ -62,7 +63,88 @@ class TestErrorPath:
         )
 
         assert result["errorCode"] == "rate_limit"
-        assert result["answer"] == "The AI service is currently rate limited. Please try again in a moment."
+        assert result["answer"] == _USER_MESSAGES["rate_limit"]
+
+    async def test_agent_failure_surfaces_invalid_request_provider_message(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LangChain transport error (stream): Error code: 400 - "
+                "{'error': {'message': 'invalid Qwen3.8 reasoning_effort', "
+                "'type': 'invalid_request_error'}}"
+            ),
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "invalid_request"
+        assert result["answer"] == (
+            "The AI model rejected this request: invalid Qwen3.8 reasoning_effort"
+        )
+
+
+class TestModelCallFailure:
+    async def test_unclassified_model_call_failure_is_logged_and_named(self) -> None:
+        context = make_context(conversation_id="conv-1", run_id="run-1")
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error="LLM call failed: LangChain transport error (stream): APIError: upstream hiccup",
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "unknown"
+        assert result["answer"] != _USER_MESSAGES["unknown"]
+        assert "AI model" in result["answer"]
+        assert [e["event"] for e in sink.events] == ["answer_chunk", "complete"]
+        context.logger.error.assert_called_once()
+        logged = context.logger.error.call_args.args
+        assert "unknown" in logged
+        assert "conv-1" in logged and "run-1" in logged and "org-1" in logged
+        assert "APIError: upstream hiccup" in logged[-1]
+
+    async def test_logged_error_masks_urls_and_account_ids(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LLM call failed: LangChain transport error (stream): APIError: 403 for "
+                "https://generativelanguage.googleapis.com/v1/models?key=AIzaSECRET in org-abc12345"
+            ),
+            event_sink=_RecordingSink(),
+        )
+
+        logged = context.logger.error.call_args.args[-1]
+        assert "AIzaSECRET" not in logged
+        assert "org-abc12345" not in logged
+        assert "APIError: 403 for [url]" in logged
+
+    async def test_content_filter_refusal_is_logged_and_explained(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False,
+            agent_error=(
+                "LLM call failed: LangChain transport error (stream): "
+                "ContentFilterFinishReasonError: Could not parse response content as "
+                "the request was rejected by the content filter"
+            ),
+            event_sink=sink,
+        )
+
+        assert result["errorCode"] == "content_filter"
+        assert result["answer"] == _USER_MESSAGES["content_filter"]
+        context.logger.error.assert_called_once()
+        assert "content_filter" in context.logger.error.call_args.args
 
 
 class TestSuccessPath:
@@ -129,6 +211,23 @@ class TestSuccessPath:
         event_types = [e["event"] for e in sink.events]
         assert event_types == ["answer_chunk", "complete"]
 
+    async def test_empty_answer_still_counts_as_an_answer_in_telemetry(self) -> None:
+        """The user received something, sourceless. Leaving the fallback out
+        would make the answers-with-sources ratio look better than it is."""
+        from app.telemetry.event_buffer import event_buffer
+
+        event_buffer.drain()
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        await finalizer.run(
+            agent_success=True, agent_error=None, agent_output="", event_sink=_RecordingSink(),
+        )
+
+        recorded = [e for e in event_buffer.drain() if e["event"] == "answer_generated"]
+        assert len(recorded) == 1
+        assert recorded[0]["props"]["citation_count"] == 0
+
     async def test_confidence_trailer_only_answer_falls_back_to_default_response(self) -> None:
         """The model's whole answer is the confidence trailer it was told to
         append — non-empty raw, but nothing survives the strip. Node rejects an
@@ -145,6 +244,75 @@ class TestSuccessPath:
 
         assert result["answer"] == "I wasn't able to generate a response. Please try rephrasing."
         assert sink.events[0]["data"]["accumulated"] == result["answer"]
+
+    async def test_needs_input_empty_output_skips_fallback(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == ""
+        assert result["status"] == "waiting_input"
+        assert "I wasn't able" not in (result.get("answer") or "")
+        assert all(e["event"] != "answer_chunk" or not (e.get("data") or {}).get("accumulated") for e in sink.events)
+
+    async def test_empty_output_keeps_streamed_follow_up(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Busy but manageable — try batching the next three tasks.",
+        )
+
+        assert result["answer"] == "Busy but manageable — try batching the next three tasks."
+        assert "wasn't able" not in result["answer"]
+
+    async def test_needs_input_does_not_drop_streamed_follow_up(self) -> None:
+        context = make_context()
+        context.tool_state["ask_user_question_resume"] = True
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Here is the follow-up after your selection.",
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == "Here is the follow-up after your selection."
+        assert result.get("status") != "waiting_input"
+
+    async def test_first_ask_needs_input_ignores_streamed_narration(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=True,
+            agent_error=None,
+            agent_output="",
+            event_sink=sink,
+            streamed_answer="Let me ask you a quick question.",
+            agent_needs_input="Waiting for user answers",
+        )
+
+        assert result["answer"] == ""
+        assert result["status"] == "waiting_input"
 
     async def test_post_normalization_fallback_resets_answer_metadata(self) -> None:
         """Same strip-to-nothing path, but with a confidence the fallback has
@@ -182,7 +350,7 @@ class TestSuccessPath:
         )
 
         assert result["answerMatchType"] == "Error"
-        assert result["answer"] == "I encountered an issue while processing your request. Please try again."
+        assert result["answer"] == _USER_MESSAGES["unknown"]
 
     async def test_citations_and_confidence_normalized_from_agent_output(self) -> None:
         context = make_context()
@@ -289,3 +457,117 @@ class TestAskUserQuestionFallback:
         )
 
         assert not [e for e in sink.events if e["event"] == "ask_user_question"]
+
+
+class TestCancelledPath:
+    """`agent_cancelled=True` (Stop Generation, Phase 3b) — must persist
+    whatever text was already streamed as a first-class `status: "stopped"`
+    answer, never the generic error/apology text `_emit_error_response`/
+    `_run_success_path`'s empty-answer fallback would otherwise produce."""
+
+    async def test_cancelled_with_partial_text_persists_it_with_stopped_status(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="Here is the partial answer",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert result["answer"] == "Here is the partial answer"
+        assert result["citations"] == []
+        assert context.tool_state["completion_data"] == result
+        event_types = [e["event"] for e in sink.events]
+        assert event_types == ["answer_chunk", "complete"]
+        assert sink.events[0]["data"]["accumulated"] == "Here is the partial answer"
+
+    async def test_cancelled_before_any_text_streamed_persists_an_empty_answer_not_a_fallback(
+        self,
+    ) -> None:
+        """Cancelled during "Thinking", before the first token — this must
+        NOT fall through to `_EMPTY_ANSWER_FALLBACK`'s apologetic text (the
+        branch an empty `agent_output` takes on the success path): Node's
+        save path already treats an empty answer as valid exactly when
+        `status == "stopped"` (see `_run_cancelled_path`'s docstring)."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert result["answer"] == ""
+
+    async def test_stopped_answer_with_text_counts_as_a_stopped_answer_in_telemetry(self) -> None:
+        from app.telemetry.event_buffer import event_buffer
+
+        event_buffer.drain()
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=_RecordingSink(), streamed_answer="Here is the partial answer",
+            agent_cancelled=True,
+        )
+
+        recorded = [e for e in event_buffer.drain() if e["event"] == "answer_generated"]
+        assert len(recorded) == 1
+        assert recorded[0]["props"]["stopped"] is True
+        assert recorded[0]["props"]["citation_count"] == len(result["citations"])
+
+    async def test_stop_before_any_text_is_not_counted_as_an_answer(self) -> None:
+        from app.telemetry.event_buffer import event_buffer
+
+        event_buffer.drain()
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+
+        await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=_RecordingSink(), streamed_answer="",
+            agent_cancelled=True,
+        )
+
+        assert [e for e in event_buffer.drain() if e["event"] == "answer_generated"] == []
+
+    async def test_agent_cancelled_takes_precedence_over_agent_success_false(self) -> None:
+        """`Agent.fail(..., status="cancelled")` sets `success=False` with a
+        generic `error="Cancelled"` — indistinguishable from a real failure
+        by those two fields alone. `agent_cancelled` must still route to the
+        cancelled branch, never `_emit_error_response`'s generic error text."""
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="partial",
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert "errorCode" not in result
+        assert result["answer"] == "partial"
+
+    async def test_reasoning_turns_are_still_attached_when_cancelled(self) -> None:
+        context = make_context()
+        finalizer = AnswerFinalizer(context, CitationCollector(context))
+        sink = _RecordingSink()
+
+        result = await finalizer.run(
+            agent_success=False, agent_error="Cancelled", agent_output=None,
+            event_sink=sink, streamed_answer="partial",
+            reasoning_turns=[{"turn": 1, "content": "thinking..."}],
+            agent_cancelled=True,
+        )
+
+        assert result["status"] == "stopped"
+        assert "reasoning" in result

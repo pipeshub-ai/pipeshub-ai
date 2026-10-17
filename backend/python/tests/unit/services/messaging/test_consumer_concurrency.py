@@ -6,21 +6,24 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.messaging.consumer_concurrency import (
     Admission,
+    GateWaiters,
     GateWaiterToken,
     _normalize_operation,
     acquire_distributed_slot,
     acquire_index_slot,
     bridge_to_main_loop,
     clear_retry_tracking,
+    dispatch_budget,
+    dispatch_tier,
     effective_index_tier,
     get_gate_waiter_count,
     get_retry_count,
@@ -40,6 +43,11 @@ from app.services.messaging.distributed_concurrency import DistributedLeaseSet
 from app.services.messaging.lease import LeaseRenewer
 from app.services.resource_governor.models import ParseTier, Pool
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from app.services.messaging.config import StreamMessage
+
 
 def _make_host(
     running=True,
@@ -49,8 +57,8 @@ def _make_host(
     governor=None,
     parsing_semaphore=None,
     gate_waiters=0,
-):
-    host = SimpleNamespace(
+) -> SimpleNamespace:
+    return SimpleNamespace(
         logger=MagicMock(),
         running=running,
         main_loop=main_loop,
@@ -59,10 +67,27 @@ def _make_host(
         _distributed_log_times={},
         governor=governor,
         parsing_semaphore=parsing_semaphore,
-        _gate_waiters=gate_waiters,
+        gate_waiters=_waiters(gate_waiters),
         _futures_lock=threading.Lock(),
     )
-    return host
+
+
+def _one_worker_governor(**ceilings) -> SimpleNamespace:
+    """A governor stand-in for one worker process, whose share of the budget
+    is the whole budget."""
+    resolved = SimpleNamespace(**ceilings)
+    return SimpleNamespace(
+        ceilings=resolved,
+        fleet_ceilings=resolved,
+        heavy_parse_lease_limit=getattr(resolved, "heavy", None),
+    )
+
+
+def _waiters(count: int, tier: ParseTier = ParseTier.HEAVY) -> GateWaiters:
+    waiters = GateWaiters()
+    for _ in range(count):
+        waiters.add(tier)
+    return waiters
 
 
 # ---------------------------------------------------------------------------
@@ -71,13 +96,13 @@ def _make_host(
 
 
 class TestNormalizeOperation:
-    def test_plain_operation(self):
+    def test_plain_operation(self) -> None:
         assert _normalize_operation("acquire:indexing") == "acquire:indexing"
 
-    def test_record_operation_collapsed(self):
+    def test_record_operation_collapsed(self) -> None:
         assert _normalize_operation("acquire:record:abc-123") == "acquire:record"
 
-    def test_nested_record_operation(self):
+    def test_nested_record_operation(self) -> None:
         assert _normalize_operation("release:record:some-id") == "release:record"
 
 
@@ -88,38 +113,136 @@ class TestNormalizeOperation:
 
 class TestBridgeToMainLoop:
     @pytest.mark.asyncio
-    async def test_same_loop_direct_execution(self):
+    async def test_same_loop_direct_execution(self) -> None:
         host = _make_host(main_loop=asyncio.get_running_loop())
 
-        async def coro():
+        async def coro() -> int:
             return 42
 
         result = await bridge_to_main_loop(host, coro())
         assert result == 42
 
     @pytest.mark.asyncio
-    async def test_none_main_loop_direct_execution(self):
+    async def test_none_main_loop_direct_execution(self) -> None:
         host = _make_host(main_loop=None)
 
-        async def coro():
+        async def coro() -> int:
             return 99
 
         result = await bridge_to_main_loop(host, coro())
         assert result == 99
 
     @pytest.mark.asyncio
-    async def test_stopped_main_loop_raises(self):
+    async def test_stopped_main_loop_raises(self) -> None:
         loop = MagicMock()
         loop.is_running.return_value = False
         host = _make_host(main_loop=loop)
 
-        async def coro():
+        async def coro() -> int:
             return 1
 
-        current_loop = asyncio.get_running_loop()
+        asyncio.get_running_loop()
         with patch("app.services.messaging.consumer_concurrency.asyncio.get_running_loop", return_value=MagicMock()):
             with pytest.raises(RuntimeError, match="not running"):
                 await bridge_to_main_loop(host, coro())
+
+
+@contextmanager
+def _main_loop_in_thread() -> Iterator[asyncio.AbstractEventLoop]:
+    """A second running loop, standing in for the consumer's main loop."""
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    # bridge_to_main_loop checks is_running() before any await, and
+    # thread.start() alone does not guarantee run_forever has begun.
+    started = threading.Event()
+    loop.call_soon_threadsafe(started.set)
+    assert started.wait(5), "the stand-in main loop never started"
+    try:
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=5)
+        loop.close()
+
+
+class TestBridgeDoesNotCancelTheMainLoopOperation:
+    """A caller that stops waiting (record timeout, lease loss, shutdown)
+    must not cancel the XACK/commit/requeue already in flight on the main
+    loop: redis-py tears down a connection whose command was cancelled
+    mid-read, and under a mass cancellation those teardowns were the pool
+    storm."""
+
+    @pytest.mark.asyncio
+    async def test_timeout_leaves_the_operation_running_to_completion(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            finished = threading.Event()
+            cancelled = threading.Event()
+
+            async def slow_ack() -> str:
+                try:
+                    await asyncio.sleep(0.2)
+                except asyncio.CancelledError:
+                    cancelled.set()
+                    raise
+                finished.set()
+                return "acked"
+
+            with pytest.raises(asyncio.TimeoutError):
+                await bridge_to_main_loop(host, slow_ack(), timeout=0.02)
+
+            assert finished.wait(2.0), "the main-loop operation was not allowed to finish"
+            assert not cancelled.is_set()
+
+    @pytest.mark.asyncio
+    async def test_caller_cancellation_leaves_the_operation_running(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            finished = threading.Event()
+
+            async def slow_ack() -> None:
+                await asyncio.sleep(0.2)
+                finished.set()
+
+            task = asyncio.create_task(bridge_to_main_loop(host, slow_ack(), timeout=5.0))
+            await asyncio.sleep(0.02)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+
+            assert finished.wait(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_detached_failure_is_consumed_quietly(self) -> None:
+        """Its outcome is retrieved so asyncio never logs an unretrieved
+        exception for an operation whose caller has already moved on."""
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+            raised = threading.Event()
+
+            async def failing_ack() -> None:
+                await asyncio.sleep(0.05)
+                raised.set()
+                raise ConnectionError("redis went away")
+
+            with pytest.raises(asyncio.TimeoutError):
+                await bridge_to_main_loop(host, failing_ack(), timeout=0.01)
+            assert raised.wait(2.0)
+            # Give the done-callback a turn on the main loop.
+            done = threading.Event()
+            main_loop.call_soon_threadsafe(done.set)
+            assert done.wait(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_completed_result_is_still_returned(self) -> None:
+        with _main_loop_in_thread() as main_loop:
+            host = _make_host(main_loop=main_loop)
+
+            async def quick() -> str:
+                return "acked"
+
+            assert await bridge_to_main_loop(host, quick(), timeout=5.0) == "acked"
 
 
 # ---------------------------------------------------------------------------
@@ -128,18 +251,18 @@ class TestBridgeToMainLoop:
 
 
 class TestLogDistributedError:
-    def test_first_log(self):
+    def test_first_log(self) -> None:
         host = _make_host()
         log_distributed_error(host, "acquire:indexing", RuntimeError("fail"))
         host.logger.warning.assert_called_once()
 
-    def test_throttled_within_30s(self):
+    def test_throttled_within_30s(self) -> None:
         host = _make_host()
         host._distributed_log_times["acquire:indexing"] = float("inf")
         log_distributed_error(host, "acquire:indexing", RuntimeError("fail"))
         host.logger.warning.assert_not_called()
 
-    def test_record_operation_collapsed(self):
+    def test_record_operation_collapsed(self) -> None:
         host = _make_host()
         log_distributed_error(host, "acquire:record:abc", RuntimeError("fail"))
         assert "acquire:record" in host._distributed_log_times
@@ -167,13 +290,13 @@ def _lease_env(*, budget: int = 5, max_backoff: float = 0.04) -> Iterator[MagicM
 
 class TestAcquireDistributedSlot:
     @pytest.mark.asyncio
-    async def test_no_manager_returns_true(self):
+    async def test_no_manager_returns_true(self) -> None:
         host = _make_host(concurrency_manager=None)
         result = await acquire_distributed_slot(host, "pool", "owner", 5)
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_acquired_on_first_try(self):
+    async def test_acquired_on_first_try(self) -> None:
         manager = AsyncMock()
         manager.try_acquire = AsyncMock(return_value=True)
         host = _make_host(concurrency_manager=manager, main_loop=asyncio.get_running_loop())
@@ -182,7 +305,7 @@ class TestAcquireDistributedSlot:
         assert result is True
 
     @pytest.mark.asyncio
-    async def test_not_running_returns_false(self):
+    async def test_not_running_returns_false(self) -> None:
         manager = AsyncMock()
         manager.try_acquire = AsyncMock(return_value=False)
         host = _make_host(
@@ -194,7 +317,7 @@ class TestAcquireDistributedSlot:
         assert result is False
 
     @pytest.mark.asyncio
-    async def test_deadline_expires(self):
+    async def test_deadline_expires(self) -> None:
         manager = AsyncMock()
         manager.try_acquire = AsyncMock(return_value=False)
         host = _make_host(
@@ -244,8 +367,13 @@ class TestAcquireDistributedSlot:
             main_loop=asyncio.get_running_loop(),
         )
         # base 0.01s growing to a 0.2s cap, mirroring the shipped 0.5s->5s
-        # ratio at a scale a unit test can wait out.
-        with _lease_env(max_backoff=0.2):
+        # ratio at a scale a unit test can wait out. Jitter's floor is the base
+        # poll, so real draws only bound the attempts on average (about 1 run
+        # in 300 made 13); each draw is pinned to the middle of its range.
+        with _lease_env(max_backoff=0.2), patch(
+            "app.services.messaging.consumer_concurrency.random.uniform",
+            side_effect=lambda low, high: (low + high) / 2,
+        ):
             result = await acquire_distributed_slot(
                 host, "parsing:light", "owner", 5, deadline_seconds=0.5
             )
@@ -334,12 +462,12 @@ class TestAcquireDistributedSlot:
 
 class TestReleaseDistributedSlot:
     @pytest.mark.asyncio
-    async def test_no_manager_noop(self):
+    async def test_no_manager_noop(self) -> None:
         host = _make_host(concurrency_manager=None)
         await release_distributed_slot(host, "pool", "owner")
 
     @pytest.mark.asyncio
-    async def test_release_called(self):
+    async def test_release_called(self) -> None:
         manager = AsyncMock()
         manager.release = AsyncMock()
         host = _make_host(concurrency_manager=manager, main_loop=asyncio.get_running_loop())
@@ -347,7 +475,7 @@ class TestReleaseDistributedSlot:
         manager.release.assert_called_once_with("pool", "owner")
 
     @pytest.mark.asyncio
-    async def test_release_error_logged(self):
+    async def test_release_error_logged(self) -> None:
         manager = AsyncMock()
         manager.release = AsyncMock(side_effect=RuntimeError("redis down"))
         host = _make_host(concurrency_manager=manager, main_loop=asyncio.get_running_loop())
@@ -362,12 +490,12 @@ class TestReleaseDistributedSlot:
 
 class TestRetryHelpers:
     @pytest.mark.asyncio
-    async def test_clear_retry_no_manager(self):
+    async def test_clear_retry_no_manager(self) -> None:
         host = _make_host(retry_manager=None)
         await clear_retry_tracking(host, "msg-1")
 
     @pytest.mark.asyncio
-    async def test_clear_retry_calls_manager(self):
+    async def test_clear_retry_calls_manager(self) -> None:
         rm = AsyncMock()
         rm.clear = AsyncMock()
         host = _make_host(retry_manager=rm, main_loop=asyncio.get_running_loop())
@@ -375,13 +503,13 @@ class TestRetryHelpers:
         rm.clear.assert_called_once_with("msg-1")
 
     @pytest.mark.asyncio
-    async def test_get_retry_count_no_manager(self):
+    async def test_get_retry_count_no_manager(self) -> None:
         host = _make_host(retry_manager=None)
         count = await get_retry_count(host, "msg-1")
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_get_retry_count_with_manager(self):
+    async def test_get_retry_count_with_manager(self) -> None:
         rm = AsyncMock()
         rm.get_count = AsyncMock(return_value=3)
         host = _make_host(retry_manager=rm, main_loop=asyncio.get_running_loop())
@@ -389,14 +517,14 @@ class TestRetryHelpers:
         assert count == 3
 
     @pytest.mark.asyncio
-    async def test_increment_retry_no_manager(self):
+    async def test_increment_retry_no_manager(self) -> None:
         host = _make_host(retry_manager=None)
         count, exhausted = await increment_retry_and_check(host, "msg-1")
         assert count == 0
         assert exhausted is False
 
     @pytest.mark.asyncio
-    async def test_increment_retry_with_manager(self):
+    async def test_increment_retry_with_manager(self) -> None:
         rm = AsyncMock()
         rm.increment_and_check = AsyncMock(return_value=(2, True))
         host = _make_host(retry_manager=rm, main_loop=asyncio.get_running_loop())
@@ -411,11 +539,9 @@ class TestRetryHelpers:
 
 
 class TestCeilings:
-    def test_index_ceiling_with_governor(self, monkeypatch):
+    def test_index_ceiling_with_governor(self, monkeypatch) -> None:
         monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
-        gov = SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        gov = _one_worker_governor(index=10, index_heavy=4, index_light=6)
         host = _make_host(governor=gov)
         assert index_ceiling(host, ParseTier.HEAVY) == 4
         assert index_ceiling(host, ParseTier.LIGHT) == 6
@@ -425,34 +551,32 @@ class TestCeilings:
         the ceiling lookup has to agree — an unclassifiable record must draw
         on the smaller budget, never the one sized for fast records."""
         monkeypatch.setenv("INDEXING_SPLIT_LEASE_POOLS", "true")
-        gov = SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        gov = _one_worker_governor(index=10, index_heavy=4, index_light=6)
         host = _make_host(governor=gov)
         assert index_ceiling(host, None) == 4
 
-    def test_index_ceiling_without_governor(self):
+    def test_index_ceiling_without_governor(self) -> None:
         host = _make_host(governor=None)
         with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
             env.max_concurrent_indexing = 4
             assert index_ceiling(host) == 4
 
-    def test_parse_ceiling_heavy_with_governor(self):
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+    def test_parse_ceiling_heavy_with_governor(self) -> None:
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, ParseTier.HEAVY) == 8
 
-    def test_parse_ceiling_light_with_governor(self):
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+    def test_parse_ceiling_light_with_governor(self) -> None:
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, ParseTier.LIGHT) == 20
 
-    def test_parse_ceiling_none_tier_defaults_heavy(self):
-        gov = SimpleNamespace(ceilings=SimpleNamespace(heavy=8, light=20))
+    def test_parse_ceiling_none_tier_defaults_heavy(self) -> None:
+        gov = _one_worker_governor(heavy=8, light=20)
         host = _make_host(governor=gov)
         assert parse_ceiling(host, None) == 8
 
-    def test_parse_ceiling_without_governor(self):
+    def test_parse_ceiling_without_governor(self) -> None:
         host = _make_host(governor=None)
         with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
             env.max_concurrent_parsing = 6
@@ -460,13 +584,13 @@ class TestCeilings:
 
 
 class TestParseLeasePool:
-    def test_light_pool(self):
+    def test_light_pool(self) -> None:
         assert parse_lease_pool(ParseTier.LIGHT) == "parsing:light"
 
-    def test_heavy_pool(self):
+    def test_heavy_pool(self) -> None:
         assert parse_lease_pool(ParseTier.HEAVY) == "parsing"
 
-    def test_none_defaults_heavy(self):
+    def test_none_defaults_heavy(self) -> None:
         assert parse_lease_pool(None) == "parsing"
 
 
@@ -479,9 +603,7 @@ class TestIndexLeasePoolSplitFlag:
     exceed MAX_CONCURRENT_INDEXING by ``index_light``."""
 
     def _gov(self) -> None:
-        return SimpleNamespace(
-            ceilings=SimpleNamespace(index=10, index_heavy=4, index_light=6)
-        )
+        return _one_worker_governor(index=10, index_heavy=4, index_light=6)
 
     def test_off_by_default_light_shares_the_legacy_pool_and_budget(self) -> None:
         host = _make_host(governor=self._gov())
@@ -625,10 +747,8 @@ class TestEffectiveIndexTier:
 
     def _host(self, index_light: int) -> None:
         return _make_host(
-            governor=SimpleNamespace(
-                ceilings=SimpleNamespace(
-                    index=1 + index_light, index_heavy=1, index_light=index_light
-                )
+            governor=_one_worker_governor(
+                index=1 + index_light, index_heavy=1, index_light=index_light
             )
         )
 
@@ -739,50 +859,112 @@ class TestAdmissionRelease:
 
 
 class TestGateWaiterToken:
-    def test_init_increments(self):
+    def test_init_increments(self) -> None:
         host = _make_host(gate_waiters=0)
-        GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        GateWaiterToken(host, ParseTier.LIGHT)
+        assert host.gate_waiters.count() == 1
+        assert host.gate_waiters.count(ParseTier.LIGHT) == 1
+        assert host.gate_waiters.count(ParseTier.HEAVY) == 0
 
-    def test_admit_decrements(self):
+    def test_admit_decrements(self) -> None:
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        token = GateWaiterToken(host, ParseTier.HEAVY)
+        assert host.gate_waiters.count(ParseTier.HEAVY) == 1
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
-    def test_admit_idempotent(self):
+    def test_admit_idempotent(self) -> None:
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.HEAVY)
         token.admit()
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
-    def test_release_without_admit(self):
+    def test_release_without_admit(self) -> None:
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
-        assert host._gate_waiters == 1
+        token = GateWaiterToken(host, ParseTier.LIGHT)
+        assert host.gate_waiters.count() == 1
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
-    def test_release_after_admit_noop(self):
+    def test_release_after_admit_noop(self) -> None:
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.LIGHT)
         token.admit()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
-    def test_release_idempotent(self):
+    def test_release_idempotent(self) -> None:
         host = _make_host(gate_waiters=0)
-        token = GateWaiterToken(host)
+        token = GateWaiterToken(host, ParseTier.LIGHT)
         token.release()
         token.release()
-        assert host._gate_waiters == 0
+        assert host.gate_waiters.count() == 0
 
-    def test_get_gate_waiter_count(self):
+    def test_token_remembers_its_tier(self) -> None:
+        host = _make_host(gate_waiters=0)
+        assert GateWaiterToken(host, ParseTier.LIGHT).tier is ParseTier.LIGHT
+
+    def test_get_gate_waiter_count(self) -> None:
         host = _make_host(gate_waiters=5)
         assert get_gate_waiter_count(host) == 5
+        assert get_gate_waiter_count(host, ParseTier.HEAVY) == 5
+        assert get_gate_waiter_count(host, ParseTier.LIGHT) == 0
+
+
+class TestGateWaiters:
+    def test_counts_per_tier_and_in_total(self) -> None:
+        waiters = GateWaiters()
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.LIGHT)
+        assert waiters.count(ParseTier.HEAVY) == 2
+        assert waiters.count(ParseTier.LIGHT) == 1
+        assert waiters.count() == 3
+        assert waiters.snapshot() == {ParseTier.HEAVY: 2, ParseTier.LIGHT: 1}
+
+    def test_remove_is_per_tier(self) -> None:
+        waiters = GateWaiters()
+        waiters.add(ParseTier.HEAVY)
+        waiters.add(ParseTier.LIGHT)
+        waiters.remove(ParseTier.HEAVY)
+        assert waiters.snapshot() == {ParseTier.HEAVY: 0, ParseTier.LIGHT: 1}
+
+    def test_reset_forgets_everything(self) -> None:
+        waiters = _waiters(4)
+        waiters.add(ParseTier.LIGHT)
+        waiters.reset()
+        assert waiters.count() == 0
+
+    def test_snapshot_is_a_copy(self) -> None:
+        waiters = _waiters(1)
+        snapshot = waiters.snapshot()
+        snapshot[ParseTier.HEAVY] = 99
+        assert waiters.count(ParseTier.HEAVY) == 1
+
+    def test_thread_safe_under_concurrent_tokens(self) -> None:
+        waiters = GateWaiters()
+        host = SimpleNamespace(gate_waiters=waiters)
+        rounds = 2000
+
+        def churn(tier: ParseTier) -> None:
+            for i in range(rounds):
+                token = GateWaiterToken(host, tier)
+                if i % 2:
+                    token.admit()
+                else:
+                    token.release()
+
+        threads = [
+            threading.Thread(target=churn, args=(tier,))
+            for tier in (ParseTier.HEAVY, ParseTier.LIGHT, ParseTier.HEAVY)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        assert waiters.snapshot() == {ParseTier.HEAVY: 0, ParseTier.LIGHT: 0}
 
 
 # ---------------------------------------------------------------------------
@@ -791,22 +973,36 @@ class TestGateWaiterToken:
 
 
 class TestPendingTaskCeiling:
-    def test_explicit_env_var(self):
+    def test_explicit_env_var(self) -> None:
         host = _make_host()
         with patch.dict("os.environ", {"MAX_PENDING_INDEXING_TASKS": "50"}):
             with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
                 env.max_pending_indexing_tasks = 50
                 assert pending_task_ceiling(host) == 50
 
-    def test_governor_derived(self):
-        gov = SimpleNamespace(ceilings=SimpleNamespace(index=5, index_heavy=2, index_light=3, heavy=3))
+    def test_governor_derived(self) -> None:
+        limits = {Pool.INDEX_HEAVY: 2, Pool.INDEX_LIGHT: 3}
+        gov = SimpleNamespace(
+            ceilings=SimpleNamespace(index=5, index_heavy=2, index_light=3, heavy=3),
+            limit=limits.__getitem__,
+        )
         host = _make_host(governor=gov)
         with patch.dict("os.environ", {}, clear=True):
             result = pending_task_ceiling(host)
-        # index total 5 * 2 read-ahead = 10, raised to the 64 floor.
+        # current index limits 5 * 2 read-ahead = 10, raised to the 64 floor.
         assert result == 64
 
-    def test_default_from_env(self):
+    def test_governor_derived_follows_current_limits_not_ceilings(self) -> None:
+        limits = {Pool.INDEX_HEAVY: 40, Pool.INDEX_LIGHT: 20}
+        gov = SimpleNamespace(
+            ceilings=SimpleNamespace(index=400, index_heavy=200, index_light=200, heavy=3),
+            limit=limits.__getitem__,
+        )
+        host = _make_host(governor=gov)
+        with patch.dict("os.environ", {}, clear=True):
+            assert pending_task_ceiling(host) == 120
+
+    def test_default_from_env(self) -> None:
         host = _make_host(governor=None)
         with patch.dict("os.environ", {}, clear=True):
             with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
@@ -820,13 +1016,13 @@ class TestPendingTaskCeiling:
 
 
 class TestParsingAdmissionCost:
-    def test_release_calls_callback(self):
+    def test_release_calls_callback(self) -> None:
         callback = MagicMock()
         admission = Admission(cost=3, _release=callback)
         release_admission(admission)
         callback.assert_called_once()
 
-    def test_release_none_noop(self):
+    def test_release_none_noop(self) -> None:
         release_admission(None)
 
 
@@ -836,19 +1032,172 @@ class TestParsingAdmissionCost:
 
 
 class TestReportMemoryIncident:
-    def test_no_governor_noop(self):
+    def test_no_governor_noop(self) -> None:
         host = _make_host(governor=None)
         report_memory_incident_if_applicable(host, "msg-1", MemoryError())
 
-    def test_non_memory_error_noop(self):
+    def test_non_memory_error_noop(self) -> None:
         gov = MagicMock()
         host = _make_host(governor=gov)
         report_memory_incident_if_applicable(host, "msg-1", RuntimeError("boom"))
         gov.report_memory_incident.assert_not_called()
 
-    def test_memory_error_reported(self):
+    def test_memory_error_reported(self) -> None:
         gov = MagicMock()
         host = _make_host(governor=gov)
         report_memory_incident_if_applicable(host, "msg-1", MemoryError())
         gov.report_memory_incident.assert_called_once()
         assert "msg-1" in gov.report_memory_incident.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# dispatch_tier / dispatch_budget
+# ---------------------------------------------------------------------------
+
+
+def _governor(
+    *, heavy_limit: int, light_limit: int, index_light_ceiling: int = 16
+) -> SimpleNamespace:
+    limits = {Pool.INDEX_HEAVY: heavy_limit, Pool.INDEX_LIGHT: light_limit}
+    return SimpleNamespace(
+        ceilings=SimpleNamespace(
+            index=8 + index_light_ceiling,
+            index_heavy=8,
+            index_light=index_light_ceiling,
+            heavy=4,
+        ),
+        limit=limits.__getitem__,
+    )
+
+
+def _message(**payload) -> StreamMessage:
+    from app.services.messaging.config import StreamMessage
+
+    return StreamMessage(eventType="newRecord", payload=payload)
+
+
+class TestDispatchTier:
+    def test_heavy_extension_is_heavy(self) -> None:
+        host = _make_host()
+        assert dispatch_tier(host, _message(extension="pdf")) is ParseTier.HEAVY
+
+    def test_blocks_payload_is_light(self) -> None:
+        host = _make_host()
+        assert (
+            dispatch_tier(host, _message(mimeType="application/blocks"))
+            is ParseTier.LIGHT
+        )
+
+    def test_unknown_and_missing_resolve_to_heavy(self) -> None:
+        host = _make_host()
+        assert dispatch_tier(host, _message()) is ParseTier.HEAVY
+        assert dispatch_tier(host, _message(extension=None, mimeType=None)) is ParseTier.HEAVY
+        assert dispatch_tier(host, None) is ParseTier.HEAVY
+
+    def test_collapsed_light_budget_routes_light_records_to_heavy(self) -> None:
+        host = _make_host(governor=_governor(heavy_limit=1, light_limit=0, index_light_ceiling=0))
+        assert dispatch_tier(host, _message(extension="txt")) is ParseTier.HEAVY
+
+    def test_agrees_with_effective_index_tier(self) -> None:
+        """The token, the dispatcher and the wrapper must all land on the
+        same pool; this is the one function they share."""
+        from app.services.resource_governor import classify
+
+        host = _make_host(governor=_governor(heavy_limit=4, light_limit=8))
+        for ext, mime in [("pdf", ""), ("txt", ""), ("", "application/blocks"), ("", "")]:
+            assert dispatch_tier(host, _message(extension=ext, mimeType=mime)) is (
+                effective_index_tier(host, classify(ext, mime))
+            )
+
+
+class TestDispatchBudget:
+    def _host(self, *, heavy_waiters=0, light_waiters=0, **governor_kwargs) -> SimpleNamespace:
+        host = _make_host(governor=_governor(**governor_kwargs) if governor_kwargs else None)
+        for _ in range(heavy_waiters):
+            host.gate_waiters.add(ParseTier.HEAVY)
+        for _ in range(light_waiters):
+            host.gate_waiters.add(ParseTier.LIGHT)
+        return host
+
+    def test_heavy_is_held_to_its_own_gate_depth_light_to_the_total(self) -> None:
+        host = self._host(heavy_limit=4, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.total_ceiling == pending_task_ceiling(host) == 64
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 8   # 2 x limit
+        assert budget.tiers[ParseTier.LIGHT].ceiling == 64  # the total
+
+    def test_heavy_ceiling_has_a_floor_when_the_pool_is_braked(self) -> None:
+        host = self._host(heavy_limit=1, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            assert dispatch_budget(host).tiers[ParseTier.HEAVY].ceiling == 8
+
+    def test_heavy_ceiling_follows_the_current_limit(self) -> None:
+        host = self._host(heavy_limit=20, light_limit=8)
+        with patch.dict("os.environ", {}, clear=True):
+            assert dispatch_budget(host).tiers[ParseTier.HEAVY].ceiling == 40
+
+    def test_heavy_at_ceiling_still_allows_light(self) -> None:
+        """The bug: heavy waiters used to fill the shared number and stop
+        light dispatch with the light pool idle."""
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert not budget.allows(ParseTier.HEAVY)
+        assert budget.allows(ParseTier.LIGHT)
+        assert not budget.blocked
+        assert budget.remaining == 56
+
+    def test_total_bounds_every_tier(self) -> None:
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=4, light_waiters=60)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.total_waiters == 64
+        assert not budget.allows(ParseTier.LIGHT)
+        assert not budget.allows(ParseTier.HEAVY)
+        assert budget.blocked
+        assert budget.remaining == 0
+
+    def test_explicit_env_cap_is_the_total_and_bounds_the_tiers(self) -> None:
+        host = self._host(heavy_limit=20, light_limit=8)
+        with patch.dict("os.environ", {"MAX_PENDING_INDEXING_TASKS": "20"}):
+            with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+                env.max_pending_indexing_tasks = 20
+                budget = dispatch_budget(host)
+        assert budget.total_ceiling == 20
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 20  # 40 derived, capped
+        assert budget.tiers[ParseTier.LIGHT].ceiling == 20
+
+    def test_collapsed_light_tier_is_absent_and_heavy_gets_the_total(self) -> None:
+        host = self._host(heavy_limit=1, light_limit=0, index_light_ceiling=0)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert set(budget.tiers) == {ParseTier.HEAVY}
+        assert budget.tiers[ParseTier.HEAVY].ceiling == budget.total_ceiling
+        assert not budget.allows(ParseTier.LIGHT)
+
+    def test_without_a_governor_every_tier_is_the_total(self) -> None:
+        host = self._host()
+        with patch.dict("os.environ", {}, clear=True):
+            with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
+                env.max_pending_indexing_tasks = 28
+                budget = dispatch_budget(host)
+        assert budget.total_ceiling == 28
+        assert {b.ceiling for b in budget.tiers.values()} == {28}
+
+    def test_untiered_budget_collapses_to_the_total(self) -> None:
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=8)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host, tiered=False)
+        assert budget.tiers[ParseTier.HEAVY].ceiling == 64
+        assert budget.allows(ParseTier.HEAVY)
+
+    def test_describe_and_as_dict_name_every_tier(self) -> None:
+        host = self._host(heavy_limit=4, light_limit=8, heavy_waiters=3, light_waiters=2)
+        with patch.dict("os.environ", {}, clear=True):
+            budget = dispatch_budget(host)
+        assert budget.describe() == "heavy 3/8, light 2/64, total 5/64"
+        payload = budget.as_dict()
+        assert payload["total"] == {"waiters": 5, "ceiling": 64}
+        assert payload["tiers"]["heavy"] == {"waiters": 3, "ceiling": 8, "allows": True}
+        assert payload["blocked"] is False

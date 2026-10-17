@@ -4,9 +4,11 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import (
@@ -643,8 +645,10 @@ class TestBoxExecuteDeletions:
 class TestBoxGetSignedUrl:
     async def test_no_data_source(self, box_connector):
         box_connector.data_source = None
-        result = await box_connector.get_signed_url(MagicMock())
-        assert result is None
+        # Not "file missing" - the connector itself is not connected.
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(MagicMock())
+        assert exc_info.value.status_code == 409
 
     async def test_success(self, box_connector):
         record = MagicMock()
@@ -671,8 +675,29 @@ class TestBoxGetSignedUrl:
         box_connector.data_source.downloads_get_download_file_url = AsyncMock(
             return_value=MagicMock(success=False, error="denied")
         )
-        result = await box_connector.get_signed_url(record)
-        assert result is None
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        # No status to map, so a generic failure - never an invented 404.
+        assert exc_info.value.status_code == 500
+
+    async def test_expired_token_is_not_reported_as_deleted(self, box_connector):
+        record = MagicMock()
+        record.external_record_id = "f1"
+        record.external_record_group_id = "u1"
+        record.record_name = "doc.pdf"
+        record.id = "r1"
+
+        class _BoxAPIError(Exception):
+            response_info = SimpleNamespace(status_code=401)
+
+        box_connector.data_source.set_as_user_context = AsyncMock()
+        box_connector.data_source.clear_as_user_context = AsyncMock()
+        box_connector.data_source.downloads_get_download_file_url = AsyncMock(
+            side_effect=_BoxAPIError("token expired")
+        )
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 409
 
     async def test_exception(self, box_connector):
         record = MagicMock()
@@ -683,8 +708,10 @@ class TestBoxGetSignedUrl:
             side_effect=Exception("error")
         )
         box_connector.data_source.clear_as_user_context = AsyncMock()
-        result = await box_connector.get_signed_url(record)
-        assert result is None
+        # The SDK failure must propagate, not collapse into None -> 404.
+        with pytest.raises(HTTPException) as exc_info:
+            await box_connector.get_signed_url(record)
+        assert exc_info.value.status_code == 500
 
     async def test_no_context_user_id(self, box_connector):
         record = MagicMock()

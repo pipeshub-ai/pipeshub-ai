@@ -23,9 +23,9 @@ class TestLoadMcpInstances:
             new_callable=AsyncMock,
             return_value=expected,
         ) as mock_load:
-            result = await load_mcp_instances(config_service)
+            result = await load_mcp_instances(config_service, "org-1")
         assert result == expected
-        mock_load.assert_awaited_once()
+        mock_load.assert_awaited_once_with(config_service, "org-1")
 
     async def test_returns_empty_list_when_service_returns_empty(self) -> None:
         from app.api.routes.mcp_resolvers import load_mcp_instances
@@ -36,7 +36,7 @@ class TestLoadMcpInstances:
             new_callable=AsyncMock,
             return_value=[],
         ):
-            result = await load_mcp_instances(config_service)
+            result = await load_mcp_instances(config_service, "org-1")
         assert result == []
 
 
@@ -58,9 +58,9 @@ class TestGetMcpInstance:
             new_callable=AsyncMock,
             return_value=expected,
         ) as mock_get:
-            result = await get_mcp_instance("inst-1", config_service)
+            result = await get_mcp_instance("inst-1", config_service, "org-1")
         assert result == expected
-        mock_get.assert_awaited_once()
+        mock_get.assert_awaited_once_with("inst-1", config_service, "org-1", None)
 
     async def test_returns_none_when_not_found(self) -> None:
         from app.api.routes.mcp_resolvers import get_mcp_instance
@@ -71,7 +71,7 @@ class TestGetMcpInstance:
             new_callable=AsyncMock,
             return_value=None,
         ):
-            result = await get_mcp_instance("missing", config_service)
+            result = await get_mcp_instance("missing", config_service, "org-1")
         assert result is None
 
 
@@ -130,9 +130,10 @@ class TestResolveMcpInstancesWithInheritance:
             "app.api.routes.mcp_resolvers.load_mcp_instances",
             new_callable=AsyncMock,
             return_value=expected,
-        ):
-            result = await resolve_mcp_instances_with_inheritance(config_service)
+        ) as mock_load:
+            result = await resolve_mcp_instances_with_inheritance(config_service, "org-1", "u1")
         assert result == expected
+        mock_load.assert_awaited_once_with(config_service, "org-1", "u1")
 
 
 # ---------------------------------------------------------------------------
@@ -149,23 +150,6 @@ class TestResolveInstanceOwnerConfigService:
         config_service = AsyncMock()
         result = await resolve_instance_owner_config_service("inst-1", config_service)
         assert result is config_service
-
-
-# ---------------------------------------------------------------------------
-# build_mcp_fallback_config_services
-# ---------------------------------------------------------------------------
-
-
-class TestBuildMcpFallbackConfigServices:
-    """OSS edition returns None (no parent tenant fallback)."""
-
-    async def test_returns_none(self) -> None:
-        from app.api.routes.mcp_resolvers import build_mcp_fallback_config_services
-
-        instance = {"_id": "i1"}
-        config_service = AsyncMock()
-        result = await build_mcp_fallback_config_services(instance, config_service)
-        assert result is None
 
 
 # ---------------------------------------------------------------------------

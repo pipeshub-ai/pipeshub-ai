@@ -32,7 +32,10 @@ class PromptTemplate:
     """
 
     DEFAULT_ORDER: tuple[str, ...] = (
-        "identity", "goal_brief", "toolset_overview", "skills_overview", "todos", "mode", "style",
+        "identity", "goal_brief",
+        "toolset_overview", "preloaded_tools",
+        "skills_overview", "preloaded_skills",
+        "todos", "mode", "style",
     )
 
     sections: dict[str, str] = field(default_factory=dict)

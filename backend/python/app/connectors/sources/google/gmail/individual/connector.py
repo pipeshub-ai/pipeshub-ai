@@ -11,12 +11,12 @@ from typing import TYPE_CHECKING, AsyncGenerator, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    PermissionModel,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -26,7 +26,18 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+    oauth_app_not_linked_error,
+)
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -59,11 +70,14 @@ from app.connectors.core.registry.filters import (
 )
 from app.connectors.sources.google.common.apps import GmailIndividualApp
 from app.connectors.sources.google.common.connector_google_exceptions import (
+    GoogleAuthError,
     GoogleMailError,
+    is_missing_scope_error,
 )
 from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
+from app.connectors.sources.google.common.gmail_message_parts import find_message_part
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
@@ -77,11 +91,13 @@ from app.models.entities import (
     RecordGroup,
     RecordGroupType,
     RecordType,
+    USER_EMAIL_PLACEHOLDER,
 )
-from app.models.permission import EntityType, Permission, PermissionType
-from app.sources.client.google.google import GoogleClient, configure_google_http_timeout
+from app.models.permission import Permission
+from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.drive.drive import GoogleDriveDataSource
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
+from app.utils.filename_utils import temp_path_for
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -102,6 +118,7 @@ _GMAIL_DOWNLOAD_CHUNK_SIZE = 4 * 1024 * 1024
     .with_description("Sync emails and messages from Gmail")\
     .with_categories(["Email"])\
     .with_scopes([ConnectorScope.PERSONAL.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Gmail",
@@ -242,12 +259,15 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.config = {"credentials": config}
 
             # Extract auth configuration
-            auth_config = config.get("auth")
+            auth_config = config.get("auth") or {}
             oauth_config_id = auth_config.get("oauthConfigId")
 
             if not oauth_config_id:
-                self.logger.error("Gmail oauthConfigId not found in auth configuration.")
-                return False
+                self.logger.error(
+                    "Gmail has no oauthConfigId in its auth config; it reads its "
+                    "client ID and secret only from a linked OAuth app."
+                )
+                raise oauth_app_not_linked_error()
 
             oauth_config = await self._fetch_oauth_config_by_id(
                 oauth_config_id=oauth_config_id,
@@ -313,6 +333,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             self.logger.info("✅ Google Gmail connector initialized successfully")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail connector: {ex}", exc_info=True)
             raise
@@ -524,7 +546,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,
                 mime_type=MimeTypes.GMAIL.value,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 preview_renderable=False,
                 subject=subject,
                 from_email=from_email,
@@ -534,30 +557,9 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 internet_message_id=internet_message_id,
             )
 
-            # Extract sender email from "from" header (may contain name)
-            sender_email = self._extract_email_from_header(from_email)
-
-            # Create permission based on whether user_email is the sender
-            permissions = []
-            if user_email:
-                # Normalize emails for comparison (case-insensitive)
-                user_email_lower = user_email.lower()
-                sender_email_lower = sender_email.lower() if sender_email else ""
-
-                if sender_email_lower and user_email_lower == sender_email_lower:
-                    # User is the sender - create owner permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    ))
-                else:
-                    # User is not the sender - create read permission
-                    permissions.append(Permission(
-                        email=user_email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER
-                    ))
+            # App-level: the creator passes the gate. A message inherits from its
+            # label, and the label inherits from the app.
+            permissions: list[Permission] = []
 
             self.logger.debug(
                 f"Processed message {message_id} in thread {thread_id}: "
@@ -839,6 +841,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                             f"✅ Fetched Drive file metadata for {drive_file_id}: {filename} ({size} bytes, {mime_type})"
                         )
                 except Exception as e:
+                    if is_missing_scope_error(e):
+                        # A record here could never be downloaded, so it would only
+                        # sit in the index as a failed file.
+                        self.logger.info(
+                            f"Skipping the Google Drive file {drive_file_id} linked from message "
+                            f"{message_id}: this Gmail connection is allowed to read mail but "
+                            "not Google Drive, so the file can't be opened. The email itself "
+                            "is still indexed."
+                        )
+                        return None
                     self.logger.warning(
                         f"⚠️ Failed to fetch Drive file metadata for {drive_file_id}: {str(e)}"
                     )
@@ -880,7 +892,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 source_created_at=get_epoch_timestamp_in_ms(),
                 source_updated_at=get_epoch_timestamp_in_ms(),
                 mime_type=mime_type,
-                weburl=f"https://mail.google.com/mail?authuser={{user.email}}#all/{message_id}",
+                weburl=f"https://mail.google.com/mail?authuser={USER_EMAIL_PLACEHOLDER}#all/{message_id}",
+                inherit_permissions=True,
                 size_in_bytes=size,
                 extension=extension,
                 is_file=True,
@@ -891,8 +904,8 @@ class GoogleGmailIndividualConnector(BaseConnector):
             if not self.indexing_filters.is_enabled(IndexingFilterKey.ATTACHMENTS, default=True):
                 file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-            # Inherit parent mail permissions
-            attachment_permissions = parent_mail_permissions
+            del parent_mail_permissions
+            attachment_permissions: list[Permission] = []
 
             attachment_identifier = drive_file_id if is_drive_file else attachment_id
             self.logger.debug(
@@ -1178,30 +1191,19 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 )
                 drive_service = user_drive_client.get_client()
                 self.logger.info("Using user OAuth credentials for Drive access")
+            # A personal connection has no service account to fall back on.
+            except GoogleAuthError as e:
+                self.logger.error(f"Failed to create Drive client: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.CONFLICT.value,
+                    detail="Couldn't connect to Google Drive to download this file. Reconnect the Gmail connector, then try again."
+                ) from e
             except Exception as e:
-                self.logger.warning(f"Failed to create Drive client: {e}, falling back to service account")
-                # Fallback to service account if user OAuth failed
-                if not self.config or "credentials" not in self.config:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Credentials not available for Drive access"
-                    )
-
-                from google.oauth2 import service_account
-                credentials_json = self.config.get("credentials", {}).get("auth", {})
-                if not credentials_json:
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Service account credentials not found for Drive access"
-                    )
-
-                credentials = service_account.Credentials.from_service_account_info(
-                    credentials_json
-                )
-                drive_service = configure_google_http_timeout(
-                    build("drive", "v3", credentials=credentials)
-                )
-                self.logger.info("Using service account credentials for Drive access")
+                self.logger.error(f"Failed to load the Drive client's settings: {e}")
+                raise HTTPException(
+                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
+                    detail="Couldn't load the Gmail connector's settings to download this file. Try again in a moment; if it keeps failing, check the connector's configuration."
+                ) from e
 
             drive_data_source = GoogleDriveDataSource(
                 drive_service,
@@ -1210,7 +1212,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Download from Drive to temp file
                     with open(temp_file_path, "wb") as f:
@@ -1289,27 +1291,26 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         except HttpError as http_error:
                             self.logger.error(f"HTTP error during Drive download: {str(http_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail=f"Error during Drive download: {str(http_error)}",
-                            )
+                            raise map_source_status(
+                                http_error.resp.status, connector=self.display_name
+                            ) from http_error
                         except Exception as chunk_error:
                             self.logger.error(f"Error downloading chunk: {str(chunk_error)}")
-                            raise HTTPException(
-                                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                                detail="Error during Drive download",
-                            )
+                            raise to_stream_error(
+                                chunk_error, connector=self.display_name
+                            ) from chunk_error
 
                     self.logger.info(
                         f"Drive file stream completed: {chunk_count} chunks, {total_bytes} total bytes"
                     )
 
+                except HTTPException:
+                    raise
                 except Exception as stream_error:
                     self.logger.error(f"Error in file stream: {str(stream_error)}", exc_info=True)
-                    raise HTTPException(
-                        status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                        detail="Error streaming file from Drive"
-                    )
+                    raise to_stream_error(
+                        stream_error, connector=self.display_name
+                    ) from stream_error
                 finally:
                     self.logger.debug(f"Closing buffer for Drive file {drive_file_id}")
                     buffer.close()
@@ -1325,10 +1326,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise
         except Exception as drive_error:
             self.logger.error(f"Failed to stream Drive file {drive_file_id}: {str(drive_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream file from Drive: {str(drive_error)}"
-            )
+            raise to_stream_error(drive_error, connector=self.display_name) from drive_error
 
     async def _stream_mail_record(
         self,
@@ -1376,24 +1374,16 @@ class GoogleGmailIndividualConnector(BaseConnector):
                 fallback_filename=f"record_{record.id}"
             )
 
+        except HTTPException:
+            raise
         except HttpError as http_error:
-            if hasattr(http_error, 'resp') and http_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                self.logger.error(f"Message not found with ID {message_id}")
-                raise HTTPException(
-                    status_code=HttpStatusCode.NOT_FOUND.value,
-                    detail="Message not found"
-                )
-            self.logger.error(f"Failed to fetch mail content: {str(http_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            self.logger.error(f"Failed to fetch mail content for {message_id}: {str(http_error)}")
+            raise map_source_status(
+                http_error.resp.status, connector=self.display_name
+            ) from http_error
         except Exception as mail_error:
             self.logger.error(f"Failed to fetch mail content: {str(mail_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail="Failed to fetch mail content"
-            )
+            raise to_stream_error(mail_error, connector=self.display_name) from mail_error
 
     async def _stream_attachment_record(
         self,
@@ -1405,7 +1395,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
         convertTo: Optional[str] = None
     ) -> StreamingResponse:
         """
-        Stream attachment content from Gmail with Drive fallback.
+        Stream attachment content from Gmail, or from Drive for a Drive-hosted attachment.
 
         Args:
             gmail_service: Raw Gmail API service client
@@ -1447,50 +1437,49 @@ class GoogleGmailIndividualConnector(BaseConnector):
         # Check if file_id is a combined ID (messageId~partId format)
         actual_attachment_id = file_id
         if "~" in file_id:
+            file_message_id, part_id = file_id.split("~", 1)
+
+            # Use the message_id from parent record, but validate it matches
+            if file_message_id != message_id:
+                self.logger.warning(
+                    f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
+                )
+
+            # Fetch the message to get the actual attachment ID
             try:
-                file_message_id, part_id = file_id.split("~", 1)
+                request = (
+                    gmail_service.users()
+                    .messages()
+                    .get(userId="me", id=message_id, format="full")
+                )
+                message = await self.gmail_data_source.execute(request.execute)
+            except HttpError as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise map_source_status(
+                    access_error.resp.status, connector=self.display_name
+                ) from access_error
+            except Exception as access_error:
+                self.logger.error(f"Failed to fetch message {message_id}: {str(access_error)}")
+                raise to_stream_error(
+                    access_error, connector=self.display_name
+                ) from access_error
 
-                # Use the message_id from parent record, but validate it matches
-                if file_message_id != message_id:
-                    self.logger.warning(
-                        f"Message ID mismatch: file_id has {file_message_id}, parent has {message_id}. Using parent message_id."
-                    )
+            if not message or "payload" not in message:
+                self.logger.error(f"Message or payload not found for message ID {message_id}")
+                raise not_found_at_source(self.display_name)
 
-                # Fetch the message to get the actual attachment ID
-                try:
-                    request = (
-                        gmail_service.users()
-                        .messages()
-                        .get(userId="me", id=message_id, format="full")
-                    )
-                    message = await self.gmail_data_source.execute(request.execute)
-                except HttpError as access_error:
-                    if hasattr(access_error, 'resp') and access_error.resp.status == HttpStatusCode.NOT_FOUND.value:
-                        self.logger.error(f"Message not found with ID {message_id}")
-                        raise HTTPException(
-                            status_code=HttpStatusCode.NOT_FOUND.value,
-                            detail="Message not found"
-                        )
-                    raise access_error
-
-                if not message or "payload" not in message:
-                    raise Exception(f"Message or payload not found for message ID {message_id}")
-
-                # Search for the part with matching partId
-                parts = message["payload"].get("parts", [])
-                for part in parts:
-                    if part.get("partId") == part_id:
-                        actual_attachment_id = part.get("body", {}).get("attachmentId")
-                        if not actual_attachment_id:
-                            raise Exception("Attachment ID not found in part body")
-                        self.logger.info(f"Found attachment ID: {actual_attachment_id}")
-                        break
-                else:
-                    raise Exception("Part ID not found in message")
-
-            except Exception as e:
-                self.logger.error(f"Error extracting attachment ID: {str(e)}")
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
+            # A `messageId~partId` id names a Gmail part only; Drive cannot resolve it.
+            part = find_message_part(message["payload"].get("parts"), part_id)
+            if part is None:
+                self.logger.error(f"Part {part_id} not found in message {message_id}")
+                raise not_found_at_source(self.display_name)
+            actual_attachment_id = part.get("body", {}).get("attachmentId")
+            if not actual_attachment_id:
+                raise not_downloadable(
+                    "This attachment has no downloadable content in Gmail.",
+                    connector=self.display_name,
+                )
+            self.logger.info(f"Found attachment ID: {actual_attachment_id}")
 
         # Try to get the attachment from Gmail
         try:
@@ -1507,7 +1496,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             if convertTo == MimeTypes.PDF.value:
                 with tempfile.TemporaryDirectory() as temp_dir:
-                    temp_file_path = os.path.join(temp_dir, file_name)
+                    temp_file_path = temp_path_for(temp_dir, file_name)
 
                     # Write attachment data to temp file
                     with open(temp_file_path, "wb") as f:
@@ -1531,27 +1520,23 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
         except HttpError as gmail_error:
-            self.logger.info(
-                f"Failed to get attachment from Gmail: {str(gmail_error)}, trying Drive..."
+            # Only `messageId~partId` ids reach here — a Drive id returned above.
+            # Drive cannot resolve one, and its non-PDF path hands back a lazy
+            # StreamingResponse that "succeeds" here and fails only once the
+            # router pulls a chunk, turning Gmail's 401/429 into a Drive 404.
+            self.logger.error(
+                f"Failed to get Gmail attachment {file_id}: {str(gmail_error)}"
             )
-
-            # Try Drive as fallback
-            try:
-                return await self._stream_from_drive(file_id, record, file_name, mime_type, convertTo)
-            except Exception as drive_error:
-                self.logger.error(
-                    f"Failed to get file from both Gmail and Drive. Gmail error: {str(gmail_error)}, Drive error: {str(drive_error)}"
-                )
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Failed to download file from both Gmail and Drive",
-                )
+            raise map_source_status(
+                gmail_error.resp.status, connector=self.display_name
+            ) from gmail_error
+        except HTTPException:
+            raise
         except Exception as attachment_error:
             self.logger.error(f"Error streaming attachment: {str(attachment_error)}")
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming attachment: {str(attachment_error)}"
-            )
+            raise to_stream_error(
+                attachment_error, connector=self.display_name
+            ) from attachment_error
 
     async def stream_record(self, record: Record, convertTo: Optional[str] = None) -> StreamingResponse:
         """
@@ -1579,10 +1564,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Check if gmail_data_source is initialized
             if not self.gmail_data_source:
-                raise HTTPException(
-                    status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                    detail="Gmail client not initialized"
-                )
+                raise connector_not_ready(self.display_name)
 
             # Get raw Gmail service client
             gmail_service = self.gmail_data_source.client
@@ -1603,10 +1585,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Error streaming record: {str(e)}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Error streaming record: {str(e)}"
-            )
+            raise to_stream_error(e, connector=self.display_name) from e
 
     async def _create_app_user(self, user_profile: Dict) -> None:
         """Create app user from Gmail profile."""
@@ -1656,18 +1635,13 @@ class GoogleGmailIndividualConnector(BaseConnector):
                         connector_name=self.connector_name,
                         connector_id=self.connector_id,
                         group_type=RecordGroupType.MAILBOX,
+                        inherit_permissions=True,
                     )
 
-                    # Create owner permission from user to record group
-                    owner_permission = Permission(
-                        email=user_email,
-                        type=PermissionType.OWNER,
-                        entity_type=EntityType.USER
-                    )
-
-                    # Submit to processor
+                    # The creator passes the app gate. An empty list clears an
+                    # owner grant an older sync stored on the label.
                     await self.data_entities_processor.on_new_record_groups(
-                        [(record_group, [owner_permission])]
+                        [(record_group, [])]
                     )
 
                     total_record_groups_processed += 1
@@ -1828,7 +1802,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                                     # Process batch when it reaches the size limit
                                     if batch_count >= self.batch_size:
-                                        await self.data_entities_processor.on_new_records(batch_records)
+                                        await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                                         self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                                         batch_records = []
                                         batch_count = 0
@@ -1867,7 +1841,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Process remaining records in batch
             if batch_records:
-                await self.data_entities_processor.on_new_records(batch_records)
+                await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                 self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
 
             # Update sync point with final state (clear pageToken, keep historyId)
@@ -2320,7 +2294,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
                         # Process batch when it reaches the size limit
                         if batch_count >= self.batch_size:
-                            await self.data_entities_processor.on_new_records(batch_records)
+                            await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                             self.logger.info(f"Processed batch of {batch_count} records for user {user_email}")
                             batch_records = []
                             batch_count = 0
@@ -2339,7 +2313,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             # Process remaining records in batch
             if batch_records:
                 try:
-                    await self.data_entities_processor.on_new_records(batch_records)
+                    await self.data_entities_processor.on_new_records(batch_records, replace_permissions=True)
                     self.logger.info(f"Processed final batch of {batch_count} records for user {user_email}")
                 except Exception as batch_error:
                     self.logger.error(f"Error processing final batch: {batch_error}")
@@ -2480,7 +2454,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
 
             # Update DB only for records that changed at source
             if updated_records:
-                await self.data_entities_processor.on_new_records(updated_records)
+                await self.data_entities_processor.on_new_records(updated_records, replace_permissions=True)
                 self.logger.info(f"Updated {len(updated_records)} records in DB that changed at source")
 
             # Publish reindex events for non updated records

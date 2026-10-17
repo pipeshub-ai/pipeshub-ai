@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from app.config.constants.arangodb import PermissionModel
 from app.sources.external.github.github_async import GhObject
 
 from app.connectors.core.registry.filters import FilterOperator, SyncFilterKey
@@ -119,17 +120,23 @@ class ProjectsSync:
             if permissions is None:
                 return
 
-        permissions.extend(self._visibility_permissions(repo))
+        visibility_permissions = self._visibility_permissions(repo)
+        if any(p.entity_type == EntityType.ORG for p in visibility_permissions):
+            await c.data_entities_processor.ensure_team_app_edge(c.connector_id)
+        permissions.extend(visibility_permissions)
         permissions = _dedupe_highest_permissions(permissions)
-        self._accumulate_org_permissions(repo.owner, permissions)
-        # Before the repo group, not after every repo: the org group is the only
-        # one the platform links to the App (a group with a parent never gets
-        # that edge), and connector stats count by walking DOWN from the App.
-        # Flushing at the end left every record of the sync unreachable — and so
-        # counted as zero — until the final write. Flushing here also means the
-        # repo group's parent lookup finds a real group instead of creating a
-        # bare placeholder.
-        await self._flush_org_record_groups()
+        # A personal repo hangs directly off the app. The team connector still
+        # puts an org group above the repo and keeps that group's grants.
+        if getattr(c, "scope", None) != "personal":
+            self._accumulate_org_permissions(repo.owner, permissions)
+            # Before the repo group, not after every repo: the org group is the only
+            # one the platform links to the App (a group with a parent never gets
+            # that edge), and connector stats count by walking DOWN from the App.
+            # Flushing at the end left every record of the sync unreachable — and so
+            # counted as zero — until the final write. Flushing here also means the
+            # repo group's parent lookup finds a real group instead of creating a
+            # bare placeholder.
+            await self._flush_org_record_groups()
         await self._create_record_group_hierarchy(repo, permissions)
 
         for step_name, step in (
@@ -379,14 +386,13 @@ class ProjectsSync:
         """
         c = self.c
         try:
-            async with c.data_store_provider.transaction() as tx_store:
-                user = await tx_store.get_user_by_source_id(
-                    source_user_id=source_user_id, connector_id=c.connector_id,
-                )
-                if user:
-                    return Permission(email=user.email, type=ptype, entity_type=EntityType.USER)
-                # Unbound identity — counted once per repo in _sync_repo_members.
-                return None
+            user = await c.data_entities_processor.get_user_by_source_id(
+                source_user_id=source_user_id, connector_id=c.connector_id,
+            )
+            if user:
+                return Permission(email=user.email, type=ptype, entity_type=EntityType.USER)
+            # Unbound identity — counted once per repo in _sync_repo_members.
+            return None
         except Exception as e:
             self.logger.error("Failed to create permission for GitHub user %s: %s", source_user_id, e)
             return None
@@ -412,8 +418,13 @@ class ProjectsSync:
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=str(repo.id),
-            parent_external_group_id=self._org_parent_external_id(repo.owner.id),
+            parent_external_group_id=(
+                None
+                if getattr(c, "scope", None) == "personal"
+                else self._org_parent_external_id(repo.owner.id)
+            ),
             web_url=getattr(repo, "html_url", None),
+            inherit_permissions=getattr(c, "scope", None) == "personal",
         )
         # The ACL lives ONLY on the repo group. The three child groups set
         # inherit_permissions=True, which makes the processor write a
@@ -429,6 +440,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Issues",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-work-items",
@@ -439,6 +451,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Pull requests",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-pull-requests",
@@ -449,6 +462,7 @@ class ProjectsSync:
             org_id=c.data_entities_processor.org_id,
             name="Code repository",
             group_type=RecordGroupType.PROJECT.value,
+            permission_model=PermissionModel.RECORD_GROUP_LEVEL,
             connector_name=c.connector_name,
             connector_id=c.connector_id,
             external_group_id=f"{repo.id}-code-repository",
@@ -520,6 +534,7 @@ class ProjectsSync:
                 connector_id=c.connector_id,
                 external_group_id=self._org_parent_external_id(org_id),
                 web_url=f"https://github.com/{org_login}",
+                inherit_permissions=getattr(c, "scope", None) == "personal",
             )
             await c.data_entities_processor.on_new_record_groups([(org_rg, list(bucket.values()))])
             # Cleared per org, after its own write: a failure leaves that org
@@ -567,6 +582,4 @@ def _permission_rank(ptype: PermissionType) -> int:
         PermissionType.OWNER: 3,
         PermissionType.WRITE: 2,
         PermissionType.READ: 1,
-        PermissionType.COMMENT: 1,
-        PermissionType.OTHER: 0,
     }.get(ptype, 0)

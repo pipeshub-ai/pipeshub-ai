@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · **Tiếng Việt** · [Italiano](../it/SECURITY.md)
+**Translations:** [English](../../../SECURITY.md) · [Français](../fr/SECURITY.md) · [Deutsch](../de/SECURITY.md) · [简体中文](../zh-CN/SECURITY.md) · [日本語](../ja/SECURITY.md) · [Русский](../ru/SECURITY.md) · [עברית](../he/SECURITY.md) · [한국어](../ko/SECURITY.md) · [Español](../es/SECURITY.md) · [Português](../pt/SECURITY.md) · [Türkçe](../tr/SECURITY.md) · **Tiếng Việt** · [Italiano](../it/SECURITY.md) · [Čeština](../cs/SECURITY.md)
 
 </div>
 
@@ -14,7 +14,7 @@ Chúng tôi xem trọng các lỗ hổng bảo mật và đánh giá cao những
 
 **Vui lòng KHÔNG tạo issue công khai trên GitHub cho các lỗ hổng bảo mật.**
 
-Thay vào đó, vui lòng báo cáo các lỗ hổng bảo mật bằng cách gửi email đến: **abhishek@pipeshub.com**
+Thay vào đó, vui lòng báo cáo các lỗ hổng bảo mật bằng cách gửi email đến: **security@pipeshub.com**
 
 ### Những gì cần đưa vào
 

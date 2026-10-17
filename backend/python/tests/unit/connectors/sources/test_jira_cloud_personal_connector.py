@@ -1,15 +1,13 @@
 """Unit tests for the Jira Cloud Personal connector and the
 ``BaseConnector.ensure_connector_group_permission`` helper exercised through it.
 
-The personal connector subclasses the workspace ``JiraConnector`` (Jira Cloud)
-and routes record-group access through a single pseudo ``AppUserGroup``
-(``ConnectorGroup``) rather than direct USER grants. These tests pin down:
+The personal connector subclasses the workspace ``JiraConnector`` (Jira Cloud).
+Each project inherits from the app and carries no grant. These tests pin down:
 
   * the helper's idempotency, identity scheme, and error fallback,
   * that ``run_sync`` resets the cache and calls the helper before fetching,
-  * that ``_fetch_projects`` attaches the cached GROUP permission to every
-    project record group and skips the application-role / permission-scheme
-    calls the workspace flow makes.
+  * that ``_fetch_projects`` writes an inherit edge and no grant, and skips
+    the application-role / permission-scheme calls the workspace flow makes.
 
 We avoid the workspace path entirely (``_sync_all_project_issues``,
 ``_fetch_users``, ``_sync_user_groups``, etc.) — those flows are owned by the
@@ -72,7 +70,7 @@ def _make_connector(
 class TestJiraCloudPersonalAppIdentity:
     def test_app_class_returns_personal_enum(self) -> None:
         app = JiraCloudPersonalApp("cid-x")
-        assert app.get_app_name() == Connectors.JIRA_PERSONAL
+        assert app.get_app_name() == Connectors.JIRA_CLOUD_PERSONAL
         assert app.get_app_group_name() == AppGroups.ATLASSIAN
 
     def test_connector_overrides_app_and_name_after_super_init(self) -> None:
@@ -82,7 +80,7 @@ class TestJiraCloudPersonalAppIdentity:
         # construction (which now goes through self.connector_name in the
         # refactored parent) gets stamped with JIRA_PERSONAL instead of JIRA.
         assert isinstance(conn.app, JiraCloudPersonalApp)
-        assert conn.connector_name == Connectors.JIRA_PERSONAL
+        assert conn.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         # The pre-refactor regression: parent's __init__ used to hardcode
         # ``self.connector_name = Connectors.JIRA`` after super(). Confirm the
         # personal override wins.
@@ -127,7 +125,7 @@ class TestEnsureConnectorGroupPermission:
 
         assert isinstance(group, AppUserGroup)
         assert group.name == "ConnectorGroup"
-        assert group.app_name == Connectors.JIRA_PERSONAL
+        assert group.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert group.connector_id == "cid-42"
         assert group.source_user_group_id == "internal-cid-42"
         assert group.org_id == "org-personal-cloud-1"
@@ -138,7 +136,7 @@ class TestEnsureConnectorGroupPermission:
         # Member lookup in on_new_user_groups is by email; the email is the
         # only field that has to be correct.
         assert member.email == "owner@example.com"
-        assert member.app_name == Connectors.JIRA_PERSONAL
+        assert member.app_name == Connectors.JIRA_CLOUD_PERSONAL
         assert member.connector_id == "cid-42"
         assert member.is_active is True
 
@@ -210,25 +208,19 @@ class TestFetchProjectsEmitsGroupPermission:
 
         assert returned_raw == raw_projects
         assert len(record_groups) == 2
+        assert record_groups[0][1] == []
+        assert record_groups[1][1] == []
+        assert record_groups[0][0].inherit_permissions is True
+        assert record_groups[1][0].inherit_permissions is True
 
-        # All projects share the same cached GROUP permission instance — that
-        # one upsert is the entire ACL surface for this connector.
-        perm_a = record_groups[0][1][0]
-        perm_b = record_groups[1][1][0]
-        assert perm_a.entity_type == EntityType.GROUP
-        assert perm_a.external_id == "internal-cid-fp"
-        assert perm_b.external_id == "internal-cid-fp"
-
-        # Idempotency check: ``_fetch_projects`` lazily calls the helper if
-        # ``run_sync`` didn't, so a single project list still produces a
-        # single user-group upsert (not one per project).
+        # The helper still links the creator to the app, once for the list.
         conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
         rg_alpha, _ = record_groups[0]
         assert rg_alpha.external_group_id == "10001"
         assert rg_alpha.short_name == "ALPHA"
         assert rg_alpha.group_type == RecordGroupType.PROJECT
-        assert rg_alpha.connector_name == Connectors.JIRA_PERSONAL
+        assert rg_alpha.connector_name == Connectors.JIRA_CLOUD_PERSONAL
         assert rg_alpha.web_url == "https://a.atlassian.net/ALPHA"
 
         # Workspace permission resolution must remain untouched.
@@ -246,9 +238,8 @@ class TestFetchProjectsEmitsGroupPermission:
         record_groups, _ = await conn._fetch_projects()
 
         assert len(record_groups) == 1
-        # Without a resolvable creator we emit the project group with no ACLs
-        # rather than fabricating an unowned grant.
         assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_uses_cached_group_permission_when_already_ensured(self) -> None:
@@ -269,8 +260,8 @@ class TestFetchProjectsEmitsGroupPermission:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][1] == [cached]
-        # No re-upsert when permission already cached upstream.
+        assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_forwards_project_key_filter_to_listing_helper(self) -> None:
@@ -316,10 +307,9 @@ class TestPersonalRunSyncOrchestration:
         ):
             await conn.run_sync()
 
-        # Helper invoked exactly once and produces a fresh, non-stale permission.
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
-        assert conn._connector_group_permission is not None
-        assert conn._connector_group_permission.external_id != "stale"
+        # The creator is linked to the app. No ConnectorGroup is written.
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert conn._connector_group_permission is None
 
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
@@ -378,34 +368,19 @@ class TestPersonalRunSyncOrchestration:
 
 
 class TestPersonalRunSyncEdgeCases:
-    async def test_run_sync_raises_when_init_fails(self) -> None:
-        conn = _make_connector()
-        conn.data_source = None
-        conn.init = AsyncMock(return_value=False)
-
-        with pytest.raises(RuntimeError, match="init failed"):
-            await conn.run_sync()
-
-    async def test_run_sync_calls_init_when_data_source_missing(self) -> None:
+    async def test_run_sync_raises_when_not_initialized(self) -> None:
+        """Mirrors Confluence: run_sync must not call init(); fail if data_source is missing."""
         conn = _make_connector()
         conn.data_source = None
         conn.init = AsyncMock(return_value=True)
-        conn.creator_email = "owner@example.com"
-        conn._fetch_projects = AsyncMock(return_value=([], []))
-        conn._sync_all_project_issues = AsyncMock(
-            return_value={"total_synced": 0, "new_count": 0, "updated_count": 0},
-        )
-        conn._get_issues_sync_checkpoint = AsyncMock(return_value=None)
-        conn._update_issues_sync_checkpoint = AsyncMock()
+        conn.notify = AsyncMock()
 
-        with patch(
-            "app.connectors.sources.atlassian.jira_cloud_personal.connector.load_connector_filters",
-            new_callable=AsyncMock,
-            return_value=(None, None),
-        ):
+        with pytest.raises(RuntimeError, match="not initialized") as exc_info:
             await conn.run_sync()
 
-        conn.init.assert_awaited_once()
+        conn.init.assert_not_awaited()
+        assert getattr(exc_info.value, "_notification_sent", False) is True
+        conn.notify.assert_not_awaited()
 
     async def test_run_sync_creator_lookup_exception_is_logged(self) -> None:
         conn = _make_connector(created_by="creator-id")
@@ -589,7 +564,7 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Project summary"
+        assert record_groups[0][0].description is None
 
     async def test_empty_description_becomes_none(self) -> None:
         conn = _make_connector()
@@ -623,9 +598,9 @@ class TestFetchProjectsDescriptionParsing:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][0].description == "Plain text summary"
+        assert record_groups[0][0].description is None
 
-    async def test_logs_debug_when_project_permissions_present(self) -> None:
+    async def test_project_inherits_and_carries_no_grant(self) -> None:
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
         conn.data_source = MagicMock()
@@ -638,11 +613,10 @@ class TestFetchProjectsDescriptionParsing:
             return_value=[{"id": "1", "key": "X", "name": "X"}],
         )
 
-        with patch.object(conn.logger, "debug") as mock_debug:
-            await conn._fetch_projects()
+        record_groups, _ = await conn._fetch_projects()
 
-        mock_debug.assert_called_once()
-        assert "ConnectorGroup" in mock_debug.call_args[0][0]
+        assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
 
 
 # -----------------------------------------------------------------------------
@@ -668,4 +642,4 @@ class TestPersonalCreateConnector:
 
         assert isinstance(instance, JiraCloudPersonalConnector)
         assert instance.connector_id == "cid-create"
-        assert instance.connector_name == Connectors.JIRA_PERSONAL
+        assert instance.connector_name == Connectors.JIRA_CLOUD_PERSONAL

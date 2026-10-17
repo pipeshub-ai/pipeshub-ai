@@ -8,17 +8,19 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import AppGroups, Connectors, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.connectors.sources.atlassian.core.apps import JiraDataCenterApp
 from app.connectors.sources.atlassian.jira_data_center.connector import (
+    GroupMemberships,
     JiraDataCenterConnector,
     _normalize_jira_dc_group_row,
 )
-from app.models.entities import RecordType
 
 
 def _make_logger() -> logging.Logger:
@@ -238,8 +240,8 @@ class TestJiraDataCenterConnectorInit:
                 {"authType": "OAUTH", "baseUrl": "https://jira.company.com"}
             )
         )
-        ok = await conn.init()
-        assert ok is False
+        with pytest.raises(ConnectorInitError, match="unsupported authType"):
+            await conn.init()
         assert conn.external_client is None
 
     @pytest.mark.asyncio
@@ -247,8 +249,8 @@ class TestJiraDataCenterConnectorInit:
         conn = _make_connector()
         bad = {"authType": "API_TOKEN", "baseUrl": "", "apiToken": "x"}
         conn.config_service.get_config = AsyncMock(return_value=_wrap_config(bad))
-        ok = await conn.init()
-        assert ok is False
+        with pytest.raises(ConnectorInitError, match="baseUrl is required"):
+            await conn.init()
 
     @pytest.mark.asyncio
     async def test_init_build_from_services_failure(self) -> None:
@@ -263,8 +265,8 @@ class TestJiraDataCenterConnectorInit:
             new_callable=AsyncMock,
             side_effect=RuntimeError("etcd"),
         ):
-            ok = await conn.init()
-        assert ok is False
+            with pytest.raises(ConnectorInitError, match="etcd"):
+                await conn.init()
 
 
 # -----------------------------------------------------------------------------
@@ -277,8 +279,9 @@ class TestJiraDataCenterFreshDatasource:
     async def test_raises_when_not_initialized(self) -> None:
         conn = _make_connector()
         conn.external_client = None
-        with pytest.raises(RuntimeError, match="not initialized"):
+        with pytest.raises(HTTPException) as exc_info:
             await conn._get_fresh_datasource()
+        assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
     async def test_returns_jira_data_source(self) -> None:
@@ -428,7 +431,7 @@ class TestJiraDataCenterRunSyncSmoke:
         conn.data_source = MagicMock()
         conn.data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
         conn._fetch_projects = AsyncMock(return_value=([], []))
         conn._sync_all_project_issues = AsyncMock(
@@ -474,7 +477,7 @@ class TestJiraDataCenterRunSyncSmoke:
             return_value=[MagicMock()]
         )
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         roles_mapping = {"jira-software": [{"name": "g1", "groupId": "g1"}]}
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(
             return_value=roles_mapping
@@ -513,7 +516,7 @@ class TestJiraDataCenterRunSyncSmoke:
             return_value=[MagicMock()]
         )
         conn._fetch_users = AsyncMock(return_value=[])
-        conn._sync_user_groups = AsyncMock(return_value={})
+        conn._sync_user_groups = AsyncMock(return_value=GroupMemberships({}))
         conn._fetch_application_roles_to_groups_mapping = AsyncMock(return_value={})
         conn._fetch_projects = AsyncMock(return_value=([], []))
         conn._sync_project_roles = AsyncMock()
@@ -709,7 +712,7 @@ class TestJiraDataCenterDeletionAudit:
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             keys = await conn._fetch_deleted_issues_from_audit(1_700_000_000_000)
 
-        assert keys == []
+        assert keys is None, "an unread window is not reported as 'no deletions'"
         mock_ds.get_auditing_events_v1.assert_awaited_once()
 
     @pytest.mark.asyncio
@@ -798,24 +801,22 @@ class TestJiraDataCenterDeletionAudit:
         mock_ds = MagicMock()
         mock_ds.get_issue_v2 = AsyncMock(return_value=resp)
 
-        tx_store = MagicMock()
-        tx_store.get_record_by_issue_key = AsyncMock()
-        tx_store.delete_records_and_relations = AsyncMock()
-        conn.data_store_provider = MagicMock()
-        conn.data_store_provider.transaction = MagicMock(
-            return_value=_aenter_ctx(tx_store)
-        )
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock()
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await conn._handle_deleted_issue("PROJ-1")
 
         # Must not have touched the DB at all.
-        tx_store.get_record_by_issue_key.assert_not_called()
-        tx_store.delete_records_and_relations.assert_not_called()
+        conn.data_entities_processor.get_record_by_issue_key.assert_not_called()
+        conn.data_entities_processor.on_records_deleted_cascade.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_handle_deleted_issue_deletes_attachments_only_not_subtasks(self) -> None:
-        """Flat delete: FILE children removed, TICKET children left, issue removed."""
+        """The issue goes through the processor without cascading: its ATTACHMENT
+        children go with it, sub-tasks survive and are re-pointed,
+        and the vectors are cleaned up."""
         conn = _make_connector()
         conn.data_source = MagicMock()
         mock_ds = MagicMock()
@@ -827,42 +828,21 @@ class TestJiraDataCenterDeletionAudit:
         issue_record.id = "internal-issue-1"
         issue_record.external_record_id = "10004"
 
-        file_child = MagicMock()
-        file_child.id = "file-1"
-        file_child.external_record_id = "att-10004-1"
-
-        ticket_child = MagicMock()
-        ticket_child.id = "subtask-1"
-        ticket_child.external_record_id = "10011"
-
-        tx_store = MagicMock()
-        tx_store.get_record_by_issue_key = AsyncMock(return_value=issue_record)
-        tx_store.get_records_by_parent = AsyncMock(
-            side_effect=lambda **kwargs: (
-                [file_child] if kwargs.get("record_type") == RecordType.FILE.value else [ticket_child]
-            )
-        )
-        tx_store.delete_records_and_relations = AsyncMock()
-        conn.data_store_provider = MagicMock()
-        conn.data_store_provider.transaction = MagicMock(
-            return_value=_aenter_ctx(tx_store)
+        conn.data_entities_processor = MagicMock()
+        conn.data_entities_processor.get_record_by_issue_key = AsyncMock(return_value=issue_record)
+        conn.data_entities_processor.on_records_deleted_cascade = AsyncMock(
+            return_value={
+                "success": True,
+                "deleted_records": [{"record_id": "internal-issue-1"}, {"record_id": "file-1"}],
+            },
         )
 
         with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
             await conn._handle_deleted_issue("PA-5")
 
-        deleted_keys = [
-            call.kwargs.get("record_key") or call.args[0]
-            for call in tx_store.delete_records_and_relations.await_args_list
-        ]
-        assert "file-1" in deleted_keys
-        assert "internal-issue-1" in deleted_keys
-        assert "subtask-1" not in deleted_keys
-        assert tx_store.get_records_by_parent.await_count == 1
-        tx_store.get_records_by_parent.assert_awaited_once_with(
-            connector_id=conn.connector_id,
-            parent_external_record_id="10004",
-            record_type=RecordType.FILE.value,
+        # include_trashed_roots: an issue the source deleted goes even when it is in the trash.
+        conn.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["internal-issue-1"], conn.connector_id, cascade_children=False, include_trashed_roots=True,
         )
 
 

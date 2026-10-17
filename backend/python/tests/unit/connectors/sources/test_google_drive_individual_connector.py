@@ -33,6 +33,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +256,8 @@ class TestInit:
         connector.config_service.get_config = AsyncMock(
             return_value={"auth": {}}
         )
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
@@ -879,7 +880,7 @@ class TestProcessDriveItem:
 
     @pytest.mark.asyncio
     async def test_existing_record_version_incremented(self, connector):
-        """Existing record gets version incremented."""
+        """A rename is not a new revision, so the stored version stays put."""
         existing = _make_existing_file_record(
             record_name="old.txt",
             external_revision_id="rev-1",
@@ -893,7 +894,7 @@ class TestProcessDriveItem:
 
         meta = _make_file_metadata(name="new.txt", parents=["parent-1"])
         result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
-        assert result.record.version == 6
+        assert result.record.version == 5
 
     @pytest.mark.asyncio
     async def test_no_parents_in_metadata(self, connector):
@@ -948,13 +949,13 @@ class TestProcessDriveItem:
 
     @pytest.mark.asyncio
     async def test_no_extension_no_dot_in_name(self, connector):
-        """No fileExtension and no dot in name."""
+        """No fileExtension and no dot in the name: the mime type supplies txt."""
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
         meta = _make_file_metadata(file_extension=None, name="README")
         meta.pop("fileExtension", None)
         result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
-        assert result.record.extension is None
+        assert result.record.extension == "txt"
 
     @pytest.mark.asyncio
     async def test_shared_file(self, connector):
@@ -1298,7 +1299,7 @@ class TestSyncUserPersonalDrive:
     async def test_drive_data_source_not_initialized(self, connector):
         connector.drive_data_source = None
         await connector._sync_user_personal_drive("d1")
-        # Should log error and return
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -1308,7 +1309,7 @@ class TestSyncUserPersonalDrive:
             return_value={"user": {}}
         )
         await connector._sync_user_personal_drive("d1")
-        # Should log error and return, no sync performed
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -1526,15 +1527,15 @@ class TestSyncSharedWithMeErrorHandling:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
-    async def test_non_retryable_403_is_skipped(self, mock_refresh, connector):
-        """A 403 without a retryable reason (or genuinely revoked access) is
-        still safe to skip permanently."""
+    async def test_permission_refused_403_is_skipped(self, mock_refresh, connector):
+        """A 403 whose reason is a known permission refusal (access revoked since
+        the folder was listed) is safe to skip permanently."""
         mock_refresh.return_value = None
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
         not_found_error = HttpError(resp, b"forbidden")
-        not_found_error.error_details = [{"reason": "insufficientPermissions"}]
+        not_found_error.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.files_list = AsyncMock(
             side_effect=_shared_with_me_files_list_side_effect(not_found_error)
         )
@@ -1804,6 +1805,10 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self, connector):
         connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(
+            return_value={"user": {"emailAddress": "user@example.com"}}
+        )
         result = await connector.test_connection_and_access()
         assert result is True
 
@@ -1869,7 +1874,7 @@ class TestStreamGoogleApiRequest:
             with pytest.raises(HTTPException) as exc_info:
                 async for _ in connector._stream_google_api_request(mock_request, "download"):
                     pass
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_chunk_error(self, connector):
@@ -2001,6 +2006,8 @@ class TestGetFileMetadataFromDrive:
 
         result = await connector._get_file_metadata_from_drive("f1")
         assert result["id"] == "f1"
+        assert mock_files.get.call_args.kwargs["supportsAllDrives"] is True
+        assert mock_files.get.call_args.kwargs["fileId"] == "f1"
 
     @pytest.mark.asyncio
     async def test_not_found_error(self, connector):
@@ -2030,7 +2037,8 @@ class TestGetFileMetadataFromDrive:
 
         with pytest.raises(HTTPException) as exc_info:
             await connector._get_file_metadata_from_drive("f1")
-        assert exc_info.value.status_code == 500
+        # Drive's own status is mapped: a 403 is a denial, not an opaque 500.
+        assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_generic_exception(self, connector):
@@ -2153,6 +2161,10 @@ class TestStreamRecord:
 
             await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_regular_file_download(self, connector):
@@ -2170,6 +2182,10 @@ class TestStreamRecord:
             mock_stream.return_value = MagicMock()
             await connector.stream_record(record)
             mock_stream.assert_called_once()
+            mock_service.files.return_value.get_media.assert_called_once_with(
+                fileId=record.external_record_id,
+                supportsAllDrives=True,
+            )
 
     @pytest.mark.asyncio
     async def test_http_exception_passthrough(self, connector):
@@ -2221,7 +2237,9 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 400
+            # record-not-downloadable: Drive understood the request and refused
+            # to serve this format, which is not a malformed-request 400.
+            assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_forbidden_other_reason(self, connector):
@@ -2234,8 +2252,9 @@ class TestStreamRecord:
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
+        # Not a quota reason: those are remapped to 429 by _is_rate_limit_403.
         http_err = HttpError(resp, b"forbidden")
-        http_err.error_details = [{"reason": "rateLimitExceeded"}]
+        http_err.error_details = [{"reason": "insufficientPermissions"}]
 
         connector.google_client.get_client.return_value = mock_service
 
@@ -2254,7 +2273,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 403
 
     @pytest.mark.asyncio
     async def test_pdf_download_http_error_non_forbidden(self, connector):
@@ -2285,7 +2304,7 @@ class TestStreamRecord:
 
             with pytest.raises(HTTPException) as exc_info:
                 await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
-            assert exc_info.value.status_code == 500
+            assert exc_info.value.status_code == 502
 
     @pytest.mark.asyncio
     async def test_pdf_conversion_requested_google_workspace_doc(self, connector):

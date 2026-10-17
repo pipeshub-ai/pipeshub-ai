@@ -10,22 +10,32 @@ from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
     map_msgraph_role_to_permission_type,
+    map_msgraph_roles_to_permission_type,
 )
 from app.models.permission import PermissionType
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 from app.connectors.sources.microsoft.common.msgraph_client import (
     DeltaGetResponse,
     GroupDeltaGetResponse,
-    MSGraphClient,
     PermissionChange,
-    RecordUpdate,
-    map_msgraph_role_to_permission_type,
 )
 
 
 # ===========================================================================
 # map_msgraph_role_to_permission_type
 # ===========================================================================
+
+
+class TestMapMsgraphRolesToPermissionType:
+    def test_the_strongest_role_wins_whatever_its_position(self) -> None:
+        assert map_msgraph_roles_to_permission_type(["read", "write"]) == PermissionType.WRITE
+        assert map_msgraph_roles_to_permission_type(["write", "owner", "read"]) == PermissionType.OWNER
+
+    def test_an_edit_link_is_write(self) -> None:
+        assert map_msgraph_roles_to_permission_type(["edit"]) == PermissionType.WRITE
+
+    def test_no_roles_reads_as_read(self) -> None:
+        assert map_msgraph_roles_to_permission_type(None) == PermissionType.READ
+        assert map_msgraph_roles_to_permission_type([]) == PermissionType.READ
 
 
 class TestMapMsgraphRoleToPermissionType:
@@ -728,6 +738,21 @@ class TestGetAllUsers:
         assert users[0].source_created_at == dt.timestamp()
 
     @pytest.mark.asyncio
+    async def test_guests_are_marked_and_members_are_not(self) -> None:
+        client = _make_client()
+        guest = self._user_mock(uid="g1", mail="bob@partner.com")
+        guest.user_type = "Guest"
+        member = self._user_mock(uid="m1")
+        member.user_type = "Member"
+        client.client.users.get = AsyncMock(return_value=_paged_result([guest, member]))
+
+        users = await client.get_all_users()
+
+        assert [(u.source_user_id, u.is_guest) for u in users] == [("g1", True), ("m1", False)]
+        query = client.client.users.get.await_args.args[0].query_parameters
+        assert "userType" in query.select
+
+    @pytest.mark.asyncio
     async def test_pagination(self):
         client = _make_client()
         u1 = self._user_mock(uid="u1")
@@ -964,6 +989,20 @@ class TestGetDeltaResponseSharepoint:
         assert resp["drive_items"] == ["item1"]
         assert resp["next_link"] is None
         assert resp["delta_link"] is None
+
+    @pytest.mark.asyncio
+    async def test_asks_for_sharing_only_changes_while_the_onedrive_delta_does_not(self) -> None:
+        client = _make_client()
+        client.client.request_adapter.send_async = AsyncMock(return_value=MagicMock(value=[]))
+
+        await client.get_delta_response_sharepoint("https://graph/delta")
+        await client.get_delta_response("https://graph/delta")
+
+        sharepoint_request, onedrive_request = (
+            call.kwargs["request_info"] for call in client.client.request_adapter.send_async.await_args_list
+        )
+        assert sharepoint_request.headers.get("Prefer") == {"deltashowsharingchanges"}
+        assert not onedrive_request.headers.contains("Prefer")
 
     @pytest.mark.asyncio
     async def test_exception_raised(self):
@@ -1691,72 +1730,19 @@ class TestSearchQuery:
     @pytest.mark.asyncio
     async def test_extract_region_exception_in_error_access(self):
         """When accessing error.error.message throws during region extraction,
-        the except Exception: pass catches it and returns None -> no retry -> raise."""
+        the except Exception: pass catches it and returns None -> no retry -> raise.
+
+        Only the 3rd access to `.message` (the one inside
+        `_extract_region_from_error`) raises. The two guard checks in
+        `search_query` before it, and any later access (e.g. `str(ex)` when
+        the error is logged) must keep succeeding, since library internals
+        (e.g. `kiota_abstractions.api_error.APIError.__str__`) may also read
+        `.message` and shouldn't be coupled to this test's call count.
+        """
         client = _make_client()
         from msgraph.generated.models.o_data_errors.o_data_error import ODataError
 
         err = ODataError()
-        # Create an error attribute that raises on property access in _extract
-        inner_error = MagicMock()
-        inner_error.code = "BadRequest"
-        # First access to .message works (for the guard in search_query),
-        # but .message as a property could raise during _extract_region_from_error
-        msg = "Requested region  not found. Only valid regions are EUR."
-        inner_error.message = msg
-        err.error = inner_error
-
-        # Make the error raise when _extract_region_from_error tries
-        # to access error.error.message the regex way -- we need a different approach.
-        # Instead, let's make the error object raise on the second access to .error
-        call_count = 0
-        original_error = err.error
-
-        def error_property_side_effect():
-            nonlocal call_count
-            call_count += 1
-            if call_count <= 2:
-                # First accesses work (guard checks in search_query)
-                return original_error
-            # Third+ access (inside _extract_region_from_error) raises
-            raise AttributeError("simulated error")
-
-        # This approach won't work easily with __getattr__. Let's take a simpler path:
-        # Make error.error.message a property that raises on regex search
-        inner2 = MagicMock()
-        inner2.code = "BadRequest"
-        inner2.message = PropertyMock(side_effect=["valid regions are EUR.", AttributeError("boom")])
-
-        # Simplest approach: just test the path with error.error = None inside _extract
-        # but error still has code/message for the guard
-        err2 = ODataError()
-        err2_inner = MagicMock()
-        err2_inner.code = "BadRequest"
-        err2_inner.message = "valid regions are here but will fail in extract"
-
-        # Override error to raise on message access in _extract context
-        # Actually the cleanest way: error.error raises on .message in _extract
-        err3 = ODataError()
-        err3_error = MagicMock()
-        err3_error.code = "BadRequest"
-
-        # message property: returns string first time (guard), raises second time (extract)
-        message_calls = [0]
-        real_message = "Requested region  not found. Only valid regions are EUR."
-
-        def message_getter():
-            message_calls[0] += 1
-            if message_calls[0] <= 2:
-                return real_message
-            raise RuntimeError("simulated parse failure")
-
-        type(err3_error).message = PropertyMock(side_effect=lambda: message_getter())
-
-        # This is getting complex. Instead, let's directly test the branch
-        # by making error.error.message be a string that causes re.search to throw.
-        # re.search can't really throw on valid inputs though.
-
-        # The simplest trigger: make error.error be something whose .message raises
-        err4 = ODataError()
 
         class BrokenInner:
             code = "BadRequest"
@@ -1765,18 +1751,22 @@ class TestSearchQuery:
             @property
             def message(self):
                 self._count += 1
-                if self._count > 2:
+                if self._count == 3:
                     raise RuntimeError("boom")
                 return "Requested region not found. Only valid regions are EUR."
 
-        err4.error = BrokenInner()
-        client.client.request_adapter.send_async = AsyncMock(side_effect=err4)
+        err.error = BrokenInner()
+        send_async = AsyncMock(side_effect=err)
+        client.client.request_adapter.send_async = send_async
 
         # The guard checks ex.error.message (count 1 and 2),
         # then _extract_region_from_error checks error.error.message (count 3 -> raises)
         # The except Exception: pass catches it, returns None => no retry => raise
         with pytest.raises(ODataError):
             await client.search_query(["driveItem"], region="NAM")
+
+        send_async.assert_awaited_once()
+        assert err.error._count >= 3
 
     @pytest.mark.asyncio
     async def test_search_with_empty_string_region(self):

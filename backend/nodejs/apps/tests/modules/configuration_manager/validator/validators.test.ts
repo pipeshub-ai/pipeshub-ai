@@ -4,11 +4,15 @@ import sinon from 'sinon'
 import {
   baseStorageSchema,
   s3ConfigSchema,
+  s3ConfigSchemaRefined,
+  storageValidationSchema,
   azureBlobConfigSchema,
   providerType,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
   configurationSchema,
   githubAuthConfigSchema,
+  rotateConnectionCredentialsSchema,
 } from '../../../../src/modules/configuration_manager/validator/validators'
 
 describe('configuration_manager/validator/validators', () => {
@@ -51,11 +55,71 @@ describe('configuration_manager/validator/validators', () => {
       expect(result.success).to.be.true
     })
 
-    it('should reject missing accessKeyId', () => {
+    it('should reject a config with only s3SecretAccessKey', () => {
       const data = {
         storageType: 's3',
         s3SecretAccessKey: 'secret',
         s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchemaRefined.safeParse(data)
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal(['s3AccessKeyId'])
+      }
+    })
+
+    it('should reject a config with only s3AccessKeyId', () => {
+      const data = {
+        storageType: 's3',
+        s3AccessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+        s3SecretAccessKey: '   ',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchemaRefined.safeParse(data)
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0]?.path).to.deep.equal(['s3SecretAccessKey'])
+      }
+    })
+
+    it('should reject partial credentials through the storage route schema', () => {
+      const result = storageValidationSchema.safeParse({
+        body: {
+          storageType: 's3',
+          s3AccessKeyId: 'AKIAIOSFODNN7EXAMPLE',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('should accept both credentials omitted through the storage route schema', () => {
+      const result = storageValidationSchema.safeParse({
+        body: {
+          storageType: 's3',
+          s3Region: 'us-east-1',
+          s3BucketName: 'my-bucket',
+        },
+      })
+      expect(result.success).to.be.true
+    })
+
+    it('should accept S3 config with both credential fields omitted (IAM role mode)', () => {
+      const data = {
+        storageType: 's3',
+        s3Region: 'us-east-1',
+        s3BucketName: 'my-bucket',
+      }
+      const result = s3ConfigSchema.safeParse(data)
+      expect(result.success).to.be.true
+    })
+
+    it('should reject missing region even in IAM role mode', () => {
+      const data = {
+        storageType: 's3',
         s3BucketName: 'my-bucket',
       }
       const result = s3ConfigSchema.safeParse(data)
@@ -253,6 +317,67 @@ describe('configuration_manager/validator/validators', () => {
         expect(result.data.project).to.equal('gcp-project-123')
         expect(result.data.location).to.equal('us-central1')
         expect(result.data.serviceAccountJson).to.equal('{"type":"service_account"}')
+      }
+    })
+  })
+
+  describe('batch and rotate configuration', () => {
+    it('accepts a shared friendly name and drops it before the single-model rule', () => {
+      const result = batchAddModelsRequestSchema.safeParse({
+        body: {
+          modelType: 'llm',
+          provider: 'openAI',
+          configuration: { apiKey: 'sk', modelFriendlyName: 'Shared' },
+          models: [{ model: 'gpt-4o', modelFriendlyName: 'Bee' }],
+        },
+      })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.body.configuration.modelFriendlyName).to.equal(undefined)
+        expect(result.data.body.configuration.apiKey).to.equal('sk')
+        expect(result.data.body.models[0].modelFriendlyName).to.equal('Bee')
+      }
+    })
+
+    it('rejects an endpoint on credential rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new', endpoint: 'https://attacker.example/v1' } },
+      })
+      expect(result.success).to.be.false
+    })
+
+    it('accepts a credential-only rotation', () => {
+      const result = rotateConnectionCredentialsSchema.safeParse({
+        params: { connectionId: 'conn-1' },
+        body: { configuration: { apiKey: 'sk-new' } },
+      })
+      expect(result.success).to.be.true
+    })
+  })
+
+  describe('configurationSchema defaultReasoningEffort', () => {
+    it('should keep a valid default so it is saved with the model', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'low' })
+      expect(result.success).to.be.true
+      if (result.success) {
+        expect(result.data.defaultReasoningEffort).to.equal('low')
+      }
+    })
+
+    it('should accept an empty or null default, which means none is set', () => {
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: '' }).success).to.be.true
+      expect(configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: null }).success).to.be.true
+    })
+
+    it('should reject an unknown effort with a message naming the valid choices', () => {
+      const result = configurationSchema.safeParse({ model: 'qwen', defaultReasoningEffort: 'extreme' })
+      expect(result.success).to.be.false
+      if (!result.success) {
+        expect(result.error.issues[0].path).to.deep.equal(['defaultReasoningEffort'])
+        expect(result.error.issues[0].message).to.equal(
+          'Default reasoning effort must be low, medium, high or max. Leave it empty to use the platform default.',
+        )
       }
     })
   })

@@ -1,7 +1,5 @@
 from logging import Logger
-from typing import override
-
-from redis.asyncio import Redis
+from typing import TYPE_CHECKING, override
 
 from app.services.messaging.config import (
     REQUIRED_TOPICS,
@@ -9,6 +7,11 @@ from app.services.messaging.config import (
     RedisStreamsConfig,
 )
 from app.services.messaging.interface.admin import IMessageAdmin
+from app.services.redis.config import ClientOptions, RedisConnectionConfig
+from app.services.redis.connection_provider_factory import get_redis_provider
+
+if TYPE_CHECKING:
+    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
 
 _ADMIN_INIT_GROUP = "admin_init"
 _STREAM_TYPE = "stream"
@@ -17,9 +20,14 @@ _STREAM_TYPE = "stream"
 class RedisStreamsAdmin(IMessageAdmin):
     """Redis Streams implementation of message broker administration"""
 
-    def __init__(self, logger: Logger, config: RedisStreamsConfig) -> None:
+    def __init__(
+        self, logger: Logger, config: RedisStreamsConfig, provider: "IRedisConnectionProvider | None" = None
+    ) -> None:
         self.logger = logger
         self.config = config
+        self._provider: "IRedisConnectionProvider" = provider or get_redis_provider(
+            RedisConnectionConfig.from_redis_config(config)
+        )
 
     @override
     async def ensure_topics_exist(
@@ -37,15 +45,9 @@ class RedisStreamsAdmin(IMessageAdmin):
             for topic in REQUIRED_TOPICS
             for lane in lane_topics_for(topic, MessageBrokerType.REDIS)
         ]
-        redis: Redis | None = None
+        redis: "RedisClient | None" = None
         try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
+            redis = self._provider.create_client(ClientOptions(decode_responses=True))
 
             failures: list[str] = []
             for topic in topic_list:
@@ -83,21 +85,13 @@ class RedisStreamsAdmin(IMessageAdmin):
 
     @override
     async def list_topics(self) -> list[str]:
-        redis: Redis | None = None
-        try:
-            redis = Redis(
-                host=self.config.host,
-                port=self.config.port,
-                password=self.config.password,
-                db=self.config.db,
-                decode_responses=True,
-            )
-            streams = []
-            async for key in redis.scan_iter():
-                key_type = await redis.type(key)  # type: ignore
-                if key_type == _STREAM_TYPE:
-                    streams.append(key)
-            return streams
-        finally:
-            if redis:
-                await redis.close()
+        # provider.scan_keys(), not a raw scan_iter() (R2): ioredis-style
+        # Cluster.scan() only reaches one random node, and this must see
+        # every stream regardless of which shard it lives on.
+        redis = self._provider.get_client()
+        streams = []
+        async for key in self._provider.scan_keys("*"):
+            key_type = await redis.type(key)  # type: ignore
+            if key_type == _STREAM_TYPE:
+                streams.append(key)
+        return streams

@@ -12,7 +12,7 @@ Tests for RedisStreamsConsumer:
 import asyncio
 import json
 import logging
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -53,10 +53,7 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         mock_redis.ping.assert_awaited_once()
@@ -76,10 +73,7 @@ class TestInitialize:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_count == 2
@@ -93,10 +87,7 @@ class TestInitialize:
             side_effect=Exception("BUSYGROUP Consumer Group name already exists")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert c.redis is mock_redis
@@ -110,10 +101,7 @@ class TestInitialize:
             side_effect=Exception("Connection lost")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             with pytest.raises(Exception, match="Connection lost"):
                 await c.initialize()
 
@@ -128,10 +116,7 @@ class TestEphemeralGroupCreation:
         c = RedisStreamsConsumer(logger, config)
         mock_redis = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_args.kwargs["id"] == "$"
@@ -142,10 +127,7 @@ class TestEphemeralGroupCreation:
         c = RedisStreamsConsumer(logger, config)
         mock_redis = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_args.kwargs["id"] == "0"
@@ -187,10 +169,7 @@ class TestStartStop:
         mock_redis.xreadgroup = AsyncMock(return_value=None)
         mock_redis.close = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.start(handler)
 
         assert c.running is True
@@ -346,10 +325,7 @@ class TestInitializeStaleConsumerCleanup:
         mock_redis.ping = AsyncMock()
         mock_redis.xgroup_create = AsyncMock()
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.initialize()
 
         assert mock_redis.xgroup_create.call_count == 2
@@ -365,10 +341,7 @@ class TestInitializeStaleConsumerCleanup:
             side_effect=Exception("BUSYGROUP Consumer Group name already exists")
         )
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             # Should not raise
             await c.initialize()
 
@@ -393,10 +366,7 @@ class TestStartErrorPath:
 
         assert c.redis is None
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            return_value=mock_redis,
-        ):
+        with patch.object(c._provider, "create_client", return_value=mock_redis):
             await c.start(handler)
 
         assert c.redis is mock_redis
@@ -424,9 +394,7 @@ class TestStartErrorPath:
         mock_redis.close = AsyncMock()
         c.redis = mock_redis
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-        ) as mock_cls:
+        with patch.object(c._provider, "create_client") as mock_cls:
             await c.start(handler)
             mock_cls.assert_not_called()
 
@@ -447,10 +415,7 @@ class TestStartErrorPath:
         c = RedisStreamsConsumer(logger, config)
         handler = AsyncMock(return_value=True)
 
-        with patch(
-            "app.services.messaging.redis_streams.consumer.Redis",
-            side_effect=Exception("Connection refused"),
-        ):
+        with patch.object(c._provider, "create_client", side_effect=Exception("Connection refused")):
             with pytest.raises(Exception, match="Connection refused"):
                 await c.start(handler)
 
@@ -1244,3 +1209,97 @@ class TestConsumeLoop:
         await consumer._consume_loop()
 
         mock_redis.aclose.assert_awaited_once()
+
+
+class TestSingleGroupReadHasNoDeadline:
+    """A standalone deployment must read exactly as it did before slot
+    grouping existed.
+
+    `key_slot()` is 0 for every key on standalone, so there is always exactly
+    one group. The per-group `asyncio.wait_for` deadline exists only to stop
+    one wedged cluster slot starving the *others* of their turn -- with a
+    single group it protects nothing and only adds a failure mode: under a
+    saturated event loop it fires on a healthy `XREADGROUP BLOCK`, abandons
+    the read, and sends the caller into its error path. Observed in a live
+    container pinned at ~500% CPU, where it logged a blank
+    "XREADGROUP failed for slot group ...: " every second.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_slow_single_group_read_is_not_timed_out(self) -> None:
+        config = RedisStreamsConfig(
+            host="localhost", port=6379, topics=["records"], block_ms=10
+        )
+        consumer = RedisStreamsConsumer(logger=MagicMock(), config=config)
+        consumer._planner = MagicMock()
+        consumer._planner.group.return_value = [["records"]]
+
+        async def _slow_read(**_kwargs) -> list:
+            # Far past `block_ms/1000 + 5s`; a deadline would abandon this.
+            await asyncio.sleep(0.2)
+            return [("records", [("1-1", {"value": "{}"})])]
+
+        consumer.redis = MagicMock()
+        consumer.redis.xreadgroup = _slow_read
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.asyncio.wait_for"
+        ) as wait_for:
+            results = await consumer._read_new_messages()
+
+        wait_for.assert_not_called()
+        assert results == [("records", [("1-1", {"value": "{}"})])]
+
+    @pytest.mark.asyncio
+    async def test_a_blank_message_exception_is_still_identifiable(self) -> None:
+        """`str(asyncio.TimeoutError())` is '', so the type has to be logged
+        or the warning carries nothing to diagnose from."""
+        config = RedisStreamsConfig(
+            host="localhost", port=6379, topics=["records"], block_ms=10
+        )
+        logger = MagicMock()
+        consumer = RedisStreamsConsumer(logger=logger, config=config)
+        consumer._planner = MagicMock()
+        consumer._planner.group.return_value = [["records"]]
+
+        async def _blank_failure(**_kwargs) -> list:
+            raise TimeoutError()
+
+        consumer.redis = MagicMock()
+        consumer.redis.xreadgroup = _blank_failure
+
+        with pytest.raises(TimeoutError):
+            await consumer._read_new_messages()
+
+        logged = logger.warning.call_args[0]
+        assert "TimeoutError" in logged
+
+
+class TestEmptyTopicListDoesNotSpin:
+    """A consumer with no topics must idle, not burn a core.
+
+    `_read_new_messages` does no I/O when the planner yields no groups, and
+    `_consume_loop` treats an empty result as an idle poll and `continue`s
+    with no sleep of its own -- so returning immediately spins the loop at
+    100% CPU. The inline XREADGROUP this replaced blocked for `block_ms` in
+    that same state, and the Node consumer keeps an explicit idle sleep.
+    """
+
+    @pytest.mark.asyncio
+    async def test_no_topics_sleeps_for_the_block_budget(self) -> None:
+        config = RedisStreamsConfig(
+            host="localhost", port=6379, topics=[], block_ms=2000
+        )
+        consumer = RedisStreamsConsumer(logger=MagicMock(), config=config)
+        consumer.redis = MagicMock()
+
+        with patch(
+            "app.services.messaging.redis_streams.consumer.asyncio.sleep",
+            new=AsyncMock(),
+        ) as sleep:
+            results = await consumer._read_new_messages()
+
+        assert results == []
+        sleep.assert_awaited_once_with(2.0)
+        # And it must not have tried to read.
+        consumer.redis.xreadgroup.assert_not_called()

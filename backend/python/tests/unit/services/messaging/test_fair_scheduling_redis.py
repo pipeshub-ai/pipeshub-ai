@@ -12,9 +12,12 @@ entirely when fair scheduling is disabled.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
+import time
 from collections import deque
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +28,8 @@ from app.services.messaging.redis_streams.indexing_consumer import (
 )
 from app.services.messaging.scheduling.interface import FairSchedulerConfig
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 @pytest.fixture
 def logger():
@@ -80,6 +85,17 @@ def _fields(
     return {"value": json.dumps(envelope)}
 
 
+@contextlib.contextmanager
+def _clock_ahead(seconds: float) -> Iterator[None]:
+    """The consumer module's monotonic clock, ``seconds`` in the future."""
+    now = time.monotonic()
+    with patch(
+        "app.services.messaging.redis_streams.indexing_consumer.time.monotonic",
+        return_value=now + seconds,
+    ):
+        yield
+
+
 def _make_consumer(logger, config, fair_scheduler_config=None, producer=None, retry_manager=None):
     consumer = IndexingRedisStreamsConsumer(
         logger,
@@ -115,7 +131,10 @@ class TestMultiOrgInterleaving:
 
         # Quantum 1 for both keys: strict alternation, not "all of org-a's
         # backlog first" -- the exact failure mode this feature fixes.
-        assert order == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
+        # Compared at entity depth: the tier level below is not what this
+        # test is about.
+        entities = [consumer._scheduler.entity_key(key) for key in order]
+        assert entities == [("org-a", "conn-1"), ("org-b", "conn-1")] * 5
 
 
 class TestFullBufferParksInsteadOfRepublishing:
@@ -216,15 +235,14 @@ class TestFullBufferParksInsteadOfRepublishing:
         # 5 total - 1 buffered - 1 parked = 3
         assert kwargs["count"] == 3
 
-    async def test_dwell_sweep_releases_entries_held_past_the_budget(
+    async def test_sweep_releases_entries_whose_ownership_is_at_risk(
         self, logger, config
     ):
         """A buffered entry is un-ACKed, so Redis counts it as idle and a peer
-        will XAUTOCLAIM it. Releasing our stale copy keeps the in-memory view
-        honest instead of dispatching an entry we no longer own."""
-        consumer = _make_consumer(
-            logger, config, _fair_config(max_dwell_seconds=0.0)
-        )
+        will XAUTOCLAIM it once its ownership refresh stops working. Releasing
+        our copy keeps the in-memory view honest instead of dispatching an
+        entry we may no longer own."""
+        consumer = _make_consumer(logger, config, _fair_config())
         consumer.redis = AsyncMock()
         consumer.main_loop = asyncio.get_running_loop()
 
@@ -233,7 +251,10 @@ class TestFullBufferParksInsteadOfRepublishing:
         )
         assert consumer._scheduler.pending_count == 1
 
-        consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
+        # No refresh confirmed for longer than the risk threshold (20s of
+        # the 30s claim window).
+        with _clock_ahead(21.0):
+            consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
 
         assert consumer._scheduler.pending_count == 0
         # Released, not ACKed: the PEL entry is untouched so it is re-read.
@@ -252,6 +273,26 @@ class TestFullBufferParksInsteadOfRepublishing:
             "record-events", "0-0", _fields(org_id="org-a", record_id="rec-1")
         )
         consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
+
+        assert consumer._scheduler.pending_count == 1
+
+    async def test_old_entries_whose_ownership_is_confirmed_stay_buffered(
+        self, logger, config
+    ) -> None:
+        """Age is not a reason to let an entry go. A connector whose turn is
+        slow to come keeps its entries buffered for as long as ownership
+        refresh keeps them ours; released, they used to come back only once
+        every stream went idle, which during a long sync never happens."""
+        consumer = _make_consumer(logger, config, _fair_config(max_dwell_seconds=0.0))
+        consumer.redis = AsyncMock()
+        consumer.main_loop = asyncio.get_running_loop()
+        await consumer._IndexingRedisStreamsConsumer__enqueue_message(
+            "record-events", "0-0", _fields(org_id="org-a", record_id="rec-1")
+        )
+
+        consumer._ownership_confirmed_at["record-events"] = time.monotonic() + 3595.0
+        with _clock_ahead(3600.0):
+            consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
 
         assert consumer._scheduler.pending_count == 1
 
@@ -295,18 +336,19 @@ class TestHeldEntriesAreNotReclaimed:
         )
         await consumer._IndexingRedisStreamsConsumer__dispatch_phase()
 
-        assert "0-0" not in consumer._held_entries
+        assert ("record-events", "0-0") not in consumer._held_entries
 
     async def test_dwell_release_stops_reporting_the_entry_as_held(
         self, logger, config
     ):
         """Released back to the pending list, so recovery *should* pick it
         up again."""
-        consumer = self._consumer(logger, config, max_dwell_seconds=0.0)
+        consumer = self._consumer(logger, config)
         await consumer._IndexingRedisStreamsConsumer__enqueue_message(
             "record-events", "0-0", _fields()
         )
-        consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
+        with _clock_ahead(21.0):
+            consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
 
         assert not consumer._IndexingRedisStreamsConsumer__already_held("0-0")
 
@@ -404,17 +446,16 @@ class TestReadBudgetIsSharedAcrossStreams:
 
 
 class TestParkedEntriesAgeOut:
-    """A key stuck at its cap would otherwise hold parked entries forever:
-    ownership refresh keeps resetting their idle time, so no peer claims them
-    either, and they never reach the dwell metric."""
+    """Parked entries follow the same rule as buffered ones: released only
+    when their ownership is at risk."""
 
-    async def test_parked_entries_past_the_dwell_budget_are_released(
+    async def test_parked_entries_whose_ownership_is_at_risk_are_released(
         self, logger, config
     ):
         consumer = _make_consumer(
             logger,
             config,
-            _fair_config(max_per_entity_messages=1, max_dwell_seconds=0.0),
+            _fair_config(max_per_entity_messages=1),
         )
         consumer.redis = AsyncMock()
         consumer.main_loop = asyncio.get_running_loop()
@@ -424,7 +465,8 @@ class TestParkedEntriesAgeOut:
             )
         assert len(consumer._deferred_entries) == 1
 
-        consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
+        with _clock_ahead(21.0):
+            consumer._IndexingRedisStreamsConsumer__sweep_stale_buffered()
 
         assert consumer._deferred_entries == deque()
         # Released, not ACKed: the pending entry is untouched so it is re-read.
@@ -464,7 +506,7 @@ class TestPendingScanPagesPastHeldEntries:
         consumer.main_loop = asyncio.get_running_loop()
         # 150 held entries, then one that is not held.
         for index in range(150):
-            consumer._held_entries[f"{index}-0"] = "record-events"
+            consumer._held_entries.add(("record-events", f"{index}-0"))
         pages = [
             [{"message_id": f"{i}-0"} for i in range(100)],
             [{"message_id": f"{i}-0"} for i in range(100, 150)]
@@ -486,7 +528,7 @@ class TestPendingScanPagesPastHeldEntries:
         consumer.redis = AsyncMock()
         consumer.main_loop = asyncio.get_running_loop()
         for index in range(5):
-            consumer._held_entries[f"{index}-0"] = "record-events"
+            consumer._held_entries.add(("record-events", f"{index}-0"))
         consumer.redis.xpending_range = AsyncMock(
             return_value=[{"message_id": f"{i}-0"} for i in range(5)]
         )
@@ -890,7 +932,10 @@ class TestDeferredDrainIsPerKey:
 
         # "busy" is still capped, so its entry stays parked; nothing else is
         # stuck behind it.
-        parked_keys = [entry[4] for entry in consumer._deferred_entries]
+        parked_keys = [
+            consumer._scheduler.entity_key(entry[4])
+            for entry in consumer._deferred_entries
+        ]
         assert parked_keys == [("org-a", "busy")]
 
     async def test_a_keys_own_entries_keep_arrival_order(self, logger, config):
@@ -990,7 +1035,7 @@ class TestDrainPendingRoutesThroughScheduler:
         keys = set()
         while not consumer._scheduler.is_empty:
             key, _item = consumer._scheduler.dequeue()
-            keys.add(key)
+            keys.add(consumer._scheduler.entity_key(key))
         assert keys == {("org-a", "conn-1"), ("org-b", "conn-1")}
 
 

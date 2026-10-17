@@ -222,5 +222,16 @@ loadtest/results/
 # Host + bearer token for a load-test target environment.
 .env.play
 
+# Filled first-run bootstrap env (copy of bootstrap-first-run.env.example)
+deployment/docker-compose/bootstrap-first-run.env
+
 # Local scratch workspace, not part of the repo
 loom/
+node_modules
+# Personal Claude Code state stays local; shared agent config at the repo root is tracked.
+*/**/.claude/
+/.claude/*
+!/.claude/settings.json
+!/.claude/rules/
+!/.claude/skills/
+!/.claude/agents/

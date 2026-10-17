@@ -6,7 +6,7 @@ to one top-K (merging). Both must leave a `single` deployment behaving exactly
 as it did before either existed.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -16,6 +16,7 @@ from app.modules.retrieval.result_merging import (
 )
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.vector_db.models import ScoreSemantics
+from app.services.vector_db.search_retry import VectorSearchUnavailableError
 from app.services.vector_db.strategies.per_connector_type import (
     PerConnectorTypeStrategy,
 )
@@ -203,10 +204,14 @@ class TestFanOut:
             side_effect=ConnectionError("vector db down")
         )
 
-        with pytest.raises(ConnectionError):
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock), \
+                pytest.raises(VectorSearchUnavailableError) as raised:
             await svc._fan_out_searches(
                 ["a_records", "b_records"], [MagicMock()], limit=10
             )
+        assert isinstance(raised.value.__cause__, ConnectionError)
+        # Each collection was asked twice: the first attempt and one retry.
+        assert svc.vector_db_service.query_nearest_points.await_count == 4
 
     async def test_no_collections_returns_empty_batches(self):
         svc = _service()

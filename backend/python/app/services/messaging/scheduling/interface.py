@@ -46,7 +46,9 @@ class WeightProvider(Protocol):
     implementation can give one org a larger share without also reweighting
     the connectors inside it: it is called with ``("org-7",)`` when choosing
     between orgs and ``("org-7", "connector-42")`` when choosing between that
-    org's connectors.
+    org's connectors. With ``FairSchedulerConfig.tier_level`` on it is also
+    called with ``("org-7", "connector-42", "heavy")`` when choosing between
+    a connector's heavy and light queues.
     """
 
     def quantum_for(self, key: FairnessKey) -> int: ...
@@ -77,8 +79,10 @@ class FairSchedulerConfig:
     parsed envelope (a connector can ship a record's whole body inline), so
     the buffer is a real memory commitment, not a free queue. A full buffer
     stops reads; it never drops or re-publishes a message.
-    ``max_per_entity_messages`` caps the innermost (leaf) key, so each
-    connector gets its own allowance rather than sharing one per org.
+    ``max_per_entity_messages`` caps the innermost *entity* key (the last
+    of ``key_fields``), so each connector gets its own allowance rather
+    than sharing one per org -- and, with ``tier_level`` on, one allowance
+    across its heavy and light queues rather than one each.
 
     This dataclass defaults to disabled so that constructing a consumer
     without a config -- tests, direct instantiation -- keeps the pre-existing
@@ -96,9 +100,11 @@ class FairSchedulerConfig:
     default_quantum: int = 1
     max_buffered_messages: int = 2000
     max_per_entity_messages: int = 500
-    # Last-resort escape for a delivery that never resolves its watermark
-    # claim: without it, one such offset stalls every later commit on its
-    # partition until the process restarts.
+    # Kafka only. Last-resort escape for a delivery that never resolves its
+    # watermark claim: without it, one such offset stalls every later commit
+    # on its partition until the process restarts. The Redis Streams consumer
+    # keeps a held entry for as long as it owns it (see its
+    # ``__sweep_stale_buffered``).
     max_dwell_seconds: float = 900.0
     # Allow several messages from one Kafka partition to be processed at
     # once. Off by default: it is safe only once the commit watermark is in
@@ -107,3 +113,25 @@ class FairSchedulerConfig:
     # with per-record serialisation, which is a real change in what the
     # consumer guarantees. See the Kafka consumer's dispatch phase.
     parallel_partitions: bool = False
+    # Split every entity's queue into one leaf per document tier (heavy /
+    # light) below the configured key fields. The dispatcher only ever
+    # inspects the head of a leaf, so without this a connector whose next
+    # record is a heavy attachment that cannot be admitted yet would hide
+    # every light page and issue queued behind it. The scheduler itself
+    # stays tier-agnostic: it only sees the depths below.
+    tier_level: bool = True
+    # Kafka only. Messages read past a connector at its cap are remembered by
+    # position (partition, offset) rather than held, up to this many across
+    # every connector; past it the lane stops as it did before. 0 keeps the
+    # earlier behaviour of parking whole messages within the buffer.
+    max_remembered_positions: int = 0
+
+    @property
+    def entity_depth(self) -> int:
+        """Key levels that identify an entity for the per-entity cap."""
+        return max(1, len(self.key_fields))
+
+    @property
+    def key_depth(self) -> int:
+        """Levels a fully-qualified fairness key has, tier level included."""
+        return self.entity_depth + (1 if self.tier_level else 0)

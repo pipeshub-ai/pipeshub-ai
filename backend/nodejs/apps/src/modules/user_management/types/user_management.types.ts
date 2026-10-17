@@ -64,7 +64,8 @@ export interface TeamResponse {
   createdByUser?: TeamCreatedByUser | null;
   orgId: string;
   memberCount: number;
-  members?: TeamMemberResponse[];
+  // Relayed from the team service unchecked, so an entry may be null.
+  members?: Array<TeamMemberResponse | null>;
   [key: string]: unknown;
 }
 

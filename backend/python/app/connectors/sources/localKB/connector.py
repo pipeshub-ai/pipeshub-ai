@@ -14,7 +14,7 @@ from fastapi import HTTPException
 from fastapi.responses import Response
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, OriginTypes
+from app.config.constants.arangodb import FOLDER_MIME_TYPES, AppGroups, Connectors, OriginTypes
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
 from app.connectors.core.base.connector.connector_service import BaseConnector
@@ -23,6 +23,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.interfaces.connector.apps import App
+from app.config.constants.arangodb import PermissionModel
 from app.connectors.core.registry.connector_builder import (
     ConnectorBuilder,
     ConnectorScope,
@@ -32,8 +33,13 @@ from app.connectors.core.registry.filters import FilterOptionsResponse
 from app.models.entities import Record
 from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
+from app.connectors.core.base.error.stream_errors import to_internal_service_error
 
 KB_CONNECTOR_NAME = "Collections"
+_STORAGE_UNREADABLE = (
+    "PipesHub could not read this file from its storage service. "
+    "Please try again, or contact your administrator if this persists."
+)
 
 class KBApp(App):
     """App class for Knowledge Base connector"""
@@ -48,6 +54,7 @@ class KBApp(App):
     .with_description("Local knowledge base for organizing and managing documents")\
     .with_categories(["Knowledge Management", "Storage"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_permission_model(PermissionModel.APP_LEVEL)\
     .configure(lambda builder: builder
         .with_sync_strategies([SyncStrategy.MANUAL])\
         .with_scheduled_config(False, 0)\
@@ -65,6 +72,10 @@ class KnowledgeBaseConnector(BaseConnector):
     One instance is created per KB (identified by connector_id = KB app _key).
     Since KBs are local storage, sync methods are no-ops.
     """
+
+    # Every user gets a KB, so one processor (and producer) per KB does not scale;
+    # the processor holds only org-level state, so the org's KBs share one.
+    shares_org_processor = True
 
     def __init__(
         self,
@@ -223,11 +234,20 @@ class KnowledgeBaseConnector(BaseConnector):
             response = await make_api_call(route=buffer_url, token=storage_token)
 
             # Extract buffer content
-            if isinstance(response["data"], dict):
-                data = response['data'].get('data')
+            payload = response.get("data") if isinstance(response, dict) else None
+            if payload is None:
+                self.logger.error(
+                    f"Storage service returned no buffer for record {record.id}"
+                )
+                raise HTTPException(
+                    status_code=HttpStatusCode.BAD_GATEWAY.value,
+                    detail=_STORAGE_UNREADABLE,
+                )
+            if isinstance(payload, dict):
+                data = payload.get("data")
                 buffer = bytes(data) if isinstance(data, list) else data
             else:
-                buffer = response['data']
+                buffer = payload
 
             return Response(content=buffer or b'', media_type=record.mime_type if record.mime_type else "application/octet-stream")
 
@@ -235,10 +255,10 @@ class KnowledgeBaseConnector(BaseConnector):
             raise
         except Exception as e:
             self.logger.error(f"Failed to stream record {record.id}: {e}", exc_info=True)
-            raise HTTPException(
-                status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-                detail=f"Failed to stream record: {str(e)}"
-            )
+            # The upstream is PipesHub's own storage service, not a third party: a 401
+            # there is a deployment fault, and telling the user to reconnect a connector
+            # would point them at something they cannot fix.
+            raise to_internal_service_error(e) from e
 
     async def run_sync(self) -> None:
         """No-op for KB connector - KBs are local storage"""
@@ -263,7 +283,7 @@ class KnowledgeBaseConnector(BaseConnector):
     async def reindex_records(self, record_results: List[Record]) -> None:
         """Reindex KB records by publishing them to the indexing service."""
         # Exclude folders — they can't be indexed
-        file_records = [r for r in record_results if r.mime_type != "application/vnd.folder"]
+        file_records = [r for r in record_results if r.mime_type not in FOLDER_MIME_TYPES]
         self.logger.info(
             f"Reindexing {len(file_records)} KB records "
             f"({len(record_results) - len(file_records)} folders excluded)"

@@ -7,8 +7,8 @@ import { Box, Button, Flex, Separator, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 
 import { apiClient } from '@/lib/api';
-import { extractApiErrorMessage, processError } from '@/lib/api/api-error';
-import { useAuthStore } from '@/config';
+import { extractApiErrorMessage, isProcessedError, processError } from '@/lib/api/api-error';
+import { useAuthStore, switchToSignedInWorkspace } from '@/config';
 import { LoadingScreen } from '@/app/components/ui/auth-guard';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { LoadingButton } from '@/app/components/ui/loading-button';
@@ -29,14 +29,19 @@ interface AppInfo {
   logoUrl?: string;
   homepageUrl?: string;
   privacyPolicyUrl?: string;
+  isDynamic?: boolean;
 }
 
 interface ConsentData {
   app: AppInfo;
   scopes: ScopeInfo[];
+  notGrantedScopes?: ScopeInfo[];
   user: {
     email: string;
     name?: string;
+  };
+  workspace?: {
+    name: string;
   };
   redirectUri: string;
   state?: string;
@@ -70,8 +75,14 @@ function extractOAuthErrorCode(data: unknown): string | null {
   return null;
 }
 
+/** apiClient rejects with a ProcessedError; the server's body is on its originalError. */
+function unwrapApiError(err: unknown): unknown {
+  return isProcessedError(err) && err.originalError ? err.originalError : err;
+}
+
 /** Extract the best human-readable message from an error, preferring error_description. */
-function errorMessageFromUnknown(err: unknown): string {
+function errorMessageFromUnknown(raw: unknown): string {
+  const err = unwrapApiError(raw);
   if (isAxiosError(err)) {
     const data = err.response?.data;
     // Prefer error_description (OAuth-style) over the generic error code
@@ -94,9 +105,26 @@ function errorMessageFromUnknown(err: unknown): string {
 }
 
 /** Extract the OAuth error code from an error, if present. */
-function errorCodeFromUnknown(err: unknown): string | null {
+function errorCodeFromUnknown(raw: unknown): string | null {
+  const err = unwrapApiError(raw);
   if (isAxiosError(err)) {
     return extractOAuthErrorCode(err.response?.data);
+  }
+  return null;
+}
+
+/** The workspace that owns the app, sent when this tab's workspace is a different one. */
+function appOrgIdFromUnknown(raw: unknown): string | null {
+  const err = unwrapApiError(raw);
+  if (!isAxiosError(err)) return null;
+  const data = err.response?.data;
+  if (
+    typeof data === 'object' &&
+    data !== null &&
+    'org_id' in data &&
+    typeof (data as { org_id?: string }).org_id === 'string'
+  ) {
+    return (data as { org_id: string }).org_id;
   }
   return null;
 }
@@ -137,6 +165,8 @@ export function OAuthAuthorizeView() {
   const [consentData, setConsentData] = useState<ConsentData | null>(null);
   const [codeChallenge, setCodeChallenge] = useState('');
   const [codeChallengeMethod, setCodeChallengeMethod] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+  const triedWorkspaceSwitchRef = useRef(false);
 
   const clientId = searchParams.get('client_id');
   const redirectUri = searchParams.get('redirect_uri');
@@ -178,6 +208,7 @@ export function OAuthAuthorizeView() {
     let cancelled = false;
 
     (async () => {
+      let retrying = false;
       setLoading(true);
       setError('');
       try {
@@ -218,11 +249,23 @@ export function OAuthAuthorizeView() {
       } catch (err) {
         if (axios.isCancel(err)) return;
         if (cancelled) return;
+        // A new tab starts in the person's first workspace, which may not own the app.
+        const appOrgId = appOrgIdFromUnknown(err);
+        if (
+          appOrgId &&
+          !triedWorkspaceSwitchRef.current &&
+          switchToSignedInWorkspace(appOrgId)
+        ) {
+          triedWorkspaceSwitchRef.current = true;
+          retrying = true;
+          setReloadKey((k) => k + 1);
+          return;
+        }
         const code = errorCodeFromUnknown(err);
         if (code) setErrorCode(code);
         setError(errorMessageFromUnknown(err));
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled && !retrying) setLoading(false);
       }
     })();
 
@@ -230,7 +273,7 @@ export function OAuthAuthorizeView() {
       cancelled = true;
       controller.abort();
     };
-  }, [isHydrated, isAuthenticated, clientId, redirectUri, queryParams, t]);
+  }, [isHydrated, isAuthenticated, clientId, redirectUri, queryParams, t, reloadKey]);
 
   const successRedirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -481,13 +524,13 @@ export function OAuthAuthorizeView() {
   }
 
   const appName = consentData.app.name;
+  const notGrantedScopes = consentData.notGrantedScopes ?? [];
 
   return (
     <Flex
-      align="center"
-      justify="center"
       style={{
-        minHeight: '100vh',
+        height: '100vh',
+        overflowY: 'auto',
         padding: 'var(--space-5)',
         background: 'var(--gray-2)',
       }}
@@ -496,6 +539,7 @@ export function OAuthAuthorizeView() {
         style={{
           width: '100%',
           maxWidth: 560,
+          margin: 'auto',
           padding: 'var(--space-5)',
           borderRadius: 'var(--radius-3)',
           border: '1px solid var(--gray-6)',
@@ -543,6 +587,12 @@ export function OAuthAuthorizeView() {
             </Text>
           </Flex>
 
+          {consentData.app.isDynamic ? (
+            <Text as="p" size="2" color="amber">
+              {t('oauthConsent.unreviewedApp')}
+            </Text>
+          ) : null}
+
           <Separator size="4" />
 
           <Text as="div" size="2" color="gray" style={{ width: '100%' }}>
@@ -552,6 +602,11 @@ export function OAuthAuthorizeView() {
                   ? `${consentData.user.name} (${consentData.user.email})`
                   : consentData.user.name || consentData.user.email,
             })}
+            {consentData.workspace ? (
+              <Text as="div" size="2" color="gray">
+                {t('oauthConsent.workspace', { name: consentData.workspace.name })}
+              </Text>
+            ) : null}
           </Text>
 
           <Separator size="4" />
@@ -602,6 +657,56 @@ export function OAuthAuthorizeView() {
               </Flex>
             ))}
           </Box>
+
+          {notGrantedScopes.length > 0 ? (
+            <Flex direction="column" gap="2" width="100%">
+              <Text as="p" size="2" color="gray">
+                {t('oauthConsent.notGrantedHeading')}
+              </Text>
+              <Box
+                style={{
+                  maxHeight: 200,
+                  overflowY: 'auto',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  gap: 'var(--space-2)',
+                }}
+              >
+                {notGrantedScopes.map((scopeItem) => (
+                  <Flex
+                    key={scopeItem.name}
+                    direction="column"
+                    gap="1"
+                    align="start"
+                    p="3"
+                    width="100%"
+                    style={{
+                      borderRadius: 'var(--radius-2)',
+                      border: '1px dashed var(--gray-6)',
+                    }}
+                  >
+                    <Text as="div" size="2" color="gray" style={{ width: '100%' }}>
+                      {scopeItem.name}
+                    </Text>
+                    <Text as="div" size="1" color="gray" style={{ width: '100%' }}>
+                      {scopeItem.description}
+                    </Text>
+                  </Flex>
+                ))}
+              </Box>
+              {/* Dynamically registered apps are hidden from Developer Settings, so nobody can add scopes to them. */}
+              {consentData.app.isDynamic ? null : (
+                <Text as="p" size="2" color="gray">
+                  {t('oauthConsent.notGrantedOwnerHint')}
+                </Text>
+              )}
+              {notGrantedScopes.some((s) => s.name === 'offline_access') ? (
+                <Text as="p" size="2" color="amber">
+                  {t('oauthConsent.notGrantedOfflineAccess')}
+                </Text>
+              ) : null}
+            </Flex>
+          ) : null}
 
           <Separator size="4" />
 

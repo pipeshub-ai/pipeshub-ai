@@ -19,11 +19,18 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Annotated
+from collections.abc import Mapping
+from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, Request, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Request, UploadFile, status
 from fastapi.responses import JSONResponse
 
+from app.api.middlewares.auth import (
+    authMiddleware,
+    require_service_token,
+    service_token_org,
+)
+from app.config.constants.service import TokenScopes
 from app.services.parsing.interface import (
     ParseError,
     ParseErrorCode,
@@ -41,7 +48,14 @@ from app.utils.semaphore_logger import SemaphoreLogger
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/api/v1/parse", tags=["parsing"])
+require_parse_token = require_service_token(TokenScopes.DOCUMENT_PARSE)
+
+# On the router, not the app, so the checks hold wherever this router is included.
+router = APIRouter(
+    prefix="/api/v1/parse",
+    tags=["parsing"],
+    dependencies=[Depends(authMiddleware), Depends(require_parse_token)],
+)
 
 # How long a request will wait for a parsing slot before it's reported as
 # "saturated" (still waiting) and, ultimately, before the gate gives up and
@@ -78,6 +92,7 @@ def _get_registry(request: Request) -> ParserRegistry:
 async def parse_file(
     request: Request,
     file: Annotated[UploadFile, File(description="File to parse")],
+    claims: Annotated[Mapping[str, Any], Depends(require_parse_token)],
     record_name: Annotated[str, Form(description="Human-readable filename")] = "",
     mime_type: Annotated[str, Form(description="MIME type of the file")] = "",
     extension: Annotated[str, Form(description="File extension (without dot)")] = "",
@@ -99,6 +114,7 @@ async def parse_file(
           "error": null
         }
     """
+    service_token_org(claims, org_id)
     registry = _get_registry(request)
 
     # Resolve provider enum if supplied
@@ -108,7 +124,7 @@ async def parse_file(
             provider_enum = ParserProvider(provider)
         except ValueError:
             return JSONResponse(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={
                     "success": False,
                     "error": {
@@ -187,13 +203,16 @@ async def parse_file(
                 "Parse failed: record='%s' provider=%s parse_ms=%.0f code=%s message=%s",
                 record_name, provider_enum.value, parse_ms, exc.code.value, exc.message,
             )
-            http_status = (
-                status.HTTP_422_UNPROCESSABLE_ENTITY
-                if exc.code in (ParseErrorCode.UNSUPPORTED_FORMAT, ParseErrorCode.INVALID_INPUT)
-                else status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
+            # 422 for every ParseError, not just the unsupported/invalid
+            # ones: a document this service could not parse is a fact about
+            # the document, and the client reads the error code from the
+            # body either way. Reported as a 500 it looked like an outage --
+            # the client retried it, counted it against the parsing circuit
+            # breaker, and five unparseable files in a row then failed every
+            # other record fast for the breaker's cooldown and sent them to
+            # the back of the queue with a retry attempt spent.
             return JSONResponse(
-                status_code=http_status,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 content={"success": False, "error": exc.to_dict()},
             )
         except Exception as exc:  # noqa: BLE001

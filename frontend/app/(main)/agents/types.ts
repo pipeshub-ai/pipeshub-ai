@@ -100,6 +100,8 @@ export interface AgentConfiguredModel {
   isDefault: boolean;
   modelType: string;
   modelFriendlyName: string;
+  /** The model's own default effort, when the admin stored one. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** Tool definition nested under `toolsets[].tools[]`. */
@@ -148,6 +150,8 @@ export interface AgentMcpServer {
   displayName?: string;
   typeId?: string | null;
   instanceId: string;
+  /** Absent on attachments saved before it existed — those use exactly `tools`. */
+  allTools?: boolean;
   tools: AgentMcpTool[];
 }
 
@@ -183,6 +187,8 @@ export interface AgentDetail {
   _id: string;
   toolsets: AgentToolset[];
   mcpServers?: AgentMcpServer[];
+  /** The server couldn't read this agent's MCP servers, so `mcpServers` is empty but not the agent's. */
+  mcpServersUnavailable?: boolean;
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];
@@ -202,6 +208,8 @@ export interface AgentDetail {
   can_view: boolean;
   /** Agent-level fallback used when a chat request omits its own reasoningEffort. */
   defaultReasoningEffort?: ReasoningEffort | null;
+  /** When false, the agent system prompt omits user name/email/org. Defaults to true. */
+  sendUserContext?: boolean;
 }
 
 // ── Builder catalog rows (tool list + KB) ───────────────────────
@@ -228,6 +236,8 @@ export interface SkillForBuilder {
   name: string;
   description: string;
   category: string | null;
+  /** `skill.source === 'builtin'` — mirrors `skill-card.tsx`'s check, used to pick the palette row icon. */
+  isBuiltin: boolean;
 }
 
 /** Skill entry as embedded on `AgentDetail.skills` (GET /agents/:id enrichment). */
@@ -238,6 +248,8 @@ export interface AgentSkillReference {
   subcategory?: string | null;
   version?: string;
   status?: string;
+  deprecatedReason?: string | null;
+  replacedBy?: string | null;
 }
 
 // ── Knowledge Hub App Nodes (for agent builder apps palette) ─────
@@ -271,14 +283,23 @@ export interface KnowledgeHubAppNode {
   isInternal: boolean;
 }
 
-/** Pagination envelope from knowledge-hub nodes API */
+/**
+ * Pagination envelope from knowledge-hub nodes API.
+ *
+ * Keyset paging has no page number to report, so `page`/`totalPages` are
+ * optional and only present while the transitional `page` path is used.
+ */
 export interface KnowledgeHubNodesPagination {
-  page: number;
+  page?: number;
   limit: number;
   totalItems: number;
-  totalPages: number;
+  totalPages?: number;
+  startIndex?: number;
+  endIndex?: number;
   hasNext: boolean;
   hasPrev: boolean;
+  nextCursor?: string | null;
+  prevCursor?: string | null;
 }
 
 /** Full response from GET /api/v1/knowledgeBase/knowledge-hub/nodes */

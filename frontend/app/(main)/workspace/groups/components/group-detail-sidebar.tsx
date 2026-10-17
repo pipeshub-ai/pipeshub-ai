@@ -16,6 +16,7 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { groupSaveRefusalMessage } from '../save-error';
 import { hasLockedGroupName, isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
@@ -86,6 +87,11 @@ export function GroupDetailSidebar({
   } = usePaginatedUserOptions({
     enabled: isDetailPanelOpen && isEditMode,
     idField: 'userId',
+      // Service accounts are offered here, each marked, because membership is
+    // how one is given anything to read — the create panel tells an
+    // administrator to grant access through groups and teams.
+    includeServiceAccounts: true,
+    serviceAccountBadge: t('workspace.serviceAccounts.memberBadge'),
   });
 
   // Exclude already-added members from the options
@@ -199,13 +205,14 @@ export function GroupDetailSidebar({
 
       exitEditMode();
       onUpdateSuccess?.();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t(
           'workspace.groups.edit.saveError',
           'Failed to update group'
         ),
+        description: groupSaveRefusalMessage(error),
         duration: 5000,
       });
     } finally {

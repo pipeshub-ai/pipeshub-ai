@@ -12,11 +12,14 @@ from app.agent_loop_lib.modules.providers.skills.base import (
     Skill,
     SkillCandidate,
     SkillFilter,
+    SkillInUseError,
     SkillMatch,
     SkillMetadata,
+    SkillReferentialUsage,
     SkillSource,
     SkillStatus,
     SkillVersionInfo,
+    is_advertised,
 )
 from app.agent_loop_lib.modules.providers.skills.governor import (
     AutoApproveGovernor,
@@ -131,16 +134,28 @@ class SkillManager:
 
     def catalog_snapshot(self) -> list[SkillMetadata]:
         """Tier 1, SYNC — read model only, for the prompt builder. Excludes
-        DEPRECATED skills (they're still loadable by exact name, just not
-        advertised — see `activate_skill`)."""
-        return [m for m in self._catalog.values() if m.status != SkillStatus.DEPRECATED]
+        DEPRECATED (still loadable by exact name, just not advertised — see
+        `activate_skill`) and DISABLED (not loadable at all) skills."""
+        return [m for m in self._catalog.values() if is_advertised(m)]
 
-    async def activate_skill(self, name: str, session_id: str | None = None) -> Skill:
-        """Tier 2 — full body, on demand. Records the activation (for the
-        usage tracker) whenever `session_id` is given."""
+    async def get_skill(self, name: str) -> Skill:
+        """Management lookup — returns the skill regardless of status,
+        without recording an activation. Agent-facing loads must go
+        through `activate_skill`, which refuses `DISABLED`."""
         skill = await self._store.get_skill(name)
         if skill is None:
             raise RegistryError(f"Skill {name!r} not found")
+        return skill
+
+    async def activate_skill(self, name: str, session_id: str | None = None) -> Skill:
+        """Tier 2 — full body, on demand. Records the activation (for the
+        usage tracker) whenever `session_id` is given. Refuses
+        `SkillStatus.DISABLED` (reversible mute: not advertised AND not
+        loadable) before tracking or returning; `DEPRECATED` stays
+        loadable by exact name."""
+        skill = await self.get_skill(name)
+        if skill.metadata.status == SkillStatus.DISABLED:
+            raise RegistryError(f"Skill {name!r} is disabled")
         if session_id is not None:
             await self._tracker.record_activation(name, session_id)
         return skill
@@ -151,6 +166,14 @@ class SkillManager:
         if content is None:
             raise RegistryError(f"Resource {path!r} not found for skill {name!r}")
         return content
+
+    async def get_resources(self, name: str) -> dict[str, str]:
+        """Bulk read of every bundled resource for `name` — `{path:
+        content}`. Delegates to the store's `get_resources` (see
+        `SkillReader.get_resources`); `SkillBundleResolver` calls this
+        instead of one `load_resource` per path so staging a skill into the
+        sandbox costs one read per skill, not one per file."""
+        return await self._store.get_resources(name)
 
     # ---- Search ------------------------------------------------------------
 
@@ -184,30 +207,67 @@ class SkillManager:
 
     async def create(
         self, name: str, content: str, category: str | None = None, subcategory: str | None = None,
+        resources: dict[str, str] | None = None,
     ) -> SkillMetadata:
-        metadata = await self._store.create_skill(name, content, category, subcategory)
+        metadata = await self._store.create_skill(name, content, category, subcategory, resources)
         self._catalog[name] = metadata
         await self._index.add_entry(metadata)
         return metadata
 
-    async def update(self, name: str, content: str) -> SkillMetadata:
-        metadata = await self._store.update_skill(name, content)
+    async def update(
+        self,
+        name: str,
+        content: str,
+        resources: dict[str, str] | None = None,
+        *,
+        expected_updated_at: int | None = None,
+    ) -> SkillMetadata:
+        metadata = await self._store.update_skill(
+            name, content, resources, expected_updated_at=expected_updated_at,
+        )
         self._catalog[name] = metadata
         await self._index.update_entry(metadata)
         return metadata
 
-    async def patch(self, name: str, old_string: str, new_string: str) -> bool:
-        ok = await self._store.patch_skill(name, old_string, new_string)
+    async def patch(
+        self,
+        name: str,
+        old_string: str,
+        new_string: str,
+        *,
+        expected_updated_at: int | None = None,
+    ) -> bool:
+        ok = await self._store.patch_skill(
+            name, old_string, new_string, expected_updated_at=expected_updated_at,
+        )
         if ok:
             await self._resync_entry(name)
         return ok
 
-    async def delete(self, name: str) -> bool:
+    async def delete(self, name: str, *, detach: bool = False) -> bool:
+        usage = await self._store.get_referential_usage(name)
+        if usage.required_by_skills:
+            raise SkillInUseError(
+                name,
+                used_by_agents=list(usage.used_by_agents),
+                required_by_skills=list(usage.required_by_skills),
+            )
+        if usage.used_by_agents and not detach:
+            raise SkillInUseError(
+                name,
+                used_by_agents=list(usage.used_by_agents),
+                required_by_skills=list(usage.required_by_skills),
+            )
+        if usage.used_by_agents and detach:
+            await self._store.detach_from_agents(name)
         ok = await self._store.delete_skill(name)
         if ok:
             self._catalog.pop(name, None)
             await self._index.remove_entry(name)
         return ok
+
+    async def get_referential_usage(self, name: str) -> SkillReferentialUsage:
+        return await self._store.get_referential_usage(name)
 
     async def deprecate(self, name: str, reason: str, replaced_by: str | None = None) -> bool:
         ok = await self._store.deprecate_skill(name, reason, replaced_by)
@@ -215,6 +275,45 @@ class SkillManager:
             await self._resync_entry(name)
             await self._governor.on_skill_deprecated(name, reason)
         return ok
+
+    async def disable(self, name: str) -> SkillMetadata:
+        """Reversible mute — ACTIVE -> DISABLED only. Distinct from
+        `deprecate` (one-way, carries a reason/replacement, still loadable):
+        this is purely "don't offer this to agents right now", undone by
+        `enable`. Raises `RegistryError` if the skill doesn't exist or isn't
+        currently `active` (e.g. already disabled, or deprecated — deprecate
+        is a one-way street, not something `enable` reverses either)."""
+        return await self._transition_status(name, from_status=SkillStatus.ACTIVE, to_status=SkillStatus.DISABLED)
+
+    async def enable(self, name: str) -> SkillMetadata:
+        """Reverses `disable` — DISABLED -> ACTIVE only. Never undeprecates
+        a deprecated skill."""
+        return await self._transition_status(name, from_status=SkillStatus.DISABLED, to_status=SkillStatus.ACTIVE)
+
+    async def _transition_status(
+        self, name: str, *, from_status: SkillStatus, to_status: SkillStatus,
+    ) -> SkillMetadata:
+        skill = await self._store.get_skill(name)
+        if skill is None:
+            raise RegistryError(f"Skill {name!r} not found")
+        if skill.metadata.status != from_status:
+            raise RegistryError(
+                f"Skill {name!r} is {skill.metadata.status.value!r}, not {from_status.value!r} — cannot transition to {to_status.value!r}"
+            )
+        ok = await self._store.set_skill_status(name, to_status, from_status=from_status)
+        if not ok:
+            latest = await self._store.get_skill(name)
+            if latest is None:
+                raise RegistryError(f"Skill {name!r} not found")
+            if latest.metadata.status != from_status:
+                raise RegistryError(
+                    f"Skill {name!r} is {latest.metadata.status.value!r}, not {from_status.value!r} — cannot transition to {to_status.value!r}"
+                )
+            raise RegistryError(
+                f"Skill {name!r} was modified — cannot transition to {to_status.value!r}"
+            )
+        await self._resync_entry(name)
+        return self._catalog[name]
 
     async def _resync_entry(self, name: str) -> None:
         skill = await self._store.get_skill(name)
