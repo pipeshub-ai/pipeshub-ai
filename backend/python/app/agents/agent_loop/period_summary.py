@@ -50,18 +50,24 @@ _MONTH = (
     r"|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)"
 )
 _YEAR = r"(?:19|20)\d{2}"
-# A point in time that is not a month name: "Q2", "2025", "last quarter".
-_NON_MONTH_POINT = (
-    rf"(?:q[1-4](?:\s+{_YEAR})?|{_YEAR}"
-    r"|last (?:week|month|quarter|year)|the (?:summer|spring|autumn|fall|winter))"
-)
+# A point in time that is neither a month nor a season: "Q2", "2025", "last quarter".
+_PLAIN_POINT = rf"(?:q[1-4](?:\s+{_YEAR})?|{_YEAR}|last (?:week|month|quarter|year))"
+_SEASON = r"the (?:summer|spring|autumn|fall|winter)"
+# "last March", "this March"; never "may", which is as often a verb.
+_NEAR_MONTH = rf"(?:last|this)\s+(?!may\b){_MONTH}"
 _POINT_PREFIX = r"(?:(?:early|mid|late|the end of|the start of)[- ]?\s*)?"
-# One end of a span: "March", "mid-May 2026", "Q2", "2025", "last quarter".
-_POINT = rf"{_POINT_PREFIX}(?:{_MONTH}(?:\s+{_YEAR})?|{_NON_MONTH_POINT})"
-# A month name only where it is a date: "may" alone is as often a verb.
+# One end of a span: "March", "mid-May 2026", "March 1", "2026-03-01", "Q2",
+# "last March", "the summer". Only used after between/from/since, which make
+# a month name a date.
+_POINT = (
+    rf"{_POINT_PREFIX}(?:\d{{4}}-\d{{2}}-\d{{2}}|{_NEAR_MONTH}"
+    rf"|{_MONTH}(?:\s+\d{{1,2}}(?:st|nd|rd|th)?\b)?(?:,?\s+{_YEAR})?|{_PLAIN_POINT}|{_SEASON})"
+)
+# A month name only where it is a date: after a preposition, with a year, or
+# with an ordinal day. "so we may 1) fix" is not one.
 _DATED_MONTH = (
-    rf"(?:(?:in|on|during|since|until|by|from|before|after|through|early|mid|late)[- ]+(?:the\s+)?{_MONTH}"
-    rf"|{_MONTH}\s+(?:{_YEAR}|\d{{1,2}}(?:st|nd|rd|th)?\b))"
+    rf"(?:(?:in|on|during|since|until|by|from|before|after|through|over|throughout|early|mid|late)"
+    rf"[- ]+(?:the\s+)?{_MONTH}|{_NEAR_MONTH}|{_MONTH}\s+(?:{_YEAR}|\d{{1,2}}(?:st|nd|rd|th)\b))"
 )
 _STRETCH = (
     r"the\s+(?:past|last)\s+(?:few\s+|several\s+|couple of\s+|\d+\s+|two\s+|three\s+|six\s+)?"
@@ -96,7 +102,9 @@ _RECAP_PATTERNS = tuple(re.compile(p, re.IGNORECASE) for p in (
     r"\b(?:went|gone|go) quiet\b",
 ))
 _TIME_CUE = re.compile(
-    rf"\b(?:{_DATED_MONTH}|{_NON_MONTH_POINT}|since\s+(?:then|{_POINT})|recent(?:ly)?|lately|so far"
+    # No seasons here: "the fall migration", "the spring launch". They count
+    # after since/over/during/throughout (_SPAN_PATTERNS) and in a span.
+    rf"\b(?:{_DATED_MONTH}|{_PLAIN_POINT}|since\s+(?:then|{_POINT})|recent(?:ly)?|lately|so far"
     r"|this (?:year|quarter|month)|past (?:few )?(?:weeks|months|year))\b",
     re.IGNORECASE,
 )

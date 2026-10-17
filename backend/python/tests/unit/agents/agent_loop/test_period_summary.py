@@ -31,6 +31,13 @@ ABOUT_A_SPAN = [
     "Since January, what was decided about the on-call rotation?",
     "What problems came up with the export in May 2026?",
     "What was decided about pricing since then?",
+    "What problems came up last March?",
+    "What was decided this March?",
+    "What happened over March?",
+    "What happened throughout March?",
+    "Between last March and May, what happened?",
+    "What happened between 2026-03-01 and 2026-05-31?",
+    "What happened between March 1 and May 31?",
 ]
 
 NOT_ABOUT_A_SPAN = [
@@ -43,6 +50,10 @@ NOT_ABOUT_A_SPAN = [
     "When did the role dropdown fix merge?",
     "What problems came up so I may share it with the team?",
     "What was decided since I missed the call?",
+    "Where are we with the fall migration?",
+    "What happened after the fall of the old auth service?",
+    "Catch me up before the spring launch",
+    "What problems came up so we may 1) fix auth",
     "What problems came up with the export, and what was decided?",
     "",
     "   ",
