@@ -41,8 +41,13 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '@/lib/store/auth-store';
+import { getUserIdFromToken } from '@/lib/utils/jwt';
+import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
+import { buildDraftKey } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
@@ -109,6 +114,8 @@ interface ChatInputProps {
    * is never overwritten since the effect only fires on `key` changes.
    */
   prefill?: { text: string; key: number } | null;
+  /** Keep unsent text per conversation across reloads and navigation (main chat only). */
+  persistDraft?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -179,6 +186,7 @@ export function ChatInput({
   isAgentChat = false,
   agentId,
   prefill,
+  persistDraft = false,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -210,6 +218,31 @@ export function ChatInput({
   const isRegenerateMode = activeMessageAction?.type === 'regenerate';
   const isEditMode = activeMessageAction?.type === 'editQuery';
   const isActionMode = isRegenerateMode || isEditMode;
+
+  // Unsent text survives leaving the page, per conversation. Opt-in: the
+  // collection widget and agent builder reuse this composer and have no thread to key on.
+  // A reload restores only the tokens, not `user`, so the id comes from the token first.
+  const draftAccessToken = useAuthStore((s) => s.accessToken);
+  const draftStoreUserId = useAuthStore((s) => s.user?.id);
+  const draftUserId = useMemo(
+    () => getUserIdFromToken() ?? draftStoreUserId,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getUserIdFromToken reads the token this re-runs on
+    [draftAccessToken, draftStoreUserId],
+  );
+  const draftSlotId = useChatStore((s) => s.activeSlotId);
+  const draftConvId = useChatStore((s) =>
+    s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
+  );
+  useComposerDraft({
+    draftKey: persistDraft
+      ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
+      : null,
+    userId: draftUserId,
+    slotId: draftSlotId,
+    message,
+    setMessage,
+    paused: isActionMode,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -381,11 +414,6 @@ export function ChatInput({
   // Reasoning effort indicator — mirrors ModelSelectorPanel's selector so the
   // toolbar shows what's actually applied without opening the panel, the same
   // way Claude's model picker shows "Sonnet 5 · High" inline.
-  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
-  useEffect(() => {
-    hydrateReasoningEffortForCtx(modelCtxKey);
-  }, [modelCtxKey, hydrateReasoningEffortForCtx]);
-
   const activeModelSupportsReasoning = isModelReasoningCapable(modelCtxKey, displayModel);
   const reasoningEffortOverride = settings.reasoningEffort[modelCtxKey] ?? null;
   const agentDefault = useChatStore((s) => s.settings.agentDefaultReasoningEffort[modelCtxKey] ?? null);
@@ -728,6 +756,10 @@ export function ChatInput({
     const sid = useChatStore.getState().activeSlotId;
     const liveSlot = sid ? useChatStore.getState().slots[sid] : undefined;
     if ((liveSlot?.isStreaming && !liveSlot.stopping) || isUniversalAgentLoading) return;
+    if (liveSlot?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
+      return;
+    }
     // Block submit while any chip is still uploading — every chip must be
     // either `uploaded` (forwarded as a ref) or removed by the user before
     // we hand off to the runtime.
@@ -1318,6 +1350,9 @@ export function ChatInput({
     if (!modeChromeOpen && !isCollectionsPanelOpen && !isModelPanelOpen && !showUploadArea) return;
     function handleClickOutside(e: MouseEvent) {
       if (expansionViewMode === 'overlay') return;
+      // A dialog opened from a panel (an MCP server's key) is portaled outside the input; closing
+      // the panel on a click inside it would unmount the dialog under the person typing.
+      if ((e.target as Element | null)?.closest?.('[role="dialog"], [role="alertdialog"]')) return;
 
       if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
         dismissExpansionPanelsRef.current();

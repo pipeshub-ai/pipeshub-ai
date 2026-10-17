@@ -736,7 +736,7 @@ class TestOnNewRecordsSnapshotIntegration:
 
         captured_pre_old_path = []
 
-        async def capturing_process(rec, perms, store, moved_vrids=None, *, publishes_event=True, pre_old_path=_NO_OLD_PATH, narrowed_connectors=None):
+        async def capturing_process(rec, perms, store, moved_vrids=None, *, publishes_event=True, pre_old_path=_NO_OLD_PATH, narrowed_connectors=None, permissions_fetched=False):
             captured_pre_old_path.append(pre_old_path)
             return (rec, [])
 

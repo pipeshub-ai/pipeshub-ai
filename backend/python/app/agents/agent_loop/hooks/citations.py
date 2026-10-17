@@ -39,6 +39,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.tools.base import ParameterType, Tool, ToolOutput, ToolParameter
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.hooks._tool_naming import INTERNAL_SEARCH_TOOL_NAMES
 
 if TYPE_CHECKING:
@@ -47,8 +48,17 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.pipeline import Middleware, Next
     from app.agents.agent_loop.context import AgentContext
 
-from app.agents.actions.knowledge_graph.ops.fetch import DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON
-from app.agents.actions.knowledge_graph.ops.fetch import FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    DEFAULT_FETCH_REASON as _DEFAULT_FETCH_REASON,
+)
+from app.agents.actions.knowledge_graph.ops.fetch import (
+    FETCH_RECORD_TOOL_NAME as _FETCH_FULL_RECORD_TOOL_NAME,
+)
+from app.modules.agents.record_escalation.policy import (
+    FULL_READ_SKIP,
+    ONE_BLOCK_IS_NOT_ENOUGH,
+)
+from app.utils.render_budget import fetch_size_by_chars_enabled
 
 # ---------------------------------------------------------------------------
 # Shared description — used by _FetchFullRecordTool (agent-loop) and kept in
@@ -100,6 +110,29 @@ _FETCH_FULL_RECORD_DESCRIPTION = (
     "IDs. Large records return a continuation hint giving the start_block for "
     "the next slice."
 )
+
+# THOROUGH_RETRIEVAL's full-read policy swaps the skip case above; a test fails
+# if the description's wording drifts away from `_SKIP_CASE`.
+_SKIP_CASE = (
+    "(Skip only when the exact fact needed — a date, a name, a number, a "
+    "status, one clause — is already visible in a block you hold, or "
+    "metadata alone settles the question outright, e.g. a ticket's status "
+    "or assignee.)"
+)
+_FULL_READ_SKIP_CASE = f"(Skip only when {FULL_READ_SKIP}. {ONE_BLOCK_IS_NOT_ENOUGH})"
+
+_MAX_BLOCKS_DESCRIPTION = (
+    "Maximum number of blocks to return per record. Leave unset to use the "
+    "server default. Set only when you need a smaller slice."
+)
+# Fixed per deployment (FETCH_SIZE_BY_CHARS), so the schema, and the prompt
+# prefix a provider caches, is the same for every request.
+_MAX_BLOCKS_BY_CHARS_DESCRIPTION = (
+    "Leave unset. A read returns as much of each record as fits. Only when "
+    "continuing a record from start_block may this limit how many blocks that "
+    "call returns."
+)
+
 
 class CitationCollector:
     """Read-only view over the citation-related fields of `AgentContext.tool_state`."""
@@ -174,6 +207,10 @@ class _FetchFullRecordTool(Tool):
 
     @property
     def description(self) -> str:
+        # Fixed for the request (set by the chat bridge before the first
+        # turn), so the schema stays inside the cached prefix.
+        if self._context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY):
+            return _FETCH_FULL_RECORD_DESCRIPTION.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
         return _FETCH_FULL_RECORD_DESCRIPTION
 
     @property
@@ -215,8 +252,8 @@ class _FetchFullRecordTool(Tool):
                 name="max_blocks",
                 type=ParameterType.INTEGER,
                 description=(
-                    "Maximum number of blocks to return per record. Leave unset to use the "
-                    "server default. Set only when you need a smaller slice."
+                    _MAX_BLOCKS_BY_CHARS_DESCRIPTION
+                    if fetch_size_by_chars_enabled() else _MAX_BLOCKS_DESCRIPTION
                 ),
                 required=False,
             ),
@@ -234,7 +271,7 @@ class _FetchFullRecordTool(Tool):
             return 0
         try:
             return max(0, int(float(raw)))
-        except (TypeError, ValueError) as exc:
+        except (TypeError, ValueError, OverflowError) as exc:
             raise ValueError(
                 f"start_block must be a whole number, got {raw!r}."
             ) from exc
@@ -302,6 +339,7 @@ class _FetchFullRecordTool(Tool):
             reason=kwargs.get("reason") or _DEFAULT_FETCH_REASON,
             start_block=start_block,
             max_blocks=kwargs.get("max_blocks"),
+            start_block_sent=kwargs.get("start_block") not in (None, ""),
         )
         if ref_mapper is not ref_mapper_in:
             self._context.tool_state["citation_ref_mapper"] = ref_mapper

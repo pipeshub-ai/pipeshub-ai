@@ -18,6 +18,8 @@ from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
 from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
+from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
@@ -1036,6 +1038,17 @@ class _HealthProbe(BaseModel):
     query: str = Field(description="Anything at all; this tool is never run.")
 
 
+def _bind_probe_tool(llm_model: BaseChatModel) -> Any:  # noqa: ANN401
+    return llm_model.bind_tools([
+        StructuredTool.from_function(
+            func=lambda query: query,
+            name="health_probe",
+            description="A no-op probe used by the health check.",
+            args_schema=_HealthProbe,
+        ),
+    ])
+
+
 async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     """Whether this model accepts bound tools.
 
@@ -1044,16 +1057,13 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     them is unusable for agents even though it answers plain prompts. Reported
     rather than fatal: the same model may still be a fine choice for the
     indexing and image-description roles.
+
+    A refusal that asks for the Responses API (Azure's gpt-6 models refuse
+    tools on Chat Completions even with Reasoning unticked) is tried once more
+    there, as an agent turn would retry it (`LangChainTransport._api_shape_fallback`).
     """
     try:
-        bound = llm_model.bind_tools([
-            StructuredTool.from_function(
-                func=lambda query: query,
-                name="health_probe",
-                description="A no-op probe used by the health check.",
-                args_schema=_HealthProbe,
-            ),
-        ])
+        bound = _bind_probe_tool(llm_model)
     except Exception as exc:
         logger.info("Model does not accept bound tools: %s", exc)
         return False
@@ -1061,6 +1071,17 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     try:
         await _invoke_with_timeout(bound, _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S)
     except Exception as exc:
+        if is_api_shape_conflict(exc) and hasattr(llm_model, "use_responses_api") \
+                and not getattr(llm_model, "use_responses_api", None):
+            try:
+                await _invoke_with_timeout(
+                    _bind_probe_tool(responses_api_copy(llm_model)), _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S,
+                )
+            except Exception as retry_exc:
+                exc = retry_exc
+            else:
+                logger.info("Model accepts tools on the Responses API, not on Chat Completions: %s", exc)
+                return True
         if _is_capability_error(exc):
             logger.info("Model rejected a request carrying tools: %s", exc)
             return False

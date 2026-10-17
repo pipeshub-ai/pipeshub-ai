@@ -100,3 +100,33 @@ class TestGetOutputsForCode:
         graph = FakeGraphProvider()
         tracker = LineageTracker(graph)
         assert await tracker.get_outputs_for_code("code-1") == []
+
+
+class _ArangoShapedGraph(FakeGraphProvider):
+    """ArangoDB returns raw edges, with `_from`/`_to` handles and no
+    `from_id`/`to_id`; Neo4j returns the latter. Lineage must read both."""
+
+    async def get_edges_from_node(self, node_ref: str, collection: str) -> list[dict]:
+        return [self._raw(e) for e in await super().get_edges_from_node(node_ref, collection)]
+
+    async def get_edges_to_node(self, node_ref: str, collection: str) -> list[dict]:
+        return [self._raw(e) for e in await super().get_edges_to_node(node_ref, collection)]
+
+    @staticmethod
+    def _raw(edge: dict) -> dict:
+        raw = {k: v for k, v in edge.items() if k not in ("from_id", "from_collection", "to_id", "to_collection")}
+        raw["_from"] = f"{edge['from_collection']}/{edge['from_id']}"
+        raw["_to"] = f"{edge['to_collection']}/{edge['to_id']}"
+        return raw
+
+
+class TestLineageOnArangoShapedEdges:
+    async def test_reads_both_ends_from_raw_edge_handles(self) -> None:
+        tracker = LineageTracker(_ArangoShapedGraph())
+        await tracker.record_derivation(output_artifact_id="out-1", code_artifact_id="code-1", code_version=2, output_version=3)
+
+        lineage = await tracker.get_lineage_for_output("out-1")
+        outputs = await tracker.get_outputs_for_code("code-1")
+
+        assert lineage is not None and lineage.code_artifact_id == "code-1"
+        assert [o.output_artifact_id for o in outputs] == ["out-1"]

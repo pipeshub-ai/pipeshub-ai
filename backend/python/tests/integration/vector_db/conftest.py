@@ -17,6 +17,7 @@ Environment variables used:
   OPENSEARCH_PORT       (default: 9299)
   QDRANT_HOST           (default: localhost)
   QDRANT_PORT           (default: 6334)
+  QDRANT_PREFER_GRPC    (default: true; false talks REST to QDRANT_PORT only)
 """
 
 import os
@@ -114,7 +115,10 @@ async def qdrant_service():
 
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", "6334"))
-    config = QdrantConfig.from_dict({"host": host, "port": port})
+    # gRPC always goes to 6334 (QdrantConfig has no grpc_port); "false" keeps a
+    # test container on other ports off whatever else listens there.
+    prefer_grpc = os.environ.get("QDRANT_PREFER_GRPC", "true").strip().lower() not in {"0", "false", "no"}
+    config = QdrantConfig.from_dict({"host": host, "port": port, "prefer_grpc": prefer_grpc})
     svc = QdrantService(config)
     await _connect_or_skip(svc, "Qdrant", host, port)
     yield svc

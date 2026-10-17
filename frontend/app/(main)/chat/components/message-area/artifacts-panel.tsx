@@ -1,16 +1,20 @@
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { KnowledgeBaseApi } from '@/app/(main)/knowledge-base/api';
 import { Spinner } from '@/app/components/ui/spinner';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { isProcessedError } from '@/lib/api';
 import { isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import type { ChatArtifact } from '../../types';
 
 interface ArtifactsPanelProps {
   artifacts: ChatArtifact[];
+  /** Rejects with a gone error (see `isArtifactGone`) when the artifact was deleted. */
   onPreview?: (artifact: ChatArtifact) => void | Promise<void>;
-  /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. */
+  /** Jump to the CODE artifact `artifact.derivedFromCodeArtifactId` was generated from. Rejects with a gone error when that artifact was deleted. */
   onViewSource?: (codeArtifactId: string) => void | Promise<void>;
   /** recordId -> highest version seen anywhere in the conversation — powers the "newer version available" hint (see `MessageList`). */
   latestArtifactVersions?: Map<string, number>;
@@ -45,6 +49,11 @@ function isPreviewableImage(mimeType: string): boolean {
   return mimeType.startsWith('image/') && !mimeType.includes('svg');
 }
 
+/** The artifact was deleted, or the caller lost access to it. */
+export function isArtifactGone(error: unknown): boolean {
+  return isProcessedError(error) && (error.statusCode === 403 || error.statusCode === 404);
+}
+
 /**
  * SECURITY: This function is the ONLY way the UI reaches an artifact URL.
  * The URL ultimately comes from the saved LLM message content, which is a
@@ -63,10 +72,13 @@ async function handleDownload(artifact: ChatArtifact): Promise<void> {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(artifact.recordId, artifact.fileName, {
         version: artifact.version,
+        suppressErrorToast: isArtifactGone,
       });
       return;
-    } catch {
-      // Intentionally fall through to URL classification below — but without
+    } catch (error) {
+      // A deleted artifact must not resurface through a stale signed URL.
+      if (isArtifactGone(error)) throw error;
+      // Otherwise fall through to URL classification below — but without
       // the recordId path, we do NOT trust an arbitrary downloadUrl.
     }
   }
@@ -99,25 +111,26 @@ export function ArtifactsPanel({
   onViewSource,
   latestArtifactVersions,
 }: ArtifactsPanelProps) {
+  const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(false);
 
   if (!artifacts.length) return null;
 
   return (
     <Box style={{ marginTop: 'var(--space-3)' }}>
-      <Flex
-        align="center"
-        gap="2"
-        style={{ cursor: 'pointer', marginBottom: collapsed ? 0 : 'var(--space-2)' }}
+      <Button
+        variant="ghost"
+        color="gray"
+        size="2"
+        aria-expanded={!collapsed}
         onClick={() => setCollapsed((v) => !v)}
+        style={{ marginBottom: collapsed ? 0 : 'var(--space-2)' }}
       >
-        <span className="material-icons-outlined" style={{ fontSize: 18, color: 'var(--accent-11)' }}>
-          {collapsed ? 'expand_more' : 'expand_less'}
-        </span>
+        <MaterialIcon name={collapsed ? 'expand_more' : 'expand_less'} size={18} color="var(--accent-11)" />
         <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
-          {artifacts.length} artifact{artifacts.length !== 1 ? 's' : ''} generated
+          {t('chat.artifactsPanel.generated', { count: artifacts.length })}
         </Text>
-      </Flex>
+      </Button>
 
       {!collapsed && (
         <Flex direction="column" gap="2">
@@ -145,7 +158,7 @@ export function ArtifactsPanel({
   );
 }
 
-function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
+function ArtifactThumbnail({ artifact, onGone }: { artifact: ChatArtifact; onGone: (gone: boolean) => void }) {
   const [src, setSrc] = useState<string | undefined>(undefined);
   const [loaded, setLoaded] = useState(false);
   const [errored, setErrored] = useState(false);
@@ -192,13 +205,20 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
       };
     }
 
-    KnowledgeBaseApi.streamRecord(artifact.recordId, { version: artifact.version })
+    KnowledgeBaseApi.streamRecord(artifact.recordId, {
+      version: artifact.version,
+      suppressErrorToast: isArtifactGone,
+    })
       .then((blob) => {
         if (cancelled) return;
         setAndTrack(URL.createObjectURL(blob));
       })
-      .catch(() => {
+      .catch((error) => {
         if (cancelled) return;
+        if (isArtifactGone(error)) {
+          onGone(true);
+          return;
+        }
         setAndTrack(trustedFallbackUrl());
       });
 
@@ -209,7 +229,7 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
         blobUrlRef.current = null;
       }
     };
-  }, [artifact.recordId, artifact.downloadUrl, artifact.version]);
+  }, [artifact.recordId, artifact.downloadUrl, artifact.version, onGone]);
 
   const showSkeleton = !src || (!loaded && !errored);
 
@@ -242,12 +262,7 @@ function ArtifactThumbnail({ artifact }: { artifact: ChatArtifact }) {
             backgroundColor: 'var(--accent-3)',
           }}
         >
-          <span
-            className="material-icons-outlined"
-            style={{ fontSize: 20, color: 'var(--accent-11)' }}
-          >
-            image
-          </span>
+          <MaterialIcon name="image" size={20} color="var(--accent-11)" />
         </Flex>
       )}
       {src && (
@@ -282,8 +297,11 @@ function ArtifactCard({
   /** Set to the higher version number when a later turn has since produced a newer copy of this same artifact. */
   newerVersionAvailable?: number;
 }) {
+  const { t } = useTranslation();
   const icon = getIconForMime(artifact.mimeType);
   const showThumbnail = isPreviewableImage(artifact.mimeType);
+  const [unavailable, setUnavailable] = useState(false);
+  const [sourceGone, setSourceGone] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isPreviewing, setIsPreviewing] = useState(false);
   const [isViewingSource, setIsViewingSource] = useState(false);
@@ -301,6 +319,8 @@ function ArtifactCard({
     setIsDownloading(true);
     try {
       await handleDownload(artifact);
+    } catch (error) {
+      if (isArtifactGone(error) && mountedRef.current) setUnavailable(true);
     } finally {
       if (mountedRef.current) setIsDownloading(false);
     }
@@ -311,6 +331,8 @@ function ArtifactCard({
     setIsPreviewing(true);
     try {
       await onPreview(artifact);
+    } catch (error) {
+      if (isArtifactGone(error) && mountedRef.current) setUnavailable(true);
     } finally {
       if (mountedRef.current) setIsPreviewing(false);
     }
@@ -321,10 +343,44 @@ function ArtifactCard({
     setIsViewingSource(true);
     try {
       await onViewSource(artifact.derivedFromCodeArtifactId);
+    } catch (error) {
+      // Only the source code is gone; this artifact itself may still exist.
+      if (isArtifactGone(error) && mountedRef.current) setSourceGone(true);
     } finally {
       if (mountedRef.current) setIsViewingSource(false);
     }
   };
+
+  if (unavailable) {
+    return (
+      <Flex
+        align="center"
+        gap="3"
+        style={{
+          padding: 'var(--space-2) var(--space-3)',
+          borderRadius: 'var(--radius-2)',
+          border: '1px dashed var(--slate-6)',
+          backgroundColor: 'var(--slate-2)',
+        }}
+      >
+        <Flex
+          align="center"
+          justify="center"
+          style={{ width: 40, height: 40, borderRadius: 'var(--radius-1)', backgroundColor: 'var(--slate-3)', flexShrink: 0 }}
+        >
+          <MaterialIcon name="hide_source" size={20} color="var(--slate-9)" />
+        </Flex>
+        <Flex direction="column" style={{ flex: 1, minWidth: 0 }}>
+          <Text size="2" weight="medium" style={{ color: 'var(--slate-10)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {artifact.fileName}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.artifactsPanel.unavailable')}
+          </Text>
+        </Flex>
+      </Flex>
+    );
+  }
 
   return (
     <Flex
@@ -347,7 +403,7 @@ function ArtifactCard({
             flexShrink: 0,
           }}
         >
-          <ArtifactThumbnail artifact={artifact} />
+          <ArtifactThumbnail artifact={artifact} onGone={setUnavailable} />
         </Box>
       ) : (
         <Flex
@@ -361,9 +417,7 @@ function ArtifactCard({
             flexShrink: 0,
           }}
         >
-          <span className="material-icons-outlined" style={{ fontSize: 20, color: 'var(--accent-11)' }}>
-            {icon}
-          </span>
+          <MaterialIcon name={icon} size={20} color="var(--accent-11)" />
         </Flex>
       )}
 
@@ -389,30 +443,31 @@ function ArtifactCard({
           )}
         </Flex>
         <Text size="1" style={{ color: 'var(--slate-9)' }}>
-          {artifact.artifactType} {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
+          {t(`artifacts.types.${artifact.artifactType}`, { defaultValue: artifact.artifactType })}{' '}
+          {artifact.sizeBytes > 0 ? `· ${formatFileSize(artifact.sizeBytes)}` : ''}
         </Text>
         {newerVersionAvailable !== undefined && (
           <Text size="1" weight="medium" style={{ color: 'var(--amber-11)' }}>
-            Newer version available (v{newerVersionAvailable})
+            {t('chat.artifactsPanel.newerVersion', { version: newerVersionAvailable })}
           </Text>
         )}
       </Flex>
 
       <Flex gap="1">
-        {onViewSource && artifact.derivedFromCodeArtifactId && (
+        {onViewSource && artifact.derivedFromCodeArtifactId && !sourceGone && (
           <IconButton
             size="1"
             variant="ghost"
             onClick={runViewSource}
             disabled={isViewingSource}
-            aria-label={isViewingSource ? 'Loading source code' : 'View source code'}
-            title="View the code that generated this artifact"
+            aria-label={isViewingSource ? t('chat.artifactsPanel.loadingSource') : t('chat.artifactsPanel.viewSource')}
+            title={t('chat.artifactsPanel.viewSourceTitle')}
             style={{ cursor: isViewingSource ? 'wait' : 'pointer' }}
           >
             {isViewingSource ? (
               <Spinner size={16} />
             ) : (
-              <span className="material-icons-outlined" style={{ fontSize: 18 }}>code</span>
+              <MaterialIcon name="code" size={18} />
             )}
           </IconButton>
         )}
@@ -422,13 +477,13 @@ function ArtifactCard({
             variant="ghost"
             onClick={runPreview}
             disabled={isPreviewing}
-            aria-label={isPreviewing ? 'Loading preview' : 'Preview artifact'}
+            aria-label={isPreviewing ? t('chat.artifactsPanel.loadingPreview') : t('chat.artifactsPanel.preview')}
             style={{ cursor: isPreviewing ? 'wait' : 'pointer' }}
           >
             {isPreviewing ? (
               <Spinner size={16} />
             ) : (
-              <span className="material-icons-outlined" style={{ fontSize: 18 }}>visibility</span>
+              <MaterialIcon name="visibility" size={18} />
             )}
           </IconButton>
         )}
@@ -437,13 +492,13 @@ function ArtifactCard({
           variant="ghost"
           onClick={runDownload}
           disabled={isDownloading}
-          aria-label={isDownloading ? 'Downloading artifact' : 'Download artifact'}
+          aria-label={isDownloading ? t('chat.artifactsPanel.downloading') : t('chat.artifactsPanel.download')}
           style={{ cursor: isDownloading ? 'wait' : 'pointer' }}
         >
           {isDownloading ? (
             <Spinner size={16} />
           ) : (
-            <span className="material-icons-outlined" style={{ fontSize: 18 }}>download</span>
+            <MaterialIcon name="download" size={18} />
           )}
         </IconButton>
       </Flex>

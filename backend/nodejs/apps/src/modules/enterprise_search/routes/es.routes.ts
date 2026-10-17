@@ -344,7 +344,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
     ValidationMiddleware.validate(conversationIdParamsSchema),
-    deleteConversationById,
+    deleteConversationById(appConfig),
   );
 
   /**
@@ -786,7 +786,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
     ValidationMiddleware.validate(deleteAgentConversationParamsSchema),
-    deleteAgentConversationById,
+    deleteAgentConversationById(appConfig),
   );
 
   /**

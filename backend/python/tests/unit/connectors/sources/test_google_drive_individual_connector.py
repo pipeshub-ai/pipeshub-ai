@@ -1805,6 +1805,10 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self, connector):
         connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(
+            return_value={"user": {"emailAddress": "user@example.com"}}
+        )
         result = await connector.test_connection_and_access()
         assert result is True
 

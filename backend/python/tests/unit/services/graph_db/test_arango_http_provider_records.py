@@ -761,6 +761,20 @@ class TestGetUserBySourceId:
         )
         assert result is None
 
+    async def test_exception_raised_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = ConnectionError("err")
+        with pytest.raises(ConnectionError):
+            await connected_provider.get_user_by_source_id(
+                source_user_id="src1", connector_id="conn1", raise_on_error=True,
+            )
+
+    async def test_not_found_is_none_even_when_asked_to_raise(self, connected_provider):
+        connected_provider.http_client.execute_aql.return_value = []
+        result = await connected_provider.get_user_by_source_id(
+            source_user_id="src-none", connector_id="conn1", raise_on_error=True,
+        )
+        assert result is None
+
 
 # ===================================================================
 # get_user_by_user_id
@@ -961,6 +975,11 @@ class TestGetAppUsers:
         connected_provider.http_client.execute_aql.side_effect = Exception("err")
         result = await connected_provider.get_app_users("org1", "conn1")
         assert result == []
+
+    async def test_exception_raised_when_asked(self, connected_provider):
+        connected_provider.http_client.execute_aql.side_effect = ConnectionError("err")
+        with pytest.raises(ConnectionError):
+            await connected_provider.get_app_users("org1", "conn1", raise_on_error=True)
 
 
 # ===================================================================
@@ -2414,6 +2433,7 @@ class TestDeleteRecordsAndRelations:
     async def test_success(self, connected_provider):
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations("r1")
         assert result is True
@@ -2421,6 +2441,7 @@ class TestDeleteRecordsAndRelations:
     async def test_hard_delete(self, connected_provider):
         record_doc = _arango_record(key="r1")
         connected_provider.http_client.get_document.return_value = record_doc
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
         connected_provider.http_client.execute_aql.return_value = []
         result = await connected_provider.delete_records_and_relations(
             "r1", hard_delete=True
@@ -2438,6 +2459,30 @@ class TestDeleteRecordsAndRelations:
             await connected_provider.delete_records_and_relations(
                 "r1", transaction="txn1"
             )
+
+    async def test_every_graph_edge_of_the_record_is_removed(self, connected_provider) -> None:
+        """Jira Data Center and Linear hard-delete here; a fixed list left inheritPermissions behind."""
+        connected_provider.http_client.get_document.return_value = _arango_record(key="r1")
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["inheritPermissions", "entityRelations"])
+        connected_provider.http_client.execute_aql.return_value = []
+
+        assert await connected_provider.delete_records_and_relations("r1", hard_delete=True) is True
+
+        swept = [
+            c.args[1]["@edge_collection"]
+            for c in connected_provider.http_client.execute_aql.await_args_list
+            if "@edge_collection" in c.args[1]
+        ]
+        assert swept == ["inheritPermissions", "inheritPermissions", "entityRelations", "entityRelations"]
+
+    async def test_a_failed_edge_delete_fails_the_delete(self, connected_provider) -> None:
+        """It used to be logged and skipped, so the record went and its edges stayed."""
+        connected_provider.http_client.get_document.return_value = _arango_record(key="r1")
+        connected_provider._edge_collections_of_graph = AsyncMock(return_value=["permission"])
+        connected_provider.http_client.execute_aql.side_effect = Exception("write failed")
+
+        assert await connected_provider.delete_records_and_relations("r1") is False
+        assert connected_provider.http_client.execute_aql.await_count == 1
 
 
 # ===================================================================
@@ -3702,44 +3747,6 @@ class TestExecuteLocalFsRecordDeletion:
 
 # ===================================================================
 # _delete_local_fs_edges  (lines 8771-8807)
-# ===================================================================
-
-class TestDeleteLocalFsEdges:
-    async def test_success_deletes_its_collections_and_the_enrichment_edges(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1")
-        swept = [c.args[1]["@edge_collection"] for c in connected_provider.http_client.execute_aql.await_args_list]
-        assert sorted(swept) == sorted([
-            "isOfType", "permission", "belongsTo",
-            "belongsToDepartment", "belongsToCategory", "belongsToLanguage", "belongsToTopic",
-        ])
-
-    async def test_exception_propagates(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(
-            side_effect=Exception("fail")
-        )
-        with pytest.raises(Exception, match="fail"):
-            await connected_provider._delete_local_fs_edges("r1")
-
-    async def test_with_transaction(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1", transaction="txn1")
-        for call in connected_provider.http_client.execute_aql.call_args_list:
-            assert call.kwargs.get("txn_id") == "txn1"
-
-    async def test_correct_bind_vars(self, connected_provider):
-        connected_provider.http_client.execute_aql = AsyncMock(return_value=[])
-        await connected_provider._delete_local_fs_edges("r1")
-        calls = connected_provider.http_client.execute_aql.call_args_list
-        all_bind_vars = [c[0][1] for c in calls]
-        collections_used = {bv["@edge_collection"] for bv in all_bind_vars}
-        assert "isOfType" in collections_used
-        assert "permission" in collections_used
-        assert "belongsTo" in collections_used
-
-
-# ===================================================================
-# delete_connector_instance  (lines 8194-8478)
 # ===================================================================
 
 class TestDeleteConnectorInstance:

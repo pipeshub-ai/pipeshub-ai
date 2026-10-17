@@ -44,6 +44,8 @@ def _make_manager(*, registry: MagicMock | None = None, **state_overrides) -> tu
     state.update(state_overrides)
     manager = ArtifactManager(state)
     mock_registry = registry if registry is not None else MagicMock()
+    if not isinstance(mock_registry.resolve, AsyncMock):
+        mock_registry.resolve = AsyncMock(return_value=_make_metadata())
     manager._registry = lambda: mock_registry  # bypass real ArtifactRegistryService construction
     return manager, mock_registry
 
@@ -131,6 +133,91 @@ class TestSaveArtifact:
         assert "unavailable" in json.loads(payload)["error"]
 
 
+DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+
+class TestBinaryDocumentsMustBeReal:
+    async def test_plain_text_under_a_docx_name_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(name="minutes.docx", content="# Minutes\nAll agreed.")
+
+        assert success is False
+        error = json.loads(payload)["error"]
+        assert "not a real Word file" in error
+        assert "run_code" in error
+        registry.register_output.assert_not_awaited()
+
+    async def test_plain_text_with_a_docx_mime_type_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, _ = await manager.save_artifact(name="minutes", content="text", mime_type=DOCX_MIME)
+
+        assert success is False
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_pdf_mime_type_in_another_case_or_with_parameters_is_checked(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        for mime_type in ("Application/PDF", "application/pdf; charset=binary"):
+            success, payload = await manager.save_artifact(name="report", content="text", mime_type=mime_type)
+
+            assert success is False
+            assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_real_docx_is_saved(self) -> None:
+        registry = MagicMock()
+        registry.register_output = AsyncMock(return_value=(_make_metadata(name="minutes.docx"), None))
+        manager, registry = _make_manager(registry=registry)
+        docx = b"PK\x03\x04" + b"rest-of-the-zip"
+
+        success, _ = await manager.save_artifact(
+            name="Minutes.DOCX", content=base64.b64encode(docx).decode(), is_base64=True, mime_type=DOCX_MIME,
+        )
+
+        assert success is True
+        assert registry.register_output.call_args.kwargs["content"] == docx
+
+    async def test_text_under_a_pdf_name_is_refused(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(name="report.pdf", content="Quarterly report")
+
+        assert success is False
+        assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_a_zip_under_a_pdf_name_is_refused_even_with_a_word_mime_type(self) -> None:
+        manager, registry = _make_manager()
+        registry.register_output = AsyncMock()
+
+        success, payload = await manager.save_artifact(
+            name="notes.pdf", content=base64.b64encode(b"PK\x03\x04zip").decode(), is_base64=True,
+            mime_type=DOCX_MIME,
+        )
+
+        assert success is False
+        assert "not a real PDF file" in json.loads(payload)["error"]
+        registry.register_output.assert_not_awaited()
+
+    async def test_updating_a_docx_artifact_with_text_is_refused(self) -> None:
+        registry = MagicMock()
+        registry.resolve = AsyncMock(return_value=_make_metadata(name="minutes.docx", mime_type=DOCX_MIME))
+        registry.add_version = AsyncMock()
+        manager, registry = _make_manager(registry=registry)
+
+        success, payload = await manager.update_artifact(artifact_id="art-1", content="new text")
+
+        assert success is False
+        assert "not a real Word file" in json.loads(payload)["error"]
+        registry.add_version.assert_not_awaited()
+
+
 class TestUpdateArtifact:
     async def test_updates_existing_artifact(self) -> None:
         metadata = _make_metadata(version=2)
@@ -160,6 +247,8 @@ class TestUpdateArtifact:
         success, payload = await manager.update_artifact(artifact_id="ghost", content="x")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_returns_permission_error(self) -> None:
         registry = MagicMock()
@@ -202,6 +291,8 @@ class TestGetArtifactDownloadUrl:
         success, payload = await manager.get_artifact_download_url(artifact_id="ghost")
         assert success is False
         assert "No artifact found" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied(self) -> None:
         registry = MagicMock()
@@ -454,6 +545,8 @@ class TestGetArtifactContent:
         success, payload = await manager.get_artifact_content(artifact_id="ghost")
         assert success is False
         assert "ghost" in json.loads(payload)["error"]
+        # Tells the model not to retry an artifact the user deleted.
+        assert "may have been deleted" in json.loads(payload)["error"]
 
     async def test_access_denied_is_not_swallowed(self) -> None:
         registry = MagicMock()

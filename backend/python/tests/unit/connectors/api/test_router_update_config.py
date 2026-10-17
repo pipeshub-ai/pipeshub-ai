@@ -1139,7 +1139,7 @@ class TestStreamRecordInternalGoogleDrivePaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance
@@ -1269,7 +1269,7 @@ class TestDownloadFileErrorPaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance_doc
@@ -1389,7 +1389,7 @@ class TestDownloadFileErrorPaths:
 
         call_count = 0
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             nonlocal call_count
             call_count += 1
             if collection == "orgs":

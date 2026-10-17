@@ -8,6 +8,7 @@ import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/con
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
+import { ConversationHeaderOverlay } from '@/config';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import {
   applyConversationModelInfoToStore,
@@ -44,19 +45,21 @@ import { ChatSearch } from './components/search';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
-import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { useBrand } from '@/lib/branding';
 import { chatContentColumnStyle } from './constants';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
+import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -70,6 +73,11 @@ const footerLinkStyle: React.CSSProperties = {
 function ChatFooterLinks() {
   const { t } = useTranslation();
   const stars = useGitHubStars();
+  const brand = useBrand();
+  const githubUrl = brand.githubUrl;
+  const docsUrl = brand.docsHref('introduction');
+
+  if (!githubUrl && !docsUrl) return null;
 
   return (
     <Flex
@@ -78,8 +86,9 @@ function ChatFooterLinks() {
       gap="3"
       style={{ marginTop: 'var(--space-1)', paddingBottom: 0 }}
     >
+      {githubUrl ? (
       <a
-        href={EXTERNAL_LINKS.github}
+        href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
         style={footerLinkStyle}
@@ -111,11 +120,15 @@ function ChatFooterLinks() {
           </>
         )}
       </a>
+      ) : null}
 
+      {githubUrl && docsUrl ? (
       <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
+      ) : null}
 
+      {docsUrl ? (
       <a
-        href="https://docs.pipeshub.com/introduction"
+        href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
         style={footerLinkStyle}
@@ -133,6 +146,7 @@ function ChatFooterLinks() {
           {t('common.docs')}
         </span>
       </a>
+      ) : null}
     </Flex>
   );
 }
@@ -173,6 +187,7 @@ function ChatContent() {
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const threadRuntime = useThreadRuntime();
+  useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
   // Actions are stable refs in Zustand — selecting them individually
@@ -205,6 +220,9 @@ function ChatContent() {
   );
   const activeSlotConvId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
+  );
+  const activeSlotRemoteRunInProgress = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.remoteRunInProgress ?? false : false
   );
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
@@ -751,8 +769,10 @@ function ChatContent() {
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
+          rawMessages: messages,
           isInitialized: true,
           hasLoaded: true,
+          remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           messagePagination: {
             currentPage: apiPagination.page,
@@ -789,6 +809,14 @@ function ChatContent() {
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
   }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+
+  // A run that outlived a refresh finishes on the server; reload once it has.
+  useRemoteRunPoll(
+    activeSlotId,
+    activeSlotConvId,
+    historyAndShareAgentId,
+    activeSlotRemoteRunInProgress && activeSlotIsInitialized && !activeSlotIsStreaming,
+  );
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -1233,58 +1261,52 @@ function ChatContent() {
         />
       )}
 
-      {/* Agent creator chip */}
-      {historyAndShareAgentId && agentCreatorName && (
-        <Box
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: showConversationShare ? 200 : 16,
-            zIndex: 19,
-          }}
-        >
-          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
-            <Flex
-              align="center"
-              gap="2"
-              px="2"
-              py="1"
-              style={{
-                background: 'var(--color-panel)',
-                borderRadius: 'var(--radius-2)',
-                maxWidth: isMobile ? 140 : 220,
-                cursor: 'default',
-              }}
-            >
-              <Avatar
-                size="1"
-                fallback={agentCreatorName.charAt(0).toUpperCase()}
-                src={agentCreatorAvatarUrl}
-                radius="full"
-                style={{ flexShrink: 0 }}
-              />
-              <Text
-                size="2"
+      {/* Agent creator chip and share group, top-right. */}
+      <ConversationHeaderOverlay
+        conversationId={conversationId}
+        agentChip={
+          historyAndShareAgentId && agentCreatorName ? (
+            <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
+              <Flex
+                align="center"
+                gap="2"
+                px="2"
+                py="1"
                 style={{
-                  color: 'var(--gray-12)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  background: 'var(--color-panel)',
+                  borderRadius: 'var(--radius-2)',
+                  maxWidth: isMobile ? 140 : 220,
+                  cursor: 'default',
                 }}
               >
-                {agentCreatorName}
-              </Text>
-            </Flex>
-          </Tooltip>
-        </Box>
-      )}
-
-      {/* Share header group — owners only */}
-      {showConversationShare && (
-        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
-          <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
-        </Box>
-      )}
+                <Avatar
+                  size="1"
+                  fallback={agentCreatorName.charAt(0).toUpperCase()}
+                  src={agentCreatorAvatarUrl}
+                  radius="full"
+                  style={{ flexShrink: 0 }}
+                />
+                <Text
+                  size="2"
+                  style={{
+                    color: 'var(--gray-12)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {agentCreatorName}
+                </Text>
+              </Flex>
+            </Tooltip>
+          ) : null
+        }
+        shareGroup={
+          showConversationShare ? (
+            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+          ) : null
+        }
+      />
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
           Message content + composer share chatContentColumnStyle so widths match. */}

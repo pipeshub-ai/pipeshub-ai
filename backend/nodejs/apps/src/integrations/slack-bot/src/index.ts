@@ -262,8 +262,7 @@ receiver.router.use(json());
 receiver.router.use(urlencoded());
 
 // Routes
-receiver.router.get("/", (req: Request, res: Response) => {
-  console.log(req);
+receiver.router.get("/", (_req: Request, res: Response) => {
   res.send("Running");
 });
 

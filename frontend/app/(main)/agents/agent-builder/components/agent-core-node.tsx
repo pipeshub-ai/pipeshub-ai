@@ -9,6 +9,7 @@ import { ConnectorIcon } from '@/app/components/ui';
 import { ThemeableAssetIcon, themeableAssetIconPresets } from '@/app/components/ui/themeable-asset-icon';
 import type { ReasoningEffort } from '@/chat/types';
 import { REASONING_EFFORT_OPTIONS } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
+import { useFeatureFlagsStore, selectSkillsEnabled } from '@/lib/store/feature-flags-store';
 import type { FlowNodeData } from '../types';
 import {
   AGENT_KNOWLEDGE_FALLBACK_ICON,
@@ -296,6 +297,7 @@ export function AgentCoreNode({
   const { setNodes } = useReactFlow();
   const storeNodes = useStore((s) => s.nodes);
   const storeEdges = useStore((s) => s.edges);
+  const skillsEnabled = useFeatureFlagsStore(selectSkillsEnabled);
 
   const [promptOpen, setPromptOpen] = useState(false);
   const [systemPrompt, setSystemPrompt] = useState(
@@ -572,20 +574,23 @@ export function AgentCoreNode({
             )}
           </Section>
 
-          <Section title={t('agentBuilder.skillsSection')} icon="psychology">
-            <CoreHandle type="target" position={Position.Left} id="skills" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
-            {connected.skills.length ? (
-              <ConnectedChips
-                nodes={connected.skills}
-                max={MAX_VISIBLE.skills}
-                labelOf={skillConnectionChipLabel}
-              />
-            ) : (
-              <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
-                {t('agentBuilder.optional')}
-              </Text>
-            )}
-          </Section>
+          {/* Kept visible for saved skills even with the flag off, so their edges still have a handle. */}
+          {skillsEnabled || connected.skills.length ? (
+            <Section title={t('agentBuilder.skillsSection')} icon="psychology">
+              <CoreHandle type="target" position={Position.Left} id="skills" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
+              {connected.skills.length ? (
+                <ConnectedChips
+                  nodes={connected.skills}
+                  max={MAX_VISIBLE.skills}
+                  labelOf={skillConnectionChipLabel}
+                />
+              ) : (
+                <Text size="1" style={{ color: 'var(--agent-flow-text-muted)', fontStyle: 'italic' }}>
+                  {t('agentBuilder.optional')}
+                </Text>
+              )}
+            </Section>
+          ) : null}
 
           <Section title={t('agentBuilder.mcpServersSection')} icon="hub">
             <CoreHandle type="target" position={Position.Left} id="mcpServers" nodeDataId={data.id} offsetStyle={{ left: -8 }} />
@@ -890,25 +895,29 @@ function DefaultReasoningEffortSelector({
         </Text>
       </Flex>
       <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('agentBuilder.defaultReasoningEffortLabel')}>
-        {REASONING_EFFORT_OPTIONS.map((option) => {
+        {[
+          { value: null, label: t('chat.reasoningEffort.modelDefaultOption', 'Model default') },
+          ...REASONING_EFFORT_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey, o.defaultLabel) })),
+        ].map((option) => {
           const isActive = value === option.value;
           return (
             <Flex
-              key={option.value}
+              key={option.value ?? 'default'}
               align="center"
               justify="center"
               role="radio"
               aria-checked={isActive}
               tabIndex={0}
-              onClick={() => onSelect(isActive ? null : option.value)}
+              onClick={() => onSelect(option.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' || e.key === ' ') {
                   e.preventDefault();
-                  onSelect(isActive ? null : option.value);
+                  onSelect(option.value);
                 }
               }}
               style={{
                 padding: '4px 12px',
+                minHeight: 44,
                 borderRadius: 'var(--radius-6)',
                 border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--gray-6)',
                 backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
@@ -920,7 +929,7 @@ function DefaultReasoningEffortSelector({
                 weight={isActive ? 'medium' : 'regular'}
                 style={{ color: isActive ? 'var(--accent-11)' : 'var(--agent-flow-text-muted)' }}
               >
-                {t(option.labelKey, option.defaultLabel)}
+                {option.label}
               </Text>
             </Flex>
           );

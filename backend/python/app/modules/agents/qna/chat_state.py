@@ -180,6 +180,8 @@ class ChatState(TypedDict):
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
     known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
+    retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
+    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -189,6 +191,13 @@ class ChatState(TypedDict):
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in, disabled by default.
     enable_record_id_shortening: bool | None
+    # Opt-in measurement surface: when True the stream carries CUSTOM
+    # `retrieval_context` and `run_usage` frames. Never on by default.
+    include_retrieval_context: bool | None
+    # `ChatQuery.keywordSearchBudget`: "short" caps how long a search waits for
+    # the keyword (grep) pattern match after its semantic results; None or
+    # "full" waits for all of it. See `pattern_match_wait_budget`.
+    keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -210,6 +219,12 @@ class ChatState(TypedDict):
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
     has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
+    client_name: str | None
+    agent_key: str | None
+    is_assistant_chat: bool
+    chat_streaming: bool
+    tool_approval: dict[str, Any] | None
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -684,6 +699,14 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
             chat_query.get("enable_record_id_shortening")
             or chat_query.get("enableRecordIdShortening")
         ),
+        "include_retrieval_context": bool(
+            chat_query.get("include_retrieval_context")
+            or chat_query.get("includeRetrievalContext")
+        ),
+        "keyword_search_budget": (
+            chat_query.get("keyword_search_budget")
+            or chat_query.get("keywordSearchBudget")
+        ),
 
         # Attachments (uploaded images/PDFs from client)
         "attachments": chat_query.get("attachments", []),
@@ -707,4 +730,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
         "has_ui_client": bool(client_name),
+        "client_name": client_name,
+        "agent_key": chat_query.get("agentKey"),
+        "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),
+        "chat_streaming": chat_query.get("chatStreaming", True) is not False,
+        "tool_approval": chat_query.get("toolApproval"),
     }

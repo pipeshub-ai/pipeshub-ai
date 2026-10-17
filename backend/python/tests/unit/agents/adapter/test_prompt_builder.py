@@ -12,7 +12,7 @@ to touch this file (see the "Prompt consolidation" plan, Part 4).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -67,7 +67,7 @@ class FakeTool(Tool):
     def parameters(self) -> list[ToolParameter]:
         return self._parameters
 
-    async def execute(self, **kwargs: Any) -> ToolOutput:
+    async def execute(self, **kwargs: object) -> ToolOutput:
         return ToolOutput(success=True, data="ok")
 
 
@@ -492,6 +492,58 @@ class TestFindingInformation:
         section = result.split("## Finding Information", 1)[1]
         assert "disagree" in section.lower()
 
+    @pytest.mark.parametrize(
+        ("high_accuracy", "feature", "expected"),
+        [
+            (None, None, False),
+            ("true", None, False),
+            ("true", "", False),
+            ("true", "false", False),
+            (None, "true", True),
+            ("false", "TRUE", True),
+            (None, "1", False),
+        ],
+    )
+    def test_keyword_query_rule_follows_only_its_own_switch(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
+    ) -> None:
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("KEYWORD_SEARCH_QUERIES", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        result = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert ("Query text for `retrieval__search_internal_knowledge`: keyword-dense" in section) is expected
+
+    def test_keyword_query_rule_not_given_to_a_parent_that_delegates_retrieval(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The exploration delegate takes a self-contained goal; keyword text
+        there would drop the task. Its child gets the rule instead."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        result = _build(make_context(has_knowledge=True), tool_names=["internal_exploration_agent"])
+        section = result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+        assert "internal_exploration_agent" in section
+        assert "keyword-dense" not in section
+
+    def test_keyword_query_rule_needs_a_granted_search_tool(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        context = make_context()
+        context.tool_state["web_search_config"] = {"enabled": True}
+
+        assert "keyword-dense" not in _build(context, tool_names=["web_search", "fetch_url"])
+
+    def test_keyword_query_rule_is_identical_across_requests(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """It sits in the cached prompt prefix, so it must not vary per request."""
+        monkeypatch.setenv("KEYWORD_SEARCH_QUERIES", "true")
+        first = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+        second = _build(make_context(has_knowledge=True), tool_names=["retrieval__search_internal_knowledge"])
+
+        assert first.split("## Finding Information", 1)[1] == second.split("## Finding Information", 1)[1]
+
     def test_no_forbidden_bullets_style(self) -> None:
         context = make_context(has_knowledge=True)
         context.tool_state["agent_toolsets"] = [{"name": "jira-cloud"}]
@@ -857,3 +909,105 @@ class TestFullRecordEscalation:
         assert "knowledgegraph__fetch_record" in section
         assert "ranked fragments" in section
         assert "ONE call" in section
+
+
+class TestAnswerRules:
+    """MULTI_STEP_ANSWER_RULES in Finding Information, and the full-read fetch
+    policy an enterprise-search chat asks for under THOROUGH_RETRIEVAL."""
+
+    _ENV = ("HIGH_ACCURACY_MODE", "MULTI_STEP_ANSWER_RULES", "ANSWER_COMPOSITION_RULES", "THOROUGH_RETRIEVAL")
+
+    @pytest.fixture(autouse=True)
+    def _switches_unset(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in self._ENV:
+            monkeypatch.delenv(name, raising=False)
+
+    @staticmethod
+    def _section(result: str) -> str:
+        return result.split("## Finding Information", 1)[1].split("\n## ", 1)[0]
+
+    @pytest.mark.parametrize(
+        ("high_accuracy", "feature", "expected"),
+        [
+            (None, None, False),
+            ("true", None, True),
+            ("true", "", True),
+            ("true", "false", False),
+            (None, "true", True),
+            ("false", "TRUE", True),
+            (None, "1", False),
+        ],
+    )
+    def test_multi_step_rules_follow_their_switch_then_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, high_accuracy: str | None, feature: str | None, expected: bool,
+    ) -> None:
+        from app.agents.agent_loop.answer_rules import MULTI_STEP_ANSWER_RULES
+
+        for name, value in (("HIGH_ACCURACY_MODE", high_accuracy), ("MULTI_STEP_ANSWER_RULES", feature)):
+            if value is not None:
+                monkeypatch.setenv(name, value)
+        result = _build(make_context(has_knowledge=True), tool_names=["knowledgegraph__search"])
+
+        assert self._section(result).count(MULTI_STEP_ANSWER_RULES) == (1 if expected else 0)
+        assert result.count("Multi-step questions:") == (1 if expected else 0)
+
+    @pytest.mark.parametrize("retrieval", ["knowledgegraph__search", "internal_exploration_agent"])
+    def test_multi_step_rules_reach_a_flat_search_tool_and_the_delegate(
+        self, monkeypatch: pytest.MonkeyPatch, retrieval: str,
+    ) -> None:
+        monkeypatch.setenv("MULTI_STEP_ANSWER_RULES", "true")
+        result = _build(make_context(has_knowledge=True), tool_names=[retrieval])
+        assert "Multi-step questions:" in self._section(result)
+
+    def test_multi_step_rules_need_a_retrieval_surface(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        web = make_context()
+        web.tool_state["web_search_config"] = {"enabled": True}
+
+        assert "Multi-step questions" not in _build(web, tool_names=["web_search", "fetch_url"])
+        assert "Multi-step questions" not in _build(make_context(), tool_names=[])
+        assert "Multi-step questions" not in _build(make_context(has_knowledge=True), tool_names=[])
+
+    def test_multi_step_rules_name_no_tool_and_fit_their_budget(self) -> None:
+        import re
+
+        from app.agent_loop_lib.core.tokens import count_text_tokens
+        from app.agents.agent_loop.answer_rules import MULTI_STEP_ANSWER_RULES
+
+        assert "`" not in MULTI_STEP_ANSWER_RULES
+        assert not re.search(r"\w__\w", MULTI_STEP_ANSWER_RULES)
+        assert count_text_tokens(MULTI_STEP_ANSWER_RULES) <= 200
+
+    def test_the_answer_rule_switches_do_not_vary_finding_information_by_request(
+        self, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("HIGH_ACCURACY_MODE", "true")
+        names = ["knowledgegraph__search", "knowledgegraph__fetch_record"]
+        first = _build(make_context(has_knowledge=True), tool_names=names, goal=Goal(description="Who owns X?"))
+        second = _build(make_context(has_knowledge=True), tool_names=names, goal=Goal(description="Compare Q3"))
+        assert "Multi-step questions:" in self._section(first)
+        assert self._section(first) == self._section(second)
+        assert first.split("## Reading Records in Full", 1)[1].split("\n## ", 1)[0] == (
+            second.split("## Reading Records in Full", 1)[1].split("\n## ", 1)[0]
+        )
+
+    @pytest.mark.parametrize("read_in_full", [False, True])
+    def test_fetch_policy_reads_in_full_only_when_the_chat_asks(self, read_in_full: bool) -> None:
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+
+        context = make_context(has_knowledge=True)
+        context.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = read_in_full
+        result = _build(context, tool_names=["knowledgegraph__search", "knowledgegraph__fetch_record"])
+        policy = result.split("## Reading Records in Full", 1)[1]
+
+        assert ("UNLESS you already hold the record in full" in policy) is read_in_full
+        assert ("UNLESS the exact fact needed is already visible" in policy) is not read_in_full
+
+    def test_full_read_flag_adds_nothing_before_the_fetch_tool_is_granted(self) -> None:
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+
+        plain = _build(make_context(has_knowledge=True), tool_names=["knowledgegraph__search"])
+        flagged = make_context(has_knowledge=True)
+        flagged.tool_state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+
+        assert _build(flagged, tool_names=["knowledgegraph__search"]) == plain

@@ -60,6 +60,17 @@ def test_the_mcp_client_lists_and_calls_the_tool(fixture_url: str) -> None:
     assert text == server_module.order_status("KO-4417")
 
 
+async def _read_only_hint(url: str) -> object:
+    async with Client(StreamableHttpTransport(url)) as client:
+        (tool,) = await client.list_tools()
+        return tool.annotations.readOnlyHint if tool.annotations else None
+
+
+def test_the_tool_says_it_only_reads(fixture_url: str) -> None:
+    # PipesHub runs a tool without asking only when the server marks it read-only.
+    assert asyncio.run(_read_only_hint(f"{fixture_url}/mcp")) is True
+
+
 def test_each_call_is_logged_until_reset(fixture_url: str) -> None:
     fixture = McpFixture(test_url=fixture_url, connector_url=f"{fixture_url}/mcp")
     assert fixture.healthy()

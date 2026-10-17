@@ -501,6 +501,58 @@ async def test_folder_filter_syncs_only_the_selected_subtree(drive: Harness) -> 
     assert drive.names() == {"Picked", "Picked sub", "in-1.txt", "in-2.txt"}
 
 
+async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(drive: Harness) -> None:
+    drive.world.hide_unreadable_parents = True
+    drive.world.add_user("owner@example.com")
+    drive.world.folder("their-parent", "Their projects", parent="root-owner", owner="owner@example.com")
+    drive.world.folder("pick", "Picked", parent="their-parent", owner="owner@example.com",
+                       perms=[{"type": "user", "role": "reader", "emailAddress": ME}])
+    drive.world.add_item("deep", "deep.txt", parent="pick", owner="owner@example.com")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert drive.records.records["pick"].parent_external_record_id is None, "Drive hides a parent I cannot open"
+
+    drive.world.share("their-parent", {"type": "user", "role": "reader", "emailAddress": ME})
+    await drive.sync()
+
+    parent = drive.records.records.get("their-parent")
+    assert parent is not None and not parent.is_placeholder and parent.record_name == "Their projects"
+    assert drive.records.records["pick"].parent_external_record_id == "their-parent"
+
+
+async def test_a_selected_shortcut_syncs_the_folder_it_points_to(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    my_file(drive.world, "out", "out.txt")
+    drive.world.add_shortcut("sc", "Link to Picked", parent=ROOT, owner=ME, target_id="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["sc"]})
+
+    await drive.sync()
+
+    assert {"Picked", "in-1.txt"} <= drive.names()
+    assert "out.txt" not in drive.names()
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_folder(drive: Harness) -> None:
+    drive.world.folder("new", "New folder", parent=ROOT, owner=ME)
+    drive.world.folder("nested", "nested folder 2", parent="new", owner=ME)
+    drive.world.folder("pick", "test", parent="nested", owner=ME)
+    drive.world.folder("sub-1", "subfolder 1", parent="pick", owner=ME)
+    drive.world.folder("sub-2", "subfolder 2", parent="sub-1", owner=ME)
+    my_file(drive.world, "deep", "deep.txt", parent="sub-2")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert {"New folder", "nested folder 2", "test"} <= drive.names()
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "subfolder 2", "deep.txt"} <= drive.names()
+    assert drive.records.deleted == []
+    assert drive.records.records["pick"].parent_external_record_id == "nested"
+    assert drive.records.records["nested"].parent_external_record_id == "new"
+
+
 async def test_a_selected_folder_that_cannot_be_listed_keeps_its_subtree_records(drive: Harness) -> None:
     drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
     for n in range(4):
@@ -858,6 +910,16 @@ async def test_a_re_authentication_while_the_check_waits_for_the_transport_is_ke
     assert sent == {"Bearer reauth-token"}
 
 
+async def test_the_connection_test_fails_once_the_refresh_token_is_revoked(drive: Harness) -> None:
+    connector = await drive.connector_()
+    assert await connector.test_connection_and_access()
+
+    drive.http._token_owner.pop("access-1")
+    drive.http.revoked_refresh_tokens.add("refresh-1")
+
+    assert not await connector.test_connection_and_access()
+
+
 async def test_a_revoked_refresh_token_fails_the_run_without_a_checkpoint(drive: Harness) -> None:
     my_file(drive.world, "f1", "one.txt")
     await drive.connector_()
@@ -1183,6 +1245,28 @@ async def test_a_member_drive_folder_filter_walks_each_folder_once(drive: Harnes
     assert writes.count("a-sub") == 1
     assert writes.count("z-sub") == 1
     assert drive.http.calls("GET", "/drive/v3/files/a-sub") == []
+
+
+async def test_a_full_resync_keeps_the_folders_above_a_selected_member_drive_folder(drive: Harness) -> None:
+    drive.world.add_drive("sd-1", "Engineering", {ME: "writer"})
+    drive.world.folder("new", "New folder", parent="sd-1")
+    drive.world.folder("nested", "nested folder 2", parent="new")
+    drive.world.folder("pick", "test", parent="nested")
+    drive.world.folder("sub-1", "subfolder 1", parent="pick")
+    drive.world.add_item("deep", "deep.txt", parent="sub-1")
+    my_file(drive.world, "mine", "mine.txt")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick"]})
+    await drive.sync()
+    assert {"New folder", "nested folder 2", "test"} <= drive.names()
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert {"New folder", "nested folder 2", "test", "subfolder 1", "deep.txt"} <= drive.names()
+    assert drive.records.deleted == []
+    assert drive.records.records["pick"].parent_external_record_id == "nested"
+    assert drive.records.records["nested"].parent_external_record_id == "new"
+    assert {drive.records.records[i].external_record_group_id for i in ("new", "nested")} == {"sd-1"}
 
 
 async def test_member_drive_changes_follow_the_folder_filter(drive: Harness) -> None:

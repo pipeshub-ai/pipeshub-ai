@@ -29,7 +29,9 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));
 
-vi.mock('react-i18next', () => ({
+// Spread the real module so exports the import graph needs (initReactI18next) stay defined.
+vi.mock('react-i18next', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-i18next')>()),
   useTranslation: () => ({
     t: (key: string) => {
       const parts = key.split('.');

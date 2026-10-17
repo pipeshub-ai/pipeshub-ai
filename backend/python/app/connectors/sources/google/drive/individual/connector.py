@@ -122,7 +122,9 @@ from app.connectors.sources.google.drive.utils.folder_filter_utils import (
     is_retryable_403,
     is_unrecognised_403,
     pass_folder_filter,
+    adopt_shortcut_seed_target,
     probe_can_list_children,
+    seeds_with_new_parent,
 )
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
@@ -858,15 +860,18 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         "its subtree will not be synced"
                     )
                     continue
+                listed_id = adopt_shortcut_seed_target(
+                    folder_id, probe, self._folder_seed_ids, self._tracked_folder_ids
+                )
                 if not probe.can_list_children:
-                    self._blocked_folder_ids.add(folder_id)
+                    self._blocked_folder_ids.add(listed_id)
                     self.logger.warning(
-                        f"📁 Seed folder {folder_id} cannot be listed by this account; "
+                        f"📁 Seed folder {listed_id} cannot be listed by this account; "
                         "its subtree will not be synced"
                     )
                     continue
-                frontier.append(folder_id)
-                drive_id_by_folder[folder_id] = probe.drive_id
+                frontier.append(listed_id)
+                drive_id_by_folder[listed_id] = probe.drive_id
         finally:
             # Every refused seed is counted before the run fails, so seeds refused together
             # use their runs together.
@@ -913,9 +918,12 @@ class GoogleDriveIndividualConnector(BaseConnector):
         while its Drive ancestors are filtered out, leaving stubs keyed by the
         ancestors' file ids with no real name, url or permissions.
 
+        Runs once per drive (My Drive and each member shared drive), over the stubs
+        filed under that drive, so each ancestor is written into its own record group.
+
         This is an ancestor-closure walk over child->parent pointers, implemented as a
         frontier BFS with a ``visited`` set (dedup + cycle guard) and a boundary that
-        stops at ancestors already materialized as real records or at My Drive root:
+        stops at ancestors already materialized as real records or at the drive root:
 
           - seed the frontier from the stubs this sync left behind (one DB query);
           - fetch each frontier level from source (bounded concurrency) and sync it as
@@ -926,9 +934,27 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
         Reconciliation is keyed by external id and idempotent, so an interrupted sweep
         is completed by the next sync's sweep.
+
+        On a full sync under the folder filter, ancestors an earlier sweep already made
+        real are walked too: the listing skips them, so unless they are rewritten here
+        the stale-record cleanup deletes them and the selected folders lose their path.
         """
+        await self._relink_seeds_with_new_parents(user_id, user_email, drive_id)
+        rewrite_real_ancestors = bool(self._folder_seed_ids) and not self._sync_ledger.incremental
+
+        def needs_backfill(record: Record) -> bool:
+            if record.is_placeholder:
+                return True
+            return rewrite_real_ancestors and record.external_record_id not in self._sync_ledger.seen
+
         visited: set = set()
-        seeds = await self.data_entities_processor.get_placeholder_records(self.connector_id)
+        seeds = [
+            stub
+            for stub in await self.data_entities_processor.get_placeholder_records(self.connector_id)
+            if stub.external_record_group_id == drive_id
+        ]
+        if rewrite_real_ancestors:
+            seeds = [*seeds, *await self._out_of_scope_seed_parents(drive_id)]
         frontier: List[Record] = []
         for stub in seeds:
             if stub.external_record_id not in visited:
@@ -958,7 +984,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 backfills.append((record, permissions))
 
             for stub in frontier:
-                if stub.external_record_id in metadata_by_id:
+                if stub.external_record_id in metadata_by_id or not stub.is_placeholder:
                     continue
                 # Source fetch failed (inaccessible/deleted). Re-submit the persisted
                 # stub anyway so its structural edges — record group (BELONGS_TO) and
@@ -976,7 +1002,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             for record, _permissions in backfills:
                 parent_ext_id = record.parent_external_record_id
                 if not parent_ext_id or not record.parent_record_type:
-                    continue  # boundary: My Drive root
+                    continue  # boundary: drive root
                 if parent_ext_id in visited:
                     continue
                 visited.add(parent_ext_id)
@@ -985,8 +1011,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
                 if parent_record is None:
                     continue  # stub should exist after on_new_records; skip defensively
-                if not parent_record.is_placeholder:
-                    continue  # boundary: parent already synced in scope — nothing to backfill
+                if not needs_backfill(parent_record):
+                    continue  # boundary: parent already synced this run — nothing to backfill
                 next_frontier.append(parent_record)
 
             total += len(frontier)
@@ -996,6 +1022,47 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 )
                 break
             frontier = next_frontier
+
+    async def _relink_seeds_with_new_parents(
+        self, user_id: str, user_email: str, drive_id: str
+    ) -> None:
+        """Run selected folders whose parent became visible through the normal change path.
+
+        The parent is then recorded as a stub, which the sweep that follows fills in.
+        """
+        if not self._folder_seed_ids:
+            return
+        for metadata in await seeds_with_new_parent(
+            self._folder_seed_ids,
+            self.data_entities_processor,
+            self.connector_id,
+            self._fresh_drive_data_source,
+            DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,
+            self.logger,
+        ):
+            async for _record, _permissions, update in self._process_drive_items_generator(
+                [metadata], user_id, user_email, drive_id
+            ):
+                await self._handle_record_updates(update)
+
+    async def _out_of_scope_seed_parents(self, drive_id: str) -> List[Record]:
+        """Real records directly above a selected folder in this drive that this run did not list."""
+        parents: List[Record] = []
+        for seed_id in sorted(self._folder_seed_ids):
+            seed = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, seed_id
+            )
+            if seed is None or seed.external_record_group_id != drive_id:
+                continue
+            parent_ext_id = seed.parent_external_record_id
+            if not parent_ext_id or parent_ext_id in self._sync_ledger.seen:
+                continue
+            parent = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, parent_ext_id
+            )
+            if parent is not None and not parent.is_placeholder:
+                parents.append(parent)
+        return parents
 
     async def _sync_user_personal_drive(self, drive_id: str) -> None:
         """
@@ -1506,27 +1573,30 @@ class GoogleDriveIndividualConnector(BaseConnector):
 
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Google Drive."""
-        try:
-            self.logger.info("Testing connection and access to Google Drive")
-            if not self.drive_data_source:
-                self.logger.error("Drive data source not initialized. Call init() first.")
-                return False
+        """Ask Drive whose account the stored token opens.
 
-            if not self.google_client:
+        Enabling the connector is gated on this check, so it has to reach Google: a
+        revoked or expired refresh token only shows up when a call is made, and a
+        check that never made one let a connector that can no longer sync look healthy.
+        """
+        self.logger.info("Testing connection and access to Google Drive")
+        if not self.drive_data_source:
+            self.logger.error("Drive data source not initialized. Call init() first.")
+            return False
+        try:
+            if not self.google_client or self.google_client.get_client() is None:
                 self.logger.error("Google client not initialized. Call init() first.")
                 return False
-
-            # Try to make a simple API call to test connection
-            # For now, just check if client is initialized
-            if self.google_client.get_client() is None:
-                self.logger.warning("Google Drive API client not initialized")
-                return False
-
-            return True
+            await self._get_fresh_datasource()
+            about = await self.drive_data_source.about_get(fields="user(emailAddress)")
         except Exception as e:
-            self.logger.error(f"❌ Error testing connection and access to Google Drive: {e}")
+            self.logger.error(f"❌ Google Drive refused the connection test: {e}")
             return False
+
+        if not (about or {}).get("user"):
+            self.logger.error(f"❌ Google Drive connection test returned no account: {about!r}")
+            return False
+        return True
 
     async def _stream_google_api_request(self, request, error_context: str = "download") -> AsyncGenerator[bytes, None]:
         """Stream a Drive media request. ``MediaIoBaseDownload`` stays in this module so tests can patch it."""
@@ -1965,6 +2035,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             await self._incremental_sync_shared_drive(
                 drive_id, sync_key, page_token, user_id, user_email
             )
+        await self._sweep_placeholder_records(user_id, user_email, drive_id)
 
     async def _full_sync_shared_drive(
         self, drive_id: str, sync_key: str, user_id: str, user_email: str

@@ -26,6 +26,7 @@ from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.blocks import (
@@ -44,7 +45,7 @@ from app.models.entities import (
     Status,
 )
 
-from .common.utils import epoch_ms_or_now, listing_payload
+from .common.utils import epoch_ms_or_now, listing_payload, listing_since, sync_window_start
 from .constants import PR_PAGE_SIZE
 from .models import GitHubLiterals, RecordUpdate
 
@@ -92,8 +93,10 @@ class PullRequestsSync:
         ``merged_by``, so paging it costs one call per 100 PRs instead.
 
         ``/pulls`` has no ``since`` parameter, hence ``sort=updated`` +
-        ``direction=desc`` with an early break at the checkpoint: the first PR
-        older than the watermark means every later one is too.
+        ``direction=desc`` with an early break at the checkpoint, or at the
+        "updated since" window when that starts later: the first PR older than
+        the bound means every later one is too. A PR outside the window is
+        never stored, so its commits, reviews and files are never fetched.
 
         The fetched page IS the batch — no re-chunking. The checkpoint is
         committed once after the sweep; any page or batch failure returns
@@ -102,7 +105,12 @@ class PullRequestsSync:
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
         group_id = f"{repo.id}-pull-requests"
-        since_dt = await self._checkpoint_datetime(group_id)
+        checkpoint_dt = await self._checkpoint_datetime(group_id)
+        window_dt = sync_window_start(c.sync_filters)
+        since_dt = listing_since(checkpoint_dt, window_dt)
+        # The checkpoint is the last PR already stored, so it is exclusive; a
+        # window start is a date the admin chose, so a PR updated at it counts.
+        inclusive = since_dt is not None and since_dt == window_dt and since_dt != checkpoint_dt
 
         page = 1
         watermark = 0
@@ -124,7 +132,7 @@ class PullRequestsSync:
             if not prs:
                 break
 
-            fresh = [p for p in prs if self._is_after(p, since_dt)]
+            fresh = [p for p in prs if self._is_after(p, since_dt, inclusive=inclusive)]
             if fresh:
                 record_updates = await self._build_pr_records(repo, fresh)
                 if not await c.issues.process_new_records(record_updates, {}):
@@ -138,8 +146,9 @@ class PullRequestsSync:
                 watermark = max(watermark, *(epoch_ms_or_now(p.updated_at) for p in fresh))
 
             # Two independent stop conditions: a filtered-out PR means we
-            # crossed the checkpoint (descending order, so everything after is
-            # older too), and a short page means the listing is exhausted.
+            # crossed the checkpoint or the window start (descending order, so
+            # everything after is older too), and a short page means the
+            # listing is exhausted.
             if len(fresh) < len(prs) or len(prs) < PR_PAGE_SIZE:
                 break
             page += 1
@@ -150,7 +159,7 @@ class PullRequestsSync:
             )
             await c.issues._update_sync_checkpoint(group_id, watermark)
 
-    def _is_after(self, pr: Any, since_dt: datetime | None) -> bool:
+    def _is_after(self, pr: Any, since_dt: datetime | None, *, inclusive: bool = False) -> bool:
         if since_dt is None:
             return True
         updated_at = getattr(pr, "updated_at", None)
@@ -158,7 +167,7 @@ class PullRequestsSync:
             return True
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
-        return updated_at > since_dt
+        return updated_at >= since_dt if inclusive else updated_at > since_dt
 
     async def _checkpoint_datetime(self, group_id: str) -> datetime | None:
         last_ms = await self.c.issues._get_sync_checkpoint(group_id)
@@ -262,6 +271,9 @@ class PullRequestsSync:
                 review_email=reviewer_emails,
                 last_commit_sha=getattr(pr.head, "sha", None) if getattr(pr, "head", None) else None,
                 inherit_permissions=True,
+                # Jira keys and addresses in the title and description join the PR
+                # to those records, in whichever connector holds them.
+                related_external_records=mentions_in(pr.title or "", getattr(pr, "body", "") or ""),
             )
             if not self._prs_indexing_enabled():
                 pr_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -295,7 +307,7 @@ class PullRequestsSync:
         repo_id = int(external_group_id.split("-")[0])
         pr_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
@@ -379,7 +391,7 @@ class PullRequestsSync:
             self.logger.warning("Cannot reindex-check GitHub PR %s: malformed external ids", record.id)
             return None
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             self.logger.error("Failed to resolve repo id=%s for reindex %s: %s", repo_id, record.id, repo_res.error)
             return None

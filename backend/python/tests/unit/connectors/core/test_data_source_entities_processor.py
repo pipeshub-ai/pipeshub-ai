@@ -4953,6 +4953,33 @@ class TestOnRecordsDetachedFromParent:
         proc.data_store_provider.transaction.assert_not_called()
 
 
+class TestOnRecordsAttachedToParent:
+    @pytest.mark.asyncio
+    async def test_links_every_record_under_the_parent_in_one_write(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_create_edges = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_attached_to_parent("folder", ["a", "b"])
+
+        tx_store.batch_create_edges.assert_awaited_once()
+        edges = tx_store.batch_create_edges.await_args.args[0]
+        assert [(e["from_id"], e["to_id"], e["relationshipType"]) for e in edges] == [
+            ("folder", "a", RecordRelations.PARENT_CHILD.value),
+            ("folder", "b", RecordRelations.PARENT_CHILD.value),
+        ]
+        assert tx_store.batch_create_edges.await_args.kwargs["collection"] == CollectionNames.RECORD_RELATIONS.value
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_attach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_attached_to_parent("folder", [])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
 class TestOnRecordMetadataUpdateAndDelete:
     @pytest.mark.asyncio
     async def test_metadata_update_processes_and_updates(self):

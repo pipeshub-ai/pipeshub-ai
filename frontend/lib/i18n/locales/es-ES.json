@@ -268,8 +268,38 @@
       "PRESENTATION": "Presentación",
       "DATA_FILE": "Archivo de datos",
       "CODE": "Código",
-      "CODE_OUTPUT": "Salida de código"
-    }
+      "CODE_OUTPUT": "Salida de código",
+      "OTHER": "Otro"
+    },
+    "tabs": {
+      "all": "Todos los artefactos",
+      "mine": "Míos",
+      "shared": "Compartidos conmigo"
+    },
+    "tabsShort": {
+      "all": "Todos",
+      "mine": "Míos",
+      "shared": "Compartidos"
+    },
+    "share": {
+      "title": "Compartir artefacto"
+    },
+    "emptyShared": "Aún no se ha compartido nada contigo",
+    "emptySharedHint": "Los artefactos que tus compañeros compartan contigo aparecerán aquí.",
+    "notAvailable": "Este artefacto ya no está disponible",
+    "deleteTitle": "¿Eliminar artefacto?",
+    "deleteConfirmMessage": "«{{name}}» y todas sus versiones se eliminarán de forma permanente. Los chats que lo muestran lo marcarán como no disponible.",
+    "deleteSuccess": "«{{name}}» eliminado",
+    "preview": "Vista previa",
+    "moreActionsFor": "Más opciones para {{name}}",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "Comprueba tu conexión e inténtalo de nuevo.",
+    "noMatches": "Ningún artefacto coincide con tus filtros",
+    "noMatchesHint": "Prueba otra búsqueda o borra los filtros para ver todos los artefactos.",
+    "clearFilters": "Borrar filtros",
+    "gridView": "Vista de cuadrícula",
+    "listView": "Vista de lista",
+    "closeSearch": "Cerrar búsqueda"
   },
   "notifications": {
     "title": "Notificaciones",
@@ -366,7 +396,8 @@
     "required": "Este campo es obligatorio",
     "invalidEmail": "Correo electrónico no válido",
     "invalidUrl": "URL no válida",
-    "name": "Nombre"
+    "name": "Nombre",
+    "optional": "(opcional)"
   },
   "dialog": {
     "newFolder": "Nueva carpeta de colección",
@@ -481,7 +512,11 @@
     "openProfile": "Abrir perfil",
     "loading": "Cargando...",
     "moreOptions": "Más opciones",
-    "docs": "Documentación"
+    "docs": "Documentación",
+    "enterprise": {
+      "label": "Disponible en EE",
+      "tooltip": "Parte de PipesHub Enterprise Edition"
+    }
   },
   "units": {
     "bytes": "Bytes",
@@ -585,11 +620,19 @@
     "record": "registro"
   },
   "chat": {
+    "answerReady": {
+      "title": "Respuesta lista",
+      "open": "Abrir chat",
+      "unread": "Nueva respuesta"
+    },
+    "jumpToNewest": "Ir al mensaje más reciente",
     "recordActions": {
       "preview": "Vista previa",
       "open": "Abrir {{source}}",
       "openIn": "Abrir en {{source}}",
       "openInCollections": "Abrir en Colecciones",
+      "syncedJustNow": "Sincronizado hace un momento",
+      "syncedAgo": "Sincronizado hace {{age}}",
       "relevance": "Relevancia: {{percent}} %"
     },
     "results": "Resultados",
@@ -633,7 +676,10 @@
       "browseWorkspaceMcp": "Explorar servidores MCP",
       "browseWorkspaceMcpAria": "Abrir los servidores MCP para añadir o gestionar conexiones",
       "noActionMatches": "Ninguna acción coincide con su búsqueda.",
-      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda."
+      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda.",
+      "notConnected": "No conectado",
+      "connect": "Conectar",
+      "actionConnected": "{{name}} está conectado"
     },
     "projectResources": {
       "noConnectors": "No hay conectores habilitados para este proyecto.",
@@ -694,6 +740,9 @@
     "copiedAsMarkdown": "Copiado como Markdown",
     "copiedAsText": "Copiado como texto",
     "citations": "Citas",
+    "showMoreCitations_one": "Mostrar {{count}} cita más",
+    "showMoreCitations_many": "Mostrar {{count}} de citas más",
+    "showMoreCitations_other": "Mostrar {{count}} citas más",
     "markdownWithCitations": "Markdown con citas",
     "onlyTextWithoutCitations": "Solo texto sin citas",
     "differentModesOfQuery": "Diferentes modos de consulta",
@@ -721,6 +770,7 @@
     "askAnythingInContext": "Pregunta lo que quieras en \"{{title}}\"",
     "expandTable": "Expandir tabla",
     "fullTableView": "Vista completa de la tabla",
+    "downloadCsv": "Descargar como CSV",
     "expandDiagram": "Expandir diagrama",
     "fullDiagramView": "Vista completa del diagrama",
     "renderingDiagram": "Renderizando diagrama…",
@@ -733,6 +783,45 @@
     "showDiagramSource": "Mostrar código",
     "hideDiagramSource": "Ocultar código",
     "stoppedMarker": "Detenido",
+    "toolCard": {
+      "arguments": "Argumentos",
+      "result": "Resultado",
+      "error": "Error",
+      "blocked": "Bloqueado",
+      "awaitingApproval": "Esperando aprobación",
+      "viewRaw": "Ver sin formato",
+      "hideRaw": "Ocultar sin formato",
+      "showingOf": "Se muestran {{shown}} de {{total}}",
+      "open": "Abrir",
+      "needsApproval": "Necesita aprobación",
+      "approved": "Aprobado",
+      "declined": "Rechazado",
+      "expired": "Caducado"
+    },
+    "mcpConnect": {
+      "title": "Conecta estos servidores MCP para usar este agente",
+      "connect": "Conectar",
+      "connecting": "Conectando…",
+      "connected": "Conectado",
+      "removed": "Eliminado. Pide al propietario del agente que lo actualice.",
+      "waitingForAdmin": "Esperando a que un administrador añada la credencial compartida",
+      "setUpInBuilder": "Configurar en Agent Builder",
+      "serviceAccount": "Este agente usa sus propias credenciales. Su propietario las configura en Agent Builder.",
+      "openAgentBuilder": "Abrir Agent Builder",
+      "allConnected": "Todo conectado. Vuelve a enviar tu mensaje para continuar.",
+      "tryAgain": "Reintentar",
+      "unavailable": "No se pudo iniciar el inicio de sesión aquí. Conéctalo en Workspace → Servidores MCP."
+    },
+    "mcpSignIn": {
+      "title": "Vuelve a iniciar sesión para dar a estos servidores MCP el permiso que pidieron",
+      "needs": "Necesita: {{scopes}}",
+      "signIn": "Volver a iniciar sesión",
+      "signingIn": "Iniciando sesión…",
+      "signedIn": "Sesión iniciada",
+      "askAnEditor": "Pide a alguien que pueda editar este agente que vuelva a iniciar sesión",
+      "allSignedIn": "Sesión iniciada. Vuelve a intentar la solicitud.",
+      "retryMessage": "He vuelto a iniciar sesión en {{servers}}. Inténtalo de nuevo, por favor."
+    },
     "toasts": {
       "stopStreamTitle": "Deteniendo…",
       "stopStreamDescription": "La respuesta se detendrá en breve. Se conservará cualquier respuesta parcial.",
@@ -883,6 +972,13 @@
     "deleteAgentDescription": "El agente llamado",
     "deleteAgentWarning": "será eliminado permanentemente de Pipeshub. Los chats que lo utilicen podrían dejar de funcionar como se espera.",
     "deleteChat": "Eliminar",
+    "export": {
+      "menuItem": "Exportar",
+      "exporting": "Exportando el chat…",
+      "done": "Chat exportado",
+      "failed": "No se pudo exportar el chat",
+      "assistant": "Asistente"
+    },
     "deleteChatConfirm": "¿Estás seguro?",
     "deleteChatDescription": "El chat titulado",
     "deleteChatWarning": "será eliminado permanentemente de Pipeshub. Todos los usuarios con acceso compartido perderán su acceso.",
@@ -1117,9 +1213,9 @@
     "configuredModels": "Modelos configurados",
     "reasoningEffort": {
       "label": "Esfuerzo de razonamiento",
-      "overrideHint": "Vuelva a hacer clic para usar el valor predeterminado.",
-      "defaultHintWithLevel": "Si no se define, se usa {{level}}.",
-      "modelDefaultHint": "Si no se define, se usa {{level}}, el valor predeterminado de este modelo.",
+      "modelDefaultOption": "Predeterminado del modelo",
+      "modelDefaultOptionWithLevel": "Predeterminado del modelo ({{level}})",
+      "agentDefaultOption": "Predeterminado del agente ({{level}})",
       "modelDefaultLabel": "Predeterminado ({{level}})",
       "low": "Bajo",
       "medium": "Medio",
@@ -1144,7 +1240,49 @@
       "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
-    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente."
+    "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
+    "toolApproval": {
+      "noArguments": "Sin detalles",
+      "deny": "Denegar",
+      "showAll": "Mostrar todo",
+      "showLess": "Mostrar menos",
+      "partial": "Solo se muestra el principio de los detalles: la llamada completa es más larga.",
+      "deletesData": "Elimina datos",
+      "allow": "Permitir",
+      "dontAskAgain": "No volver a preguntar por esta herramienta",
+      "answerFailed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
+      "needsApproval": "Necesita tu aprobación",
+      "expiresIn_one": "caduca en {{count}} min",
+      "expiresIn_other": "caduca en {{count}} min",
+      "expiresIn_many": "caduca en {{count}} min",
+      "expiresSoon": "caduca en menos de un minuto",
+      "notice": {
+        "expired": "{{tool}} en {{server}} no se ejecutó: la solicitud caducó. Vuelve a pedirlo si aún lo necesitas.",
+        "passed": "{{tool}} en {{server}} no se aprobó, así que no se ejecutó.",
+        "waiting": "{{tool}} en {{server}} espera la aprobación del propietario de la conversación."
+      },
+      "receipt": {
+        "allowed": "Permitiste {{tool}}",
+        "declined": "Rechazaste {{tool}}",
+        "expired": "{{tool}} no se ejecutó: la solicitud caducó",
+        "allowedNotRun": "Permitiste {{tool}}, pero no se ejecutó"
+      }
+    },
+    "artifactsPanel": {
+      "generated_one": "{{count}} artefacto generado",
+      "generated_many": "{{count}} artefactos generados",
+      "generated_other": "{{count}} artefactos generados",
+      "newerVersion": "Hay una versión más reciente (v{{version}})",
+      "unavailable": "Ya no está disponible",
+      "viewSource": "Ver código fuente",
+      "loadingSource": "Cargando código fuente",
+      "viewSourceTitle": "Ver el código que generó este artefacto",
+      "preview": "Vista previa del artefacto",
+      "loadingPreview": "Cargando vista previa",
+      "download": "Descargar artefacto",
+      "downloading": "Descargando artefacto"
+    },
+    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -1479,7 +1617,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "Administre aplicaciones OAuth 2.0 que pueden acceder a su organizaci├│n a trav├⌐s de Pipeshub",
+      "subtitle": "Cree y administre las aplicaciones OAuth que ha registrado. Solo usted ve sus aplicaciones aquí.",
       "searchPlaceholder": "Buscar aplicaciones por nombre o descripci├│n...",
       "newApplication": "Nueva aplicaci├│n OAuth",
       "emptyTitle": "No hay aplicaciones OAuth 2.0",
@@ -1993,10 +2131,20 @@
         "maxLength": "{{field}} no puede tener más de {{maxLength}} caracteres",
         "email": "{{field}} debe ser una dirección de correo electrónico válida",
         "url": "{{field}} debe ser una URL válida",
-        "urlProtocol": "{{field}} debe usar http o https"
+        "urlProtocol": "{{field}} debe usar http o https",
+        "numberRange": "Introduce un número entero de {{min, number}} a {{max, number}}.",
+        "numberMin": "Introduce un número entero de al menos {{min, number}}.",
+        "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
       "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas."
+      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
+      "toolRules": {
+        "open": "Aprobaciones de herramientas",
+        "title": "Aprobaciones de herramientas: {{name}}",
+        "description": "Qué ocurre cuando un asistente o agente quiere usar una de estas herramientas. Las mismas reglas se aplican a todos en tu organización.",
+        "readOnly": "Solo un administrador puede cambiarlas.",
+        "toolsError": "No se pudieron cargar las herramientas de este conjunto."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",
@@ -2117,7 +2265,9 @@
       },
       "featureFlags": {
         "title": "Indicadores de funciones",
-        "subtitle": "Active o desactive funciones experimentales para todos los agentes de este espacio de trabajo."
+        "subtitle": "Active o desactive funciones experimentales para todos los agentes de este espacio de trabajo.",
+        "advancedTitle": "Mostrar indicadores de funciones avanzadas",
+        "advancedSubtitle": "Indicadores internos que la mayoría de los espacios de trabajo pueden dejar en su valor predeterminado."
       },
       "vectorStore": {
         "title": "Almacén vectorial",
@@ -2374,7 +2524,13 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Define con qué frecuencia se actualizan los datos de {{name}}",
+        "lastRunLimit": {
+          "saved": "Última sincronización: {{count, number}} páginas almacenadas",
+          "stoppedAtLimit": "detenida en este límite",
+          "leftOut": "{{count, number}} omitidas",
+          "nearLimit": "Este conector ya almacena al menos el 90 % de este límite. Auméntalo para conservar más páginas de este sitio."
+        }
       },
       "instancePanel": {
         "overview": "Overview",
@@ -2407,7 +2563,31 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "VIGILANTE LOCAL",
-        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos"
+        "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
+        "lastRun": {
+          "title": "Última sincronización",
+          "outcome": {
+            "succeeded": "Completada",
+            "failed": "Fallida",
+            "stopped": "Detenida",
+            "skipped": "Omitida"
+          },
+          "stopReason": {
+            "max_pages": "Alcanzó el límite de páginas",
+            "time_limit": "Alcanzó su límite de tiempo; la próxima sincronización continúa",
+            "stalled": "El sitio dejó de responder; la próxima sincronización continúa",
+            "rate_limited": "El sitio pidió repetidamente menos solicitudes; la próxima sincronización continúa"
+          },
+          "pagesSaved": "{{count}} páginas guardadas",
+          "failed": "{{count}} páginas con error",
+          "robotsSkipped": "{{count}} omitidas por robots.txt",
+          "noindexSkipped": "{{count}} pidieron no ser indexadas",
+          "skippedMaxPages": "{{count}} excluidas por el límite de páginas",
+          "pruned": "{{count}} eliminadas, ya no están en el sitio",
+          "sitemapUrls": "{{count}} encontradas en sitemaps",
+          "resumed": "Continuó una sincronización sin terminar",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Nombre de la instancia",
@@ -2425,7 +2605,7 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "Puede cambiar la estrategia de sincronización yendo a <bold>{{manageConfig}}</bold>.",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "syncIntervalHelper": "Define con qué frecuencia se actualizan los datos de {{name}}",
         "removeInstance": "Quitar la instancia del conector",
         "removeInstanceDescription": "Quite permanentemente esta instancia del conector y detenga la sincronización de sus datos. Esto no se puede deshacer."
       },
@@ -2524,6 +2704,7 @@
         "add": "Añadir filtro",
         "incomplete": "Complete el operador y el valor de cada filtro de abajo para ver aquí un resumen.",
         "empty": "Aún no hay filtros. Use \"Añadir filtro\" para elegir uno de los filtros admitidos.",
+        "unsetFallback": "{{field}}: {{value}} (predeterminado)",
         "operator": "Operador",
         "chooseOperator": "Elija un operador…",
         "value": "Valor",
@@ -2596,12 +2777,115 @@
           "confirm": "Iniciar la reindexación"
         },
         "typePrompt": "Escriba {{token}} para confirmar."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "URL de inicio",
+            "help": "La primera página que visita PipesHub. No se puede cambiar después de guardar; para rastrear otro sitio, añade otro conector."
+          },
+          "type": {
+            "label": "Rastrear",
+            "options": {
+              "single": "Solo esta página",
+              "recursive": "Esta página y las páginas a las que enlaza"
+            }
+          },
+          "discovery": {
+            "label": "Buscar páginas mediante",
+            "help": "Los sitemaps son lo más rápido; los enlaces encuentran páginas que faltan en el sitemap.",
+            "options": {
+              "sitemap_and_links": "Sitemaps y enlaces (recomendado)",
+              "links": "Solo enlaces",
+              "sitemap": "Solo sitemaps"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "Quedarse en esta sección",
+            "help": "Solo páginas bajo la ruta de la URL de inicio, como /docs/."
+          },
+          "max_pages": {
+            "label": "Máximo de páginas",
+            "help": "PipesHub conserva como máximo este número de páginas de este sitio. Los archivos como los PDF cuentan como páginas.",
+            "unit": "páginas"
+          },
+          "url_should_contain": {
+            "label": "Guardar solo páginas cuya URL contenga",
+            "help": "Déjalo vacío para guardar todas las páginas. Las páginas que no coinciden no se visitan, así que tampoco se siguen sus enlaces."
+          },
+          "ignore_query_params": {
+            "label": "Misma página, otra URL",
+            "help": "Parámetros de URL que no cambian la página, como sort o ref. Usa * para todos. Los parámetros de seguimiento (utm_…) se ignoran siempre."
+          },
+          "depth": {
+            "label": "Clics desde la página de inicio",
+            "help": "Hasta dónde seguir los enlaces. Las páginas de un sitemap cuentan como un clic.",
+            "unit": "clics"
+          },
+          "max_size_mb": {
+            "label": "Archivo más grande que se descarga",
+            "help": "Las páginas y archivos más grandes se omiten y aparecen en la última sincronización.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Seguir también enlaces a otros sitios",
+            "help": "Normalmente desactivado: el rastreo puede extenderse mucho más allá de este sitio."
+          },
+          "use_headless_browser": {
+            "label": "Usar siempre un navegador (más lento)",
+            "help": "Desactivado: PipesHub detecta las páginas que necesitan JavaScript y usa un navegador solo para esos sitios."
+          },
+          "browser_like_identity": {
+            "label": "Identificarse como navegador web",
+            "help": "Desactivado: las solicitudes se identifican como el rastreador de PipesHub. Actívalo solo para un sitio que puedas rastrear y que bloquee rastreadores; robots.txt se sigue respetando."
+          },
+          "respect_robots_txt": {
+            "label": "Respetar robots.txt",
+            "help": "Omitir las páginas que el sitio pide a los rastreadores no visitar ni indexar."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Sitio web"
+          },
+          "crawl": {
+            "title": "Qué rastrear"
+          },
+          "skip": {
+            "title": "Qué omitir"
+          },
+          "advanced": {
+            "title": "Avanzado",
+            "description": "Profundidad del rastreo, tamaño de archivo, navegador e identidad del rastreador."
+          }
+        },
+        "summaryOn": "{{label}} activado",
+        "summaryOff": "{{label}} desactivado",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Empezar desde",
+        "custom": "Personalizado",
+        "suggested": "Sugerido para esta dirección: {{name}}",
+        "replaceTitle": "¿Reemplazar la configuración actual?",
+        "replaceMessage": "«{{name}}» reemplaza tu configuración de rastreo actual.",
+        "replaceConfirm": "Reemplazar",
+        "web": {
+          "docs": "Sitio de documentación",
+          "helpCenter": "Centro de ayuda",
+          "wholeSite": "Sitio completo",
+          "onePage": "Una página"
+        }
       }
     },
     "mcpServers": {
       "searchPlaceholder": "Buscar servidores MCP...",
       "loading": "Cargando servidores MCP…",
       "noResults": "Ningún servidor MCP coincide con tu búsqueda",
+      "replacedNotice": "Ya no se mantiene. Añade {{name}} en su lugar.",
       "addServer": "Añadir servidor",
       "custom": "Personalizado",
       "inherited": "Heredado",
@@ -2610,17 +2894,33 @@
       "sharedAuth": "Autenticación de administrador compartida",
       "toolsCount_one": "{{count}} herramienta",
       "toolsCount_other": "{{count}} herramientas",
+      "toolsCachedAt": "Herramientas a fecha de {{time}}",
+      "editImpact": {
+        "title": "¿Eliminar los inicios de sesión guardados?",
+        "body": "Cambiar cómo se accede a este servidor o cómo se inicia sesión en él elimina las credenciales que personas y agentes guardaron para él. Todos tendrán que volver a conectarse.",
+        "personalBody": "Cambiar cómo se accede a este servidor o cómo se inicia sesión en él elimina las credenciales que tú y tus agentes guardasteis para él. Tendrás que volver a conectarte.",
+        "sharedBody": "Desactivar la credencial compartida la elimina. Todos tendrán que conectarse con la suya.",
+        "confirm": "Guardar y eliminar inicios de sesión"
+      },
       "cta": {
         "manage": "Gestionar",
         "delete": "Eliminar",
         "reauthenticate": "Reautenticar",
+        "reconnect": "Volver a conectar",
         "disconnect": "Desconectar",
         "connect": "Conectar",
-        "addInstance": "Añadir instancia"
+        "addInstance": "Añadir instancia",
+        "edit": "Editar"
       },
       "status": {
-        "ready": "Listo",
+        "ready": "Conectado",
         "notConnected": "No conectado",
+        "reconnectNeeded": "Hay que volver a conectar",
+        "waitingForAdmin": "Esperando al administrador",
+        "sharedCredentialMissing": "Falta la credencial compartida",
+        "blocked": "Bloqueado por política",
+        "unreachable": "No se puede acceder al servidor",
+        "slow": "Responde despacio",
         "needsAuth": "Requiere autenticación",
         "disabled": "Deshabilitado"
       },
@@ -2632,9 +2932,17 @@
       },
       "personal": {
         "title": "Servidores MCP",
-        "subtitle": "Autentícate con los servidores MCP que tu administrador ha puesto a disposición.",
+        "subtitle": "Conéctate a los servidores MCP que tu administrador ha puesto a disposición o añade los tuyos.",
         "emptyTitle": "No hay servidores MCP disponibles",
-        "emptyDescription": "Tu administrador todavía no ha añadido ningún servidor MCP."
+        "emptyDescription": "Añade uno propio o pide a tu administrador que añada uno para todos.",
+        "yourServersDescription": "Servidores que has añadido. Solo tú puedes verlos y usarlos, y no se pueden añadir a agentes compartidos con tu organización.",
+        "tabs": {
+          "all": "Todos",
+          "connected": "Conectados",
+          "notConnected": "No conectados"
+        },
+        "yours": "Tuyo",
+        "noneInTab": "No hay servidores MCP aquí."
       },
       "details": {
         "breadcrumbLabel": "Servidores MCP",
@@ -2654,13 +2962,15 @@
         "authBannerTitle": "Se requiere autenticación",
         "authBannerDescription": "Autentica este servidor MCP para que los agentes de tu equipo puedan usarlo.",
         "authBannerAuthenticatedTitle": "Conectado",
+        "reconnectBannerDescription": "El inicio de sesión de este servidor caducó o fue rechazado. Vuelve a conectarlo para seguir usándolo.",
         "authBannerAuthenticatedDescription": "Puedes reautenticar o desconectar este servidor MCP.",
         "createdBy": "Creado por",
         "discoveredTools_many": "{{count}} de herramientas disponibles"
       },
       "deleteDialog": {
         "title": "¿Eliminar el servidor MCP?",
-        "body": "El servidor \"{{name}}\" se eliminará permanentemente. Los miembros del equipo que lo usen perderán el acceso."
+        "body": "El servidor \"{{name}}\" se eliminará permanentemente. Los miembros del equipo que lo usen perderán el acceso.",
+        "personalBody": "El servidor \"{{name}}\" y sus credenciales guardadas se eliminarán permanentemente."
       },
       "toasts": {
         "loadError": "No se pudieron cargar los servidores MCP",
@@ -2674,10 +2984,15 @@
         "disconnected": "Desconectado correctamente",
         "disconnectError": "No se pudo desconectar",
         "credentialsSaveError": "Servidor guardado, pero no se pudieron guardar las credenciales. Puedes añadirlas más tarde desde Gestionar.",
+        "credentialsSaved": "Credenciales guardadas",
+        "credentialsReset": "Servidor MCP actualizado. Se eliminaron las credenciales guardadas porque la conexión cambió; vuelve a conectarte para usarlo.",
+        "oauthTimedOut": "El inicio de sesión tardó demasiado y se detuvo. Inténtalo de nuevo.",
+        "oauthProviderError": "Error al iniciar sesión: {{message}}",
         "discoveryError": "No se pudieron descubrir las herramientas"
       },
       "authDialog": {
         "title": "Autenticarse con {{name}}",
+        "docsLink": "Dónde encontrarlo",
         "description": "Introduce tus credenciales para conectar este servidor MCP."
       },
       "form": {
@@ -2689,6 +3004,7 @@
         "argsPlaceholder": "Añadir un argumento",
         "requiredEnv": "Variables de entorno requeridas",
         "requiredEnvPlaceholder": "Añadir un nombre de variable (p. ej. API_KEY)",
+        "defaultTokenEnvHint": "Si no se indica ninguna variable, el token se pasa al comando como {{name}}.",
         "url": "URL",
         "authMode": "Modo de autenticación",
         "headerName": "Nombre del encabezado",
@@ -2704,14 +3020,58 @@
         "credentialsHint": "Añade las credenciales ahora, o sáltalo y conéctate más tarde desde la pestaña Conexión y herramientas.",
         "multiEnvIncomplete": "Completa todas las variables de entorno obligatorias, o déjalas todas en blanco para conectar más tarde.",
         "oauthPairRequired": "Introduce tanto el ID de cliente como el secreto de cliente, o deja ambos vacíos.",
-        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo."
+        "connectAfterCreateHint": "Guarda este servidor y luego vuelve a abrir Gestionar para conectarlo.",
+        "timeoutsHeading": "Tiempos de espera",
+        "connectTimeout": "Tiempo de espera de conexión (segundos)",
+        "callTimeout": "Tiempo de espera de las llamadas a herramientas (segundos)",
+        "timeoutRange": "Introduce un número entre {{min}} y {{max}}, o déjalo en blanco para usar el valor predeterminado."
       },
       "configPanel": {
         "editTitle": "Editar servidor MCP",
         "createTitle": "Añadir servidor MCP",
         "tabs": {
           "configuration": "Configuración",
-          "connection": "Conexión y herramientas"
+          "tools": "Herramientas y aprobaciones",
+          "toolList": "Herramientas"
+        },
+        "synced": "Sincronizado {{time}}",
+        "refreshTools": "Actualizar la lista de herramientas",
+        "signInForTools": "Inicia sesión para ver las herramientas de este servidor.",
+        "toolsError": "No se pudo cargar la lista de herramientas",
+        "toolsErrorSignIn": "El servidor pide que vuelvas a iniciar sesión.",
+        "rulesKept": "Tus reglas de aprobación guardadas se conservan.",
+        "tryAgain": "Reintentar",
+        "findingTools": "Buscando herramientas en este servidor",
+        "rulesUnlock": "Las reglas de aprobación estarán disponibles cuando la lista esté lista.",
+        "unsaved_one": "{{count}} cambio sin guardar",
+        "unsaved_other": "{{count}} cambios sin guardar",
+        "unsaved_many": "{{count}} cambios sin guardar",
+        "allSaved": "Todas las reglas guardadas",
+        "discard": "Descartar",
+        "saveRules": "Guardar reglas",
+        "discardTitle": "¿Descartar los cambios de reglas sin guardar?",
+        "discardBody_one": "Cambiaste la regla de {{count}} herramienta. Si cierras ahora, se pierde ese cambio.",
+        "discardBody_other": "Cambiaste las reglas de {{count}} herramientas. Si cierras ahora, se pierden esos cambios.",
+        "discardBody_many": "Cambiaste las reglas de {{count}} herramientas. Si cierras ahora, se pierden esos cambios.",
+        "noSignIn": "No hace falta iniciar sesión · {{transport}}",
+        "signInExpired": "El inicio de sesión caducó",
+        "sharedMissing": "Falta el inicio de sesión compartido",
+        "signInExpiredBody": "Las herramientas de este servidor no pueden ejecutarse hasta que alguien vuelva a iniciar sesión.",
+        "notSignedIn": "Sin iniciar sesión",
+        "notSignedInDetail": "Inicia sesión para usar las herramientas de este servidor.",
+        "signedIn": "Sesión iniciada",
+        "sharedSignIn": "Inicio de sesión compartido",
+        "signedInDetail": "{{transport}} · sesión iniciada {{time}}",
+        "menu": {
+          "label": "Más acciones",
+          "copyUrl": "Copiar la URL del servidor",
+          "copied": "URL del servidor copiada",
+          "copyFailed": "No se pudo copiar la URL del servidor",
+          "addedBy": "Añadido por {{name}}",
+          "disconnectHint": "Cierra tu sesión. La configuración y las reglas se mantienen.",
+          "remove": "Quitar servidor",
+          "removeHint": "Lo elimina para todos.",
+          "removeHintPersonal": "Lo elimina junto con tu inicio de sesión."
         }
       },
       "oauthConfig": {
@@ -2731,7 +3091,9 @@
         "callbackUrlLabel": "URL de callback",
         "copyCallbackUrl": "Copiar URL de callback",
         "callbackUrlCopied": "URL de callback copiada",
-        "providerDocsLink": "Ver la documentación de configuración del proveedor"
+        "providerDocsLink": "Ver la documentación de configuración del proveedor",
+        "clientSecretPrefixHint": "Empieza por {{prefix}}. Copie el secreto completo, incluida esa parte.",
+        "clientSecretPrefixMissing": "No empieza por {{prefix}}, así que el proveedor lo rechazará. Al copiarlo con doble clic se omite esa parte: copie el secreto completo."
       },
       "oauth": {
         "completingTitle": "Completando el inicio de sesión…",
@@ -2752,6 +3114,70 @@
         "disabledDescription": "Los servidores STDIO personalizados ejecutan un comando en el servidor de PipesHub, por lo que permanecen desactivados hasta que el operador establezca {{flag}}=true en el entorno de la instalación (.env de Docker Compose o config.mcpAllowCustomStdio en Helm). Hasta entonces, los agentes no pueden usar las herramientas de este servidor. Puedes eliminarlo o cambiarlo a un servidor remoto (HTTP).",
         "unavailableHint": "Los servidores con comando local (STDIO) están desactivados en esta instalación. Para permitirlos, el operador debe establecer {{flag}}=true.",
         "enabledWarning": "Este comando se ejecuta en el servidor de PipesHub con los privilegios del servicio, incluidos su acceso a la red y sus credenciales. Añade solo comandos de confianza."
+      },
+      "addDialog": {
+        "title": "Añadir un servidor MCP",
+        "description": "Elige un servidor del catálogo o conecta cualquier servidor MCP remoto mediante su URL. Solo tú lo verás.",
+        "custom": "Servidor personalizado",
+        "customDescription": "Cualquier servidor MCP remoto, mediante su URL."
+      },
+      "toolRules": {
+        "open": "Aprobaciones de herramientas",
+        "title": "Aprobaciones de herramientas: {{name}}",
+        "description": {
+          "personal": "Elige qué ocurre cuando un asistente o agente quiere usar una de estas herramientas en tus chats."
+        },
+        "loading": "Cargando…",
+        "loadError": "No se pudieron cargar las reglas.",
+        "search": "Buscar por nombre o ID",
+        "empty": "Aún no hay herramientas. Conecta el servidor para ver sus herramientas.",
+        "rule": {
+          "allow": "Aprobada de antemano",
+          "ask": "Permitir tras aprobar",
+          "block": "Denegar"
+        },
+        "saved": "Aprobaciones de herramientas guardadas",
+        "saveError": "No se pudieron guardar las aprobaciones de herramientas",
+        "kindSource": {
+          "name": "Agrupada por su nombre: el servidor no indica qué hace esta herramienta.",
+          "none": "El servidor no indica qué hace esta herramienta, así que se trata como si cambiara datos."
+        },
+        "group": {
+          "destructive": "Elimina datos",
+          "write": "Cambia datos",
+          "read": "Solo lectura",
+          "notOffered": "No disponible ahora",
+          "byName": "Reglas definidas por nombre"
+        },
+        "groupHint": {
+          "destructive": "Revisa estas primero",
+          "read": "Solo consulta información"
+        },
+        "noMatch": "Ninguna herramienta coincide con tu búsqueda.",
+        "clearSearch": "Borrar búsqueda",
+        "noTools": "No hay herramientas que mostrar."
+      },
+      "disconnectDialog": {
+        "title": "¿Desconectar {{name}}?",
+        "yours_one": "Dejarás de usar su {{count}} herramienta hasta que vuelvas a iniciar sesión.",
+        "yours_other": "Dejarás de usar sus {{count}} herramientas hasta que vuelvas a iniciar sesión.",
+        "yours_many": "Dejarás de usar sus {{count}} herramientas hasta que vuelvas a iniciar sesión.",
+        "yoursUnknown": "Dejarás de usar sus herramientas hasta que vuelvas a iniciar sesión.",
+        "shared_one": "Los agentes de tu organización dejarán de usar su {{count}} herramienta de inmediato, también en Slack y en las ejecuciones programadas.",
+        "shared_other": "Los agentes de tu organización dejarán de usar sus {{count}} herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "shared_many": "Los agentes de tu organización dejarán de usar sus {{count}} herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "sharedUnknown": "Los agentes de tu organización dejarán de usar sus herramientas de inmediato, también en Slack y en las ejecuciones programadas.",
+        "keeps": "Se conservan la configuración del servidor y las reglas de aprobación",
+        "reconnect": "Vuelve a conectarte cuando quieras iniciando sesión de nuevo",
+        "deletesYours": "Se elimina tu inicio de sesión guardado",
+        "deletesShared": "Se elimina el inicio de sesión compartido",
+        "disconnecting": "Desconectando…"
+      },
+      "enterprise": {
+        "orgRulesTitle": "Reglas de aprobación de la organización",
+        "orgRulesDescription": "Decide qué herramientas se ejecutan, piden aprobación o nunca se ejecutan para toda tu organización. Aquí, cada persona define sus propias reglas desde su página de servidores MCP.",
+        "userServersTitle": "Servidores MCP propios de las personas",
+        "userServersDescription": "Revisa y elimina los servidores MCP que las personas de tu organización añaden para sí mismas."
       }
     },
     "bots": {
@@ -3875,6 +4301,9 @@
     "configureMcpTooltip": "Administrar credenciales",
     "authenticateMcpTooltip": "Autenticar este servidor MCP",
     "mcpAuthUpdatedNotify": "Autenticación MCP actualizada.",
+    "mcpServersUnavailable": "No se pudieron cargar los servidores MCP de este agente",
+    "mcpServersUnavailableHint": "No se muestran aquí y guardar no los cambiará. Recarga la página para volver a intentarlo.",
+    "mcpServersUnavailableNoDrop": "No se pudieron cargar los servidores MCP de este agente, así que no se puede añadir ninguno hasta que recargues la página.",
     "mcpAuthSaveError": "No se pudieron guardar las credenciales MCP.",
     "mcpAuthRemoveError": "No se pudieron eliminar las credenciales MCP.",
     "loadingSchema": "Cargando esquema…",
@@ -4020,7 +4449,7 @@
     "removeDeprecatedTools": "Eliminar herramientas obsoletas",
     "showMore": "Mostrar más",
     "showLess": "Mostrar menos",
-    "mcpServerAlreadyAttachedNotify": "{{name}} ya está adjuntado a este agente",
+    "mcpServerAlreadyAttachedNotify": "Este agente ya tiene otro servidor del mismo tipo que {{name}}. Un agente puede usar un servidor de cada tipo.",
     "webSearchOnlyOne": "Solo se puede adjuntar un proveedor de búsqueda web",
     "mcpServerNodeSubtitle": "Herramientas de un servidor MCP",
     "noMcpServersAvailable": "No hay servidores MCP disponibles",
@@ -4035,7 +4464,20 @@
     "deprecatedToolsBanner_one": "{{count}} herramienta de este agente está obsoleta. Quítela: {{tools}}",
     "deprecatedToolsBanner_other": "{{count}} herramientas de este agente están obsoletas. Quítelas: {{tools}}",
     "mcpServerWithToolCount_many": "Servidor MCP con {{count}} de herramientas",
-    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}"
+    "deprecatedToolsBanner_many": "{{count}} de herramientas de este agente están obsoletas. Quítelas: {{tools}}",
+    "mcpAllTools": "Todas las herramientas",
+    "mcpAllToolsHint": "Incluye las herramientas que el servidor añada más adelante.",
+    "mcpServerUnavailable": "No disponible",
+    "mcpServerUnavailableHint": "Este servidor no está entre tus servidores MCP: se eliminó o no se ha compartido contigo.",
+    "mcpToolNotOnServer": "No está en el servidor",
+    "mcpToolNotOnServerHint": "El servidor ya no ofrece esta herramienta. Quítala; de lo contrario, el agente no podrá usarla.",
+    "mcpAllToolsNoneYet": "El servidor aún no ha publicado herramientas. El agente recibirá todo lo que ofrezca.",
+    "mcpNoToolsSelected": "No hay herramientas seleccionadas. Añade herramientas o activa «Todas las herramientas».",
+    "mcpServerNeedsToolsTooltip": "Elige herramientas para cada servidor MCP o activa «Todas las herramientas».",
+    "mcpServerNeedsToolsBanner": "Elige al menos una herramienta para {{names}} o activa «Todas las herramientas».",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} es tu servidor MCP personal. No se puede añadir a un agente compartido con tu organización ni a uno que se ejecute como cuenta de servicio.",
+    "mcpAgentApprovalsEnterprise": "Las aprobaciones de herramientas por agente forman parte de la Enterprise Edition. Aquí se aplican las aprobaciones propias de cada persona.",
+    "mcpAgentApprovals": "Aprobaciones de herramientas por agente"
   },
   "recordView": {
     "sections": {
@@ -4150,6 +4592,7 @@
     "missingRecordId": "Falta el id del registro"
   },
   "oauthConsent": {
+    "workspace": "Espacio de trabajo: {{name}}",
     "loading": "Cargando solicitud de autorización…",
     "missingParams": "Faltan parámetros OAuth obligatorios (client_id, redirect_uri).",
     "noData": "No hay datos de autorización disponibles.",

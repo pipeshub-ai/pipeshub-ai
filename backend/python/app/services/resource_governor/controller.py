@@ -38,18 +38,26 @@ from app.services.resource_governor.policy import (
     LIGHT_PARSE_SLOTS_PER_CPU,
     SAMPLE_INTERVAL_SECONDS,
     SAMPLE_JITTER_SECONDS,
+    cgroup_heavy_parse_limit,
     floor_for,
     next_limits,
     resolve_ceilings,
+    split_ceilings,
     start_rate_limiter_params,
     warm_start_limits,
 )
 from app.services.resource_governor.probe import ResourceProbe, build_probe
 from app.services.resource_governor.registry import LimitRegistry
+from app.services.resource_governor.shared_slots import (
+    SharedSlots,
+    SlotHold,
+    open_shared_slots,
+)
 
 if TYPE_CHECKING:
     import logging
     from collections.abc import Awaitable, Callable
+    from pathlib import Path
 
 
 def _fmt_bytes(value: int | None) -> str:
@@ -73,6 +81,7 @@ class ResourceGovernor:
         env_parse: int | None = None,
         env_index: int | None = None,
         worker_count: int = 1,
+        heavy_parse_slots_dir: Path | None = None,
         reserve_embedding_cpus: bool = False,
         probe: ResourceProbe | None = None,
         feedback: DownstreamFeedback | None = None,
@@ -103,12 +112,27 @@ class ResourceGovernor:
                 "ResourceGovernor: initial probe snapshot failed; retrying once before resolving ceilings"
             )
             initial_snapshot = self._probe.snapshot()
-        self._ceilings: Ceilings = resolve_ceilings(
+        self._fleet_ceilings: Ceilings = resolve_ceilings(
             initial_snapshot,
             env_parse,
             env_index,
-            self._worker_count,
             reserve_embedding_cpus=reserve_embedding_cpus,
+        )
+        self._ceilings: Ceilings = split_ceilings(self._fleet_ceilings, self._worker_count)
+        # Only shared when there are workers to share with: one process's
+        # heavy gate already holds it to free memory.
+        self._heavy_parse_slots: SharedSlots | None = (
+            open_shared_slots(heavy_parse_slots_dir, self._fleet_ceilings.heavy)
+            if heavy_parse_slots_dir is not None and self._worker_count > 1
+            else None
+        )
+        # Without the slots nothing holds N workers' heavy parses to free
+        # memory, so the cluster lease falls back to one worker's share, as
+        # it was sized before the leases covered every worker.
+        self._heavy_parse_lease_limit = (
+            self._ceilings.heavy
+            if self._worker_count > 1 and self._heavy_parse_slots is None
+            else self._fleet_ceilings.heavy
         )
         if self._ceilings.index_light == 0:
             # Only reachable when an explicit MAX_CONCURRENT_INDEXING is too
@@ -253,7 +277,36 @@ class ResourceGovernor:
 
     @property
     def ceilings(self) -> Ceilings:
+        """This process's share: what its own gates are clamped to."""
         return self._ceilings
+
+    @property
+    def fleet_ceilings(self) -> Ceilings:
+        """The ceilings for every worker process of this service together,
+        before ``ceilings`` split them. The cluster-wide leases are sized
+        from these, since every worker takes the same ones."""
+        return self._fleet_ceilings
+
+    @property
+    def heavy_parse_lease_limit(self) -> int:
+        """The cluster-wide heavy ``parsing`` lease limit: the heavy budget
+        for every worker, or, with several workers and no shared slots to
+        hold them to free memory, one worker's share."""
+        return self._heavy_parse_lease_limit
+
+    def try_acquire_heavy_parse_slots(self, count: int = 1) -> SlotHold | None:
+        """Take *count* of the heavy-parse slots every worker process of this
+        container shares, held to ``cgroup_heavy_parse_limit`` for the last
+        sample. ``None`` means no room yet. Without shared slots (one worker,
+        or none configured) this always succeeds with an empty hold.
+        """
+        if self._heavy_parse_slots is None:
+            return SlotHold()
+        with self._stats_lock:
+            snapshot = self._last_snapshot
+        return self._heavy_parse_slots.try_acquire(
+            cgroup_heavy_parse_limit(snapshot, self._fleet_ceilings), count
+        )
 
     def limit(self, pool: Pool) -> int:
         """Current adaptive limit for *pool*. Safe from any thread."""
@@ -303,6 +356,9 @@ class ResourceGovernor:
             self._gates.clear()
         for gate in gates:
             gate.close()
+        slots, self._heavy_parse_slots = self._heavy_parse_slots, None
+        if slots is not None:
+            slots.close()
 
     async def _sample_once(self) -> None:
         now = self._clock()
@@ -326,6 +382,7 @@ class ResourceGovernor:
                 now=now,
                 interval=self._sample_interval,
                 feedback=feedback,
+                worker_count=self._worker_count,
             )
             self._state = new_state
 
@@ -461,6 +518,13 @@ class ResourceGovernor:
             "mem_working_set_raw_bytes": snapshot.mem_working_set_raw_bytes,
             "mem_baseline_bytes": snapshot.mem_baseline_bytes,
             "worker_count": self._worker_count,
+            "fleet_ceilings": {
+                "heavy_parse": self._fleet_ceilings.heavy,
+                "light_parse": self._fleet_ceilings.light,
+                "index": self._fleet_ceilings.index,
+                "index_heavy": self._fleet_ceilings.index_heavy,
+                "index_light": self._fleet_ceilings.index_light,
+            },
             "ceilings": {
                 "heavy_parse": self._ceilings.heavy,
                 "light_parse": self._ceilings.light,

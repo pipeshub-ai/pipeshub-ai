@@ -286,6 +286,7 @@ class GroupSubType(str, Enum):
 
 class SemanticMetadata(BaseModel):
     entities: Optional[list[dict[str, Any]]] = None
+    named_entities: Optional[dict[str, Any]] = None
     section_numbers: Optional[list[str]] = None
     summary: Optional[str] = None
     keywords: Optional[list[str]] = None

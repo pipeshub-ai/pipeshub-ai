@@ -69,12 +69,12 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 ]
 
 # Things integration tests often cannot know ahead of time or that change after sync.
-# indexing_status, parsing_status and queued_at belong to the indexing pipeline, which
-# keeps moving them after the connector hands the record over.
+# indexing_status, parsing_status, queued_at and processing_started_at belong to the
+# indexing pipeline, which keeps moving them after the connector hands the record over.
 # parent_record_type and record_group_type are write-time hints (edge creation, record-group
 # linkage); Record.to_arango_base_record never serializes them, so they always read back None.
 _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
-    "id", "org_id", "indexing_status", "parsing_status", "queued_at",
+    "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
 })
 

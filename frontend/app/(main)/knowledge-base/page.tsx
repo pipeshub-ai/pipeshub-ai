@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
 import { Flex } from '@radix-ui/themes';
@@ -1312,11 +1312,13 @@ function KnowledgeBasePageContent() {
   ]);
 
   // Handle refresh
+  const [extrasRefreshKey, bumpExtrasRefresh] = useReducer((n: number) => n + 1, 0);
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
       await refetchMainTableForCurrentRoute();
       await refreshAllRecordsSidebarForCurrentRoute();
+      bumpExtrasRefresh();
     } finally {
       setIsRefreshing(false);
     }
@@ -2924,6 +2926,7 @@ function KnowledgeBasePageContent() {
           showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
           onPageChange={(page) => {

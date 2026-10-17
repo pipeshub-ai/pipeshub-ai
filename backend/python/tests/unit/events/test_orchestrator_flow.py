@@ -27,6 +27,13 @@ from app.services.parsing.interface import ParseResult, ParserProvider
 # ---------------------------------------------------------------------------
 
 
+def _sink_mock() -> MagicMock:
+    sink = MagicMock()
+    sink.extract_named_entities = AsyncMock(return_value=MagicMock(entities=[]))
+    sink.persist_named_entities = AsyncMock()
+    return sink
+
+
 def _make_empty_bc() -> BlocksContainer:
     return BlocksContainer(blocks=[], block_groups=[])
 
@@ -155,7 +162,7 @@ async def test_full_pipeline_happy_path() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)  # no metadata returned
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
@@ -185,6 +192,43 @@ async def test_full_pipeline_happy_path() -> None:
 
 @pytest.mark.asyncio
 @patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_named_entity_failure_still_enriches_and_persists_after_graph_write() -> None:
+    from app.modules.named_entities.domain.models import NamedEntityExtraction
+
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=None)
+
+    order: list[str] = []
+    failed = NamedEntityExtraction(status="FAILED", termination_reason="llm_error", strategy="deterministic")
+    sink_orchestrator = _sink_mock()
+    sink_orchestrator.extract_named_entities = AsyncMock(return_value=failed)
+    sink_orchestrator.index = AsyncMock()
+    sink_orchestrator.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
+    sink_orchestrator.persist_named_entities = AsyncMock(side_effect=lambda *a: order.append("persist"))
+    sink_orchestrator.blob_storage.apply = AsyncMock()
+    transform_pipeline = MagicMock()
+    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client,
+        extraction_client=extraction_client,
+        sink_orchestrator=sink_orchestrator,
+        transform_pipeline=transform_pipeline,
+    )
+    events = [event async for event in ep.on_event(_make_event_data())]
+
+    assert IndexingEvent.INDEXING_COMPLETE in [e.event for e in events]
+    assert order == ["enrich", "persist"]
+    sink_orchestrator.extract_named_entities.assert_awaited_once()
+    assert sink_orchestrator.extract_named_entities.await_args.kwargs["client"] is extraction_client
+    assert sink_orchestrator.persist_named_entities.await_args.args[1] is failed
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
 async def test_enrichment_failure_does_not_block_indexing() -> None:
     """When enrich raises, the INDEXING_COMPLETE event is still yielded."""
     parsing_client = MagicMock()
@@ -194,7 +238,7 @@ async def test_enrichment_failure_does_not_block_indexing() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(side_effect=RuntimeError("LLM down"))
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
@@ -239,7 +283,7 @@ async def test_deferred_extraction_skips_extraction_client() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock()  # should NOT be called
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
@@ -285,7 +329,7 @@ async def test_statuses_track_active_parse_and_index_phases() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -371,7 +415,7 @@ async def test_start_parsing_size_bytes_uses_utf8_length_for_str_content() -> No
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -433,6 +477,7 @@ async def test_duplicate_record_skips_service_pipeline() -> None:
         "extractionStatus": "COMPLETED",
     }])
     graph_provider.copy_document_relationships = AsyncMock(return_value=True)
+    graph_provider.copy_named_entity_mentions = AsyncMock(return_value=0)
     graph_provider.get_departments = AsyncMock(return_value=[])
 
     ep = _make_event_processor(
@@ -464,7 +509,7 @@ async def test_apple_double_sidecar_is_skipped_before_parsing() -> None:
     parsing_client.circuit_open = False
     parsing_client.parse = AsyncMock(return_value=_make_parse_result())
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -586,7 +631,7 @@ async def test_real_pdf_named_with_leading_dot_is_not_skipped() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
 
@@ -630,7 +675,7 @@ async def test_blob_storage_failure_does_not_block_indexing() -> None:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=SemanticMetadata(categories=["Finance"]))
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.resolve_entities = AsyncMock()
@@ -677,7 +722,7 @@ async def test_blob_storage_called_after_enrichment() -> None:
     async def _blob_apply_side_effect(_ctx: Any) -> None:
         call_order.append("blob_storage.apply")
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock(side_effect=_enrich_side_effect)
     sink_orchestrator.resolve_entities = AsyncMock()
@@ -710,7 +755,7 @@ def _service_clients() -> tuple[MagicMock, MagicMock, MagicMock]:
     extraction_client = MagicMock()
     extraction_client.classify = AsyncMock(return_value=None)
 
-    sink_orchestrator = MagicMock()
+    sink_orchestrator = _sink_mock()
     sink_orchestrator.index = AsyncMock()
     sink_orchestrator.enrich = AsyncMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()

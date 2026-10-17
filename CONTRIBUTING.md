@@ -50,7 +50,7 @@ Markdown-only work does not need Docker or a local stack. If you add or change a
 
 ## New connectors
 
-A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
+A new connector is a large piece of work. [CONNECTOR.md](CONNECTOR.md) is the starting point, and [CONNECTOR_CHECKLIST.md](CONNECTOR_CHECKLIST.md) is what a reviewer will check it against; Discord is a good place to talk through scope first.
 
 ## Setting Up the Development Environment
 

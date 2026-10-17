@@ -44,6 +44,7 @@ TAXONOMY_ENTITY_TYPES: frozenset[str] = frozenset(
 SEARCHABLE_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES | {
     RECORD_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
+    "named_entity",
 }
 # Named by the records extracted into them; departments are the org's list.
 EXTRACTED_ENTITY_TYPES: frozenset[str] = TAXONOMY_ENTITY_TYPES - {"department"}
@@ -132,6 +133,8 @@ class EntityHit:
     records: list[dict[str, Any]]
     more_records: bool
     filter_name: str = ""
+    kind: str = ""
+    """A named entity's kind (person, organization, ...); empty for other types."""
 
     @property
     def graph_filter_name(self) -> str:
@@ -359,6 +362,61 @@ def _is_kept(context: EntityAccessContext, probe: _Probe) -> bool:
     return bool(probe.permitted)
 
 
+@dataclass(frozen=True)
+class PermittedEntity:
+    """An entity with at least one record the user can read: the readable rows
+    found (newest first, at most ``PREVIEW_RECORD_COUNT + 1``) and whether more
+    may exist."""
+
+    entity_id: str
+    entity_type: str
+    records: list[dict[str, Any]]
+    more_records: bool
+
+
+@dataclass(frozen=True)
+class EntityProbe:
+    permitted: dict[str, PermittedEntity]
+    """By entity id; an entity not here has no record this user can read, or
+    the deadline passed before one was found. The two look the same."""
+    timed_out: bool
+
+
+async def probe_permitted_entities(
+    graph_provider: "IGraphDBProvider",
+    context: EntityAccessContext,
+    entities: list[tuple[str, str]],
+    *,
+    deadline_seconds: float = SEARCH_DEADLINE_SECONDS,
+) -> EntityProbe:
+    """Which of ``(entity_id, entity_type)`` the user can reach through a readable
+    record, in the same probe rounds ``search_entities_for_user`` runs. For
+    callers that found the entities themselves (by id or key) and must not show,
+    count or reason over one before this says it is readable."""
+    probes = [
+        _Probe(hit={}, entity_id=entity_id, entity_type=entity_type,
+               connector_ids=context.connector_scope(entity_type, entity_id))
+        for entity_id, entity_type in dict.fromkeys(entities)
+        if entity_id and entity_type in SEARCHABLE_ENTITY_TYPES
+    ]
+    if not probes:
+        return EntityProbe(permitted={}, timed_out=False)
+    _, timed_out = await _run_probes(
+        graph_provider, context, probes, time.monotonic() + max(0.0, deadline_seconds),
+    )
+    permitted = {
+        probe.entity_id: PermittedEntity(
+            entity_id=probe.entity_id,
+            entity_type=probe.entity_type,
+            records=list(probe.permitted[: PREVIEW_RECORD_COUNT + 1]),
+            more_records=len(probe.permitted) > PREVIEW_RECORD_COUNT or not probe.exhausted or probe.capped,
+        )
+        for probe in probes
+        if _is_kept(context, probe)
+    }
+    return EntityProbe(permitted=permitted, timed_out=timed_out)
+
+
 def _search_passes(context: EntityAccessContext) -> list[tuple[str, frozenset[str], frozenset[str], bool]]:
     passes: list[tuple[str, frozenset[str], frozenset[str], bool]] = []
     rg_ids = (
@@ -384,7 +442,9 @@ async def search_entities_for_user(
     query: str,
     *,
     entity_types: list[str] | None = None,
+    kinds: list[str] | None = None,
     top_k: int = 10,
+    include_named: bool = True,
 ) -> list[EntityHit]:
     """Vector search in widening passes, keeping only entities the graph
     confirms the user can reach, best score first.
@@ -410,7 +470,9 @@ async def search_entities_for_user(
             context.org_id,
             [EntitySearchPass(rg_ids, connector_ids, org_wide) for _, rg_ids, connector_ids, org_wide in passes],
             entity_types=entity_types,
+            kinds=kinds,
             top_k=fetch_k,
+            include_named=include_named,
         )
     except Exception as exc:
         raise EntityAccessError("Entity vector search failed") from exc
@@ -424,6 +486,8 @@ async def search_entities_for_user(
             entity_id = hit.get("entityId")
             entity_type = hit.get("entityType")
             if not entity_id or entity_type not in SEARCHABLE_ENTITY_TYPES:
+                continue
+            if entity_type == "named_entity" and not include_named:
                 continue
             if (entity_type, entity_id) in seen or len(probes) >= MAX_EVALUATED_HITS:
                 continue
@@ -456,6 +520,7 @@ async def search_entities_for_user(
                 or probe.capped
             ),
             filter_name=_stored_name(probe),
+            kind=str(probe.hit.get("kind") or ""),
         )
         for probe in kept_probes
         if (probe.entity_type, probe.entity_id) in shown_names

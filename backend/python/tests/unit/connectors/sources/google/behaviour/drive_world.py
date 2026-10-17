@@ -165,6 +165,7 @@ class DriveWorld:
         self.aliases: dict[str, str] = {}
         self.groups: dict[str, dict[str, Any]] = {}
         self.drives: dict[str, dict[str, Any]] = {}
+        self.hide_unreadable_parents = False
         self.files: dict[str, FileState] = {}
         self.log: list[_Change] = []
         self.admin_email: Optional[str] = None
@@ -252,6 +253,18 @@ class DriveWorld:
         capabilities["canEdit"] = role in ("owner", "organizer", "fileOrganizer", "writer")
         capabilities["canDownload"] = role is not None
         meta["capabilities"] = capabilities
+        # Real Drive omits a parent the caller cannot open (an item shared on its own). Opt-in:
+        # turning it on everywhere changes Shared-with-Me filing for a reader synced after the
+        # owner (FINDINGS B8), which existing tests still encode.
+        parents = meta.get("parents") or []
+        if (
+            self.hide_unreadable_parents
+            and parents
+            and parents[0] in self.files
+            and parents[0] not in self.drives
+            and not self.can_open(parents[0], email)
+        ):
+            meta["parents"] = []
         if state.export_too_large:
             meta["exportLinks"] = {
                 "application/vnd.openxmlformats-officedocument.wordprocessingml.document": (
@@ -412,6 +425,7 @@ class DriveWorld:
         r("GET", f"{DRIVE_API}/changes/startPageToken", self._start_token)
         r("GET", f"{DRIVE_API}/changes", self._changes_list)
         r("GET", f"{DRIVE_API}/drives", self._drives_list)
+        r("GET", f"{DRIVE_API}/drives/([^/]+)", self._drives_get)
         r("GET", f"{ADMIN_API}/users", self._admin_users)
         r("GET", f"{ADMIN_API}/groups", self._admin_groups)
         r("GET", f"{ADMIN_API}/groups/([^/]+)/members", self._admin_members)
@@ -637,6 +651,14 @@ class DriveWorld:
         if m := re.fullmatch(r"name contains '(.*)'", req.query.get("q", "")):
             drives = [d for d in drives if m.group(1).lower() in d["name"].lower()]
         return paginate(drives, req.query, default_size=self.page_size, key="drives")
+
+    def _drives_get(self, req: ApiRequest) -> object:
+        if req.query.get("useDomainAdminAccess") != "true" or self._caller(req) != self.admin_email:
+            return google_error(403, "forbidden")
+        drive = self.drives.get(req.path.split("/drives/")[1])
+        if drive is None:
+            return google_error(404, "notFound")
+        return {"id": drive["id"], "name": drive["name"], "createdTime": drive["createdTime"]}
 
     def _admin_guard(self, req: ApiRequest) -> Optional[object]:
         if self._caller(req) != self.admin_email:

@@ -1,5 +1,5 @@
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.connectors.core.base.token_service.token_refresh_service import (
     TokenRefreshService,
@@ -76,6 +76,34 @@ def get_data_entities_processor_cls():
     """Return the DataSourceEntitiesProcessor class for this edition."""
     from app.connectors.core.base.data_processor.data_source_entities_processor import DataSourceEntitiesProcessor
     return DataSourceEntitiesProcessor
+
+
+if TYPE_CHECKING:
+    from fastapi import FastAPI
+    from langchain_core.embeddings import Embeddings
+    from langchain_core.language_models.chat_models import BaseChatModel
+
+    from app.agents.registry.toolset_registry import ToolsetRegistry
+
+
+def register_extra_toolsets(registry: "ToolsetRegistry") -> None:
+    """Register edition-specific agent toolsets. OSS: no-op."""
+    pass
+
+
+def configure_app(app: "FastAPI", service: str) -> None:
+    """Edition setup on a freshly built FastAPI app. `service` names the process. OSS: no-op."""
+    pass
+
+
+def decorate_chat_model(model: "BaseChatModel", provider: str, model_name: str, config: dict) -> "BaseChatModel":
+    """Wrap a chat model with edition extras. OSS: none."""
+    return model
+
+
+def decorate_embeddings(embeddings: "Embeddings", provider: str, model_name: str, config: dict) -> "Embeddings":
+    """Wrap an embeddings client with edition extras. OSS: none."""
+    return embeddings
 
 
 

@@ -984,13 +984,13 @@ class TestContainsBase64Image:
     def test_data_uri_png(self):
         import base64
 
-        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100).decode()
         assert contains_base64_image(f"prefix data:image/png;base64,{png_b64} suffix")
 
     def test_raw_base64_jpeg(self):
         import base64
 
-        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 20).decode()
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff" + b"\x00" * 100).decode()
         assert contains_base64_image(jpeg_b64)
 
     def test_non_image_base64_false(self):
@@ -1030,11 +1030,80 @@ class TestTextContainsBase64Image:
     def test_text_block_with_embedded_png_errors(self):
         import base64
 
-        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 20).decode()
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100).decode()
         container = _container(
             blocks=[_text_block(0, data=f"see data:image/png;base64,{png_b64}")]
         )
         _assert_raises_with_codes(container, "TEXT_DATA_CONTAINS_BASE64_IMAGE")
+
+
+class TestQuotedBase64IsNotAnImage:
+    """A truncated example quoted in a doc or chat starts like an image but is
+    a few characters of text; only a payload big enough to be an image counts."""
+
+    # A valid 1x1 PNG, 70 bytes.
+    _ONE_PIXEL_PNG = (
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
+    )
+
+    def test_quoted_truncated_example_passes(self) -> None:
+        text = 'request body: {"args": {"image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg..."}}'
+        assert contains_base64_image(text) is False
+        BlockContainerValidator().validate(_container(blocks=[_text_block(0, data=text)]))
+
+    def test_quoted_header_followed_by_prose_passes(self) -> None:
+        text = (
+            "Every PNG starts with iVBORw0KGgoAAAANSUhEUg and the rest of the "
+            "payload follows the IHDR chunk in the request body we send upstream"
+        )
+        assert contains_base64_image(text) is False
+        assert contains_base64_image(f"data:image/png;base64,{text.split(' with ')[1]}") is False
+
+    def test_smallest_real_png_is_still_an_image(self) -> None:
+        assert contains_base64_image(f"see data:image/png;base64,{self._ONE_PIXEL_PNG}")
+        assert contains_base64_image(self._ONE_PIXEL_PNG)
+
+    def test_line_wrapped_image_is_still_an_image(self) -> None:
+        import base64
+        import textwrap
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 100).decode()
+        assert contains_base64_image("\n".join(textwrap.wrap(png_b64, 76)))
+        assert contains_base64_image("data:image/png;base64," + "\r\n".join(textwrap.wrap(png_b64, 64)))
+
+
+    def test_column_wrapped_data_uri_is_still_an_image(self) -> None:
+        import base64
+        import textwrap
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        wrapped = "\n".join(textwrap.wrap("data:image/png;base64," + png_b64, 76, break_long_words=True))
+        assert contains_base64_image(f"Attached screenshot:\n{wrapped}\n")
+
+    def test_prose_word_after_a_quoted_fragment_passes(self) -> None:
+        fragment = self._ONE_PIXEL_PNG[:80]
+        assert contains_base64_image(f"the payload {fragment} example") is False
+        assert contains_base64_image(f"data:image/png;base64,{fragment} example") is False
+
+    def test_image_after_a_quoted_fragment_in_the_same_run_is_found(self) -> None:
+        import base64
+        import textwrap
+
+        png_b64 = base64.b64encode(b"\x89PNG\r\n\x1a\n" + bytes(range(256)) * 8).decode()
+        text = "PNG payloads start iVBORw0KGgoAAAANSUhEUg and look like\n" + "\n".join(textwrap.wrap(png_b64, 76))
+        assert contains_base64_image(text)
+
+
+    def test_wrapped_smallest_png_with_padded_last_line_is_still_an_image(self) -> None:
+        import textwrap
+
+        raw = "\n".join(textwrap.wrap(self._ONE_PIXEL_PNG, 76))
+        uri = "\n".join(textwrap.wrap("data:image/png;base64," + self._ONE_PIXEL_PNG, 76, break_long_words=True))
+        for text in (raw, uri):
+            assert contains_base64_image(f"Logo:\n{text}\nThanks")
+        _assert_raises_with_codes(
+            _container(blocks=[_text_block(0, data=raw)]), "TEXT_DATA_CONTAINS_BASE64_IMAGE"
+        )
 
 
 class TestParentChainOutOfRangeBreak:

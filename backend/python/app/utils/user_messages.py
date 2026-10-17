@@ -15,6 +15,18 @@ RETRY_HINT = "Please try again; if it keeps failing, contact your admin."
 
 SOMETHING_WENT_WRONG = f"Something went wrong. {RETRY_HINT}"
 
+# Node repeats this 503 word for word (READER_WRITTEN_MESSAGES in
+# backend/nodejs/apps/src/libs/errors/reader-friendly.ts); change both together.
+DATABASE_UNREACHABLE = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+
+
+
+def where_to_authenticate(*, is_service_account: bool) -> str:
+    """Where a toolset's sign-in is fixed: a service-account agent signs in once, on the agent."""
+    if is_service_account:
+        return "this agent's settings in the agent builder (someone who can edit the agent has to do it)"
+    return "Your actions"
+
 
 PEOPLE_GONE = (
     "Some people you picked are no longer in this workspace. "

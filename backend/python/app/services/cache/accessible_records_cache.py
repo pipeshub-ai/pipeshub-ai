@@ -558,6 +558,11 @@ class AccessibleRecordsInvalidator:
     # arriving, the connector's entries are deleted once per window; the window
     # after the last change ends the run.
     PERMISSION_CHANGE_SETTLE_SECONDS = 5.0
+    # The same coalescing for connector records that finish indexing, which
+    # arrive in bursts of thousands during a sync. Per process: N indexing
+    # processes cost at most N deletes per window, fewer than one permission
+    # window's worth.
+    RECORD_INDEXED_SETTLE_SECONDS = 30.0
 
     def __init__(
         self,
@@ -568,9 +573,10 @@ class AccessibleRecordsInvalidator:
         self.logger = logger
         self.cache = cache
         self.graph_provider = graph_provider
-        # connector id -> its settle run. Thread lock: the indexing service
-        # calls in from its consumer's worker loop too.
+        # connector id -> its settle run, one map per kind of change. Thread
+        # lock: the indexing service calls in from its consumer's worker loop too.
         self._settling: dict[str, _SettleRun] = {}
+        self._indexed_settling: dict[str, _SettleRun] = {}
         self._settle_lock = threading.Lock()
 
     async def on_connector_permissions_changed(
@@ -589,7 +595,7 @@ class AccessibleRecordsInvalidator:
         try:
             if not connector_id:
                 return
-            run = self._join_settle_run(connector_id, org_id)
+            run = self._join_settle_run(self._settling, connector_id, org_id)
             if run is not None:
                 await self.cache.mark_connector_changed(run.org_id, connector_id)
                 return
@@ -602,7 +608,10 @@ class AccessibleRecordsInvalidator:
                     connector_id,
                 )
                 return
-            run = self._join_settle_run(connector_id, org_id, start=True)
+            run = self._join_settle_run(
+                self._settling, connector_id, org_id,
+                start_window=self.PERMISSION_CHANGE_SETTLE_SECONDS,
+            )
             if run is not None:
                 await self.cache.mark_connector_changed(run.org_id, connector_id)
                 return
@@ -615,46 +624,57 @@ class AccessibleRecordsInvalidator:
             )
 
     def _join_settle_run(
-        self, connector_id: str, org_id: str | None, *, start: bool = False
+        self,
+        runs: dict[str, _SettleRun],
+        connector_id: str,
+        org_id: str | None,
+        *,
+        start_window: float | None = None,
     ) -> "_SettleRun | None":
-        """The running settle run, marked as owing a delete; None when there was
-        none, after starting one if ``start`` (the caller then deletes at once)."""
+        """The running settle run in ``runs``, marked as owing a delete; None when
+        there was none, after starting one with ``start_window`` (the caller then
+        deletes at once)."""
         with self._settle_lock:
-            run = self._settling.get(connector_id)
+            run = runs.get(connector_id)
             if run is not None and not run.task.done():
                 run.changed = True
                 if org_id:
                     run.org_id = org_id
                 return run
-            if start and org_id:
+            if start_window is not None and org_id:
                 run = _SettleRun(org_id)
                 run.task = asyncio.get_running_loop().create_task(
-                    self._settle(connector_id, run)
+                    self._settle(runs, connector_id, run, start_window)
                 )
-                self._settling[connector_id] = run
+                runs[connector_id] = run
             return None
 
-    async def _settle(self, connector_id: str, run: "_SettleRun") -> None:
+    async def _settle(
+        self,
+        runs: dict[str, _SettleRun],
+        connector_id: str,
+        run: "_SettleRun",
+        window: float,
+    ) -> None:
         try:
             while True:
-                await asyncio.sleep(self.PERMISSION_CHANGE_SETTLE_SECONDS)
+                await asyncio.sleep(window)
                 with self._settle_lock:
                     changed, run.changed = run.changed, False
                     if not changed:
-                        del self._settling[connector_id]
+                        del runs[connector_id]
                         return
                 try:
                     await self.cache.invalidate_connector(run.org_id, connector_id)
                 except Exception as e:
                     self.logger.warning(
-                        "Could not invalidate accessible-records cache for connector %s after "
-                        "a permission change: %s",
+                        "Could not invalidate accessible-records cache for connector %s: %s",
                         connector_id, str(e),
                     )
         finally:
             with self._settle_lock:
-                if self._settling.get(connector_id) is run:
-                    del self._settling[connector_id]
+                if runs.get(connector_id) is run:
+                    del runs[connector_id]
 
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
@@ -709,18 +729,22 @@ class AccessibleRecordsInvalidator:
         external_record_group_id: str | None = None,
         org_id: str | None = None,
     ) -> None:
-        """Invalidate when a KB record becomes searchable.
+        """Invalidate when a record becomes searchable.
 
-        Deliberately KB-only. Connector records also flip to COMPLETED here, but
-        a full sync does that thousands of times in a burst; dropping the
-        connector entry per record would leave the cache empty exactly when the
-        graph is busiest. Connectors invalidate once, on sync completion.
+        A KB record drops its KB's entry at once. A connector record finishes
+        indexing after its sync completed, so the delete at sync completion
+        does not cover it; but a full sync flips thousands of records here in a
+        burst, and a delete per record would leave the cache empty exactly when
+        the graph is busiest. Those deletes are coalesced instead: the first
+        deletes at once, the rest once per window while records keep arriving.
         """
         try:
             from app.config.constants.arangodb import Connectors
 
             name = getattr(connector_name, "value", connector_name)
             if name != Connectors.KNOWLEDGE_BASE.value:
+                if name:
+                    await self._on_connector_record_indexed(connector_id, org_id)
                 return
             kb_id = connector_id or external_record_group_id
             if not kb_id:
@@ -735,6 +759,23 @@ class AccessibleRecordsInvalidator:
             self.logger.warning(
                 "Could not invalidate accessible-records cache after indexing: %s", str(e)
             )
+
+    async def _on_connector_record_indexed(
+        self, connector_id: str | None, org_id: str | None
+    ) -> None:
+        if not connector_id:
+            return
+        if self._join_settle_run(self._indexed_settling, connector_id, org_id) is not None:
+            return
+        org_id = org_id or await self._org_for_app(connector_id)
+        if not org_id:
+            return
+        run = self._join_settle_run(
+            self._indexed_settling, connector_id, org_id,
+            start_window=self.RECORD_INDEXED_SETTLE_SECONDS,
+        )
+        if run is None:
+            await self.cache.invalidate_connector(org_id, connector_id)
 
     async def _app_doc(self, app_id: str) -> dict | None:
         from app.config.constants.arangodb import CollectionNames

@@ -1970,6 +1970,7 @@ class AzureBlobConnector(BaseConnector):
         **kwargs: object,
     ) -> "AzureBlobConnector":
         """Factory method to create and initialize connector."""
+        org_id = kwargs.pop("org_id", None)
         # Extract account name from connection string if available
         account_name = ""
         try:
@@ -1991,7 +1992,7 @@ class AzureBlobConnector(BaseConnector):
         data_entities_processor = AzureBlobDataSourceEntitiesProcessor(
             logger, data_store_provider, config_service, account_name=account_name
         )
-        await data_entities_processor.initialize()
+        await data_entities_processor.initialize(org_id=org_id)
 
         return cls(
             logger,

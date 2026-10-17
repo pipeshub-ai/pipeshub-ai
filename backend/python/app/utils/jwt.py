@@ -3,7 +3,7 @@ import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from jose import jwt  # type: ignore
+import jwt
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants

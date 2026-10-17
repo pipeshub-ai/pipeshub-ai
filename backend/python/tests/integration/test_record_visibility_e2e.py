@@ -67,6 +67,11 @@ from app.connectors.sources.github_teams.models import blob_external_id
 from app.connectors.sources.github_teams.repos import ReposSync
 from app.connectors.sources.nextcloud.connector import NextcloudConnector
 from app.models.entities import FileRecord, RecordType
+from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.domain.models import Mention, NamedEntity
+from app.modules.named_entities.graph_writer import NamedEntityGraphWriter
+from app.modules.named_entities.keys import named_entity_key
+from app.modules.named_entities.resolution import ResolvedEntity
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -481,9 +486,14 @@ EXERCISED_HERE: dict[str, str] = {
     "get_failed_records_by_org": "test_failed_records",
     "get_failed_records_with_active_users": "test_failed_records",
     "get_record_by_weburl": "test_weburl_lookup",
+    "get_records_by_weburls": "test_weburl_lookup",
+    "get_records_linking_to_weburls": "test_records_linking_to_an_address",
+    "get_issue_sites": "test_issue_sites",
+    "get_address_links_batch": "test_address_links",
     "get_entity_candidate_records": "test_entity_candidate_records",
     "get_records_pending_duplicate_reconcile": "test_duplicate_reconcile_sweep",
     "get_permitted_entity_records": "test_permitted_entity_records",
+    "get_records_for_named_entities": "test_named_entity_records",
     "get_knowledge_hub_children": "test_knowledge_hub_browse",
     "get_knowledge_hub_search": "test_knowledge_hub_search",
     "get_record_by_id": "test_point_reads_return_the_trash_with_its_state",
@@ -606,6 +616,55 @@ async def test_weburl_lookup(world: _World) -> None:
     g = world.graph
     assert (await g.get_record_by_weburl(world.url("live"), world.org_id)).id == world.ids["live"]
     assert await g.get_record_by_weburl(world.url("trashed"), world.org_id) is None
+    rows = await g.get_records_by_weburls([world.url("live"), world.url("trashed")], world.org_id)
+    assert {row["id"] for row in rows} == {world.ids["live"]}
+
+
+async def test_records_linking_to_an_address(world: _World) -> None:
+    """A link record under a live record finds it; a trashed holder or a trashed
+    link record does not."""
+    g = world.graph
+    address = world.url("linked")
+    links = {}
+    for holder, link_trashed in (("live", False), ("trashed", False), ("live_failed", True)):
+        link_id = f"link-{holder}-{uuid.uuid4().hex[:8]}"
+        world.ids[f"link_{holder}"] = link_id
+        node = _file(world, "live", trashed=False).to_arango_base_record()
+        node.update(
+            id=link_id, _key=link_id, recordType=RecordType.LINK.value, webUrl=address,
+            externalRecordId=f"ext-{link_id}", isDeleted=link_trashed,
+        )
+        links[holder] = link_id
+        await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
+    await g.batch_upsert_record_relations([
+        {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[holder]}",
+         "_to": f"{CollectionNames.RECORDS.value}/{link_id}",
+         "relationshipType": "PARENT_CHILD", "constraintName": ""}
+        for holder, link_id in links.items()
+    ])
+
+    holders = await g.get_records_linking_to_weburls(
+        [address], world.org_id, [Connectors.GOOGLE_DRIVE.value]
+    )
+
+    assert holders == [world.ids["live"]]
+
+
+async def test_issue_sites(world: _World) -> None:
+    """A live ticket's site is read; a trashed ticket's is not."""
+    g = world.graph
+    for name, trashed, site in (("live", False, "https://live.example"), ("trashed", True, "https://gone.example")):
+        ticket_id = f"ticket-{name}-{uuid.uuid4().hex[:8]}"
+        world.ids[f"ticket_{name}"] = ticket_id
+        node = _file(world, "live", trashed=False).to_arango_base_record()
+        node.update(
+            id=ticket_id, _key=ticket_id, recordType=RecordType.TICKET.value,
+            connectorName=Connectors.JIRA.value, webUrl=f"{site}/browse/PA-1",
+            externalRecordId=f"ext-{ticket_id}", isDeleted=trashed,
+        )
+        await g.batch_upsert_nodes([node], CollectionNames.RECORDS.value)
+
+    assert await g.get_issue_sites(world.org_id, [Connectors.JIRA.value]) == ["https://live.example"]
 
 
 async def test_entity_candidate_records(world: _World) -> None:
@@ -628,6 +687,29 @@ async def test_permitted_entity_records(world: _World) -> None:
     )
     assert [row["_key"] for row in got[("record", world.ids["live"])]] == [world.ids["live"]]
     assert list(got[("record", world.ids["trashed"])]) == []
+
+
+async def test_named_entity_records(world: _World) -> None:
+    g = world.graph
+    entity = NamedEntity(
+        kind=EntityKind.ORGANIZATION, display_name="Globex", norm_key="globex",
+        mentions=[Mention(block_index=0, char_start=0, char_end=6, surface="Globex", extractor="agent")],
+    )
+    key = named_entity_key(world.org_id, entity.kind.value, entity.norm_key)
+    writer = NamedEntityGraphWriter(g, GraphDataStore(logger, g), logger)
+    try:
+        for name in ("live", "trashed"):
+            await writer.write(
+                world.org_id, world.ids[name], [ResolvedEntity(entity=entity, graph_key=key)],
+            )
+        got = await g.get_records_for_named_entities(world.org_id, entity_ids=[key])
+        assert {hit["recordId"] for hit in got["hits"]} == {world.ids["live"]}
+        # The trash stays reachable from the record itself: it is graph structure, not a listing.
+        assert [row["name"] for row in await g.get_named_entities_for_record(world.ids["trashed"])] == ["Globex"]
+    finally:
+        for name in ("live", "trashed"):
+            await writer.clear_for_record(world.ids[name])
+        await g.delete_orphan_named_entities(world.org_id)
 
 
 @pytest.mark.parametrize("grant", ["app", "role"])
@@ -1046,3 +1128,19 @@ async def test_a_removed_space_keeps_its_group_while_records_in_the_trash_belong
         assert group is None
         for name in ("live_shared", "trashed_shared"):
             assert await world.graph.get_document(world.ids[name], records) is None, name
+
+
+async def test_address_links(world: _World) -> None:
+    """A record joined by address to a live record and to a trashed one sees
+    only the live one."""
+    g = world.graph
+    await g.batch_upsert_record_relations([
+        {"_from": f"{CollectionNames.RECORDS.value}/{world.ids[source]}",
+         "_to": f"{CollectionNames.RECORDS.value}/{world.ids['live_shared']}",
+         "relationshipType": "LINKED_TO", "matchedBy": "url", "constraintName": ""}
+        for source in ("live", "trashed")
+    ])
+
+    links = await g.get_address_links_batch([world.ids["live_shared"]], world.org_id)
+
+    assert links[world.ids["live_shared"]]["mentioned_in"] == [world.ids["live"]]

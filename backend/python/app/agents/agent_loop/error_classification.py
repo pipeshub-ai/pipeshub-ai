@@ -28,8 +28,15 @@ from __future__ import annotations
 
 import ast
 import json
+import logging
 import re
 from http import HTTPStatus
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+logger = logging.getLogger(__name__)
 
 # Provider content-moderation rejections (Azure `content_filter` /
 # `ResponsibleAIPolicyViolation`, OpenAI `content_policy_violation`, ...).
@@ -140,6 +147,16 @@ _MODEL_CALL_FAILED_MESSAGE = (
     "model in Workspace → AI Models."
 )
 
+# Checked before the built-in hints. Each returns `(error_code, user_message)`
+# or `None` to pass.
+_extra_classifiers: list[Callable[[str], tuple[str, str] | None]] = []
+
+
+def register_error_classifier(fn: Callable[[str], tuple[str, str] | None]) -> None:
+    if fn not in _extra_classifiers:
+        _extra_classifiers.append(fn)
+
+
 _ERROR_PAYLOAD_RE = re.compile(
     r"Error code:\s*\d+\s*-\s*(\{.*\})\s*$",
     re.DOTALL | re.IGNORECASE,
@@ -206,6 +223,15 @@ def classify_error(error_msg: str) -> tuple[str, str]:
     must win because "try again in a moment" is wrong advice for a
     permanently oversized request).
     """
+    for fn in _extra_classifiers:
+        try:
+            hit = fn(error_msg)
+        except Exception:
+            logger.exception("Error classifier %r failed; skipping it", fn)
+            continue
+        if hit is not None:
+            return hit
+
     lower = error_msg.lower()
 
     if any(hint in lower for hint in _CONTENT_FILTER_HINTS):
@@ -284,4 +310,9 @@ def classify_exception(exc: BaseException) -> tuple[str, str]:
     return classify_error(str(exc))
 
 
-__all__ = ["classify_error", "classify_exception", "redact_error_for_log"]
+__all__ = [
+    "classify_error",
+    "classify_exception",
+    "redact_error_for_log",
+    "register_error_classifier",
+]

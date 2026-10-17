@@ -1,19 +1,19 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import inspect
 import logging
 import os
-from uuid import uuid4
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from functools import partial
-from typing import Any, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar
+from uuid import uuid4
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # must precede all ML library imports
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -21,34 +21,28 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
+from app.containers.indexing import initialize_container
+from app.edition_containers import IndexingAppContainer
+from app.edition_services import configure_app
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
 )
 from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
-from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.named_entity_completion import (
+    record_consumer_loop,
+    run_named_entity_completion_loop,
+)
+from app.modules.indexing.named_entity_persist_retry import (
+    retry_pending_named_entity_persists,
+)
+from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.record_label_repair import run_record_label_repair_loop
 from app.modules.indexing.record_republish import is_parked_duplicate, record_event
 from app.modules.indexing.vector_membership_backfill import (
     run_vector_membership_backfill_loop,
-)
-from app.containers.indexing import initialize_container
-from app.edition_containers import IndexingAppContainer
-from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
-from app.services.graph_db.common.utils import RESTORED_AT_FIELD
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import (
-    ConsumerType,
-    Topic,
-    get_message_broker_type,
-    messaging_env,
-)
-from app.services.messaging.backpressure import (
-    get_default_backpressure_coordinator,
-)
-from app.services.messaging.distributed_concurrency import (
-    DistributedConcurrencyManager,
 )
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
@@ -56,17 +50,39 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.backpressure import (
+    get_default_backpressure_coordinator,
+)
+from app.services.messaging.config import (
+    ConsumerType,
+    Topic,
+    get_message_broker_type,
+    messaging_env,
+)
+from app.services.messaging.distributed_concurrency import (
+    DistributedConcurrencyManager,
+)
 from app.services.messaging.kafka.utils.utils import KafkaUtils
 from app.services.messaging.lanes.assignment import lane_assignments_in_use
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
+from app.utils.concurrency import indexing_llm_stats
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.loop_lag_monitor import LoopLagMonitor
 from app.utils.loop_share import LoopShare
 from app.utils.process_hardening import mark_process_non_dumpable
+from app.utils.request_context import set_service_suffix
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -74,6 +90,10 @@ from app.utils.user_errors import (
     RECOVERY_REQUEUED,
     RECOVERY_RETRY,
 )
+
+if TYPE_CHECKING:
+    from app.modules.indexing.run import IndexingPipeline
+    from app.services.messaging.interface.producer import IMessagingProducer
 
 _T = TypeVar("_T")
 
@@ -634,6 +654,22 @@ async def recover_in_progress_records(
         except Exception as exc:
             logger.warning(f"Duplicate reconcile retry skipped this pass: {exc}")
 
+        # A named-entity graph write that failed after its own retries left the
+        # record's last good entities in place and a retry marker for this pass.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_named_entity_persists(
+                graph_provider=graph_provider,
+                sink=getattr(event_processor, "sink_orchestrator", None),
+                logger=logger,
+                page_size=page_size,
+                concurrency_manager=concurrency_manager,
+            )
+        except Exception as exc:
+            logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
+
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
             return
@@ -730,9 +766,9 @@ _orphan_sweep_cursor = 0
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
-    graph_provider,
-    pipeline,
-    logger,
+    graph_provider: IGraphDBProvider,
+    pipeline: "IndexingPipeline",
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Clean up VRIDs whose vectors outlived every graph record referencing them.
@@ -754,7 +790,7 @@ async def _sweep_orphaned_virtual_record_mappings(
     rather than all at once. The cursor is per-process and resets on restart —
     acceptable, since nothing here is required to be timely.
     """
-    global _orphan_sweep_cursor
+    global _orphan_sweep_cursor  # noqa: PLW0603 - the cursor is per process by design
 
     swept = 0
     offset = _orphan_sweep_cursor
@@ -838,8 +874,8 @@ async def _sweep_orphaned_virtual_record_mappings(
 
 async def _sweep_queued_records_for_inactive_connectors(
     *,
-    graph_provider,
-    logger,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
@@ -1021,11 +1057,11 @@ def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
 
 async def _republish_stranded_records(
     *,
-    graph_provider,
-    logger,
-    producer,
-    run_coordination,
-    concurrency_manager,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    producer: "IMessagingProducer",
+    run_coordination: CoordinationRunner,
+    concurrency_manager: DistributedConcurrencyManager | None,
     page_size: int,
     read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
@@ -1712,6 +1748,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
         worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        heavy_parse_slots_dir=shared_slots_directory(
+            "pipeshub-indexing-heavy-parse-slots"
+        ),
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
@@ -1780,6 +1819,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_record_label_repair_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.named_entity_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_sweep_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
@@ -1792,6 +1835,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
         app.state.label_repair_task = asyncio.create_task(
             run_record_label_repair_loop(app_container, graph_provider)
+        )
+        app.state.named_entity_sweep_task = asyncio.create_task(
+            run_named_entity_sweep_loop(app_container, graph_provider)
+        )
+
+    # On every store, not only Neo4j: the indexing LLM slots are per event loop,
+    # and only on the loop records are indexed on does the pass see and share them.
+    completion_loop = record_consumer_loop(consumers)
+    if completion_loop is not None:
+        app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_completion_loop(app_container, graph_provider),
+            completion_loop,
+        )
+    else:
+        app.state.named_entity_completion_task = asyncio.create_task(
+            run_named_entity_completion_loop(app_container, graph_provider)
         )
 
     yield
@@ -1898,6 +1957,50 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during record label repair future shutdown: {str(e)}")
 
+    sweep_task = getattr(app.state, "named_entity_sweep_task", None)
+    if sweep_task:
+        if not sweep_task.done():
+            sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep shutdown: {str(e)}")
+
+    sweep_future = getattr(app.state, "named_entity_sweep_future", None)
+    if sweep_future:
+        if not sweep_future.done():
+            sweep_future.cancel()
+        try:
+            await asyncio.wrap_future(sweep_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep future shutdown: {str(e)}")
+
+    completion_task = getattr(app.state, "named_entity_completion_task", None)
+    if completion_task:
+        if not completion_task.done():
+            completion_task.cancel()
+        try:
+            await completion_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion shutdown: {str(e)}")
+
+    completion_future = getattr(app.state, "named_entity_completion_future", None)
+    if completion_future:
+        if not completion_future.done():
+            completion_future.cancel()
+        try:
+            await asyncio.wrap_future(completion_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion future shutdown: {str(e)}")
+
     # Stop message consumers
     try:
         await stop_kafka_consumers(app_container)
@@ -1956,9 +2059,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
 
-from app.api.middlewares.request_context import RequestContextMiddleware
-from app.utils.request_context import set_service_suffix
-
 set_service_suffix("-is")
 
 app = FastAPI(
@@ -1967,6 +2067,7 @@ app = FastAPI(
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
+configure_app(app, "indexing")
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
@@ -1997,8 +2098,14 @@ async def health_check(request: Request) -> JSONResponse:
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        loop_lag: dict[str, Any] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
+            # Late wake-ups on the worker loop: every record on it was stalled
+            # that long, which reads as slow I/O everywhere else.
+            lag_monitor = getattr(consumer, "loop_lag_monitor", None)
+            if isinstance(lag_monitor, LoopLagMonitor):
+                loop_lag[str(entry[0])] = lag_monitor.stats()
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
@@ -2009,6 +2116,9 @@ async def health_check(request: Request) -> JSONResponse:
                 dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        if loop_lag:
+            content["worker_loop_lag"] = loop_lag
+        content["indexing_llm"] = indexing_llm_stats()
         # Which connector is on which Redis Streams lane, from the last lane
         # upkeep this replica ran (the one holding the recovery lock).
         lane_report = last_lane_report(Topic.RECORD_EVENTS.value)

@@ -33,6 +33,15 @@ _RECORDS = CollectionNames.RECORDS.value
 _RELATIONS = CollectionNames.RECORD_RELATIONS.value
 
 
+def _endpoint(edge: dict, side: str) -> str:
+    """The key at one end of an edge: Neo4j returns `from_id`/`to_id`, while
+    ArangoDB returns raw `_from`/`_to` handles (`records/<key>`)."""
+    key = edge.get(f"{side}_id")
+    if key:
+        return str(key)
+    return str(edge.get(f"_{side}") or "").split("/", 1)[-1]
+
+
 class LineageTracker:
     def __init__(self, graph_provider: Any) -> None:
         self._graph_provider = graph_provider
@@ -84,7 +93,7 @@ class LineageTracker:
         latest = max(derived, key=lambda e: e.get("createdAtTimestamp") or 0)
         return ArtifactLineage(
             output_artifact_id=output_artifact_id,
-            code_artifact_id=str(latest.get("to_id")),
+            code_artifact_id=_endpoint(latest, "to"),
             code_version=int(latest.get("sourceVersion") or 1),
             output_version=int(latest.get("derivedVersion") or 1),
         )
@@ -96,7 +105,7 @@ class LineageTracker:
         derived = [e for e in edges if e.get("relationshipType") == RecordRelations.DERIVED_FROM.value]
         return [
             ArtifactLineage(
-                output_artifact_id=str(e.get("from_id")),
+                output_artifact_id=_endpoint(e, "from"),
                 code_artifact_id=code_artifact_id,
                 code_version=int(e.get("sourceVersion") or 1),
                 output_version=int(e.get("derivedVersion") or 1),

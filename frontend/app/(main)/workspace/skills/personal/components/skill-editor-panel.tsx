@@ -68,7 +68,6 @@ const CONTENT_TAB_STYLE: CSSProperties = {
   flex: 1,
   minHeight: 0,
   overflow: 'hidden',
-  display: 'flex',
   flexDirection: 'column',
 };
 
@@ -270,7 +269,10 @@ export function SkillEditorPanel() {
               <Tabs.Trigger value="versions" disabled={!isEditMode}>{t('workspace.skills.tabs.versions')}</Tabs.Trigger>
             </Tabs.List>
 
-            <Tabs.Content value="content" style={CONTENT_TAB_STYLE}>
+            <Tabs.Content
+              value="content"
+              style={{ ...CONTENT_TAB_STYLE, display: editorTab === 'content' ? 'flex' : 'none' }}
+            >
               <Flex direction="column" gap="1" style={{ flex: 1, minHeight: 0 }}>
                 <Text size="1" style={{ color: 'var(--gray-9)', marginBottom: 4, flexShrink: 0 }}>
                   {t('workspace.skills.editorPanel.bodyHint')}

@@ -29,6 +29,7 @@ import shutil
 import signal
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import regex
@@ -326,14 +327,22 @@ class RunCommandInput(BaseModel):
 _MAX_FIND_RECORDS = 20
 # find_records answers every empty outcome identically, so it never reveals
 # whether matching content exists in records the user cannot read.
-_NO_ACCESSIBLE_MATCH = json_mod.dumps({
+_NO_ACCESSIBLE_MATCH_BODY = {
     "records": [],
     "total_found": 0,
     "message": (
         "No accessible records matched. The command must list record files "
         "(grep -l or -c, or find) for records to be returned."
     ),
-})
+}
+_NO_ACCESSIBLE_MATCH = json_mod.dumps(_NO_ACCESSIBLE_MATCH_BODY)
+
+
+def _no_accessible_match(*, output_truncated: bool) -> str:
+    """The "nothing" answer; one that was cut at a size limit says so."""
+    if not output_truncated:
+        return _NO_ACCESSIBLE_MATCH
+    return json_mod.dumps({**_NO_ACCESSIBLE_MATCH_BODY, "output_truncated": True})
 
 
 def _public_failure(output: str) -> str:
@@ -382,10 +391,14 @@ class FindRecordsInput(BaseModel):
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
+_TRUNCATION_MARKER_PREFIX = "[...output truncated"
+_BYTE_CAP_MARKER = f"{_TRUNCATION_MARKER_PREFIX} at a pipeline stage's byte cap]"
+
+
 def _truncate(text: str, max_len: int) -> str:
     if len(text) <= max_len:
         return text
-    return text[:max_len] + f"\n[...output truncated ({len(text)} chars total)]"
+    return text[:max_len] + f"\n{_TRUNCATION_MARKER_PREFIX} ({len(text)} chars total)]"
 
 
 def _resolve_mount_root(mount_name: str) -> str:
@@ -918,6 +931,7 @@ async def _run_subprocess(
     last_proc: asyncio.subprocess.Process | None = None
     last_stderr = b""
     killed_early = max_stdout_bytes > 0
+    capped = False
 
     try:
         for i, tokens in enumerate(stage_tokens):
@@ -950,6 +964,7 @@ async def _run_subprocess(
             )
             if truncated:
                 killed_early = True
+                capped = True
                 # A half-written path would reach the next stage as a bogus file name.
                 if i < len(stage_tokens) - 1:
                     stdout_bytes = _trim_to_last_record(stdout_bytes)
@@ -963,7 +978,12 @@ async def _run_subprocess(
         exit_code = last_proc.returncode if last_proc else 0
 
         if killed_early and stdout.strip():
-            return True, _truncate(stdout, max_output_chars)
+            output = _truncate(stdout, max_output_chars)
+            if capped:
+                # Said in the output: a stage stopped at its byte cap, so files
+                # past it were never searched and their absence means nothing.
+                output += f"\n{_BYTE_CAP_MARKER}"
+            return True, output
 
         if exit_code == 0:
             output = stdout if stdout.strip() else "No matches found."
@@ -1041,6 +1061,62 @@ def _bre_to_python(alternative: str) -> str:
     return "".join(out)
 
 
+@dataclass(frozen=True)
+class GrepStage:
+    """What one grep-family pipeline stage searches for."""
+
+    patterns: tuple[str, ...]
+    fixed: bool
+    extended: bool
+    ignore_case: bool
+    # -v, -L: the stage keeps what does NOT match.
+    inverted: bool
+    word: bool
+    line: bool
+
+
+def grep_stage(stage: str) -> GrepStage | None:
+    """The patterns and matching flags of one pipeline stage, or None when the
+    stage runs no grep-family binary or cannot be parsed."""
+    try:
+        tokens = shlex.split(stage)
+    except ValueError:
+        return None
+    start = next((i for i, t in enumerate(tokens) if t in _GREP_BINARIES), None)
+    if start is None:
+        return None
+    binary, args = tokens[start], tokens[start + 1:]
+    short_flags = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
+    patterns: list[str] = []
+    positionals: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("-e", "--regexp") and i + 1 < len(args):
+            patterns.append(args[i + 1])
+            i += 2
+        elif arg in _GREP_VALUE_FLAGS:
+            i += 2
+        else:
+            if not arg.startswith("-"):
+                positionals.append(arg)
+            i += 1
+    if not patterns:
+        patterns = positionals[:1]
+    return GrepStage(
+        patterns=tuple(patterns),
+        fixed=binary == "fgrep" or "F" in short_flags or "--fixed-strings" in args,
+        extended=binary in ("egrep", "rg") or "E" in short_flags or "--extended-regexp" in args,
+        ignore_case="i" in short_flags or "--ignore-case" in args,
+        inverted=(
+            "v" in short_flags or "L" in short_flags
+            or "--invert-match" in args or "--files-without-match" in args
+        ),
+        word="w" in short_flags or "--word-regexp" in args,
+        line="x" in short_flags or "--line-regexp" in args,
+    )
+
+
 def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
     """Compile each search alternative of every non-inverted grep stage.
 
@@ -1048,49 +1124,27 @@ def _grep_search_regexes(command: str) -> list[regex.Pattern[str]]:
     file can be ranked by how many distinct alternatives it contains.
     """
     regexes: list[regex.Pattern[str]] = []
-    for stage in _split_pipeline_stages(command):
-        try:
-            tokens = shlex.split(stage)
-        except ValueError:
+    for stage_text in _split_pipeline_stages(command):
+        stage = grep_stage(stage_text)
+        if stage is None or stage.inverted:
             continue
-        start = next((i for i, t in enumerate(tokens) if t in _GREP_BINARIES), None)
-        if start is None:
-            continue
-        binary, args = tokens[start], tokens[start + 1:]
-        short_flags = "".join(a[1:] for a in args if a.startswith("-") and not a.startswith("--"))
-        if "v" in short_flags or "--invert-match" in args:
-            continue
-        fixed = binary == "fgrep" or "F" in short_flags
-        extended = binary in ("egrep", "rg") or "E" in short_flags
-        patterns: list[str] = []
-        positionals: list[str] = []
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            if arg in ("-e", "--regexp") and i + 1 < len(args):
-                patterns.append(args[i + 1])
-                i += 2
-            elif arg in _GREP_VALUE_FLAGS:
-                i += 2
-            else:
-                if not arg.startswith("-"):
-                    positionals.append(arg)
-                i += 1
-        if not patterns:
-            patterns = positionals[:1]
-        for pattern in patterns:
-            regexes.extend(_compile_alternatives(pattern, fixed=fixed, extended=extended))
+        for pattern in stage.patterns:
+            regexes.extend(_compile_alternatives(pattern, fixed=stage.fixed, extended=stage.extended))
     # A term repeated across stages or alternatives must count once.
     return list({rx.pattern.lower(): rx for rx in regexes}.values())[:_MAX_RANK_ALTERNATIVES]
 
 
-def _compile_alternatives(pattern: str, *, fixed: bool, extended: bool) -> list[regex.Pattern[str]]:
+def _compile_alternatives(
+    pattern: str, *, fixed: bool, extended: bool, ignore_case: bool = True, strict: bool = False,
+) -> list[regex.Pattern[str]]:
     """Split a grep pattern into top-level alternatives and compile each.
 
     A pattern with groups is kept whole, since splitting ``(a|b)c`` on ``|``
     would produce two broken halves. Anything that fails to compile, or could
     backtrack catastrophically, is matched literally instead; an alternative
     longer than ``_MAX_RANK_PATTERN_CHARS`` is not used for ranking at all.
+    With *strict*, any of those raises ValueError instead, for a caller that
+    decides matches with these regexes rather than only ranking by them.
     """
     if fixed:
         alternatives = [regex.escape(p) for p in pattern.split("\n")]
@@ -1099,24 +1153,37 @@ def _compile_alternatives(pattern: str, *, fixed: bool, extended: bool) -> list[
     else:
         parts = [pattern] if "\\(" in pattern else pattern.split("\\|")
         alternatives = [_bre_to_python(p) for p in parts]
+    if strict and len(alternatives) > _MAX_RANK_ALTERNATIVES:
+        raise ValueError("too many alternatives")
     compiled: list[regex.Pattern[str]] = []
     for raw_alt in alternatives[:_MAX_RANK_ALTERNATIVES]:
         if len(raw_alt) > _MAX_RANK_PATTERN_CHARS:
+            if strict:
+                raise ValueError("alternative too long")
             continue
         alt = raw_alt
         for posix, py in _POSIX_CLASSES.items():
             alt = alt.replace(posix, py)
         if not alt:
+            if strict:
+                raise ValueError("empty alternative")
             continue
         if _NESTED_QUANTIFIER_RE.search(alt):
+            if strict:
+                raise ValueError("nested quantifier")
             alt = regex.escape(raw_alt)
         else:
+            if strict and _UNBOUNDED_DOT_RE.search(alt):
+                raise ValueError("unbounded wildcard")
             # Unbounded ".*" is quadratic on the long single-line blocks records hold.
             alt = _UNBOUNDED_DOT_RE.sub(lambda m: ".{0,200}" if m.group(1) == "*" else ".{1,200}", alt)
+        flags = regex.IGNORECASE if ignore_case else 0
         try:
-            compiled.append(regex.compile(alt, regex.IGNORECASE))
+            compiled.append(regex.compile(alt, flags))
         except regex.error:
-            compiled.append(regex.compile(regex.escape(raw_alt), regex.IGNORECASE))
+            if strict:
+                raise ValueError("does not compile") from None
+            compiled.append(regex.compile(regex.escape(raw_alt), flags))
     return compiled
 
 
@@ -1174,7 +1241,20 @@ def _score_record_file(
             raw = f.read(_MAX_SCORE_READ_BYTES)
     except OSError:
         return 0, 0, "", 0
-    text = _record_search_text(raw)
+    distinct, total, snippet = score_text(_record_search_text(raw), regexes, timeout=timeout)
+    return distinct, total, snippet, len(raw)
+
+
+def score_text(
+    text: str,
+    regexes: list[regex.Pattern[str]],
+    *,
+    timeout: float = _RANK_MATCH_TIMEOUT_SECS,
+) -> tuple[int, int, str]:
+    """(distinct alternatives matched, total matches, snippet) of *text*.
+
+    A regex that runs past *timeout* scores the text as no match at all.
+    """
     distinct = total = 0
     rarest: tuple[int, regex.Match[str]] | None = None
     try:
@@ -1187,14 +1267,14 @@ def _score_record_file(
             if rarest is None or len(matches) < rarest[0]:
                 rarest = (len(matches), matches[0])
     except TimeoutError:
-        return 0, 0, "", len(raw)
+        return 0, 0, ""
     if rarest is None:
-        return 0, 0, "", len(raw)
+        return 0, 0, ""
     m = rarest[1]
     start, end = max(0, m.start() - _SNIPPET_RADIUS), min(len(text), m.end() + _SNIPPET_RADIUS)
     snippet = " ".join(text[start:end].split())
     snippet = f"{'…' if start else ''}{snippet}{'…' if end < len(text) else ''}"
-    return distinct, total, snippet, len(raw)
+    return distinct, total, snippet
 
 
 def _rank_candidates(
@@ -1751,8 +1831,13 @@ class StoragePatternMatch:
         max_results: int = 10,
         max_stdout_bytes: int = 0,
         max_output_chars: int = _MAX_OUTPUT_CHARS,
+        max_output_lines: int | None = None,
     ) -> tuple[bool, str]:
-        """Run a command and parse record file paths from output into structured metadata."""
+        """Run a command and parse record file paths from output into structured metadata.
+
+        *max_output_lines* is the line cap the caller put on the command (a
+        trailing ``head``); output that reaches it counts as truncated.
+        """
         org_id = self.state.get("org_id", "")
         logger.info(
             "[storage_pattern_match.find_records] org_id=%s connector_id=%s command_len=%d max_results=%d",
@@ -1802,10 +1887,11 @@ class StoragePatternMatch:
         # Extract candidate record file paths (cheap regex, no file opens).
         # Handles both grep -l output (plain paths) and grep -c output
         # (path:count) so results can be ranked by keyword density.
-        lines = [
-            line.strip() for line in output.splitlines()
-            if line.strip() and not line.startswith("[...output truncated")
-        ]
+        all_lines = [line.strip() for line in output.splitlines() if line.strip()]
+        lines = [line for line in all_lines if not line.startswith(_TRUNCATION_MARKER_PREFIX)]
+        output_truncated = len(lines) < len(all_lines) or (
+            max_output_lines is not None and len(lines) >= max_output_lines
+        )
         line_vrids: list[tuple[str, str, int]] = []  # (path, vrid, match_count)
         for line in lines:
             path = line
@@ -1834,7 +1920,7 @@ class StoragePatternMatch:
         )
 
         if not line_vrids:
-            return True, _NO_ACCESSIBLE_MATCH
+            return True, _no_accessible_match(output_truncated=output_truncated)
 
         # Permission gate: keep only records the requesting user may access.
         # Fail closed if the check cannot be performed.
@@ -1901,7 +1987,7 @@ class StoragePatternMatch:
             records.append(meta)
 
         if not records:
-            return True, _NO_ACCESSIBLE_MATCH
+            return True, _no_accessible_match(output_truncated=output_truncated)
 
         remember_record_ids(
             self.state,
@@ -1916,10 +2002,17 @@ class StoragePatternMatch:
             f"fetch_full_record accepts at most {_MAX_FETCH_RECORD_IDS} IDs per call.",
         ]
 
+        if output_truncated:
+            hint_parts.append(
+                "The command's output was cut at a size limit, so records past it were "
+                "not searched: a record missing here may still match.",
+            )
+
         result = {
             "records": records,
             "total_found": paths_found,
             "returned": len(records),
+            "output_truncated": output_truncated,
             "hint": " ".join(hint_parts),
             "success": True,
         }

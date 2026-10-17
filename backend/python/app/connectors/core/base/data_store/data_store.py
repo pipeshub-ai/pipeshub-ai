@@ -210,7 +210,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> Optional[User]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers None."""
         pass
 
     @abstractmethod
@@ -234,7 +237,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
+    async def get_app_users(
+        self, org_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUser]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
     @abstractmethod
@@ -292,7 +298,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_groups(self, connector_id: str, org_id: str) -> list[UserGroup]:
+    async def get_user_groups(
+        self, connector_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> list[UserGroup]:
         pass
 
     @abstractmethod
@@ -491,6 +499,33 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        """Every app of the org, active or not; see IGraphDBProvider.get_org_apps."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        """Records of the org stored under any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        """The Jira sites the org syncs; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: Optional[str] = None,
+    ) -> list[str]:
+        """Records holding a link to any of ``weburls``; see IGraphDBProvider."""
         pass
 
     @abstractmethod

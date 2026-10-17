@@ -495,7 +495,7 @@ class TestGetUserDocument:
         gp.get_user_by_user_id.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_user_document("u1", gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================
@@ -545,7 +545,7 @@ class TestGetOrgInfo:
         gp.get_document.side_effect = RuntimeError("db error")
         with pytest.raises(HTTPException) as exc_info:
             await _get_org_info({"orgId": "o1"}, gp, MagicMock())
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # =============================================================================

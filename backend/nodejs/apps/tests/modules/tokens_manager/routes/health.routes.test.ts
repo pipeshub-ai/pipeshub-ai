@@ -3,6 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { ConfigService } from '../../../../src/modules/tokens_manager/services/cm.service'
 import { createHealthRouter } from '../../../../src/modules/tokens_manager/routes/health.routes'
+import * as buildInfoUtils from '../../../../src/libs/utils/build-info.utils'
+
+const NODE_BUILD = { version: '0.9.1', commitId: 'a'.repeat(40) }
 
 describe('tokens_manager/routes/health.routes', () => {
   let mockRedis: any
@@ -27,6 +30,7 @@ describe('tokens_manager/routes/health.routes', () => {
       readDeploymentConfig: sinon.stub().callsFake(() => Promise.resolve({ ...mockAppConfig.deployment })),
     }
     sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+    sinon.stub(buildInfoUtils, 'getBuildInfo').returns(NODE_BUILD)
 
     mockRedis = { get: sinon.stub().resolves(null) }
     mockKafka = { healthCheck: sinon.stub().resolves(true) }
@@ -588,9 +592,47 @@ describe('tokens_manager/routes/health.routes', () => {
       )
       expect(graphDbCall).to.exist
       expect(graphDbCall!.args[0]).to.equal('http://localhost:8088/health/graph-db')
+      expect(graphDbCall!.args[1]).to.include({ timeout: 5000 })
 
       const jsonArg = res.json.firstCall.args[0]
       expect(jsonArg.services.graphDb).to.equal('healthy')
+    })
+
+    it('should log when graph-db health check times out', async () => {
+      mockAppConfig.deployment.dataStoreType = 'neo4j'
+      mockAppConfig.connectorBackend = 'http://localhost:8088'
+      router = createHealthRouter(container, cmContainer)
+
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+      const next = sinon.stub()
+
+      const timeoutErr: any = new Error('timeout of 5000ms exceeded')
+      timeoutErr.code = 'ECONNABORTED'
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').callsFake((url: string) => {
+        if (url.includes('graph-db')) {
+          return Promise.reject(timeoutErr)
+        }
+        return Promise.resolve({ status: 200 })
+      })
+
+      const LoggerModule = require('../../../../src/libs/services/logger.service')
+      const errorStub = sinon.stub(
+        LoggerModule.Logger.getInstance({ service: 'HealthStatus' }),
+        'error',
+      )
+
+      await handler({}, res, next)
+
+      const jsonArg = res.json.firstCall.args[0]
+      expect(jsonArg.services.graphDb).to.equal('unhealthy')
+      expect(
+        errorStub.getCalls().some(
+          (c: any) => c.args[0] === 'graph-db health check timed out',
+        ),
+      ).to.equal(true)
     })
 
     it('should mark graphDb unhealthy when connector /health/graph-db returns non-200 (neo4j or arangodb)', async () => {
@@ -727,6 +769,18 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg).to.have.property('services')
       expect(jsonArg).to.have.property('serviceNames')
       expect(jsonArg).to.have.property('deployment')
+    })
+
+    it('should report the build of the Node.js process', async () => {
+      const handler = findHandler('/', 'get')
+      const res = mockRes()
+
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 200 })
+
+      await handler({}, res, sinon.stub())
+
+      expect(res.json.firstCall.args[0].build).to.deep.equal(NODE_BUILD)
     })
 
     it('should include all expected deployment keys', async () => {

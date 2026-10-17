@@ -846,3 +846,21 @@ class TestCreateFetchSlackThreadTool:
         result = await tool_fn.ainvoke({"record_id": "r"})
         assert result["ok"] is False
         assert "Failed to fetch Slack thread" in result["error"]
+
+
+class TestResolveThreadReadErrors:
+    """A failed graph read is not "this record has no thread"."""
+
+    async def test_a_failed_read_is_none_by_default_and_raised_when_asked(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        import pytest
+
+        from app.utils.fetch_slack_thread import _resolve_thread_record_group
+
+        graph = MagicMock()
+        graph.get_record_by_id = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        assert await _resolve_thread_record_group("r-1", graph) is None
+        with pytest.raises(RuntimeError):
+            await _resolve_thread_record_group("r-1", graph, raise_on_error=True)

@@ -56,6 +56,21 @@ class TestRetrievalSurface:
         s = _resolve(["internal_exploration_agent"])
         assert s.retrieval_md() == "`internal_exploration_agent`"
 
+    @pytest.mark.parametrize(
+        ("tool_names", "expected"),
+        [
+            (["knowledgegraph__search"], "knowledgegraph__search"),
+            (["retrieval.search_internal_knowledge"], "retrieval.search_internal_knowledge"),
+            (["internal_exploration_agent", "retrieval.search_internal_knowledge"], None),
+            (["run_code"], None),
+        ],
+    )
+    def test_search_tool_is_the_retrieval_surface_only_when_called_directly(
+        self, tool_names: list[str], expected: str | None,
+    ) -> None:
+        """The exploration delegate takes a goal; its child run writes the queries."""
+        assert _resolve(tool_names).search_tool == expected
+
 
 # ---------------------------------------------------------------------------
 # Web surface

@@ -15,7 +15,9 @@ from app.modules.retrieval.retrieval_service import (
     ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE,
     DEFAULT_SEARCH_LIMIT,
     PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
+    RetrievalService,
 )
+from app.services.vector_db.search_retry import VectorSearchUnavailableError
 
 # ---------------------------------------------------------------------------
 # Helpers to build a RetrievalService without real FastEmbedSparse / model load
@@ -183,6 +185,62 @@ class TestCreateVirtualToRecordMapping:
         records = [{"virtualRecordId": "vr1", "_key": "rec1"}]
         mapping = retrieval_service._create_virtual_to_record_mapping(records, ["vr999"])
         assert "vr999" not in mapping
+
+
+class TestAttachConnectorInstanceNames:
+    @pytest.mark.asyncio
+    async def test_labels_records_with_their_connector_instance_name(self, retrieval_service, mock_graph_provider) -> None:
+        apps = {
+            "c-mkt": {"_key": "c-mkt", "name": "Marketing Drive", "type": "Drive"},
+            "c-eng": {"_key": "c-eng", "name": "Eng SharePoint", "type": "SharePoint Online"},
+        }
+        mock_graph_provider.get_document = AsyncMock(side_effect=lambda key, _c: apps.get(key))
+        records = [
+            {"_key": "r1", "connectorName": "DRIVE", "connectorId": "c-mkt"},
+            {"_key": "r2", "connectorName": "SHAREPOINT ONLINE", "connectorId": "c-eng"},
+            {"_key": "r3", "connectorName": "DRIVE", "connectorId": "c-mkt"},
+        ]
+
+        await retrieval_service._attach_connector_instance_names(records)
+
+        assert [r["connectorInstanceName"] for r in records] == ["Marketing Drive", "Eng SharePoint", "Marketing Drive"]
+        # One lookup per connector, not per record, and only in the apps collection.
+        assert sorted(c.args for c in mock_graph_provider.get_document.await_args_list) == [
+            ("c-eng", "apps"), ("c-mkt", "apps"),
+        ]
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_connector_leaves_record_unlabelled(self, retrieval_service, mock_graph_provider) -> None:
+        async def get_document(key: str, _collection: str) -> None:
+            # c-gone: the instance no longer exists; anything else: the lookup fails.
+            if key != "c-gone":
+                raise RuntimeError("graph down")
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=get_document)
+        records = [
+            {"_key": "r1", "connectorId": "c-gone"},
+            {"_key": "r2", "connectorId": "c-err"},
+            {"_key": "r3"},
+            None,
+        ]
+
+        await retrieval_service._attach_connector_instance_names(records)
+
+        for r in records[:3]:
+            assert "connectorInstanceName" not in r
+
+    @pytest.mark.asyncio
+    async def test_slow_lookup_is_abandoned_not_awaited(self, retrieval_service, mock_graph_provider) -> None:
+        async def never_returns(_key: str, _collection: str) -> None:
+            await asyncio.Event().wait()
+
+        mock_graph_provider.get_document = AsyncMock(side_effect=never_returns)
+        records = [{"_key": "r1", "connectorId": "c-slow"}]
+
+        with patch("app.modules.retrieval.retrieval_service.CONNECTOR_NAME_LOOKUP_TIMEOUT_SECONDS", 0.05):
+            await asyncio.wait_for(retrieval_service._attach_connector_instance_names(records), timeout=2)
+
+        assert "connectorInstanceName" not in records[0]
 
 
 # ============================================================================
@@ -835,10 +893,12 @@ class TestExecuteParallelSearches:
             side_effect=ConnectionError("vector db down")
         )
 
-        with pytest.raises(ConnectionError):
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock), \
+                pytest.raises(VectorSearchUnavailableError) as raised:
             await retrieval_service._execute_parallel_searches(
                 ["query"], models.Filter(must=[]), 10, "org-1"
             )
+        assert isinstance(raised.value.__cause__, ConnectionError)
 
     @pytest.mark.asyncio
     async def test_one_collection_failing_still_returns_the_others(
@@ -1946,6 +2006,236 @@ class TestSearchWithFilters:
         contents = [sr["content"] for sr in result["searchResults"]]
         assert "table row content" in contents
         assert "text result" in contents
+
+    async def _knowledge_search_over_a_thread(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
+        *, passages: int, hit: int | list[int] | dict[int, float] | None,
+    ) -> dict:
+        """A match inside a long thread: the thread is expanded into every passage."""
+        from app.models.blocks import GroupType
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "CONNECTOR",
+                "recordName": "Thread", "webUrl": "https://example.com/t",
+                "mimeType": "application/blocks",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": 0.9, "content": "message 20", "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": False, "blockIndex": 20},
+            }
+        ])
+        meta = {
+            "virtualRecordId": "vr1", "orgId": "o1", "origin": "CONNECTOR",
+            "recordName": "Thread", "recordId": "rec1", "mimeType": "application/blocks",
+        }
+        unit = {
+            "block_type": GroupType.CONVERSATION.value,
+            "score": 0.9,
+            "content": ("", [
+                {"score": 0.9, "content": f"message {i}", "block_index": i,
+                 "citationType": "vectordb|document", "metadata": dict(meta)}
+                for i in range(passages)
+            ]),
+        }
+        if hit is not None:
+            if isinstance(hit, int):
+                hit = [hit]
+            unit["hit_block_scores"] = hit if isinstance(hit, dict) else dict.fromkeys(hit, 0.9)
+
+        async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
+            vid_to_record[vid] = {"record_type": "MESSAGE"}
+
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)), \
+             patch("app.modules.retrieval.retrieval_service.get_flattened_results",
+                   new=AsyncMock(return_value=[unit])):
+            return await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", limit=10, knowledge_search=True,
+            )
+
+    @pytest.mark.asyncio
+    async def test_one_long_thread_cannot_fill_the_search_response(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """A match in message 20 of a 40-message thread returned all 40 messages
+        as separate hits. Now the thread keeps the matched message and its
+        nearest neighbours, and the response says how many were left out."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40, hit=20
+        )
+
+        kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
+        assert kept == [(18, 2), (19, 1), (20, 0), (21, 1)]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_every_matched_passage_of_a_section_is_kept_before_its_neighbours(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Two hits merged into one thread: both matched messages stay, and the
+        rest of the record's share goes to their nearest neighbours."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40, hit=[5, 30]
+        )
+
+        kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
+        assert kept == [(4, 1), (5, 0), (6, 1), (30, 0)]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_every_hit_on_a_record_goes_through_the_flattener(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Two hits on one 40-message thread, flattened for real. Only the first hit
+        per record used to be flattened; the second came back raw, so its message
+        could appear twice and the first hit's neighbours lost their place."""
+        from app.models.blocks import BlockType, GroupType
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "CONNECTOR",
+                "recordName": "Thread", "webUrl": "https://example.com/t",
+                "mimeType": "application/blocks",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": score, "content": f"raw chunk {index}", "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": False, "blockIndex": index},
+            }
+            for index, score in ((5, 0.9), (30, 0.8))
+        ])
+        blob = {
+            "virtual_record_id": "vr1", "id": "rec1", "org_id": "o1", "record_name": "Thread",
+            "record_type": "MESSAGE", "origin": "CONNECTOR", "connector_name": "SLACK",
+            "mime_type": "application/blocks", "weburl": "https://example.com/t",
+            "block_containers": {
+                "blocks": [
+                    {"id": f"b{i}", "index": i, "type": BlockType.TEXT.value, "data": f"message {i}",
+                     "citation_metadata": None, "parent_index": 0}
+                    for i in range(40)
+                ],
+                "block_groups": [{
+                    "index": 0, "type": GroupType.CONVERSATION.value, "data": "",
+                    "children": [{"block_index": i} for i in range(40)],
+                    "citation_metadata": None, "parent_index": None,
+                }],
+            },
+        }
+
+        async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
+            vid_to_record[vid] = blob
+
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)):
+            result = await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", limit=10, knowledge_search=True,
+            )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [4, 5, 6, 30]
+        assert [hit["content"] for hit in result["searchResults"]] == [
+            "message 4", "message 5", "message 6", "message 30",
+        ]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_keeps_its_message_under_the_cap(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Messages 0-3 match at 0.5; message 30 matches at 0.3, then again at
+        0.95 (a second point of the same long message). Cap 4 keeps 30."""
+        from app.models.blocks import BlockType, GroupType
+
+        mock_graph_provider.get_accessible_virtual_record_ids.return_value = {"vr1": "rec1"}
+        mock_graph_provider.get_user_by_user_id.return_value = {"email": "u@t.com"}
+        mock_graph_provider.get_records_by_record_ids.return_value = [
+            {
+                "_key": "rec1", "virtualRecordId": "vr1", "origin": "CONNECTOR",
+                "recordName": "Thread", "webUrl": "https://example.com/t",
+                "mimeType": "application/blocks",
+            }
+        ]
+        retrieval_service._execute_parallel_searches = AsyncMock(return_value=[
+            {
+                "score": score, "content": f"chunk {index}", "citationType": "vectordb|document",
+                "metadata": {"virtualRecordId": "vr1", "orgId": "o1", "isBlockGroup": False, "blockIndex": index},
+            }
+            for index, score in ((0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (30, 0.3), (30, 0.95))
+        ])
+        blob = {
+            "virtual_record_id": "vr1", "id": "rec1", "org_id": "o1", "record_name": "Thread",
+            "record_type": "MESSAGE", "origin": "CONNECTOR", "connector_name": "SLACK",
+            "mime_type": "application/blocks", "weburl": "https://example.com/t",
+            "block_containers": {
+                "blocks": [
+                    {"id": f"b{i}", "index": i, "type": BlockType.TEXT.value, "data": f"message {i}",
+                     "citation_metadata": None, "parent_index": 0}
+                    for i in range(40)
+                ],
+                "block_groups": [{
+                    "index": 0, "type": GroupType.CONVERSATION.value, "data": "",
+                    "children": [{"block_index": i} for i in range(40)],
+                    "citation_metadata": None, "parent_index": None,
+                }],
+            },
+        }
+
+        async def fake_get_record(vid: str, vid_to_record: dict, *_args: object) -> None:
+            vid_to_record[vid] = blob
+
+        with patch("app.modules.retrieval.retrieval_service.get_record",
+                   new=AsyncMock(side_effect=fake_get_record)):
+            result = await retrieval_service.search_with_filters(
+                queries=["q"], user_id="u1", org_id="o1", limit=10, knowledge_search=True,
+            )
+
+        assert 30 in [hit["block_index"] for hit in result["searchResults"]]
+
+    @pytest.mark.asyncio
+    async def test_more_matches_than_the_cap_keep_the_best_hits_not_the_first(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Every child carries the section's best score, so matched passages
+        tie on it. Their own hits' scores decide: the strong match on message
+        30 stays, and the weakest early match goes."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=40,
+            hit={0: 0.2, 1: 0.25, 2: 0.3, 3: 0.35, 30: 0.95},
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [1, 2, 3, 30]
+        assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_a_section_hit_as_a_whole_keeps_its_first_passages(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """No single passage matched, so the section keeps its reading order."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=10, hit=None
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [0, 1, 2, 3]
+        assert "distanceFromMatch" not in result["searchResults"][0]
+        assert result["omittedPassages"] == {"rec1": 6}
+
+    @pytest.mark.asyncio
+    async def test_a_short_section_is_returned_whole_without_an_omitted_count(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=3, hit=1
+        )
+
+        assert [hit["block_index"] for hit in result["searchResults"]] == [0, 1, 2]
+        assert "omittedPassages" not in result
 
     @pytest.mark.asyncio
     async def test_knowledge_search_get_record_returns_none_skips(

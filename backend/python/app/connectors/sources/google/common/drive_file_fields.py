@@ -76,4 +76,7 @@ DRIVE_FOLDER_EXPANSION_LIST_FIELDS = (
     "nextPageToken, incompleteSearch, files(id, capabilities/canListChildren)"
 )
 
-DRIVE_FOLDER_EXPANSION_GET_FIELDS = "id, capabilities/canListChildren, driveId"
+# mimeType + shortcutDetails let a selected folder that is a shortcut be followed to its target.
+DRIVE_FOLDER_EXPANSION_GET_FIELDS = (
+    "id, mimeType, capabilities/canListChildren, driveId, shortcutDetails/targetId"
+)

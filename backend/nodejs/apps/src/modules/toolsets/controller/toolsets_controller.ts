@@ -812,6 +812,53 @@ export const updateToolsetInstance =
   };
 
 /**
+ * A toolset instance's tool approval rules, passed on to the connector service: everyone reads
+ * them (with whether they may change them); an admin replaces them.
+ */
+const proxyToolsetToolRules =
+  (method: HttpMethod, operation: string) =>
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const { instanceId } = req.params;
+    try {
+      if (instanceId === undefined || instanceId === '') {
+        throw new BadRequestError('instanceId is required');
+      }
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`,
+        method,
+        { ...(req.headers as Record<string, string>) },
+        method === HttpMethod.PUT ? req.body : undefined,
+      );
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        operation,
+        'Toolset not found',
+      );
+    } catch (error: unknown) {
+      logger.error(`Failed to ${operation}`, {
+        error: error instanceof Error ? error.message : 'unknown error',
+        instanceId,
+      });
+      next(handleBackendError(error, operation));
+    }
+  };
+
+export const getToolsetToolRules = proxyToolsetToolRules(
+  HttpMethod.GET,
+  'get toolset tool approvals',
+);
+export const updateToolsetToolRules = proxyToolsetToolRules(
+  HttpMethod.PUT,
+  'save toolset tool approvals',
+);
+
+/**
  * Delete a toolset instance (admin only).
  */
 export const deleteToolsetInstance =

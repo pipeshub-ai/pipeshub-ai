@@ -202,13 +202,13 @@ class TestSearchTimeRangeFanOut:
         from app.utils.chat_helpers import CitationRefMapper
 
         with patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            "app.modules.retrieval.context.builder.get_flattened_results",
             new_callable=AsyncMock,
             return_value=[],
         ), patch(
             "app.agents.actions.knowledge_graph.ops.search.BlobStorage",
         ), patch(
-            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+            "app.modules.retrieval.context.renderer.build_message_content_array",
             return_value=([], CitationRefMapper()),
         ):
             await execute_search(

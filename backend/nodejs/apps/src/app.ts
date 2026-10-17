@@ -28,6 +28,10 @@ import { loadConfigurationManagerConfig } from './modules/configuration_manager/
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
 import { createOAuthRouter } from './modules/tokens_manager/routes/oauth.routes';
 import { startTelemetry } from './libs/services/telemetry/telemetry.service';
+import {
+  isTelemetryEnabled,
+  TELEMETRY_COLLECTION_FLAG,
+} from './libs/services/telemetry/flag';
 import { KeyValueStoreService } from './libs/services/keyValueStore.service';
 // Import shared symbols from `./config` rather than `./modules/*` directly.
 import {
@@ -62,7 +66,9 @@ import {
   createDelegationRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
+  editionBoot,
 } from './config';
+import type { EditionContainers } from './libs/edition/edition-boot';
 import { NotificationContainer } from './modules/notification/container/notification.container';
 import { NotificationConsumer } from './modules/notification/service/notification.consumer';
 import { MailConsumer } from './modules/mail/services/mail.consumer';
@@ -79,7 +85,11 @@ import { DesktopProxySocketGateway } from './modules/desktop_proxy/socket/deskto
 import { DesktopProxyContainer } from './modules/desktop_proxy/container/desktop-proxy.container';
 import { createDesktopProxyRouter } from './modules/desktop_proxy/routes/desktop-proxy.routes';
 import { registerDesktopPresence } from './libs/services/desktop-presence.provider';
-import { createGlobalRateLimiter } from './libs/middlewares/rate-limit.middleware';
+import {
+  createGlobalRateLimiter,
+  createSlackEventsRateLimiter,
+  slackEventsRateLimitPerMinute,
+} from './libs/middlewares/rate-limit.middleware';
 import { ApiDocsContainer } from './modules/api-docs/docs.container';
 import { createApiDocsRouter } from './modules/api-docs/docs.routes';
 import { CrawlingManagerContainer } from './modules/crawling_manager/container/cm_container';
@@ -108,6 +118,10 @@ import { SkillsContainer } from './modules/skills/container/skills.container';
 import { createSkillsRouter } from './modules/skills/routes/skills.routes';
 import { McpServersContainer } from './modules/mcp_servers/container/mcp_servers.container';
 import { createMcpServersRouter } from './modules/mcp_servers/routes/mcp_servers.routes';
+import {
+  createMcpClientMetadataHandler,
+  MCP_CLIENT_METADATA_PATH,
+} from './modules/mcp_servers/routes/mcp_client_metadata';
 import { ProjectsContainer } from './modules/projects/container/project.container';
 import { createProjectsRouter } from './modules/projects/routes/project.routes';
 import { createArtifactsRouter } from './modules/artifacts/routes/artifacts.routes';
@@ -121,10 +135,17 @@ import {
 } from './libs/services/redis/connectionProviderFactory';
 
 const SERVER_KEEP_ALIVE_TIMEOUT_MS = 65_000;
+// Well under the stop grace period (30s in docker-compose.yml, 300s in Helm),
+// leaving time to close Mongo, Redis and the brokers after a drain that runs
+// the full time.
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 8_000;
+const SHUTDOWN_IDLE_SWEEP_MS = 50;
 
 const loggerConfig = {
   service: 'Application',
 };
+
+const SCHEDULE_REPAIR_INTERVAL_MS = 60 * 60 * 1000;
 
 export class Application {
   private app: Express;
@@ -141,6 +162,8 @@ export class Application {
   private notificationContainer!: Container;
   private desktopProxyContainer!: Container;
   private outboxDispatcher: OutboxDispatcher | null = null;
+  private scheduleRepairTimer: NodeJS.Timeout | null = null;
+  private scheduleRepairPass: Promise<void> | null = null;
   private crawlingManagerContainer!: Container;
   private apiDocsContainer!: Container;
   private oauthProviderContainer!: Container;
@@ -194,7 +217,10 @@ export class Application {
       try {
         this.logger.info('Ensuring message broker topics exist...');
         const brokerConfig = resolveMessageBrokerConfig(appConfig);
-        await ensureMessageTopicsExist(brokerConfig, this.logger, REQUIRED_TOPICS);
+        await ensureMessageTopicsExist(brokerConfig, this.logger, [
+          ...REQUIRED_TOPICS,
+          ...editionBoot.topics,
+        ]);
         this.logger.info('Message broker topics check completed');
       } catch (brokerError: any) {
         this.logger.warn(
@@ -234,6 +260,8 @@ export class Application {
         configurationManagerConfig,
         appConfig,
       );
+
+      await editionBoot.initialize(configurationManagerConfig, appConfig);
 
       this.mailServiceContainer =
         await MailServiceContainer.initialize(appConfig, configurationManagerConfig);
@@ -287,6 +315,7 @@ export class Application {
       // Slack events proxy must be mounted before body-parsing middleware
       // so the raw request body is forwarded intact for signature verification
       this.setupSlackEventsProxy();
+      editionBoot.mountRawRoutes(this.app);
 
       // Configure Express
       this.configureMiddleware(appConfig);
@@ -294,10 +323,16 @@ export class Application {
       this.setupApiDocs();
       this.configureErrorHandling();
 
-      startTelemetry(
-        KeyValueStoreService.getInstance(configurationManagerConfig),
-      );
-      startOrgMetricsRefresh(this.logger);
+      if (isTelemetryEnabled()) {
+        startTelemetry(
+          KeyValueStoreService.getInstance(configurationManagerConfig),
+        );
+        startOrgMetricsRefresh(this.logger);
+      } else {
+        this.logger.info(
+          `Telemetry disabled (${TELEMETRY_COLLECTION_FLAG} is not 'true')`,
+        );
+      }
 
       // Domain events are written to the outbox by whoever makes the change;
       // this is what actually delivers them. Without it running, events queue
@@ -319,6 +354,7 @@ export class Application {
 
       this.bootstrapNotificationBrokerConsumer();
       this.bootstrapMailBrokerConsumer();
+      editionBoot.startWorkers(this.logger);
 
       // Serve static frontend files\
       const publicDir = path.join(__dirname, 'public');
@@ -425,39 +461,43 @@ export class Application {
           // Login with microsoft urls
           'https://login.microsoftonline.com',
           'https://graph.microsoft.com',
+          ...editionBoot.cspSources.connectSrc,
           ...envConnectSrcs,
           appConfig.connectorPublicUrl,
         ]),
       ].filter(Boolean);
 
-      this.app.use(helmet({
-        crossOriginOpenerPolicy: { policy: "unsafe-none" }, // Required for MSAL popup
-        contentSecurityPolicy: {
-          directives: {
-            defaultSrc: ["'self'"],
-            scriptSrc: [
-              "'self'",
-              ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
-                "https://cdnjs.cloudflare.com",
-                "https://login.microsoftonline.com",
-                "https://graph.microsoft.com",
-                "https://accounts.google.com",
-                "https://challenges.cloudflare.com",
-                "https://api.iconify.design",
-                "https://api.simplesvg.com"
-              ]),
-            ],
-            connectSrc: connectSrc,
-            objectSrc: ["'self'", "data:", "blob:"], // PDF rendering
-            frameSrc: ["'self'", "blob:"], // PDF rendering in frames
-            workerSrc: ["'self'", "blob:"], // PDF.js workers
-            childSrc: ["'self'", "blob:"], // PDF rendering
-            imgSrc: ["'self'", "data:", "blob:", "https:"], // Images in PDFs
-            fontSrc: ["'self'", "data:", "https:"], // Fonts in PDFs
-            mediaSrc: ["'self'", "blob:", "data:"] // Media in PDFs
-          }
-        }
-      }));
+      this.app.use(
+        helmet({
+          crossOriginOpenerPolicy: { policy: 'unsafe-none' }, // Required for MSAL popup
+          contentSecurityPolicy: {
+            directives: {
+              defaultSrc: ["'self'"],
+              scriptSrc: [
+                "'self'",
+                ...editionBoot.cspSources.scriptSrc,
+                ...(process.env.CSP_SCRIPT_SRCS?.split(',') ?? [
+                  'https://cdnjs.cloudflare.com',
+                  'https://login.microsoftonline.com',
+                  'https://graph.microsoft.com',
+                  'https://accounts.google.com',
+                  'https://challenges.cloudflare.com',
+                  'https://api.iconify.design',
+                  'https://api.simplesvg.com',
+                ]),
+              ],
+              connectSrc: connectSrc,
+              objectSrc: ["'self'", 'data:', 'blob:'], // PDF rendering
+              frameSrc: ["'self'", 'blob:', ...editionBoot.cspSources.frameSrc], // PDF rendering in frames
+              workerSrc: ["'self'", 'blob:'], // PDF.js workers
+              childSrc: ["'self'", 'blob:'], // PDF rendering
+              imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
+              fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
+              mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+            },
+          },
+        }),
+      );
     }
 
     // Request context middleware
@@ -515,7 +555,9 @@ export class Application {
         appConfig.scopedJwtSecret,
       ),
     );
-    this.app.use(metricsMiddleware());
+    if (isTelemetryEnabled()) {
+      this.app.use(metricsMiddleware());
+    }
   }
 
   private configureRoutes(): void {
@@ -632,6 +674,8 @@ export class Application {
       createKnowledgeBaseRouter(this.knowledgeBaseContainer),
     );
 
+    editionBoot.mountRoutes(this.app, this.editionContainers());
+
     this.app.use(
       '/api/v1/artifacts',
       createArtifactsRouter(this.knowledgeBaseContainer),
@@ -681,6 +725,14 @@ export class Application {
     this.app.use(
       '/api/v1/mcp-servers',
       createMcpServersRouter(this.mcpServersContainer)
+    );
+    // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
+    // ahead of the static files and the SPA fallback, which answer a .json path with 404.
+    this.app.get(
+      MCP_CLIENT_METADATA_PATH,
+      createMcpClientMetadataHandler(
+        KeyValueStoreService.getInstance(loadConfigurationManagerConfig()),
+      ),
     );
 
     // Projects — workspaces grouping chat/agent conversations, instructions, files, and scope
@@ -825,6 +877,7 @@ export class Application {
       if (this.authServiceContainer) {
         await this.updateSamlStrategies();
       }
+      await editionBoot.afterListen(this.logger, this.editionContainers());
 
     } catch (error) {
       this.logger.error('Failed to start server', {
@@ -834,9 +887,82 @@ export class Application {
     }
   }
 
+  /**
+   * Stops accepting connections and resolves once in-flight requests have
+   * finished, force-closing whatever is still open after the drain timeout.
+   */
+  private async closeHttpServer(): Promise<void> {
+    if (!this.server.listening) return;
+    const closed = new Promise<void>((resolve) => {
+      this.server.close(() => {
+        resolve();
+      });
+    });
+    // close() drops only the sockets idle at this moment. A keep-alive socket
+    // whose response finishes later stays open for keepAliveTimeout (65s) and
+    // would hold close() until the drain timeout, so keep sweeping.
+    const sweep = setInterval(() => {
+      this.server.closeIdleConnections();
+    }, SHUTDOWN_IDLE_SWEEP_MS);
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => {
+        resolve('timeout');
+      }, SHUTDOWN_DRAIN_TIMEOUT_MS);
+    });
+    try {
+      const outcome = await Promise.race([
+        closed.then(() => 'drained' as const),
+        timedOut,
+      ]);
+      if (outcome === 'timeout') {
+        this.logger.warn(
+          'Requests still open after the shutdown drain timeout; closing them',
+          { timeoutMs: SHUTDOWN_DRAIN_TIMEOUT_MS },
+        );
+        this.server.closeAllConnections();
+        await closed;
+      }
+    } finally {
+      clearInterval(sweep);
+      clearTimeout(timer);
+    }
+  }
+
+  private editionContainers(): EditionContainers {
+    return {
+      entityManager: this.entityManagerContainer,
+      auth: this.authServiceContainer,
+    };
+  }
+
   async stop(): Promise<void> {
     try {
       this.logger.info('Shutting down application...');
+      if (this.scheduleRepairTimer) clearInterval(this.scheduleRepairTimer);
+      // A pass still running calls the scheduler: let it end before its services are disposed, but
+      // never hold the shutdown longer than the request drain does.
+      if (this.scheduleRepairPass) {
+        let waited: NodeJS.Timeout | undefined;
+        await Promise.race([
+          this.scheduleRepairPass,
+          new Promise<void>((resolve) => {
+            waited = setTimeout(resolve, SHUTDOWN_DRAIN_TIMEOUT_MS);
+          }),
+        ]).finally(() => clearTimeout(waited));
+      }
+      // Stop accepting first, and only dispose Mongo/Redis/brokers once the
+      // requests already in flight have finished — otherwise they fail
+      // mid-request on closed clients. Socket.IO connections are closed by
+      // the gateway shutdowns below, so they don't hold the drain open.
+      const drained = this.closeHttpServer();
+      try {
+        await editionBoot.stop(this.logger, this.editionContainers());
+      } catch (err) {
+        this.logger.warn('Edition services did not stop cleanly', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
       try {
         const notificationConsumer =
           this.notificationContainer.get<NotificationConsumer>(
@@ -858,15 +984,6 @@ export class Application {
         });
       }
       try {
-        this.mailServiceContainer
-          .get<MailSenderService>(MailSenderService)
-          .close();
-      } catch (err) {
-        this.logger.warn('MailSenderService not available during shutdown', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      try {
         this.desktopProxySocketGateway?.shutdown();
         this.desktopProxySocketGateway = null;
         registerDesktopPresence(null);
@@ -876,6 +993,18 @@ export class Application {
       } catch (err) {
         this.logger.warn('NotificationService not available during shutdown',
           { error: err instanceof Error ? err.message : String(err) });
+      }
+      await drained;
+      // After the drain: an in-flight /mail/emails/sendEmail request may still be
+      // queued on this pool, and close() fails queued messages.
+      try {
+        this.mailServiceContainer
+          .get<MailSenderService>(MailSenderService)
+          .close();
+      } catch (err) {
+        this.logger.warn('MailSenderService not available during shutdown', {
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       // Stopped before the containers go, because it holds the message
       // producer one of them owns.
@@ -891,6 +1020,7 @@ export class Application {
       await EnterpriseSearchAgentContainer.dispose();
       await TokenManagerContainer.dispose();
       await KnowledgeBaseContainer.dispose();
+      await editionBoot.dispose();
       await ConfigurationManagerContainer.dispose();
       await MailServiceContainer.dispose();
       await CrawlingManagerContainer.dispose();
@@ -920,27 +1050,36 @@ export class Application {
     // are logged but never crash the process — startup must succeed even
     // if a migration cannot run this boot.
     setImmediate(async () => {
-      await runWithRequestContext(
-        { rootId: newSystemRoot() },
-        async () => {
-      try {
-        this.logger.info('Running migration...');
-        const scheduler =
-          this.crawlingManagerContainer.get<CrawlingSchedulerService>(
-            CrawlingSchedulerService,
-          );
-        const appConfig = await loadAppConfig();
-        await this.configurationManagerContainer
-          .get(MigrationService)
-          .runMigration({ scheduler, appConfig });
-        this.logger.info('Migration completed successfully');
-      } catch (error) {
-        this.logger.error('Failed to run migration', {
-          error: error instanceof Error ? error.message : 'Unknown error',
-        });
-      }
-        },
-      );
+      await runWithRequestContext({ rootId: newSystemRoot() }, async () => {
+        try {
+          this.logger.info('Running migration...');
+          const scheduler =
+            this.crawlingManagerContainer.get<CrawlingSchedulerService>(
+              CrawlingSchedulerService,
+            );
+          const appConfig = await loadAppConfig();
+          const migrations =
+            this.configurationManagerContainer.get(MigrationService);
+          // Before the migration: the repair is the safety net, so a failed migration must not turn it off.
+          // A schedule that failed to be written after a save would otherwise stay missing for ever.
+          this.scheduleRepairTimer = setInterval(() => {
+            if (this.scheduleRepairPass) return; // a slow pass must not overlap the next one
+            this.scheduleRepairPass = runWithRequestContext(
+              { rootId: newSystemRoot() },
+              () => migrations.repairConnectorSchedules(scheduler, appConfig),
+            ).finally(() => {
+              this.scheduleRepairPass = null;
+            });
+          }, SCHEDULE_REPAIR_INTERVAL_MS);
+          this.scheduleRepairTimer.unref();
+          await migrations.runMigration({ scheduler, appConfig });
+          this.logger.info('Migration completed successfully');
+        } catch (error) {
+          this.logger.error('Failed to run migration', {
+            error: error instanceof Error ? error.message : 'Unknown error',
+          });
+        }
+      });
     });
   }
 
@@ -1008,32 +1147,39 @@ export class Application {
   private setupSlackEventsProxy(): void {
     const slackBotPort = parseInt(process.env.SLACK_BOT_PORT || '3020', 10);
 
-    this.app.use('/slack/events', (req, res) => {
-      const proxyReq = http.request(
-        {
-          hostname: 'localhost',
-          port: slackBotPort,
-          path: '/slack/events',
-          method: req.method,
-          headers: req.headers,
-        },
-        (proxyRes) => {
-          res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
-          proxyRes.pipe(res);
-        },
-      );
+    this.app.use(
+      '/slack/events',
+      createSlackEventsRateLimiter(
+        this.logger,
+        slackEventsRateLimitPerMinute(),
+      ),
+      (req, res) => {
+        const proxyReq = http.request(
+          {
+            hostname: 'localhost',
+            port: slackBotPort,
+            path: '/slack/events',
+            method: req.method,
+            headers: req.headers,
+          },
+          (proxyRes) => {
+            res.writeHead(proxyRes.statusCode || 502, proxyRes.headers);
+            proxyRes.pipe(res);
+          },
+        );
 
-      proxyReq.on('error', (err) => {
-        this.logger.error('Slack events proxy error', {
-          error: err instanceof Error ? err.message : String(err),
+        proxyReq.on('error', (err) => {
+          this.logger.error('Slack events proxy error', {
+            error: err instanceof Error ? err.message : String(err),
+          });
+          if (!res.headersSent) {
+            res.status(502).json({ error: 'Slack bot service unavailable' });
+          }
         });
-        if (!res.headersSent) {
-          res.status(502).json({ error: 'Slack bot service unavailable' });
-        }
-      });
 
-      req.pipe(proxyReq);
-    });
+        req.pipe(proxyReq);
+      },
+    );
   }
 
   async addOAuthServicesToAuthMiddleware(): Promise<void> {

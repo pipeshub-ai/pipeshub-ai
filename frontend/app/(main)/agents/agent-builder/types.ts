@@ -83,6 +83,8 @@ export interface McpServerReference {
   name: string;
   displayName?: string;
   typeId?: string;
+  /** Every tool the server offers at chat time, including ones added later; `tools` is then just the snapshot shown. */
+  allTools?: boolean;
   tools?: McpToolRef[];
 }
 

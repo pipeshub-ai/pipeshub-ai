@@ -84,6 +84,20 @@ class TestDriverIsPerLoop:
             assert len(built) == 2, "the second loop reused the first loop's driver"
             assert client.driver is main_driver, "this loop's driver was replaced"
 
+    async def test_the_database_check_runs_once_across_loops(self) -> None:
+        """It runs a server-wide query on the system database; a second loop's
+        driver must not repeat it."""
+        client = _client()
+        ensure = AsyncMock()
+        with patch(
+            "app.services.graph_db.neo4j.neo4j_client.AsyncGraphDatabase.driver",
+            side_effect=lambda *a, **kw: AsyncMock(),
+        ), patch.object(Neo4jClient, "_ensure_database_exists", ensure):
+            await client.connect()
+            _run_on_another_loop(client.connect)
+
+        ensure.assert_awaited_once()
+
     async def test_the_same_loop_reuses_its_driver(self):
         """Per-loop must not mean per-call."""
         client = _client()

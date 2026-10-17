@@ -67,6 +67,12 @@ vi.mock('@/config', () => ({
   AgentChatHeader: ({ displayName }: { displayName: string | null }) => (
     <header aria-label="Agent header">{displayName ?? 'Agent'}</header>
   ),
+  ConversationHeaderOverlay: (props: { agentChip: React.ReactNode; shareGroup: React.ReactNode }) => (
+    <>
+      {props.agentChip}
+      {props.shareGroup}
+    </>
+  ),
 }));
 
 const fetchConversations = vi.fn();
@@ -140,6 +146,7 @@ vi.mock('@/app/(main)/workspace/users/api', () => ({
 const getProject = vi.fn();
 vi.mock('@/chat/project-api', () => ({ ProjectApi: { get: (...args: unknown[]) => getProject(...args) } }));
 vi.mock('@/chat/hooks/use-project-scope-hydration', () => ({ useProjectScopeHydration: () => {} }));
+vi.mock('@/chat/hooks/use-hydrate-unread-conversations', () => ({ useHydrateUnreadConversations: () => {} }));
 
 const toastError = vi.fn();
 vi.mock('@/lib/store/toast-store', () => ({
@@ -241,6 +248,14 @@ beforeEach(() => {
 // ── Tests ──────────────────────────────────────────────────────────
 
 describe('Chat page — new chat', () => {
+  it('links the footer to the GitHub repository and the docs introduction', () => {
+    const { container } = renderPage();
+
+    const hrefs = Array.from(container.querySelectorAll('a')).map((a) => a.getAttribute('href'));
+    expect(hrefs).toContain('https://github.com/pipeshub-ai/pipeshub-ai');
+    expect(hrefs).toContain('https://docs.pipeshub.com/introduction');
+  });
+
   it('greets the user by name and offers the composer', () => {
     useUserStore.setState({
       profile: {

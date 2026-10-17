@@ -309,6 +309,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {
@@ -2431,6 +2441,31 @@ class TestGetRecord:
         assert "vr-1" in vr_map
 
     @pytest.mark.asyncio
+    async def test_citation_metadata_carries_connector_instance_name(self) -> None:
+        """The name the retrieval service put on the graph record reaches the citation."""
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=_make_record_blob())
+        virtual_to_record_map = {
+            "vr-1": {
+                "_key": "rec-1",
+                "recordType": "FILE",
+                "recordName": "Q3 plan.pdf",
+                "origin": "CONNECTOR",
+                "connectorName": "DRIVE",
+                "connectorId": "conn-1",
+                "connectorInstanceName": "Marketing Drive",
+                "mimeType": "application/pdf",
+            },
+        }
+        vr_map = {}
+        await get_record("vr-1", vr_map, blob_store, "org-1", virtual_to_record_map)
+
+        meta = get_enhanced_metadata(vr_map["vr-1"], _make_text_block(index=0, data="x"), {})
+
+        assert meta["connector"] == "DRIVE"
+        assert meta["connectorInstanceName"] == "Marketing Drive"
+
+    @pytest.mark.asyncio
     async def test_without_graph_provider(self):
         record_blob = _make_record_blob()
         blob_store = AsyncMock()
@@ -2705,6 +2740,257 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
         assert results[0]["content"] == "Hello world"
         assert results[0]["block_type"] == BlockType.TEXT.value
+
+    @pytest.mark.asyncio
+    async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
+        """Each list-item hit expands to its whole list; a second hit on the same
+        list must not add a duplicate unit that takes another ranked slot."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.9), (1, "ItemB", 0.8))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert [r.get("block_group_index") for r in results] == [0]
+
+    @pytest.mark.asyncio
+    async def test_a_list_hit_twice_keeps_its_best_score(self) -> None:
+        """/search flattens before it sorts, and its query batches are not in score order."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.4), (1, "ItemB", 0.9))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+        # The search API keeps every item that matched, whatever its score.
+        assert unit["hit_block_scores"] == {0: 0.4, 1: 0.9}
+
+    @pytest.mark.asyncio
+    async def test_a_weaker_later_hit_on_a_list_is_still_recorded_as_a_match(self) -> None:
+        """Merging a second hit into the list must not lose which item it matched."""
+        items = [_make_text_block(index=i, data=f"Item{i}", parent_index=0) for i in range(8)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [
+            _make_list_group(index=0, children_block_indices=list(range(8)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": f"Item{idx}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, score in ((1, 0.9), (6, 0.3))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert unit["hit_block_scores"] == {1: 0.9, 6: 0.3}
+
+    @pytest.mark.asyncio
+    async def test_a_row_hit_inside_a_table_already_expanded_is_recorded_on_it(self) -> None:
+        """A small table hit as a whole is expanded into every row first; a hit on
+        one of its rows used to be dropped as already seen."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Row 7", "score": 0.7, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 7, "isBlockGroup": False}},
+            {"content": "", "score": 0.8, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == {7: 0.7}
+        assert len(table["content"][1]) == 10
+
+    @pytest.mark.asyncio
+    async def test_a_hit_on_a_split_row_of_an_expanded_table_is_recorded_on_its_row(self) -> None:
+        """A row with an inline image is stored as an empty row container plus text
+        fragments, and the fragment is what was indexed. When the table was already
+        expanded, the fragment's hit is recorded on the container's row."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        rows[7]["data"] = {"row_number": 8}
+        fragment = {
+            "id": "frag-10", "index": 10, "type": BlockType.TEXT.value, "data": "Row 7 text",
+            "citation_metadata": None, "parent_index": None, "parent_block_index": 7,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, fragment]
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            {"content": "Row 7 text", "score": 0.6, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 10, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == {7: 0.6}
+        assert any(child["block_index"] == 7 and child["content"] == "Row 7 text" for child in table["content"][1])
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_seen_message_raises_its_score(self) -> None:
+        """A long block is several points with one blockIndex, and the search API
+        runs several queries; the passage must keep its best point's score."""
+        items = [_make_text_block(index=i, data=f"message {i}", parent_index=0) for i in range(40)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [
+            _make_list_group(index=0, children_block_indices=list(range(40)), group_type=GroupType.CONVERSATION)
+        ]
+        vr_map = {"vr-1": record}
+        points = [(0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (30, 0.3), (30, 0.95)]
+        result_set = [
+            {"content": f"message {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in points
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_scores"][30] == 0.95
+
+    @pytest.mark.asyncio
+    async def test_a_small_table_hit_again_more_strongly_raises_its_rows(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9, 0.9, 0.9]
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_standalone_block_raises_its_score(self) -> None:
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="a long paragraph")]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "part", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False}}
+            for score in (0.3, 0.8)
+        ]
+
+        (passage,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert passage["score"] == 0.8
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_queued_large_table_row_raises_its_score(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Row 1", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 1, "isBlockGroup": False}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9]
+
+    @pytest.mark.asyncio
+    async def test_a_split_row_of_a_large_table_keeps_its_best_fragment_score(self) -> None:
+        """Two fragments of one image-split row of a large table both match; the
+        row is queued once, and must carry the stronger hit's score."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        rows[1]["data"] = {"row_number": 2}
+        fragments = [
+            {"id": f"frag-{i}", "index": i, "type": BlockType.TEXT.value, "data": f"part {i}",
+             "citation_metadata": None, "parent_index": None, "parent_block_index": 1}
+            for i in (3, 4)
+        ]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, *fragments]
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": f"part {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in ((3, 0.3), (4, 0.9))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert {child["score"] for child in table_unit["content"][1]} == {0.9}
+
+    @pytest.mark.asyncio
+    async def test_each_row_hit_on_an_expanded_table_keeps_its_own_score(self) -> None:
+        """The rows all carry the table point's score; the search API ranks the
+        matched rows by their own hits, so each hit's score is kept."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        hits = {0: 0.2, 1: 0.25, 2: 0.3, 3: 0.35, 9: 0.95}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            *[
+                {"content": f"Row {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+                for i, score in hits.items()
+            ],
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == hits
+
+    @pytest.mark.asyncio
+    async def test_a_list_unit_records_the_item_that_matched(self) -> None:
+        items = [_make_text_block(index=i, data=f"Item{i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1, 2])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Item2", "score": 0.7, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 2, "isBlockGroup": False}},
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_scores"] == {2: 0.7}
+        assert [child["block_index"] for child in unit["content"][1]] == [0, 1, 2]
 
     @pytest.mark.asyncio
     async def test_one_unreadable_record_does_not_fail_the_rest(self):
@@ -2989,34 +3275,9 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_from_tool_no_adjacent_chunks(self):
-        """With from_tool=True, adjacent chunks should not be added."""
-        block0 = _make_text_block(index=0, data="Main text")
-        block1 = _make_text_block(index=1, data="Adjacent text")
-        record = _make_record_blob()
-        record["block_containers"]["blocks"] = [block0, block1]
-
-        blob_store = self._make_blob_store(record)
-        vr_map = {"vr-1": record}
-
-        result_set = [
-            {
-                "content": "Main text",
-                "score": 0.9,
-                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
-            },
-        ]
-        results = await get_flattened_results(
-            result_set, blob_store, "org-1", False, vr_map,
-            from_tool=True,
-        )
-        # block_index=1 should not appear as adjacent chunk
-        adjacent_results = [r for r in results if r.get("block_index") == 1]
-        assert len(adjacent_results) == 0
-
-    @pytest.mark.asyncio
-    async def test_adjacent_chunks_added_for_regular_call(self):
-        """Without from_tool/from_retrieval_service, adjacent text blocks should be added."""
+    async def test_no_adjacent_chunks_are_added(self):
+        """Neighbours are added after ranking, around the units kept
+        (`modules/retrieval/context`), never here."""
         block0 = _make_text_block(index=0, data="Adjacent before")
         block1 = _make_text_block(index=1, data="Main text")
         block2 = _make_text_block(index=2, data="Adjacent after")
@@ -3036,11 +3297,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map,
         )
-        # Should contain the main block plus adjacent text blocks
-        block_indices = {r.get("block_index") for r in results}
-        assert 1 in block_indices  # main
-        assert 0 in block_indices  # adjacent before
-        assert 2 in block_indices  # adjacent after
+        assert [r.get("block_index") for r in results] == [1]
 
     @pytest.mark.asyncio
     async def test_config_service_error_graceful(self):
@@ -6360,7 +6617,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6371,7 +6628,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]
@@ -6460,6 +6717,31 @@ class TestGetFlattenedResultsNewBranches:
         assert "DDL:" in summary
         assert len(children) == 1
         assert children[0]["content"] == "id=1, name=Alice"
+
+    @pytest.mark.asyncio
+    async def test_an_out_of_blob_sql_row_keeps_its_strongest_point(self) -> None:
+        """A SQL row past the rows the blob stores, hit by two points: the row
+        takes the stronger point's score and text."""
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": {"table_summary": "sql table", "ddl": "CREATE TABLE t(id INT)"},
+            "children": [],
+            "table_metadata": {},
+            "citation_metadata": None,
+        }]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 99, "isBlockGroup": False}}
+            for text, score in (("id=1, part one", 0.3), ("id=1, part two", 0.95))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        (row,) = table_unit["content"][1]
+        assert (row["score"], row["content"]) == (0.95, "id=1, part two")
 
     @pytest.mark.asyncio
     async def test_block_index_out_of_bounds_non_sql(self):

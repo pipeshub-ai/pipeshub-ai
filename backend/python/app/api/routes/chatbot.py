@@ -7,7 +7,7 @@ from collections.abc import AsyncGenerator, Mapping
 from contextlib import aclosing
 from io import BytesIO
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 import pdfplumber
@@ -43,6 +43,7 @@ from app.models.blocks import (
 )
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import (
+    count_chars_per_page_from_bytes_sync,
     render_all_pages_as_pil_from_bytes_sync,
 )
 from app.modules.parsers.pdf.pdfplumber_opencv_processor import (
@@ -52,7 +53,11 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
 from app.modules.transformers.graphdb import GraphDBTransformer
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
-from app.modules.transformers.transformer import TransformContext
+from app.modules.transformers.transformer import (
+    IMAGE_DESCRIPTION_BUDGET_S,
+    TransformContext,
+)
+from app.services.artifact_registry.access import is_direct_share, reader_edge
 from app.services.featureflag.platform_settings import is_user_context_enabled
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
@@ -70,6 +75,7 @@ from app.utils.llm import LLM_MISSING_FOR_CHAT, LLMNotConfiguredError
 from app.utils.record_access import service_account_upload_permission_edges
 from app.utils.streaming import create_sse_event
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 
 DEFAULT_CONTEXT_LENGTH = 128000
 logger = logging.getLogger(__name__)
@@ -113,6 +119,16 @@ class ChatQuery(BaseModel):
     # labels are only valid for the request that minted them, so callers
     # that rely on record ids surviving across turns should leave this off.
     enableRecordIdShortening: bool = False
+    # Opt-in measurement surface for evaluation clients: streams CUSTOM
+    # `retrieval_context` frames naming the records and blocks that reached
+    # the model, plus a `run_usage` frame. No effect on the answer.
+    includeRetrievalContext: bool = False
+    # "short": a search waits at most `KEYWORD_SEARCH_SHORT_WAIT_SECS` for the
+    # keyword (grep) pattern match once its semantic results are in, and keeps
+    # what it found by then. For callers that would rather answer sooner, such
+    # as agents calling chat over MCP. Ignored under HIGH_ACCURACY_MODE.
+    # Absent or "full": waits for all of it, as before.
+    keywordSearchBudget: Literal["short", "full"] | None = None
     # Stop Generation: client-generated UUID identifying this run, so a
     # later `POST /chat/cancel {runId}` can target it. Absent for callers
     # that predate this field or don't need cancellation (the agent loop
@@ -161,12 +177,33 @@ class AttachmentUploadRequest(BaseModel):
     attachments: list[AttachmentUploadItem]
 
 
+def _text_layer_char_counts(file_content: bytes) -> list[int] | None:
+    try:
+        return count_chars_per_page_from_bytes_sync(file_content)
+    except Exception:
+        logger.warning(
+            "Could not read the PDF's text layer with pdfium; checking every page with pdfplumber",
+            exc_info=True,
+        )
+        return None
+
+
 def _pdf_has_any_ocr_page(file_content: bytes) -> bool:
+    chars_per_page = _text_layer_char_counts(file_content)
     with pdfplumber.open(BytesIO(file_content)) as pdf:
         total = len(pdf.pages)
         if total == 0:
             return False
-        ocr_count = sum(1 for page in pdf.pages if OCRStrategy.needs_ocr(page, logger))
+        if chars_per_page is None or len(chars_per_page) != total:
+            chars_per_page = [None] * total
+        # A page with no text layer always needs OCR (`needs_ocr` sees zero text
+        # density), so it is counted without pdfplumber, which can spend minutes
+        # walking a page whose glyphs are drawn as vector paths.
+        ocr_count = sum(
+            1
+            for page, chars in zip(pdf.pages, chars_per_page)
+            if chars == 0 or OCRStrategy.needs_ocr(page, logger)
+        )
     return ocr_count / total >= 0.5
 
 
@@ -440,6 +477,10 @@ def _attachment_unreadable(file_name: str, kind: str) -> str:
 # Cap tabular chat-attachment context so large CSV/XLSX files don't blow the LLM window.
 _CHAT_ATTACHMENT_MAX_TABLE_ROWS = 500
 
+# The browser gives an attachment upload 90s, and one stalled vision call can run
+# for minutes. An image left undescribed still reaches a multimodal chat model.
+_CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S = 40
+
 
 def _is_supported_attachment_mime(mime_type: str) -> bool:
     return mime_type.lower() in SUPPORTED_ATTACHMENT_MIME_TYPES
@@ -539,12 +580,15 @@ async def _rollback_attachment_records(
             )
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.post(
     "/chat/attachments/upload",
     dependencies=[
         Depends(
             require_scopes(
                 OAuthScopes.CONVERSATION_CHAT,
+                OAuthScopes.AGENT_EXECUTE,
                 service_scopes=(TokenScopes.CONVERSATION_CREATE,),
             )
         )
@@ -585,7 +629,7 @@ async def upload_chat_attachments(
     # have no User node and skip permission edges, so the lookup is skipped.
     user_key: str | None = None
     if not is_service_account:
-        user_doc = await graph_provider.get_user_by_user_id(user_id)
+        user_doc = await get_user_or_503(graph_provider, user_id)
         if not user_doc:
             raise HTTPException(status_code=404, detail="User not found for attachment upload")
         user_key = user_doc.get("_key") or user_doc.get("id")
@@ -819,6 +863,10 @@ async def upload_chat_attachments(
             config_service=config_service,
         )
 
+        # One budget for the whole request: its records are indexed one after
+        # another, and the Slack bot and API send up to 10 files in one upload.
+        loop = asyncio.get_running_loop()
+        describe_deadline = loop.time() + _CHAT_ATTACHMENT_IMAGE_DESCRIPTION_BUDGET_S
         for record_doc in record_docs:
             record_id = record_doc.get("_key") or record_doc.get("id")
             block_containers = parsed_blocks_by_record.get(record_id)
@@ -830,7 +878,11 @@ async def upload_chat_attachments(
             record.virtual_record_id = record_doc.get("virtualRecordId")
             ctx = TransformContext(
                 record=record,
-                settings={"sink_only": True, "skip_vector_store": True},
+                settings={
+                    "sink_only": True,
+                    "skip_vector_store": True,
+                    IMAGE_DESCRIPTION_BUDGET_S: max(describe_deadline - loop.time(), 0.0),
+                },
             )
             await sink_orchestrator.index(ctx)
     except Exception:
@@ -962,19 +1014,28 @@ async def _grant_reader_permissions(
     record_ids: list[str],
 ) -> int:
     """Create READER edges for pairs with no permission edge yet, on records the
-    grantor owns. Existing edges are left alone: `batch_create_edges` overwrites
+    grantor owns. Other edges are left alone: `batch_create_edges` overwrites
     every property, so re-granting would downgrade an OWNER edge and rewrite edges
-    on every shared conversation view."""
+    on every shared conversation view. The exception is an artifact the owner also
+    shared directly: its edge records the conversation grant once, so taking the
+    direct share away later leaves the chat's access."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     missing = [pair for pair, edge in zip(pairs, existing) if edge is None]
-    if not missing:
+    direct_only = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and not edge.get("chatGranted")
+    ]
+    if not missing and not direct_only:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in missing))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in missing] + [rid for (_, rid), _ in direct_only])),
     )
     ts = get_epoch_timestamp_in_ms()
     edges: list[dict[str, Any]] = [
@@ -991,6 +1052,11 @@ async def _grant_reader_permissions(
         for user_key, record_id in missing
         if record_id in owned
     ]
+    edges += [
+        reader_edge(user_key, record_id, direct=True, chat=True, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in direct_only
+        if record_id in owned
+    ]
     if edges:
         await graph_provider.batch_create_edges(edges, CollectionNames.PERMISSION.value)
     return len(edges)
@@ -1004,20 +1070,38 @@ async def _revoke_reader_permissions(
 ) -> int:
     """Remove READER edges on records the grantor owns. `batch_delete_edges` matches
     `(_from, _to)` regardless of role, so without the READER filter an unshare that
-    names the owner would delete the owner's own OWNER edges."""
+    names the owner would delete the owner's own OWNER edges. An artifact the
+    owner also shared directly keeps its edge and only loses the chat's grant."""
     if not user_ids or not record_ids:
         return 0
 
     pairs, existing = await _user_record_pairs(graph_provider, user_ids, record_ids)
     readers = [
-        pair for pair, edge in zip(pairs, existing) if edge and edge.get("role") == "READER"
+        pair
+        for pair, edge in zip(pairs, existing)
+        if edge and edge.get("role") == "READER" and not is_direct_share(edge)
     ]
-    if not readers:
+    also_direct = [
+        (pair, edge)
+        for pair, edge in zip(pairs, existing)
+        if is_direct_share(edge) and edge.get("chatGranted")
+    ]
+    if not readers and not also_direct:
         return 0
 
     owned = await _records_owned_by(
-        graph_provider, grantor_user_id, list(dict.fromkeys(record_id for _, record_id in readers))
+        graph_provider,
+        grantor_user_id,
+        list(dict.fromkeys([rid for _, rid in readers] + [rid for (_, rid), _ in also_direct])),
     )
+    ts = get_epoch_timestamp_in_ms()
+    direct_kept = [
+        reader_edge(user_key, record_id, direct=True, chat=False, now=ts, created_at=edge.get("createdAtTimestamp"))
+        for (user_key, record_id), edge in also_direct
+        if record_id in owned
+    ]
+    if direct_kept:
+        await graph_provider.batch_create_edges(direct_kept, CollectionNames.PERMISSION.value)
     edges: list[dict[str, Any]] = [
         {
             "from_id": user_key,
@@ -1030,7 +1114,7 @@ async def _revoke_reader_permissions(
     ]
     if edges:
         await graph_provider.batch_delete_edges(edges, CollectionNames.PERMISSION.value)
-    return len(edges)
+    return len(edges) + len(direct_kept)
 
 
 async def _get_artifact_record_ids_for_conversation(
@@ -1141,10 +1225,12 @@ async def revoke_artifact_permissions(
     return {"revoked": revoked}
 
 
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
 @router.delete(
     "/chat/attachments/{record_id}",
     status_code=204,
-    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))],
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 @inject
 async def delete_chat_attachment(
@@ -1215,14 +1301,16 @@ async def _load_org_doc(graph_provider: IGraphDBProvider, org_id: str | None) ->
     return await graph_provider.get_document(org_id, CollectionNames.ORGS.value)
 
 
-async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None:  # noqa: ANN401
+async def load_entity_vector_store(
+    container: Any, logger_: Any, org_id: str | None,  # noqa: ANN401
+) -> Any | None:  # noqa: ANN401
     """The entity store backing the knowledge-graph entity tools, or None.
 
     None hides the tools and their prompt paragraph: when the provider is
-    missing or fails, and when the entities collection does not exist yet, so
-    a deployment with nothing indexed does not pay for tools that can only
-    come back empty. Never raises; chat must not fail over an optional
-    dependency.
+    missing or fails, and when *org_id*'s entities collection does not
+    exist yet, so a deployment with nothing indexed does not pay for tools
+    that can only come back empty. Never raises; chat must not fail over an
+    optional dependency.
     """
     provider = getattr(container, "entity_vector_store", None)
     if provider is None:
@@ -1231,12 +1319,30 @@ async def load_entity_vector_store(container: Any, logger_: Any) -> Any | None: 
         store = provider()
         if inspect.isawaitable(store):
             store = await store
-        if store is None or not await store.collection_exists():
+        if store is None or not await store.collection_exists(org_id):
             return None
         return store
     except Exception as exc:
         logger_.warning("entity_vector_store unavailable: %s", exc)
         return None
+
+
+async def warm_up_entity_vector_store(container: Any, logger_: Any) -> None:  # noqa: ANN401
+    """Load the entity store's embedding models at startup. Loaded lazily,
+    they used up the first entity search's deadline, which then dropped every
+    match unchecked. Skipped without an entities collection: initialising
+    would create one, and chat hides the tools until there is one. Never
+    raises; a failed load is retried after the store's back-off, as a failed
+    first search would be."""
+    store = await load_entity_vector_store(container, logger_, None)
+    if store is None:
+        return
+    try:
+        logger_.info("🔥 Warming up entity vector store in background")
+        await store.embedding_fingerprint()
+        logger_.info("✅ Entity vector store warmup complete")
+    except Exception as exc:
+        logger_.warning("Entity vector store warmup failed (a later search retries): %s", exc)
 
 
 async def load_system_prompts(
@@ -1308,7 +1414,7 @@ async def _generate_chat_stream_via_agent_loop(
     # find_records_by_entity tools. When unavailable those tools are simply
     # not granted, rather than blocking chat.
     entity_vector_store_task = asyncio.ensure_future(
-        load_entity_vector_store(container, logger_)
+        load_entity_vector_store(container, logger_, org_id)
     )
     background_tasks = [
         prompts_task, user_doc_task, org_doc_task,
@@ -1375,6 +1481,8 @@ async def _generate_chat_stream_via_agent_loop(
         "projectInstructions": query_info.projectInstructions,
         "attachments": query_info.attachments,
         "enableRecordIdShortening": query_info.enableRecordIdShortening,
+        "includeRetrievalContext": query_info.includeRetrievalContext,
+        "keywordSearchBudget": query_info.keywordSearchBudget,
         "runId": query_info.runId,
         "is_service_account": bool(user.get("isServiceAccount")),
     }
@@ -1551,7 +1659,12 @@ async def askAIStream(
     )
 
 
-@router.post("/chat/cancel", dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT))])
+# Node's conversation routes (conversation:chat) and agent conversation routes
+# (agent:execute) both forward here with the caller's token.
+@router.post(
+    "/chat/cancel",
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
+)
 async def cancel_chat_stream(
     request: Request,
     cancellation_registry: RunCancellationRegistry = Depends(get_run_cancellation_registry),

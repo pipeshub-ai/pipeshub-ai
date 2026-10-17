@@ -344,7 +344,7 @@ class CifsConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Sync could not read the share",
+                title=self._notification_title("Sync could not read the share"),
                 message=(
                     f"Nothing could be listed in {', '.join(unreadable)}. "
                     "Check that the server is reachable and the account still has access."
@@ -398,11 +398,16 @@ class CifsConnector(BaseConnector):
         if creator and getattr(creator, "email", None):
             await self.data_entities_processor.on_new_app_users(self.get_app_users([creator]))
 
+    def _notification_title(self, event: str) -> str:
+        label = Connectors.CIFS.value
+        name = self.connector_instance_name
+        return f"{label} ({name}): {event}" if name and name != label else f"{label}: {event}"
+
     async def _auth_error(self, title: str, message: str) -> None:
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=self._notification_title(title),
             message=message,
             payload={"connectorId": self.connector_id, "connectorName": Connectors.CIFS.value},
         )

@@ -459,6 +459,13 @@ export const CHAT_ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 export const CHAT_ATTACHMENT_MAX_FILES = 10;
 
 /**
+ * How long one attachment upload may take. The server parses the file and has
+ * a vision model describe its images before it answers, which can outlast the
+ * API client's 90s default on a scanned or image-heavy PDF.
+ */
+export const CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS = 180_000;
+
+/**
  * AG-UI wire event type discriminators (`data.type` on every AG-UI frame —
  * see `backend/python/app/agents/agent_loop/protocol/agui.py::AGUIEventType`
  * and the Node-side mirror in `backend/nodejs/.../utils/agui.ts`).
@@ -542,6 +549,8 @@ export interface PendingAskUserQuestion {
   assistantMessageId: string;
   payload: AskUserQuestionPayload;
   answers: Record<string, AskUserQuestionAnswer>;
+  /** Answers the model already received. A resume only carries what is not here or differs. */
+  sentAnswers?: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
 }
 
@@ -627,6 +636,7 @@ export interface CitationApiResponse {
       connector: string;
       /** Connector instance the record came from; absent on older saved answers */
       connectorId?: string;
+      connectorInstanceName?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -639,6 +649,8 @@ export interface CitationApiResponse {
       topics?: string[];
       languages?: string[];
       departments?: string[];
+      /** When the cited record was last updated at its source */
+      updatedAt?: string;
     };
     citationType: string;
     createdAt: string;
@@ -717,8 +729,17 @@ export interface ReasoningTurn {
  * `resultPreview` is always a bounded preview (~500 chars), never the full
  * external tool result — the server never sends more than that.
  */
+/** On an `mcp_sign_in` part: an MCP server whose sign-in lacked permission this turn (Python `mcp_sign_in.py`). */
+export interface McpSignInServer {
+  instanceId: string;
+  serverName: string;
+  scopes: string[];
+  /** Set for a service-account agent's own sign-in, redone through the agent's route. */
+  agentKey?: string;
+}
+
 export interface MessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -726,10 +747,20 @@ export interface MessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side. Falls back to `args` when absent. */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. Falls back to `resultPreview` when absent. */
   resultSummary?: string;
+  /** A table or field list of the result, built server-side; unchecked here, see `toolResultView`. */
+  resultView?: unknown;
+  /** On an `awaiting_approval` call: what the approval card shows. */
+  approval?: ToolApprovalDetails;
+  /** The call a person approved, run when they answered. */
+  approved?: boolean;
+  /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
+  approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  /** On the `mcp_sign_in` part: the reply's sign-in card. Not activity, so never in the timeline. */
+  servers?: McpSignInServer[];
   runId?: string;
   roleName?: string;
   parts?: MessagePart[];
@@ -899,6 +930,36 @@ export interface StreamChatRequest {
    * is ignored").
    */
   projectId?: string;
+  /** The person's answer to a tool approval card; the call itself is saved server-side. */
+  toolApproval?: ToolApprovalAnswer;
+}
+
+export type ToolApprovalDecision = 'allow' | 'deny';
+
+export interface ToolApprovalAnswer {
+  approvalId: string;
+  decision: ToolApprovalDecision;
+  /** "Don't ask again for this tool": the answer becomes the person's own rule for it. */
+  remember?: boolean;
+}
+
+/** A tool call waiting for a person's approval (Python `tool_approvals._ask`). */
+export interface ToolApprovalDetails {
+  approvalId: string;
+  instanceId: string;
+  serverName: string;
+  toolName: string;
+  toolTitle?: string | null;
+  readOnly?: boolean;
+  /** What the tool does to data; a deleting tool is marked on the card. */
+  kind?: 'read' | 'write' | 'destructive' | null;
+  /** False when "Don't ask again" can't set a rule: a toolset's rules are its admin's. */
+  canRemember?: boolean;
+  /** Epoch milliseconds. */
+  expiresAt: number;
+  /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
+  arguments?: Record<string, unknown> | null;
+  argumentsPreview?: string;
 }
 
 /**
@@ -1016,6 +1077,11 @@ export interface ChatSlot {
   refreshGeneration: number;
   /** True after first successful message load — drives tracker selection. */
   hasLoaded: boolean;
+  /**
+   * The loaded conversation was still `Inprogress` on the server — a run that kept going after this
+   * tab's connection dropped (refresh, closed tab). Drives `startRemoteRunPoll`.
+   */
+  remoteRunInProgress: boolean;
 
   /** Messages in assistant-ui ThreadMessageLike[] format. */
   messages: ThreadMessageLike[];
@@ -1056,6 +1122,8 @@ export interface ChatSlot {
    */
   activeExpandedMessageId: string | null;
   regenerateMessageId: string | null;
+  /** Assistant row this run is writing into. A resume can be an older card. */
+  streamingAssistantId: string | null;
   pendingCollections: ChatCollectionAttachment[];
 
   /** Artifacts produced during the current streaming response. */
@@ -1100,6 +1168,13 @@ export interface ChatSlot {
     isLoadingOlder: boolean;
   } | null;
 
+  /**
+   * The stored rows `messages` was built from. "Load older messages" joins an
+   * older page onto these and rebuilds, so a card that spans two pages comes
+   * out as one card. `null` when the thread was not built from stored rows.
+   */
+  rawMessages: ConversationMessage[] | null;
+
   /** Epoch ms of last interaction — used for LRU eviction. */
   lastAccessedAt: number;
 
@@ -1139,6 +1214,7 @@ export interface SearchResultMetadata {
   connector: string;
   /** Connector instance the record came from; marks demo records. */
   connectorId?: string;
+  connectorInstanceName?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

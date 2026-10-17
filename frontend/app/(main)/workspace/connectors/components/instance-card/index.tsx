@@ -17,7 +17,7 @@ import {
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
 import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
-import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel } from './utils';
+import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
 import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
@@ -104,7 +104,14 @@ export function InstanceCard({
     deriveSyncStatusState(instance, undefined, config);
   const syncStrategy = getSyncStrategyLabel(t, config);
   const syncInterval = getSyncIntervalLabel(t, config);
-  const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
+  const lastSyncedTime = formatRelativeTime(lastSyncedAt(instance));
+  const lastSynced =
+    instance.lastSyncOutcome && instance.lastSyncOutcome !== 'succeeded' && lastSyncedTime
+      ? t('workspace.connectors.overview.lastRun.lastSyncedWithOutcome', {
+          time: lastSyncedTime,
+          outcome: t(`workspace.connectors.overview.lastRun.outcome.${instance.lastSyncOutcome}`),
+        })
+      : lastSyncedTime;
 
   const canToggleSync =
     Boolean(instance._key) &&

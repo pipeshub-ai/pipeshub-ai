@@ -1,4 +1,4 @@
-"""robots.txt: read once per site per crawl, and honoured unless the user turns it off (RFC 9309)."""
+"""robots.txt: read once a day per site, kept through a bad read, and honoured unless the user turns it off (RFC 9309)."""
 
 import time
 from urllib.parse import unquote
@@ -14,9 +14,22 @@ from web_behaviour_fakes import (
     VirtualClock,
 )
 
-from app.connectors.sources.web.robots import RobotsRules
+from app.connectors.sources.web.robots import (
+    RobotsCache,
+    RobotsRules,
+    shared_robots_cache,
+)
 
 ROBOTS = "http://site.test/robots.txt"
+DAY = 24 * 3600
+
+
+@pytest.fixture
+def robots_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """The robots.txt cache's clock, moved by hand: [seconds since the test began]."""
+    now = [0.0]
+    monkeypatch.setattr(shared_robots_cache, "_now", lambda: now[0])
+    return now
 
 
 def _robots(site: FakeWeb, body: str, status: int = 200) -> None:
@@ -35,33 +48,36 @@ async def test_pages_robots_txt_disallows_are_skipped_and_the_summary_says_how_t
     _site(site)
     _robots(site, "User-agent: *\nDisallow: /private/\n")
     connector = await make_connector()
-    read_by_init = site.gets(ROBOTS)
 
     await connector.run_sync()
 
     assert set(db.pages()) == {START_URL, "http://site.test/public"}
     assert site.gets("http://site.test/private/secret") == 0
-    assert site.gets(ROBOTS) - read_by_init == 1
+    assert site.gets(ROBOTS) == 1, "the rendering check and the crawl share one read"
     assert (await notifications.delivered())[-1]["message"].endswith(
         "Skipped 1 pages that the site's robots.txt asks crawlers not to visit. "
-        "To include them, turn off Respect robots.txt in the connector settings."
+        "To include them, turn off Respect robots.txt (Advanced settings)."
     )
 
 
-async def test_each_sync_reads_robots_txt_again(
-    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+async def test_robots_txt_is_read_again_once_its_day_is_up(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector, robots_clock: list[float],
 ) -> None:
+    """DI-10's other half: RFC 9309 §2.4 lets a crawler keep robots.txt for up to 24 hours."""
     _site(site)
     _robots(site, "User-agent: *\nDisallow: /private/\n")
     connector = await make_connector()
-    read_by_init = site.gets(ROBOTS)
     await connector.run_sync()
-    read_by_first_sync = site.gets(ROBOTS) - read_by_init
     _robots(site, "User-agent: *\nDisallow: /public\n")
 
+    robots_clock[0] += DAY - 60
+    await connector.run_sync()
+    assert site.gets(ROBOTS) == 1 and site.gets("http://site.test/private/secret") == 0
+
+    robots_clock[0] += 120
     await connector.run_sync()
 
-    assert (read_by_first_sync, site.gets(ROBOTS) - read_by_init) == (1, 2)
+    assert site.gets(ROBOTS) == 2
     assert site.gets("http://site.test/private/secret") == 1
 
 
@@ -128,10 +144,11 @@ async def test_a_missing_or_refused_robots_txt_allows_everything(
         pytest.param(Page(hang_up=True), id="no-answer"),
     ],
 )
-async def test_an_unreadable_robots_txt_pauses_the_site_without_touching_stored_pages(
+async def test_an_unreadable_robots_txt_with_no_usable_copy_pauses_the_site_without_touching_stored_pages(
     robots_page: Page, site: FakeWeb, db: FakeRecordsDb, notifications: RecordingNotifications,
-    make_connector: MakeConnector,
+    make_connector: MakeConnector, robots_clock: list[float],
 ) -> None:
+    """DI-11: a robots.txt that can't be read, and no copy from the last 30 days to fall back on."""
     _site(site)
     connector = await make_connector()
     await connector.run_sync()
@@ -139,6 +156,7 @@ async def test_an_unreadable_robots_txt_pauses_the_site_without_touching_stored_
     gets_before = site.gets(START_URL)
 
     site.add(ROBOTS, robots_page)
+    robots_clock[0] += RobotsCache.STALE_SECONDS + 1
     await connector.run_sync()
     await connector.run_sync()
 
@@ -215,19 +233,37 @@ async def test_the_longest_matching_rule_decides_and_allow_wins_a_tie(
 
 
 @pytest.mark.parametrize("status", [429, 503], ids=["429", "503"])
-async def test_a_rate_limited_robots_txt_skips_the_site_at_once(
+async def test_a_rate_limited_robots_txt_is_asked_twice_more_then_the_site_skipped(
     status: int, site: FakeWeb, db: FakeRecordsDb, clock: VirtualClock, make_connector: MakeConnector
 ) -> None:
     _site(site)
     site.add(ROBOTS, Page(status=status, body=b"", headers={"Retry-After": "120"}))
     connector = await make_connector()
-    read_by_init = site.gets(ROBOTS)
+    read_by_init, waits_by_init = site.gets(ROBOTS), len(clock.sleeps)
 
     await connector.run_sync()
 
-    assert site.gets(ROBOTS) - read_by_init == 1
-    assert clock.sleeps == []
+    assert site.gets(ROBOTS) - read_by_init == 3
+    assert clock.sleeps[waits_by_init:] == [2.0, 6.0], "short waits, not the site's two minutes"
     assert db.pages() == {}
+
+
+async def test_a_cached_robots_txt_carries_a_site_through_a_bad_read(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector, robots_clock: list[float],
+) -> None:
+    """DI-10: past its day, a copy under 30 days old is still used while the site can't serve one."""
+    _site(site)
+    _robots(site, "User-agent: *\nDisallow: /private/\n")
+    connector = await make_connector()
+    await connector.run_sync()
+
+    site.add(ROBOTS, Page(status=503, body=b""))
+    robots_clock[0] += 3 * DAY
+    await connector.run_sync()
+
+    assert "http://site.test/public" in db.pages()
+    assert site.gets("http://site.test/private/secret") == 0
+    assert site.gets(START_URL) == 2
 
 
 @pytest.mark.parametrize(

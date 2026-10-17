@@ -25,7 +25,9 @@ vi.mock('../../../streaming', () => ({
   loadOlderMessagesForSlot: (slotId: string) => loadOlder(slotId),
 }));
 
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({
   LottieLoader: ({ size }: { size?: number }) => (
@@ -138,6 +140,12 @@ beforeEach(() => {
     if (typeof arg === 'object' && arg?.top !== undefined) this.scrollTop = arg.top;
   } as HTMLElement['scrollTo'];
   HTMLElement.prototype.getBoundingClientRect = function rect(this: HTMLElement) {
+    if (this.classList.contains('chat-message-scroll')) {
+      return {
+        top: 0, bottom: geometry.viewportHeight, height: geometry.viewportHeight,
+        left: 0, right: 0, width: 0, x: 0, y: 0, toJSON: () => ({}),
+      };
+    }
     const question = rowQuestion(this);
     const scroller = this.closest('.chat-message-scroll');
     const offset = scroller instanceof HTMLElement ? scroller.scrollTop : 0;
@@ -548,5 +556,177 @@ describe('MessageList — scrolling', () => {
       flushFrames();
     });
     expect(spacer.style.minHeight).toBe(`${500 - 300}px`);
+  });
+});
+
+describe('MessageList — jump to newest', () => {
+  const jumpButton = () => screen.queryByRole('button', { name: 'Jump to latest message' });
+
+  function openTwoTurns() {
+    thread.messages = TWO_TURNS;
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+  }
+
+  it('is not offered while the latest question is in view', () => {
+    openTwoTurns();
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('is at least 44px square on a phone so a thumb can hit it', () => {
+    viewport.isMobile = true;
+    try {
+      openTwoTurns();
+      scrollTo(100);
+
+      const button = jumpButton() as HTMLElement;
+      expect(button.style.minWidth).toBe('44px');
+      expect(button.style.minHeight).toBe('44px');
+    } finally {
+      viewport.isMobile = false;
+    }
+  });
+
+  it('does not force a minimum size on desktop', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    const button = jumpButton() as HTMLElement;
+    expect(button.style.minWidth).toBe('');
+    expect(button.style.minHeight).toBe('');
+  });
+
+  it('is not offered in an empty conversation', () => {
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+    scrollTo(300);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('appears when the reader scrolls up away from the latest message', () => {
+    openTwoTurns();
+
+    scrollTo(100);
+
+    expect(jumpButton()).not.toBeNull();
+  });
+
+  it('stays hidden for a small scroll that keeps the latest message within reach', () => {
+    openTwoTurns();
+
+    scrollTo(560);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('goes away again once the reader scrolls back down', () => {
+    openTwoTurns();
+    scrollTo(100);
+    expect(jumpButton()).not.toBeNull();
+
+    scrollTo(600);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('takes the reader to the end of the conversation and then hides', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    fireEvent.click(jumpButton() as HTMLElement);
+    settle();
+    expect(scroller().scrollTop).toBe(2000 - 500);
+
+    fireEvent.scroll(scroller());
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('does not send anything when used', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    fireEvent.click(jumpButton() as HTMLElement);
+
+    expect(thread.append).not.toHaveBeenCalled();
+  });
+
+  it('is offered while an answer streams once the reader scrolls up, and following resumes after it is used', () => {
+    thread.messages = [...TWO_TURNS, user('u3', 'Summarise the policy'), assistant('a3', '')];
+    geometry.rowTop = { 'Summarise the policy': 900 };
+    geometry.rowHeight = { 'Summarise the policy': 900 };
+    const slotId = openConversation('conv-1', {
+      isStreaming: true,
+      streamingQuestion: 'Summarise the policy',
+      streamingContent: 'Part one',
+    });
+    render(<MessageList />);
+    settle();
+    expect(jumpButton()).toBeNull();
+
+    fireEvent.wheel(scroller(), { deltaY: -40 });
+    scrollTo(1000);
+    expect(jumpButton()).not.toBeNull();
+
+    fireEvent.click(jumpButton() as HTMLElement);
+    settle();
+    act(() => {
+      geometry.contentHeight = 2600;
+      useChatStore.getState().updateSlot(slotId, { streamingContent: 'Part one. Part two' });
+    });
+
+    expect(scroller().scrollTop).toBe(2600 - 500);
+  });
+
+  it('appears when the latest answer grows below the view while the reader is up-thread', () => {
+    thread.messages = [...TWO_TURNS, user('u3', 'Summarise the policy'), assistant('a3', 'Short')];
+    geometry.rowTop = { 'Summarise the policy': 900 };
+    geometry.rowHeight = { 'Summarise the policy': 200 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+    scrollTo(1000);
+    expect(jumpButton()).toBeNull();
+
+    geometry.rowHeight['Summarise the policy'] = 1200;
+    act(() => {
+      for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+    });
+    settle();
+
+    expect(jumpButton()).not.toBeNull();
+  });
+
+  it('is gone after switching to an empty conversation', () => {
+    openTwoTurns();
+    scrollTo(100);
+    expect(jumpButton()).not.toBeNull();
+
+    act(() => {
+      thread.messages = [];
+      openConversation('conv-2');
+    });
+    settle();
+
+    expect(jumpButton()).toBeNull();
+  });
+});
+
+describe('MessageList — opening a chat', () => {
+  it('lands on the latest question, with the jump button wrapper around the list', () => {
+    thread.messages = [
+      user('u1', 'What is our refund policy?'), assistant('a1', 'Refunds.'),
+      user('u2', 'Who approves exceptions?'), assistant('a2', 'Finance.'),
+    ];
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+
+    expect(scroller().scrollTop).toBe(600);
   });
 });

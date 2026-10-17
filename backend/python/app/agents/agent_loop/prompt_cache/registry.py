@@ -14,8 +14,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.transport.prompt_cache import (
     REJECTED_CACHE_PARAMS,
+    PromptCacheSettings,
     anthropic_top_level_allowed,
     openai_cache_kwargs,
+    routing_key,
 )
 from app.agents.agent_loop.prompt_cache.strategies import (
     AnthropicCacheStrategy,
@@ -27,7 +29,6 @@ from app.agents.agent_loop.prompt_cache.strategies import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from app.agent_loop_lib.transport.prompt_cache import PromptCacheSettings
     from app.agents.agent_loop.prompt_cache.strategies import CacheStrategy
 
 # Bedrock models that take cache points: Claude 3.5 Haiku, 3.7 Sonnet and every
@@ -87,6 +88,29 @@ def cache_strategy_for(
         return NoCacheStrategy()
     build = _BUILDERS.get(target.family)
     return build(target, settings, routing_key) if build else NoCacheStrategy()
+
+
+def family_cache_strategy(
+    chat_model: Any,  # noqa: ANN401 - any LangChain chat model
+    *,
+    family: str,
+    org_id: str,
+    shard_key: str | None,
+    model_name: str = "",
+) -> CacheStrategy:
+    """The strategy for a fixed prompt sent once or a few times per record (an
+    indexing prompt). Records spread over the org's shards by ``shard_key``, and
+    every shard of ``family`` shares that prompt's static prefix."""
+    settings = PromptCacheSettings.from_env()
+    key = routing_key(org_id, shard_key, settings.routing_shards, family=family)
+    return cache_strategy_for(chat_model, model_name=model_name, settings=settings, routing_key=key)
+
+
+def forget_cache_params(chat_model: Any, model_name: str = "") -> None:  # noqa: ANN401 - any LangChain chat model
+    """Stop sending cache parameters to this model and endpoint for the life
+    of the process, after the provider refused one."""
+    target = cache_target(chat_model, model_name)
+    REJECTED_CACHE_PARAMS.record(target.model, target.base_url)
 
 
 def _anthropic(target: CacheTarget, settings: PromptCacheSettings, _key: str) -> CacheStrategy:

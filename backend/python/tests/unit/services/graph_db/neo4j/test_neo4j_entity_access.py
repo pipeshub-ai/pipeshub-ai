@@ -156,6 +156,89 @@ class TestGetTaxonomyEntityMembership:
         p.client.execute_query.assert_not_called()
 
 
+class TestGetUnreachedTaxonomyEntities:
+    @pytest.mark.asyncio
+    async def test_refs_the_query_does_not_return_are_unreached(self) -> None:
+        """Only reached refs come back from the CALL; the rest, nodes gone
+        included, are the unreached ones."""
+        p = _provider([{"id": "t1"}])
+
+        unreached = await p.get_unreached_taxonomy_entities(
+            [{"id": "t1", "type": "topic"}, {"id": "t2", "type": "topic"}, {"id": "t2", "type": "topic"}], "org1",
+        )
+
+        assert unreached == {("topic", "t2")}
+        assert p.client.execute_query.call_args.kwargs["parameters"] == {
+            "refs": [{"id": "t1"}, {"id": "t2"}], "org_id": "org1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_any_live_record_of_the_org_reaches_whatever_its_connector(self) -> None:
+        p = _provider([])
+
+        await p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], "org1")
+
+        (query,) = _queries(p)
+        assert "MATCH (rec:Record)-[:BELONGS_TO_TOPIC]->(e)" in query
+        assert "rec.orgId = $org_id AND coalesce(rec.isDeleted, false) = false" in query
+        assert "connectorId" not in query
+
+    @pytest.mark.asyncio
+    async def test_each_entity_stops_at_its_first_live_record(self) -> None:
+        p = _provider([])
+
+        await p.get_unreached_taxonomy_entities([{"id": "l1", "type": "language"}], "org1")
+
+        (query,) = _queries(p)
+        assert "LIMIT 1" in query
+        assert "collect(" not in query
+
+    @pytest.mark.asyncio
+    async def test_subcategory_seeks_every_level(self) -> None:
+        p = _provider([])
+
+        assert await p.get_unreached_taxonomy_entities([{"id": "s1", "type": "subcategory"}], "org1") == {
+            ("subcategory", "s1"),
+        }
+        query = _queries(p)[0]
+        for label in ("Subcategories1", "Subcategories2", "Subcategories3"):
+            assert f"MATCH (e:{label} {{id: ref.id}})" in query
+
+    @pytest.mark.asyncio
+    async def test_one_query_per_type(self) -> None:
+        p = _provider([])
+
+        await p.get_unreached_taxonomy_entities(
+            [{"id": "t1", "type": "topic"}, {"id": "c1", "type": "category"}], "org1",
+        )
+
+        assert p.client.execute_query.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_no_org_or_no_supported_ref_issues_no_query(self) -> None:
+        p = _provider([])
+        assert await p.get_unreached_taxonomy_entities([{"id": "t", "type": "topic"}], "") == set()
+        assert await p.get_unreached_taxonomy_entities([{"id": "r", "type": "record"}], "o") == set()
+        p.client.execute_query.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_query_raises_and_never_reads_as_unreached(self) -> None:
+        """Unreached is everything not returned, so an error answered as an
+        empty result would delete every point asked about."""
+        p = _provider(RuntimeError("neo4j down"))
+
+        with pytest.raises(RuntimeError):
+            await p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], "org1")
+
+    @pytest.mark.asyncio
+    async def test_without_a_client_raises(self) -> None:
+        p = _provider([])
+        p.client = None
+
+        with pytest.raises(RuntimeError):
+            await p.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], "org1")
+
+
 class TestGetEntityCandidateRecords:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -345,3 +428,31 @@ class TestFilterNodesWithPermissionRole:
             await p.filter_nodes_with_permission_role(
                 self._NODES, "uk1", "org1", raise_on_error=True
             )
+
+
+class TestRecordTaxonomyLinksDepartments:
+    """Label and permission reads leave departments out; the record-delete
+    cleanup asks for them, since a department has an entity point too."""
+
+    @pytest.mark.asyncio
+    async def test_departments_are_left_out_by_default(self) -> None:
+        p = _provider([])
+
+        await p.get_record_taxonomy_links(["r1"])
+
+        (query,) = _queries(p)
+        assert "BELONGS_TO_DEPARTMENT" not in query
+        assert "Departments" not in p.client.execute_query.call_args.kwargs["parameters"]["labels"]
+
+    @pytest.mark.asyncio
+    async def test_the_delete_cleanup_reads_departments_by_their_name(self) -> None:
+        p = _provider([{"recordId": "r1", "entityId": "d1", "nodeLabels": ["Departments"], "name": "Engineering"}])
+
+        rows = await p.get_record_taxonomy_links(["r1"], include_departments=True)
+
+        (query,) = _queries(p)
+        assert "BELONGS_TO_DEPARTMENT" in query
+        assert "BELONGS_TO_TOPIC" in query
+        assert "coalesce(n.name, n.departmentName)" in query
+        assert "Departments" in p.client.execute_query.call_args.kwargs["parameters"]["labels"]
+        assert [(r["collection"], r["entityId"], r["name"]) for r in rows] == [("departments", "d1", "Engineering")]

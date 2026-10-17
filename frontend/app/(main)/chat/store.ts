@@ -1,6 +1,12 @@
 import { create } from 'zustand';
 import { debugLog } from './debug-logger';
 import {
+  forgetUnreadConversation,
+  loadUnreadConversationIds,
+  rememberUnreadConversation,
+} from '@/lib/storage/chat-unread';
+import { getCurrentUserId } from './utils/current-user-id';
+import {
   Conversation,
   ChatMode,
   QueryMode,
@@ -52,44 +58,13 @@ function lsSetAgentCapabilities(caps: AgentCapabilities, agentId?: string): void
   }
 }
 
-const LS_REASONING_EFFORT_KEY = 'pipeshub-reasoning-effort';
-const REASONING_EFFORT_VALUES = ['none', 'low', 'medium', 'high', 'max'] as const;
-
-function lsGetReasoningEffort(ctxKey: string): import('./types').ReasoningEffort | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = localStorage.getItem(`${LS_REASONING_EFFORT_KEY}:${ctxKey}`);
-    if (!raw) return null;
-    return (REASONING_EFFORT_VALUES as readonly string[]).includes(raw)
-      ? normalizeReasoningEffort(raw as import('./types').ReasoningEffort)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function lsSetReasoningEffort(
-  ctxKey: string,
-  effort: import('./types').ReasoningEffort | null,
-): void {
-  if (typeof window === 'undefined') return;
-  try {
-    const key = `${LS_REASONING_EFFORT_KEY}:${ctxKey}`;
-    if (effort === null) {
-      localStorage.removeItem(key);
-    } else {
-      localStorage.setItem(key, effort);
-    }
-  } catch {
-    // Storage unavailable — silently ignore
-  }
-}
-
 /** Row shape for the Actions / MCP tabs of the scoped resources panel (agent or project). */
 export interface ScopedToolGroupRow {
   label: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
+  /** Display name per `fullNames` entry, where the full name doesn't read as one (MCP). */
+  toolLabels?: Record<string, string>;
   toolsetSlug: string;
   instanceId?: string;
   iconPath?: string;
@@ -274,6 +249,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     isInitialized: isNew,      // new chats have nothing to load
     refreshGeneration: 0,
     hasLoaded: false,
+    remoteRunInProgress: false,
     messages: [],
     isStreaming: false,
     streamingContent: '',
@@ -286,6 +262,7 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     savedScrollWasStreaming: false,
     activeExpandedMessageId: null,
     regenerateMessageId: null,
+    streamingAssistantId: null,
     pendingCollections: [],
     artifacts: [],
     pendingAskUserQuestion: null,
@@ -293,9 +270,20 @@ function createDefaultSlot(convId: string | null): ChatSlot {
     runId: null,
     stopping: false,
     messagePagination: null,
+    rawMessages: null,
     lastAccessedAt: Date.now(),
     isOwner: isNew ? true : null,
   };
+}
+
+/** Whose saved unread chats are in memory; null until the first hydrate. */
+let unreadOwnerId: string | null = null;
+
+function withoutId(ids: Set<string>, id: string): Set<string> {
+  if (!ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
 }
 
 // ── Helper: generate a stable slot ID ───────────────────────────────
@@ -326,6 +314,11 @@ interface ChatState {
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
+  /**
+   * Conversations whose answer finished while the user was looking at something
+   * else. Mirrored to localStorage per user so a reload keeps the dot.
+   */
+  unreadConversationIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
   moreChatsSectionType: 'shared' | 'your' | null;
   /** Agents browser panel (same shell as More Chats) */
@@ -475,6 +468,8 @@ interface ChatState {
   searchId: string | null;
   isSearching: boolean;
   searchError: string | null;
+  /** Top-level fields of the last search response (opaque pass-through). */
+  searchResponseMeta: Record<string, unknown> | null;
 
   // ── Slot actions ──
   /** Create a new slot. Returns the generated slotId. */
@@ -539,6 +534,10 @@ interface ChatState {
     modelInfo: ModelInfo | undefined
   ) => void;
   removeConversation: (conversationId: string) => void;
+  markConversationUnread: (conversationId: string) => void;
+  markConversationRead: (conversationId: string) => void;
+  /** Bring back this user's unread chats from before a reload. */
+  hydrateUnreadConversations: (userId: string) => void;
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
   bumpConversationsVersion: () => void;
@@ -672,17 +671,10 @@ interface ChatState {
   setDefaultModelForCtx: (ctxKey: string, model: import('./types').ModelOverride | null) => void;
   setAvailableModelsForCtx: (ctxKey: string, models: import('./types').AvailableLlmModel[]) => void;
   /**
-   * Set the reasoning effort override for a context (assistant or agent) and
-   * persist it to localStorage under `pipeshub-reasoning-effort:{ctxKey}`.
-   * `null` means "use the model's own default" — clears any explicit choice.
+   * Set the reasoning effort picked for a context (assistant or agent), for
+   * this session only. `null` means "use the default" and clears the pick.
    */
   setReasoningEffortForCtx: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
-  /**
-   * Load a context's persisted reasoning effort from localStorage into the
-   * in-memory store, if it hasn't been loaded yet this session. Call once
-   * when a context's model selector mounts.
-   */
-  hydrateReasoningEffortForCtx: (ctxKey: string) => void;
   /** Store the agent-configured default reasoning effort for a context. */
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => void;
   /** Update universal agent mode capability toggles and persist to localStorage. */
@@ -696,7 +688,12 @@ interface ChatState {
   setScopedAgentCapabilities: (agentId: string, caps: Partial<import('./types').AgentCapabilities>) => void;
 
   // ── Search actions ──
-  setSearchResults: (results: SearchResultItem[], searchId: string | null, query: string) => void;
+  setSearchResults: (
+    results: SearchResultItem[],
+    searchId: string | null,
+    query: string,
+    responseMeta?: object | null,
+  ) => void;
   setIsSearching: (loading: boolean) => void;
   setSearchError: (error: string | null) => void;
   clearSearchResults: () => void;
@@ -724,6 +721,7 @@ const initialState = {
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
+  unreadConversationIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
   moreChatsSectionType: null as 'shared' | 'your' | null,
   isAgentsSidebarOpen: false,
@@ -831,6 +829,7 @@ const initialState = {
   searchId: null as string | null,
   isSearching: false,
   searchError: null as string | null,
+  searchResponseMeta: null as Record<string, unknown> | null,
 };
 
 // ── Store creation ──────────────────────────────────────────────────
@@ -898,6 +897,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setActiveSlot: (slotId) => {
+    const openedConvId = get().slots[slotId]?.convId;
+    const wasUnread = Boolean(openedConvId && get().unreadConversationIds.has(openedConvId));
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
@@ -907,8 +908,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...state.slots,
           [slotId]: { ...existing, lastAccessedAt: Date.now() },
         },
+        // Opening a chat is what reads it, whichever sidebar row the user used.
+        ...(existing.convId && state.unreadConversationIds.has(existing.convId)
+          ? { unreadConversationIds: withoutId(state.unreadConversationIds, existing.convId) }
+          : {}),
       };
     });
+    if (openedConvId && wasUnread) forgetUnreadConversation(getCurrentUserId(), openedConvId);
   },
 
   evictSlot: (slotId) => {
@@ -1329,12 +1335,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  removeConversation: (conversationId) =>
+  removeConversation: (conversationId) => {
+    const wasUnread = get().unreadConversationIds.has(conversationId);
     set((state) => ({
       conversations: state.conversations.filter((c) => c.id !== conversationId),
       sharedConversations: state.sharedConversations.filter((c) => c.id !== conversationId),
       agentConversations: state.agentConversations.filter((c) => c.id !== conversationId),
-    })),
+      unreadConversationIds: withoutId(state.unreadConversationIds, conversationId),
+    }));
+    if (wasUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationUnread: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = new Set(state.unreadConversationIds);
+        next.add(conversationId);
+        return { unreadConversationIds: next };
+      });
+    }
+    // Written even when already unread, which refreshes how long it is kept.
+    rememberUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationRead: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) return;
+    set((state) => ({ unreadConversationIds: withoutId(state.unreadConversationIds, conversationId) }));
+    forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  hydrateUnreadConversations: (userId) => {
+    const stored = loadUnreadConversationIds(userId);
+    // Chats flagged before this ran belong to the same person on a first hydrate;
+    // after a switch to someone else they must not carry over.
+    const keepCurrent = unreadOwnerId === null || unreadOwnerId === userId;
+    unreadOwnerId = userId;
+    set((state) => {
+      const next = new Set(stored);
+      if (keepCurrent) state.unreadConversationIds.forEach((id) => next.add(id));
+      const unchanged = next.size === state.unreadConversationIds.size
+        && [...next].every((id) => state.unreadConversationIds.has(id));
+      return unchanged ? state : { unreadConversationIds: next };
+    });
+  },
 
   renameConversation: (conversationId, newTitle) =>
     set((state) => ({
@@ -1523,36 +1566,14 @@ export const useChatStore = create<ChatState>((set, get) => ({
     },
   })),
 
-  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => {
-    // Only persist for the universal assistant. Agent-scoped contexts use the
-    // agent's configured default as baseline — persisting would let a stale
-    // user override mask admin changes to the agent's default.
-    if (ctxKey === ASSISTANT_CTX) {
-      lsSetReasoningEffort(ctxKey, effort);
-    }
-    return {
-      settings: {
-        ...state.settings,
-        reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
-      },
-    };
-  }),
-
-  hydrateReasoningEffortForCtx: (ctxKey) => set((state) => {
-    if (state.settings.reasoningEffort[ctxKey] !== undefined) return state;
-    return {
-      settings: {
-        ...state.settings,
-        reasoningEffort: {
-          ...state.settings.reasoningEffort,
-          // Agent contexts skip localStorage — their default comes from the
-          // agent's config (agentDefaultReasoningEffort), not from a stale
-          // persisted override that would hide admin changes.
-          [ctxKey]: ctxKey === ASSISTANT_CTX ? lsGetReasoningEffort(ctxKey) : null,
-        },
-      },
-    };
-  }),
+  // Not persisted: a pick kept across sessions outlived the reason for it and
+  // hid the model's and the agent's defaults.
+  setReasoningEffortForCtx: (ctxKey, effort) => set((state) => ({
+    settings: {
+      ...state.settings,
+      reasoningEffort: { ...state.settings.reasoningEffort, [ctxKey]: effort },
+    },
+  })),
 
   setAgentDefaultReasoningEffort: (ctxKey: string, effort: import('./types').ReasoningEffort | null) => set((state) => ({
     settings: {
@@ -1582,15 +1603,35 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   // ── Search actions ──────────────────────────────────────────────
 
-  setSearchResults: (results, searchId, query) =>
-    set({ searchResults: results, searchId, searchQuery: query }),
+  setSearchResults: (results, searchId, query, responseMeta = null) =>
+    set({
+      searchResults: results,
+      searchId,
+      searchQuery: query,
+      searchResponseMeta: (responseMeta as Record<string, unknown> | null) ?? null,
+      searchError: null,
+    }),
 
-  setIsSearching: (loading) => set({ isSearching: loading }),
+  setIsSearching: (loading) =>
+    set((state) => ({
+      isSearching: loading,
+      searchResponseMeta: loading ? null : state.searchResponseMeta,
+    })),
 
-  setSearchError: (error) => set({ searchError: error }),
+  setSearchError: (error) =>
+    set((state) => ({
+      searchError: error,
+      searchResponseMeta: error ? null : state.searchResponseMeta,
+    })),
 
   clearSearchResults: () =>
-    set({ searchResults: [], searchQuery: '', searchId: null, searchError: null }),
+    set({
+      searchResults: [],
+      searchQuery: '',
+      searchId: null,
+      searchError: null,
+      searchResponseMeta: null,
+    }),
 
   // ── Cache ────────────────────────────────────────────────────────
 
@@ -1612,6 +1653,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     for (const slot of Object.values(slots)) {
       slot.abortController?.abort();
     }
+    unreadOwnerId = null;
     set(initialState);
   },
 }));

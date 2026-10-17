@@ -3019,6 +3019,7 @@ class KnowledgeBaseService:
         file_dict: Dict,
         parent_folder_id: Optional[str],
         storage_url: str,
+        uploaded_by: Optional[str] = None,
     ) -> FileRecord:
         """Build a KB file FileRecord from the (record, fileRecord) dicts the client
         sends. `from_arango_record` already handles the KB-upload dict shape; we then
@@ -3030,6 +3031,8 @@ class KnowledgeBaseService:
         frec.connector_id = kb_id
         frec.external_record_group_id = kb_id
         frec.parent_external_record_id = parent_folder_id or None
+        # Server-side stamp: never trust a client-supplied uploader.
+        frec.uploaded_by = uploaded_by or None
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"
@@ -3070,7 +3073,12 @@ class KnowledgeBaseService:
         return folder_map, new_folder_records
 
     async def _build_upload_file_records(
-        self, kb_id: str, files: List[Dict], analysis: Dict, storage_url: str
+        self,
+        kb_id: str,
+        files: List[Dict],
+        analysis: Dict,
+        storage_url: str,
+        user_id: Optional[str] = None,
     ) -> tuple[List[FileRecord], List[Dict], List[str]]:
         """Build file FileRecords, deduplicating by name per destination folder (mirrors
         the provider's _create_files_batch skip logic). Returns (records, skipped, failed)."""
@@ -3118,7 +3126,9 @@ class KnowledgeBaseService:
                 if "recordName" not in record:
                     record["recordName"] = file_name
                 file_records.append(
-                    self._build_kb_file_record(kb_id, record, file_rec, parent_id, storage_url)
+                    self._build_kb_file_record(
+                        kb_id, record, file_rec, parent_id, storage_url, uploaded_by=user_id
+                    )
                 )
         return file_records, skipped_files, failed_files
 
@@ -3153,7 +3163,7 @@ class KnowledgeBaseService:
 
             storage_url = await self._get_storage_url()
             file_records, skipped_files, failed_files = await self._build_upload_file_records(
-                kb_id, files, analysis, storage_url
+                kb_id, files, analysis, storage_url, user_id=user_id
             )
 
             entities = [(fr, []) for fr in new_folder_records] + [(fr, []) for fr in file_records]

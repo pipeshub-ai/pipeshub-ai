@@ -32,23 +32,10 @@ export interface OAuthCodeExchangePayload {
 
 // ─── Auth API ─────────────────────────────────────────────────────────────────
 
-export interface SignUpResponse {
-  accessToken: string;
-  refreshToken: string;
-  user?: {
-    id: string;
-    name?: string;
-    email?: string;
-    phone?: string;
-    created_at?: string;
-    updated_at?: string;
-  };
-}
-
 export const AuthApi = {
   /**
-   * Register a new user account.
-   * Returns an accessToken on success.
+   * Create the organization and its first admin. The response carries no
+   * session; sign in afterwards with the same email and password.
    */
   async signUp(payload: {
     email: string;
@@ -56,8 +43,8 @@ export const AuthApi = {
     firstName: string;
     lastName: string;
     registeredName: string;
-  }): Promise<SignUpResponse> {
-    const { data } = await publicAuthClient.post<SignUpResponse>(
+  }): Promise<void> {
+    await publicAuthClient.post(
       '/api/v1/org',
       {
         contactEmail: payload.email,
@@ -67,7 +54,6 @@ export const AuthApi = {
         accountType: 'business',
       },
     );
-    return data;
   },
 
   /**

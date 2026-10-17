@@ -747,6 +747,20 @@ describe('ConfigurationManager Controller', () => {
       expect(skillsFlag.defaultEnabled).to.equal(true)
     })
 
+    it('should include ENABLE_NAMED_ENTITY_EXTRACTION, defaulting to disabled', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const flag = flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')
+      expect(flag).to.exist
+      expect(flag.defaultEnabled).to.equal(false)
+    })
+
     it('should include ENABLE_USER_CONTEXT, defaulting to enabled', async () => {
       const handler = getAvailablePlatformFeatureFlags()
       const req = createMockRequest()
@@ -771,6 +785,27 @@ describe('ConfigurationManager Controller', () => {
 
       const flags = res.json.firstCall.args[0].flags
       expect(flags.find((f: any) => f.key === 'ENABLE_BETA_CONNECTORS')).to.be.undefined
+    })
+
+    it('should mark internal flags as advanced and keep them in the list', async () => {
+      const handler = getAvailablePlatformFeatureFlags()
+      const req = createMockRequest()
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      const flags = res.json.firstCall.args[0].flags
+      const advancedKeys = flags.filter((f: any) => f.advanced).map((f: any) => f.key)
+      expect(advancedKeys).to.include.members([
+        'ENABLE_VECTOR_STORE_REBUILD',
+        'ENABLE_CONTAINER_PERMISSION_FILTER',
+        'ENABLE_SOFT_DELETE',
+        'ENABLE_NAMED_ENTITY_EXTRACTION',
+        'ENABLE_USER_CONTEXT',
+      ])
+      expect(flags.find((f: any) => f.key === 'ENABLE_MCP')?.advanced).to.not.equal(true)
+      expect(flags.find((f: any) => f.key === 'ENABLE_NAMED_ENTITY_EXTRACTION')?.defaultEnabled).to.equal(false)
     })
   })
 
@@ -4940,6 +4975,76 @@ describe('ConfigurationManager Controller', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
       }
+    })
+  })
+
+  describe('Slack bot duplicate credentials', () => {
+    const storeWith = (configs: object[]) =>
+      createMockKeyValueStore({
+        get: sinon.stub().resolves(mockEncService.encrypt(JSON.stringify({ configs }))),
+        compareAndSet: sinon.stub().resolves(true),
+      })
+    const bot = (id: string, botToken: string, signingSecret: string) => ({
+      id,
+      name: id,
+      botToken,
+      signingSecret,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    })
+
+    it('rejects creating a bot with an existing signing secret', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a')])
+      const next = createMockNext()
+      await createSlackBotConfig(kvs)(
+        createMockRequest({ body: { name: 'B', botToken: 'xoxb-b', signingSecret: 'secret-a' } }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+      expect(kvs.compareAndSet.called).to.be.false
+    })
+
+    it('rejects creating a bot with an existing bot token', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a')])
+      const next = createMockNext()
+      await createSlackBotConfig(kvs)(
+        createMockRequest({ body: { name: 'B', botToken: 'xoxb-a', signingSecret: 'secret-b' } }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+    })
+
+    it('rejects updating a bot to another bot\'s credentials', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a'), bot('b', 'xoxb-b', 'secret-b')])
+      const next = createMockNext()
+      await updateSlackBotConfig(kvs)(
+        createMockRequest({
+          params: { configId: 'b' },
+          body: { name: 'B', botToken: 'xoxb-b', signingSecret: 'secret-a' },
+        }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.match(/already connected/)
+    })
+
+    it('allows updating a bot with its own unchanged credentials', async () => {
+      const kvs = storeWith([bot('a', 'xoxb-a', 'secret-a'), bot('b', 'xoxb-b', 'secret-b')])
+      const next = createMockNext()
+      const res = createMockResponse()
+      await updateSlackBotConfig(kvs)(
+        createMockRequest({
+          params: { configId: 'b' },
+          body: { name: 'Renamed', botToken: 'xoxb-b', signingSecret: 'secret-b' },
+        }),
+        res,
+        next,
+      )
+      expect(next.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
     })
   })
 

@@ -156,11 +156,20 @@ export const handleMCPRequest =
         recordEvent('mcp_tool_called', toolCallProps);
         recordActivityFromProps('mcp_tool_called', toolCallProps);
       }
+
+      const body = req.body as { method?: unknown } | undefined;
+      const jsonRpcMethod =
+        typeof body?.method === 'string' ? body.method : undefined;
+      logger.info('MCP request completed', {
+        method: jsonRpcMethod,
+        requestId: req.context?.requestId,
+      });
     } catch (error: any) {
       logger.error('MCP request failed', {
         error: error.message,
         method: req.method,
         userId: req.user?.userId,
+        requestId: req.context?.requestId,
       });
       next(error);
     }

@@ -90,6 +90,13 @@ import {
   mergeWebSearchProviderPlaceholders,
   maskSlackBotConfig,
   mergeSlackBotConfigPlaceholders,
+  GOOGLE_AUTH_SECRET_KEYS,
+  MICROSOFT_AUTH_SECRET_KEYS,
+  OAUTH_SECRET_KEYS,
+  maskGoogleAuthConfig,
+  maskMicrosoftAuthConfig,
+  maskOAuthConfig,
+  restoreSecretPlaceholders,
 } from '../utils/maskConfigSecrets';
 import {
   canRevealSecrets,
@@ -545,12 +552,12 @@ const getParsedSmtpConfig = async (
 };
 
 export const getSmtpConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const smtpConfig = await getParsedSmtpConfig(keyValueStoreService);
       if (smtpConfig) {
-        const hideSecrets = shouldHideSecrets() && !canRevealSecrets(req);
+        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
         res
           .status(200)
           .json(hideSecrets ? maskSmtpConfig(smtpConfig) : smtpConfig)
@@ -621,6 +628,27 @@ export const getSlackBotStore = async (
   const configManagerConfig = loadConfigurationManagerConfig();
   const encrypted = await keyValueStoreService.get<string>(configPaths.slackBot);
   return parseSlackBotStore(encrypted, configManagerConfig);
+};
+
+/** Inbound events are matched to a bot by signing secret, so a second row with
+ * the same secret or token makes the answering bot (and its agent) depend on
+ * store order. Checked inside the CAS write. */
+const assertSlackAppNotAlreadyConfigured = (
+  configs: SlackBotConfigEntry[],
+  credentials: { botToken: string; signingSecret: string },
+  exceptConfigId?: string,
+): void => {
+  const duplicate = configs.some(
+    (entry) =>
+      entry.id !== exceptConfigId &&
+      (entry.signingSecret === credentials.signingSecret ||
+        entry.botToken === credentials.botToken),
+  );
+  if (duplicate) {
+    throw new BadRequestError(
+      'This Slack app is already connected to another bot in this organization',
+    );
+  }
 };
 
 const updateSlackBotStoreWithCAS = async <T>(
@@ -738,6 +766,10 @@ export const createSlackBotConfig =
       const config = await updateSlackBotStoreWithCAS(
         keyValueStoreService,
         (store): SlackBotConfigEntry => {
+          assertSlackAppNotAlreadyConfigured(store.configs, {
+            botToken: botToken as string,
+            signingSecret: signingSecret as string,
+          });
           if (normalizedAgentId) {
             const duplicate = store.configs.find(
               (configItem) => configItem.agentId === normalizedAgentId,
@@ -816,6 +848,11 @@ export const updateSlackBotConfig =
           const credentials = mergeSlackBotConfigPlaceholders(
             { botToken, signingSecret },
             previousConfig,
+          );
+          assertSlackAppNotAlreadyConfigured(
+            store.configs,
+            credentials,
+            configId,
           );
           const nextConfig: SlackBotConfigEntry = {
             ...previousConfig,
@@ -956,9 +993,39 @@ export const getEffectivePlatformFeatureFlags =
     }
   };
 
+/**
+ * Auth-config setters accept the masked placeholder for a secret the admin did
+ * not reveal, and keep the stored value for it.
+ */
+async function restoreStoredAuthSecrets<T extends Record<string, unknown>>(
+  keyValueStoreService: KeyValueStoreService,
+  path: string,
+  incoming: T,
+  keys: readonly string[],
+): Promise<T> {
+  if (!keys.some((key) => incoming[key] === CONFIG_SECRET_PLACEHOLDER)) {
+    return incoming;
+  }
+  const configManagerConfig = loadConfigurationManagerConfig();
+  const encrypted = await keyValueStoreService.get<string>(path);
+  const existing = encrypted
+    ? (JSON.parse(
+        EncryptionService.getInstance(
+          configManagerConfig.algorithm,
+          configManagerConfig.secretKey,
+        ).decrypt(encrypted),
+      ) as Record<string, unknown>)
+    : null;
+  const { config, unrestored } = restoreSecretPlaceholders(incoming, existing, keys);
+  if (unrestored.length > 0) {
+    throw new BadRequestError(`Enter a value for ${unrestored.join(', ')}`);
+  }
+  return config;
+}
+
 export const getAzureAdAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
@@ -973,7 +1040,8 @@ export const getAzureAdAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        res.status(200).json(authConfig).end();
+        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
       } else {
         res.status(200).json({}).end();
       }
@@ -989,7 +1057,12 @@ export const setAzureAdAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId, enableJit } = req.body;
+      const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        configPaths.auth.azureAD,
+        req.body,
+        MICROSOFT_AUTH_SECRET_KEYS,
+      );
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
@@ -1013,8 +1086,8 @@ export const setAzureAdAuthConfig =
   };
 
 export const getMicrosoftAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
@@ -1029,7 +1102,8 @@ export const getMicrosoftAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        res.status(200).json(authConfig).end();
+        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1045,7 +1119,12 @@ export const setMicrosoftAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, tenantId, enableJit } = req.body;
+      const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        configPaths.auth.microsoft,
+        req.body,
+        MICROSOFT_AUTH_SECRET_KEYS,
+      );
       const authority = `https://login.microsoftonline.com/${tenantId}`;
 
       const encryptedAuthConfig = EncryptionService.getInstance(
@@ -1069,8 +1148,8 @@ export const setMicrosoftAuthConfig =
   };
 
 export const getGoogleAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
@@ -1085,7 +1164,8 @@ export const getGoogleAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        res.status(200).json(authConfig).end();
+        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res.status(200).json(hideSecrets ? maskGoogleAuthConfig(authConfig) : authConfig).end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1101,7 +1181,12 @@ export const setGoogleAuthConfig =
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
-      const { clientId, enableJit } = req.body;
+      const { clientId, enableJit } = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        configPaths.auth.google,
+        req.body,
+        GOOGLE_AUTH_SECRET_KEYS,
+      );
 
       const encryptedAuthConfig = EncryptionService.getInstance(
         configManagerConfig.algorithm,
@@ -1124,8 +1209,8 @@ export const setGoogleAuthConfig =
   };
 
 export const getOAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
 
@@ -1140,7 +1225,8 @@ export const getOAuthConfig =
             configManagerConfig.secretKey,
           ).decrypt(encryptedAuthConfig),
         );
-        res.status(200).json(authConfig).end();
+        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
+        res.status(200).json(hideSecrets ? maskOAuthConfig(authConfig) : authConfig).end();
       } else {
         res.status(200).json({}).end();
       }
@@ -1166,7 +1252,12 @@ export const setOAuthConfig =
         scope,
         redirectUri,
         enableJit,
-      } = req.body;
+      } = await restoreStoredAuthSecrets(
+        keyValueStoreService,
+        configPaths.auth.oauth,
+        req.body,
+        OAUTH_SECRET_KEYS,
+      );
 
       const oauthConfig = {
         providerName,

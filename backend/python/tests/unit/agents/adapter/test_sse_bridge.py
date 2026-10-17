@@ -347,6 +347,22 @@ class TestSSEEventEmitterTranslation:
             {"event": "tool_result", "data": {"tool": "jira_search", "result": "blocked after 3 failures", "status": "error"}}
         )
 
+    async def test_a_call_awaiting_approval_is_an_unrun_call_for_legacy_clients(self) -> None:
+        sink = MagicMock()
+        sink.write = AsyncMock(return_value=True)
+        emitter = SSEEventEmitter(sink)
+
+        await emitter.emit(
+            _event(EventType.TOOL_CALL_END, {
+                "tool": "mcp_jira_create_issue", "reason": "Waiting for your approval.",
+                "status": ToolCallStatus.AWAITING_APPROVAL,
+            })
+        )
+
+        sink.write.assert_awaited_once_with(
+            {"event": "tool_result", "data": {"tool": "mcp_jira_create_issue", "result": "Waiting for your approval.", "status": "error"}}
+        )
+
     async def test_unmapped_event_types_are_silently_dropped(self) -> None:
         sink = MagicMock()
         sink.write = AsyncMock(return_value=True)
@@ -508,6 +524,23 @@ class TestSSEEventEmitterChildVisibility:
         )
 
 
+# 2026-07-27 03:00:00 UTC, a Monday; Sunday 8:00 PM in California.
+_MON_0300_UTC = 1785121200000
+
+
+def _record_header_created_at() -> str:
+    """The `Created At:` line a tool renders for a record, as the model sees it."""
+    from app.config.constants.arangodb import Connectors, OriginTypes
+    from app.models.entities import Record, RecordType
+
+    record = Record(
+        record_name="r", record_type=RecordType.FILE, external_record_id="e", version=1,
+        origin=OriginTypes.CONNECTOR, connector_name=Connectors.GOOGLE_DRIVE, connector_id="c",
+        source_created_at=_MON_0300_UTC,
+    )
+    return next(line for line in record.to_llm_context().splitlines() if line.startswith("Created At:"))
+
+
 class TestRunAgentLoopStream:
     @staticmethod
     def _base_kwargs() -> dict[str, Any]:
@@ -585,6 +618,40 @@ class TestRunAgentLoopStream:
         assert events[0].startswith("event: status\n")
         assert events[1].startswith("event: complete\n")
         assert json.loads(events[1].split("data: ", 1)[1].strip()) == {"answer": "42"}
+
+    async def test_record_dates_in_the_run_use_the_users_time_zone(self) -> None:
+        """Tools run inside the run's task render record dates in the user's
+        zone, weekday included; nothing outside the run is affected."""
+        seen: dict[str, str] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            seen["header"] = await asyncio.create_task(asyncio.to_thread(_record_header_created_at))
+            return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
+
+        async def _fake_finalizer_run(self, **kwargs) -> dict[str, str]:
+            return {"answer": "ok"}
+
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={
+                    "org_id": "org-1", "user_id": "user-1", "query": "hello",
+                    "timezone": "America/Los_Angeles",
+                },
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.PipesHubAgentFactory.create",
+                new=_fake_create,
+            ),
+            patch(
+                "app.agents.agent_loop.stream_bridge.AnswerFinalizer.run",
+                new=_fake_finalizer_run,
+            ),
+        ):
+            [chunk async for chunk in run_agent_loop_stream(**self._base_kwargs())]
+
+        assert seen["header"] == "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)"
+        assert _record_header_created_at().endswith("(Mon, Jul 27, 2026, 3:00 AM UTC)")
 
     async def test_sql_allowlist_is_agent_knowledge_intersected_with_user_connectors(self) -> None:
         """Only a SQL connector that is both attached to the agent AND visible

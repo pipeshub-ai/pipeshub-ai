@@ -268,10 +268,10 @@ class TestDeleteEdgesBetweenCollections:
         assert count == 0
 
     @pytest.mark.asyncio
-    async def test_exception(self, connected_provider):
+    async def test_exception_raises(self, connected_provider) -> None:
         connected_provider.http_client.execute_aql = AsyncMock(side_effect=Exception("fail"))
-        count = await connected_provider.delete_edges_between_collections("id1", "users", "edge_col", "groups")
-        assert count == 0
+        with pytest.raises(Exception, match="fail"):
+            await connected_provider.delete_edges_between_collections("id1", "users", "edge_col", "groups")
 
 
 # ===========================================================================
@@ -2011,19 +2011,19 @@ class TestGetTeamWithUsers:
             "canEdit": True, "canDelete": True, "canManageMembers": True
         }])
         connected_provider._enrich_created_by_user = AsyncMock()
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result["id"] == "t1"
 
     @pytest.mark.asyncio
     async def test_not_found(self, connected_provider):
         connected_provider.execute_query = AsyncMock(return_value=[])
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result is None
 
     @pytest.mark.asyncio
     async def test_exception(self, connected_provider):
         connected_provider.execute_query = AsyncMock(side_effect=Exception("fail"))
-        result = await connected_provider.get_team_with_users("t1", "u1")
+        result = await connected_provider.get_team_with_users("t1", "org1", "u1")
         assert result is None
 
 

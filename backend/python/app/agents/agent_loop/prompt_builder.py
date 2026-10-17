@@ -43,8 +43,10 @@ from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.agent.prompt import render_skills_overview
 from app.agent_loop_lib.tools.errors import ToolNotFoundError
+from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY, multi_step_answer_rules
 from app.agents.agent_loop.confidence import confidence_enabled
 from app.agents.agent_loop.sandbox_bridge import sandbox_network_enabled  # noqa: F401 — re-export for test patching
+from app.agents.agent_loop.search_query_guidance import keyword_search_query_rule
 from app.modules.agents.capability_summary import build_capability_summary
 from app.modules.agents.context.knowledge_context import _build_knowledge_context
 from app.modules.agents.context.tool_surface import ToolSurfaces
@@ -304,6 +306,8 @@ _NO_KNOWLEDGE_SOURCES = (
 def _build_finding_information(
     surfaces: "ToolSurfaces",
     catalog: "SourceCatalog",
+    *,
+    read_in_full: bool = False,
 ) -> str:
     """The single source-precedence section: where to look, in what order,
     when more than one place needs checking at once, and when it's fine to
@@ -406,6 +410,10 @@ def _build_finding_information(
             "repeating it or giving up."
         )
 
+    query_rule = keyword_search_query_rule(surfaces.search_tool) if surfaces.search_tool else None
+    if query_rule:
+        parts.append(query_rule)
+
     if surfaces.retrieval is not None:
         parts.append(
             "Time-scoped searches: when the question names a time period "
@@ -419,12 +427,63 @@ def _build_finding_information(
             "same query WITHOUT date filters before concluding nothing "
             "exists."
         )
+        multi_step = multi_step_answer_rules()
+        if multi_step:
+            parts.append(multi_step)
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
-        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME))
+        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME, read_in_full=read_in_full))
 
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
+
+
+# What each exact-calculation tool is for, keyed by its tool-name suffix.
+_EXACT_NUMBER_USES = {
+    "evaluate_expression": "any calculation with more than one step (durations too)",
+    "date_difference": "any age or gap between two dates",
+    "count_text": "any count of letters or words",
+}
+
+
+def _join_with_and(items: list[str]) -> str:
+    return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
+
+
+def _build_exact_numbers(tool_names: tuple[str, ...], toolset: str | None) -> str | None:
+    """When to use the calculator rather than mental arithmetic, for the
+    calculator tools this request grants. `toolset` is the group a lazily
+    disclosed agent must load first; the rule then names that group, never
+    its tools, whose schemas are not bound yet."""
+    if not tool_names:
+        return None
+    uses = _join_with_and([_EXACT_NUMBER_USES[name.replace(".", "__").rsplit("__", 1)[-1]] for name in tool_names])
+    if toolset is None:
+        rule = f"Use {_join_with_and([f'`{name}`' for name in tool_names])} for {uses}"
+        load = ""
+    else:
+        rule = f"Use the `{toolset}` toolset for {uses}"
+        load = f' Load it with `fetch_tools("{toolset}")` when its tools are not in your tool list yet.'
+    return (
+        "\n## Exact Numbers\n\n"
+        f"{rule}, rather than working them out in your head.{load} Convert every "
+        "operand to one unit first, copy each figure exactly from its source, and "
+        "give the result in the unit the question asks for."
+    )
+
+
+def _toolset_to_load(tool_names: tuple[str, ...], spec: AgentSpec, runtime: AgentRuntime) -> str | None:
+    """The toolset a lazily disclosed agent must `fetch_tools` before it can
+    call `tool_names`, or None when they are bound from turn 0 (eager
+    disclosure, a pinned toolset, or a tool in no toolset). Reads the
+    registry's grouping, which `fetch_tools` never changes, so the answer
+    stays the same for the whole run."""
+    if not tool_names or spec.tool_disclosure != "lazy" or runtime.tool_registry is None:
+        return None
+    groups = [group for group in runtime.tool_registry.toolsets() if tool_names[0] in group.tool_names]
+    if not groups or any(group.name in (spec.pinned_toolsets or []) for group in groups):
+        return None
+    return groups[0].name
 
 
 def _build_code_execution_section(*, composed: bool, networked: bool) -> str:
@@ -642,7 +701,12 @@ class PipesHubPromptBuilder:
                 tpl.set("turn_citation_rules", citation_rules)
 
         # ── Finding information: the one source-precedence section ──────────
-        tpl.set("finding_information", _build_finding_information(surfaces, catalog) or None)
+        tpl.set("finding_information", _build_finding_information(
+            surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
+        ) or None)
+        tpl.set("exact_numbers", _build_exact_numbers(
+            surfaces.calculator_tools, _toolset_to_load(surfaces.calculator_tools, spec, runtime),
+        ))
 
         # ── Code execution steering ───────────────────────────────────────────
         code_tool = surfaces.code
@@ -844,9 +908,10 @@ class PipesHubPromptBuilder:
                 "**How to load and use them:**\n"
                 "- If you know which toolset you need, call "
                 "`fetch_tools(\"<toolset_name>\")`.\n"
-                "- If you're unsure which toolset has the tool you need, "
-                "call `search_tools(\"<description of what you need>\")` to find it.\n"
-                "- Whenever you suspect a tool might exist for the task, search for it — "
+                "- If you're unsure which toolset has the tool you need, call "
+                "`search_tools(\"<capability keywords, e.g. 'search indexed knowledge'>\")` "
+                "to find it — name the capability, never the user's question.\n"
+                "- Whenever you suspect a tool might exist for a capability you need, search for it — "
                 "call `search_tools` and then `fetch_tools` on anything relevant it finds — "
                 "before concluding you cannot do it or falling back to a manual/text-only answer.\n"
                 "- Only load toolsets relevant to the current task — "

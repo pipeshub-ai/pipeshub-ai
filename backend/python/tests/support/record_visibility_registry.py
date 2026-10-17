@@ -69,9 +69,14 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_records_by_record_group": (Rule.LIVE, "reindex keyset walk"),
     "get_records_by_parent_record": (Rule.LIVE, "reindex keyset walk"),
     "get_record_by_weburl": (Rule.LIVE, "resolves links and agent references"),
+    "get_records_by_weburls": (Rule.LIVE, "joins a record to the records at the addresses it pastes"),
+    "get_address_links_batch": (Rule.LIVE, "shown to the model as what mentions a record and what it mentions"),
+    "get_issue_sites": (Rule.LIVE, "reads the Jira sites of live tickets to resolve issue keys in text"),
+    "get_records_linking_to_weburls": (Rule.LIVE, "joins a newly indexed record to the records that pasted its address"),
     "get_linked_records": (Rule.LIVE, "shown to users"),
     "get_entity_candidate_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
     "get_permitted_entity_records": (Rule.LIVE, "knowledge-graph entity tools list these records to users"),
+    "get_records_for_named_entities": (Rule.LIVE, "entity filters and find_records_by_value list these records to users"),
     "filter_nodes_with_permission_role": (
         Rule.LIVE, "the Location trail's ancestor check: a trashed folder ends the trail, unnamed",
     ),
@@ -123,6 +128,10 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         _STRUCTURE + "; search_entities passes only records the user can open, and the label "
         "repair restores a trashed record's labels too, so a restore shows its own",
     ),
+    "get_named_entities_for_record": (Rule.ALL, _STRUCTURE),
+    "get_named_entity_mentions_in_records": (
+        Rule.ALL, _STRUCTURE + "; search_by_entities passes only records list_accessible_entity_records returned",
+    ),
     "move_taxonomy_edges": (
         Rule.ALL, "a merge or migration moves a trashed record's edges too, so a restore finds them on the new node",
     ),
@@ -146,6 +155,7 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
     ),
     # Writes.
+    "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),

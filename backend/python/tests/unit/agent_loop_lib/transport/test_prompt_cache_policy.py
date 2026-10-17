@@ -56,6 +56,13 @@ class TestRoutingKey:
         prefix, org, shard = key.split(":")
         assert prefix == "pipeshub" and len(org) == 12 and "org-1" not in key and 0 <= int(shard) < 8
 
+    def test_a_prompt_family_gets_keys_of_its_own(self) -> None:
+        key = routing_key("org-1", "record-1", 8, family="named-entities")
+        prefix, org, family, shard = key.split(":")
+        assert (prefix, family) == ("pipeshub", "named-entities") and 0 <= int(shard) < 8
+        assert org == routing_key("org-1", "record-1", 8).split(":")[1]
+        assert key != routing_key("org-1", "record-1", 8, family="document-extraction")
+
     def test_conversations_spread_over_the_shards(self) -> None:
         shards = {routing_key("org-1", f"conv-{i}", 8).rsplit(":", 1)[1] for i in range(200)}
         assert len(shards) == 8

@@ -245,11 +245,13 @@ class TestExcludesRecordsTheOldPathExcluded:
         assert "isDeleted IS NULL OR" in src
         assert "isDeleted <> true" not in src
 
-    def test_requires_completed_indexing(self, source):
+    def test_requires_an_indexed_copy(self, source):
         """Vector points can exist before a record finishes indexing; the old
-        path filtered these out and this one has to match."""
-        assert "indexingStatus" in source
-        assert "completed" in source
+        path filtered these out and this one has to match. A record queued again
+        after an edit still holds its indexed copy, which the enumeration maps
+        accept too, so both take the same shared predicate."""
+        assert "_searchable_record(" in source
+        assert "'completed'" in source
 
 
 class TestTenantBoundary:

@@ -261,8 +261,38 @@
       "PRESENTATION": "प्रस्तुति",
       "DATA_FILE": "डेटा फ़ाइल",
       "CODE": "कोड",
-      "CODE_OUTPUT": "कोड आउटपुट"
-    }
+      "CODE_OUTPUT": "कोड आउटपुट",
+      "OTHER": "अन्य"
+    },
+    "tabs": {
+      "all": "सभी आर्टिफैक्ट",
+      "mine": "मेरे",
+      "shared": "मेरे साथ साझा किए गए"
+    },
+    "tabsShort": {
+      "all": "सभी",
+      "mine": "मेरे",
+      "shared": "साझा"
+    },
+    "share": {
+      "title": "आर्टिफैक्ट साझा करें"
+    },
+    "emptyShared": "अभी तक आपके साथ कुछ साझा नहीं किया गया",
+    "emptySharedHint": "आपके साथी जो आर्टिफैक्ट आपके साथ साझा करेंगे, वे यहाँ दिखाई देंगे।",
+    "notAvailable": "यह आर्टिफैक्ट अब उपलब्ध नहीं है",
+    "deleteTitle": "आर्टिफैक्ट हटाएँ?",
+    "deleteConfirmMessage": "\"{{name}}\" और इसके सभी संस्करण स्थायी रूप से हटा दिए जाएँगे। जिन चैट में यह दिखता है, वे इसे अब उपलब्ध नहीं के रूप में दिखाएँगी।",
+    "deleteSuccess": "\"{{name}}\" हटा दिया गया",
+    "preview": "पूर्वावलोकन",
+    "moreActionsFor": "{{name}} के लिए और विकल्प",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "अपना कनेक्शन जाँचें और फिर से कोशिश करें।",
+    "noMatches": "आपके फ़िल्टर से कोई आर्टिफैक्ट मेल नहीं खाता",
+    "noMatchesHint": "कोई दूसरी खोज आज़माएँ, या सभी आर्टिफैक्ट देखने के लिए फ़िल्टर हटाएँ।",
+    "clearFilters": "फ़िल्टर हटाएँ",
+    "gridView": "ग्रिड दृश्य",
+    "listView": "सूची दृश्य",
+    "closeSearch": "खोज बंद करें"
   },
   "notifications": {
     "title": "सूचनाएँ",
@@ -359,7 +389,8 @@
     "required": "यह फ़ील्ड आवश्यक है",
     "invalidEmail": "अमान्य ईमेल पता",
     "invalidUrl": "अमान्य URL",
-    "name": "नाम"
+    "name": "नाम",
+    "optional": "(वैकल्पिक)"
   },
   "dialog": {
     "newFolder": "नया कलेक्शन फ़ोल्डर",
@@ -474,7 +505,11 @@
     "openProfile": "प्रोफ़ाइल खोलें",
     "loading": "लोड हो रहा है...",
     "moreOptions": "अधिक विकल्प",
-    "docs": "दस्तावेज़"
+    "docs": "दस्तावेज़",
+    "enterprise": {
+      "label": "EE में उपलब्ध",
+      "tooltip": "PipesHub Enterprise Edition का हिस्सा"
+    }
   },
   "units": {
     "bytes": "बाइट",
@@ -578,11 +613,19 @@
     "record": "रिकॉर्ड"
   },
   "chat": {
+    "answerReady": {
+      "title": "उत्तर तैयार है",
+      "open": "चैट खोलें",
+      "unread": "नया उत्तर"
+    },
+    "jumpToNewest": "नवीनतम संदेश पर जाएँ",
     "recordActions": {
       "preview": "पूर्वावलोकन",
       "open": "{{source}} खोलें",
       "openIn": "{{source}} में खोलें",
       "openInCollections": "कलेक्शन में खोलें",
+      "syncedJustNow": "अभी सिंक हुआ",
+      "syncedAgo": "{{age}} पहले सिंक हुआ",
       "relevance": "प्रासंगिकता: {{percent}}%"
     },
     "results": "परिणाम",
@@ -626,7 +669,10 @@
       "browseWorkspaceMcp": "MCP सर्वर ब्राउज़ करें",
       "browseWorkspaceMcpAria": "कनेक्शन जोड़ने या प्रबंधित करने के लिए MCP सर्वर खोलें",
       "noActionMatches": "आपकी खोज से कोई क्रिया मेल नहीं खाती।",
-      "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।"
+      "noMcpMatches": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता।",
+      "notConnected": "कनेक्ट नहीं है",
+      "connect": "कनेक्ट करें",
+      "actionConnected": "{{name}} कनेक्ट है"
     },
     "projectResources": {
       "noConnectors": "इस प्रोजेक्ट के लिए कोई कनेक्टर सक्षम नहीं है।",
@@ -687,6 +733,8 @@
     "copiedAsMarkdown": "मार्कडाउन के रूप में कॉपी किया गया",
     "copiedAsText": "टेक्स्ट के रूप में कॉपी किया गया",
     "citations": "उद्धरण",
+    "showMoreCitations_one": "{{count}} और उद्धरण दिखाएँ",
+    "showMoreCitations_other": "{{count}} और उद्धरण दिखाएँ",
     "markdownWithCitations": "उद्धरण के साथ Markdown",
     "onlyTextWithoutCitations": "केवल टेक्स्ट (बिना उद्धरण के)",
     "differentModesOfQuery": "प्रश्न के विभिन्न तरीके",
@@ -714,6 +762,7 @@
     "askAnythingInContext": "\"{{title}}\" में कुछ भी पूछें",
     "expandTable": "तालिका बड़ी करें",
     "fullTableView": "पूर्ण तालिका दृश्य",
+    "downloadCsv": "CSV के रूप में डाउनलोड करें",
     "expandDiagram": "आरेख बड़ा करें",
     "fullDiagramView": "पूर्ण आरेख दृश्य",
     "renderingDiagram": "आरेख रेंडर हो रहा है…",
@@ -726,6 +775,45 @@
     "showDiagramSource": "स्रोत दिखाएं",
     "hideDiagramSource": "स्रोत छुपाएं",
     "stoppedMarker": "रोका गया",
+    "toolCard": {
+      "arguments": "आर्गुमेंट",
+      "result": "परिणाम",
+      "error": "त्रुटि",
+      "blocked": "अवरुद्ध",
+      "awaitingApproval": "अनुमोदन की प्रतीक्षा है",
+      "viewRaw": "मूल आउटपुट देखें",
+      "hideRaw": "मूल आउटपुट छिपाएँ",
+      "showingOf": "{{total}} में से {{shown}} दिखाए गए",
+      "open": "खोलें",
+      "needsApproval": "अनुमति चाहिए",
+      "approved": "अनुमति दी गई",
+      "declined": "मना किया गया",
+      "expired": "समय-सीमा खत्म"
+    },
+    "mcpConnect": {
+      "title": "इस एजेंट का उपयोग करने के लिए इन MCP सर्वरों को कनेक्ट करें",
+      "connect": "कनेक्ट करें",
+      "connecting": "कनेक्ट हो रहा है…",
+      "connected": "कनेक्ट है",
+      "removed": "हटा दिया गया। एजेंट के मालिक से इसे अपडेट करने को कहें।",
+      "waitingForAdmin": "साझा क्रेडेंशियल जोड़ने के लिए एडमिन की प्रतीक्षा",
+      "setUpInBuilder": "Agent Builder में सेट करें",
+      "serviceAccount": "यह एजेंट अपने क्रेडेंशियल का उपयोग करता है। इसका मालिक उन्हें Agent Builder में सेट करता है।",
+      "openAgentBuilder": "Agent Builder खोलें",
+      "allConnected": "सब कनेक्ट हो गया। जारी रखने के लिए अपना संदेश फिर से भेजें।",
+      "tryAgain": "फिर से कोशिश करें",
+      "unavailable": "यहां साइन-इन शुरू नहीं हो सका। इसे Workspace → MCP Servers में कनेक्ट करें।"
+    },
+    "mcpSignIn": {
+      "title": "इन MCP सर्वर को माँगी गई अनुमति देने के लिए फिर से साइन इन करें",
+      "needs": "चाहिए: {{scopes}}",
+      "signIn": "फिर से साइन इन करें",
+      "signingIn": "साइन इन हो रहा है…",
+      "signedIn": "साइन इन हो गया",
+      "askAnEditor": "इस एजेंट को संपादित कर सकने वाले किसी व्यक्ति से फिर से साइन इन करने को कहें",
+      "allSignedIn": "साइन इन हो गया। अनुरोध फिर से आज़माएँ।",
+      "retryMessage": "मैंने {{servers}} में फिर से साइन इन किया है। कृपया फिर से कोशिश करें।"
+    },
     "toasts": {
       "stopStreamTitle": "रोका जा रहा है…",
       "stopStreamDescription": "प्रतिक्रिया शीघ्र ही रुक जाएगी। अब तक जनरेट किया गया आंशिक उत्तर सुरक्षित रहेगा।",
@@ -876,6 +964,13 @@
     "deleteAgentDescription": "नाम वाला एजेंट",
     "deleteAgentWarning": "Pipeshub से स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाली चैट अपेक्षित रूप से काम नहीं कर सकतीं।",
     "deleteChat": "हटाएं",
+    "export": {
+      "menuItem": "एक्सपोर्ट करें",
+      "exporting": "चैट एक्सपोर्ट हो रही है…",
+      "done": "चैट एक्सपोर्ट हो गई",
+      "failed": "चैट एक्सपोर्ट नहीं की जा सकी",
+      "assistant": "असिस्टेंट"
+    },
     "deleteChatConfirm": "क्या आप सुनिश्चित हैं?",
     "deleteChatDescription": "शीर्षक वाली चैट",
     "deleteChatWarning": "Pipeshub से स्थायी रूप से हटा दी जाएगी। साझा पहुंच वाले सभी उपयोगकर्ता अपनी पहुंच खो देंगे।",
@@ -1103,9 +1198,9 @@
     "configuredModels": "कॉन्फ़िगर किए गए मॉडल",
     "reasoningEffort": {
       "label": "रीज़निंग प्रयास",
-      "overrideHint": "डिफ़ॉल्ट उपयोग करने के लिए फिर से क्लिक करें।",
-      "defaultHintWithLevel": "सेट न होने पर डिफ़ॉल्ट {{level}} रहता है।",
-      "modelDefaultHint": "सेट न होने पर इस मॉडल का अपना डिफ़ॉल्ट, {{level}}, रहता है।",
+      "modelDefaultOption": "मॉडल डिफ़ॉल्ट",
+      "modelDefaultOptionWithLevel": "मॉडल डिफ़ॉल्ट ({{level}})",
+      "agentDefaultOption": "एजेंट डिफ़ॉल्ट ({{level}})",
       "modelDefaultLabel": "डिफ़ॉल्ट ({{level}})",
       "low": "कम",
       "medium": "मध्यम",
@@ -1129,7 +1224,47 @@
       "webSearch": "वेब खोज"
     },
     "resizePanels": "चैट और पूर्वावलोकन पैनल का आकार बदलें",
-    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।"
+    "mobileProfileComingSoon": "मोबाइल पर प्रोफ़ाइल पेज जल्द ही आ रहा है।",
+    "toolApproval": {
+      "noArguments": "कोई विवरण नहीं",
+      "deny": "अस्वीकार करें",
+      "showAll": "सब दिखाएँ",
+      "showLess": "कम दिखाएँ",
+      "partial": "विवरण का केवल शुरुआती हिस्सा दिखाया गया है: पूरा कॉल इससे लंबा है।",
+      "deletesData": "डेटा हटाता है",
+      "allow": "अनुमति दें",
+      "dontAskAgain": "इस टूल के लिए दोबारा न पूछें",
+      "answerFailed": "आपका जवाब नहीं भेजा जा सका। फिर से कोशिश करें।",
+      "needsApproval": "आपकी अनुमति चाहिए",
+      "expiresIn_one": "{{count}} मिनट में समाप्त",
+      "expiresIn_other": "{{count}} मिनट में समाप्त",
+      "expiresSoon": "एक मिनट से कम में समाप्त",
+      "notice": {
+        "expired": "{{server}} पर {{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई। ज़रूरत हो तो फिर से पूछें।",
+        "passed": "{{server}} पर {{tool}} को अनुमति नहीं मिली, इसलिए यह नहीं चला।",
+        "waiting": "{{server}} पर {{tool}} बातचीत के मालिक की अनुमति का इंतज़ार कर रहा है।"
+      },
+      "receipt": {
+        "allowed": "आपने {{tool}} की अनुमति दी",
+        "declined": "आपने {{tool}} को मना किया",
+        "expired": "{{tool}} नहीं चला: अनुरोध की समय-सीमा खत्म हो गई",
+        "allowedNotRun": "आपने {{tool}} की अनुमति दी, लेकिन यह नहीं चला"
+      }
+    },
+    "artifactsPanel": {
+      "generated_one": "{{count}} आर्टिफैक्ट बनाया गया",
+      "generated_other": "{{count}} आर्टिफैक्ट बनाए गए",
+      "newerVersion": "नया संस्करण उपलब्ध है (v{{version}})",
+      "unavailable": "अब उपलब्ध नहीं है",
+      "viewSource": "सोर्स कोड देखें",
+      "loadingSource": "सोर्स कोड लोड हो रहा है",
+      "viewSourceTitle": "वह कोड देखें जिससे यह आर्टिफैक्ट बना",
+      "preview": "आर्टिफैक्ट का पूर्वावलोकन",
+      "loadingPreview": "पूर्वावलोकन लोड हो रहा है",
+      "download": "आर्टिफैक्ट डाउनलोड करें",
+      "downloading": "आर्टिफैक्ट डाउनलोड हो रहा है"
+    },
+    "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।"
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -1458,7 +1593,7 @@
     },
     "oauth2": {
       "title": "OAuth 2.0",
-      "subtitle": "उन OAuth 2.0 अनुप्रयोगों को प्रबंधित करें जो Pipeshub के माध्यम से आपके संगठन तक पहुँच सकते हैं",
+      "subtitle": "अपने द्वारा पंजीकृत OAuth ऐप बनाएँ और प्रबंधित करें। यहाँ आपके ऐप केवल आपको दिखाई देते हैं।",
       "searchPlaceholder": "नाम या विवरण से अनुप्रयोग खोजें...",
       "newApplication": "नया OAuth अनुप्रयोग",
       "emptyTitle": "कोई OAuth 2.0 अनुप्रयोग नहीं",
@@ -1971,10 +2106,20 @@
         "maxLength": "{{field}} में {{maxLength}} से अधिक अक्षर नहीं हो सकते",
         "email": "{{field}} एक मान्य ईमेल पता होना चाहिए",
         "url": "{{field}} एक मान्य URL होना चाहिए",
-        "urlProtocol": "{{field}} में http या https का उपयोग होना चाहिए"
+        "urlProtocol": "{{field}} में http या https का उपयोग होना चाहिए",
+        "numberRange": "{{min, number}} से {{max, number}} तक कोई पूर्ण संख्या दर्ज करें।",
+        "numberMin": "कम से कम {{min, number}} की कोई पूर्ण संख्या दर्ज करें।",
+        "numberMax": "अधिकतम {{max, number}} तक की कोई पूर्ण संख्या दर्ज करें।"
       },
       "adminRequiredToast": "केवल व्यवस्थापक नई क्रियाएँ जोड़ सकते हैं। अपने व्यवस्थापक से पहले यह क्रिया कॉन्फ़िगर करने को कहें।",
-      "personalNonAdminHint": "\"कॉन्फ़िगर नहीं\" चिह्नित क्रियाओं को उपयोग करने से पहले व्यवस्थापक द्वारा सेट किया जाना आवश्यक है।"
+      "personalNonAdminHint": "\"कॉन्फ़िगर नहीं\" चिह्नित क्रियाओं को उपयोग करने से पहले व्यवस्थापक द्वारा सेट किया जाना आवश्यक है।",
+      "toolRules": {
+        "open": "टूल अनुमोदन",
+        "title": "टूल अनुमोदन: {{name}}",
+        "description": "जब कोई असिस्टेंट या एजेंट इनमें से कोई टूल इस्तेमाल करना चाहे तो क्या हो। ये नियम आपके संगठन में सभी पर एक जैसे लागू होते हैं।",
+        "readOnly": "इन्हें केवल एडमिन बदल सकते हैं।",
+        "toolsError": "इस टूलसेट के टूल लोड नहीं हो सके।"
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "जारी रखने के लिए ऊपर स्क्रॉल करें और आवश्यक फ़ील्ड (* चिह्न वाले) पूरे करें।",
@@ -2095,7 +2240,9 @@
       },
       "featureFlags": {
         "title": "फ़ीचर फ़्लैग",
-        "subtitle": "इस वर्कस्पेस के हर एजेंट के लिए प्रयोगात्मक क्षमताएँ चालू या बंद करें।"
+        "subtitle": "इस वर्कस्पेस के हर एजेंट के लिए प्रयोगात्मक क्षमताएँ चालू या बंद करें।",
+        "advancedTitle": "उन्नत फ़ीचर फ़्लैग दिखाएँ",
+        "advancedSubtitle": "आंतरिक फ़्लैग जिन्हें ज़्यादातर वर्कस्पेस अपने डिफ़ॉल्ट पर छोड़ सकते हैं।"
       },
       "vectorStore": {
         "title": "वेक्टर स्टोर",
@@ -2352,7 +2499,13 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "तय करें कि {{name}} का डेटा कितनी बार रीफ़्रेश हो",
+        "lastRunLimit": {
+          "saved": "पिछला सिंक: {{count, number}} पेज संग्रहीत",
+          "stoppedAtLimit": "इस सीमा पर रुका",
+          "leftOut": "{{count, number}} छोड़े गए",
+          "nearLimit": "यह कनेक्टर इस सीमा का कम से कम 90% पहले से संग्रहीत करता है। इस साइट के और पेज रखने के लिए इसे बढ़ाएँ।"
+        }
       },
       "instancePanel": {
         "overview": "Overview",
@@ -2385,7 +2538,31 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "लोकल वॉचर",
-        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल"
+        "localWatcherStatus": "{{state}} · {{pending}} लंबित · {{failed}} विफल",
+        "lastRun": {
+          "title": "पिछला सिंक",
+          "outcome": {
+            "succeeded": "पूरा हुआ",
+            "failed": "विफल",
+            "stopped": "रोका गया",
+            "skipped": "छोड़ा गया"
+          },
+          "stopReason": {
+            "max_pages": "अधिकतम पेज सीमा तक पहुँचा",
+            "time_limit": "समय सीमा तक पहुँचा; अगला सिंक यहीं से जारी रहेगा",
+            "stalled": "साइट ने जवाब देना बंद कर दिया; अगला सिंक यहीं से जारी रहेगा",
+            "rate_limited": "साइट बार-बार कम अनुरोध भेजने को कहती रही; अगला सिंक यहीं से जारी रहेगा"
+          },
+          "pagesSaved": "{{count}} पेज सहेजे गए",
+          "failed": "{{count}} पेज विफल",
+          "robotsSkipped": "robots.txt के कारण {{count}} छोड़े गए",
+          "noindexSkipped": "{{count}} ने इंडेक्स न करने को कहा",
+          "skippedMaxPages": "अधिकतम पेज सीमा के कारण {{count}} छोड़े गए",
+          "pruned": "{{count}} हटाए गए, अब साइट पर नहीं हैं",
+          "sitemapUrls": "साइटमैप में {{count}} मिले",
+          "resumed": "अधूरे सिंक को आगे बढ़ाया",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "इंस्टेंस का नाम",
@@ -2403,7 +2580,7 @@
         "syncSettings": "Sync Settings",
         "syncStrategySettingsHint": "आप <bold>{{manageConfig}}</bold> पर जाकर सिंक रणनीति बदल सकते हैं।",
         "syncInterval": "Sync Interval",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "syncIntervalHelper": "तय करें कि {{name}} का डेटा कितनी बार रीफ़्रेश हो",
         "removeInstance": "कनेक्टर इंस्टेंस हटाएँ",
         "removeInstanceDescription": "इस कनेक्टर इंस्टेंस को स्थायी रूप से हटाएँ और इसके डेटा का सिंक रोकें। यह पूर्ववत नहीं किया जा सकता।"
       },
@@ -2502,6 +2679,7 @@
         "add": "फ़िल्टर जोड़ें",
         "incomplete": "यहाँ सारांश देखने के लिए नीचे हर फ़िल्टर का ऑपरेटर और मान पूरा करें।",
         "empty": "अभी कोई फ़िल्टर नहीं है। समर्थित फ़िल्टरों में से एक चुनने के लिए \"फ़िल्टर जोड़ें\" का उपयोग करें।",
+        "unsetFallback": "{{field}}: {{value}} (डिफ़ॉल्ट)",
         "operator": "ऑपरेटर",
         "chooseOperator": "ऑपरेटर चुनें…",
         "value": "मान",
@@ -2574,12 +2752,115 @@
           "confirm": "पुनः इंडेक्सिंग शुरू करें"
         },
         "typePrompt": "पुष्टि के लिए {{token}} टाइप करें।"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "शुरुआती URL",
+            "help": "वह पहला पेज जिस पर PipesHub जाता है। सेव करने के बाद इसे बदला नहीं जा सकता; किसी दूसरी साइट को क्रॉल करने के लिए एक और कनेक्टर जोड़ें।"
+          },
+          "type": {
+            "label": "क्रॉल करें",
+            "options": {
+              "single": "केवल यह पेज",
+              "recursive": "यह पेज और इससे लिंक किए गए पेज"
+            }
+          },
+          "discovery": {
+            "label": "पेज इनसे खोजें",
+            "help": "साइटमैप सबसे तेज़ हैं; लिंक उन पेजों को ढूँढते हैं जो साइटमैप में नहीं हैं।",
+            "options": {
+              "sitemap_and_links": "साइटमैप और लिंक (अनुशंसित)",
+              "links": "केवल लिंक",
+              "sitemap": "केवल साइटमैप"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "इसी सेक्शन में रहें",
+            "help": "केवल शुरुआती URL के पाथ के नीचे के पेज, जैसे /docs/।"
+          },
+          "max_pages": {
+            "label": "अधिकतम पेज",
+            "help": "PipesHub इस साइट से अधिकतम इतने पेज रखता है। PDF जैसी फ़ाइलें भी पेज गिनी जाती हैं।",
+            "unit": "पेज"
+          },
+          "url_should_contain": {
+            "label": "केवल वे पेज सेव करें जिनके URL में यह हो",
+            "help": "हर पेज सेव करने के लिए खाली छोड़ें। जो पेज मेल नहीं खाते उन पर जाया नहीं जाता, इसलिए उनके लिंक भी फ़ॉलो नहीं होते।"
+          },
+          "ignore_query_params": {
+            "label": "वही पेज, अलग URL",
+            "help": "ऐसे URL पैरामीटर जो पेज नहीं बदलते, जैसे sort या ref। सभी के लिए * लिखें। ट्रैकिंग पैरामीटर (utm_…) हमेशा अनदेखे किए जाते हैं।"
+          },
+          "depth": {
+            "label": "शुरुआती पेज से क्लिक",
+            "help": "लिंक कितनी दूर तक फ़ॉलो करने हैं। साइटमैप में दिए पेज एक क्लिक गिने जाते हैं।",
+            "unit": "क्लिक"
+          },
+          "max_size_mb": {
+            "label": "डाउनलोड होने वाली सबसे बड़ी फ़ाइल",
+            "help": "इससे बड़े पेज और फ़ाइलें छोड़ दी जाती हैं और पिछले सिंक में दिखाई जाती हैं।",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "दूसरी साइटों के लिंक भी फ़ॉलो करें",
+            "help": "आमतौर पर बंद: क्रॉल इस साइट से बहुत आगे तक जा सकता है।"
+          },
+          "use_headless_browser": {
+            "label": "हमेशा ब्राउज़र का उपयोग करें (धीमा)",
+            "help": "बंद: PipesHub उन पेजों को पहचानता है जिन्हें JavaScript चाहिए और केवल उन्हीं साइटों के लिए ब्राउज़र का उपयोग करता है।"
+          },
+          "browser_like_identity": {
+            "label": "वेब ब्राउज़र के रूप में पहचान दें",
+            "help": "बंद: अनुरोध PipesHub क्रॉलर के रूप में पहचाने जाते हैं। इसे केवल ऐसी साइट के लिए चालू करें जिसे आप क्रॉल कर सकते हैं और जो क्रॉलर को रोकती है; robots.txt का पालन तब भी होता है।"
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt का पालन करें",
+            "help": "वे पेज छोड़ें जिन पर साइट क्रॉलर से न जाने या उन्हें इंडेक्स न करने को कहती है।"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "वेबसाइट"
+          },
+          "crawl": {
+            "title": "क्या क्रॉल करना है"
+          },
+          "skip": {
+            "title": "क्या छोड़ना है"
+          },
+          "advanced": {
+            "title": "उन्नत",
+            "description": "क्रॉल गहराई, फ़ाइल आकार, ब्राउज़र और क्रॉलर पहचान।"
+          }
+        },
+        "summaryOn": "{{label}} चालू",
+        "summaryOff": "{{label}} बंद",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "इससे शुरू करें",
+        "custom": "कस्टम",
+        "suggested": "इस पते के लिए सुझाव: {{name}}",
+        "replaceTitle": "अपनी मौजूदा सेटिंग्स बदलें?",
+        "replaceMessage": "{{name}} आपकी मौजूदा क्रॉल सेटिंग्स की जगह ले लेगा।",
+        "replaceConfirm": "बदलें",
+        "web": {
+          "docs": "डॉक्स साइट",
+          "helpCenter": "हेल्प सेंटर",
+          "wholeSite": "पूरी साइट",
+          "onePage": "एक पेज"
+        }
       }
     },
     "mcpServers": {
       "searchPlaceholder": "MCP सर्वर खोजें...",
       "loading": "MCP सर्वर लोड हो रहे हैं…",
       "noResults": "आपकी खोज से कोई MCP सर्वर मेल नहीं खाता",
+      "replacedNotice": "अब इसका रखरखाव नहीं होता। इसके बजाय {{name}} जोड़ें।",
       "addServer": "सर्वर जोड़ें",
       "custom": "कस्टम",
       "inherited": "इनहेरिटेड",
@@ -2588,17 +2869,33 @@
       "sharedAuth": "साझा एडमिन प्रमाणीकरण",
       "toolsCount_one": "{{count}} टूल",
       "toolsCount_other": "{{count}} टूल्स",
+      "toolsCachedAt": "{{time}} तक के टूल",
+      "editImpact": {
+        "title": "सहेजे गए साइन-इन हटाएं?",
+        "body": "इस सर्वर तक पहुंचने या साइन इन करने का तरीका बदलने से लोगों और एजेंट्स के सहेजे गए क्रेडेंशियल हट जाते हैं। सभी को फिर से कनेक्ट करना होगा।",
+        "personalBody": "इस सर्वर तक पहुंचने या साइन इन करने का तरीका बदलने से आपके और आपके एजेंट्स के सहेजे गए क्रेडेंशियल हट जाते हैं। आपको फिर से कनेक्ट करना होगा।",
+        "sharedBody": "साझा क्रेडेंशियल बंद करने पर वह हट जाता है। सभी को अपने क्रेडेंशियल से कनेक्ट करना होगा।",
+        "confirm": "सहेजें और साइन-इन हटाएं"
+      },
       "cta": {
         "manage": "प्रबंधित करें",
         "delete": "हटाएं",
         "reauthenticate": "फिर से प्रमाणित करें",
+        "reconnect": "फिर से कनेक्ट करें",
         "disconnect": "डिस्कनेक्ट करें",
         "connect": "कनेक्ट करें",
-        "addInstance": "इंस्टेंस जोड़ें"
+        "addInstance": "इंस्टेंस जोड़ें",
+        "edit": "संपादित करें"
       },
       "status": {
-        "ready": "तैयार",
+        "ready": "कनेक्टेड",
         "notConnected": "कनेक्ट नहीं है",
+        "reconnectNeeded": "फिर से कनेक्ट करना होगा",
+        "waitingForAdmin": "एडमिन की प्रतीक्षा",
+        "sharedCredentialMissing": "साझा क्रेडेंशियल नहीं है",
+        "blocked": "नीति द्वारा अवरुद्ध",
+        "unreachable": "सर्वर तक नहीं पहुंच पा रहे",
+        "slow": "धीरे जवाब दे रहा है",
         "needsAuth": "प्रमाणीकरण आवश्यक",
         "disabled": "अक्षम"
       },
@@ -2610,9 +2907,17 @@
       },
       "personal": {
         "title": "MCP सर्वर",
-        "subtitle": "अपने व्यवस्थापक द्वारा उपलब्ध कराए गए MCP सर्वर से प्रमाणित करें।",
-        "emptyTitle": "कोई MCP सर्वर उपलब्ध नहीं है",
-        "emptyDescription": "आपके व्यवस्थापक ने अभी तक कोई MCP सर्वर नहीं जोड़ा है।"
+        "subtitle": "अपने व्यवस्थापक द्वारा उपलब्ध कराए गए MCP सर्वर से जुड़ें, या अपने स्वयं के सर्वर जोड़ें।",
+        "emptyTitle": "कोई MCP सर्वर उपलब्ध नहीं",
+        "emptyDescription": "अपना सर्वर जोड़ें, या अपने एडमिन से सभी के लिए एक जोड़ने को कहें।",
+        "yourServersDescription": "आपके द्वारा जोड़े गए सर्वर। केवल आप इन्हें देख और उपयोग कर सकते हैं, और इन्हें आपके संगठन के साथ साझा किए गए एजेंट में नहीं जोड़ा जा सकता।",
+        "tabs": {
+          "all": "सभी",
+          "connected": "कनेक्टेड",
+          "notConnected": "कनेक्ट नहीं"
+        },
+        "yours": "आपका",
+        "noneInTab": "यहाँ कोई MCP सर्वर नहीं है।"
       },
       "details": {
         "breadcrumbLabel": "MCP सर्वर",
@@ -2632,12 +2937,14 @@
         "authBannerTitle": "प्रमाणीकरण आवश्यक",
         "authBannerDescription": "इस MCP सर्वर को प्रमाणित करें ताकि आपकी टीम के एजेंट इसका उपयोग कर सकें।",
         "authBannerAuthenticatedTitle": "कनेक्टेड",
+        "reconnectBannerDescription": "इस सर्वर का साइन-इन समाप्त हो गया या अस्वीकार कर दिया गया। इसका उपयोग जारी रखने के लिए फिर से कनेक्ट करें।",
         "authBannerAuthenticatedDescription": "आप इस MCP सर्वर को फिर से प्रमाणित या डिस्कनेक्ट कर सकते हैं।",
         "createdBy": "किसने बनाया"
       },
       "deleteDialog": {
         "title": "MCP सर्वर हटाएं?",
-        "body": "\"{{name}}\" नाम का सर्वर स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाले टीम सदस्यों की पहुंच समाप्त हो जाएगी।"
+        "body": "\"{{name}}\" नाम का सर्वर स्थायी रूप से हटा दिया जाएगा। इसका उपयोग करने वाले टीम सदस्यों की पहुंच समाप्त हो जाएगी।",
+        "personalBody": "\"{{name}}\" नाम का सर्वर और उसके सहेजे गए क्रेडेंशियल स्थायी रूप से हटा दिए जाएंगे।"
       },
       "toasts": {
         "loadError": "MCP सर्वर लोड करने में विफल",
@@ -2651,10 +2958,15 @@
         "disconnected": "सफलतापूर्वक डिस्कनेक्ट किया गया",
         "disconnectError": "डिस्कनेक्ट करने में विफल",
         "credentialsSaveError": "सर्वर सहेजा गया, लेकिन प्रमाण-पत्र सहेजने में विफल। आप उन्हें बाद में \"प्रबंधित करें\" से जोड़ सकते हैं।",
+        "credentialsSaved": "क्रेडेंशियल सहेजे गए",
+        "credentialsReset": "MCP सर्वर अपडेट किया गया। कनेक्शन बदलने के कारण सहेजे गए प्रमाण-पत्र हटा दिए गए; इसका उपयोग करने के लिए फिर से कनेक्ट करें।",
+        "oauthTimedOut": "साइन-इन में बहुत समय लगा और इसे रोक दिया गया। फिर से प्रयास करें।",
+        "oauthProviderError": "साइन-इन विफल: {{message}}",
         "discoveryError": "टूल खोजने में विफल"
       },
       "authDialog": {
         "title": "{{name}} के साथ प्रमाणित करें",
+        "docsLink": "यह कहां मिलेगा",
         "description": "इस MCP सर्वर को कनेक्ट करने के लिए अपना प्रमाण-पत्र दर्ज करें।"
       },
       "form": {
@@ -2666,6 +2978,7 @@
         "argsPlaceholder": "एक आर्गुमेंट जोड़ें",
         "requiredEnv": "आवश्यक env",
         "requiredEnvPlaceholder": "एक env वेरिएबल नाम जोड़ें (जैसे API_KEY)",
+        "defaultTokenEnvHint": "कोई वेरिएबल न होने पर टोकन कमांड को {{name}} के रूप में दिया जाता है।",
         "url": "URL",
         "authMode": "प्रमाणीकरण मोड",
         "headerName": "हेडर नाम",
@@ -2681,14 +2994,56 @@
         "credentialsHint": "अभी प्रमाण-पत्र जोड़ें, या छोड़ दें और बाद में \"कनेक्शन और टूल्स\" टैब से कनेक्ट करें।",
         "multiEnvIncomplete": "हर आवश्यक पर्यावरण चर भरें, या बाद में कनेक्ट करने के लिए सभी को खाली छोड़ दें।",
         "oauthPairRequired": "क्लाइंट ID और क्लाइंट सीक्रेट दोनों दर्ज करें, या दोनों खाली छोड़ दें।",
-        "connectAfterCreateHint": "इस सर्वर को सहेजें, फिर इसे कनेक्ट करने के लिए \"प्रबंधित करें\" फिर से खोलें।"
+        "connectAfterCreateHint": "इस सर्वर को सहेजें, फिर इसे कनेक्ट करने के लिए \"प्रबंधित करें\" फिर से खोलें।",
+        "timeoutsHeading": "टाइमआउट",
+        "connectTimeout": "कनेक्शन टाइमआउट (सेकंड)",
+        "callTimeout": "टूल कॉल टाइमआउट (सेकंड)",
+        "timeoutRange": "{{min}} से {{max}} तक कोई संख्या दर्ज करें, या डिफ़ॉल्ट के लिए इसे खाली छोड़ दें।"
       },
       "configPanel": {
         "editTitle": "MCP सर्वर संपादित करें",
         "createTitle": "MCP सर्वर जोड़ें",
         "tabs": {
           "configuration": "कॉन्फ़िगरेशन",
-          "connection": "कनेक्शन और टूल्स"
+          "tools": "टूल और अनुमोदन",
+          "toolList": "टूल"
+        },
+        "synced": "{{time}} सिंक किया गया",
+        "refreshTools": "टूल सूची रीफ़्रेश करें",
+        "signInForTools": "इस सर्वर के टूल देखने के लिए साइन इन करें।",
+        "toolsError": "टूल सूची लोड नहीं हो सकी",
+        "toolsErrorSignIn": "सर्वर चाहता है कि आप फिर से साइन इन करें।",
+        "rulesKept": "आपके सहेजे गए अनुमोदन नियम बने रहते हैं।",
+        "tryAgain": "फिर से कोशिश करें",
+        "findingTools": "इस सर्वर पर टूल खोजे जा रहे हैं",
+        "rulesUnlock": "सूची तैयार होते ही अनुमोदन नियम उपलब्ध होंगे।",
+        "unsaved_one": "{{count}} बिना सहेजा बदलाव",
+        "unsaved_other": "{{count}} बिना सहेजे बदलाव",
+        "allSaved": "सभी नियम सहेजे गए",
+        "discard": "छोड़ें",
+        "saveRules": "नियम सहेजें",
+        "discardTitle": "बिना सहेजे नियम बदलाव छोड़ें?",
+        "discardBody_one": "आपने {{count}} टूल का नियम बदला है। अभी बंद करने पर वह बदलाव खो जाएगा।",
+        "discardBody_other": "आपने {{count}} टूल के नियम बदले हैं। अभी बंद करने पर वे बदलाव खो जाएँगे।",
+        "noSignIn": "साइन इन की ज़रूरत नहीं · {{transport}}",
+        "signInExpired": "साइन-इन की अवधि समाप्त",
+        "sharedMissing": "साझा साइन-इन मौजूद नहीं",
+        "signInExpiredBody": "जब तक कोई फिर से साइन इन नहीं करता, इस सर्वर के टूल नहीं चल सकते।",
+        "notSignedIn": "साइन इन नहीं है",
+        "notSignedInDetail": "इस सर्वर के टूल इस्तेमाल करने के लिए साइन इन करें।",
+        "signedIn": "साइन इन है",
+        "sharedSignIn": "साझा साइन-इन",
+        "signedInDetail": "{{transport}} · {{time}} साइन इन किया",
+        "menu": {
+          "label": "और कार्रवाइयाँ",
+          "copyUrl": "सर्वर URL कॉपी करें",
+          "copied": "सर्वर URL कॉपी किया गया",
+          "copyFailed": "सर्वर URL कॉपी नहीं हो सका",
+          "addedBy": "{{name}} ने जोड़ा",
+          "disconnectHint": "आपको साइन आउट करता है। सेटिंग और नियम बने रहते हैं।",
+          "remove": "सर्वर हटाएँ",
+          "removeHint": "इसे सभी के लिए हटा देता है।",
+          "removeHintPersonal": "इसे और आपका साइन-इन हटा देता है।"
         }
       },
       "oauthConfig": {
@@ -2708,7 +3063,9 @@
         "callbackUrlLabel": "कॉलबैक URL",
         "copyCallbackUrl": "कॉलबैक URL कॉपी करें",
         "callbackUrlCopied": "कॉलबैक URL कॉपी हो गया",
-        "providerDocsLink": "प्रदाता सेटअप दस्तावेज़ देखें"
+        "providerDocsLink": "प्रदाता सेटअप दस्तावेज़ देखें",
+        "clientSecretPrefixHint": "{{prefix}} से शुरू होता है। पूरा सीक्रेट कॉपी करें, उस हिस्से समेत।",
+        "clientSecretPrefixMissing": "यह {{prefix}} से शुरू नहीं होता, इसलिए प्रोवाइडर इसे अस्वीकार करेगा। डबल-क्लिक से कॉपी करने पर वह हिस्सा छूट जाता है: पूरा सीक्रेट कॉपी करें।"
       },
       "oauth": {
         "completingTitle": "साइन-इन पूरा हो रहा है…",
@@ -2728,6 +3085,68 @@
         "disabledDescription": "कस्टम STDIO सर्वर PipesHub सर्वर पर एक कमांड चलाते हैं, इसलिए वे तब तक बंद रहते हैं जब तक ऑपरेटर डिप्लॉयमेंट के एनवायरनमेंट में {{flag}}=true सेट नहीं करता (Docker Compose .env, या Helm में config.mcpAllowCustomStdio)। तब तक एजेंट इस सर्वर के टूल का उपयोग नहीं कर सकते। आप इसे हटा सकते हैं या इसे रिमोट (HTTP) सर्वर में बदल सकते हैं।",
         "unavailableHint": "इस डिप्लॉयमेंट पर लोकल कमांड (STDIO) सर्वर बंद हैं। इन्हें अनुमति देने के लिए ऑपरेटर को {{flag}}=true सेट करना होगा।",
         "enabledWarning": "यह कमांड PipesHub सर्वर पर सेवा के विशेषाधिकारों के साथ चलती है, जिसमें उसका नेटवर्क एक्सेस और क्रेडेंशियल शामिल हैं। केवल भरोसेमंद कमांड ही जोड़ें।"
+      },
+      "addDialog": {
+        "title": "MCP सर्वर जोड़ें",
+        "description": "कैटलॉग से कोई सर्वर चुनें, या किसी भी रिमोट MCP सर्वर को उसके URL से जोड़ें। इसे केवल आप देखेंगे।",
+        "custom": "कस्टम सर्वर",
+        "customDescription": "कोई भी रिमोट MCP सर्वर, URL द्वारा।"
+      },
+      "toolRules": {
+        "open": "टूल अनुमोदन",
+        "title": "टूल अनुमोदन: {{name}}",
+        "description": {
+          "personal": "चुनें कि जब कोई असिस्टेंट या एजेंट आपकी चैट में इनमें से कोई टूल इस्तेमाल करना चाहे तो क्या हो।"
+        },
+        "loading": "लोड हो रहा है…",
+        "loadError": "नियम लोड नहीं हो सके।",
+        "search": "नाम या ID से खोजें",
+        "empty": "अभी कोई टूल नहीं। इसके टूल देखने के लिए सर्वर कनेक्ट करें।",
+        "rule": {
+          "allow": "पहले से स्वीकृत",
+          "ask": "अनुमोदन पर अनुमति दें",
+          "block": "अस्वीकार करें"
+        },
+        "saved": "टूल अनुमोदन सहेजे गए",
+        "saveError": "टूल अनुमोदन सहेजे नहीं जा सके",
+        "kindSource": {
+          "name": "नाम के आधार पर समूह में रखा गया: सर्वर नहीं बताता कि यह टूल क्या करता है।",
+          "none": "सर्वर नहीं बताता कि यह टूल क्या करता है, इसलिए इसे डेटा बदलने वाला माना जाता है।"
+        },
+        "group": {
+          "destructive": "डेटा हटाता है",
+          "write": "डेटा बदलता है",
+          "read": "केवल पढ़ना",
+          "notOffered": "अभी उपलब्ध नहीं",
+          "byName": "नाम से तय किए गए नियम"
+        },
+        "groupHint": {
+          "destructive": "इन्हें पहले देखें",
+          "read": "केवल जानकारी देखता है"
+        },
+        "noMatch": "आपकी खोज से कोई टूल मेल नहीं खाता।",
+        "clearSearch": "खोज साफ़ करें",
+        "noTools": "दिखाने के लिए कोई टूल नहीं।"
+      },
+      "disconnectDialog": {
+        "title": "{{name}} डिस्कनेक्ट करें?",
+        "yours_one": "जब तक आप फिर से साइन इन नहीं करते, आप इसका {{count}} टूल इस्तेमाल नहीं कर पाएँगे।",
+        "yours_other": "जब तक आप फिर से साइन इन नहीं करते, आप इसके {{count}} टूल इस्तेमाल नहीं कर पाएँगे।",
+        "yoursUnknown": "जब तक आप फिर से साइन इन नहीं करते, आप इसके टूल इस्तेमाल नहीं कर पाएँगे।",
+        "shared_one": "आपके संगठन के एजेंट इसका {{count}} टूल तुरंत इस्तेमाल करना बंद कर देंगे, Slack और शेड्यूल किए गए रन में भी।",
+        "shared_other": "आपके संगठन के एजेंट इसके {{count}} टूल तुरंत इस्तेमाल करना बंद कर देंगे, Slack और शेड्यूल किए गए रन में भी।",
+        "sharedUnknown": "आपके संगठन के एजेंट इसके टूल तुरंत इस्तेमाल करना बंद कर देंगे, Slack और शेड्यूल किए गए रन में भी।",
+        "keeps": "सर्वर सेटिंग और अनुमोदन नियम बने रहते हैं",
+        "reconnect": "फिर से साइन इन करके कभी भी दोबारा कनेक्ट करें",
+        "deletesYours": "आपका सहेजा गया साइन-इन हटा दिया जाता है",
+        "deletesShared": "साझा साइन-इन हटा दिया जाता है",
+        "disconnecting": "डिस्कनेक्ट हो रहा है…"
+      },
+      "enterprise": {
+        "orgRulesTitle": "संगठन के अनुमोदन नियम",
+        "orgRulesDescription": "तय करें कि आपके संगठन में सभी के लिए कौन से टूल चलें, पहले पूछें या कभी न चलें। यहाँ, हर व्यक्ति अपने MCP सर्वर पेज से अपने नियम तय करता है।",
+        "userServersTitle": "लोगों के अपने MCP सर्वर",
+        "userServersDescription": "आपके संगठन के लोग अपने लिए जो MCP सर्वर जोड़ते हैं, उन्हें देखें और हटाएँ।"
       }
     },
     "bots": {
@@ -3848,6 +4267,9 @@
     "configureMcpTooltip": "क्रेडेंशियल प्रबंधित करें",
     "authenticateMcpTooltip": "इस MCP सर्वर को प्रमाणित करें",
     "mcpAuthUpdatedNotify": "MCP प्रमाणीकरण अपडेट हो गया।",
+    "mcpServersUnavailable": "इस एजेंट के MCP सर्वर लोड नहीं हो सके",
+    "mcpServersUnavailableHint": "वे यहां नहीं दिखते, और सहेजने से वे नहीं बदलेंगे। फिर से कोशिश करने के लिए पेज रीलोड करें।",
+    "mcpServersUnavailableNoDrop": "इस एजेंट के MCP सर्वर लोड नहीं हो सके, इसलिए पेज रीलोड होने तक कोई नहीं जोड़ा जा सकता।",
     "mcpAuthSaveError": "MCP क्रेडेंशियल सहेजने में विफल।",
     "mcpAuthRemoveError": "MCP क्रेडेंशियल हटाने में विफल।",
     "loadingSchema": "स्कीमा लोड हो रहा है…",
@@ -3993,7 +4415,7 @@
     "removeDeprecatedTools": "पुराने टूल हटाएं",
     "showMore": "और दिखाएं",
     "showLess": "कम दिखाएं",
-    "mcpServerAlreadyAttachedNotify": "{{name}} पहले से इस एजेंट से संलग्न है",
+    "mcpServerAlreadyAttachedNotify": "इस एजेंट में पहले से {{name}} के समान प्रकार का दूसरा सर्वर है। एक एजेंट हर प्रकार का एक सर्वर उपयोग कर सकता है।",
     "webSearchOnlyOne": "केवल एक वेब खोज प्रदाता संलग्न किया जा सकता है",
     "mcpServerNodeSubtitle": "किसी MCP सर्वर के टूल",
     "noMcpServersAvailable": "कोई MCP सर्वर उपलब्ध नहीं",
@@ -4006,7 +4428,20 @@
     "mcpServerWithToolCount_one": "{{count}} टूल वाला MCP सर्वर",
     "mcpServerWithToolCount_other": "{{count}} टूल वाला MCP सर्वर",
     "deprecatedToolsBanner_one": "इस एजेंट का {{count}} टूल अप्रचलित है। इसे हटाएँ: {{tools}}",
-    "deprecatedToolsBanner_other": "इस एजेंट के {{count}} टूल अप्रचलित हैं। उन्हें हटाएँ: {{tools}}"
+    "deprecatedToolsBanner_other": "इस एजेंट के {{count}} टूल अप्रचलित हैं। उन्हें हटाएँ: {{tools}}",
+    "mcpAllTools": "सभी टूल",
+    "mcpAllToolsHint": "इसमें वे टूल भी शामिल हैं जिन्हें सर्वर बाद में जोड़ता है।",
+    "mcpServerUnavailable": "उपलब्ध नहीं",
+    "mcpServerUnavailableHint": "यह सर्वर आपके MCP सर्वरों में नहीं है: इसे हटा दिया गया है, या यह आपके साथ साझा नहीं किया गया है।",
+    "mcpToolNotOnServer": "सर्वर पर नहीं",
+    "mcpToolNotOnServerHint": "सर्वर अब यह टूल नहीं देता। इसे हटाएं, वरना एजेंट इसका उपयोग नहीं कर सकता।",
+    "mcpAllToolsNoneYet": "सर्वर ने अभी तक कोई टूल सूचीबद्ध नहीं किया है। एजेंट को वह सब मिलेगा जो सर्वर उपलब्ध कराता है।",
+    "mcpNoToolsSelected": "कोई टूल चयनित नहीं है। टूल जोड़ें, या \"सभी टूल\" चालू करें।",
+    "mcpServerNeedsToolsTooltip": "हर MCP सर्वर के लिए टूल चुनें, या \"सभी टूल\" चालू करें।",
+    "mcpServerNeedsToolsBanner": "{{names}} के लिए कम से कम एक टूल चुनें, या \"सभी टूल\" चालू करें।",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} आपका व्यक्तिगत MCP सर्वर है। इसे आपके संगठन के साथ साझा किए गए या सेवा खाते के रूप में चलने वाले एजेंट में नहीं जोड़ा जा सकता।",
+    "mcpAgentApprovalsEnterprise": "हर एजेंट के लिए टूल अनुमोदन Enterprise Edition का हिस्सा हैं। यहाँ, हर व्यक्ति के अपने टूल अनुमोदन लागू होते हैं।",
+    "mcpAgentApprovals": "हर एजेंट के लिए टूल अनुमोदन"
   },
   "recordView": {
     "sections": {
@@ -4121,6 +4556,7 @@
     "missingRecordId": "रिकॉर्ड आईडी अनुपलब्ध"
   },
   "oauthConsent": {
+    "workspace": "वर्कस्पेस: {{name}}",
     "loading": "प्राधिकरण अनुरोध लोड हो रहा है…",
     "missingParams": "आवश्यक OAuth पैरामीटर गुम हैं (client_id, redirect_uri)।",
     "noData": "कोई प्राधिकरण डेटा उपलब्ध नहीं है।",

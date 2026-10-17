@@ -15,6 +15,7 @@ from app.connectors.core.base.data_store.data_store import DataStoreProvider
 from app.connectors.core.constants import INTERNAL_CONNECTOR_GROUP_NAME
 from app.connectors.core.interfaces.connector.apps import App, AppGroup
 from app.connectors.core.registry.filters import FilterOptionsResponse
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.core.thread_pool import (
     SharedConnectorThreadPool,
     ThreadPoolLease,
@@ -120,6 +121,9 @@ class BaseConnector(ABC):
         # Injected post-construction by ConnectorFactory, same as _notification_service.
         self.connector_instance_name: Optional[str] = None
         self.last_synced_by: Optional[str] = None
+        # What the last run did, in the connector's own terms (counts, why it stopped); stored on
+        # the app doc with the run's outcome so the UI can show it. Flat JSON values only.
+        self.last_sync_summary: dict[str, object] | None = None
         self.creator_email = None
         # Cached GROUP permission for the pseudo "ConnectorGroup" (see
         # ensure_connector_group_permission). Populated lazily by personal-scope
@@ -250,6 +254,17 @@ class BaseConnector(ABC):
     @abstractmethod
     def run_incremental_sync(self) -> None:
         NotImplementedError("This method is not supported")
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """How much of the source the full sync that just returned read.
+
+        Asked once ``run_sync`` has returned from a full sync. The links of the
+        records and groups that sync did not write are then removed, except what
+        this says it did not read. The default says it read everything, so a node
+        it did not write is gone from the source. A connector whose sync reads
+        only a date window, or that carries on past errors, should say so here.
+        """
+        return FullSyncCoverage()
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:

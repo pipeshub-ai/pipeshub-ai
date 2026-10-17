@@ -133,6 +133,9 @@ pytestmark = [
 # helpers
 # =============================================================================
 
+# A stream that hits one Notion 429 waits out its ~30s Retry-After on top of a ~50s render.
+_STREAM_TIMEOUT_SECONDS = 240
+
 
 async def _stream_container(
     pipeshub_client: PipeshubClient,
@@ -143,7 +146,7 @@ async def _stream_container(
     """Stream a record's ``BlocksContainer`` and return it parsed."""
     record = await graph_provider.get_record_by_external_id(connector_id, external_id)
     assert record is not None, f"record {external_id} not synced — cannot stream"
-    response = pipeshub_client.stream_record(record.id)
+    response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
     assert response.headers.get("content-type", "").startswith("application/octet-stream"), (
         f"expected an octet-stream blocks body, got {response.headers.get('content-type')!r}"
     )
@@ -1137,7 +1140,7 @@ class TestNotionStreaming:
         pdf_block_id = notion_seed.file_block_ids["pdf"]
         record = await graph_provider.get_record_by_external_id(connector_id, pdf_block_id)
         assert record is not None, "pdf FileRecord not synced"
-        response = pipeshub_client.stream_record(record.id)
+        response = pipeshub_client.stream_record(record.id, timeout=_STREAM_TIMEOUT_SECONDS)
         assert response.content == expected_bytes, (
             "streamed block attachment bytes differ from the uploaded sample file"
         )
@@ -1153,7 +1156,9 @@ class TestNotionStreaming:
             connector_id, notion_seed.comment_attachment_external_id
         )
         assert comment_record is not None, "comment attachment FileRecord not synced"
-        comment_response = pipeshub_client.stream_record(comment_record.id)
+        comment_response = pipeshub_client.stream_record(
+            comment_record.id, timeout=_STREAM_TIMEOUT_SECONDS
+        )
         assert comment_response.content == expected_bytes, (
             "streamed comment attachment bytes differ from the uploaded sample file"
         )

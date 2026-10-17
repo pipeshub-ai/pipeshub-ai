@@ -16,6 +16,9 @@ from app.agents.actions.storage_search.storage_search import (
 from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
 from app.utils.pattern_match import (
     _MAX_GREP_OUTPUT_CHARS,
+    _fuse_ranked,
+    _merge_command_hits,
+    keyword_match_rank,
     _MAX_GREP_STDOUT_BYTES,
     _cap_grep_output,
     _ensure_null_delimited_pipeline,
@@ -78,6 +81,84 @@ class TestRanking:
     def test_inverted_filter_stage_is_not_a_search_term(self):
         regexes = _grep_search_regexes('grep -rci "billion" . | grep -v \':0$\' | head -200')
         assert [r.pattern for r in regexes] == ["billion"]
+
+
+class TestRankFusion:
+    def test_a_record_two_commands_rank_beats_one_a_broad_command_ranks_first(self) -> None:
+        found: dict = {}
+        _fuse_ranked(found, [
+            {"virtual_record_id": "broad-only", "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "matched_terms": "2", "match_count": "3"},
+        ])
+        _fuse_ranked(found, [{"virtual_record_id": "both", "matched_terms": "2", "match_count": "2"}])
+
+        order = sorted(found.values(), key=keyword_match_rank, reverse=True)
+
+        assert [r["virtual_record_id"] for r in order] == ["both", "broad-only"]
+        assert found["both"]["match_count"] == "3"
+
+    def test_one_command_ranks_its_connectors_hits_together(self) -> None:
+        connector_a = [
+            {"virtual_record_id": "answer", "matched_terms": "5", "match_count": "9"},
+            {"virtual_record_id": "also", "matched_terms": "4", "match_count": "6"},
+        ]
+        connector_b = [
+            {"virtual_record_id": "noise", "matched_terms": "1", "match_count": "1"},
+            {"virtual_record_id": "answer", "matched_terms": "5", "match_count": "9"},
+        ]
+        found: dict = {}
+        _fuse_ranked(found, connector_a + connector_b)
+
+        order = sorted(found.values(), key=keyword_match_rank, reverse=True)
+
+        assert [r["virtual_record_id"] for r in order] == ["answer", "also", "noise"]
+        assert found["answer"]["fusion_score"] == pytest.approx(1 / 60)
+
+    def test_equal_match_counts_share_a_place(self) -> None:
+        found: dict = {}
+        _fuse_ranked(found, [
+            {"virtual_record_id": "a", "matched_terms": "2", "match_count": "3"},
+            {"virtual_record_id": "b", "matched_terms": "2", "match_count": "3"},
+            {"virtual_record_id": "c", "matched_terms": "1", "match_count": "1"},
+        ])
+
+        assert [found[v]["fusion_score"] for v in "abc"] == pytest.approx([1 / 60, 1 / 60, 1 / 62])
+
+    @staticmethod
+    def _merged_order(
+        monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str | None = None,
+    ) -> list[str]:
+        for name, value in (("HIGH_ACCURACY_MODE", mode), ("GREP_RANK_FUSION", feature)):
+            if value is None:
+                monkeypatch.delenv(name, raising=False)
+            else:
+                monkeypatch.setenv(name, value)
+        found: dict = {}
+        _merge_command_hits(found, [
+            {"virtual_record_id": "broad-only", "matched_terms": "5", "match_count": "40"},
+            {"virtual_record_id": "both", "matched_terms": "2", "match_count": "3"},
+        ])
+        _merge_command_hits(found, [{"virtual_record_id": "both", "matched_terms": "2", "match_count": "2"}])
+        return [r["virtual_record_id"] for r in sorted(found.values(), key=keyword_match_rank, reverse=True)]
+
+    def test_commands_are_fused_only_in_high_accuracy_mode(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        assert self._merged_order(monkeypatch, "true") == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("mode", [None, "false", "1", ""])
+    def test_otherwise_the_best_match_counts_rank_first(self, monkeypatch: pytest.MonkeyPatch, mode: str | None) -> None:
+        assert self._merged_order(monkeypatch, mode) == ["broad-only", "both"]
+
+    @pytest.mark.parametrize(("mode", "feature"), [(None, "true"), ("false", "true"), ("true", "")])
+    def test_its_own_switch_or_high_accuracy_mode_turns_fusion_on(
+        self, monkeypatch: pytest.MonkeyPatch, mode: str | None, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, mode, feature) == ["both", "broad-only"]
+
+    @pytest.mark.parametrize("feature", ["false", "0"])
+    def test_its_own_switch_turns_fusion_off_in_high_accuracy_mode(
+        self, monkeypatch: pytest.MonkeyPatch, feature: str,
+    ) -> None:
+        assert self._merged_order(monkeypatch, "true", feature) == ["broad-only", "both"]
 
 
 def test_hint_shows_matched_text():

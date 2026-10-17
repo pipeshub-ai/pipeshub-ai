@@ -22,6 +22,9 @@ from app.connectors.core.base.error.stream_errors import (
     map_source_status,
     to_stream_error,
 )
+from app.connectors.sources.google.drive.utils.folder_filter_utils import (
+    QUOTA_403_REASONS,
+)
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -96,10 +99,18 @@ async def stream_media_request(
                 _status, done = await execute(downloader.next_chunk)
             except HttpError as http_error:
                 logger.error("HTTP error during %s: %s", error_context, http_error)
-                if EXPORT_SIZE_LIMIT_REASON in drive_http_reasons(http_error):
+                reasons = drive_http_reasons(http_error)
+                if EXPORT_SIZE_LIMIT_REASON in reasons:
                     raise ExportSizeLimitExceeded(error_context) from http_error
+                status = http_error.resp.status
+                if status == HttpStatusCode.FORBIDDEN.value and reasons & QUOTA_403_REASONS:
+                    # Drive reports rate and quota limits as 403; read as "access denied"
+                    # they fail the record for good instead of retrying once the quota refills.
+                    status = HttpStatusCode.TOO_MANY_REQUESTS.value
                 raise map_source_status(
-                    http_error.resp.status, connector=connector_name
+                    status,
+                    connector=connector_name,
+                    retry_after=http_error.resp.get("retry-after"),
                 ) from http_error
             except Exception as chunk_error:
                 logger.error("Error during %s: %s", error_context, chunk_error)

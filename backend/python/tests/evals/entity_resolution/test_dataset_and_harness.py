@@ -59,3 +59,23 @@ async def test_a_failing_oracle_fails_the_run_instead_of_scoring_as_no_model(mon
     monkeypatch.setattr(run, "_PROMPT_ITEMS", re.compile(r"(?!)"))
     with pytest.raises(RuntimeError, match="oracle"):
         await evaluate(_dataset(), embeddings=HashEmbeddings(), llm=None, oracle=run.GoldOracle())
+
+
+async def test_the_oracle_reads_a_handle_as_the_node_the_prompt_offered() -> None:
+    """Handles are unique among one prompt's offered nodes only: a node learned
+    earlier with the same id prefix must not stand in for the offered one."""
+    from langchain_core.messages import HumanMessage
+
+    from tests.evals.entity_resolution.run import GoldOracle
+
+    oracle = GoldOracle()
+    oracle.learn("aaaaaaaa-1111-4111-8111-111111111111", "billing")
+    oracle.learn("aaaaaaaa-2222-4222-8222-222222222222", "payroll")
+    oracle.start_record({"Payroll run": "payroll"})
+    oracle.offer({"aaaaaaaa-2222-4222-8222-222222222222": "aaaaaaaa"})
+    items = [{"i": 0, "name": "Payroll run", "kind": "topic", "matches": [{"id": "aaaaaaaa", "name": "Payroll", "aliases": []}]}]
+    prompt = "# Items\n" + json.dumps(items) + "\n\n# Output"
+    answer = await oracle(None, [HumanMessage(content=prompt)], None)
+    assert answer.decisions[0].same is True
+    assert answer.decisions[0].target == "aaaaaaaa"
+

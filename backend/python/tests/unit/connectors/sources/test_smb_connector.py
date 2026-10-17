@@ -239,6 +239,18 @@ class TestSmbConnectorInit:
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_init_unreachable_server_names_the_connector(self, mock_build, mock_filters, smb_connector):
+        mock_build.side_effect = ValueError("Failed to connect to '10.0.0.1:445': timed out")
+        mock_filters.return_value = _empty_filters()
+        assert await smb_connector.init() is False
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Connection failed"
+
+        smb_connector.connector_instance_name = "Finance share"
+        assert await smb_connector.init() is False
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB (Finance share): Connection failed"
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
     async def test_init_success(self, mock_build, mock_filters, smb_connector):
         mock_build.return_value = MagicMock()
         mock_filters.return_value = _empty_filters()
@@ -387,7 +399,7 @@ class TestSmbConnectorSync:
         mock_processor.get_records_by_record_type.assert_not_awaited()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
-        assert smb_connector.notify.await_args.kwargs["title"] == "Sync could not read the share"
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Sync could not read the share"
         assert SHARE in smb_connector.notify.await_args.kwargs["message"]
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
@@ -809,3 +821,55 @@ class TestSmbConnectorStreamAndFilters:
         assert isinstance(created, SmbConnector)
         assert created.scope == ConnectorScope.TEAM.value
         mock_init.assert_awaited()
+
+
+class TestSmbConnectorEditionSeams:
+    """An edition replaces the processor and the data source by subclassing.
+    These are the defaults it replaces; removing either breaks that edition."""
+
+    def test_default_processor_is_the_network_share_one(self):
+        from app.connectors.sources.network_share.entities_processor import (
+            NetworkShareEntitiesProcessor,
+        )
+
+        assert SmbConnector.processor_cls is NetworkShareEntitiesProcessor
+
+    async def test_create_connector_builds_the_subclass_processor(
+        self, mock_logger, mock_data_store_provider, mock_config_service, mock_processor
+    ):
+        built = MagicMock()
+        built.initialize = AsyncMock()
+        processor_cls = MagicMock(return_value=built)
+
+        class Edition(SmbConnector):
+            pass
+
+        Edition.processor_cls = processor_cls
+        created = await Edition.create_connector(
+            mock_logger, mock_data_store_provider, mock_config_service, "smb-1", mock_processor,
+            org_id="org-1",
+        )
+
+        processor_cls.assert_called_once_with(mock_logger, mock_data_store_provider, mock_config_service)
+        assert created.data_entities_processor is built
+        assert built.org_id == "org-1"
+
+    @patch("app.connectors.sources.smb.connector.SmbClient.build_from_services", new_callable=AsyncMock)
+    async def test_default_data_source_wraps_the_smb_client(self, mock_build, smb_connector):
+        from app.sources.external.smb.smb import SmbDataSource
+
+        mock_build.return_value = MagicMock()
+
+        source = await smb_connector._build_data_source()
+
+        assert isinstance(source, SmbDataSource)
+        assert source._client is mock_build.return_value
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_init_uses_the_data_source_the_hook_returns(self, mock_filters, smb_connector):
+        mock_filters.return_value = _empty_filters()
+        replacement = MagicMock()
+        smb_connector._build_data_source = AsyncMock(return_value=replacement)
+
+        assert await smb_connector.init() is True
+        assert smb_connector.data_source is replacement

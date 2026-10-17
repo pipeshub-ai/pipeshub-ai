@@ -2,8 +2,15 @@ import { apiClient } from '@/lib/api';
 import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
 import type { DocumentationLink } from '@/app/(main)/workspace/connectors/types';
 import { normalizeDocumentationLinks } from '@/app/(main)/workspace/connectors/normalize-documentation-links';
+import type { McpToolRules } from '@/app/(main)/workspace/mcp-servers/types';
 
 const PAGE_SIZE = 20;
+
+/** A toolset instance's tool approval rules, the same for everyone in the organization. */
+export interface ToolsetToolRules extends McpToolRules {
+  /** Whether the caller may change them (an admin). */
+  canEdit: boolean;
+}
 
 /** Backend caps `limit` on my-toolsets and agents toolsets list routes (`le=200` on connector). */
 export const MAX_TOOLSETS_LIST_LIMIT = 200;
@@ -457,6 +464,23 @@ export const ToolsetsApi = {
   async getToolsetRegistrySchema(toolsetType: string): Promise<unknown> {
     const { data } = await apiClient.get<unknown>(
       `/api/v1/toolsets/registry/${encodeURIComponent(toolsetType)}/schema`
+    );
+    return data;
+  },
+
+  /** GET /api/v1/toolsets/instances/:instanceId/tool-rules — set by an admin, read by everyone. */
+  async getToolRules(instanceId: string): Promise<ToolsetToolRules> {
+    const { data } = await apiClient.get<ToolsetToolRules>(
+      `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`
+    );
+    return data;
+  },
+
+  /** PUT /api/v1/toolsets/instances/:instanceId/tool-rules — admins only. */
+  async updateToolRules(instanceId: string, rules: McpToolRules): Promise<ToolsetToolRules> {
+    const { data } = await apiClient.put<ToolsetToolRules>(
+      `/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`,
+      rules
     );
     return data;
   },

@@ -11,6 +11,7 @@ import {
   createGlobalRateLimiter,
   createOAuthClientRateLimiter,
   createSkillsImportRateLimiter,
+  createSlackEventsRateLimiter,
 } from '../../../src/libs/middlewares/rate-limit.middleware'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { Logger } from '../../../src/libs/services/logger.service'
@@ -656,6 +657,44 @@ describe('Rate Limit Middleware', () => {
       const token = serviceToken()
 
       expect(await statuses(limiter, [lookup(token), lookup(token)])).to.deep.equal([200, 429])
+    })
+  })
+
+  describe('createSlackEventsRateLimiter', () => {
+    // Real Express + socket: skipSuccessfulRequests reads the status the
+    // response finishes with, which a hand-built res does not exercise.
+    async function deliver(limit: number, statuses: number[]): Promise<number[]> {
+      const app = express()
+      app.use(createSlackEventsRateLimiter(loggerStub as unknown as Logger, limit))
+      app.post('/slack/events', (req, res) => { res.status(Number(req.query.status)).end() })
+      const server = app.listen(0)
+      await new Promise((resolve) => server.once('listening', resolve))
+      const { port } = server.address() as AddressInfo
+      try {
+        const results: number[] = []
+        for (const status of statuses) {
+          const response = await fetch(`http://127.0.0.1:${port}/slack/events?status=${status}`, { method: 'POST' })
+          results.push(response.status)
+        }
+        return results
+      } finally {
+        server.close()
+      }
+    }
+
+    it('should never throttle deliveries the bot accepted', async () => {
+      const results = await deliver(2, [200, 200, 200, 200, 200, 200])
+      expect(results).to.deep.equal([200, 200, 200, 200, 200, 200])
+    })
+
+    it('should return 429 once failed deliveries exceed the limit', async () => {
+      const results = await deliver(2, [401, 401, 401])
+      expect(results).to.deep.equal([401, 401, 429])
+    })
+
+    it('should not let accepted deliveries use up the allowance for failures', async () => {
+      const results = await deliver(1, [200, 200, 200, 401, 401])
+      expect(results).to.deep.equal([200, 200, 200, 401, 429])
     })
   })
 })

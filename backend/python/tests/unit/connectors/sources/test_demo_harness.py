@@ -352,6 +352,40 @@ def test_record_states_read_every_page_of_the_knowledge_base() -> None:
     assert seen[0].url.params["nodeTypes"] == "record" and seen[0].url.params["flattened"] == "true"
 
 
+def _agent_stream(*frames: tuple[str, dict]) -> httpx.MockTransport:
+    body = "".join(f"event: {event}\ndata: {json.dumps(data)}\n\n" for event, data in frames)
+    return httpx.MockTransport(lambda _: httpx.Response(200, text=body, headers={"content-type": "text/event-stream"}))
+
+
+def _turn(text: str) -> list[tuple[str, dict]]:
+    return [("TEXT_MESSAGE_START", {}), ("TEXT_MESSAGE_CONTENT", {"delta": text}), ("TEXT_MESSAGE_END", {})]
+
+
+def _finished(content: str) -> tuple[str, dict]:
+    message = {"messageType": "bot_response", "content": content, "citations": [{"metadata": {"recordName": "doc.md"}}]}
+    return "RUN_FINISHED", {"result": {"conversation": {"messages": [message]}}}
+
+
+def test_an_agent_answer_is_scored_without_the_narration_of_its_tool_turns() -> None:
+    transport = _agent_stream(
+        *_turn("I'll search the internal records."),
+        ("TOOL_CALL_START", {"tool": "search"}),
+        *_turn("I found two records; I'll read both."),
+        ("TOOL_CALL_START", {"tool": "fetch"}),
+        *_turn("The change was approved by the review board."),
+        _finished("The change was approved by the review board."),
+    )
+    answer, cited = kb_harness.ask("http://pipeshub", "jwt", "why?", "agent", transport=transport)
+    assert answer == "The change was approved by the review board."
+    assert cited == ["doc.md"]
+
+
+def test_without_a_saved_answer_the_last_turn_is_scored() -> None:
+    transport = _agent_stream(*_turn("I'll search."), *_turn("The final answer."), _finished(""))
+    answer, _ = kb_harness.ask("http://pipeshub", "jwt", "why?", transport=transport)
+    assert answer == "The final answer."
+
+
 
 
 

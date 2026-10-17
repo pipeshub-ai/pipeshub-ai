@@ -97,3 +97,92 @@ test.describe('Workspace Services', () => {
     await expect(redisRow).toBeVisible({ timeout: 5_000 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Deterministic redis mode label, with /api/v1/health mocked
+// ---------------------------------------------------------------------------
+//
+// The test above asserts against whatever mode the live backend under test
+// happens to be running in. These mock the health endpoint's `deployment`
+// field directly so the "MemoryDB" (and "Cluster") label is exercised on
+// every CI run, regardless of what redis mode is actually configured for
+// the E2E environment.
+
+const MOCK_HEALTH_SERVICES_RESPONSE = {
+  status: 'healthy',
+  services: { query: 'healthy', connector: 'healthy', indexing: 'healthy', docling: 'healthy' },
+};
+
+async function mockHealthWithRedisMode(
+  page: import('@playwright/test').Page,
+  redisMode: string | undefined,
+): Promise<void> {
+  await page.route('**/api/v1/health', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        status: 'healthy',
+        services: {
+          redis: 'healthy',
+          mongodb: 'healthy',
+          messageBroker: 'healthy',
+          graphDb: 'healthy',
+          vectorDb: 'healthy',
+        },
+        serviceNames: {},
+        deployment: {
+          kvStoreType: 'redis',
+          messageBrokerType: 'kafka',
+          graphDbType: 'neo4j',
+          vectorDbType: 'qdrant',
+          redisMode,
+        },
+      }),
+    }),
+  );
+  await page.route('**/api/v1/health/services', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(MOCK_HEALTH_SERVICES_RESPONSE),
+    }),
+  );
+}
+
+test.describe('Workspace Services - Redis mode label (mocked deployment)', () => {
+  test('shows "Redis (MemoryDB)" when the backend reports redisMode=memorydb', async ({
+    page,
+  }) => {
+    await mockHealthWithRedisMode(page, 'memorydb');
+    await page.goto('/workspace/services/');
+    await page.waitForTimeout(1_500);
+
+    await expect(page.locator('text=Redis (MemoryDB)').first()).toBeVisible({
+      timeout: 5_000,
+    });
+  });
+
+  test('shows "Redis (Cluster)" when the backend reports redisMode=cluster', async ({
+    page,
+  }) => {
+    await mockHealthWithRedisMode(page, 'cluster');
+    await page.goto('/workspace/services/');
+    await page.waitForTimeout(1_500);
+
+    await expect(page.locator('text=Redis (Cluster)').first()).toBeVisible({
+      timeout: 5_000,
+    });
+  });
+
+  test('shows plain "Redis" when the backend omits redisMode', async ({ page }) => {
+    await mockHealthWithRedisMode(page, undefined);
+    await page.goto('/workspace/services/');
+    await page.waitForTimeout(1_500);
+
+    const redisRow = page.locator('text=/^Redis$/').first();
+    await expect(redisRow).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Redis (MemoryDB)')).toHaveCount(0);
+    await expect(page.locator('text=Redis (Cluster)')).toHaveCount(0);
+  });
+});

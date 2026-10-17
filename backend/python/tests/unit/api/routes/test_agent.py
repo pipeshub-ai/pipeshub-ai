@@ -9,6 +9,8 @@ from fastapi import HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.utils.user_messages import DATABASE_UNREACHABLE
+
 
 async def _drain(response) -> str:
     """Consume an SSE StreamingResponse body.
@@ -613,7 +615,7 @@ class TestGetUserDocument:
 
         result = await _get_user_document("user-1", graph_provider, log)
         assert result["email"] == "test@example.com"
-        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1")
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_user_not_found_none(self) -> None:
@@ -709,8 +711,8 @@ class TestGetUserDocument:
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -720,14 +722,12 @@ class TestGetUserDocument:
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "email": " "})
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -854,8 +854,8 @@ class TestGetOrgInfoAccountTypes:
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve organization" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -864,14 +864,12 @@ class TestGetOrgInfoAccountTypes:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_document = AsyncMock(return_value=None)
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_calls_get_document_with_correct_args(self) -> None:
@@ -885,7 +883,7 @@ class TestGetOrgInfoAccountTypes:
         log = logging.getLogger("test")
 
         await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value)
+        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value, raise_on_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1524,7 +1522,7 @@ class TestGetOrgInfo:
         graph_provider.get_document = AsyncMock(side_effect=RuntimeError("db error"))
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "o1"}, graph_provider, logging.getLogger("test"))
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -2682,6 +2680,46 @@ class TestDeleteAgent:
             services["graph_provider"].delete_agent.assert_awaited_once_with(
                 "a1", "k1", "o1", transaction="txn-1"
             )
+
+    @staticmethod
+    def _services(agent: dict) -> dict:
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": MagicMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=agent)
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+        return services
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("is_service_account", "removes"), [(True, True), (False, False)])
+    async def test_a_service_account_agent_takes_its_mcp_credentials_with_it(
+        self, is_service_account: bool, removes: bool,
+    ) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": is_service_account})
+        remove = AsyncMock(return_value=[])
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=remove):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        if removes:
+            remove.assert_awaited_once_with(services["config_service"], "o1", "a1")
+        else:
+            remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_mcp_cleanup_does_not_fail_the_delete(self) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": True})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=AsyncMock(side_effect=RuntimeError("down"))):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
 
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:

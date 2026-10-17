@@ -75,6 +75,7 @@ from app.services.vector_db.models import (
     HybridSearchRequest,
     QuantizationType,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
@@ -82,6 +83,7 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.opensearch.config import OpenSearchConfig
+from app.services.vector_db.opensearch.errors import classify_opensearch_search_error
 from app.services.vector_db.opensearch.utils import (
     PAGE_CONTENT_FIELD,
     PAGE_CONTENT_MAPPING,
@@ -304,6 +306,9 @@ class OpenSearchService(IVectorDBService):
 
     def get_capabilities(self) -> VectorDBCapabilities:
         return _OS_CAPABILITIES
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        return classify_opensearch_search_error(error)
 
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()

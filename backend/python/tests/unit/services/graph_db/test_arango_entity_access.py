@@ -157,6 +157,73 @@ class TestGetTaxonomyEntityMembership:
         provider.execute_query.assert_not_awaited()
 
 
+class TestGetUnreachedTaxonomyEntities:
+    @pytest.mark.asyncio
+    async def test_returns_the_refs_the_query_found_unreached_one_query_per_type(self, provider) -> None:
+        provider.execute_query.side_effect = [["t2"], []]
+
+        unreached = await provider.get_unreached_taxonomy_entities(
+            [
+                {"id": "t1", "type": "topic"}, {"id": "t2", "type": "topic"}, {"id": "t2", "type": "topic"},
+                {"id": "c1", "type": "category"},
+            ],
+            "org1",
+        )
+
+        assert unreached == {("topic", "t2")}
+        assert provider.execute_query.await_count == 2
+        assert _bind_vars(provider) == [
+            {"ref_ids": ["t1", "t2"], "org_id": "org1"},
+            {"ref_ids": ["c1"], "org_id": "org1"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_any_live_record_of_the_org_reaches_whatever_its_connector(self, provider) -> None:
+        """A record of another knowledge base or connector, or a copy of the
+        deleted record, keeps the entity: no connector filter, trashed records
+        and other orgs excluded."""
+        await provider.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], "org1")
+
+        (query,) = _queries(provider)
+        assert "FOR edge IN belongsToTopic" in query
+        assert "rec.orgId == @org_id AND rec.isDeleted != true" in query
+        assert "connectorId" not in query
+        assert "recordGroupId" not in query
+
+    @pytest.mark.asyncio
+    async def test_each_entity_stops_at_its_first_live_record(self, provider) -> None:
+        """A language most of the org links to must cost one edge read, not one per record."""
+        await provider.get_unreached_taxonomy_entities([{"id": "l1", "type": "language"}], "org1")
+
+        (query,) = _queries(provider)
+        assert "FOR edge IN belongsToLanguage" in query
+        assert "LIMIT 1" in query
+        assert "COLLECT" not in query
+
+    @pytest.mark.asyncio
+    async def test_subcategory_targets_every_level(self, provider) -> None:
+        await provider.get_unreached_taxonomy_entities([{"id": "s1", "type": "subcategory"}], "org1")
+
+        (query,) = _queries(provider)
+        for collection in ("subcategories1", "subcategories2", "subcategories3"):
+            assert f'CONCAT("{collection}/", ref_id)' in query
+
+    @pytest.mark.asyncio
+    async def test_no_org_or_no_supported_ref_issues_no_query(self, provider) -> None:
+        assert await provider.get_unreached_taxonomy_entities([{"id": "t", "type": "topic"}], "") == set()
+        assert await provider.get_unreached_taxonomy_entities(
+            [{"id": "r", "type": "record"}, {"id": "g", "type": "record_group"}, {"id": "", "type": "topic"}], "o",
+        ) == set()
+        provider.execute_query.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_query_raises_and_never_reads_as_unreached(self, provider) -> None:
+        provider.execute_query.side_effect = RuntimeError("arango down")
+
+        with pytest.raises(RuntimeError):
+            await provider.get_unreached_taxonomy_entities([{"id": "t1", "type": "topic"}], "org1")
+
+
 class TestGetEntityCandidateRecords:
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -370,3 +437,29 @@ class TestFilterNodesWithPermissionRoleRaiseOnError:
             await provider.filter_nodes_with_permission_role(
                 self.NODES, "uk1", "org1", raise_on_error=True
             )
+
+
+class TestRecordTaxonomyLinksDepartments:
+    """Label and permission reads leave departments out; the record-delete
+    cleanup asks for them, since a department has an entity point too."""
+
+    @pytest.mark.asyncio
+    async def test_departments_are_left_out_by_default(self, provider) -> None:
+        await provider.get_record_taxonomy_links(["r1"])
+
+        (query,) = _queries(provider)
+        assert "belongsToDepartment" not in query
+        assert "departments" not in _bind_vars(provider)[0]["collections"]
+
+    @pytest.mark.asyncio
+    async def test_the_delete_cleanup_reads_departments_by_their_name(self, provider) -> None:
+        row = {"recordId": "r1", "collection": "departments", "entityId": "d1", "name": "Engineering"}
+        provider.execute_query.return_value = [row]
+
+        assert await provider.get_record_taxonomy_links(["r1"], include_departments=True) == [row]
+
+        (query,) = _queries(provider)
+        assert "belongsToDepartment" in query
+        assert "belongsToTopic" in query
+        assert "departments" in _bind_vars(provider)[0]["collections"]
+        assert "NOT_NULL(v.name, v.departmentName)" in query

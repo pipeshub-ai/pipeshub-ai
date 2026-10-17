@@ -218,6 +218,10 @@ _OLLAMA_CLASS_NAME = "ChatOllama"
 _OPENAI_CLASS_NAMES = frozenset({"BaseChatOpenAI", "ChatOpenAI", "AzureChatOpenAI"})
 
 
+def _is_openai_family(chat_model: "BaseChatModel") -> bool:
+    return bool({cls.__name__ for cls in type(chat_model).__mro__} & _OPENAI_CLASS_NAMES)
+
+
 def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     """Whether this LangChain chat model's underlying provider accepts
     image content inside a tool-result message.
@@ -248,6 +252,23 @@ def _supports_multipart_tool_result(chat_model: "BaseChatModel") -> bool:
     if mro_names & _OPENAI_CLASS_NAMES:
         return bool(getattr(chat_model, "use_responses_api", False))
     return True
+
+
+def responses_api_copy(llm: "BaseChatModel") -> "BaseChatModel":
+    """A copy of an OpenAI-family LangChain model that sends its requests to
+    the Responses API, moving any `reasoning_effort` into the `reasoning` dict
+    that API expects (`_default_params` drops `None` values, so clearing the
+    other kwarg outright is required). With no effort set, the copy sends no
+    reasoning setting and the model keeps its own default.
+
+    Shared with the model setup check (`app/api/routes/health.py`), which
+    tries tools the same way an agent turn retries them."""
+    effort = getattr(llm, "reasoning_effort", None)
+    return llm.model_copy(update={
+        "use_responses_api": True,
+        "reasoning": {"effort": effort} if effort else None,
+        "reasoning_effort": None,
+    })
 
 
 def _system_prompt(system: str | None, system_blocks: list[str] | None) -> tuple[str, str]:
@@ -372,6 +393,11 @@ class LangChainTransport(LLMTransport):
                 return cached
 
         lc_tools = self._cache.tools(convert_tool_schemas_to_langchain(tools))
+        if _is_openai_family(llm):
+            # Without `strict`, the Responses API holds a tool to strict mode: every property
+            # becomes required, and the model fills the optional ones with "" or 0, which a server
+            # refuses (Linear's `customView` must be non-empty). See `openai_responses.py`.
+            lc_tools = [{**tool, "function": {**tool["function"], "strict": False}} for tool in lc_tools]
         try:
             bound = llm.bind_tools(lc_tools)
         except Exception as exc:
@@ -552,12 +578,7 @@ class LangChainTransport(LLMTransport):
             return llm.model_copy(update={
                 "use_responses_api": None, "reasoning": None, "reasoning_effort": None,
             }), LLMApiMode.NO_REASONING_WITH_TOOLS.value
-        effort = getattr(llm, "reasoning_effort", None)
-        return llm.model_copy(update={
-            "use_responses_api": True,
-            "reasoning": {"effort": effort} if effort else None,
-            "reasoning_effort": None,
-        }), LLMApiMode.RESPONSES.value
+        return responses_api_copy(llm), LLMApiMode.RESPONSES.value
 
     def _reasoning_mandatory_fallback(self, exc: Exception) -> tuple[BaseChatModel, str] | None:
         """Builds a copy of `self._llm` with reasoning bumped off an

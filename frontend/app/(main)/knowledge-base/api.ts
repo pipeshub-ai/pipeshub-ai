@@ -1,5 +1,6 @@
 // Knowledge Base API - Action Operations (CRUD)
 
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from '@/lib/api';
 import { streamSSEUpload, type SSEEvent } from '@/lib/api/streaming';
 import type {
@@ -707,7 +708,7 @@ export const KnowledgeBaseApi = {
   async streamDownloadRecord(
     recordId: string,
     fileName?: string,
-    options?: { version?: number }
+    options?: { version?: number; suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
   ): Promise<void> {
     const params: Record<string, number> = {};
     if (options?.version !== undefined) {
@@ -717,6 +718,7 @@ export const KnowledgeBaseApi = {
       responseType: 'blob',
       timeout: 300000,
       params,
+      suppressErrorToast: options?.suppressErrorToast,
     });
 
     // response.data is already a Blob with the correct MIME type when responseType is 'blob'
@@ -737,9 +739,13 @@ export const KnowledgeBaseApi = {
   /**
    * Get full record details including metadata and permissions
    */
-  async getRecordDetails(recordId: string) {
+  async getRecordDetails(
+    recordId: string,
+    options?: { suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
+  ) {
     const { data } = await apiClient.get<RecordDetailsResponse>(
-      `${BASE_URL}/record/${recordId}`
+      `${BASE_URL}/record/${recordId}`,
+      { suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
   },
@@ -757,7 +763,7 @@ export const KnowledgeBaseApi = {
    */
   async streamRecord(
     recordId: string,
-    options?: { convertTo?: string; version?: number }
+    options?: { convertTo?: string; version?: number; suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
   ): Promise<Blob> {
     const params: Record<string, string | number> = {};
     if (options?.convertTo) {
@@ -768,7 +774,7 @@ export const KnowledgeBaseApi = {
     }
     const { data } = await apiClient.get(
       `${BASE_URL}/stream/record/${recordId}`,
-      { responseType: 'blob', params }
+      { responseType: 'blob', params, suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
   },

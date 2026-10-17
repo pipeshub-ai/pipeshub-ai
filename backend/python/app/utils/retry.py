@@ -23,27 +23,28 @@ async def retry_async(
     base_delay_seconds: float = 0.2,
     logger: Optional[logging.Logger] = None,
     description: str = "operation",
+    should_retry: Callable[[Exception], bool] | None = None,
 ) -> T:
     """Retry an async zero-arg callable with exponential backoff.
 
     Backoff schedule with defaults: 0.2s, 0.4s, ... (base_delay * 2**attempt).
-    Re-raises the last exception if every attempt fails.
+    Re-raises the last exception if every attempt fails, or at once when
+    ``should_retry`` says a failure is not worth another attempt.
     """
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
 
-    last_exception: Optional[Exception] = None
-    for attempt in range(1, max_attempts + 1):
+    attempt = 1
+    while True:
         try:
             return await func()
         except Exception as e:
-            last_exception = e
             if logger:
                 logger.warning(
                     "Retryable %s failed (attempt %d/%d): %s",
                     description, attempt, max_attempts, e,
                 )
-            if attempt < max_attempts:
-                await asyncio.sleep(base_delay_seconds * (2 ** (attempt - 1)))
-
-    raise last_exception
+            if attempt >= max_attempts or (should_retry is not None and not should_retry(e)):
+                raise
+            await asyncio.sleep(base_delay_seconds * (2 ** (attempt - 1)))
+            attempt += 1

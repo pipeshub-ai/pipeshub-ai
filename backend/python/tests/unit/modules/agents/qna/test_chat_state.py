@@ -55,6 +55,17 @@ def minimal_user_info():
 # build_initial_state
 # ===================================================================
 class TestBuildInitialState:
+    @pytest.mark.parametrize(("chat_query", "expected"), [
+        ({"query": "q", "keywordSearchBudget": "short"}, "short"),
+        ({"query": "q", "keyword_search_budget": "full"}, "full"),
+        ({"query": "q"}, None),
+    ], ids=["camel-case", "snake-case", "absent"])
+    def test_keyword_search_budget_reaches_the_search_tools(
+        self, mock_deps, minimal_user_info, chat_query, expected,
+    ) -> None:
+        state = build_initial_state(chat_query=chat_query, user_info=minimal_user_info, **mock_deps)
+        assert state["keyword_search_budget"] == expected
+
     def test_default_values(self, mock_deps, minimal_chat_query, minimal_user_info):
         state = build_initial_state(
             chat_query=minimal_chat_query,

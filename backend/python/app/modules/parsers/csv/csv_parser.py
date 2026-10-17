@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional, TextIO, Tuple, TypeVar, Union
 
 from app.config.configuration_service import ConfigurationService
 from app.services.parsing.interface import ParseResult
+from app.exceptions.non_retryable import NonRetryableError
 from app.utils.llm import get_llm_for_role
 from langchain_core.language_models.chat_models import BaseChatModel
 from tenacity import (
@@ -41,6 +42,7 @@ from app.modules.parsers.text_decoding import decode_text
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.logger import create_logger
+from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
@@ -469,7 +471,7 @@ class CSVParser:
     )
     async def _call_llm(self, llm, messages) -> Union[str, dict, list]:
         """Wrapper for LLM calls with retry logic"""
-        return await llm.ainvoke(messages)
+        return await llm.ainvoke(messages, config=get_llm_invoke_config(llm))
 
 
     def _concatenate_multirow_headers(
@@ -660,6 +662,8 @@ class CSVParser:
                 reasoning="LLM call failed, defaulting to no headers"
             )
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             logger.warning(f"Error in header detection: {e}, defaulting to no headers")
             return CSVHeaderDetection(
@@ -715,6 +719,8 @@ class CSVParser:
             logger.warning("Header generation LLM call failed, using generic headers")
             return [f"Column_{i+1}" for i in range(column_count)]
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             logger.warning(f"Error in header generation: {e}, using generic headers")
             return [f"Column_{i+1}" for i in range(column_count)]

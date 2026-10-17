@@ -149,6 +149,7 @@ export function CreateGroupSidebar({
         {/* Group Name */}
         <FormField
           label={t('workspace.groups.create.nameLabel', 'Group Name')}
+          required
         >
           <input
             type="text"

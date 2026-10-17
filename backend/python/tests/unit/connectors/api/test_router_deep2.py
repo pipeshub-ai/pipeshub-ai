@@ -1254,8 +1254,7 @@ class TestToggleConnectorInstanceDeep:
 
         assert result["success"] is True
 
-    async def test_generic_exception_raises_500(self):
-        """Lines 5385-5387: generic exception in toggle raises 500."""
+    async def test_a_failed_org_read_is_503(self):
         from app.connectors.api.router import toggle_connector_instance
 
         req = _make_request(is_admin=True, body={"type": "sync"})
@@ -1266,7 +1265,7 @@ class TestToggleConnectorInstanceDeep:
 
         with pytest.raises(HTTPException) as exc_info:
             await toggle_connector_instance("c1", req, graph_provider=graph_provider)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # ===========================================================================

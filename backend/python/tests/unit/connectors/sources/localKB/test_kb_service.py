@@ -3014,6 +3014,27 @@ class TestUploadRecordsPipeline:
         built = service._build_kb_file_record("kb1", record, file_rec, None, "http://storage:3001")
         assert built.fetch_signed_url is None
 
+    def test_build_kb_file_record_stamps_uploader(self, service) -> None:
+        record = _minimal_upload_record_dict()
+        file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
+        built = service._build_kb_file_record(
+            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext"
+        )
+        assert built.uploaded_by == "u-ext"
+        assert built.to_arango_base_record()["uploadedBy"] == "u-ext"
+        assert "createdBy" not in built.to_arango_base_record()
+
+    def test_build_kb_file_record_ignores_client_supplied_uploader(self, service) -> None:
+        record = _minimal_upload_record_dict()
+        record["uploadedBy"] = "attacker"
+        file_rec = {"name": "root.pdf", "mimeType": "application/pdf", "isFile": True}
+        built = service._build_kb_file_record(
+            "kb1", record, file_rec, None, "http://storage:3001", uploaded_by="u-ext"
+        )
+        assert built.uploaded_by == "u-ext"
+        assert built.to_arango_base_record()["uploadedBy"] == "u-ext"
+        assert "createdBy" not in built.to_arango_base_record()
+
     @pytest.mark.asyncio
     async def test_resolve_upload_folders_reuses_existing(self, service):
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(
@@ -3104,6 +3125,10 @@ class TestUploadRecordsPipeline:
         entities = service.processor_for_kb.return_value.on_new_records.await_args[0][0]
         assert entities[0][0].is_file is False
         assert entities[1][0].is_file is True
+        # The file records who uploaded it.
+        # Folders never index, so they stay unstamped.
+        assert entities[1][0].uploaded_by == "user1"
+        assert entities[0][0].uploaded_by is None
 
     @pytest.mark.asyncio
     async def test_upload_records_invalid_context(self, service):

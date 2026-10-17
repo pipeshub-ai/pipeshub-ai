@@ -420,9 +420,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        // orgId from token payload OR query param (allows migration to pass per-org id)
-        const orgId =
-          req.tokenPayload?.orgId;
+        const orgId = req.tokenPayload?.orgId;
         if (!orgId) {
           res.status(400).json({ error: 'Organization ID is required' });
           return;

@@ -56,6 +56,34 @@ _MAX_ARTIFACT_CONTENT_CHARS = 40_000
 # through a legitimately long program.
 _MAX_ARTIFACT_FETCH_BYTES = 5_000_000
 
+# Binary document formats a model can name but cannot write as text: their
+# files must start with these bytes, or the saved file will not open.
+_ZIP_MAGIC = b"PK\x03\x04"
+_BINARY_DOCUMENT_FORMATS: dict[str, tuple[str, bytes, str, str]] = {
+    ".docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", _ZIP_MAGIC, "Word", "docx"),
+    ".xlsx": ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", _ZIP_MAGIC, "Excel", "exceljs"),
+    ".pptx": ("application/vnd.openxmlformats-officedocument.presentationml.presentation", _ZIP_MAGIC, "PowerPoint", "pptxgenjs"),
+    ".pdf": ("application/pdf", b"%PDF-", "PDF", "pdfkit"),
+}
+
+
+def _not_a_real_document(name: str | None, mime_type: str | None, raw: bytes) -> str | None:
+    """The error for content that is not every binary document its name and MIME type claim."""
+    lowered = (name or "").lower()
+    media_type = (mime_type or "").split(";", 1)[0].strip().lower()
+    for extension, (document_mime, magic, label, library) in _BINARY_DOCUMENT_FORMATS.items():
+        if not (lowered.endswith(extension) or media_type == document_mime):
+            continue
+        if raw.startswith(magic):
+            continue
+        return (
+            f"This content is not a real {label} file, so it would not open in {label}. "
+            f"To make a {extension} file, generate it with run_code (language='typescript', "
+            f"packages=['{library}']); the file it writes is attached automatically. To save "
+            "the text itself, use a .md or .txt name with mime_type 'text/markdown' or 'text/plain'."
+        )
+    return None
+
 
 @ToolsetBuilder("Artifact Manager")\
     .in_group("Internal Tools")\
@@ -158,6 +186,10 @@ class ArtifactManager:
         raw = self._decode(content, is_base64)
         if isinstance(raw, str):
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
+
+        refusal = _not_a_real_document(name, mime_type, raw)
+        if refusal:
+            return _result(False, {"success": False, "error": refusal})
 
         try:
             vis = ArtifactVisibility(visibility.upper())
@@ -262,6 +294,10 @@ class ArtifactManager:
             return _result(False, {"success": False, "error": raw.removeprefix("__error__:")})
 
         try:
+            current = await registry.resolve(actor=self._actor(), ref=artifact_id)
+            refusal = _not_a_real_document(current.name, mime_type or current.mime_type, raw)
+            if refusal:
+                return _result(False, {"success": False, "error": refusal})
             version, metadata = await registry.add_version(
                 actor=self._actor(),
                 artifact_id=artifact_id,
@@ -270,7 +306,7 @@ class ArtifactManager:
                 expected_version=expected_version,
             )
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to update this artifact"})
         except VersionConflictError as e:
@@ -332,7 +368,7 @@ class ArtifactManager:
         try:
             url = await registry.get_download_url(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to access this artifact"})
         except Exception:
@@ -419,7 +455,7 @@ class ArtifactManager:
                 })
             raw = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to read this artifact"})
         except Exception:
@@ -641,7 +677,7 @@ class ArtifactManager:
         try:
             metadata = await registry.promote_to_visible(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to promote this artifact"})
         except Exception:
