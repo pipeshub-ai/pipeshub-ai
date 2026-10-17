@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,6 +20,9 @@ from app.agents.actions.knowledge_graph.ops.search import (
     unresolved_entity_ids,
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
+
+if TYPE_CHECKING:
+    from app.utils.pattern_match import PatternMatchCoverage
 
 # ---------------------------------------------------------------------------
 # normalize_source_ids
@@ -1521,3 +1524,82 @@ class TestRequestEntityFilter:
         with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
             await execute_search(self._state(retrieval), "refunds")
         grep.assert_not_called()
+
+
+def _grep_that_covers(*, timed_out: set[str], sources: set[str]) -> AsyncMock:
+    """A pattern match that ran over *sources* and reached none of *timed_out*."""
+    async def _run(*, coverage: PatternMatchCoverage, **_kwargs: object) -> list[dict[str, Any]]:
+        coverage.sources.update(sources)
+        coverage.timed_out.update(timed_out)
+        return []
+
+    return AsyncMock(side_effect=_run)
+
+
+class TestIncompleteExactTextSearch:
+    """A keyword search cut short by its time limit used to return what it had
+    with no word about the rest, so the model read "no keyword match" as "the
+    text is not in the corpus"."""
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_result_with_semantic_hits_says_the_keyword_search_was_cut_short(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out={"wiki"}, sources={"wiki", "tickets"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "p99 latency regression")
+
+        assert result.startswith("Top 1 block")
+        assert "Exact-text search incomplete: searched 1 of 2 sources in full" in result
+        assert "not evidence that the text is absent" in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_an_empty_result_says_the_keyword_search_was_cut_short(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out={"wiki"}, sources={"wiki"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep):
+            parsed = json.loads(await execute_search(_state(retrieval), "p99 latency regression"))
+
+        assert parsed["result_count"] == 0
+        assert parsed["message"].startswith("No results found")
+        assert "Exact-text search incomplete: searched 0 of 1 sources in full" in parsed["message"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_complete_keyword_search_adds_no_note(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out=set(), sources={"wiki"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep):
+            parsed = json.loads(await execute_search(_state(retrieval), "p99 latency regression"))
+
+        assert parsed["message"] == "No results found"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_records_the_merge_drops_are_said(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+
+        async def _merge(*, coverage: PatternMatchCoverage, **_kwargs: object) -> list:
+            coverage.records_truncated = True
+            return []
+
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "vr9"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=_merge), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "p99 latency regression")
+
+        assert "more records matched than are listed" in result

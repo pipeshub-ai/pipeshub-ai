@@ -359,6 +359,7 @@ jobs:
       JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
       JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
       JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
+      ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -457,7 +458,7 @@ jobs:
             connectors-7) MARKERS="$CONN_SHARD_7" ;;
             connectors-8) MARKERS="$CONN_SHARD_8" ;;
             connectors-9) MARKERS="$CONN_SHARD_9" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not ($CONN_SHARD_7) and not ($CONN_SHARD_8) and not ($CONN_SHARD_9) and not storage and not cifs and not demo and not ai_agents" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not ($CONN_SHARD_7) and not ($CONN_SHARD_8) and not ($CONN_SHARD_9) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
             demo)         MARKERS="demo" ;;
             ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
@@ -554,6 +555,19 @@ jobs:
         run: |
           uv venv
           uv pip install -e .
+
+      # client_credentials grant: a fresh token every run, nothing rotates or is written back.
+      - name: Mint Zendesk test token
+        if: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk' }}
+        working-directory: integration-tests
+        env:
+          ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}
+          ZENDESK_TEST_CLIENT_SECRET: ${{ secrets.ZENDESK_TEST_CLIENT_SECRET }}
+        run: |
+          source .venv/bin/activate
+          export ZENDESK_TEST_ACCESS_TOKEN_FILE="$RUNNER_TEMP/zendesk-access-token"
+          printf 'ZENDESK_TEST_ACCESS_TOKEN_FILE=%s\n' "$ZENDESK_TEST_ACCESS_TOKEN_FILE" >> "$GITHUB_ENV"
+          python connectors/zendesk/prepare_token.py
 
       # Pure helper unit tests (mocks only) — fail fast before Docker/services come up.
       - name: Run helper unit tests
