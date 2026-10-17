@@ -85,10 +85,12 @@ sequenceDiagram
 
 A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type.
 
-The **For Decisions** tab in Workspace → AI Models is hidden until a feature uses decision models (`'decision'` is commented out of `CAPABILITY_SECTION_ORDER` in `frontend/app/(main)/workspace/ai-models/types.ts`). Until then, add one through the configuration API:
+The **For Decisions** tab in Workspace → AI Models is hidden until a feature uses decision models (`'decision'` is commented out of `CAPABILITY_SECTION_ORDER` in `frontend/app/(main)/workspace/ai-models/types.ts`). Until then, add one through the configuration API (`$NODE_URL` is the Node app's address, for example `http://localhost:3000`):
 
 ```bash
-curl -X POST {node}/api/v1/configurationManager/ai-models/providers \n  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \n  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
+curl -X POST "$NODE_URL/api/v1/configurationManager/ai-models/providers" \
+  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
        "configuration": {"model": "gpt-6-luna", "apiKey": "sk-..."}}'
 ```
 
