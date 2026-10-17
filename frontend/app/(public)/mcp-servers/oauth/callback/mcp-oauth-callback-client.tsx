@@ -30,12 +30,20 @@ function closePopup() {
   }
 }
 
+type CompleteCallback = (params: { code: string; state: string }) => Promise<{
+  success: boolean;
+  instanceId?: string | null;
+  errorMessage?: string | null;
+}>;
+
 /**
- * Completes MCP server OAuth in a popup: exchanges `code`+`state` via the Node proxy
- * (`GET /api/v1/mcp-servers/oauth/callback`), notifies the opener with
- * `MCP_OAUTH_SUCCESS` / `MCP_OAUTH_ERROR`, then closes the window.
+ * Completes an OAuth sign-in in a popup: exchanges `code`+`state` via the Node proxy
+ * (MCP's `GET /api/v1/mcp-servers/oauth/callback` unless `completeCallback` names another
+ * feature's), notifies the opener with `MCP_OAUTH_SUCCESS` / `MCP_OAUTH_ERROR`, then closes the window.
  */
-export function McpOAuthCallbackClient() {
+export function McpOAuthCallbackClient({
+  completeCallback = McpServersApi.completeOAuthCallback,
+}: { completeCallback?: CompleteCallback } = {}) {
   const { t } = useTranslation();
   const [status, setStatus] = useState<CallbackStatus>('processing');
   const [message, setMessage] = useState('');
@@ -80,7 +88,7 @@ export function McpOAuthCallbackClient() {
           throw new Error(t('workspace.mcpServers.oauth.noState'));
         }
 
-        const data = await McpServersApi.completeOAuthCallback({ code, state });
+        const data = await completeCallback({ code, state });
 
         if (!data?.success) {
           const friendlyMessage = data?.errorMessage;
@@ -106,7 +114,7 @@ export function McpOAuthCallbackClient() {
     };
 
     void run();
-  }, [closeWindow, t]);
+  }, [closeWindow, completeCallback, t]);
 
   if (handoffLink) {
     return <DesktopHandoffNotice deepLink={handoffLink} titleKey="auth.desktopHandoff.integrationTitle" />;

@@ -2174,7 +2174,8 @@
         "tenants": "Tenants",
         "superOrgs": "Organisations",
         "oauthApps": "OAuth Apps",
-        "serviceAccounts": "Service accounts"
+        "serviceAccounts": "Service accounts",
+        "apiToolsets": "API Toolsets"
       }
     },
     "actions": {
@@ -4258,6 +4259,124 @@
         "outcomeRevoked": "Permission removed",
         "byAdmin": "by {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API Toolsets",
+      "subtitle": "Internal APIs your admin made available to agents. Connect your own credential where a toolset asks for one.",
+      "subtitleAdmin": "Add an internal REST API from its OpenAPI spec, choose which operations agents may call, and decide how PipesHub signs in to it.",
+      "loading": "Loading API toolsets…",
+      "emptyTitle": "No API toolsets yet",
+      "emptyAdmin": "Add one from an OpenAPI 3.0 or 3.1 spec.",
+      "emptyMember": "Your admin hasn't added any API toolsets.",
+      "operationCount_one": "{{count}} operation",
+      "operationCount_other": "{{count}} operations",
+      "kind": {
+        "read": "Read",
+        "write": "Write",
+        "destructive": "Delete"
+      },
+      "authType": {
+        "none": "No authentication",
+        "api_key": "API key",
+        "http_bearer": "Bearer token",
+        "http_basic": "Username and password",
+        "oauth2_client_credentials": "OAuth 2.0 client credentials",
+        "oauth2_authorization_code": "OAuth 2.0 sign-in"
+      },
+      "status": {
+        "connected": "Connected",
+        "notConnected": "Not connected",
+        "shared": "Shared credential"
+      },
+      "cta": {
+        "add": "Add API toolset",
+        "connection": "Connection",
+        "details": "Details",
+        "edit": "Edit",
+        "delete": "Delete"
+      },
+      "toasts": {
+        "loadError": "Couldn't load API toolsets",
+        "created": "API toolset added",
+        "updated": "API toolset updated",
+        "saveError": "Couldn't save the API toolset",
+        "deleted": "API toolset deleted",
+        "deleteError": "Couldn't delete the API toolset",
+        "connected": "Connected",
+        "disconnected": "Disconnected"
+      },
+      "deleteDialog": {
+        "title": "Delete API toolset",
+        "body": "Delete {{name}}? Agents that use its operations lose them, and every saved credential for it is removed."
+      },
+      "editor": {
+        "addTitle": "Add API toolset",
+        "editTitle": "Edit API toolset",
+        "spec": "OpenAPI spec",
+        "specHint": "Paste an OpenAPI 3.0 or 3.1 spec in JSON or YAML, or choose a file, then preview its operations.",
+        "specEditHint": "Leave empty to keep the current spec. Upload a new one to pick from its operations and auth schemes.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "chooseFile": "Choose file",
+        "preview": "Preview operations",
+        "previewing": "Reading spec…",
+        "validateError": "Couldn't read the spec",
+        "warnings": "Some parts of the spec were skipped:",
+        "operations": "Operations ({{selected}} of {{total}} selected)",
+        "operationsHint": "Agents can call only the operations you select. Read operations are selected for you.",
+        "name": "Name",
+        "description": "Description",
+        "baseUrl": "Base URL",
+        "baseUrlHint": "Where PipesHub sends requests. Operation paths are added to it.",
+        "authScheme": "Authentication",
+        "authSchemeLocked": "Upload the spec again to change how PipesHub authenticates.",
+        "scopes": "Scopes",
+        "oauthClientId": "OAuth app client ID",
+        "oauthRedirectHint": "Register this redirect URL with the OAuth app: {{url}}",
+        "oauthClientSecret": "OAuth app client secret",
+        "keepSecret": "Leave blank to keep the saved secret",
+        "sharedCredential": "One shared credential",
+        "sharedCredentialHint": "You set the credential once and every member uses it. When off, each member connects their own.",
+        "sharedCredentialForced": "Client credentials sign in as the app, not as a person, so everyone shares the one you set.",
+        "timeout": "Timeout (seconds)",
+        "timeoutHint": "How long to wait for the API, from 1 to {{max}} seconds.",
+        "problems": {
+          "name": "Enter a name.",
+          "baseUrl": "Enter the base URL.",
+          "operations": "Select at least one operation.",
+          "timeout": "Enter a timeout from 1 to 120 seconds.",
+          "oauthClientId": "Enter the OAuth app's client ID."
+        }
+      },
+      "connect": {
+        "title": "{{name}} connection",
+        "mode": {
+          "none": "This API needs no credential.",
+          "own": "Agents call this API with your own credential.",
+          "shared": "Every member uses the credential you set here.",
+          "managed": "Your admin manages the credential for this toolset."
+        },
+        "status": "Status",
+        "signIn": "Sign in",
+        "signInAgain": "Sign in again",
+        "signingIn": "Signing in…",
+        "fields": {
+          "apiKey": "API key",
+          "token": "Token",
+          "username": "Username",
+          "password": "Password",
+          "clientId": "Client ID",
+          "clientSecret": "Client secret"
+        },
+        "replaceHint": "Saving replaces the credential that is stored now.",
+        "error": "That didn't work. Try again.",
+        "test": "Test connection",
+        "testing": "Testing…",
+        "testOk": "The API answered.",
+        "testFailed": "The API answered with an error.",
+        "testTruncated": "Only the start of the response is shown.",
+        "disconnect": "Disconnect",
+        "disconnecting": "Disconnecting…"
+      }
     }
   },
   "filePreview": {
@@ -4620,7 +4739,14 @@
     "limitSource": "Choose what {{name}} searches",
     "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
     "limitSourceCount": "Limited to {{count}} selected",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} is your personal action. It can't be added to an agent shared with your organization or running as a service account.",
+    "apiToolsets": {
+      "section": "API Toolsets",
+      "none": "No API toolsets yet. Admins add them under Workspace > API Toolsets.",
+      "connectTooltip": "Connect on the API Toolsets page",
+      "notConnected": "Not connected. The agent skips this toolset for anyone who hasn't connected it.",
+      "serviceAccountBlocked": "Service-account agents can only use toolsets with a shared credential."
+    }
   },
   "recordView": {
     "sections": {

@@ -579,6 +579,23 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     };
   }, [webSearchNode]);
 
+  const apiToolsetTools = useMemo(() => {
+    const value = nodes.find((n) => n.data?.type === 'agent-core')?.data.config?.apiToolsetTools;
+    return Array.isArray(value) ? (value as string[]) : [];
+  }, [nodes]);
+
+  const setApiToolsetTools = useCallback(
+    (entries: string[]) =>
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.data?.type === 'agent-core'
+            ? { ...n, data: { ...n.data, config: { ...n.data.config, apiToolsetTools: entries } } }
+            : n
+        )
+      ),
+    [setNodes]
+  );
+
   const saveRef = useRef(false);
 
   const focusAgentNameInput = useCallback(() => {
@@ -988,6 +1005,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
             paletteDragBlockedMessage={paletteDragBlockedMessage}
             toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
             webSearchAttached={webSearchAttached}
+            apiToolsetTools={apiToolsetTools}
+            onApiToolsetToolsChange={setApiToolsetTools}
             onManageAgentToolsetCredentials={
               isServiceAccountToolsetOrgLocked
                 ? undefined

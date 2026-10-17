@@ -9,6 +9,7 @@ import type {
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
+import { changedAttachments } from './api-toolset-attachments';
 
 interface ToolsetDataInternal {
   name: string;
@@ -393,6 +394,7 @@ export function extractAgentConfigFromFlow(
     // When the server couldn't read them, the canvas never showed the agent's MCP servers:
     // sending the empty list would detach them all. Left out, the save keeps what is stored.
     ...(currentAgent?.mcpServersUnavailable ? {} : { mcpServers }),
+    ...changedAttachments(coreCfg.apiToolsetTools, currentAgent?.apiToolsetTools),
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],

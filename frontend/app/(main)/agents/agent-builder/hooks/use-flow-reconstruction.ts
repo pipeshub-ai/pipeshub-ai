@@ -781,6 +781,7 @@ export function useAgentBuilderReconstruction(): {
             startMessage: agent.startMessage || t('agentBuilder.defaultStartMessage'),
             defaultReasoningEffort: agent.defaultReasoningEffort ?? null,
             sendUserContext: agent.sendUserContext !== false,
+            apiToolsetTools: agent.apiToolsetTools ?? [],
             routing: 'auto',
             allowMultipleLLMs: true,
           },

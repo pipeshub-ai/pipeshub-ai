@@ -25,6 +25,7 @@ vi.mock('@/lib/store/feature-flags-store', () => ({
   useFeatureFlagsStore: (selector: (s: typeof flagsState) => unknown) => selector(flagsState),
   selectFeatureFlagsLoaded: (s: typeof flagsState) => s.flags !== null,
   selectMcpEnabled: (s: typeof flagsState) => s.flags?.ENABLE_MCP !== false,
+  selectApiToolsetsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_API_TOOLSETS === true,
   selectActionsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_ACTIONS !== false,
   selectSkillsEnabled: (s: typeof flagsState) => s.flags?.ENABLE_SKILLS !== false,
 }));
@@ -91,5 +92,21 @@ describe('WorkspaceSidebar — Your Skills (Beta, flag-gated)', () => {
     renderSidebar();
 
     expect(screen.queryByText(YOUR_SKILLS_LABEL)).toBeNull();
+  });
+});
+
+describe('WorkspaceSidebar — API Toolsets (Labs, flag-gated)', () => {
+  const API_TOOLSETS_LABEL = en.workspace.sidebar.nav.apiToolsets;
+
+  it('shows API Toolsets to members only once ENABLE_API_TOOLSETS is on', () => {
+    userState = { profile: { isAdmin: false } };
+    flagsState = { flags: null };
+    renderSidebar();
+    expect(screen.queryByText(API_TOOLSETS_LABEL)).toBeNull();
+    cleanup();
+
+    flagsState = { flags: { ENABLE_API_TOOLSETS: true } };
+    renderSidebar();
+    expect(screen.getByText(API_TOOLSETS_LABEL)).toBeTruthy();
   });
 });

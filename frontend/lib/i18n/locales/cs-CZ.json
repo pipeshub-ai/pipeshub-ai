@@ -2248,7 +2248,8 @@
         "tenants": "Tenanti",
         "superOrgs": "Organizace",
         "oauthApps": "OAuth aplikace",
-        "serviceAccounts": "Servisní účty"
+        "serviceAccounts": "Servisní účty",
+        "apiToolsets": "API sady nástrojů"
       }
     },
     "actions": {
@@ -4348,6 +4349,126 @@
         "outcomeRevoked": "Oprávnění odebráno",
         "byAdmin": "uživatelem {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API sady nástrojů",
+      "subtitle": "Interní API, která váš správce zpřístupnil agentům. Tam, kde to sada nástrojů vyžaduje, připojte vlastní přihlašovací údaje.",
+      "subtitleAdmin": "Přidejte interní REST API z jeho specifikace OpenAPI, vyberte, které operace smějí agenti volat, a určete, jak se k němu PipesHub přihlásí.",
+      "loading": "Načítání API sad nástrojů…",
+      "emptyTitle": "Zatím žádné API sady nástrojů",
+      "emptyAdmin": "Přidejte ji ze specifikace OpenAPI 3.0 nebo 3.1.",
+      "emptyMember": "Váš správce zatím nepřidal žádné API sady nástrojů.",
+      "operationCount_one": "{{count}} operace",
+      "operationCount_few": "{{count}} operace",
+      "operationCount_many": "{{count}} operace",
+      "operationCount_other": "{{count}} operací",
+      "kind": {
+        "read": "Čtení",
+        "write": "Zápis",
+        "destructive": "Mazání"
+      },
+      "authType": {
+        "none": "Bez ověření",
+        "api_key": "API klíč",
+        "http_bearer": "Bearer token",
+        "http_basic": "Uživatelské jméno a heslo",
+        "oauth2_client_credentials": "OAuth 2.0 přihlašovací údaje klienta",
+        "oauth2_authorization_code": "Přihlášení OAuth 2.0"
+      },
+      "status": {
+        "connected": "Připojeno",
+        "notConnected": "Nepřipojeno",
+        "shared": "Sdílené přihlašovací údaje"
+      },
+      "cta": {
+        "add": "Přidat API sadu nástrojů",
+        "connection": "Připojení",
+        "details": "Podrobnosti",
+        "edit": "Upravit",
+        "delete": "Smazat"
+      },
+      "toasts": {
+        "loadError": "API sady nástrojů se nepodařilo načíst",
+        "created": "API sada nástrojů byla přidána",
+        "updated": "API sada nástrojů byla aktualizována",
+        "saveError": "API sadu nástrojů se nepodařilo uložit",
+        "deleted": "API sada nástrojů byla smazána",
+        "deleteError": "API sadu nástrojů se nepodařilo smazat",
+        "connected": "Připojeno",
+        "disconnected": "Odpojeno"
+      },
+      "deleteDialog": {
+        "title": "Smazat API sadu nástrojů",
+        "body": "Smazat {{name}}? Agenti, kteří používají její operace, o ně přijdou a všechny uložené přihlašovací údaje k ní budou odstraněny."
+      },
+      "editor": {
+        "addTitle": "Přidat API sadu nástrojů",
+        "editTitle": "Upravit API sadu nástrojů",
+        "spec": "Specifikace OpenAPI",
+        "specHint": "Vložte specifikaci OpenAPI 3.0 nebo 3.1 ve formátu JSON nebo YAML, nebo vyberte soubor, a pak si prohlédněte její operace.",
+        "specEditHint": "Ponechte prázdné, chcete-li zachovat současnou specifikaci. Nahrajte novou, chcete-li vybírat z jejích operací a způsobů ověření.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "chooseFile": "Vybrat soubor",
+        "preview": "Zobrazit operace",
+        "previewing": "Čtení specifikace…",
+        "validateError": "Specifikaci se nepodařilo přečíst",
+        "warnings": "Některé části specifikace byly přeskočeny:",
+        "operations": "Operace (vybráno {{selected}} z {{total}})",
+        "operationsHint": "Agenti mohou volat jen operace, které vyberete. Operace pro čtení jsou vybrané předem.",
+        "name": "Název",
+        "description": "Popis",
+        "baseUrl": "Základní URL",
+        "baseUrlHint": "Kam PipesHub posílá požadavky. Cesty operací se připojují za ni.",
+        "authScheme": "Ověření",
+        "authSchemeLocked": "Chcete-li změnit, jak se PipesHub ověřuje, nahrajte specifikaci znovu.",
+        "scopes": "Rozsahy",
+        "oauthClientId": "ID klienta aplikace OAuth",
+        "oauthRedirectHint": "Zaregistrujte v aplikaci OAuth tuto adresu přesměrování: {{url}}",
+        "oauthClientSecret": "Tajný klíč klienta aplikace OAuth",
+        "keepSecret": "Ponechte prázdné, chcete-li zachovat uložený tajný klíč",
+        "sharedCredential": "Jedny sdílené přihlašovací údaje",
+        "sharedCredentialHint": "Přihlašovací údaje nastavíte jednou a používají je všichni členové. Když je vypnuto, každý člen připojí své vlastní.",
+        "sharedCredentialForced": "Přihlašovací údaje klienta přihlašují aplikaci, ne člověka, proto všichni sdílejí ty, které nastavíte.",
+        "timeout": "Časový limit (sekundy)",
+        "timeoutHint": "Jak dlouho čekat na API, od 1 do {{max}} sekund.",
+        "problems": {
+          "name": "Zadejte název.",
+          "baseUrl": "Zadejte základní URL.",
+          "operations": "Vyberte alespoň jednu operaci.",
+          "timeout": "Zadejte časový limit od 1 do 120 sekund.",
+          "oauthClientId": "Zadejte ID klienta aplikace OAuth."
+        }
+      },
+      "connect": {
+        "title": "Připojení {{name}}",
+        "mode": {
+          "none": "Toto API nepotřebuje žádné přihlašovací údaje.",
+          "own": "Agenti volají toto API s vašimi vlastními přihlašovacími údaji.",
+          "shared": "Všichni členové používají přihlašovací údaje, které zde nastavíte.",
+          "managed": "Přihlašovací údaje k této sadě nástrojů spravuje váš správce."
+        },
+        "status": "Stav",
+        "signIn": "Přihlásit se",
+        "signInAgain": "Přihlásit se znovu",
+        "signingIn": "Přihlašování…",
+        "fields": {
+          "apiKey": "API klíč",
+          "token": "Token",
+          "username": "Uživatelské jméno",
+          "password": "Heslo",
+          "clientId": "ID klienta",
+          "clientSecret": "Tajný klíč klienta"
+        },
+        "replaceHint": "Uložením nahradíte přihlašovací údaje, které jsou teď uložené.",
+        "error": "Nepovedlo se. Zkuste to znovu.",
+        "test": "Otestovat připojení",
+        "testing": "Testování…",
+        "testOk": "API odpovědělo.",
+        "testFailed": "API odpovědělo chybou.",
+        "testTruncated": "Zobrazuje se jen začátek odpovědi.",
+        "disconnect": "Odpojit",
+        "disconnecting": "Odpojování…"
+      }
     }
   },
   "filePreview": {
@@ -4714,7 +4835,14 @@
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
     "limitSourceCount": "Omezeno na vybrané položky: {{count}}",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} je vaše osobní akce. Nelze ji přidat k agentovi sdílenému s vaší organizací ani k agentovi běžícímu jako servisní účet.",
+    "apiToolsets": {
+      "section": "API sady nástrojů",
+      "none": "Zatím žádné API sady nástrojů. Správci je přidávají v části Pracovní prostor > API sady nástrojů.",
+      "connectTooltip": "Připojte na stránce API sad nástrojů",
+      "notConnected": "Nepřipojeno. Agent tuto sadu nástrojů vynechá u každého, kdo ji nepřipojil.",
+      "serviceAccountBlocked": "Agenti se servisním účtem mohou používat jen sady nástrojů se sdílenými přihlašovacími údaji."
+    }
   },
   "recordView": {
     "sections": {

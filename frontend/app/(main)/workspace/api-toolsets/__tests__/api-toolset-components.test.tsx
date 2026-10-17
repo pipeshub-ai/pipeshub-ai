@@ -1,0 +1,131 @@
+import React from 'react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, screen, waitFor } from '@testing-library/react';
+import '@/lib/__tests__/test-i18n';
+import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
+import { compiledSpec, toolset, toolsetConfig } from './fixtures';
+
+const api = vi.hoisted(() => ({
+  validateSpec: vi.fn(),
+  getConfig: vi.fn(),
+  createInstance: vi.fn(),
+  updateInstance: vi.fn(),
+  saveCredentials: vi.fn(),
+  deleteCredentials: vi.fn(),
+  getAuthorizationUrl: vi.fn(),
+  listInstances: vi.fn(),
+  testConnection: vi.fn(),
+}));
+vi.mock('../api', () => ({ ApiToolsetsApi: api }));
+vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
+
+import { ApiToolsetEditorPanel } from '../components/api-toolset-editor-panel';
+import { ApiToolsetConnectDialog } from '../components/api-toolset-connect-dialog';
+
+beforeEach(() => {
+  installBrowserShims();
+  Object.values(api).forEach((fn) => fn.mockReset());
+});
+afterEach(cleanup);
+
+function checkbox(name: RegExp) {
+  return screen.getByText(name).closest('label')!.querySelector('[role="checkbox"]')!;
+}
+
+describe('ApiToolsetEditorPanel', () => {
+  it('previews a pasted spec, preselects read operations and saves the selection', async () => {
+    api.validateSpec.mockResolvedValue(compiledSpec({ warnings: ['Skipped GET /legacy: no responses'] }));
+    api.createInstance.mockResolvedValue(toolsetConfig());
+    const onSaved = vi.fn();
+    renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={onSaved} />);
+
+    fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'openapi: 3.1.0' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview operations' }));
+
+    expect(await screen.findByText('Skipped GET /legacy: no responses')).toBeTruthy();
+    expect(screen.getByText('Operations (1 of 3 selected)')).toBeTruthy();
+    expect(checkbox(/^\/listOrders$/).getAttribute('aria-checked')).toBe('true');
+    expect(checkbox(/^\/deleteOrder$/).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByDisplayValue('Orders API')).toBeTruthy();
+    expect(screen.getByDisplayValue('https://orders.internal/v1')).toBeTruthy();
+
+    fireEvent.click(checkbox(/^\/createOrder$/));
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(onSaved).toHaveBeenCalled());
+    expect(api.createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        spec: 'openapi: 3.1.0',
+        name: 'Orders API',
+        authSchemeName: 'apiKey',
+        operations: ['listOrders', 'createOrder'],
+      }),
+    );
+  });
+
+  it("shows the backend's reason when the spec is refused", async () => {
+    api.validateSpec.mockRejectedValue({ type: 'VALIDATION_ERROR', message: 'Swagger 2.0 specs are not supported.', statusCode: 400 });
+    renderInTheme(<ApiToolsetEditorPanel open editingId={null} onOpenChange={() => {}} onSaved={() => {}} />);
+    fireEvent.change(screen.getByPlaceholderText(/openapi: 3.1.0/), { target: { value: 'swagger: "2.0"' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview operations' }));
+    expect(await screen.findByText('Swagger 2.0 specs are not supported.')).toBeTruthy();
+  });
+
+  it('edits without a new spec: stored operations, locked scheme, no spec sent', async () => {
+    api.getConfig.mockResolvedValue(toolsetConfig());
+    api.updateInstance.mockResolvedValue(toolsetConfig());
+    const id = 'a'.repeat(32);
+    renderInTheme(<ApiToolsetEditorPanel open editingId={id} onOpenChange={() => {}} onSaved={() => {}} />);
+
+    expect(await screen.findByText('Upload the spec again to change how PipesHub authenticates.')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(api.updateInstance).toHaveBeenCalled());
+    const [calledId, payload] = api.updateInstance.mock.calls[0];
+    expect(calledId).toBe(id);
+    expect(payload).not.toHaveProperty('spec');
+    expect(payload.operations).toEqual(['listOrders', 'createOrder']);
+  });
+});
+
+describe('ApiToolsetConnectDialog', () => {
+  const render = (overrides: Parameters<typeof toolset>[0], isAdmin = false) =>
+    renderInTheme(<ApiToolsetConnectDialog toolset={toolset(overrides)} isAdmin={isAdmin} onOpenChange={() => {}} onChanged={() => {}} />);
+
+  it("asks for username and password for basic auth and saves the member's own credential", async () => {
+    api.saveCredentials.mockResolvedValue(undefined);
+    render({ authType: 'http_basic' });
+    fireEvent.change(screen.getByLabelText(/Username/), { target: { value: 'me' } });
+    fireEvent.change(screen.getByLabelText(/Password/), { target: { value: 'pw' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() =>
+      expect(api.saveCredentials).toHaveBeenCalledWith('a'.repeat(32), { username: 'me', password: 'pw' }, false),
+    );
+  });
+
+  it('offers sign-in instead of fields for the OAuth sign-in flow', () => {
+    render({ authType: 'oauth2_authorization_code' });
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
+  });
+
+  it('lets an admin manage the shared credential and shows members it is managed for them', () => {
+    render({ authType: 'oauth2_client_credentials', useSharedCredential: true }, true);
+    expect(screen.getByLabelText(/Client ID/)).toBeTruthy();
+    expect(screen.getByText('Every member uses the credential you set here.')).toBeTruthy();
+    cleanup();
+    render({ authType: 'oauth2_client_credentials', useSharedCredential: true, isConnected: true }, false);
+    expect(screen.getByText('Your admin manages the credential for this toolset.')).toBeTruthy();
+    expect(screen.queryByLabelText(/Client ID/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Disconnect' })).toBeNull();
+  });
+
+  it('shows the status and start of the body from a test call', async () => {
+    api.testConnection.mockResolvedValue({ ok: false, status: 401, body: '{"error":"bad key"}', truncated: true });
+    render({ authType: 'api_key', isConnected: true });
+    fireEvent.click(screen.getByRole('button', { name: 'Test connection' }));
+    expect(await screen.findByText('401')).toBeTruthy();
+    expect(screen.getByText('The API answered with an error.')).toBeTruthy();
+    expect(screen.getByText('{"error":"bad key"}')).toBeTruthy();
+    expect(screen.getByText('Only the start of the response is shown.')).toBeTruthy();
+  });
+});

@@ -2026,7 +2026,8 @@
         "superOrgs": "Organisationen",
         "oauthApps": "OAuth Apps",
         "personalAccessTokens": "Persönliche Zugriffstoken",
-        "serviceAccounts": "Dienstkonten"
+        "serviceAccounts": "Dienstkonten",
+        "apiToolsets": "API-Toolsets"
       }
     },
     "actions": {
@@ -4171,6 +4172,124 @@
         "outcomeRevoked": "Berechtigung entfernt",
         "byAdmin": "von {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API-Toolsets",
+      "subtitle": "Interne APIs, die Ihr Administrator für Agenten freigegeben hat. Verbinden Sie Ihre eigenen Zugangsdaten, wo ein Toolset sie verlangt.",
+      "subtitleAdmin": "Fügen Sie eine interne REST-API aus ihrer OpenAPI-Spezifikation hinzu, wählen Sie die Operationen, die Agenten aufrufen dürfen, und legen Sie fest, wie sich PipesHub anmeldet.",
+      "loading": "API-Toolsets werden geladen…",
+      "emptyTitle": "Noch keine API-Toolsets",
+      "emptyAdmin": "Fügen Sie eines aus einer OpenAPI-3.0- oder -3.1-Spezifikation hinzu.",
+      "emptyMember": "Ihr Administrator hat noch keine API-Toolsets hinzugefügt.",
+      "operationCount_one": "{{count}} Operation",
+      "operationCount_other": "{{count}} Operationen",
+      "kind": {
+        "read": "Lesen",
+        "write": "Schreiben",
+        "destructive": "Löschen"
+      },
+      "authType": {
+        "none": "Keine Authentifizierung",
+        "api_key": "API-Schlüssel",
+        "http_bearer": "Bearer-Token",
+        "http_basic": "Benutzername und Passwort",
+        "oauth2_client_credentials": "OAuth 2.0 Client Credentials",
+        "oauth2_authorization_code": "OAuth-2.0-Anmeldung"
+      },
+      "status": {
+        "connected": "Verbunden",
+        "notConnected": "Nicht verbunden",
+        "shared": "Gemeinsame Zugangsdaten"
+      },
+      "cta": {
+        "add": "API-Toolset hinzufügen",
+        "connection": "Verbindung",
+        "details": "Details",
+        "edit": "Bearbeiten",
+        "delete": "Löschen"
+      },
+      "toasts": {
+        "loadError": "API-Toolsets konnten nicht geladen werden",
+        "created": "API-Toolset hinzugefügt",
+        "updated": "API-Toolset aktualisiert",
+        "saveError": "API-Toolset konnte nicht gespeichert werden",
+        "deleted": "API-Toolset gelöscht",
+        "deleteError": "API-Toolset konnte nicht gelöscht werden",
+        "connected": "Verbunden",
+        "disconnected": "Getrennt"
+      },
+      "deleteDialog": {
+        "title": "API-Toolset löschen",
+        "body": "{{name}} löschen? Agenten verlieren seine Operationen, und alle dafür gespeicherten Zugangsdaten werden entfernt."
+      },
+      "editor": {
+        "addTitle": "API-Toolset hinzufügen",
+        "editTitle": "API-Toolset bearbeiten",
+        "spec": "OpenAPI-Spezifikation",
+        "specHint": "Fügen Sie eine OpenAPI-3.0- oder -3.1-Spezifikation als JSON oder YAML ein oder wählen Sie eine Datei und zeigen Sie dann ihre Operationen an.",
+        "specEditHint": "Leer lassen, um die aktuelle Spezifikation zu behalten. Laden Sie eine neue hoch, um aus ihren Operationen und Authentifizierungsverfahren zu wählen.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "chooseFile": "Datei wählen",
+        "preview": "Operationen anzeigen",
+        "previewing": "Spezifikation wird gelesen…",
+        "validateError": "Die Spezifikation konnte nicht gelesen werden",
+        "warnings": "Einige Teile der Spezifikation wurden übersprungen:",
+        "operations": "Operationen ({{selected}} von {{total}} ausgewählt)",
+        "operationsHint": "Agenten können nur die ausgewählten Operationen aufrufen. Leseoperationen sind vorausgewählt.",
+        "name": "Name",
+        "description": "Beschreibung",
+        "baseUrl": "Basis-URL",
+        "baseUrlHint": "Wohin PipesHub Anfragen sendet. Die Pfade der Operationen werden angehängt.",
+        "authScheme": "Authentifizierung",
+        "authSchemeLocked": "Laden Sie die Spezifikation erneut hoch, um die Authentifizierung zu ändern.",
+        "scopes": "Scopes",
+        "oauthClientId": "Client-ID der OAuth-App",
+        "oauthRedirectHint": "Registrieren Sie diese Weiterleitungs-URL bei der OAuth-App: {{url}}",
+        "oauthClientSecret": "Client-Secret der OAuth-App",
+        "keepSecret": "Leer lassen, um das gespeicherte Secret zu behalten",
+        "sharedCredential": "Gemeinsame Zugangsdaten",
+        "sharedCredentialHint": "Sie hinterlegen die Zugangsdaten einmal, und alle Mitglieder nutzen sie. Wenn deaktiviert, verbindet jedes Mitglied seine eigenen.",
+        "sharedCredentialForced": "Client Credentials melden sich als App an, nicht als Person, daher nutzen alle die von Ihnen hinterlegten.",
+        "timeout": "Zeitlimit (Sekunden)",
+        "timeoutHint": "Wie lange auf die API gewartet wird, von 1 bis {{max}} Sekunden.",
+        "problems": {
+          "name": "Geben Sie einen Namen ein.",
+          "baseUrl": "Geben Sie die Basis-URL ein.",
+          "operations": "Wählen Sie mindestens eine Operation aus.",
+          "timeout": "Geben Sie ein Zeitlimit von 1 bis 120 Sekunden ein.",
+          "oauthClientId": "Geben Sie die Client-ID der OAuth-App ein."
+        }
+      },
+      "connect": {
+        "title": "Verbindung zu {{name}}",
+        "mode": {
+          "none": "Diese API benötigt keine Zugangsdaten.",
+          "own": "Agenten rufen diese API mit Ihren eigenen Zugangsdaten auf.",
+          "shared": "Alle Mitglieder nutzen die Zugangsdaten, die Sie hier hinterlegen.",
+          "managed": "Ihr Administrator verwaltet die Zugangsdaten für dieses Toolset."
+        },
+        "status": "Status",
+        "signIn": "Anmelden",
+        "signInAgain": "Erneut anmelden",
+        "signingIn": "Anmeldung läuft…",
+        "fields": {
+          "apiKey": "API-Schlüssel",
+          "token": "Token",
+          "username": "Benutzername",
+          "password": "Passwort",
+          "clientId": "Client-ID",
+          "clientSecret": "Client-Secret"
+        },
+        "replaceHint": "Beim Speichern werden die aktuell gespeicherten Zugangsdaten ersetzt.",
+        "error": "Das hat nicht funktioniert. Versuchen Sie es erneut.",
+        "test": "Verbindung testen",
+        "testing": "Wird getestet…",
+        "testOk": "Die API hat geantwortet.",
+        "testFailed": "Die API hat mit einem Fehler geantwortet.",
+        "testTruncated": "Nur der Anfang der Antwort wird angezeigt.",
+        "disconnect": "Trennen",
+        "disconnecting": "Wird getrennt…"
+      }
     }
   },
   "filePreview": {
@@ -4533,7 +4652,14 @@
     "limitSource": "Auswählen, was {{name}} durchsucht",
     "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
     "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} ist Ihre persönliche Aktion. Sie kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
+    "apiToolsets": {
+      "section": "API-Toolsets",
+      "none": "Noch keine API-Toolsets. Administratoren fügen sie unter Arbeitsbereich > API-Toolsets hinzu.",
+      "connectTooltip": "Auf der Seite API-Toolsets verbinden",
+      "notConnected": "Nicht verbunden. Der Agent überspringt dieses Toolset für alle, die es nicht verbunden haben.",
+      "serviceAccountBlocked": "Service-Agenten können nur Toolsets mit gemeinsamen Zugangsdaten verwenden."
+    }
   },
   "recordView": {
     "sections": {

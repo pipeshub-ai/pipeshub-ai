@@ -2046,7 +2046,8 @@
         "tenants": "Inquilinos",
         "superOrgs": "Organizaciones",
         "oauthApps": "OAuth Apps",
-        "serviceAccounts": "Cuentas de servicio"
+        "serviceAccounts": "Cuentas de servicio",
+        "apiToolsets": "Conjuntos de herramientas de API"
       }
     },
     "actions": {
@@ -4205,6 +4206,125 @@
         "outcomeRevoked": "Permiso quitado",
         "byAdmin": "por {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "Conjuntos de herramientas de API",
+      "subtitle": "API internas que tu administrador puso a disposición de los agentes. Conecta tu propia credencial cuando un conjunto la pida.",
+      "subtitleAdmin": "Añade una API REST interna a partir de su especificación OpenAPI, elige qué operaciones pueden llamar los agentes y decide cómo se autentica PipesHub.",
+      "loading": "Cargando conjuntos de herramientas de API…",
+      "emptyTitle": "Aún no hay conjuntos de herramientas de API",
+      "emptyAdmin": "Añade uno a partir de una especificación OpenAPI 3.0 o 3.1.",
+      "emptyMember": "Tu administrador no ha añadido ningún conjunto de herramientas de API.",
+      "operationCount_one": "{{count}} operación",
+      "operationCount_many": "{{count}} operaciones",
+      "operationCount_other": "{{count}} operaciones",
+      "kind": {
+        "read": "Lectura",
+        "write": "Escritura",
+        "destructive": "Eliminación"
+      },
+      "authType": {
+        "none": "Sin autenticación",
+        "api_key": "Clave de API",
+        "http_bearer": "Token bearer",
+        "http_basic": "Usuario y contraseña",
+        "oauth2_client_credentials": "Credenciales de cliente OAuth 2.0",
+        "oauth2_authorization_code": "Inicio de sesión OAuth 2.0"
+      },
+      "status": {
+        "connected": "Conectado",
+        "notConnected": "No conectado",
+        "shared": "Credencial compartida"
+      },
+      "cta": {
+        "add": "Añadir conjunto de API",
+        "connection": "Conexión",
+        "details": "Detalles",
+        "edit": "Editar",
+        "delete": "Eliminar"
+      },
+      "toasts": {
+        "loadError": "No se pudieron cargar los conjuntos de herramientas de API",
+        "created": "Conjunto de herramientas de API añadido",
+        "updated": "Conjunto de herramientas de API actualizado",
+        "saveError": "No se pudo guardar el conjunto de herramientas de API",
+        "deleted": "Conjunto de herramientas de API eliminado",
+        "deleteError": "No se pudo eliminar el conjunto de herramientas de API",
+        "connected": "Conectado",
+        "disconnected": "Desconectado"
+      },
+      "deleteDialog": {
+        "title": "Eliminar conjunto de herramientas de API",
+        "body": "¿Eliminar {{name}}? Los agentes que usan sus operaciones las pierden y se eliminan todas sus credenciales guardadas."
+      },
+      "editor": {
+        "addTitle": "Añadir conjunto de herramientas de API",
+        "editTitle": "Editar conjunto de herramientas de API",
+        "spec": "Especificación OpenAPI",
+        "specHint": "Pega una especificación OpenAPI 3.0 o 3.1 en JSON o YAML, o elige un archivo, y luego revisa sus operaciones.",
+        "specEditHint": "Déjalo vacío para conservar la especificación actual. Sube una nueva para elegir entre sus operaciones y esquemas de autenticación.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "chooseFile": "Elegir archivo",
+        "preview": "Ver operaciones",
+        "previewing": "Leyendo la especificación…",
+        "validateError": "No se pudo leer la especificación",
+        "warnings": "Se omitieron algunas partes de la especificación:",
+        "operations": "Operaciones ({{selected}} de {{total}} seleccionadas)",
+        "operationsHint": "Los agentes solo pueden llamar a las operaciones que selecciones. Las de lectura vienen seleccionadas.",
+        "name": "Nombre",
+        "description": "Descripción",
+        "baseUrl": "URL base",
+        "baseUrlHint": "Adónde envía PipesHub las solicitudes. Se le añaden las rutas de las operaciones.",
+        "authScheme": "Autenticación",
+        "authSchemeLocked": "Vuelve a subir la especificación para cambiar cómo se autentica PipesHub.",
+        "scopes": "Ámbitos",
+        "oauthClientId": "ID de cliente de la app OAuth",
+        "oauthRedirectHint": "Registra esta URL de redirección en la app OAuth: {{url}}",
+        "oauthClientSecret": "Secreto de cliente de la app OAuth",
+        "keepSecret": "Déjalo vacío para conservar el secreto guardado",
+        "sharedCredential": "Una credencial compartida",
+        "sharedCredentialHint": "Configuras la credencial una vez y todos los miembros la usan. Si está desactivado, cada miembro conecta la suya.",
+        "sharedCredentialForced": "Las credenciales de cliente inician sesión como la app, no como una persona, así que todos comparten la que configures.",
+        "timeout": "Tiempo de espera (segundos)",
+        "timeoutHint": "Cuánto esperar a la API, de 1 a {{max}} segundos.",
+        "problems": {
+          "name": "Introduce un nombre.",
+          "baseUrl": "Introduce la URL base.",
+          "operations": "Selecciona al menos una operación.",
+          "timeout": "Introduce un tiempo de espera de 1 a 120 segundos.",
+          "oauthClientId": "Introduce el ID de cliente de la app OAuth."
+        }
+      },
+      "connect": {
+        "title": "Conexión de {{name}}",
+        "mode": {
+          "none": "Esta API no necesita credenciales.",
+          "own": "Los agentes llaman a esta API con tu propia credencial.",
+          "shared": "Todos los miembros usan la credencial que configures aquí.",
+          "managed": "Tu administrador gestiona la credencial de este conjunto."
+        },
+        "status": "Estado",
+        "signIn": "Iniciar sesión",
+        "signInAgain": "Volver a iniciar sesión",
+        "signingIn": "Iniciando sesión…",
+        "fields": {
+          "apiKey": "Clave de API",
+          "token": "Token",
+          "username": "Usuario",
+          "password": "Contraseña",
+          "clientId": "ID de cliente",
+          "clientSecret": "Secreto de cliente"
+        },
+        "replaceHint": "Al guardar se reemplaza la credencial guardada.",
+        "error": "No funcionó. Inténtalo de nuevo.",
+        "test": "Probar conexión",
+        "testing": "Probando…",
+        "testOk": "La API respondió.",
+        "testFailed": "La API respondió con un error.",
+        "testTruncated": "Solo se muestra el inicio de la respuesta.",
+        "disconnect": "Desconectar",
+        "disconnecting": "Desconectando…"
+      }
     }
   },
   "filePreview": {
@@ -4569,7 +4689,14 @@
     "limitSource": "Elegir qué busca {{name}}",
     "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
     "limitSourceCount": "Limitado a {{count}} seleccionados",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio."
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} es su acción personal. No se puede añadir a un agente compartido con su organización ni a uno que se ejecute como cuenta de servicio.",
+    "apiToolsets": {
+      "section": "Conjuntos de herramientas de API",
+      "none": "Aún no hay conjuntos de herramientas de API. Los administradores los añaden en Espacio de trabajo > Conjuntos de herramientas de API.",
+      "connectTooltip": "Conectar en la página de conjuntos de herramientas de API",
+      "notConnected": "No conectado. El agente omite este conjunto para quien no lo haya conectado.",
+      "serviceAccountBlocked": "Los agentes de cuenta de servicio solo pueden usar conjuntos con credencial compartida."
+    }
   },
   "recordView": {
     "sections": {
