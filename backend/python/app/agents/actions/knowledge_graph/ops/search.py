@@ -245,9 +245,15 @@ def _result_frame(
         shown_omitted = {
             vrid: count for vrid, count in passage_cap.omitted.items() if vrid in shown_records
         }
-        trim_note = more_passages_note(per_record, len(shown_omitted), passage_cap.repeats_dropped)
+        # Under the full-read policy the fetch tool takes no `query`.
+        focused_reads = not state.get(READ_RECORDS_IN_FULL_STATE_KEY)
+        trim_note = more_passages_note(
+            per_record, len(shown_omitted), passage_cap.repeats_dropped, focused_reads=focused_reads,
+        )
         # Before the candidate table, which closes the result with its own call to action.
-        candidate_suffix = more_passages_list(shown_omitted, shown_records) + candidate_suffix
+        candidate_suffix = more_passages_list(
+            shown_omitted, shown_records, focused_reads=focused_reads,
+        ) + candidate_suffix
     shown_candidates = candidate_suffix
     if candidate_suffix and selection.record_id_shortener is not None:
         shown_candidates = selection.record_id_shortener.copy().shorten_record_ids_in_text(candidate_suffix)

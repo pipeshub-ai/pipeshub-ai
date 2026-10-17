@@ -105,10 +105,13 @@ moves characters from breadth to depth:
   record that fits is read whole. Without a query, a fetch reads as before.
   The prompt's record-reading rules add when to use it: a specific detail the
   passages point to but do not state. Under `THOROUGH_RETRIEVAL`, which reads
-  those records in full, neither the rule nor the `query` parameter is
-  offered, and a `query` is ignored. A continuation (`start_block`) with a
-  `query` reads on in order within the same focused size.
-- The first-turn context in internal-search chats is fitted the same way.
+  those records in full, none of this is offered: the tool has no `query`
+  parameter and refuses one as an unknown argument, and the notes on trimmed
+  records ask for the record read whole. A continuation (`start_block`) with
+  a `query` reads on in order within the same focused size.
+- The first-turn context in internal-search chats is fitted the same way. A
+  turn with no tools (a model that cannot call them) gets no note asking it
+  to read a record.
 
 Off, none of this runs: results, the fetch tool's schema and the prompt are
 unchanged. `tests/perf/bench_targeted_retrieval.py` replays a mix of searches

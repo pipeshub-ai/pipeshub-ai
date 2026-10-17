@@ -308,6 +308,8 @@ async def _run_no_tools_degradation(
             filters=query_info.get("filters"), limit=query_info.get("limit"),
             is_multimodal_llm=is_multimodal_llm, previous_conversations=query_info.get("previous_conversations"),
             logger=log, force=True,
+            # A turn with no tools cannot read a record, so no note asks it to.
+            can_fetch=False,
         )
     finally:
         reset_llm_time_zone(zone_token)
@@ -556,6 +558,9 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                         ref_mapper=ref_mapper,
                         image_budget=image_budget,
                         image_admission=admission_from_state(context.tool_state),
+                        # Set by `_apply_mode_instructions` before this runs: under the
+                        # full-read policy the fetch tool takes no `query`.
+                        read_in_full=bool(context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
                     )
                 )
                 if policy.prefetch_retrieval else None
