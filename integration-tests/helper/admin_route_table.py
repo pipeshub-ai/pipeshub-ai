@@ -167,6 +167,8 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
               "re-embeds every connector in the org"),
     _no_admin("POST", "/api/v1/connectors/getTokenFromCode",
               "exchanges an OAuth code and stores the result; no validator follows the check"),
+    # tokens_manager/routes/health.routes.ts (read-only: estimates index memory)
+    AdminRoute("GET", "/api/v1/health/vector-db/memory"),
     # user_management/routes/org.routes.ts
     AdminRoute("PUT", "/api/v1/org", admin="invalid"),
     _no_admin("DELETE", "/api/v1/org", "deletes the test org"),
