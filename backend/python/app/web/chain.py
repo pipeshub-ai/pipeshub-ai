@@ -121,6 +121,8 @@ async def run_chain(
             cooldowns.failed(source.cooldown_key, e)
             attempts.append(Attempt(source.id, e.error_type, clock() - started))
             errors.append(e)
+            if e.ends_chain:
+                break
             continue
         cooldowns.answered(source.cooldown_key)
         attempts.append(Attempt(source.id, None, clock() - started))

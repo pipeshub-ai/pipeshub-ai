@@ -21,6 +21,8 @@ _HTTP_SERVER_ERROR = 500
 class WebError(Exception):
     error_type: ClassVar[str] = "upstream_error"
     default_retryable: ClassVar[bool] = False
+    # About the address itself, not the source that tried it: no other source may try it either.
+    ends_chain: ClassVar[bool] = False
 
     def __init__(
         self,
@@ -104,10 +106,12 @@ class UnknownProvider(WebError):
 
 class InvalidUrl(WebError):
     error_type = "invalid_url"
+    ends_chain = True
 
 
 class UnsafeUrl(WebError):
     error_type = "unsafe_url"
+    ends_chain = True
 
 
 class TooLarge(WebError):
@@ -116,6 +120,7 @@ class TooLarge(WebError):
 
 class TooManyRedirects(WebError):
     error_type = "too_many_redirects"
+    ends_chain = True
 
 
 class UnsupportedContent(WebError):
@@ -128,6 +133,7 @@ class NoText(WebError):
 
 class AccessDenied(WebError):
     error_type = "access_denied"
+    ends_chain = True
 
 
 class BudgetExhausted(WebError):

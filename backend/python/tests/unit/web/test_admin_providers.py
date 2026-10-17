@@ -178,16 +178,49 @@ class TestFirecrawlFetcher:
             await FirecrawlFetcher({"apiKey": "k"}).fetch("https://a.example/", deadline())
 
 
+def crawled(**result: object) -> Handler:
+    """A ``/crawl`` answer for one page, shaped like Crawl4AI's ``CrawlResult``."""
+    page = {"url": "https://a.example/", "success": True, "status_code": 200,
+            "markdown": {"raw_markdown": "## The Title\n\nAll of it.", "fit_markdown": "## The Title\n\nBody text."},
+            "metadata": {}, **result}
+    return lambda r: httpx.Response(200, json={"success": True, "results": [page]})
+
+
 class TestCrawl4AI:
     async def test_reads_the_page_and_titles_it_from_its_heading(self, server: Server, public_hosts: list[str]) -> None:
-        server.handler = lambda r: httpx.Response(200, json={"success": True, "markdown": "## The Title\n\nBody text."})
+        server.handler = crawled()
         page = await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235", "apiKey": "t"}).fetch("https://a.example/", deadline())
         assert page.title == "The Title"
-        assert body(server.requests[0]) == {"url": "https://a.example/", "f": "fit"}
+        assert "Body text." in page.blocks[0].content
+        assert server.requests[0].url.path == "/crawl"
+        assert body(server.requests[0])["urls"] == ["https://a.example/"]
         assert server.requests[0].headers["Authorization"] == "Bearer t"
 
+    async def test_the_page_title_and_landing_address_are_used(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(redirected_url="https://a.example/moved", metadata={"title": "Moved page"})
+        page = await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
+        assert (page.url, page.title) == ("https://a.example/moved", "Moved page")
+
+    async def test_landing_on_an_internal_address_is_refused(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(redirected_url="http://metadata.internal/latest/")
+        with pytest.raises(UnsafeUrl):
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/go", deadline())
+
+    async def test_landing_on_a_refused_page(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(redirected_url="https://elsewhere.example/")
+        refuse = AsyncMock(return_value=False)
+        with pytest.raises(AccessDenied):
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch(
+                "https://a.example/go", deadline(), allow_hop=refuse)
+        refuse.assert_awaited_once_with("https://elsewhere.example/")
+
+    async def test_the_sites_status_counts(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(status_code=403)
+        with pytest.raises(Blocked):
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
+
     async def test_a_failed_read(self, server: Server, public_hosts: list[str]) -> None:
-        server.handler = lambda r: httpx.Response(200, json={"success": False, "error": "navigation failed"})
+        server.handler = crawled(success=False, error_message="navigation failed")
         with pytest.raises(UpstreamError) as info:
             await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
         assert "navigation failed" in info.value.message
@@ -197,14 +230,15 @@ class TestCrawl4AI:
             await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("http://redis.internal:6379/", deadline())
         assert server.requests == []
 
-    @pytest.mark.parametrize("version", ["0.8.7", "0.6.3", "", "unknown"])
+    @pytest.mark.parametrize("version", ["0.9.3", "0.8.8", "0.6.3", "", "unknown"])
     async def test_an_unsafe_version_fails_the_probe(self, server: Server, version: str) -> None:  # WP-3-FETCH-01
         server.handler = lambda r: httpx.Response(200, json={"status": "ok", "version": version})
         with pytest.raises(NotConfigured) as info:
             await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).probe(deadline())
-        assert "0.8.8" in info.value.message
+        assert "0.9.4" in info.value.message
+        assert info.value.reason == "server_version"
 
-    @pytest.mark.parametrize("version", ["0.8.8", "0.9.4", "1.0.0"])
+    @pytest.mark.parametrize("version", ["0.9.4", "0.10.0", "1.0.0"])
     async def test_a_safe_version_passes(self, server: Server, version: str) -> None:
         server.handler = lambda r: httpx.Response(200, json={"version": version})
         await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).probe(deadline())
@@ -243,6 +277,14 @@ class TestOrder:
 
     def test_with_no_chosen_provider_the_stored_searchers_still_come_first(self) -> None:
         selection = {"provider": "duckduckgo", "configuration": {}, "providers": self.STORED}
+        assert [p.id for p in search_providers(selection)] == ["tavily", "firecrawl", "ddgs", "duckduckgo"]
+
+    def test_firecrawl_chosen_searches_first(self) -> None:
+        selection = {"provider": "firecrawl", "configuration": {"apiKey": "f"}, "providers": self.STORED}
+        assert [p.id for p in search_providers(selection)] == ["firecrawl", "tavily", "ddgs", "duckduckgo"]
+
+    def test_a_page_reader_chosen_leaves_search_to_the_others(self) -> None:
+        selection = {"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}, "providers": self.STORED}
         assert [p.id for p in search_providers(selection)] == ["tavily", "firecrawl", "ddgs", "duckduckgo"]
 
     def test_pages_are_read_built_in_first_then_by_the_stored_readers(self) -> None:

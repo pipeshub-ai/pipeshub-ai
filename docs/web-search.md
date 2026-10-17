@@ -113,6 +113,8 @@ When every source fails, the reported `error_type` is the last one's, and `attem
 - The built-in reader goes first. When it fails (a bot check, a timeout), the stored providers
   that read pages are tried: Firecrawl and a Crawl4AI server, both of which render JavaScript.
   Crawl4AI only reads pages, so it can never be the default search provider (Node refuses it).
+- A failure about the address itself (`unsafe_url`, `too_many_redirects`, `invalid_url`,
+  `access_denied`) ends the chain: no other reader is given a URL the built-in one refused.
 - A URL is only sent to Firecrawl or Crawl4AI once its host resolves to public addresses, and
   the address they end up on is checked too. They fetch from where they run, so a redirect they
   follow in between can't be seen from here: run them where they can't reach internal services,
@@ -160,7 +162,7 @@ instructions still apply.
   `web-readers` network, which reaches the internet and the app but not the databases.
 - SearXNG answers JSON only when `search.formats` lists it; `searxng/settings.yml` does, and a
   server that doesn't is reported as `not_configured` with the fix.
-- Crawl4AI below 0.8.8 fails the health check: earlier servers let anyone who can reach them run
+- Crawl4AI below 0.9.4 fails the health check: earlier servers let anyone who can reach them run
   code. Saving any provider runs one real search, or one real page read for Crawl4AI.
 
 ## Metrics
@@ -235,7 +237,7 @@ Manual checks on a running instance (chat with web search on):
 | WP-2-VIEW-03 | Make a search fail (see WP-0-SRCH-01) | The step's result says why in plain words, not raw JSON |
 | WP-3-PROV-01 | Start the stack with `search-searxng`, add SearXNG at `http://searxng:8080`, make it the default, search | Results come from SearXNG (`served_by: searxng`) |
 | WP-3-PROV-02 | Point SearXNG at a server whose settings.yml lacks `json` and press Save | The save is refused with "add json to search.formats" |
-| WP-3-FETCH-01 | Add a Crawl4AI server older than 0.8.8 | The save is refused, naming 0.8.8 |
+| WP-3-FETCH-01 | Add a Crawl4AI server older than 0.9.4 | The save is refused, naming 0.9.4 |
 | WP-3-FETCH-03 | With `fetch-crawl4ai` added, ask chat to read a page that blocks plain clients | The built-in reader fails and Crawl4AI reads it (`fetched_by: crawl4ai`) |
 | WP-3-CFG-01 | Add Crawl4AI as the first provider | It is not the default; there is no "Set as default" for it |
 | WP-6-CSR-01 | Ask chat to read a page built by scripts (a single-page app's docs page) | The answer quotes the rendered text; `fetched_by: browser` |

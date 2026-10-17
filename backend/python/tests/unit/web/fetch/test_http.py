@@ -28,10 +28,11 @@ PUBLIC = "https://example.com/page"
 _REAL_GETADDRINFO = socket.getaddrinfo
 
 
-def _response(status: int = 200, body: bytes = b"ok", headers: dict | None = None, final_url: str = PUBLIC) -> FetchResponse:
+def _response(status: int = 200, body: bytes = b"ok", headers: dict | None = None, final_url: str = PUBLIC,
+              strategy: str = "aiohttp") -> FetchResponse:
     return FetchResponse(
         status_code=status, content_bytes=body, headers=headers or {"Content-Type": "text/html"},
-        final_url=final_url, strategy="aiohttp",
+        final_url=final_url, strategy=strategy,
     )
 
 
@@ -130,9 +131,15 @@ class TestFetch:
         ],
     )
     async def test_skip_reasons(self, reason: str, error: type) -> None:
-        response = _response(status=413, body=b"", headers={"X-Fetch-Skip-Reason": reason})
+        response = _response(status=413, body=b"", headers={"X-Fetch-Skip-Reason": reason}, strategy="redirect_guard")
         with _resolves_publicly(), _fallback(response), pytest.raises(error):
             await fetch_public(PUBLIC, Deadline.after(5))
+
+    @pytest.mark.parametrize("reason", ["unsafe_address", "too_many_redirects", "max_size_exceeded"])
+    async def test_a_page_cannot_fake_a_skip_reason(self, reason: str) -> None:
+        response = _response(body=b"<p>page</p>", headers={"X-Fetch-Skip-Reason": reason, "Content-Type": "text/html"})
+        with _resolves_publicly(), _fallback(response):
+            assert (await fetch_public(PUBLIC, Deadline.after(5))).content == b"<p>page</p>"
 
     async def test_non_2xx_is_returned_for_the_caller_to_judge(self) -> None:
         with _resolves_publicly(), _fallback(_response(status=202)):

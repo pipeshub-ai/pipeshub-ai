@@ -81,7 +81,7 @@ class TestWebSearchHealthCheck:
             (NotConfigured("boom"), 400, "Serper needs an API key"),
             (NotConfigured("boom", reason="base_url"), 400, "needs the http(s) address"),
             (NotConfigured("boom", reason="searxng_json"), 400, "add json to search.formats"),
-            (NotConfigured("boom", reason="server_version"), 400, "0.8.8 or later is required"),
+            (NotConfigured("boom", reason="server_version"), 400, "0.9.4 or later is required"),
             (AuthFailed("x", status=401), 400, "didn't accept the API key"),
             (RateLimited("x", status=429), 400, "limiting requests"),
             (QuotaExceeded("x", status=402), 400, "credits are used up"),

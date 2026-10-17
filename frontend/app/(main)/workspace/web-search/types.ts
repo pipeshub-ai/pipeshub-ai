@@ -198,7 +198,7 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
         label: 'Server URL',
         placeholder: 'http://crawl4ai:11235',
         required: true,
-        helperText: 'Version 0.8.8 or later.',
+        helperText: 'Version 0.9.4 or later.',
       },
       {
         key: 'apiKey',

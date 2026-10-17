@@ -501,7 +501,7 @@ _NOT_CONFIGURED_HINTS = {
     "api_key": "{name} needs an API key. Add it in the web search settings, then try again.",
     "base_url": "{name} needs the http(s) address of its server.",
     "searxng_json": "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml.",
-    "server_version": "{name} 0.8.8 or later is required; older versions are unsafe to expose.",
+    "server_version": "{name} 0.9.4 or later is required; older versions are unsafe to expose.",
 }
 
 

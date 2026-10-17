@@ -97,10 +97,12 @@ class Engines:
         def answer(request: httpx.Request) -> httpx.Response:
             if request.url.path == "/health":
                 return httpx.Response(200, json={"status": "ok", "version": version})
-            url = json.loads(request.content)["url"]
+            url = json.loads(request.content)["urls"][0]
             if url not in pages:
-                return httpx.Response(200, json={"success": False, "error": "navigation failed"})
-            return httpx.Response(200, json={"success": True, "markdown": pages[url]})
+                result = {"url": url, "success": False, "error_message": "navigation failed"}
+            else:
+                result = {"url": url, "success": True, "status_code": 200, "markdown": {"raw_markdown": pages[url]}}
+            return httpx.Response(200, json={"success": True, "results": [result]})
 
         self.answers[host] = answer
 

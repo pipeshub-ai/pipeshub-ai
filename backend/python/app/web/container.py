@@ -48,7 +48,8 @@ def search_providers(selection: dict[str, Any]) -> list[SearchProvider]:
     http = shared_http_client()
     type_id = selection.get("provider") or DEFAULT_PROVIDER
     # A provider that only reads pages (an agent may name one) leaves the search to the others.
-    searches = type_id not in (DEFAULT_PROVIDER, *FETCHERS)
+    page_only = type_id in FETCHERS and type_id not in PROVIDERS  # Crawl4AI; Firecrawl does both
+    searches = type_id != DEFAULT_PROVIDER and not page_only
     if searches and type_id not in PROVIDERS:
         return [UnknownSearchProvider(type_id)]
     chosen = [spec_for(type_id).build(selection.get("configuration") or {}, http)] if searches else []

@@ -6,14 +6,22 @@ from typing import Any
 from app.web.deadline import Deadline
 from app.web.endpoint import Endpoint
 from app.web.errors import NotConfigured, UpstreamError
-from app.web.fetch.http import check_public
-from app.web.fetch.remote import markdown_page
+from app.web.fetch.http import FetchedBody, check_page_status, check_public
+from app.web.fetch.remote import ensure_final_allowed, markdown_page
 from app.web.models import WebPage
 from app.web.ports import HopCheck
 
 NAME = "Crawl4AI"
-# Earlier servers let anyone who can reach them run code (CVE-2026-56259).
-MIN_VERSION = (0, 8, 8)
+# Earlier servers let anyone who can reach them run code or reach internal addresses
+# (CVE-2026-56259, CVE-2026-57573, CVE-2026-109238).
+MIN_VERSION = (0, 9, 4)
+# The main content only, as ``/md?f=fit`` gives; ``/crawl`` is used because it reports where the page landed.
+_FIT_MARKDOWN = {
+    "type": "CrawlerRunConfig",
+    "params": {"markdown_generator": {"type": "DefaultMarkdownGenerator", "params": {
+        "content_filter": {"type": "PruningContentFilter", "params": {}},
+    }}},
+}
 _VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)")
 
 
@@ -22,8 +30,15 @@ def _version(text: str) -> tuple[int, int, int] | None:
     return (int(match[1]), int(match[2]), int(match[3])) if match else None
 
 
+def _markdown(value: object) -> str:
+    """The page's markdown: the filtered main content when there is any, else all of it."""
+    if isinstance(value, dict):
+        return str(value.get("fit_markdown") or value.get("raw_markdown") or "")
+    return str(value or "")
+
+
 class Crawl4AIServerFetcher:
-    """Reads a page through a Crawl4AI server's ``/md`` endpoint, which renders JavaScript and
+    """Reads a page through a Crawl4AI server's ``/crawl`` endpoint, which renders JavaScript and
     keeps the main content."""
 
     id = "crawl4ai"
@@ -37,10 +52,19 @@ class Crawl4AIServerFetcher:
 
     async def fetch(self, url: str, deadline: Deadline, *, allow_hop: HopCheck | None = None) -> WebPage:
         await check_public(url)
-        data = await self._endpoint.call("POST", "/md", deadline, json={"url": url, "f": "fit"})
-        if data.get("success") is False:
-            raise UpstreamError(f"{NAME} could not read {url}: {data.get('error') or 'no reason given'}", source=self.id)
-        return markdown_page(url, str(data.get("markdown") or ""), "", self.id)
+        data = await self._endpoint.call("POST", "/crawl", deadline, json={"urls": [url], "crawler_config": _FIT_MARKDOWN})
+        results = data.get("results")
+        result = results[0] if isinstance(results, list) and results and isinstance(results[0], dict) else {}
+        if data.get("success") is False or not result.get("success"):
+            reason = result.get("error_message") or data.get("error") or "no reason given"
+            raise UpstreamError(f"{NAME} could not read {url}: {reason}", source=self.id)
+        final = str(result.get("redirected_url") or result.get("url") or url)
+        status = result.get("status_code")
+        if isinstance(status, int):
+            check_page_status(FetchedBody(final, status, None, b""))
+        await ensure_final_allowed(url, final, allow_hop)
+        metadata = result.get("metadata") if isinstance(result.get("metadata"), dict) else {}
+        return markdown_page(final, _markdown(result.get("markdown")), str(metadata.get("title") or ""), self.id)
 
     async def probe(self, deadline: Deadline) -> None:
         """Refuses a server too old to be safe, or one that answers without a token."""

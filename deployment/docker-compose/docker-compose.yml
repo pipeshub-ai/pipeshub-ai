@@ -627,7 +627,7 @@ services:
 
   crawl4ai:
     profiles: ["fetch-crawl4ai"]
-    # 0.8.8 or later: earlier servers let anyone who can reach them run code.
+    # 0.9.4 or later: earlier servers let anyone who can reach them run code or reach internal addresses.
     image: unclecode/crawl4ai:0.9.4
     restart: always
     environment:

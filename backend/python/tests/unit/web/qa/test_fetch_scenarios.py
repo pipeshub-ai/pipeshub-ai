@@ -50,6 +50,14 @@ class TestSafety:
         assert call.payload["error_type"] == "unsafe_url"
         assert lab.site.gets(f"http://{INTRANET_HOST}/admin") == 0
 
+    async def test_a_refused_redirect_is_not_handed_to_a_remote_reader(self, lab: WebLab) -> None:
+        lab.site.redirect("http://evil.test/go", "http://169.254.169.254/latest/")
+        lab.engines.crawl4ai("crawl4ai", {"http://evil.test/go": "metadata"})
+        agent = lab.agent(others=[{"provider": "crawl4ai", "configuration": {"baseUrl": "http://crawl4ai:11235"}}])
+        call = await agent.fetch("http://evil.test/go")
+        assert call.payload["error_type"] == "unsafe_url"
+        assert lab.engines.requests_to("crawl4ai") == []
+
     @pytest.mark.parametrize("url", ["http://169.254.169.254/latest/", "http://127.0.0.1:8080/", "file:///etc/passwd", "gopher://x/"])
     async def test_internal_and_non_web_addresses(self, lab: WebLab, url: str) -> None:
         call = await lab.agent().fetch(url)

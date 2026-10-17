@@ -49,6 +49,7 @@ _HTTP_REFUSED = frozenset({401, 403})
 _HTTP_TOO_MANY_REQUESTS = 429
 
 _SKIP_REASON_HEADER = "X-Fetch-Skip-Reason"
+_GUARD_STRATEGIES = frozenset({"address_guard", "redirect_guard", "size_guard"})
 _SKIP_ERRORS: dict[str, Callable[[str], WebError]] = {
     "unsafe_address": lambda url: UnsafeUrl(f"{url} points at a private or internal address"),
     "redirect_refused": lambda url: UnsafeUrl(f"Redirect to {url} is not allowed"),
@@ -127,7 +128,8 @@ async def fetch_public(
 
     if response is None:
         raise Unreachable(f"Could not connect to {redact_url(url)}")
-    skip_reason = _header(response.headers, _SKIP_REASON_HEADER)
+    # Only the fetcher's own refusals carry a trustworthy skip reason; a page's headers are its own.
+    skip_reason = _header(response.headers, _SKIP_REASON_HEADER) if response.strategy in _GUARD_STRATEGIES else None
     if skip_reason in _SKIP_ERRORS:
         raise _SKIP_ERRORS[skip_reason](redact_url(response.final_url or url))
     return FetchedBody(
