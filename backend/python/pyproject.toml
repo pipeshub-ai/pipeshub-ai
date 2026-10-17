@@ -249,7 +249,7 @@ dependencies = [
     "langchain-google-vertexai==2.1.2",
     "langchain-groq==1.1.0",
     "langchain-huggingface==1.1.0",
-    "langchain-mistralai==0.2.12",
+    "langchain-mistralai==1.1.6",
     "langchain-ollama==1.0.0",
     "langchain-openai==1.4.1",
     "openai==2.45.0",
