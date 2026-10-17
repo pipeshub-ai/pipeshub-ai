@@ -25,11 +25,15 @@ vi.mock('socket.io-client', () => ({
   },
 }));
 
+const apiBaseUrlMock = vi.fn(() => '');
+vi.mock('@/lib/utils/api-base-url', () => ({ getApiBaseUrl: () => apiBaseUrlMock() }));
+
 describe('notification-socket', () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
     lastSocket = null;
+    apiBaseUrlMock.mockReturnValue('');
     const mod = await import('../notification-socket');
     mod.disconnectNotificationSocket();
   });
@@ -63,5 +67,20 @@ describe('notification-socket', () => {
     expect(disconnectMock).toHaveBeenCalled();
     expect(ioMock).toHaveBeenCalledTimes(2);
     expect(lastSocket?.auth).toEqual({ token: 'Bearer token-b' });
+  });
+
+  it('connects to the configured API server, not the page origin (desktop app:// origin)', async () => {
+    apiBaseUrlMock.mockReturnValue('http://localhost:14000/');
+    const { connectNotificationSocket } = await import('../notification-socket');
+    connectNotificationSocket('token-a');
+
+    expect(ioMock).toHaveBeenCalledWith('http://localhost:14000', expect.anything());
+  });
+
+  it('falls back to the page origin when no API base URL is configured', async () => {
+    const { connectNotificationSocket } = await import('../notification-socket');
+    connectNotificationSocket('token-a');
+
+    expect(ioMock).toHaveBeenCalledWith(window.location.origin, expect.anything());
   });
 });
