@@ -445,10 +445,17 @@ async function main(): Promise<void> {
     isConfidential: true,
   });
 
+  // Built as the Enterprise edition does. The checks below are about what the
+  // exchange writes and revokes against a real database, which is the same in
+  // both editions; whether the capability is offered at all is a separate
+  // question with its own unit tests. Left at the community default, every
+  // check here would pass for the wrong reason, because the exchange would
+  // refuse before touching Mongo.
   const exchangeService = new TokenExchangeService(
     logger as never,
     tokenService,
     service,
+    true,
   );
 
   const serviceToken = await tokenService.generateTokens(
