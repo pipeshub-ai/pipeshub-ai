@@ -35,6 +35,7 @@ _ROUTERS = {
         "knowledge_hub_router",
     ),
     "connectors": ("app.connectors.api.router", "router"),
+    "artifacts": ("app.connectors.api.artifacts_router", "artifacts_router"),
     "parsing": ("app.api.routes.parsing", "router"),
     "extraction": ("app.api.routes.extraction", "router"),
 }

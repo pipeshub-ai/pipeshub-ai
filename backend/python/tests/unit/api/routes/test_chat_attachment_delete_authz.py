@@ -15,7 +15,10 @@ from app.config.constants.arangodb import Connectors
 ORG_A = "org-A"
 ORG_B = "org-B"
 RECORD_ID = "rec-1"
-ATTACHMENT = {"orgId": ORG_A, "origin": "UPLOAD", "connectorName": Connectors.ATTACHMENTS.value}
+ATTACHMENT = {
+    "orgId": ORG_A, "origin": "UPLOAD", "connectorName": Connectors.ATTACHMENTS.value,
+    "connectorId": f"attachments_{ORG_A}",
+}
 
 
 def _request(org_id: str = ORG_A, user_id: str = "user-a") -> MagicMock:
@@ -102,12 +105,15 @@ async def test_a_request_without_a_user_removes_nothing() -> None:
 
 @pytest.mark.asyncio
 async def test_another_orgs_attachment_is_refused() -> None:
-    provider = _provider({**ATTACHMENT, "orgId": ORG_B}, permission={"role": "OWNER"})
+    provider = _provider(
+        {**ATTACHMENT, "orgId": ORG_B, "connectorId": f"attachments_{ORG_B}"}, permission={"role": "OWNER"}
+    )
 
     with pytest.raises(HTTPException) as exc:
         await delete_chat_attachment(RECORD_ID, _request(), provider)
 
-    assert exc.value.status_code == 403
+    # The same answer as a missing id, so another org's record id is never confirmed.
+    assert exc.value.status_code == 404
     _assert_untouched(provider)
 
 
@@ -136,9 +142,11 @@ async def test_the_owner_removes_their_own_attachment() -> None:
 
 
 @pytest.mark.asyncio
-async def test_an_attachment_that_is_already_gone_is_a_success() -> None:
+async def test_an_attachment_that_is_already_gone_is_not_found() -> None:
     provider = _provider(None)
 
-    await delete_chat_attachment(RECORD_ID, _request(), provider)
+    with pytest.raises(HTTPException) as exc:
+        await delete_chat_attachment(RECORD_ID, _request(), provider)
 
+    assert exc.value.status_code == 404
     _assert_untouched(provider)

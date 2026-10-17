@@ -63,4 +63,11 @@ export const ArtifactsApi = {
   async unshare(artifactId: string, userIds: string[]): Promise<void> {
     await apiClient.post(`${BASE_URL}/${artifactId}/unshare`, { userIds }, { suppressErrorToast: true });
   },
+
+  async delete(artifactId: string): Promise<void> {
+    // 404 means it is already gone, which the caller treats as success.
+    await apiClient.delete(`${BASE_URL}/${encodeURIComponent(artifactId)}`, {
+      suppressErrorToast: (error) => error.statusCode === 404,
+    });
+  },
 };

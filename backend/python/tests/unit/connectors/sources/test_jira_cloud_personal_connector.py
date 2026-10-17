@@ -1,15 +1,13 @@
 """Unit tests for the Jira Cloud Personal connector and the
 ``BaseConnector.ensure_connector_group_permission`` helper exercised through it.
 
-The personal connector subclasses the workspace ``JiraConnector`` (Jira Cloud)
-and routes record-group access through a single pseudo ``AppUserGroup``
-(``ConnectorGroup``) rather than direct USER grants. These tests pin down:
+The personal connector subclasses the workspace ``JiraConnector`` (Jira Cloud).
+Each project inherits from the app and carries no grant. These tests pin down:
 
   * the helper's idempotency, identity scheme, and error fallback,
   * that ``run_sync`` resets the cache and calls the helper before fetching,
-  * that ``_fetch_projects`` attaches the cached GROUP permission to every
-    project record group and skips the application-role / permission-scheme
-    calls the workspace flow makes.
+  * that ``_fetch_projects`` writes an inherit edge and no grant, and skips
+    the application-role / permission-scheme calls the workspace flow makes.
 
 We avoid the workspace path entirely (``_sync_all_project_issues``,
 ``_fetch_users``, ``_sync_user_groups``, etc.) — those flows are owned by the
@@ -210,18 +208,12 @@ class TestFetchProjectsEmitsGroupPermission:
 
         assert returned_raw == raw_projects
         assert len(record_groups) == 2
+        assert record_groups[0][1] == []
+        assert record_groups[1][1] == []
+        assert record_groups[0][0].inherit_permissions is True
+        assert record_groups[1][0].inherit_permissions is True
 
-        # All projects share the same cached GROUP permission instance — that
-        # one upsert is the entire ACL surface for this connector.
-        perm_a = record_groups[0][1][0]
-        perm_b = record_groups[1][1][0]
-        assert perm_a.entity_type == EntityType.GROUP
-        assert perm_a.external_id == "internal-cid-fp"
-        assert perm_b.external_id == "internal-cid-fp"
-
-        # Idempotency check: ``_fetch_projects`` lazily calls the helper if
-        # ``run_sync`` didn't, so a single project list still produces a
-        # single user-group upsert (not one per project).
+        # The helper still links the creator to the app, once for the list.
         conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
 
         rg_alpha, _ = record_groups[0]
@@ -246,9 +238,8 @@ class TestFetchProjectsEmitsGroupPermission:
         record_groups, _ = await conn._fetch_projects()
 
         assert len(record_groups) == 1
-        # Without a resolvable creator we emit the project group with no ACLs
-        # rather than fabricating an unowned grant.
         assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_uses_cached_group_permission_when_already_ensured(self) -> None:
@@ -269,8 +260,8 @@ class TestFetchProjectsEmitsGroupPermission:
 
         record_groups, _ = await conn._fetch_projects()
 
-        assert record_groups[0][1] == [cached]
-        # No re-upsert when permission already cached upstream.
+        assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
         conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
 
     async def test_forwards_project_key_filter_to_listing_helper(self) -> None:
@@ -316,10 +307,9 @@ class TestPersonalRunSyncOrchestration:
         ):
             await conn.run_sync()
 
-        # Helper invoked exactly once and produces a fresh, non-stale permission.
-        conn.data_entities_processor.on_new_user_groups.assert_awaited_once()
-        assert conn._connector_group_permission is not None
-        assert conn._connector_group_permission.external_id != "stale"
+        # The creator is linked to the app. No ConnectorGroup is written.
+        conn.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        assert conn._connector_group_permission is None
 
         # Downstream steps still run.
         conn._fetch_projects.assert_awaited_once()
@@ -610,7 +600,7 @@ class TestFetchProjectsDescriptionParsing:
 
         assert record_groups[0][0].description is None
 
-    async def test_logs_debug_when_project_permissions_present(self) -> None:
+    async def test_project_inherits_and_carries_no_grant(self) -> None:
         conn = _make_connector()
         conn.creator_email = "owner@example.com"
         conn.data_source = MagicMock()
@@ -623,11 +613,10 @@ class TestFetchProjectsDescriptionParsing:
             return_value=[{"id": "1", "key": "X", "name": "X"}],
         )
 
-        with patch.object(conn.logger, "debug") as mock_debug:
-            await conn._fetch_projects()
+        record_groups, _ = await conn._fetch_projects()
 
-        mock_debug.assert_called_once()
-        assert "ConnectorGroup" in mock_debug.call_args[0][0]
+        assert record_groups[0][1] == []
+        assert record_groups[0][0].inherit_permissions is True
 
 
 # -----------------------------------------------------------------------------

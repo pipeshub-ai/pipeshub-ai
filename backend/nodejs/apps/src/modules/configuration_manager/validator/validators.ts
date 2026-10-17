@@ -9,6 +9,7 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../../storage/utils/s3-credentials.util';
+import { canSearch } from '../types/web-search.types';
 
 export const baseStorageSchema = z.object({
   storageType: z.enum([
@@ -633,9 +634,10 @@ export const aiModelsConfigSchema = z.object({
       imageGeneration: z.array(modelConfigurationSchema).optional(),
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
+      decision: z.array(modelConfigurationSchema).optional(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
     })
     .refine(
       (data) => {
@@ -678,12 +680,52 @@ export const webSearchProviderType = z.enum([
   'serper',
   'tavily',
   'exa',
+  'brave',
+  'searxng',
+  'firecrawl',
+  'crawl4ai',
 ]);
+
+const notADefaultPageReader = (body: {
+  provider: string;
+  isDefault?: boolean;
+}): boolean => !(body.isDefault && !canSearch(body.provider));
+const PAGE_READER_DEFAULT_MESSAGE = {
+  message:
+    'This provider only reads pages, so it cannot be the default web search provider',
+  path: ['isDefault'],
+};
+
+const isServerAddress = (value: unknown): boolean => {
+  if (typeof value !== 'string' || value.length > 2048) {
+    return false;
+  }
+  try {
+    const url = new URL(value);
+    return (
+      (url.protocol === 'http:' || url.protocol === 'https:') &&
+      !url.username &&
+      !url.password
+    );
+  } catch {
+    return false;
+  }
+};
 
 export const webSearchConfigurationSchema = z
   .record(z.any())
+  .refine(
+    (configuration) =>
+      configuration.baseUrl === undefined ||
+      isServerAddress(configuration.baseUrl),
+    {
+      message:
+        'baseUrl must be an http(s) address of at most 2048 characters, without a user name or password',
+      path: ['baseUrl'],
+    },
+  )
   .describe(
-    'Provider-specific configuration (e.g., apiKey, cx, endpoint, engine)',
+    'Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)',
   );
 
 export const webSearchProviderConfigSchema = z.object({
@@ -696,28 +738,32 @@ export const webSearchProviderConfigSchema = z.object({
 });
 
 export const addWebSearchProviderSchema = z.object({
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const updateWebSearchProviderSchema = z.object({
   params: z.object({
     providerKey: z.string().min(1, { message: 'Provider key is required' }),
   }),
-  body: z.object({
-    provider: webSearchProviderType,
-    configuration: webSearchConfigurationSchema,
-    isDefault: z
-      .boolean()
-      .default(false)
-      .describe('Whether this should be the default provider'),
-  }),
+  body: z
+    .object({
+      provider: webSearchProviderType,
+      configuration: webSearchConfigurationSchema,
+      isDefault: z
+        .boolean()
+        .default(false)
+        .describe('Whether this should be the default provider'),
+    })
+    .refine(notADefaultPageReader, PAGE_READER_DEFAULT_MESSAGE),
 });
 
 export const deleteWebSearchProviderSchema = z.object({

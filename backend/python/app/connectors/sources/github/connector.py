@@ -88,14 +88,8 @@ class GitHubPersonalProjectsSync(ProjectsSync):
     async def _sync_repo_members(
         self, owner: str, repo: str, repo_obj: GhObject | None = None,
     ) -> list[Permission]:
-        """Route all repo access through the ConnectorGroup — no collaborator/team fetch.
-
-        ``repo_obj`` (used by the team connector to bind individual-repo
-        collaborators) is deliberately ignored: personal access is the
-        ConnectorGroup, never GitHub's ACL.
-        """
-        permission = self.c.creator_user_permission()
-        return [permission] if permission is not None else []
+        """A personal repo inherits the app. No collaborator or ConnectorGroup grant."""
+        return []
 
     def _visibility_permissions(self, repo: GhObject) -> list[Permission]:
         """No visibility-derived grants on a personal connector.
@@ -180,7 +174,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
                 redirect_uri=AUTH_REDIRECT_URI,
-                scopes=OAuthScopeConfig(personal_sync=["user", "repo"], team_sync=[], agent=[]),
+                scopes=OAuthScopeConfig(personal_sync=["read:user", "repo"], team_sync=[], agent=[]),
                 fields=[
                     AuthField(
                         name="clientId",
@@ -310,7 +304,7 @@ class GithubConnector(GitHubTeamsConnector):
                     self.connector_id,
                 )
             else:
-                await self.ensure_connector_group_permission()
+                await self.ensure_creator_user_app_relation()
 
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()

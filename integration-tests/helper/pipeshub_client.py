@@ -430,6 +430,36 @@ class PipeshubClient:
             )
         return data.get("connector") or {}
 
+    def get_filter_options(
+        self,
+        connector_id: str,
+        filter_key: str,
+        *,
+        limit: int = 20,
+        cursor: Optional[str] = None,
+        search: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """One page of a dynamic filter's options (``options``, ``hasMore``, ``cursor``).
+
+        The same call the filter picker in the UI makes, e.g. ``filter_key="drive_ids"``
+        for Drive Workspace's Shared Drive list.
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if cursor:
+            params["cursor"] = cursor
+        if search:
+            params["search"] = search
+        data = self._request_json(
+            "GET",
+            f"/api/v1/connectors/{connector_id}/filters/{filter_key}/options",
+            params=params,
+        )
+        if not data.get("success"):
+            raise PipeshubClientError(
+                f"Filter options {filter_key!r} for {connector_id} returned success=false: {data}"
+            )
+        return data
+
     def toggle_sync(self, connector_id: str, enable: bool = True) -> Dict[str, Any]:
         """
         Toggle sync on or off for the connector.

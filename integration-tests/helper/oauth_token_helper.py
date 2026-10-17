@@ -308,6 +308,23 @@ def exchange_refresh_token(
     return access_token, new_refresh_token
 
 
+async def inject_connector_credentials(
+    connector_id: str,
+    access_token: str,
+    refresh_token: str,
+) -> None:
+    """Store an OAuth token pair for a connector exactly as the auth flow would.
+
+    For tests that need credentials the provider will reject (a revoked or
+    garbage refresh token) without touching the real token in
+    ``.env.refresh_tokens``. Requires ``SECRET_KEY`` and the KV store env vars.
+    """
+    secret_key = os.getenv("SECRET_KEY")
+    if not secret_key:
+        raise ValueError("SECRET_KEY is not set.")
+    await _write_credentials_to_kv(connector_id, access_token, refresh_token, _derive_key(secret_key))
+
+
 async def authenticate_connector_with_refresh_token(
     connector_id: str,
     refresh_token_env_var: str,

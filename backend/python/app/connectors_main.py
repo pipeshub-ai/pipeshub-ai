@@ -35,7 +35,7 @@ from app.config.constants.service import config_node_constants
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.base.token_service.startup_service import startup_service
-from app.connectors.core.constants import ConnectorStateKeys
+from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_dispatcher import (
     SyncSpec,
@@ -262,6 +262,12 @@ async def reset_stale_sync_state(graph_provider, logger: logging.Logger) -> None
                 "status": AppStatus.IDLE.value,
                 "isLocked": False,
                 "updatedAtTimestamp": now,
+                # The run this process was doing when it died never finished.
+                ConnectorStateKeys.LAST_SYNC_FINISHED_AT: now,
+                ConnectorStateKeys.LAST_SYNC_OUTCOME: SyncRunOutcome.FAILED.value,
+                # The summary there is the run before it; left next to this
+                # outcome, the two read as one run.
+                ConnectorStateKeys.LAST_SYNC_SUMMARY: None,
                 **(
                     {
                         ConnectorStateKeys.PENDING_FULL_SYNC: True,
@@ -755,12 +761,9 @@ async def refresh_connector_metrics(graph_provider, logger, interval_s: int = 60
     """Periodically refresh the connector_active gauge; best-effort, never fatal."""
     while True:
         try:
-            docs = await graph_provider.get_all_documents(CollectionNames.APPS.value)
-            counts: dict = {}
-            for doc in docs or []:
-                if doc.get("isActive"):
-                    connector_type = doc.get("type") or "unknown"
-                    counts[connector_type] = counts.get(connector_type, 0) + 1
+            # Counted in the database: a tenant can have thousands of collection
+            # Apps, and reading every App here stalled the event loop for seconds.
+            counts = await graph_provider.count_active_apps_by_type()
             set_connector_active(counts)
         except asyncio.CancelledError:
             raise
@@ -875,6 +878,22 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
     except Exception as e:
         logger.error(f"❌ Connector OAuth app repair failed: {e}", exc_info=True)
+
+    # Before any connector reads its settings, so none crawls with a value the form doesn't show.
+    try:
+        from app.migrations.web_browser_identity_migration import (
+            run_web_browser_identity_backfill,
+        )
+
+        backfill_result = await run_web_browser_identity_backfill(app_container, graph_provider, logger)
+        if not backfill_result.get("skipped"):
+            logger.info(
+                "Web connector identity backfill: %s connector(s) updated, %s failure(s)",
+                backfill_result.get("connectors_updated", 0),
+                backfill_result.get("failures", 0),
+            )
+    except Exception as e:
+        logger.error(f"❌ Web connector identity backfill failed: {e}", exc_info=True)
 
     logger.debug("🚀 Starting application")
 

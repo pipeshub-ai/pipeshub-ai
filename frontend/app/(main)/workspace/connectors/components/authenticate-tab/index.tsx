@@ -21,7 +21,7 @@ import { WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/com
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
 import { ConnectorsApi } from '../../api';
-import { FormField } from '@/app/(main)/workspace/components/form-field';
+import { FormField, useFormFieldControl } from '@/app/(main)/workspace/components/form-field';
 import {
   nestedConfigFromOAuthRegistrationDoc,
   readAuthValueFromFlatRecord,
@@ -509,7 +509,7 @@ export function AuthenticateTab() {
             required
             error={instanceNameError ?? undefined}
           >
-            <input
+            <FormFieldInput
               type="text"
               data-ph-connector-instance-name
               value={instanceName}
@@ -617,4 +617,9 @@ export function AuthenticateTab() {
       )}
     </Flex>
   );
+}
+
+/** An input that takes its id from the enclosing FormField, so the label names it. */
+function FormFieldInput(props: React.InputHTMLAttributes<HTMLInputElement>) {
+  return <input {...useFormFieldControl()} {...props} />;
 }

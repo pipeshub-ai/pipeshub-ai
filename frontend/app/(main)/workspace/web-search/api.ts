@@ -51,6 +51,15 @@ export const WebSearchApi = {
     return typeof apiKey === 'string' ? apiKey : null;
   },
 
+  /** The stored providers; throws when they can't be read (unlike `getConfig`). */
+  async getProviders(): Promise<ConfiguredWebSearchProvider[]> {
+    const { data } = await apiClient.get(BASE_URL);
+    if (data?.status !== 'success' || !Array.isArray(data.providers)) {
+      throw new Error('Could not read the web search settings');
+    }
+    return data.providers;
+  },
+
   async getConfig(): Promise<WebSearchConfigData> {
     try {
       const { data } = await apiClient.get(BASE_URL);

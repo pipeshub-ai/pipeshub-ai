@@ -1,6 +1,14 @@
 import { create } from 'zustand';
 import { debugLog } from './debug-logger';
 import {
+  forgetUnreadConversation,
+  loadUnreadConversationIds,
+  rememberUnreadConversation,
+} from '@/lib/storage/chat-unread';
+import { getCurrentUserId } from './utils/current-user-id';
+import {
+  ChatKnowledgeFilters,
+  CollectionMeta,
   Conversation,
   ChatMode,
   QueryMode,
@@ -64,12 +72,44 @@ export interface ScopedToolGroupRow {
   iconPath?: string;
 }
 
+/**
+ * A connector row of a saved agent's or a project's sources. `nodeType` is set
+ * on a record group, folder or record the source is limited to.
+ */
+export interface ScopedConnectorRow {
+  id: string;
+  label: string;
+  connectorKind: string;
+  nodeType?: string;
+  /** For a node a source is limited to: the connector it belongs to. */
+  source?: ScopedRowSource;
+}
+
+/** The connector or collection a limited row belongs to; the panel lists such rows under it. */
+export interface ScopedRowSource {
+  id: string;
+  /** Empty when only the connector type is known (a project's scope). */
+  label: string;
+  kind: string;
+}
+
+/** A collection row of a saved agent's or a project's sources; see `ScopedConnectorRow`. */
+export interface ScopedCollectionRow {
+  id: string;
+  name: string;
+  sourceType?: string;
+  nodeType?: string;
+  source?: ScopedRowSource;
+}
+
 /** Composer allow-list derived from a project's settings (see `useProjectScopeHydration`). */
 export interface ProjectChatScope {
   projectId: string;
-  connectors: Array<{ id: string; label: string; connectorKind: string }>;
-  knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
-  knowledgeDefaults: { apps: string[]; kb: string[] };
+  connectors: ScopedConnectorRow[];
+  knowledgeCollectionRows: ScopedCollectionRow[];
+  knowledgeDefaults: ChatKnowledgeFilters;
+  /** The project's hidden Collection for uploads; the server always searches it. */
+  linkedKnowledgeBaseId?: string | null;
   toolGroups: ScopedToolGroupRow[];
   mcpGroups: ScopedToolGroupRow[];
   /** Every selectable tool key (`instanceId:fullName`), across toolsets and MCP. */
@@ -270,9 +310,27 @@ function createDefaultSlot(convId: string | null): ChatSlot {
   };
 }
 
+/** Whose saved unread chats are in memory; null until the first hydrate. */
+let unreadOwnerId: string | null = null;
+
+function withoutId(ids: Set<string>, id: string): Set<string> {
+  if (!ids.has(id)) return ids;
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
+}
+
 // ── Helper: generate a stable slot ID ───────────────────────────────
 
 let slotCounter = 0;
+function sameKnowledgeFilters(a: ChatKnowledgeFilters, b: ChatKnowledgeFilters): boolean {
+  return (['apps', 'kb', 'recordGroups', 'records', 'recordsExact'] as const).every((key) => {
+    const left = new Set(a[key] ?? []);
+    const right = b[key] ?? [];
+    return left.size === new Set(right).size && right.every((id) => left.has(id));
+  });
+}
+
 function generateSlotId(): string {
   slotCounter += 1;
   return `slot-${Date.now()}-${slotCounter}`;
@@ -298,6 +356,11 @@ interface ChatState {
   pendingConversations: Record<string, PendingConversation>;
   /** IDs of conversations that just resolved from pending — triggers typing animation */
   newlyResolvedIds: Set<string>;
+  /**
+   * Conversations whose answer finished while the user was looking at something
+   * else. Mirrored to localStorage per user so a reload keeps the dot.
+   */
+  unreadConversationIds: Set<string>;
   isMoreChatsPanelOpen: boolean;
   moreChatsSectionType: 'shared' | 'your' | null;
   /** Agents browser panel (same shell as More Chats) */
@@ -332,11 +395,11 @@ interface ChatState {
   /** Every tool fullName from the loaded agent — drives the Actions tab and “select all”. */
   agentToolCatalogFullNames: string[];
   /** Connector rows scoped to the agent (for Connectors tab labels + icons). */
-  agentChatConnectors: Array<{ id: string; label: string; connectorKind: string }>;
+  agentChatConnectors: ScopedConnectorRow[];
   /** Distinct KB / collection ids the agent can use (Collections tab). */
   agentChatKbIds: string[];
   /** Agent KB rows with labels from the knowledge graph (record groups). */
-  agentKnowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
+  agentKnowledgeCollectionRows: ScopedCollectionRow[];
   /** Toolsets for grouped Actions UI (`label` prefers per-instance `instanceName`, else `displayName` / `name`). */
   agentChatToolGroups: Array<{
     label: string;
@@ -357,13 +420,13 @@ interface ChatState {
     iconPath?: string;
   }>;
   /** Default knowledge scope derived from the agent graph (used to reset UI). */
-  agentKnowledgeDefaults: { apps: string[]; kb: string[] };
+  agentKnowledgeDefaults: ChatKnowledgeFilters;
   /**
    * Optional override of connector / collection ids for agent streams. `null` means “use
    * `agentKnowledgeDefaults`” (same as the panel when nothing is narrowed); runtime still
    * sends explicit `filters` built from defaults or this scope.
    */
-  agentKnowledgeScope: { apps: string[]; kb: string[] } | null;
+  agentKnowledgeScope: ChatKnowledgeFilters | null;
   /** Resolved agent name for the top chat header when `agentId` is in the URL */
   agentContextDisplayName: string | null;
   /** Whether the current scoped agent was configured with a web search provider. */
@@ -383,7 +446,9 @@ interface ChatState {
    */
   projectScope: ProjectChatScope | null;
   /** Per-turn narrowing of `projectScope.knowledgeDefaults`; `null` = whole project scope. */
-  projectKnowledgeScope: { apps: string[]; kb: string[] } | null;
+  projectKnowledgeScope: ChatKnowledgeFilters | null;
+  /** Project whose reopened conversation set `projectKnowledgeScope` before that project's scope loaded. */
+  projectKnowledgeScopeRestoredFor: string | null;
   /** Per-turn narrowing of `projectScope.toolCatalogFullNames`; `null` = all project tools. */
   projectStreamTools: string[] | null;
 
@@ -439,7 +504,7 @@ interface ChatState {
 
   // ── Cache ──
   collectionNamesCache: Record<string, string>;
-  collectionMetaCache: Record<string, { name: string; nodeType: string; connector: string }>;
+  collectionMetaCache: Record<string, CollectionMeta>;
 
   // ── Search state ──
   searchResults: SearchResultItem[];
@@ -513,6 +578,10 @@ interface ChatState {
     modelInfo: ModelInfo | undefined
   ) => void;
   removeConversation: (conversationId: string) => void;
+  markConversationUnread: (conversationId: string) => void;
+  markConversationRead: (conversationId: string) => void;
+  /** Bring back this user's unread chats from before a reload. */
+  hydrateUnreadConversations: (userId: string) => void;
   renameConversation: (conversationId: string, newTitle: string) => void;
   /** Bump the version counter to trigger a sidebar refetch */
   bumpConversationsVersion: () => void;
@@ -565,21 +634,23 @@ interface ChatState {
       instanceId?: string;
       iconPath?: string;
     }>;
-    connectors: Array<{ id: string; label: string; connectorKind: string }>;
+    connectors: ScopedConnectorRow[];
     kbIds: string[];
-    knowledgeCollectionRows: Array<{ id: string; name: string; sourceType?: string }>;
-    knowledgeDefaults: { apps: string[]; kb: string[] };
+    knowledgeCollectionRows: ScopedCollectionRow[];
+    knowledgeDefaults: ChatKnowledgeFilters;
     deprecatedToolNames: string[];
     /** Whether the agent was built with a web search provider. */
     hasWebSearch?: boolean;
   } | null) => void;
-  setAgentKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  setAgentKnowledgeScope: (scope: ChatKnowledgeFilters | null) => void;
   /**
    * Replace the project allow-list (or clear with null). Resets per-turn narrowing and seeds
    * the collection name/meta caches so pills and `appliedFilters` resolve labels.
    */
   setProjectScope: (scope: ProjectChatScope | null) => void;
-  setProjectKnowledgeScope: (scope: { apps: string[]; kb: string[] } | null) => void;
+  setProjectKnowledgeScope: (scope: ChatKnowledgeFilters | null) => void;
+  /** A reopened project conversation's last scope; survives that project's first `setProjectScope`. */
+  restoreProjectKnowledgeScope: (projectId: string, scope: ChatKnowledgeFilters) => void;
   setProjectStreamTools: (tools: string[] | null) => void;
   setAgentContextDisplayName: (name: string | null) => void;
   setAgentContextCreatedBy: (mongoUserId: string | null) => void;
@@ -675,7 +746,7 @@ interface ChatState {
 
   // ── Cache actions ──
   setCollectionNamesCache: (cache: Record<string, string>) => void;
-  setCollectionMetaCache: (cache: Record<string, { name: string; nodeType: string; connector: string }>) => void;
+  setCollectionMetaCache: (cache: Record<string, CollectionMeta>) => void;
 
   // ── Global reset ──
   reset: () => void;
@@ -696,6 +767,7 @@ const initialState = {
   sharedPagination: null as ConversationsListResponse['pagination'] | null,
   pendingConversations: {} as Record<string, PendingConversation>,
   newlyResolvedIds: new Set<string>(),
+  unreadConversationIds: new Set<string>(),
   isMoreChatsPanelOpen: false,
   moreChatsSectionType: null as 'shared' | 'your' | null,
   isAgentsSidebarOpen: false,
@@ -717,9 +789,9 @@ const initialState = {
   agentMoreChatsPagination: null as { page: number; hasNextPage: boolean; isLoadingMore: boolean } | null,
   agentStreamTools: null as string[] | null,
   agentToolCatalogFullNames: [] as string[],
-  agentChatConnectors: [] as Array<{ id: string; label: string; connectorKind: string }>,
+  agentChatConnectors: [] as ScopedConnectorRow[],
   agentChatKbIds: [] as string[],
-  agentKnowledgeCollectionRows: [] as Array<{ id: string; name: string; sourceType?: string }>,
+  agentKnowledgeCollectionRows: [] as ScopedCollectionRow[],
   agentChatToolGroups: [] as Array<{
     label: string;
     fullNames: string[];
@@ -736,8 +808,8 @@ const initialState = {
     instanceId?: string;
     iconPath?: string;
   }>,
-  agentKnowledgeDefaults: { apps: [] as string[], kb: [] as string[] },
-  agentKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
+  agentKnowledgeDefaults: { apps: [], kb: [] } as ChatKnowledgeFilters,
+  agentKnowledgeScope: null as ChatKnowledgeFilters | null,
   agentContextDisplayName: null as string | null,
   agentHasWebSearch: false,
   agentContextCreatedBy: null as string | null,
@@ -745,7 +817,8 @@ const initialState = {
   agentDeprecatedToolNames: [] as string[],
 
   projectScope: null as ProjectChatScope | null,
-  projectKnowledgeScope: null as { apps: string[]; kb: string[] } | null,
+  projectKnowledgeScope: null as ChatKnowledgeFilters | null,
+  projectKnowledgeScopeRestoredFor: null as string | null,
   projectStreamTools: null as string[] | null,
 
   universalAgentStreamTools: null as string[] | null,
@@ -796,7 +869,7 @@ const initialState = {
   previewMode: 'sidebar' as 'sidebar' | 'fullscreen',
   expansionViewMode: 'inline' as 'inline' | 'overlay',
   collectionNamesCache: {} as Record<string, string>,
-  collectionMetaCache: {} as Record<string, { name: string; nodeType: string; connector: string }>,
+  collectionMetaCache: {} as Record<string, CollectionMeta>,
 
   searchResults: [] as SearchResultItem[],
   searchQuery: '' as string,
@@ -871,6 +944,8 @@ export const useChatStore = create<ChatState>((set, get) => ({
   },
 
   setActiveSlot: (slotId) => {
+    const openedConvId = get().slots[slotId]?.convId;
+    const wasUnread = Boolean(openedConvId && get().unreadConversationIds.has(openedConvId));
     set((state) => {
       const existing = state.slots[slotId];
       if (!existing) return state;
@@ -880,8 +955,13 @@ export const useChatStore = create<ChatState>((set, get) => ({
           ...state.slots,
           [slotId]: { ...existing, lastAccessedAt: Date.now() },
         },
+        // Opening a chat is what reads it, whichever sidebar row the user used.
+        ...(existing.convId && state.unreadConversationIds.has(existing.convId)
+          ? { unreadConversationIds: withoutId(state.unreadConversationIds, existing.convId) }
+          : {}),
       };
     });
+    if (openedConvId && wasUnread) forgetUnreadConversation(getCurrentUserId(), openedConvId);
   },
 
   evictSlot: (slotId) => {
@@ -1134,12 +1214,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
               return { ...state.collectionNamesCache, ...patch };
             })(),
             collectionMetaCache: (() => {
-              const patch: Record<string, { name: string; nodeType: string; connector: string }> = {};
+              const patch: Record<string, CollectionMeta> = {};
               for (const c of payload.connectors) {
-                patch[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+                patch[c.id] = { name: c.label, nodeType: c.nodeType ?? 'app', connector: c.connectorKind };
               }
               for (const r of payload.knowledgeCollectionRows) {
-                patch[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+                patch[r.id] = { name: r.name, nodeType: r.nodeType ?? 'recordGroup', connector: r.sourceType ?? 'KB' };
               }
               return { ...state.collectionMetaCache, ...patch };
             })(),
@@ -1164,24 +1244,45 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setProjectScope: (scope) =>
     set((state) => {
       if (!scope) {
-        return { projectScope: null, projectKnowledgeScope: null, projectStreamTools: null };
+        return {
+          projectScope: null,
+          projectKnowledgeScope: null,
+          projectKnowledgeScopeRestoredFor: null,
+          projectStreamTools: null,
+        };
       }
       const names: Record<string, string> = {};
-      const meta: Record<string, { name: string; nodeType: string; connector: string }> = {};
+      const meta: Record<string, CollectionMeta> = {};
       for (const c of scope.connectors) {
         names[c.id] = c.label;
-        meta[c.id] = { name: c.label, nodeType: 'app', connector: c.connectorKind };
+        meta[c.id] = { name: c.label, nodeType: c.nodeType ?? 'app', connector: c.connectorKind };
       }
       for (const r of scope.knowledgeCollectionRows) {
         names[r.id] = r.name;
-        meta[r.id] = { name: r.name, nodeType: 'recordGroup', connector: r.sourceType ?? 'KB' };
+        meta[r.id] = { name: r.name, nodeType: r.nodeType ?? 'recordGroup', connector: r.sourceType ?? 'KB' };
       }
-      // Same project re-hydrated (settings saved, catalog arrived): keep the user's per-turn
-      // narrowing, minus anything no longer in the allow-list. A different project starts clean.
+      // Same project re-hydrated (settings saved, catalog arrived, a new chat resolved): keep the
+      // user's per-turn narrowing, minus anything no longer in the allow-list. A different project
+      // starts clean, unless one of its conversations was just reopened.
       const sameProject = state.projectScope?.projectId === scope.projectId;
-      let projectKnowledgeScope: { apps: string[]; kb: string[] } | null = null;
+      const restored = state.projectKnowledgeScopeRestoredFor === scope.projectId;
+      let projectKnowledgeScope: ChatKnowledgeFilters | null = null;
       let projectStreamTools: string[] | null = null;
-      if (sameProject && state.projectKnowledgeScope) {
+      const narrowedBelowApps =
+        Boolean(state.projectKnowledgeScope?.recordGroups?.length) ||
+        Boolean(state.projectKnowledgeScope?.records?.length);
+      const knowledgeUnchanged =
+        sameProject && sameKnowledgeFilters(state.projectScope!.knowledgeDefaults, scope.knowledgeDefaults);
+      if (restored && state.projectKnowledgeScope) {
+        // The server bounds the nodes to the project; a scope equal to the project's own is no narrowing.
+        projectKnowledgeScope = sameKnowledgeFilters(state.projectKnowledgeScope, scope.knowledgeDefaults)
+          ? null
+          : state.projectKnowledgeScope;
+      } else if (sameProject && state.projectKnowledgeScope && narrowedBelowApps) {
+        // Folders and records may sit under a source the project dropped; the server
+        // bounds them otherwise, so only a changed project scope starts again.
+        projectKnowledgeScope = knowledgeUnchanged ? state.projectKnowledgeScope : null;
+      } else if (sameProject && state.projectKnowledgeScope) {
         const apps = new Set(scope.knowledgeDefaults.apps);
         const kb = new Set(scope.knowledgeDefaults.kb);
         projectKnowledgeScope = {
@@ -1196,6 +1297,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
       return {
         projectScope: scope,
         projectKnowledgeScope,
+        projectKnowledgeScopeRestoredFor: null,
         projectStreamTools,
         collectionNamesCache: { ...state.collectionNamesCache, ...names },
         collectionMetaCache: { ...state.collectionMetaCache, ...meta },
@@ -1203,6 +1305,12 @@ export const useChatStore = create<ChatState>((set, get) => ({
     }),
 
   setProjectKnowledgeScope: (scope) => set({ projectKnowledgeScope: scope }),
+
+  restoreProjectKnowledgeScope: (projectId, scope) =>
+    set((state) => ({
+      projectKnowledgeScope: scope,
+      projectKnowledgeScopeRestoredFor: state.projectScope?.projectId === projectId ? null : projectId,
+    })),
 
   setProjectStreamTools: (tools) => set({ projectStreamTools: tools }),
 
@@ -1302,12 +1410,49 @@ export const useChatStore = create<ChatState>((set, get) => ({
     });
   },
 
-  removeConversation: (conversationId) =>
+  removeConversation: (conversationId) => {
+    const wasUnread = get().unreadConversationIds.has(conversationId);
     set((state) => ({
       conversations: state.conversations.filter((c) => c.id !== conversationId),
       sharedConversations: state.sharedConversations.filter((c) => c.id !== conversationId),
       agentConversations: state.agentConversations.filter((c) => c.id !== conversationId),
-    })),
+      unreadConversationIds: withoutId(state.unreadConversationIds, conversationId),
+    }));
+    if (wasUnread) forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationUnread: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) {
+      set((state) => {
+        const next = new Set(state.unreadConversationIds);
+        next.add(conversationId);
+        return { unreadConversationIds: next };
+      });
+    }
+    // Written even when already unread, which refreshes how long it is kept.
+    rememberUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  markConversationRead: (conversationId) => {
+    if (!get().unreadConversationIds.has(conversationId)) return;
+    set((state) => ({ unreadConversationIds: withoutId(state.unreadConversationIds, conversationId) }));
+    forgetUnreadConversation(getCurrentUserId(), conversationId);
+  },
+
+  hydrateUnreadConversations: (userId) => {
+    const stored = loadUnreadConversationIds(userId);
+    // Chats flagged before this ran belong to the same person on a first hydrate;
+    // after a switch to someone else they must not carry over.
+    const keepCurrent = unreadOwnerId === null || unreadOwnerId === userId;
+    unreadOwnerId = userId;
+    set((state) => {
+      const next = new Set(stored);
+      if (keepCurrent) state.unreadConversationIds.forEach((id) => next.add(id));
+      const unchanged = next.size === state.unreadConversationIds.size
+        && [...next].every((id) => state.unreadConversationIds.has(id));
+      return unchanged ? state : { unreadConversationIds: next };
+    });
+  },
 
   renameConversation: (conversationId, newTitle) =>
     set((state) => ({
@@ -1570,10 +1715,17 @@ export const useChatStore = create<ChatState>((set, get) => ({
       collectionNamesCache: { ...state.collectionNamesCache, ...cache },
     })),
 
+  // Field by field: writers know different things about a node (its place, its file type),
+  // and one leaving a field out must not erase what another wrote.
   setCollectionMetaCache: (cache) =>
-    set((state) => ({
-      collectionMetaCache: { ...state.collectionMetaCache, ...cache },
-    })),
+    set((state) => {
+      const next = { ...state.collectionMetaCache };
+      for (const [id, meta] of Object.entries(cache)) {
+        const defined = Object.fromEntries(Object.entries(meta).filter(([, value]) => value !== undefined));
+        next[id] = { ...next[id], ...defined } as CollectionMeta;
+      }
+      return { collectionMetaCache: next };
+    }),
 
   // ── Reset ────────────────────────────────────────────────────────
 
@@ -1583,6 +1735,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     for (const slot of Object.values(slots)) {
       slot.abortController?.abort();
     }
+    unreadOwnerId = null;
     set(initialState);
   },
 }));

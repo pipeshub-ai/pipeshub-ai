@@ -25,7 +25,7 @@ PRODUCT_SCHEMA = {
     "permission": product_edges.permissions_schema,
     "belongsTo": product_edges.belongs_to_schema,
     "inheritPermissions": product_edges.inherit_permissions_schema,
-    "recordRelations": product_edges.record_relations_schema,
+    "nodeRelations": product_edges.node_relations_schema,
     "isOfType": product_edges.is_of_type_schema,
     "userAppRelation": product_edges.user_app_relation_schema,
     "entityRelations": product_edges.entity_relations_schema,

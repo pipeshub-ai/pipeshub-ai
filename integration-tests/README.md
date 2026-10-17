@@ -277,11 +277,11 @@ pytest -m "integration and not slow" -v             # exclude slow
 
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
-three shards (`CONN_SHARD_1` … `CONN_SHARD_3`), and a fourth `core` shard runs
-everything those three do not name, plus the browser tests. A fifth `demo` shard
+four shards (`CONN_SHARD_1` … `CONN_SHARD_4`), and a fifth `core` shard runs
+everything those four do not name, plus the browser tests. A sixth `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. A sixth
+workspace has data of its own; `core` leaves the `demo` marker out. A seventh
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
@@ -289,9 +289,10 @@ the nightly and on a full manual run, never on a pull request, and `core` leaves
 its marker out. The model-settings part (`-m ai_models`) also runs weekly
 against a local Ollama model in `integration-tests-ollama.yml`. Each shard
 brings up its own stack and runs both graph databases, so a shard's wall clock is
-roughly the sum of its two legs.
+roughly the sum of its two legs, and has to stay under the job's 300-minute timeout.
 
-Adding a connector means adding its marker to one of those shard lines. Connector
+Adding a connector means adding its marker to `CONN_SHARD_4`, the shard new
+connector suites go on (shards 1–3 are full). Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that

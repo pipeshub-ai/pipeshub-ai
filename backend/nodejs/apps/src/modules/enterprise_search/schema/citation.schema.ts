@@ -18,6 +18,8 @@ export interface ICitationMetadata {
   connector?: string;
   /** Connector instance the record came from; `connector` is only its kind. */
   connectorId?: string;
+  /** Name the connector instance had when the answer was written. */
+  connectorInstanceName?: string;
   recordType?: string;
   orgId: string;
   blockType?: string;
@@ -38,6 +40,8 @@ export interface ICitationMetadata {
   webUrl: string;
   previewRenderable: boolean;
   hideWeburl?: boolean;
+  /** ISO time the cited record was last updated at its source. */
+  updatedAt?: string;
 }
 
 export interface ICitation extends Document {
@@ -75,6 +79,7 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   departments: [{ type: String }],
   connector: { type: String },
   connectorId: { type: String },
+  connectorInstanceName: { type: String },
   recordType: { type: String },
   orgId: { type: String, required: true },
   blockType: { type: String },
@@ -94,6 +99,7 @@ const citationMetadataSchema = new Schema<ICitationMetadata>({
   webUrl: { type: String },
   previewRenderable: { type: Boolean, default: true },
   hideWeburl: { type: Boolean },
+  updatedAt: { type: String },
 });
 
 const citationSchema = new Schema<ICitation, ICitationModel>(

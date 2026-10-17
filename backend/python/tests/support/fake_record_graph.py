@@ -1,12 +1,7 @@
 """An in-memory graph holding only what the stranded-record sweep reads and writes.
 
-<<<<<<< HEAD
-Records by key, read one at a time or a page at a time by ``indexingStatus`` in
+Records by key, read one at a time or a page at a time by equality filters in
 key order, and updated field by field. Returns copies, as a real store does, so a caller that
-=======
-Records by key, read a page at a time by equality filters in key order, and
-updated field by field. Returns copies, as a real store does, so a caller that
->>>>>>> e09dbe43762fd7b16f388c871d7b6493f0eab56f
 mutates what it read does not change what is stored. A null removes the
 property, as Neo4j's ``SET +=`` does. Every connector is live.
 """

@@ -261,7 +261,8 @@
       "PRESENTATION": "Präsentation",
       "DATA_FILE": "Datendatei",
       "CODE": "Code",
-      "CODE_OUTPUT": "Codeausgabe"
+      "CODE_OUTPUT": "Codeausgabe",
+      "OTHER": "Sonstiges"
     },
     "tabs": {
       "all": "Alle Artefakte",
@@ -278,7 +279,20 @@
     },
     "emptyShared": "Noch nichts mit Ihnen geteilt",
     "emptySharedHint": "Artefakte, die Ihre Teammitglieder mit Ihnen teilen, erscheinen hier.",
-    "notAvailable": "Dieses Artefakt ist nicht mehr verfügbar"
+    "notAvailable": "Dieses Artefakt ist nicht mehr verfügbar",
+    "deleteTitle": "Artefakt löschen?",
+    "deleteConfirmMessage": "„{{name}}“ und alle Versionen werden endgültig gelöscht. Chats, die es anzeigen, markieren es als nicht mehr verfügbar.",
+    "deleteSuccess": "„{{name}}“ gelöscht",
+    "preview": "Vorschau",
+    "moreActionsFor": "Weitere Optionen für {{name}}",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut.",
+    "noMatches": "Keine Artefakte entsprechen Ihren Filtern",
+    "noMatchesHint": "Versuchen Sie eine andere Suche oder setzen Sie die Filter zurück, um alle Artefakte zu sehen.",
+    "clearFilters": "Filter zurücksetzen",
+    "gridView": "Rasteransicht",
+    "listView": "Listenansicht",
+    "closeSearch": "Suche schließen"
   },
   "notifications": {
     "title": "Benachrichtigungen",
@@ -375,7 +389,8 @@
     "required": "Dieses Feld ist erforderlich",
     "invalidEmail": "Ungültige E-Mail-Adresse",
     "invalidUrl": "Ungültige URL",
-    "name": "Name"
+    "name": "Name",
+    "optional": "(optional)"
   },
   "dialog": {
     "newFolder": "Neuer Sammlungsordner",
@@ -528,6 +543,8 @@
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "noCollectionsCreatePrompt": "Keine Sammlungen verfügbar. Bitte erstellen Sie eine neue.",
     "seeMoreConnectors": "Weitere Konnektoren anzeigen",
+    "connectMoreApps": "Weitere Apps verbinden",
+    "connectMoreAppsHint": "Mehr Quellen, bessere Antworten.",
     "suggestedInWorkspace": "Vorgeschlagen im Arbeitsbereich",
     "createSubFolder": "Unterordner erstellen",
     "more": "Mehr",
@@ -577,7 +594,12 @@
     "searchEmptyHint": "Keine passenden Ergebnisse gefunden. Versuchen Sie einen anderen Suchbegriff.",
     "adjustFiltersHint": "Wählen Sie eine andere Quelle oder passen Sie Ihre Filter an",
     "addFromCollectionsHint": "Sie können Unternehmensdateien oder -ordner über die Sammlungen hinzufügen",
-    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu"
+    "addFilesHint": "Fügen Sie Ihre Dateien oder Ordner hinzu",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
+    "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
+    "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut.",
+    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -598,11 +620,19 @@
     "record": "Datensatz"
   },
   "chat": {
+    "answerReady": {
+      "title": "Antwort fertig",
+      "open": "Chat öffnen",
+      "unread": "Neue Antwort"
+    },
+    "jumpToNewest": "Zur neuesten Nachricht springen",
     "recordActions": {
       "preview": "Vorschau",
       "open": "{{source}} öffnen",
       "openIn": "In {{source}} öffnen",
       "openInCollections": "In Sammlungen öffnen",
+      "syncedJustNow": "Gerade synchronisiert",
+      "syncedAgo": "Vor {{age}} synchronisiert",
       "relevance": "Relevanz: {{percent}} %"
     },
     "results": "Ergebnisse",
@@ -645,7 +675,11 @@
       "browseWorkspaceMcp": "MCP-Server durchsuchen",
       "browseWorkspaceMcpAria": "MCP-Server öffnen, um Verbindungen hinzuzufügen oder zu verwalten",
       "noActionMatches": "Keine Aktionen entsprechen Ihrer Suche.",
-      "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche."
+      "noMcpMatches": "Keine MCP-Server entsprechen Ihrer Suche.",
+      "notConnected": "Nicht verbunden",
+      "connect": "Verbinden",
+      "actionConnected": "{{name}} ist verbunden",
+      "limitedToCount": "· {{count}} ausgewählt"
     },
     "projectResources": {
       "noConnectors": "Für dieses Projekt sind keine Konnektoren aktiviert.",
@@ -673,6 +707,12 @@
     "searchCollections": "Konnektoren und Sammlungen suchen",
     "loadingCollections": "Sammlungen werden geladen…",
     "failedToLoadCollections": "Sammlungen konnten nicht geladen werden",
+    "treeEmpty": "Hier ist nichts",
+    "treeLoadFailed": "Diese Elemente konnten nicht geladen werden",
+    "treeRetry": "Erneut versuchen",
+    "treeIncludedWith": "In {{name}} enthalten",
+    "treeExpand": "Inhalt von {{name}} anzeigen",
+    "treeCollapse": "Inhalt von {{name}} ausblenden",
     "noCollectionsAvailable": "Keine Sammlungen verfügbar",
     "comingSoon": "Demnächst verfügbar",
     "answer": "Antwort",
@@ -706,6 +746,8 @@
     "copiedAsMarkdown": "Als Markdown kopiert",
     "copiedAsText": "Als Text kopiert",
     "citations": "Zitate",
+    "showMoreCitations_one": "{{count}} weiteres Zitat anzeigen",
+    "showMoreCitations_other": "{{count}} weitere Zitate anzeigen",
     "markdownWithCitations": "Markdown mit Zitaten",
     "onlyTextWithoutCitations": "Nur Text ohne Zitate",
     "differentModesOfQuery": "Verschiedene Abfragemodi",
@@ -784,6 +826,7 @@
       "retryMessage": "Ich habe mich erneut bei {{servers}} angemeldet. Bitte versuche es noch einmal."
     },
     "fullTableView": "Vollständige Tabellenansicht",
+    "downloadCsv": "Als CSV herunterladen",
     "toasts": {
       "stopStreamTitle": "Wird gestoppt…",
       "stopStreamDescription": "Die Antwort wird in Kürze gestoppt. Eine bereits erzeugte Teilantwort bleibt erhalten.",
@@ -932,6 +975,13 @@
     "deleteAgentDescription": "Der Agent mit dem Namen",
     "deleteAgentWarning": "wird dauerhaft aus Pipeshub entfernt. Chats, die ihn verwenden, funktionieren möglicherweise nicht mehr wie erwartet.",
     "deleteChat": "Löschen",
+    "export": {
+      "menuItem": "Exportieren",
+      "exporting": "Chat wird exportiert…",
+      "done": "Chat exportiert",
+      "failed": "Der Chat konnte nicht exportiert werden",
+      "assistant": "Assistent"
+    },
     "deleteChatConfirm": "Sind Sie sicher?",
     "deleteChatDescription": "Der Chat mit dem Titel",
     "deleteChatWarning": "wird dauerhaft aus Pipeshub entfernt. Alle Benutzer mit geteiltem Zugriff verlieren ihren Zugang.",
@@ -1119,9 +1169,9 @@
     "configuredModels": "Konfigurierte Modelle",
     "reasoningEffort": {
       "label": "Reasoning-Aufwand",
-      "modelDefaultOption": "Modellstandard",
-      "modelDefaultOptionWithLevel": "Modellstandard ({{level}})",
-      "agentDefaultOption": "Agent-Standard ({{level}})",
+      "overrideHint": "Klicken Sie erneut, um den Standardwert zu verwenden.",
+      "defaultHintWithLevel": "Ohne Auswahl wird {{level}} verwendet.",
+      "modelDefaultHint": "Ohne Auswahl wird {{level}} verwendet, der eigene Standardwert dieses Modells.",
       "modelDefaultLabel": "Standard ({{level}})",
       "low": "Niedrig",
       "medium": "Mittel",
@@ -1142,7 +1192,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche"
+      "webSearch": "Websuche",
+      "deepResearch": "Tiefenrecherche",
+      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "mobileProfileComingSoon": "Die Profilseite ist bald auch auf Mobilgeräten verfügbar.",
@@ -1214,7 +1266,38 @@
         "expired": "{{tool}} wurde nicht ausgeführt: Die Anfrage ist abgelaufen",
         "allowedNotRun": "Sie haben {{tool}} zugelassen, es wurde aber nicht ausgeführt"
       }
-    }
+    },
+    "selectedAlone": "{{name}} (nur dieses Element)",
+    "noConnectorsFound": "Keine Konnektoren gefunden",
+    "treeSearching": "Suche läuft…",
+    "treeSearchFailed": "Suche fehlgeschlagen. Bitte erneut versuchen.",
+    "treeSearchMatches": "Ordner und Elemente",
+    "nodeSearchTooShort": "Mindestens 2 Zeichen eingeben",
+    "mentionNodes": "Elemente",
+    "mentionNodesLabel": "Passende Elemente",
+    "mentionTypeToSearch": "Namen zum Suchen eingeben",
+    "mentionSearching": "Suche läuft…",
+    "mentionNone": "Keine passenden Elemente",
+    "mentionYourApps": "Ihre Apps",
+    "mentionCollections": "Sammlungen",
+    "sourceUnavailable": "Eine Quelle, die du nicht öffnen kannst",
+    "sourceLoading": "Wird geladen…",
+    "mentionBack": "Zurück",
+    "mentionRemove": "{{name}} entfernen",
+    "artifactsPanel": {
+      "generated_one": "{{count}} Artefakt erstellt",
+      "generated_other": "{{count}} Artefakte erstellt",
+      "newerVersion": "Neuere Version verfügbar (v{{version}})",
+      "unavailable": "Nicht mehr verfügbar",
+      "viewSource": "Quellcode anzeigen",
+      "loadingSource": "Quellcode wird geladen",
+      "viewSourceTitle": "Den Code anzeigen, der dieses Artefakt erzeugt hat",
+      "preview": "Artefakt-Vorschau",
+      "loadingPreview": "Vorschau wird geladen",
+      "download": "Artefakt herunterladen",
+      "downloading": "Artefakt wird heruntergeladen"
+    },
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -1810,6 +1893,11 @@
         "video": {
           "label": "Video",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Entscheidung",
+          "badge": "Entscheidung",
+          "sectionTab": "Für Entscheidungen"
         }
       },
       "fetchingModels": "Modelle werden geladen…",
@@ -2061,10 +2149,20 @@
         "maxLength": "{{field}} darf höchstens {{maxLength}} Zeichen lang sein",
         "email": "{{field}} muss eine gültige E-Mail-Adresse sein",
         "url": "{{field}} muss eine gültige URL sein",
-        "urlProtocol": "{{field}} muss http oder https verwenden"
+        "urlProtocol": "{{field}} muss http oder https verwenden",
+        "numberRange": "Geben Sie eine ganze Zahl von {{min, number}} bis {{max, number}} ein.",
+        "numberMin": "Geben Sie eine ganze Zahl ab {{min, number}} ein.",
+        "numberMax": "Geben Sie eine ganze Zahl bis {{max, number}} ein."
       },
       "adminRequiredToast": "Nur Administratoren können neue Aktionen hinzufügen. Bitten Sie Ihren Administrator, diese Aktion zuerst zu konfigurieren.",
-      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können."
+      "personalNonAdminHint": "Als „Nicht konfiguriert“ markierte Aktionen müssen zunächst von einem Administrator eingerichtet werden, bevor Sie sie verwenden können.",
+      "toolRules": {
+        "open": "Tool-Freigaben",
+        "title": "Tool-Freigaben: {{name}}",
+        "description": "Was passiert, wenn ein Assistent oder Agent eines dieser Tools verwenden möchte. Dieselben Regeln gelten für alle in Ihrer Organisation.",
+        "readOnly": "Nur ein Administrator kann diese ändern.",
+        "toolsError": "Die Tools dieses Toolsets konnten nicht geladen werden."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Scrollen Sie nach oben und füllen Sie die Pflichtfelder (mit *) aus, um fortzufahren.",
@@ -2455,7 +2553,13 @@
         "syncStrategyHelper": "Wählen Sie, wie Daten von {{name}} synchronisiert werden",
         "syncInterval": "Synchronisierungsintervall",
         "syncIntervalPlaceholder": "Intervall wählen...",
-        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden"
+        "syncIntervalHelper": "Legen Sie fest, wie oft {{name}}-Daten aktualisiert werden",
+        "lastRunLimit": {
+          "saved": "Letzte Synchronisierung: {{count, number}} Seiten gespeichert",
+          "stoppedAtLimit": "bei diesem Limit angehalten",
+          "leftOut": "{{count, number}} ausgelassen",
+          "nearLimit": "Dieser Connector speichert bereits mindestens 90 % dieses Limits. Erhöhen Sie es, um mehr Seiten dieser Website zu behalten."
+        }
       },
       "instancePanel": {
         "overview": "Übersicht",
@@ -2488,7 +2592,31 @@
         "recordsByType": "Datensätze nach Typ",
         "noRecordTypes": "Keine Datensatztypen verfügbar",
         "localWatcherLabel": "LOKALER WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen"
+        "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
+        "lastRun": {
+          "title": "Letzte Synchronisierung",
+          "outcome": {
+            "succeeded": "Abgeschlossen",
+            "failed": "Fehlgeschlagen",
+            "stopped": "Angehalten",
+            "skipped": "Übersprungen"
+          },
+          "stopReason": {
+            "max_pages": "Seitenlimit erreicht",
+            "time_limit": "Zeitlimit erreicht; die nächste Synchronisierung macht weiter",
+            "stalled": "Die Website antwortete nicht mehr; die nächste Synchronisierung macht weiter",
+            "rate_limited": "Die Website bat wiederholt um weniger Anfragen; die nächste Synchronisierung macht weiter"
+          },
+          "pagesSaved": "{{count}} Seiten gespeichert",
+          "failed": "{{count}} Seiten fehlgeschlagen",
+          "robotsSkipped": "{{count}} durch robots.txt übersprungen",
+          "noindexSkipped": "{{count}} sollen nicht indexiert werden",
+          "skippedMaxPages": "{{count}} wegen des Seitenlimits ausgelassen",
+          "pruned": "{{count}} entfernt, nicht mehr auf der Website",
+          "sitemapUrls": "{{count}} in Sitemaps gefunden",
+          "resumed": "Unvollständige Synchronisierung fortgesetzt",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Instanzname",
@@ -2678,6 +2806,108 @@
           "confirm": "Neuindizierung starten"
         },
         "typePrompt": "Geben Sie zur Bestätigung {{token}} ein."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "Start-URL",
+            "help": "Die erste Seite, die PipesHub aufruft. Nach dem Speichern lässt sie sich nicht mehr ändern; für eine andere Website fügen Sie einen weiteren Connector hinzu."
+          },
+          "type": {
+            "label": "Crawlen",
+            "options": {
+              "single": "Nur diese Seite",
+              "recursive": "Diese Seite und die darauf verlinkten Seiten"
+            }
+          },
+          "discovery": {
+            "label": "Seiten finden über",
+            "help": "Sitemaps sind am schnellsten; Links finden Seiten, die in keiner Sitemap stehen.",
+            "options": {
+              "sitemap_and_links": "Sitemaps und Links (empfohlen)",
+              "links": "Nur Links",
+              "sitemap": "Nur Sitemaps"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "In diesem Bereich bleiben",
+            "help": "Nur Seiten unterhalb des Pfads der Start-URL, etwa /docs/."
+          },
+          "max_pages": {
+            "label": "Maximale Seitenzahl",
+            "help": "PipesHub behält höchstens so viele Seiten dieser Website. Dateien wie PDFs zählen als Seiten.",
+            "unit": "Seiten"
+          },
+          "url_should_contain": {
+            "label": "Nur Seiten speichern, deren URL Folgendes enthält",
+            "help": "Leer lassen, um alle Seiten zu speichern. Nicht passende Seiten werden nicht aufgerufen, ihren Links wird also auch nicht gefolgt."
+          },
+          "ignore_query_params": {
+            "label": "Gleiche Seite, andere URL",
+            "help": "URL-Parameter, die die Seite nicht verändern, etwa sort oder ref. * steht für alle. Tracking-Parameter (utm_…) werden immer ignoriert."
+          },
+          "depth": {
+            "label": "Klicks von der Startseite",
+            "help": "Wie weit Links gefolgt wird. Seiten aus einer Sitemap zählen als ein Klick.",
+            "unit": "Klicks"
+          },
+          "max_size_mb": {
+            "label": "Größte herunterzuladende Datei",
+            "help": "Größere Seiten und Dateien werden übersprungen und in der letzten Synchronisierung aufgeführt.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Auch Links zu anderen Websites folgen",
+            "help": "Meist aus: Der Crawl kann sich weit über diese Website hinaus ausdehnen."
+          },
+          "use_headless_browser": {
+            "label": "Immer einen Browser verwenden (langsamer)",
+            "help": "Aus: PipesHub erkennt Seiten, die JavaScript brauchen, und nutzt nur für diese Websites einen Browser."
+          },
+          "browser_like_identity": {
+            "label": "Als Webbrowser ausgeben",
+            "help": "Aus: Anfragen geben sich als PipesHub-Crawler zu erkennen. Nur für eine Website einschalten, die Sie crawlen dürfen und die Crawler blockiert; robots.txt wird weiterhin beachtet."
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt beachten",
+            "help": "Seiten überspringen, die Crawler laut Website nicht besuchen oder indexieren sollen."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Website"
+          },
+          "crawl": {
+            "title": "Was gecrawlt wird"
+          },
+          "skip": {
+            "title": "Was übersprungen wird"
+          },
+          "advanced": {
+            "title": "Erweitert",
+            "description": "Crawl-Tiefe, Dateigröße, Browser und Crawler-Kennung."
+          }
+        },
+        "summaryOn": "{{label}} an",
+        "summaryOff": "{{label}} aus",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Ausgangspunkt",
+        "custom": "Benutzerdefiniert",
+        "suggested": "Vorschlag für diese Adresse: {{name}}",
+        "replaceTitle": "Aktuelle Einstellungen ersetzen?",
+        "replaceMessage": "„{{name}}“ ersetzt Ihre aktuellen Crawl-Einstellungen.",
+        "replaceConfirm": "Ersetzen",
+        "web": {
+          "docs": "Dokumentation",
+          "helpCenter": "Hilfe-Center",
+          "wholeSite": "Ganze Website",
+          "onePage": "Eine Seite"
+        }
       }
     },
     "mcpServers": {
@@ -4224,7 +4454,10 @@
     "mcpServerNeedsToolsBanner": "Wählen Sie mindestens ein Tool für {{names}} aus oder aktivieren Sie „Alle Tools“.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} ist Ihr persönlicher MCP-Server. Er kann keinem Agenten hinzugefügt werden, der mit Ihrer Organisation geteilt ist oder als Dienstkonto läuft.",
     "mcpAgentApprovalsEnterprise": "Tool-Freigaben pro Agent sind Teil der Enterprise Edition. Hier gelten die eigenen Tool-Freigaben jeder Person.",
-    "mcpAgentApprovals": "Tool-Freigaben pro Agent"
+    "mcpAgentApprovals": "Tool-Freigaben pro Agent",
+    "limitSource": "Auswählen, was {{name}} durchsucht",
+    "limitSourceHint": "Lassen Sie die gesamte Quelle angehakt, oder entfernen Sie den Haken und wählen Sie die Ordner und Elemente, die der Agent durchsuchen darf.",
+    "limitSourceCount": "Auf {{count}} ausgewählte Elemente begrenzt"
   },
   "recordView": {
     "sections": {
@@ -4632,7 +4865,8 @@
     "isAnyOf": "ist einer von",
     "loadingOptions": "Optionen werden geladen…",
     "refreshingOptions": "Optionen werden aktualisiert…",
-    "loadingMore": "Weitere werden geladen…"
+    "loadingMore": "Weitere werden geladen…",
+    "clear": "Filter {{label}} löschen"
   },
   "moveFolder": {
     "moving": "Wird verschoben...",

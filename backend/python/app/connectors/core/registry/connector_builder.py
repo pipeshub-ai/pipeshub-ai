@@ -317,8 +317,28 @@ class ConnectorConfigBuilder:
             field_config["validation"]["minLength"] = field.min_length
         if field.max_length is not None:
             field_config["validation"]["maxLength"] = field.max_length
+        if field.min_value is not None:
+            field_config["validation"]["min"] = field.min_value
+        if field.max_value is not None:
+            field_config["validation"]["max"] = field.max_value
+        presentation = {
+            "unit": field.unit,
+            "optionLabels": field.option_labels,
+            "group": field.group,
+            "showWhen": field.show_when,
+            "placeholder": field.placeholder,
+        }
+        field_config.update({key: value for key, value in presentation.items() if value})
 
         self.config["sync"]["customFields"].append(field_config)
+        return self
+
+    def with_sync_field_group(
+        self, name: str, display_name: str, description: str = "", *, collapsed: bool = False
+    ) -> 'ConnectorConfigBuilder':
+        """Declare a section of sync custom fields; sections render in the order they are declared."""
+        group = {"name": name, "displayName": display_name, "description": description, "collapsed": collapsed}
+        self.config["sync"].setdefault("customFieldGroups", []).append(group)
         return self
 
     def add_filter_field(self, field: FilterField) -> 'ConnectorConfigBuilder':
@@ -813,9 +833,14 @@ class CommonFields:
         description: str | None = None,
         display_name: str = "File Extensions",
         options_endpoint: str | None = None,
+        extensions: list[ExtensionTypes] | None = None,
+        labels: dict[str, str] | None = None,
     ) -> FilterField:
         """
         Standard file extension filter (static multiselect).
+
+        ``extensions`` limits the options to the types the connector can actually return
+        (every type by default); ``labels`` replaces an option's ".ext" label.
 
         Note: options_endpoint is reserved for a future dynamic-options implementation.
         """
@@ -829,8 +854,8 @@ class CommonFields:
             default_operator=MultiselectOperator.IN.value,
             option_source_type=OptionSourceType.STATIC,
             options=[
-                FilterOption(id=ext.value, label=f".{ext.value}")
-                for ext in ExtensionTypes
+                FilterOption(id=ext.value, label=(labels or {}).get(ext.value, f".{ext.value}"))
+                for ext in (extensions or ExtensionTypes)
             ]
         )
 
@@ -886,7 +911,7 @@ class CommonFields:
             display_name="Enable Manual Indexing",
             filter_type=FilterType.BOOLEAN,
             category=FilterCategory.INDEXING,
-            description="Disable automatic indexing for all synced records.",
+            description="On: synced records are not indexed until you choose them. Off: every synced record is indexed.",
             default_value=False
         )
 

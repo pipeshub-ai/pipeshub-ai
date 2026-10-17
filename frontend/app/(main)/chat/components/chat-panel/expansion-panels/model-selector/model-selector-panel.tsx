@@ -198,8 +198,12 @@ export function ModelSelectorPanel({
   const modelDefaultEffort = normalizeReasoningEffort(activeModel?.defaultReasoningEffort ?? null);
 
   const handleReasoningEffortSelect = useCallback(
-    (value: ReasoningEffort | null) => setReasoningEffortForCtx(ctxKey, value),
-    [ctxKey, setReasoningEffortForCtx]
+    (value: ReasoningEffort) => {
+      // Clicking the already-active pill clears the override (back to the
+      // model's own default) rather than getting stuck once selected.
+      setReasoningEffortForCtx(ctxKey, reasoningEffort === value ? null : value);
+    },
+    [ctxKey, reasoningEffort, setReasoningEffortForCtx]
   );
 
   return (
@@ -312,40 +316,17 @@ export function ModelSelectorPanel({
 // ─── Reasoning effort selector (shown only for isReasoning models) ───
 
 interface ReasoningEffortSelectorProps {
-  /** `null` = no pick: the request carries none and the default applies. */
+  /** `null` = no explicit override, model/provider uses its own default. */
   value: ReasoningEffort | null;
-  onSelect: (value: ReasoningEffort | null) => void;
+  onSelect: (value: ReasoningEffort) => void;
   agentDefault: ReasoningEffort | null;
   modelDefault: ReasoningEffort | null;
 }
 
-/** Label of the pill that clears the pick, naming the default it falls back to when known. */
-export function getDefaultEffortOptionLabel(
-  t: TFunction,
-  agentDefault: ReasoningEffort | null,
-  modelDefault: ReasoningEffort | null,
-): string {
-  if (agentDefault) {
-    return t('chat.reasoningEffort.agentDefaultOption', {
-      defaultValue: 'Agent default ({{level}})',
-      level: getReasoningEffortLabel(t, agentDefault),
-    });
-  }
-  if (modelDefault) {
-    return t('chat.reasoningEffort.modelDefaultOptionWithLevel', {
-      defaultValue: 'Model default ({{level}})',
-      level: getReasoningEffortLabel(t, modelDefault),
-    });
-  }
-  return t('chat.reasoningEffort.modelDefaultOption', 'Model default');
-}
-
 export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDefault }: ReasoningEffortSelectorProps) {
   const { t } = useTranslation();
-  const options: { value: ReasoningEffort | null; label: string }[] = [
-    { value: null, label: getDefaultEffortOptionLabel(t, agentDefault, modelDefault) },
-    ...REASONING_EFFORT_OPTIONS.map((o) => ({ value: o.value, label: t(o.labelKey, o.defaultLabel) })),
-  ];
+  const effectiveDefault = agentDefault ?? modelDefault ?? DEFAULT_REASONING_EFFORT;
+  const usesModelDefault = !agentDefault && Boolean(modelDefault);
   return (
     <Flex
       direction="column"
@@ -362,11 +343,11 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
         {t('chat.reasoningEffort.label', 'Reasoning Effort')}
       </Text>
       <Flex align="center" gap="2" wrap="wrap" role="radiogroup" aria-label={t('chat.reasoningEffort.label', 'Reasoning Effort')}>
-        {options.map((option) => {
-          const isActive = value === option.value;
+        {REASONING_EFFORT_OPTIONS.map((option) => {
+          const isActive = value === option.value || (!value && option.value === effectiveDefault);
           return (
             <Flex
-              key={option.value ?? 'default'}
+              key={option.value}
               align="center"
               justify="center"
               role="radio"
@@ -381,7 +362,6 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
               }}
               style={{
                 padding: '4px var(--space-3)',
-                minHeight: 44,
                 borderRadius: 'var(--radius-6)',
                 border: isActive ? '1px solid var(--accent-9)' : '1px solid var(--slate-7)',
                 backgroundColor: isActive ? 'var(--accent-3)' : 'transparent',
@@ -393,12 +373,25 @@ export function ReasoningEffortSelector({ value, onSelect, agentDefault, modelDe
                 weight={isActive ? 'medium' : 'regular'}
                 style={{ color: isActive ? 'var(--accent-11)' : 'var(--slate-11)' }}
               >
-                {option.label}
+                {t(option.labelKey, option.defaultLabel)}
               </Text>
             </Flex>
           );
         })}
       </Flex>
+      <Text size="1" style={{ color: 'var(--slate-10)' }}>
+        {value
+          ? t('chat.reasoningEffort.overrideHint', 'Click again to use the default.')
+          : usesModelDefault
+            ? t('chat.reasoningEffort.modelDefaultHint', {
+                defaultValue: "Defaults to {{level}}, this model's own default, when not set.",
+                level: getReasoningEffortLabel(t, effectiveDefault),
+              })
+            : t('chat.reasoningEffort.defaultHintWithLevel', {
+                defaultValue: 'Defaults to {{level}} when not set.',
+                level: getReasoningEffortLabel(t, effectiveDefault),
+              })}
+      </Text>
     </Flex>
   );
 }

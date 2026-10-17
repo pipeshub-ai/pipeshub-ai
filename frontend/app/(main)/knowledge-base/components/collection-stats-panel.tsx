@@ -132,7 +132,9 @@ export function CollectionStatsPanel() {
 
       const params = new URLSearchParams();
       params.set('view', 'all-records');
-      params.set('kbIds', collectionId);
+      // A collection is an App, so it filters through connectorIds; no route
+      // accepts `kbIds`.
+      params.set('connectorIds', collectionId);
       if (indexingStatuses && indexingStatuses.length > 0) {
         params.set('indexingStatus', indexingStatuses.join(','));
       }

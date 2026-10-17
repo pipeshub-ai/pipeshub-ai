@@ -405,6 +405,10 @@ class FakeRecordsDb:
         self.unreadable_paths: set[str] = set()
         self.fail_record_scan = False
         self.messaging_producer: Any = None
+        self.kept_records: list[str] = []
+
+    def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
+        self.kept_records.extend(record_ids)
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -641,7 +645,7 @@ class FakeStore:
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeStore"]:
         yield self
 
 

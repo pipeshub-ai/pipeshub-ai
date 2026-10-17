@@ -263,3 +263,128 @@ class TestRefusedFilter:
         retrieval_service.search_with_filters.return_value = {"status_code": status_code, "message": "x"}
         result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
         assert result.filter_notice is None
+
+
+class TestSearchFailureNotice:
+    """The model is told when its first retrieval failed, and only then."""
+
+    @pytest.mark.parametrize(("status", "status_code", "message"), [
+        ("search_index_unavailable", 503,
+         "The search index took too long to respond, so no results are shown. Please try again in a minute."),
+        ("error", 500, "Unexpected server error during search."),
+        ("permission_check_unavailable", 503, "We couldn't check which documents you have access to just now."),
+    ])
+    async def test_a_failed_search_carries_its_reason(self, status, status_code, message) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": status, "status_code": status_code, "message": message, "searchResults": [],
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.is_empty is True
+        assert result.failure_notice == message
+
+    @pytest.mark.parametrize(("status", "status_code"), [
+        ("accessible_records_not_found", 404),
+        ("vector_db_empty", 503),
+    ])
+    async def test_an_answer_that_is_not_a_failure_carries_no_notice(self, status, status_code) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": status, "status_code": status_code, "message": "No documents yet.",
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.failure_notice is None
+
+    async def test_nothing_readable_where_the_search_ran_with_part_of_the_index_down_is_a_failure(self) -> None:
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": "accessible_records_not_found", "status_code": 404,
+            "message": f"{notice} No documents are available.", "searchIncomplete": notice,
+        }
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.failure_notice == notice
+
+    async def test_a_raised_search_names_no_internals(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.side_effect = RuntimeError("qdrant at 10.0.0.4:6334 refused")
+
+        result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.failure_notice == "The search could not run."
+        assert "10.0.0.4" not in result.failure_notice
+
+    async def test_a_successful_empty_search_is_not_a_failure(self) -> None:
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": "empty_response", "status_code": 200, "searchResults": [], "virtual_to_record_map": {},
+        }
+
+        with _pipeline([]):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.is_empty is True
+        assert result.failure_notice is None
+        assert result.incomplete_notice is None
+
+    async def test_empty_where_the_search_ran_with_part_of_the_index_down_is_a_failure(self) -> None:
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": "empty_response", "status_code": 200, "searchResults": [],
+            "virtual_to_record_map": {}, "searchIncomplete": notice,
+        }
+
+        with _pipeline([]):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.is_empty is True
+        assert result.failure_notice == notice
+
+    async def test_results_from_part_of_the_index_carry_the_gap(self) -> None:
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+        retrieval_service = AsyncMock()
+        retrieval_service.search_with_filters.return_value = {
+            "status": "success", "status_code": 200, "searchResults": [{"metadata": {"recordId": "r1"}}],
+            "virtual_to_record_map": {}, "searchIncomplete": notice,
+        }
+
+        def _build(final_results, vr_map, **kwargs) -> tuple[list, Any]:
+            return [[{"type": "text", "text": "Relevant excerpt from r1"}]], kwargs["ref_mapper"]
+
+        with _pipeline([{"virtual_record_id": "vr1", "recordId": "r1"}], build=_build):
+            result = await prefetch_retrieval(**_make_kwargs(retrieval_service=retrieval_service))
+
+        assert result.is_empty is False
+        assert result.failure_notice is None
+        assert result.incomplete_notice == notice
+
+
+class TestSearchFailureConstraints:
+    def test_the_failure_constraint_says_the_search_failed_and_what_to_do(self) -> None:
+        from app.agents.chat_modes.prefetch import search_failure_constraint
+
+        notice = "The search index took too long to respond, so no results are shown."
+        with_tool = search_failure_constraint(notice, can_search=True)
+        without_tool = search_failure_constraint(notice, can_search=False)
+
+        for text in (with_tool, without_tool):
+            assert notice in text
+            assert "did not complete" in text
+            assert "Do not answer as if no documents matched" in text
+        assert "Search again" in with_tool
+        assert "Search again" not in without_tool
+
+    def test_the_incomplete_note_tells_the_model_a_missing_document_may_exist(self) -> None:
+        from app.agents.chat_modes.prefetch import search_incomplete_constraint
+
+        note = search_incomplete_constraint("1 of 2 parts did not respond.", can_search=True)
+
+        assert note.startswith("Note: 1 of 2 parts did not respond.")
+        assert "search again" in note

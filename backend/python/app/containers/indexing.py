@@ -1,3 +1,5 @@
+from logging import Logger
+
 from dependency_injector import containers, providers  # type: ignore
 from dotenv import find_dotenv, load_dotenv  # type: ignore
 
@@ -7,6 +9,7 @@ from app.connectors.services.kafka_service import KafkaService
 from app.containers.container import BaseAppContainer
 from app.containers.utils.utils import ContainerUtils
 from app.health.health import Health
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.const.const import (
     VECTOR_DB_ENTITIES_COLLECTION_NAME,
 )
@@ -184,6 +187,22 @@ class IndexingAppContainer(BaseAppContainer):
         ]
     )
 
+async def _backfill_indexed_copy_flags(graph_provider: IGraphDBProvider, logger: Logger) -> None:
+    """Records indexed before ``hasIndexedCopy`` existed would otherwise leave search
+    the first time they are edited. Idempotent, so every boot may run it."""
+    try:
+        marked = await graph_provider.backfill_indexed_copy_flags()
+    except Exception:
+        logger.warning(
+            "⚠️ Could not mark existing indexed records; an edit may hide one "
+            "from search until it is indexed again",
+            exc_info=True,
+        )
+        return
+    if marked:
+        logger.info("✅ Marked %d indexed record(s) as having an indexed copy", marked)
+
+
 async def initialize_container(container: IndexingAppContainer) -> bool:
     """Initialize container resources"""
     logger = container.logger()
@@ -216,6 +235,16 @@ async def initialize_container(container: IndexingAppContainer) -> bool:
                 "⚠️ Graph schema bootstrap failed; taxonomy and alias constraints "
                 "may be missing until a service that runs it starts successfully"
             )
+        # Unlike a missing constraint, a records schema without this field refuses
+        # every finished-indexing write, so indexing must not start on it.
+        if not await graph_provider.records_accept_indexed_copy():
+            logger.error(
+                "❌ The graph database's records schema does not allow hasIndexedCopy yet, so "
+                "it would refuse every finished-indexing write. Check that this service or "
+                "the connector service can update collection properties, then restart."
+            )
+            raise RuntimeError("The records schema does not allow hasIndexedCopy")
+        await _backfill_indexed_copy_flags(graph_provider, logger)
 
         await Health.system_health_check(container)
         return True

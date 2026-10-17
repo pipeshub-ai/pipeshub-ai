@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -24,7 +24,6 @@ from app.agents.chat_modes.bridge import (
     _apply_policy_to_chat_state,
     _fetch_available_connectors,
     _resolve_custom_instructions,
-    _resolve_web_search_config,
     _with_mode_instructions,
     run_chat_stream,
 )
@@ -332,48 +331,6 @@ class TestResolveCustomInstructions:
         assert _resolve_custom_instructions(system_prompts_config, INTERNAL_SEARCH_POLICY) == "Be concise."
 
 
-class TestResolveWebSearchConfig:
-    async def test_falls_back_to_duckduckgo_when_no_default_provider(self) -> None:
-        """Configured providers exist but none is marked default -- the
-        Node.js layer treats DuckDuckGo as the active default in that case
-        (see `cm_controller.ts::getWebSearchProviders`), so this must not
-        disable web_search/fetch_url entirely."""
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {"providers": [{"provider": "tavily", "isDefault": False}]}
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    async def test_falls_back_to_duckduckgo_when_no_providers_configured(self) -> None:
-        """Brand-new org that has never touched web search settings --
-        `providers` is empty/absent. Must still default to DuckDuckGo, not
-        silently disable the tool."""
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {"providers": []}
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    async def test_returns_default_provider_configuration(self) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.return_value = {
-            "providers": [
-                {"provider": "tavily", "isDefault": False},
-                {"provider": "serper", "isDefault": True, "configuration": {"apiKey": "x"}},
-            ]
-        }
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result == {"provider": "serper", "configuration": {"apiKey": "x"}}
-
-    async def test_config_lookup_failure_returns_none(self) -> None:
-        config_service = AsyncMock()
-        config_service.get_config.side_effect = RuntimeError("etcd unavailable")
-
-        result = await _resolve_web_search_config(config_service, MagicMock())
-        assert result is None
-
-
 class TestRunChatStream:
     @staticmethod
     def _base_kwargs(policy=None) -> dict[str, Any]:
@@ -381,7 +338,7 @@ class TestRunChatStream:
         # `config_service.get_config` is itself an `AsyncMock` attribute
         # (child attrs of an `AsyncMock` propagate async-ness), so its
         # return value must be a concrete dict, not the default child
-        # mock -- otherwise `_resolve_web_search_config`'s `.get("providers")`
+        # mock -- otherwise `resolve_web_search`'s `.get("providers")`
         # silently returns an unawaited coroutine instead of a list.
         config_service.get_config.return_value = {"providers": []}
         return {
@@ -636,6 +593,67 @@ class TestRunChatStream:
         assert events[-1].startswith("event: complete\n")
         assert captured_context.custom_instructions is None
 
+    async def test_a_user_who_can_read_nothing_in_scope_is_answered_at_once(self) -> None:
+        """Bug-bash 002: the loop would retry its search until the time budget ran out."""
+        from app.agents.agent_loop.protocol.stream_collector import (
+            collect_stream_outcome,
+        )
+
+        create = AsyncMock()
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            sql_patch,
+            slack_patch,
+            patch(
+                "app.agents.chat_modes.bridge.unreadable_scope_error",
+                new=AsyncMock(return_value=("selection_empty", "Nothing in your selection is available.")),
+            ),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=create),
+        ):
+            events = [
+                chunk async for chunk in run_chat_stream(
+                    **self._base_kwargs(policy=INTERNAL_SEARCH_POLICY), protocol="agui",
+                )
+            ]
+
+        create.assert_not_called()
+        assert len(events) == 1
+
+        async def _replay() -> AsyncIterator[dict[str, Any]]:
+            for event in events:
+                yield event
+
+        response = (await collect_stream_outcome(_replay(), AsyncMock(return_value=False))).to_response()
+        assert response.status_code == 422
+        assert json.loads(response.body)["message"] == "Nothing in your selection is available."
+
+    async def test_a_user_with_readable_sources_still_runs_the_loop(self) -> None:
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, Any, Any, list[Any]]:
+            return _stream_agent(MagicMock(success=True, error=None, output="ok")), MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        check = AsyncMock(return_value=None)
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.unreadable_scope_error", new=check),
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=None)),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))]
+
+        check.assert_awaited_once()
+        assert events[-1].startswith("event: complete\n")
+
     async def test_internal_search_prefetch_merges_into_goal_and_tool_state(self) -> None:
         """`INTERNAL_SEARCH_POLICY.prefetch_retrieval=True` -- a non-empty
         `PrefetchResult` must be folded into `context.tool_state` and
@@ -686,6 +704,76 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+
+    async def _goal_constraints_for(self, prefetch_result: PrefetchResult) -> list[str]:
+        captured: dict[str, Any] = {}
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            goal = MagicMock(constraints=[])
+            captured["goal"] = goal
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), goal, []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": "hello"},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+        ):
+            events = [
+                chunk
+                async for chunk in run_chat_stream(**self._base_kwargs(policy=INTERNAL_SEARCH_POLICY))
+            ]
+        assert events[-1].startswith("event: complete\n")
+        return [str(c) for c in captured["goal"].constraints]
+
+    async def test_a_failed_prefetch_tells_the_model_the_search_failed(self) -> None:
+        """Without this the model read an empty context as "nothing matched"."""
+        notice = "The search index took too long to respond, so no results are shown. Please try again in a minute."
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+            error_message=notice, failure_notice=notice,
+        ))
+
+        failure = [c for c in constraints if notice in c]
+        assert len(failure) == 1
+        assert "Search again with the search tool" in failure[0]
+        assert "Do not answer as if no documents matched" in failure[0]
+
+    async def test_an_empty_prefetch_that_ran_adds_no_failure_note(self) -> None:
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        ))
+
+        assert not any("did not complete" in c for c in constraints)
+
+    async def test_a_prefetch_from_part_of_the_index_says_what_is_missing(self) -> None:
+        notice = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+        constraints = await self._goal_constraints_for(PrefetchResult(
+            formatted_context="Refunds are processed within 5 business days.",
+            final_results=[{"virtual_record_id": "vr1"}],
+            virtual_record_id_to_result={"vr1": {"recordId": "r1"}},
+            tool_records=[{"recordId": "r1"}],
+            citation_ref_mapper=CitationRefMapper(),
+            is_empty=False,
+            incomplete_notice=notice,
+        ))
+
+        context = next(c for c in constraints if "Refunds are processed" in c)
+        assert notice in context
+        assert context.index(notice) < context.index("Refunds are processed")
 
     @pytest.mark.parametrize("high_accuracy", [False, True])
     async def test_internal_search_answer_rules_reach_the_agent_context(
@@ -1228,6 +1316,30 @@ class TestRunChatStreamNoToolsDegradation:
         event_names = [chunk.split("\n", 1)[0] for chunk in events]
         assert "event: status" in event_names
         assert event_names[-1] == "event: complete"
+
+    async def test_a_failed_forced_prefetch_tells_the_model_to_say_so(self) -> None:
+        notice = "We couldn't reach the search index just now, so no results are shown. Please try again in a minute."
+        prefetch_result = PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+            error_message=notice, failure_notice=notice,
+        )
+        seen: list[list[Any]] = []
+
+        async def _fake_handle_simple_mode(**kwargs: object):  # noqa: ANN202
+            seen.append(list(kwargs["messages"]))  # type: ignore[call-overload]
+            yield {"event": "complete", "data": {"answer": "Answer"}}
+
+        with (
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=AsyncMock(return_value=prefetch_result)),
+            patch("app.agents.chat_modes.bridge.handle_simple_mode", new=_fake_handle_simple_mode),
+        ):
+            [chunk async for chunk in run_chat_stream(**self._base_kwargs(INTERNAL_SEARCH_POLICY))]
+
+        prompt = json.dumps(seen[-1], default=str)
+        assert notice in prompt
+        assert "could not be searched just now" in prompt
+        assert "Search again with the search tool" not in prompt
 
     async def test_answer_rules_never_reach_the_no_tools_prompt(self, answer_rule_env: SetEnv) -> None:
         """Models without tool calls get a fixed system prompt and no fetch or

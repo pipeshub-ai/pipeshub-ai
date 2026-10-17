@@ -341,7 +341,8 @@
       "PRESENTATION": "簡報",
       "DATA_FILE": "資料檔",
       "CODE": "程式碼",
-      "CODE_OUTPUT": "程式碼輸出"
+      "CODE_OUTPUT": "程式碼輸出",
+      "OTHER": "其他"
     },
     "tabs": {
       "all": "所有產物",
@@ -358,7 +359,20 @@
     },
     "emptyShared": "尚無與你分享的內容",
     "emptySharedHint": "隊友與你分享的產物會顯示在這裡。",
-    "notAvailable": "此產物已無法使用"
+    "notAvailable": "此產物已無法使用",
+    "deleteTitle": "刪除產物？",
+    "deleteConfirmMessage": "「{{name}}」及其所有版本將被永久刪除。顯示它的聊天會將其標示為已無法使用。",
+    "deleteSuccess": "已刪除「{{name}}」",
+    "preview": "預覽",
+    "moreActionsFor": "{{name}} 的更多選項",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "請檢查網路連線後再試一次。",
+    "noMatches": "沒有符合篩選條件的產物",
+    "noMatchesHint": "請嘗試其他搜尋，或清除篩選條件以查看所有產物。",
+    "clearFilters": "清除篩選",
+    "gridView": "格狀檢視",
+    "listView": "清單檢視",
+    "closeSearch": "關閉搜尋"
   },
   "notifications": {
     "title": "通知",
@@ -455,7 +469,8 @@
     "required": "此欄位為必填",
     "invalidEmail": "電子郵件地址無效",
     "invalidUrl": "URL 無效",
-    "name": "名稱"
+    "name": "名稱",
+    "optional": "（選填）"
   },
   "dialog": {
     "newFolder": "新增集合資料夾",
@@ -608,6 +623,8 @@
     "noCollectionsAvailable": "沒有可用的集合",
     "noCollectionsCreatePrompt": "沒有可用的集合。請建立新的集合。",
     "seeMoreConnectors": "查看更多連接器",
+    "connectMoreApps": "連接更多應用程式",
+    "connectMoreAppsHint": "接入更多來源，答案更準確。",
     "suggestedInWorkspace": "工作區建議",
     "createSubFolder": "建立子資料夾",
     "more": "更多",
@@ -662,7 +679,12 @@
     "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
     "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
-    "addFilesHint": "新增您的檔案或資料夾"
+    "addFilesHint": "新增您的檔案或資料夾",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
+    "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
+    "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。",
+    "chatNoCollections": "您還沒有可提問的集合。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -683,11 +705,19 @@
     "record": "記錄"
   },
   "chat": {
+    "answerReady": {
+      "title": "回答已完成",
+      "open": "開啟對話",
+      "unread": "新回答"
+    },
+    "jumpToNewest": "跳到最新訊息",
     "recordActions": {
       "preview": "預覽",
       "open": "開啟 {{source}}",
       "openIn": "在 {{source}} 中開啟",
       "openInCollections": "在集合中開啟",
+      "syncedJustNow": "剛剛同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相關度：{{percent}}%"
     },
     "results": "結果",
@@ -731,7 +761,11 @@
       "browseWorkspaceMcp": "瀏覽 MCP 伺服器",
       "browseWorkspaceMcpAria": "開啟 MCP 伺服器以新增或管理連線",
       "noActionMatches": "沒有符合您搜尋的動作。",
-      "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。"
+      "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。",
+      "notConnected": "未連線",
+      "connect": "連線",
+      "actionConnected": "{{name}} 已連線",
+      "limitedToCount": "· 限定為 {{count}} 項"
     },
     "projectResources": {
       "noConnectors": "此專案未啟用任何連接器。",
@@ -759,6 +793,12 @@
     "searchCollections": "搜尋連接器與集合",
     "loadingCollections": "正在載入集合…",
     "failedToLoadCollections": "無法載入集合",
+    "treeEmpty": "這裡沒有內容",
+    "treeLoadFailed": "無法載入這些項目",
+    "treeRetry": "重試",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "顯示 {{name}} 中的內容",
+    "treeCollapse": "隱藏 {{name}} 中的內容",
     "noCollectionsAvailable": "沒有可用的集合",
     "comingSoon": "即將推出",
     "answer": "回答",
@@ -792,6 +832,8 @@
     "copiedAsMarkdown": "已複製為 Markdown",
     "copiedAsText": "已複製為純文字",
     "citations": "引用",
+    "showMoreCitations_one": "顯示另外 {{count}} 則引用",
+    "showMoreCitations_other": "顯示另外 {{count}} 則引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "僅純文字（不含引用）",
     "differentModesOfQuery": "不同的查詢模式",
@@ -825,6 +867,13 @@
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
+    "export": {
+      "menuItem": "匯出",
+      "exporting": "正在匯出聊天…",
+      "done": "聊天已匯出",
+      "failed": "無法匯出聊天",
+      "assistant": "助理"
+    },
     "renaming": "重新命名中...",
     "archiving": "封存中...",
     "chatRenamed": "對話已重新命名",
@@ -843,6 +892,7 @@
     "askAnythingInContext": "在「{{title}}」中隨時提問",
     "expandTable": "展開表格",
     "fullTableView": "完整表格檢視",
+    "downloadCsv": "下載為 CSV",
     "expandDiagram": "展開圖表",
     "fullDiagramView": "完整圖表檢視",
     "renderingDiagram": "正在繪製圖表…",
@@ -1246,9 +1296,9 @@
     "configuredModels": "已設定的模型",
     "reasoningEffort": {
       "label": "推理強度",
-      "modelDefaultOption": "模型預設",
-      "modelDefaultOptionWithLevel": "模型預設（{{level}}）",
-      "agentDefaultOption": "代理預設（{{level}}）",
+      "overrideHint": "再次點選即可使用預設值。",
+      "defaultHintWithLevel": "未設定時預設為{{level}}。",
+      "modelDefaultHint": "未設定時使用此模型本身的預設值：{{level}}。",
       "modelDefaultLabel": "預設（{{level}}）",
       "low": "低",
       "medium": "中",
@@ -1268,7 +1318,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此代理程式未設定",
       "internalSearch": "內部搜尋",
-      "webSearch": "網路搜尋"
+      "webSearch": "網路搜尋",
+      "deepResearch": "深度研究",
+      "deepResearchNeedsWebSearch": "開啟網頁搜尋後才能使用深度研究"
     },
     "resizePanels": "調整對話與預覽面板大小",
     "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
@@ -1297,7 +1349,37 @@
         "expired": "{{tool}} 未執行：請求已過期",
         "allowedNotRun": "你允許了 {{tool}}，但它沒有執行"
       }
-    }
+    },
+    "selectedAlone": "{{name}}（僅此項目）",
+    "noConnectorsFound": "找不到連接器",
+    "treeSearching": "正在搜尋…",
+    "treeSearchFailed": "搜尋失敗，請重試。",
+    "treeSearchMatches": "資料夾和項目",
+    "nodeSearchTooShort": "請至少輸入 2 個字元",
+    "mentionNodes": "項目",
+    "mentionNodesLabel": "相符的項目",
+    "mentionTypeToSearch": "輸入名稱以搜尋",
+    "mentionSearching": "正在搜尋…",
+    "mentionNone": "沒有相符的項目",
+    "mentionYourApps": "你的應用程式",
+    "mentionCollections": "集合",
+    "sourceUnavailable": "你無法開啟的來源",
+    "sourceLoading": "載入中…",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
+    "artifactsPanel": {
+      "generated_other": "已產生 {{count}} 個產物",
+      "newerVersion": "有較新的版本 (v{{version}})",
+      "unavailable": "已無法使用",
+      "viewSource": "檢視原始碼",
+      "loadingSource": "正在載入原始碼",
+      "viewSourceTitle": "檢視產生此產物的程式碼",
+      "preview": "預覽產物",
+      "loadingPreview": "正在載入預覽",
+      "download": "下載產物",
+      "downloading": "正在下載產物"
+    },
+    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -1947,6 +2029,11 @@
         "video": {
           "label": "影片",
           "badge": "多模態"
+        },
+        "decision": {
+          "label": "決策",
+          "badge": "決策",
+          "sectionTab": "用於決策"
         }
       },
       "fetchingModels": "正在載入模型…",
@@ -2198,10 +2285,20 @@
         "maxLength": "{{field}}不能超過 {{maxLength}} 個字元",
         "email": "{{field}}必須是有效的電子郵件地址",
         "url": "{{field}}必須是有效的 URL",
-        "urlProtocol": "{{field}}必須使用 http 或 https"
+        "urlProtocol": "{{field}}必須使用 http 或 https",
+        "numberRange": "請輸入 {{min, number}} 到 {{max, number}} 之間的整數。",
+        "numberMin": "請輸入不小於 {{min, number}} 的整數。",
+        "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
       "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
-      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。"
+      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。",
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
+        "readOnly": "只有管理員可以變更這些規則。",
+        "toolsError": "無法載入此工具集的工具。"
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "請向上捲動並填寫必填欄位（標有 * 者）以繼續。",
@@ -2591,7 +2688,13 @@
         "syncStrategyHelper": "選擇要如何從 {{name}} 同步資料",
         "syncInterval": "同步間隔",
         "syncIntervalPlaceholder": "選取間隔...",
-        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率"
+        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率",
+        "lastRunLimit": {
+          "saved": "上次同步：已儲存 {{count, number}} 個頁面",
+          "stoppedAtLimit": "已在此上限停止",
+          "leftOut": "{{count, number}} 個未納入",
+          "nearLimit": "此連接器儲存的頁面已達此上限的 90% 以上。若要保留此網站的更多頁面，請提高上限。"
+        }
       },
       "instancePanel": {
         "overview": "總覽",
@@ -2624,7 +2727,31 @@
         "recordsByType": "依類型統計的記錄",
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
-        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗"
+        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "lastRun": {
+          "title": "上次同步",
+          "outcome": {
+            "succeeded": "已完成",
+            "failed": "失敗",
+            "stopped": "已停止",
+            "skipped": "已略過"
+          },
+          "stopReason": {
+            "max_pages": "已達到最大頁數限制",
+            "time_limit": "已達到時間限制；下次同步將繼續",
+            "stalled": "網站停止回應；下次同步將繼續",
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+          },
+          "pagesSaved": "已儲存 {{count}} 個頁面",
+          "failed": "{{count}} 個頁面失敗",
+          "robotsSkipped": "因 robots.txt 略過 {{count}} 個",
+          "noindexSkipped": "{{count}} 個頁面要求不被索引",
+          "skippedMaxPages": "因最大頁數限制排除 {{count}} 個",
+          "pruned": "已移除 {{count}} 個已不在網站上的頁面",
+          "sitemapUrls": "在網站地圖中找到 {{count}} 個",
+          "resumed": "已繼續未完成的同步",
+          "lastSyncedWithOutcome": "{{time}}（{{outcome}}）"
+        }
       },
       "settingsTab": {
         "instanceName": "執行個體名稱",
@@ -2814,6 +2941,108 @@
           "confirm": "開始重新索引"
         },
         "typePrompt": "請輸入 {{token}} 以確認。"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "起始 URL",
+            "help": "PipesHub 造訪的第一個頁面。儲存後無法變更；如要爬取其他網站，請再新增一個連接器。"
+          },
+          "type": {
+            "label": "爬取範圍",
+            "options": {
+              "single": "僅此頁面",
+              "recursive": "此頁面及其連結到的頁面"
+            }
+          },
+          "discovery": {
+            "label": "尋找頁面的方式",
+            "help": "網站地圖最快；連結可以找到網站地圖遺漏的頁面。",
+            "options": {
+              "sitemap_and_links": "網站地圖和連結（建議）",
+              "links": "僅連結",
+              "sitemap": "僅網站地圖"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "僅限此區段",
+            "help": "僅包含起始 URL 路徑下的頁面，例如 /docs/。"
+          },
+          "max_pages": {
+            "label": "頁面數上限",
+            "help": "PipesHub 最多保留此網站的這麼多頁面。PDF 等檔案也計為頁面。",
+            "unit": "頁"
+          },
+          "url_should_contain": {
+            "label": "僅儲存 URL 包含以下內容的頁面",
+            "help": "留空即儲存所有頁面。不符合的頁面不會被造訪，因此也不會追蹤其中的連結。"
+          },
+          "ignore_query_params": {
+            "label": "同一頁面，不同 URL",
+            "help": "不會改變頁面內容的 URL 參數，例如 sort 或 ref。使用 * 代表全部。追蹤參數（utm_…）一律會被忽略。"
+          },
+          "depth": {
+            "label": "距起始頁的點擊次數",
+            "help": "追蹤連結的深度。網站地圖中列出的頁面計為一次點擊。",
+            "unit": "次點擊"
+          },
+          "max_size_mb": {
+            "label": "可下載的最大檔案",
+            "help": "更大的頁面和檔案會被略過，並列在上次同步中。",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "也追蹤指向其他網站的連結",
+            "help": "通常關閉：爬取可能會遠遠超出此網站。"
+          },
+          "use_headless_browser": {
+            "label": "一律使用瀏覽器（較慢）",
+            "help": "關閉時：PipesHub 會偵測需要 JavaScript 的頁面，只對這些網站使用瀏覽器。"
+          },
+          "browser_like_identity": {
+            "label": "以網頁瀏覽器身分存取",
+            "help": "關閉時：要求會以 PipesHub 爬蟲的身分送出。僅對允許你爬取但會封鎖爬蟲的網站開啟；仍會遵守 robots.txt。"
+          },
+          "respect_robots_txt": {
+            "label": "遵守 robots.txt",
+            "help": "略過網站要求爬蟲不要造訪或建立索引的頁面。"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "網站"
+          },
+          "crawl": {
+            "title": "爬取內容"
+          },
+          "skip": {
+            "title": "略過內容"
+          },
+          "advanced": {
+            "title": "進階",
+            "description": "爬取深度、檔案大小、瀏覽器和爬蟲身分。"
+          }
+        },
+        "summaryOn": "{{label}}：開",
+        "summaryOff": "{{label}}：關",
+        "summaryValue": "{{label}}：{{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "從範本開始",
+        "custom": "自訂",
+        "suggested": "依此網址建議：{{name}}",
+        "replaceTitle": "要取代目前的設定嗎？",
+        "replaceMessage": "「{{name}}」將取代你目前的爬取設定。",
+        "replaceConfirm": "取代",
+        "web": {
+          "docs": "文件網站",
+          "helpCenter": "說明中心",
+          "wholeSite": "整個網站",
+          "onePage": "單一頁面"
+        }
       }
     },
     "mcpServers": {
@@ -4295,7 +4524,10 @@
     "mcpServerNeedsToolsBanner": "請為 {{names}} 至少選擇一個工具，或開啟「所有工具」。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的個人 MCP 伺服器，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
     "mcpAgentApprovalsEnterprise": "依代理程式設定的工具核准屬於企業版。在這裡，適用每個人自己的工具核准設定。",
-    "mcpAgentApprovals": "依代理程式設定工具核准"
+    "mcpAgentApprovals": "依代理程式設定工具核准",
+    "limitSource": "選擇 {{name}} 的搜尋範圍",
+    "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
+    "limitSourceCount": "僅限所選的 {{count}} 項"
   },
   "recordView": {
     "sections": {
@@ -4618,7 +4850,8 @@
     "isAnyOf": "是其中之一",
     "loadingOptions": "正在載入選項…",
     "refreshingOptions": "正在重新整理選項…",
-    "loadingMore": "正在載入更多…"
+    "loadingMore": "正在載入更多…",
+    "clear": "清除{{label}}篩選"
   },
   "moveFolder": {
     "moving": "正在移動...",

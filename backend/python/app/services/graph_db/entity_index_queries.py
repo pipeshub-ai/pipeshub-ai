@@ -57,7 +57,7 @@ ENTITY_INDEX_SOURCES: dict[str, EntityIndexSource] = {
     for source in (
         EntityIndexSource(
             CollectionNames.RECORDS.value, "connectorId", "recordName",
-            fields=("orgId", "recordGroupId", "indexingStatus", "isDeleted"),
+            fields=("orgId", "recordGroupId", "indexingStatus", "hasIndexedCopy", "isDeleted"),
         ),
         EntityIndexSource(
             CollectionNames.RECORD_GROUPS.value, "connectorId", "groupName",

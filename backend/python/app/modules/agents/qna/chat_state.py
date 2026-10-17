@@ -10,7 +10,10 @@ from app.config.configuration_service import ConfigurationService
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.modules.transformers.blob_storage import BlobStorage
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.interface.graph_db_provider import (
+    SELECTION_FILTER_KEYS,
+    IGraphDBProvider,
+)
 from app.utils.chat_helpers import CitationRefMapper
 from app.utils.execute_query import agent_knowledge_has_sql_connector
 from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
@@ -104,6 +107,7 @@ class ChatState(TypedDict):
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
+    deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -380,9 +384,12 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         provider = str(resolved_config.get("provider", "")).strip().lower()
         configuration = resolved_config.get("configuration", {})
         if provider:
+            others = resolved_config.get("providers")
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
+                # The other stored providers: search fallbacks and page readers (`app.web.config`).
+                "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
             }
 
 
@@ -557,7 +564,9 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
-    has_knowledge = bool(real_kb or apps or agent_knowledge)
+    # A selection below app level is knowledge too, with or without a whole app.
+    has_selection = any(filters.get(key) for key in SELECTION_FILTER_KEYS)
+    has_knowledge = bool(real_kb or apps or agent_knowledge or has_selection)
     
     has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
     has_slack_knowledge = agent_knowledge_has_slack_connector(agent_knowledge)
@@ -629,6 +638,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "web_search_config": _build_web_search_tool_config(chat_query),
+        # Applies only with web search on; AgentContext.from_chat_state checks that.
+        "deep_research": bool(chat_query.get("deepResearch")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 

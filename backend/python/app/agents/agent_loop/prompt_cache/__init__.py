@@ -7,6 +7,8 @@ from app.agents.agent_loop.prompt_cache.registry import (
     CacheTarget,
     cache_strategy_for,
     cache_target,
+    family_cache_strategy,
+    forget_cache_params,
 )
 from app.agents.agent_loop.prompt_cache.strategies import (
     AnthropicCacheStrategy,
@@ -14,6 +16,7 @@ from app.agents.agent_loop.prompt_cache.strategies import (
     CacheStrategy,
     NoCacheStrategy,
     OpenAICacheStrategy,
+    without_cache_markers,
 )
 
 __all__ = [
@@ -25,4 +28,7 @@ __all__ = [
     "OpenAICacheStrategy",
     "cache_strategy_for",
     "cache_target",
+    "family_cache_strategy",
+    "forget_cache_params",
+    "without_cache_markers",
 ]

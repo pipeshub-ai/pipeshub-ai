@@ -306,7 +306,7 @@ class ArtifactManager:
                 expected_version=expected_version,
             )
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to update this artifact"})
         except VersionConflictError as e:
@@ -368,7 +368,7 @@ class ArtifactManager:
         try:
             url = await registry.get_download_url(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to access this artifact"})
         except Exception:
@@ -455,7 +455,7 @@ class ArtifactManager:
                 })
             raw = await registry.get_content(actor=actor, artifact_id=metadata.artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found for {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to read this artifact"})
         except Exception:
@@ -530,9 +530,13 @@ class ArtifactManager:
         except Exception:
             logger.exception("[get_record_download_url] lookup failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to look up record"})
+        # Missing, another org's and denied read the same: the id comes from the
+        # model, and the answer must not say which ids exist.
+        not_found = _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
         if record is None:
-            return _result(False, {"success": False, "error": f"No record found with id {record_id!r}"})
+            return not_found
 
+        from app.agents.actions.knowledge_graph.ops.scope import ids_outside_scope
         from app.config.constants.arangodb import OriginTypes
         from app.services.record_content import (
             RecordAccessDeniedError,
@@ -547,10 +551,19 @@ class ArtifactManager:
         except RecordNotFoundError:
             return _result(False, {"success": False, "error": f"Record {record_id!r} was deleted, so it can no longer be downloaded"})
         except RecordAccessDeniedError:
-            return _result(False, {"success": False, "error": "You do not have permission to access this record"})
+            return not_found
         except Exception:
             logger.exception("[get_record_download_url] access check failed for %s", record_id)
             return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        try:
+            outside = await ids_outside_scope(
+                self.chat_state, graph_provider, self.chat_state.get("user_id", ""), org_id, [record_id],
+            )
+        except Exception:
+            logger.exception("[get_record_download_url] scope check failed for %s", record_id)
+            return _result(False, {"success": False, "error": "Failed to check access to this record"})
+        if outside:
+            return not_found
 
         if record.origin == OriginTypes.UPLOAD:
             if not record.external_record_id:
@@ -677,7 +690,7 @@ class ArtifactManager:
         try:
             metadata = await registry.promote_to_visible(actor=self._actor(), artifact_id=artifact_id)
         except ArtifactNotFoundError:
-            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}"})
+            return _result(False, {"success": False, "error": f"No artifact found with id {artifact_id!r}; it may have been deleted"})
         except AccessDeniedError:
             return _result(False, {"success": False, "error": "You do not have permission to promote this artifact"})
         except Exception:

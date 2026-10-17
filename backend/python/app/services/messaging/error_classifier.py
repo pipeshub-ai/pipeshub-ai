@@ -21,6 +21,7 @@ from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
+    EntityLookupUnavailableError,
     ExtractionError,
     IndexingError,
     ProcessingError,
@@ -282,6 +283,12 @@ class MessageErrorClassifier:
         # 0a. A deliberate stop wins over the transport error it was raised from.
         if any(isinstance(chain_exc, NonRetryableError) for chain_exc in chain):
             return MessageErrorType.TERMINAL
+
+        # 0a2. An entity lookup that could not run says nothing about the
+        # document, whatever the store answered (a 4xx root would otherwise
+        # mark an already searchable record FAILED on its first delivery).
+        if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
 
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.
         # ClientPayloadError may wrap TransferEncodingError whose .code is not HTTP status.

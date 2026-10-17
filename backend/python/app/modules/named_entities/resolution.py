@@ -1,4 +1,9 @@
-"""Resolve semantic names inside one org and one kind. Value kinds are already keyed."""
+"""Resolve semantic names inside one org and one kind. Value kinds are already keyed.
+
+A graph or vector lookup that cannot run raises ``EntityLookupUnavailableError``
+rather than reading as "no match": the persist step then fails and its durable
+retry writes the record again (``app.modules.indexing.named_entity_persist_retry``).
+"""
 
 from __future__ import annotations
 
@@ -13,6 +18,7 @@ from app.modules.entity_resolution.gates import (
     fuzzy_same,
     validate_candidate_id,
 )
+from app.modules.entity_resolution.lookup import run_lookup
 from app.modules.entity_resolution.models import ResolutionMode
 from app.modules.named_entities.domain.kinds import EntityKind, spec_for
 from app.modules.named_entities.domain.models import NamedEntity
@@ -71,19 +77,19 @@ class NamedEntityResolver:
         merged = [_node_id(row) for row in rows if row.get("mergedInto")]
         if not merged:
             return {}
-        try:
-            return await self._graph.resolve_named_entity_redirects(org_id, merged)
-        except Exception:
-            logger.warning("Named-entity redirect lookup failed for %d nodes", len(merged))
-            return {}
+        return await run_lookup(
+            lambda: self._graph.resolve_named_entity_redirects(org_id, merged),
+            lookup="named_entity_redirect",
+            logger=logger,
+        )
 
     async def _resolve_kind(self, org_id: str, kind: EntityKind, group: list[NamedEntity]) -> list[ResolvedEntity]:
         keys = [entity.norm_key for entity in group]
-        try:
-            found = await self._graph.find_named_entities(org_id, kind.value, keys)
-        except Exception:
-            logger.warning("Named-entity lookup failed for kind %s", kind.value)
-            found = []
+        found = await run_lookup(
+            lambda: self._graph.find_named_entities(org_id, kind.value, keys),
+            lookup="named_entity",
+            logger=logger,
+        )
         survivors = await self._survivors(org_id, found)
         by_norm = {row.get("normKey"): _node_id(row) for row in found}
         alias_index: dict[str, str] = {}
@@ -143,13 +149,14 @@ class NamedEntityResolver:
         return left.casefold().strip() == right.casefold().strip()
 
     async def _candidates(self, org_id: str, kind: EntityKind, entity: NamedEntity) -> list[dict]:
-        if self._vector_search is None:
+        search = self._vector_search
+        if search is None:
             return []
-        try:
-            rows = await self._vector_search(org_id, kind.value, entity.display_name)
-        except Exception:
-            logger.warning("Named-entity candidate search failed")
-            return []
+        rows = await run_lookup(
+            lambda: search(org_id, kind.value, entity.display_name),
+            lookup="named_entity_candidates",
+            logger=logger,
+        )
         checked = []
         for row in rows or []:
             node_id = str(row.get("id") or "")

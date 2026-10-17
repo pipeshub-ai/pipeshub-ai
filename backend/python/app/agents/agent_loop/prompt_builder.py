@@ -31,7 +31,7 @@ so a section can never reference a tool the model cannot call.
 Facts that are true regardless of which other tools exist this turn (what
 a tool returns, what it cannot reach) live in that tool's own
 function-calling schema instead of here — see `coding_sandbox.py`'s
-`set_web_tool_names()`, `web_search_tool.py`'s docstring, and
+`set_web_tool_names()`, `app/web/tools/web_search.py`'s docstring, and
 `hooks/citations.py`'s `_FETCH_FULL_RECORD_DESCRIPTION`. Only arbitration
 BETWEEN tools — which depends on the granted surface set, invisible to any
 one schema — stays here.
@@ -450,6 +450,23 @@ def _join_with_and(items: list[str]) -> str:
     return items[0] if len(items) == 1 else f"{', '.join(items[:-1])} and {items[-1]}"
 
 
+_DEEP_RESEARCH = """## Deep Research
+
+The person asked for deep research: research this thoroughly on the web before answering.
+
+1. Break the question into the sub-questions an expert would check first.
+2. Search for each one. Run independent searches in the same turn rather than one per turn, and
+   prefer primary, recent and authoritative sources.
+3. Read the most relevant pages in full instead of relying on search snippets.
+4. Check every key fact against at least two independent sources. When sources disagree, say so
+   and say which you trust and why.
+5. Stop when new searches stop turning up new sources, or when the web tools say the research
+   budget is used up, and answer with what you have.
+
+Answer as a structured report: the direct answer first in two or three sentences, then sections
+with the evidence, then open questions. Cite every claim."""
+
+
 def _build_exact_numbers(tool_names: tuple[str, ...], toolset: str | None) -> str | None:
     """When to use the calculator rather than mental arithmetic, for the
     calculator tools this request grants. `toolset` is the group a lazily
@@ -704,6 +721,7 @@ class PipesHubPromptBuilder:
         tpl.set("finding_information", _build_finding_information(
             surfaces, catalog, read_in_full=bool(state.get(READ_RECORDS_IN_FULL_STATE_KEY)),
         ) or None)
+        tpl.set("deep_research", _DEEP_RESEARCH if self._context.deep_research and surfaces.has_web_search else None)
         tpl.set("exact_numbers", _build_exact_numbers(
             surfaces.calculator_tools, _toolset_to_load(surfaces.calculator_tools, spec, runtime),
         ))

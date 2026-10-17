@@ -16,7 +16,7 @@ backend/python/          FastAPI: connectors :8088, indexing :8091, query :8000,
 deployment/               Docker Compose and Helm
 ```
 
-New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
+New connectors extend `ConnectorFactory` under `backend/python/app/connectors/sources/`. Before adding or changing one, read [CONNECTOR.md](./CONNECTOR.md); [CONNECTOR_CHECKLIST.md](./CONNECTOR_CHECKLIST.md) is the definition of done. New HTTP routes must keep `backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml` in sync — a mismatch is blocking.
 
 ## Storage is pluggable
 

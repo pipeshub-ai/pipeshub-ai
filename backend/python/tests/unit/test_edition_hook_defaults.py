@@ -47,3 +47,17 @@ def test_a_failing_classifier_is_skipped(monkeypatch) -> None:
 
     assert error_classification.classify_error("a special failure") == ("custom_code", "Custom message")
     assert error_classification.classify_error("rate limit exceeded")[0] == "rate_limit"
+
+
+async def test_web_access_gate_allows_searches_and_public_urls_only() -> None:
+    from app.web.models import CallerContext
+    from app.web.ports import AccessRequest
+
+    gate = edition_services.get_web_access_gate()
+    caller = CallerContext(org_id="org-1", user_id="user-1")
+
+    assert (await gate.check(AccessRequest("search", "anything at all", caller))).allowed
+    assert (await gate.check(AccessRequest("fetch", "https://example.com/page", caller))).allowed
+    for blocked in ("http://localhost/", "http://169.254.169.254/", "file:///etc/passwd", "https:///no-host"):
+        decision = await gate.check(AccessRequest("fetch", blocked, caller))
+        assert not decision.allowed and decision.reason

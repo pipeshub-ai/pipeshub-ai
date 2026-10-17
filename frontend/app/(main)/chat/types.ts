@@ -275,15 +275,40 @@ export interface QueryModeConfig {
 }
 
 /**
- * Assistant chat knowledge scope — **same shape as stream/search `filters`** (`apps` + `kb`).
+ * Assistant chat knowledge scope — **same shape as stream/search `filters`**.
  *
- * - **`apps`** — Ids sent as `filters.apps`: connector hub roots **and** collection/KB hub roots
- *   (whole-subtree scope). Nested record groups do **not** go here.
- * - **`kb`** — Record group ids sent as `filters.kb` (nested picks under an expanded hub root).
+ * - **`apps`** — whole apps: connectors and collections.
+ * - **`kb`** — older name for collection ids; read, no longer written by the picker.
+ * - **`recordGroups`** — record groups, each with the groups nested in it and their records.
+ * - **`records`** — folders and records, each with everything under it.
+ *
+ * Only the topmost selected node is kept: selecting a node drops what was
+ * selected under it (see `utils/tree-selection.ts`).
  */
 export interface ChatKnowledgeFilters {
   apps: string[];
   kb: string[];
+  recordGroups?: string[];
+  records?: string[];
+  /**
+   * Records selected alone, without what is under them. The picker has no
+   * control for it; an API client can start a conversation with it, and the
+   * conversation keeps it when it is opened here.
+   */
+  recordsExact?: string[];
+}
+
+/** What the chat UI remembers about a node it has listed or selected. */
+export interface CollectionMeta {
+  name: string;
+  nodeType: string;
+  connector: string;
+  /** Ids of the nodes above it in the picker tree, root first (absent for a root). */
+  ancestorIds?: string[];
+  extension?: string | null;
+  mimeType?: string | null;
+  /** The place lookup was refused: deleted, or not readable by this user. */
+  unavailable?: boolean;
 }
 
 export interface AppliedFilterNode {
@@ -291,21 +316,28 @@ export interface AppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  /** Named in the question with @. Absent on messages saved before this was kept. */
+  mentioned?: boolean;
 }
 
 export interface AppliedFilters {
   apps: AppliedFilterNode[];
   kb: AppliedFilterNode[];
+  recordGroups?: AppliedFilterNode[];
+  records?: AppliedFilterNode[];
+  recordsExact?: AppliedFilterNode[];
 }
 
 /** Shallow copy for stream/search payloads (keeps a stable object shape for callers). */
-export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): {
-  apps: string[];
-  kb: string[];
-} {
+export function buildAssistantApiFilters(filters: ChatKnowledgeFilters): ChatKnowledgeFilters {
   return {
     apps: [...(filters.apps ?? [])],
     kb: [...(filters.kb ?? [])],
+    ...(filters.recordGroups?.length ? { recordGroups: [...filters.recordGroups] } : {}),
+    ...(filters.records?.length ? { records: [...filters.records] } : {}),
+    ...(filters.recordsExact?.length ? { recordsExact: [...filters.recordsExact] } : {}),
   };
 }
 
@@ -324,8 +356,8 @@ export interface ChatCollectionAttachment {
  * - `internalSearch` gates knowledge tools (retrieval, knowledgegraph, knowledgehub),
  *   and disables the Connectors + Collections tabs in the UI when false.
  * - `webSearch` gates web_search + fetch_url tools.
- * - `deepSearch` is reserved for a future "deep research" mode; ignored by the
- *   backend until that feature ships (always treated as false server-side).
+ * - `deepSearch` turns on deep research: the agent researches thoroughly on the
+ *   web before answering (more steps and a larger web budget). Needs `webSearch`.
  *
  * When absent from a stream request, the backend defaults both to `true`
  * (preserving today's behavior for existing clients).
@@ -636,6 +668,7 @@ export interface CitationApiResponse {
       connector: string;
       /** Connector instance the record came from; absent on older saved answers */
       connectorId?: string;
+      connectorInstanceName?: string;
       recordType: string;
       webUrl?: string;
       mimeType: string;
@@ -648,6 +681,8 @@ export interface CitationApiResponse {
       topics?: string[];
       languages?: string[];
       departments?: string[];
+      /** When the cited record was last updated at its source */
+      updatedAt?: string;
     };
     citationType: string;
     createdAt: string;
@@ -880,10 +915,7 @@ export interface StreamChatRequest {
    * e.g. `agent:auto`, `agent:planExecute` (UI “Plan & Execute” strategy).
    */
   chatMode: StreamChatModePayload;
-  filters: {
-    apps: string[];
-    kb: string[];
-  };
+  filters: ChatKnowledgeFilters;
   timezone?: string;
   currentTime?: string;
   appliedFilters?: AppliedFilters;
@@ -950,6 +982,8 @@ export interface ToolApprovalDetails {
   readOnly?: boolean;
   /** What the tool does to data; a deleting tool is marked on the card. */
   kind?: 'read' | 'write' | 'destructive' | null;
+  /** False when "Don't ask again" can't set a rule: a toolset's rules are its admin's. */
+  canRemember?: boolean;
   /** Epoch milliseconds. */
   expiresAt: number;
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */
@@ -1187,15 +1221,10 @@ export interface ChatSlot {
 
 // ── Search types ──────────────────────────────────────────────────────
 
-export interface SearchFilters {
-  apps: string[];
-  kb: string[];
-}
-
 export interface SearchRequest {
   query: string;
   limit: number;
-  filters: SearchFilters;
+  filters: ChatKnowledgeFilters;
 }
 
 export interface SearchResultMetadata {
@@ -1209,6 +1238,7 @@ export interface SearchResultMetadata {
   connector: string;
   /** Connector instance the record came from; marks demo records. */
   connectorId?: string;
+  connectorInstanceName?: string;
   blockText?: string;
   blockType?: string;
   bounding_box?: Array<{ x: number; y: number }>;

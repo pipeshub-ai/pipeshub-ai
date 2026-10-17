@@ -15,7 +15,8 @@ import {
   findModelInfoInConversationLists,
   pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
-import { ChatSuggestion } from '@/chat/types';
+import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
+import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -59,6 +60,7 @@ import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
+import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -186,6 +188,7 @@ function ChatContent() {
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
   const threadRuntime = useThreadRuntime();
+  useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
   // Actions are stable refs in Zustand — selecting them individually
@@ -356,12 +359,13 @@ function ChatContent() {
           if (cancelled) return;
           const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
           const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+          const wholeCollections = collectionRows.filter((r) => !r.nodeType);
           const kbIds =
-            collectionRows.length > 0
-              ? collectionRows.map((r) => r.id)
+            wholeCollections.length > 0
+              ? wholeCollections.map((r) => r.id)
               : knowledgeDefaults.kb;
           const knowledgeDefaultsForStore = {
-            apps: knowledgeDefaults.apps,
+            ...knowledgeDefaults,
             kb: kbIds,
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
@@ -420,20 +424,9 @@ function ChatContent() {
                   custom?: { appliedFilters?: import('./types').AppliedFilters };
                 }
               )?.custom?.appliedFilters;
-              if (af) {
-                freshStore.setAgentKnowledgeScope({
-                  apps: af.apps.map((n) => n.id),
-                  kb: af.kb.map((n) => n.id),
-                });
-                const namesCache: Record<string, string> = {};
-                const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-                for (const node of [...af.apps, ...af.kb]) {
-                  namesCache[node.id] = node.name;
-                  metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-                }
-                freshStore.setCollectionNamesCache(namesCache);
-                freshStore.setCollectionMetaCache(metaCache);
-              }
+              // Every bucket, not only apps and collections: a folder or record
+              // the agent chat was narrowed to stays in its scope.
+              if (af) restoreAppliedFilters(af, true);
             }
           }
         } catch (error) {
@@ -509,6 +502,8 @@ function ChatContent() {
       } else if (store.activeSlotId && activeSlot?.threadAgentId) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'leave-agent-for-main-home' });
         useChatStore.setState({ activeSlotId: null });
+        // The main assistant starts unscoped, not with what was picked before the agent.
+        store.setFilters({ apps: [], kb: [] });
         store.bumpConversationsVersion();
       } else if (
         store.activeSlotId &&
@@ -552,41 +547,19 @@ function ChatContent() {
             .find(
               (msg) =>
                 msg.role === 'user' &&
-                (msg.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
-                  ?.custom?.appliedFilters != null
+                (msg.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)?.custom
+                  ?.appliedFilters != null
             );
-          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
+          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
-            // Legacy chats stored the KB/Collections root ID in apps. With the new
-            // behavior, KB roots are never added to apps — drop them for compat.
-            const legacyFilteredApps = af.apps.filter(
-              (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-            );
-            if (urlAgentId) {
-              store.setAgentKnowledgeScope({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            } else {
-              store.setFilters({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            }
-            const namesCache: Record<string, string> = {};
-            const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-            for (const node of [...legacyFilteredApps, ...af.kb]) {
-              namesCache[node.id] = node.name;
-              metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-            }
-            store.setCollectionNamesCache(namesCache);
-            store.setCollectionMetaCache(metaCache);
+            restoreAppliedFilters(af, Boolean(urlAgentId), projectId);
           } else {
             if (urlAgentId) {
               store.setAgentKnowledgeScope(null);
             } else {
               store.setFilters({ apps: [], kb: [] });
+              if (projectId) store.setProjectKnowledgeScope(null);
             }
           }
         } else {
@@ -721,6 +694,7 @@ function ChatContent() {
         // Always reset filters so pills from a previously viewed conversation
         // don't persist if this conversation carries no filter history.
         useChatStore.getState().setFilters({ apps: [], kb: [] });
+        if (projectId) useChatStore.getState().setProjectKnowledgeScope(null);
 
         // Restore filter state from the most recent user message that carried filters.
         // This brings back the selected connectors/collections after a hard refresh.
@@ -729,39 +703,7 @@ function ChatContent() {
           .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
 
         if (lastFiltered?.appliedFilters) {
-          const af = lastFiltered.appliedFilters;
-          const store = useChatStore.getState();
-
-          // Legacy chats stored the KB/Collections root ID in apps. With the new
-          // behavior, KB roots are never added to apps — drop them for compat.
-          const legacyFilteredApps = af.apps.filter(
-            (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-          );
-
-          if (historyAndShareAgentId) {
-            store.setAgentKnowledgeScope({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          } else {
-            store.setFilters({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          }
-
-          const namesCache: Record<string, string> = {};
-          const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-          for (const node of [...legacyFilteredApps, ...af.kb]) {
-            namesCache[node.id] = node.name;
-            metaCache[node.id] = {
-              name: node.name,
-              nodeType: node.nodeType,
-              connector: node.connector,
-            };
-          }
-          store.setCollectionNamesCache(namesCache);
-          store.setCollectionMetaCache(metaCache);
+          restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId), projectId);
         }
 
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
@@ -806,7 +748,7 @@ function ChatContent() {
       cancelled = true;
       if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, t]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, projectId, t]);
 
   // A run that outlived a refresh finishes on the server; reload once it has.
   useRemoteRunPoll(
@@ -920,9 +862,11 @@ function ChatContent() {
 
     const store = useChatStore.getState();
 
-    // Ensure we have a slot for the new chat
+    // A fresh slot unless the active one is an idle, empty new chat: reusing a
+    // running or finished thread would show its Stop button and append there.
     let slotId = store.activeSlotId;
-    if (!slotId) {
+    const activeSlot = slotId ? store.slots[slotId] : undefined;
+    if (!slotId || !activeSlot || activeSlot.isStreaming || activeSlot.stopping || activeSlot.messages.length > 0) {
       slotId = store.createSlot(null);
       store.setActiveSlot(slotId);
     }
@@ -937,14 +881,15 @@ function ChatContent() {
     }
 
     // 1. Set collection filters so they scope the AI query
+    // The handed-over scope replaces whatever an earlier chat left in the
+    // filters; with no scope the question searches everything.
     const collections = pending.pageContext.collections ?? [];
+    const selectedNodes = pending.pageContext.selectedNodes ?? [];
+    if (collections.length === 0 && selectedNodes.length === 0) {
+      store.setFilters({ apps: [], kb: [] });
+    }
     if (collections.length > 0) {
-      const rootIds = collections.map((c) => c.id);
-      store.setFilters({
-        ...store.settings.filters,
-        apps: [...new Set([...(store.settings.filters.apps ?? []), ...rootIds])],
-        kb: [],
-      });
+      store.setFilters({ apps: [...new Set(collections.map((c) => c.id))], kb: [] });
 
       const cache = { ...store.collectionNamesCache };
       collections.forEach((c) => {
@@ -962,12 +907,18 @@ function ChatContent() {
       });
     }
 
+    if (selectedNodes.length > 0) {
+      restoreAppliedFilters(appliedFiltersFromNodes(selectedNodes), false);
+    }
+
     // 2. Apply any settings overrides from the widget
     if (pending.settings) {
       if (pending.settings.mode) store.setMode(pending.settings.mode);
       if (pending.settings.queryMode) store.setQueryMode(pending.settings.queryMode);
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
+
+    if (!pending.message.trim() && !pending.attachments?.length) return;
 
     // 3. Auto-send the message through the runtime. Attachments arrive
     // pre-uploaded (the widget triggered the upload at attach-time), so we
@@ -1243,6 +1194,22 @@ function ChatContent() {
   useEffect(() => () => { splitResizeCleanupRef.current?.(); }, []);
   // ─────────────────────────────────────────────────────────────────────────
 
+  const showMessageList = !(showInitialLoading || showLoading) && !showSearchView && !showNewChatView;
+  const composerColumn = (
+    <Box
+      style={{
+        ...chatContentColumnStyle(isMobile),
+        paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
+        paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+        // MessageList's composer dock passes clicks through its gutters.
+        pointerEvents: 'auto',
+      }}
+    >
+      {!isInputCentered && showChatInput && <ChatInputWrapper />}
+      <ChatFooterLinks />
+    </Box>
+  );
+
   // ── Chat column body (shared between split-pane and full-width modes) ──────
   const chatColumnBody = (
     <>
@@ -1427,31 +1394,24 @@ function ChatContent() {
           </Flex>
         ) : (
           <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
-            <MessageList />
+            <MessageList composer={composerColumn} />
           </Box>
         )}
 
-        <Flex
-          direction="column"
-          align="center"
-          className="chat-composer-row"
-          style={{
-            width: '100%',
-            flexShrink: 0,
-            paddingBottom: isMobile ? 'var(--space-2)' : 0,
-          }}
-        >
-          <Box
+        {!showMessageList && (
+          <Flex
+            direction="column"
+            align="center"
+            className="chat-composer-row"
             style={{
-              ...chatContentColumnStyle(isMobile),
-              paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
-              paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+              width: '100%',
+              flexShrink: 0,
+              paddingBottom: isMobile ? 'var(--space-2)' : 0,
             }}
           >
-            {!isInputCentered && showChatInput && <ChatInputWrapper />}
-            <ChatFooterLinks />
-          </Box>
-        </Flex>
+            {composerColumn}
+          </Flex>
+        )}
       </Flex>
     </>
   );

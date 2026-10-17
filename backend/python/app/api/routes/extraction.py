@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Mapping
+from collections.abc import (
+    Mapping,  # noqa: TC003  # FastAPI resolves route annotations at runtime
+)
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
@@ -25,8 +27,10 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
-from app.models.blocks import BlocksContainer
-from app.modules.named_entities.domain.config import NamedEntityBudgets
+from app.models.blocks import BlocksContainer  # noqa: TC001  # pydantic field type
+from app.modules.named_entities.domain.config import (
+    NamedEntityBudgets,  # noqa: TC001  # pydantic field type
+)
 from app.modules.named_entities.domain.kinds import EntityKind
 from app.modules.transformers.document_extraction import (
     semantic_metadata_from_classification,
@@ -95,7 +99,7 @@ async def classify(
             record_type=body.record_type,
         )
         metadata = None if classification is None else semantic_metadata_from_classification(classification)
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.exception(
             "Unexpected error during classification for org '%s'", org_id
         )
@@ -161,7 +165,11 @@ async def extract_entities(
                 content=ExtractEntitiesResponse(success=False, error="entity extraction is busy").model_dump(),
             )
     try:
-        from app.modules.named_entities.extractor import NamedEntityExtractor, NamedEntityRequest, indexing_llm
+        from app.modules.named_entities.extractor import (
+            NamedEntityExtractor,
+            NamedEntityRequest,
+            indexing_llm,
+        )
 
         enabled = None
         if body.enabled_kinds:
@@ -176,7 +184,9 @@ async def extract_entities(
         llm = transport = None
         provider = model = "indexing"
         try:
-            llm, transport, provider, model = await indexing_llm(config_service)
+            llm, transport, provider, model = await indexing_llm(
+                config_service, org_id=org_id, shard_key=body.record_name,
+            )
         except Exception as exc:
             # As in-process extraction does: without a model the deterministic
             # entities still count, and the record is PARTIAL, not failed.

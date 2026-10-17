@@ -560,11 +560,16 @@ class GitLabDataSource:
         ``data`` is a dict with a ``changes`` list; each entry has
         ``new_path``, ``old_path``, ``diff``, ``new_file``, ``deleted_file``,
         ``too_large``, and ``generated_file`` fields.
+
+        ``access_raw_diffs`` asks for every patch under GitLab's hard limit.
+        Without it, GitLab collapses (empties) any patch of 10% of that limit
+        or more on a merge request that changes more than one file, so a
+        medium-sized edit would arrive with no diff.
         """
         try:
             p = self._sdk.projects.get(project_id, lazy=True)
             mr = p.mergerequests.get(id=mr_iid, lazy=True)
-            return GitLabResponse(success=True, data=mr.changes(get_all=True))
+            return GitLabResponse(success=True, data=mr.changes(get_all=True, access_raw_diffs="true"))
         except Exception as e:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
@@ -853,7 +858,6 @@ class GitLabDataSource:
 
     # Used by:
     #   gitlab/projects.py - ProjectsSync._sync_project_members_as_pseudo
-    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
     def list_project_members_all(
@@ -877,9 +881,23 @@ class GitLabDataSource:
             return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
 
     # Used by:
+    #   gitlab/projects.py - ProjectsSync._ensure_gitlab_group_record_groups
+    def list_group_members(
+        self,
+        group_id: int | str,
+        *,
+        get_all: bool | None = None,
+    ) -> GitLabResponse:
+        """List direct group members (``/members``), not members inherited from a parent."""
+        try:
+            g = self._sdk.groups.get(group_id, lazy=True)
+            return GitLabResponse(success=True, data=g.members.list(get_all=get_all))
+        except Exception as e:
+            return GitLabResponse(success=False, error=str(e), status_code=_status_of(e))
+
+    # Used by:
     #   gitlab/users.py    - UsersSync._sync_users_unscoped
     #   gitlab/users.py    - UsersSync._sync_users_scoped
-    #   gitlab/projects.py - ProjectsSync._group_permissions_from_child_projects
     def list_group_members_all(
         self,
         group_id: int | str,

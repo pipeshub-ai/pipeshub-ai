@@ -128,6 +128,29 @@ class OpenAICacheStrategy(CacheStrategy):
         return messages, dict(self._call_kwargs)
 
 
+def without_cache_markers(messages: list[BaseMessage]) -> list[BaseMessage]:
+    """``messages`` with every cache marker a strategy put on them removed: the
+    ``cache_control`` on a block and the Converse ``cachePoint`` blocks. What a
+    request sends once its provider has refused a marker."""
+    stripped: list[BaseMessage] = []
+    for message in messages:
+        content = message.content
+        if isinstance(content, str) or not any(_is_marked(block) for block in content):
+            stripped.append(message)
+            continue
+        blocks = [
+            {key: value for key, value in block.items() if key != ANTHROPIC_PARAM} if isinstance(block, dict) else block
+            for block in content
+            if not (isinstance(block, dict) and "cachePoint" in block)
+        ]
+        stripped.append(message.model_copy(update={"content": blocks}))
+    return stripped
+
+
+def _is_marked(block: object) -> bool:
+    return isinstance(block, dict) and (ANTHROPIC_PARAM in block or "cachePoint" in block)
+
+
 def _after(blocks: list[dict[str, Any]], text: str) -> str:
     """``text`` as a block that follows others: adjacent system blocks reach the
     model with nothing between them, and the separator goes on this side so the

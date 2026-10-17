@@ -95,17 +95,7 @@ export function MobileQueryOptionsSheet({
         />
       )}
       {activePanel === 'connectors' && (
-        <CollectionsTab
-          apps={settings.filters?.apps ?? []}
-          kb={settings.filters?.kb ?? []}
-          onSelectionChange={(next) => {
-            setFilters({
-              ...settings.filters,
-              apps: next.apps,
-              kb: next.kb,
-            });
-          }}
-        />
+        <CollectionsTab selection={settings.filters} onSelectionChange={setFilters} />
       )}
       {activePanel === 'agent-resources' && (
         <Flex

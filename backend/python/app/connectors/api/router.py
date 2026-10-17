@@ -48,6 +48,7 @@ from app.api.middlewares.auth import is_request_admin, require_scopes, require_s
 from app.api.middlewares.token_policy import has_service_scope
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     AppStatus,
     CollectionNames,
     Connectors,
@@ -73,10 +74,8 @@ from app.edition_config import (
     default_connector_scope,
     ensure_oauth_default,
     forbid_inherited_oauth_mutation,
-    lookup_user_for_records,
     mask_oauth_config_for_response,
     oauth_create_extra_fields,
-    records_user_id_arg,
     resolve_config_service,
     resolve_oauth_config,
     resolve_oauth_configs,
@@ -111,8 +110,8 @@ from app.connectors.core.registry.auth_builder import AuthType
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.connector_registry import ConnectorRegistry
 from app.connectors.core.registry.filters import sync_filter_selection_problems
+from app.connectors.core.registry.sync_field_validation import sync_custom_field_problems
 from app.connectors.sources.atlassian.core.auth_fields import apply_confluence_jira_scope
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
 from app.connectors.core.sync.sync_coordinator import get_coordinator
 from app.edition_services import max_connector_workers, sync_executor_enabled
 from app.connectors.core.sync.sync_dispatcher import get_dispatcher
@@ -1113,6 +1112,25 @@ async def _validate_sync_filter_selections(
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=problems[0])
 
 
+async def _validate_sync_custom_fields(
+    connector_registry: ConnectorRegistry,
+    connector_type: str,
+    submitted: object,
+    config: dict[str, Any],
+) -> None:
+    """400 listing every submitted sync setting outside its schema's rules (range, options, required)."""
+    if not isinstance(submitted, dict):
+        return
+    metadata = await connector_registry.get_connector_metadata(connector_type)
+    if not isinstance(metadata, dict):
+        return
+    fields = metadata.get("config", {}).get("sync", {}).get("customFields", [])
+    current = config.get("sync") if isinstance(config.get("sync"), dict) else {}
+    problems = sync_custom_field_problems([f for f in fields if isinstance(f, dict)], submitted, current)
+    if problems:
+        raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=" ".join(problems))
+
+
 def _caller_org_and_user(request: Request) -> tuple[str, str, bool]:
     """Return (org_id, user_id, is_indexing_service) for the signed-URL routes.
 
@@ -1745,114 +1763,6 @@ async def convert_buffer_to_pdf_stream(
             fallback_filename="converted_file.pdf"
         )
 
-@router.get("/api/v1/records", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
-@inject
-async def get_records(
-    request:Request,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
-    page: int = Query(1, ge=1, description="Page number (1-based)"),
-    limit: int = Query(20, ge=1, le=100, description="Number of items per page"),
-    search: str | None = None,
-    record_types: str | None = Query(None, description="Comma-separated list of record types"),
-    origins: str | None = Query(None, description="Comma-separated list of origins"),
-    connectors: str | None = Query(None, description="Comma-separated list of connectors"),
-    indexing_status: str | None = Query(None, description="Comma-separated list of indexing statuses"),
-    permissions: str | None = Query(None, description="Comma-separated list of permissions"),
-    date_from: int | None = None,
-    date_to: int | None = None,
-    sort_by: str = "createdAtTimestamp",
-    sort_order: str = "desc",
-    source: str = "all",
-) -> dict | None:
-    """
-    List all records the user can access (from all KBs, folders, and direct connector permissions), with filters.
-    """
-    try:
-        container = request.app.container
-        logger = container.logger()
-
-        user_id = request.state.user.get("userId")
-        org_id = request.state.user.get("orgId")
-
-        logger.info(f"Looking up user by user_id: {user_id}")
-        user = await lookup_user_for_records(graph_provider, user_id, org_id)
-
-        if not user:
-            logger.warning(f"⚠️ User not found for user_id: {user_id}")
-            return {
-                "success": False,
-                "code": 404,
-                "reason": f"User not found for user_id: {user_id}"
-            }
-        records_user_id = records_user_id_arg(user, user_id)
-
-        skip = (page - 1) * limit
-        sort_order = sort_order.lower() if sort_order.lower() in ["asc", "desc"] else "desc"
-        sort_by = sort_by if sort_by in [
-            "recordName", "createdAtTimestamp", "updatedAtTimestamp", "recordType", "origin", "indexingStatus"
-        ] else "createdAtTimestamp"
-
-        # Parse comma-separated strings into lists
-        parsed_record_types = _parse_comma_separated_str(record_types)
-        parsed_origins = _parse_comma_separated_str(origins)
-        parsed_connectors = _parse_comma_separated_str(connectors)
-        parsed_indexing_status = _parse_comma_separated_str(indexing_status)
-        parsed_permissions = _parse_comma_separated_str(permissions)
-
-        records, total_count, available_filters = await graph_provider.get_records(
-            user_id=records_user_id,
-            org_id=org_id,
-            skip=skip,
-            limit=limit,
-            search=search,
-            record_types=parsed_record_types,
-            origins=parsed_origins,
-            connectors=parsed_connectors,
-            indexing_status=parsed_indexing_status,
-            permissions=parsed_permissions,
-            date_from=date_from,
-            date_to=date_to,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            source=source,
-        )
-
-        total_pages = (total_count + limit - 1) // limit
-
-        applied_filters = {
-            k: v for k, v in {
-                "search": search,
-                "recordTypes": parsed_record_types,
-                "origins": parsed_origins,
-                "connectors": parsed_connectors,
-                "indexingStatus": parsed_indexing_status,
-                "source": source if source != "all" else None,
-                "dateRange": {"from": date_from, "to": date_to} if date_from or date_to else None,
-            }.items() if v
-        }
-
-        return {
-            "records": records,
-            "pagination": {
-                "page": page,
-                "limit": limit,
-                "totalCount": total_count,
-                "totalPages": total_pages,
-            },
-            "filters": {
-                "applied": applied_filters,
-                "available": available_filters,
-            }
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"❌ Failed to list all records: {str(e)}", exc_info=True)
-        raise HTTPException(
-            status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value,
-            detail="Failed to retrieve records",
-        ) from e
-
 @router.get("/api/v1/records/{record_id}", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_READ, OAuthScopes.KB_READ))])
 @inject
 async def get_record_by_id(
@@ -2211,9 +2121,14 @@ async def delete_record(
                 detail="You do not have access to this record",
             )
 
+        record = has_access.get("record") or {}
+        # The provider's delete refuses another org's record, but only after the
+        # file removal below is published; a record known to be foreign stops here.
+        if record.get("orgId") not in (None, org_id):
+            raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail="Record not found")
+
         # Only uploads are role-checked by the providers, and a synced record deleted here
         # would return on the next sync, so those are removed at the source instead.
-        record = has_access.get("record") or {}
         if (
             record.get("origin") != OriginTypes.UPLOAD.value
             and record.get("connectorName") != Connectors.KNOWLEDGE_BASE.value
@@ -2284,12 +2199,14 @@ async def delete_record(
             # the request — that would misreport an already-completed deletion.
             # Retry transient broker hiccups, then flag (rather than silently
             # swallow) a failure so the caller knows vector cleanup is pending.
-            vector_cleanup_pending = False
-            failed_record_ids: list[str] = []
+            unpublished_record_ids: list[str] = []
             event_data = result.get("eventData")
+            payloads = []
+            if isinstance(event_data, dict):
+                payloads = event_data.get("payloads") or [event_data.get("payload")]
+                payloads = [p for p in payloads if p]
             has_valid_event_data = (
-                isinstance(event_data, dict)
-                and event_data.get("payload")
+                bool(payloads)
                 and event_data.get("eventType")
                 and event_data.get("topic")
             )
@@ -2297,17 +2214,17 @@ async def delete_record(
                 logger.error(
                     f"❌ Malformed eventData for record {record_id}, skipping publish: {event_data!r}"
                 )
-                vector_cleanup_pending = True
-                failed_record_ids.append(record_id)
+                unpublished_record_ids.append(record_id)
             elif has_valid_event_data:
                 timestamp = get_epoch_timestamp_in_ms()
-                # An email's attachments have vectors of their own.
-                for payload in event_data.get("payloads") or [event_data["payload"]]:
+                # A folder's contents and an email's attachments have vectors of their own.
+                for payload in payloads:
                     event = {
                         "eventType": event_data["eventType"],
                         "timestamp": timestamp,
                         "payload": payload,
                     }
+                    deleted_id = payload.get("recordId") or record_id
                     async def publish(event: dict = event) -> None:
                         if await kafka_service.publish_event(event_data["topic"], event) is False:
                             raise RuntimeError("the message broker did not accept the event")
@@ -2316,17 +2233,15 @@ async def delete_record(
                         await retry_async(
                             publish,
                             logger=logger,
-                            description=f"publish {event_data['eventType']} event for record {record_id}",
+                            description=f"publish {event_data['eventType']} event for record {deleted_id}",
                         )
-                        logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
+                        logger.info(f"✅ Published {event_data['eventType']} event for record {deleted_id}")
                     except Exception as e:
                         logger.error(
-                            f"❌ Giving up publishing deletion event for record "
-                            f"{payload.get('recordId') or record_id} after retries; embeddings "
-                            f"are orphaned until reconciliation: {str(e)}"
+                            f"❌ Giving up publishing deletion event for record {deleted_id} "
+                            f"after retries; embeddings are orphaned until reconciliation: {str(e)}"
                         )
-                        vector_cleanup_pending = True
-                        failed_record_ids.append(payload.get("recordId") or record_id)
+                        unpublished_record_ids.append(deleted_id)
 
             # This route deletes directly, bypassing the processor's cascade
             # path, so it owns its own cache invalidation.
@@ -2341,9 +2256,9 @@ async def delete_record(
                 "connector": result.get("connector"),
                 "timestamp": result.get("timestamp")
             }
-            if vector_cleanup_pending:
+            if unpublished_record_ids:
                 response["vectorCleanupPending"] = True
-                response["vectorCleanupFailedRecordIds"] = failed_record_ids or [record_id]
+                response["vectorCleanupFailedRecordIds"] = unpublished_record_ids
             return response
         else:
             logger.error("❌ Failed to delete record %s: %s", record_id, result.get("reason"))
@@ -2472,7 +2387,7 @@ def _build_reindex_event(
     return {"eventType": event_type, "topic": "sync-events", "payload": payload}
 
 
-@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record)])
+@router.post("/api/v1/records/{record_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
 @inject
 async def reindex_single_record(
     record_id: str,
@@ -2516,8 +2431,12 @@ async def reindex_single_record(
         )
 
         if result["success"]:
-            # Publish event in router
+            # Only after the provider's access and disabled checks, so a caller
+            # without access cannot learn from a 409 that the record exists.
+            await require_connector_not_locked_for_record(record_id, graph_provider)
+
             event_data = result.get("eventData")
+            event_published = False
             if event_data:
                 try:
                     timestamp = get_epoch_timestamp_in_ms()
@@ -2527,6 +2446,7 @@ async def reindex_single_record(
                         "payload": event_data["payload"]
                     }
                     await kafka_service.publish_event(event_data["topic"], event)
+                    event_published = True
                     logger.info(f"✅ Published {event_data['eventType']} event for record {record_id}")
                     # Only the single-record path owns this record's status; the
                     # sync-events paths hand off to the reindex handler instead.
@@ -2546,7 +2466,7 @@ async def reindex_single_record(
                 "recordId": result.get("recordId"),
                 "recordName": result.get("recordName"),
                 "connector": result.get("connector"),
-                "eventPublished": event_data is not None,
+                "eventPublished": event_published,
                 "userRole": result.get("userRole"),
                 "depth": depth
             }
@@ -2591,7 +2511,7 @@ async def get_connector_stats_endpoint(
         logger.error(f"Error getting connector stats: {str(e)}")
         raise HTTPException(status_code=HttpStatusCode.INTERNAL_SERVER_ERROR.value, detail=action_failed("load connector activity")) from e
 
-@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE)), Depends(require_connector_not_locked_for_record_group)])
+@router.post("/api/v1/record-groups/{record_group_id}/reindex", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_SYNC, OAuthScopes.KB_WRITE))])
 @inject
 async def reindex_record_group(
     record_group_id: str,
@@ -2632,6 +2552,8 @@ async def reindex_record_group(
             logger.error("❌ Failed to reindex record group %s: %s", record_group_id, result.get("reason"))
             status_code, detail = provider_failure(result, "reindex these files")
             raise HTTPException(status_code=status_code, detail=detail)
+
+        await require_connector_not_locked_for_record_group(record_group_id, graph_provider)
 
         # Publish reindex event (router is responsible for event publishing)
         connector_id = result.get("connectorId")
@@ -3307,6 +3229,48 @@ async def _fetch_connector_sync_block(
     return sync
 
 
+_MAX_LISTED_CONNECTOR_IDS = 200
+
+
+async def _connector_schedule_state(
+    connector_id: str,
+    graph_provider: IGraphDBProvider,
+    config_service: ConfigurationService,
+    organisation_id: str,
+    logger: logging.Logger,
+) -> dict[str, Any]:
+    """What decides one connector's schedule, for a caller that must not read a gap as "sync is off".
+
+    ``missing``: no such connector. ``unreadable``: its settings could not be read, so the caller
+    keeps the schedule it has and asks again later.
+    """
+    try:
+        # Raising: a read that failed must not look like a connector that is gone.
+        doc = await graph_provider.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
+    except Exception as e:
+        logger.warning("Failed to read connector %s: %s", connector_id, e)
+        return {"connectorId": connector_id, "unreadable": True}
+    if not doc:
+        return {"connectorId": connector_id, "missing": True}
+    item: dict[str, Any] = {
+        "connectorId": connector_id,
+        "type": doc.get("type"),
+        "orgId": organisation_id,
+        "ownerUserId": doc.get("createdBy"),
+        "isActive": bool(doc.get("isActive")),
+    }
+    try:
+        # Raising, and uncached: a store error otherwise reads as no settings, which removes the schedule.
+        config = await config_service.get_config(
+            _get_config_path_for_instance(connector_id), use_cache=False, raise_on_error=True,
+        )
+    except Exception as e:
+        logger.warning("Failed to read config for connector %s: %s", connector_id, e)
+        return {**item, "sync": None, "unreadable": True}
+    sync = (config or {}).get("sync") if isinstance(config, dict) else None
+    return {**item, "sync": sync if isinstance(sync, dict) else {}}
+
+
 @router.get(
     "/api/v1/connectors/internal/all-scheduled",
     dependencies=[Depends(require_service_token(TokenScopes.FETCH_CONFIG))],
@@ -3315,6 +3279,11 @@ async def get_all_scheduled_connector_instances_internal(
     request: Request,
     page: int = Query(1, ge=1, description="1-based page number"),
     limit: int = Query(50, ge=1, le=200, description="Maximum candidates to process per call"),
+    connector_ids: str | None = Query(
+        None,
+        alias="connectorIds",
+        description="Comma-separated ids: return exactly these connectors, active or not, in one page",
+    ),
 ) -> dict[str, Any]:
     """
     Internal cross-org enumeration of connector instances configured for
@@ -3363,6 +3332,17 @@ async def get_all_scheduled_connector_instances_internal(
                 detail="No organisations found",
             )
         organisation_id = organisation[0].get("_key") or organisation[0].get("id")
+
+        if isinstance(connector_ids, str):
+            ids = list(dict.fromkeys(i.strip() for i in connector_ids.split(",") if i.strip()))[:_MAX_LISTED_CONNECTOR_IDS]
+            return {
+                "success": True,
+                "items": [
+                    await _connector_schedule_state(cid, graph_provider, config_service, organisation_id, logger)
+                    for cid in ids
+                ],
+                "hasMore": False,
+            }
 
         # Convert 1-based page to 0-based DB offset.
         skip = (page - 1) * limit
@@ -4601,7 +4581,7 @@ async def get_connector_instance(
                 detail="User not authenticated"
             )
 
-        connector = await connector_registry.get_connector_instance(
+        connector = await connector_registry.get_connector_instance_for_view(
             connector_id=connector_id,
             user_id=user_id,
             org_id=org_id,
@@ -5435,6 +5415,7 @@ async def update_connector_instance_filters_sync_config(
                 if key in body["filters"]:
                     new_config["filters"][key] = body["filters"][key]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
@@ -5632,6 +5613,7 @@ async def update_connector_instance_config(
                     # Section doesn't exist, add it
                     new_config[section] = body[section]
 
+        await _validate_sync_custom_fields(connector_registry, instance.get("type", ""), body.get("sync"), new_config)
         if isinstance((body.get("filters") or {}).get("sync"), dict):
             await _validate_sync_filter_selections(
                 connector_registry, instance.get("type", ""), new_config, "saving"
@@ -7528,7 +7510,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
+@router.post("/api/v1/connectors/{connector_id}/filters", deprecated=True, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -7536,6 +7518,11 @@ async def save_connector_instance_filters(
 ) -> dict[str, Any]:
     """
     Save filter selections for a connector instance.
+
+    Deprecated: the app saves filters through
+    ``PUT /api/v1/connectors/{connector_id}/config/filters-sync``, which takes
+    ``{sync?, filters?: {sync, indexing}}`` and refuses while the connector is active.
+    What this route saves lands in ``filters.values``, which sync doesn't read. Removed in a later release.
 
     Args:
         connector_id: Unique instance key
@@ -7551,6 +7538,13 @@ async def save_connector_instance_filters(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
+    logger.warning(
+        "Deprecated POST /api/v1/connectors/%s/filters was called; use PUT "
+        "/api/v1/connectors/%s/config/filters-sync with {sync?, filters?: {sync, indexing}} "
+        "while the connector is disabled",
+        connector_id,
+        connector_id,
+    )
 
     try:
         # Get and validate user context

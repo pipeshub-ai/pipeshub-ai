@@ -2056,7 +2056,7 @@ class TestExtractEmailPermissions:
         connector._extract_email_from_recipient = MagicMock(return_value="owner@test.com")
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_owner_not_in_recipients_added(self):
@@ -2071,9 +2071,7 @@ class TestExtractEmailPermissions:
         connector._extract_email_from_recipient = MagicMock(return_value="other@test.com")
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        owner_perms = [p for p in perms if p.type == PermissionType.OWNER]
-        assert len(owner_perms) == 1
-        assert owner_perms[0].email == "owner@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_empty_recipients(self):
@@ -2086,9 +2084,7 @@ class TestExtractEmailPermissions:
         msg.from_ = None
 
         perms = await connector._extract_email_permissions(msg, "rec-1", "owner@test.com")
-        # Owner should be added
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
 
 # ===========================================================================

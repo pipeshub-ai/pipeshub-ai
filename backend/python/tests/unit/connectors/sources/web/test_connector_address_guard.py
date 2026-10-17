@@ -59,21 +59,6 @@ UNSAFE_URLS = [
 ]
 
 
-def _batch_connector() -> MagicMock:
-    """A connector whose pages are all plain pages that redirect nowhere."""
-    connector = MagicMock()
-    connector._is_document_url = lambda url: False
-    connector._landing_refused_before_browser = AsyncMock(return_value=None)
-    connector._refused_before_browser = lambda url: WebConnector._refused_before_browser(connector, url)
-    connector._browser_got_no_answer = lambda result: False
-
-    async def unchanged(response: object, url: str, *, no_answer: bool) -> object:
-        return response
-
-    connector._fetch_document_behind_render = unchanged
-    return connector
-
-
 class TestBrowserHandOff:
     """The browser opens file: URLs itself and only its http(s) connections pass the guard
     proxy, so the connector checks the address before handing one over."""
@@ -88,34 +73,6 @@ class TestBrowserHandOff:
         connector.crawl4ai_fetcher.fetch.assert_not_awaited()
         assert response.headers["X-Fetch-Skip-Reason"] == "unsafe_address"
         assert response.success is False
-
-    async def test_a_batch_renders_only_the_safe_urls_and_keeps_their_order(self) -> None:
-        urls = ["https://site.example/a", "file:///etc/hostname", "https://site.example/b", "http://127.0.0.1/"]
-        rendered = [MagicMock(name="a"), MagicMock(name="b")]
-        connector = _batch_connector()
-        connector.crawl4ai_fetcher.fetch_many = AsyncMock(return_value=rendered)
-        connector._crawl4ai_result_to_response = lambda result, url: (result, url)
-
-        async def only_site_example_is_safe(url: str) -> bool:
-            return not url.startswith("https://site.example/")
-
-        with patch.object(web_connector, "is_unsafe_url", only_site_example_is_safe):
-            responses = await WebConnector._headless_fetch_many(connector, urls)
-
-        connector.crawl4ai_fetcher.fetch_many.assert_awaited_once_with([urls[0], urls[2]])
-        assert responses[0] == (rendered[0], urls[0])
-        assert responses[2] == (rendered[1], urls[2])
-        assert [responses[i].headers["X-Fetch-Skip-Reason"] for i in (1, 3)] == ["unsafe_address"] * 2
-        assert [responses[i].final_url for i in (1, 3)] == [urls[1], urls[3]]
-
-    async def test_a_batch_of_only_unsafe_urls_does_not_call_the_browser(self) -> None:
-        connector = _batch_connector()
-        connector.crawl4ai_fetcher.fetch_many = AsyncMock()
-
-        responses = await WebConnector._headless_fetch_many(connector, UNSAFE_URLS)
-
-        connector.crawl4ai_fetcher.fetch_many.assert_not_awaited()
-        assert [r.headers["X-Fetch-Skip-Reason"] for r in responses] == ["unsafe_address"] * len(UNSAFE_URLS)
 
     @pytest.mark.parametrize("url", UNSAFE_URLS)
     async def test_a_fetch_that_skips_the_redirect_walk_is_still_checked(self, url: str) -> None:

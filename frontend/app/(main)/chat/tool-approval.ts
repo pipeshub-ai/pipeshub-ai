@@ -32,6 +32,8 @@ export function toolApprovalDetails(value: unknown): ToolApprovalDetails | null 
     toolTitle: text('toolTitle'),
     readOnly: raw.readOnly === true,
     kind: raw.kind === 'read' || raw.kind === 'write' || raw.kind === 'destructive' ? raw.kind : null,
+    // Cards saved before it was sent were all MCP cards, which can.
+    canRemember: raw.canRemember !== false,
     expiresAt: raw.expiresAt,
     arguments: args && typeof args === 'object' && !Array.isArray(args) ? (args as Record<string, unknown>) : null,
     ...(text('argumentsPreview') ? { argumentsPreview: text('argumentsPreview') as string } : {}),

@@ -14,7 +14,7 @@ from app.modules.named_entities.text import TextUnit
 from app.modules.named_entities.wire import EntitySubmission, WireEntity
 
 
-def test_grounder_exact_casefold_fuzzy_and_reject():
+def test_grounder_exact_casefold_fuzzy_and_reject() -> None:
     grounder = Grounder([TextUnit(0, "b", "Acme Corp signed the agreement")])
     exact = grounder.align(0, "Acme Corp")
     assert exact is not None and exact[3] == "exact"
@@ -26,25 +26,25 @@ def test_grounder_exact_casefold_fuzzy_and_reject():
     assert "Acme" in grounder.nearest(0, "Acmee Corp")
 
 
-def test_a_case_insensitive_match_keeps_offsets_after_a_length_changing_letter():
+def test_a_case_insensitive_match_keeps_offsets_after_a_length_changing_letter() -> None:
     text = "Straße 5, ACME GmbH"
     start, end, surface, grounding = Grounder([TextUnit(0, "b", text)]).align(0, "acme gmbh")
     assert (surface, grounding) == ("ACME GmbH", "exact")
     assert text[start:end] == surface
 
 
-def test_a_fuzzy_match_past_the_head_of_a_long_block_is_found_near_its_anchor():
+def test_a_fuzzy_match_past_the_head_of_a_long_block_is_found_near_its_anchor() -> None:
     text = "filler " * 2_000 + "the Acme  Corp agreement"
     start, end, surface, outcome = Grounder([TextUnit(0, "b", text)]).align(0, "Acme Corp")
     assert (surface, outcome) == ("Acme  Corp", "fuzzy")
     assert text[start:end] == surface
 
 
-def test_the_fuzzy_scan_of_a_huge_block_is_bounded(monkeypatch):
+def test_the_fuzzy_scan_of_a_huge_block_is_bounded(monkeypatch) -> None:
     calls = []
     real = grounding.SequenceMatcher
 
-    def counting(*args):
+    def counting(*args) -> object:
         calls.append(1)
         return real(*args)
 
@@ -55,13 +55,13 @@ def test_the_fuzzy_scan_of_a_huge_block_is_bounded(monkeypatch):
     assert len(calls) < 5 * grounding._HEAD_CHARS
 
 
-def test_wire_schema_has_no_unions_or_optional_fields():
+def test_wire_schema_has_no_unions_or_optional_fields() -> None:
     schema = EntitySubmission.model_json_schema()
     blob = json.dumps(schema)
     assert "anyOf" not in blob
     assert "oneOf" not in blob
     entity = schema["$defs"]["WireEntity"]
-    assert set(entity["required"]) == {"text", "block", "kind", "normalized"}
+    assert set(entity["required"]) == {"text", "block", "kind"}
     WireEntity.model_validate({"text": "Acme", "block": 0, "kind": "organization", "normalized": ""})
     from anthropic import transform_schema
     from openai.lib._pydantic import to_strict_json_schema
@@ -72,7 +72,7 @@ def test_wire_schema_has_no_unions_or_optional_fields():
         assert "oneOf" not in text
 
 
-def test_submit_is_idempotent_and_rejects_a_secret():
+def test_submit_is_idempotent_and_rejects_a_secret() -> None:
     session = ExtractionSession(
         [TextUnit(0, "b", "Acme owes 4111111111111111")],
         enabled=frozenset({EntityKind.ORGANIZATION}),
@@ -89,7 +89,7 @@ def test_submit_is_idempotent_and_rejects_a_secret():
     assert stage_wire_entity(session, 2, secret)["status"] == "rejected"
 
 
-async def test_finish_refuses_unread_blocks():
+async def test_finish_refuses_unread_blocks() -> None:
     units = [TextUnit(index, "b", "x") for index in range(3)]
     session = ExtractionSession(
         units,
@@ -105,7 +105,7 @@ async def test_finish_refuses_unread_blocks():
     assert accepted.success is True
 
 
-async def test_every_block_of_a_long_window_is_shown_and_the_tail_is_still_groundable():
+async def test_every_block_of_a_long_window_is_shown_and_the_tail_is_still_groundable() -> None:
     units = [TextUnit(index, "b", "x" * 50_000 + " Globex") for index in range(5)]
     session = ExtractionSession(
         units, enabled=frozenset({EntityKind.ORGANIZATION}), norm_ctx=NormalizationContext(), seed_count=0,
@@ -118,7 +118,7 @@ async def test_every_block_of_a_long_window_is_shown_and_the_tail_is_still_groun
     assert stage_wire_entity(session, 0, item)["status"] == "accepted"
 
 
-def test_a_span_is_grounded_only_as_a_whole_word():
+def test_a_span_is_grounded_only_as_a_whole_word() -> None:
     grounder = Grounder([TextUnit(0, "b", "Edward met Ed. Paid $50, then $5.")])
     start, end, surface, _ = grounder.align(0, "Ed")
     assert (start, surface) == (11, "Ed")
@@ -126,18 +126,18 @@ def test_a_span_is_grounded_only_as_a_whole_word():
     assert (start, surface) == (30, "$5")
 
 
-def test_text_without_spaces_still_grounds():
+def test_text_without_spaces_still_grounds() -> None:
     grounder = Grounder([TextUnit(0, "b", "株式会社トヨタ自動車と契約した")])
     assert grounder.align(0, "トヨタ自動車")[2] == "トヨタ自動車"
 
 
-def test_a_value_is_never_grounded_to_a_near_miss():
+def test_a_value_is_never_grounded_to_a_near_miss() -> None:
     grounder = Grounder([TextUnit(0, "b", "The fee is $12,600 per year.")])
     assert grounder.align(0, "$12,500", fuzzy=False) is None
     assert grounder.align(0, "$12,500") is not None
 
 
-def test_fuzzy_work_is_capped_per_run():
+def test_fuzzy_work_is_capped_per_run() -> None:
     grounder = Grounder([TextUnit(0, "b", "Acme Robotics signed with Globex")])
     long_surface = "one two three four five six seven eight nine ten eleven"
     assert grounder.align(0, long_surface) is None
@@ -146,7 +146,7 @@ def test_fuzzy_work_is_capped_per_run():
     assert grounder.align(0, "Acme Robotix") is None
 
 
-async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch):
+async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch) -> None:
     """Staging is CPU work; a fixed blocking delay per item stands in for it, so
     the test costs the same on any machine and fails only if staging runs inline."""
     import asyncio
@@ -159,7 +159,7 @@ async def test_a_heavy_submit_does_not_stall_the_event_loop(monkeypatch):
         SubmitEntitiesTool,
     )
 
-    def slow_align(self, block_index, surface, *, fuzzy=True):
+    def slow_align(self, block_index, surface, *, fuzzy=True) -> None:
         time.sleep(0.05)
 
     monkeypatch.setattr(Grounder, "align", slow_align)

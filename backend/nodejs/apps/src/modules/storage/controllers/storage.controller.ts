@@ -586,6 +586,36 @@ export class StorageController {
   }
 
   /**
+   * Removes every file the assistant stored for a conversation, when the
+   * conversation is deleted: registered artifacts under `artifacts/{id}` and
+   * older unregistered outputs under `conversations/{id}`. Only those exact
+   * folders, never anything below or beside them.
+   */
+  async purgeConversationDocuments(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgIdText = extractOrgId(req);
+      const orgId = new mongoose.Types.ObjectId(orgIdText);
+      const conversationId = String(req.params.conversationId);
+      const documents = await DocumentModel.find({
+        orgId,
+        documentPath: {
+          $in: ['artifacts', 'conversations'].map((folder) =>
+            getFullDocumentPath(orgIdText, `${folder}/${conversationId}`),
+          ),
+        },
+      });
+      await this.purgeDocuments(documents, orgId, req);
+      res.status(HTTP_STATUS.OK).json({ purged: documents.length });
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
    * Files first, metadata last: if a file cannot be removed its document is kept,
    * so the next attempt can still find the file.
    */

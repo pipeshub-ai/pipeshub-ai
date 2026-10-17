@@ -61,10 +61,10 @@ export function AgentBuilderWebSearchSection({
   }, [configuredProviders]);
 
   const visibleProviders = useMemo(() => {
-    if (isAdmin) return WEB_SEARCH_PROVIDER_META;
-    return WEB_SEARCH_PROVIDER_META.filter(
-      (meta) => !meta.configurable || providerMap.has(meta.type),
-    );
+    // An agent attaches a search provider; one that only reads pages (Crawl4AI) can't search.
+    const searchers = WEB_SEARCH_PROVIDER_META.filter((meta) => meta.searches);
+    if (isAdmin) return searchers;
+    return searchers.filter((meta) => !meta.configurable || providerMap.has(meta.type));
   }, [isAdmin, providerMap]);
 
   const handleToggle = useCallback(() => {

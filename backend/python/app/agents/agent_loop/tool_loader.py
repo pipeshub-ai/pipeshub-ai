@@ -11,14 +11,17 @@ except `web_search`/`fetch_url`, which get the `WebToolAdapter` subclass so
 their output is rendered through `ToolHandlerRegistry.format_message`
 (restores Citation IDs — see `web_tool_adapter.py`).
 
-The loader's only responsibility is loading and registration. Filtering,
-gating, and policy enforcement are separate concerns. It does, however,
+The loader's responsibility is loading and registration: of each attached
+toolset, only the tools picked for the agent (`agent_toolsets[].tools`).
+Policy on how tools are called is a separate concern. It does, however,
 record WHY a toolset failed to load into `context.toolset_load_failures`
 (`"not_authenticated"` vs `"error"`) and WHICH loaded toolsets are
-`essential=True` metadata into `context.essential_toolset_names` — both are
-facts only this loop can observe, and downstream consumers (the global
-search fallback, the capability summary, `factory.py`'s pinned-toolsets
-derivation) need them without re-deriving.
+`essential=True` metadata into `context.essential_toolset_names`, and which
+instance each external toolset tool runs on, for the approval gate
+(`tool_approvals.TOOLSET_TOOLS_BY_PATH`) — all facts only this loop can
+observe, and downstream consumers (the global search fallback, the capability
+summary, `factory.py`'s pinned-toolsets derivation, the gate) need them
+without re-deriving.
 """
 
 from __future__ import annotations
@@ -36,7 +39,9 @@ from app.agent_loop_lib.tools.tags import TAG_UI_ONLY
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder as AgentLoopToolsetBuilder
 from app.agents.agent_loop.instance_creator import ToolInstanceCreator, configured_name_matches
 from app.agents.agent_loop.tool_adapter import PipesHubStructuredToolAdapter, split_original_tool_name
+from app.agents.agent_loop.tool_approvals import TOOLSET_TOOLS_BY_PATH, ApprovalTarget
 from app.agents.agent_loop.web_tool_adapter import WebToolAdapter
+from app.agents.mcp.tool_kind import toolset_tool_kind
 from app.agents.tools.factories.base import ToolsetAuthError
 from app.agents.tools.factories.registry import ClientFactoryRegistry
 
@@ -94,6 +99,20 @@ def _has_tool_decorated_methods(cls: type) -> bool:
             if hasattr(func, TOOL_META_ATTR):
                 return True
     return False
+
+
+def _record_for_approvals(
+    context: "AgentContext", tool: "Tool", instance: tuple[str, str] | None, *, fallback_owner: str,
+) -> None:
+    """Records an external toolset's tool for the approval gate: the instance its calls run on
+    (whose rules apply) and what it does to data."""
+    instance_id, owner = instance or ("", fallback_owner)
+    tool_name = tool.path.rsplit("/", 1)[-1]
+    type_tag = next((tag.value for tag in tool.tags if tag.key == "type"), None)
+    context.tool_state.setdefault(TOOLSET_TOOLS_BY_PATH, {})[tool.path] = ApprovalTarget(
+        source="toolset", instance_id=instance_id, tool_name=tool_name, owner=owner,
+        kind=toolset_tool_kind(tool_name, type_tag), tool=tool,
+    )
 
 
 def _infer_path_prefix(cls: type, *, fallback_name: str) -> str:
@@ -203,6 +222,7 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
                 graph_provider=state.get("graph_provider"),
                 org_id=state.get("org_id"),
                 user_id=state.get("user_id"),
+                tool_state=state,
             )
             setattr(slack_nearby_tool, "_original_name", "slack.fetch_slack_nearby_messages")
             a, t = split_original_tool_name(slack_nearby_tool)
@@ -223,31 +243,42 @@ def _build_dynamic_tools(context: "AgentContext") -> list["Tool"]:
             state["citation_ref_mapper"] = ref_mapper
 
         try:
-            from app.utils.web_search_tool import create_web_search_tool
-            ws_tool = create_web_search_tool(config=web_search_config)
-            a, t = split_original_tool_name(ws_tool)
-            tools.append(WebToolAdapter(ws_tool, a, t, context))
-        except Exception as e:
-            if state_logger:
-                state_logger.warning("Failed to create web_search tool: %s", e)
+            from app.edition_services import get_web_access_gate
+            from app.web.budget import WebBudget
+            from app.web.container import build_web_services
+            from app.web.models import CallerContext
+            from app.web.tools.fetch_url import create_fetch_url_tool
+            from app.web.tools.web_search import create_web_search_tool
 
-        try:
-            from app.utils.fetch_url_tool import create_fetch_url_tool
-            fu_tool = create_fetch_url_tool(ref_mapper=ref_mapper)
-            a, t = split_original_tool_name(fu_tool)
-            tools.append(WebToolAdapter(fu_tool, a, t, context))
+            services = build_web_services(
+                web_search_config, get_web_access_gate(), WebBudget.for_answer(deep_research=context.deep_research),
+            )
+            caller = CallerContext(org_id=context.org_id, user_id=context.user_id, conversation_id=context.conversation_id)
+            web_tools = [
+                create_web_search_tool(services.search, caller),
+                create_fetch_url_tool(services.fetch, caller, ref_mapper=ref_mapper),
+            ]
         except Exception as e:
+            web_tools = []
             if state_logger:
-                state_logger.warning("Failed to create fetch_url tool: %s", e)
+                state_logger.warning("Failed to create web tools: %s", e)
+        for web_tool in web_tools:
+            a, t = split_original_tool_name(web_tool)
+            tools.append(WebToolAdapter(web_tool, a, t, context))
 
     return tools
+
+
+def _normalized_toolset_name(toolset: dict) -> str:
+    """An agent toolset entry's name in the form `configured_name_matches` compares."""
+    return (toolset.get("name") or "").lower().replace(" ", "").replace("_", "")
 
 
 class PipesHubToolLoader:
     """Registers PipesHub tools into an agent-loop ``ToolRegistry`` per request.
 
-    The loader's responsibility is strictly loading and registration.
-    It does not filter, gate, or enforce policy on which tools are available.
+    Of each toolset attached to the agent it registers only the tools picked
+    for it; it does not enforce policy on how those tools are called.
     """
 
     async def load(self, context: "AgentContext", *, skip_apps: set[str] | None = None) -> ToolRegistry:
@@ -347,6 +378,20 @@ class PipesHubToolLoader:
                                 "No UI client, withholding %s (conversation=%s)",
                                 ui_only, context.conversation_id,
                             )
+                selected = None if is_internal else self._selected_tool_names(ts_name, context.agent_toolsets)
+                if selected is not None:
+                    # Same name the agent builder lists and saves: the last segment of the @tool path.
+                    tools = [t for t in tools if t.path.rsplit("/", 1)[-1] in selected]
+                    # Agents saved before a tool was renamed still pick the old name,
+                    # and the builder shows it as picked.
+                    stale = selected - {t.path.rsplit("/", 1)[-1] for t in toolset.tools}
+                    if stale and state_logger:
+                        state_logger.warning(
+                            "Tools picked for toolset %s no longer exist: %s", ts_name, sorted(stale),
+                        )
+                # An external toolset's calls pass the approval gate, under its instance's rules.
+                gated = has_factory and not is_internal
+                approval_instance = instance_creator.instance_for_app(ts_name) if gated else None
                 for t in tools:
                     try:
                         registry.register_tool(t)
@@ -354,6 +399,9 @@ class PipesHubToolLoader:
                     except (DuplicateToolPathError, DuplicateToolNameError):
                         if state_logger:
                             state_logger.warning("Skipping duplicate: %s", t.name)
+                        continue
+                    if gated:
+                        _record_for_approvals(context, t, approval_instance, fallback_owner=group_name)
 
                 registered_names = [t.name for t in toolset.tools if registry.has(t.name)]
                 if registered_names:
@@ -409,12 +457,7 @@ class PipesHubToolLoader:
         Used to skip external toolsets the user hasn't configured on this agent,
         avoiding noisy factory errors for unconfigured connectors.
         """
-        configured: set[str] = set()
-        for ts in agent_toolsets:
-            name = (ts.get("name") or "").lower().replace(" ", "").replace("_", "")
-            if name:
-                configured.add(name)
-        return configured
+        return {name for ts in agent_toolsets if (name := _normalized_toolset_name(ts))}
 
     @staticmethod
     def _is_configured(ts_name: str, configured_apps: set[str]) -> bool:
@@ -425,6 +468,27 @@ class PipesHubToolLoader:
         DB (e.g. ``"googledrive"``, ``"googlecalendar"``).
         """
         return any(configured_name_matches(ts_name, cfg_name) for cfg_name in configured_apps)
+
+    @staticmethod
+    def _selected_tool_names(ts_name: str, agent_toolsets: list[dict]) -> set[str] | None:
+        """The tool names picked for toolset *ts_name* — in the agent builder,
+        narrowed by the chat composer's picks — across every entry for it (the
+        assistant has one per instance). ``None`` when any entry lists no tool:
+        an entry saved without tools has always loaded all of them.
+        """
+        selected: set[str] = set()
+        for ts in agent_toolsets:
+            name = _normalized_toolset_name(ts)
+            if not name or not configured_name_matches(ts_name, name):
+                continue
+            picked = {
+                tool_name for t in ts.get("tools") or []
+                if isinstance(t, dict) and isinstance(tool_name := t.get("name"), str) and tool_name
+            }
+            if not picked:
+                return None
+            selected |= picked
+        return selected or None
 
 
 __all__ = ["PipesHubToolLoader"]

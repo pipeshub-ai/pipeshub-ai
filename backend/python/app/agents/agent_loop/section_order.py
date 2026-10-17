@@ -59,6 +59,8 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # When to reach for the calculator instead of mental arithmetic; depends
     # only on the grant and disclosure, so it is fixed for the request.
     ("exact_numbers",              Volatility.STATIC),
+    # How to research when the person turned deep research on; absent otherwise.
+    ("deep_research",              Volatility.STATIC),
     ("code_execution",             Volatility.STATIC),
     # ── Band B — conversation-stable ─────────────────────────────────────────
     # `available_tools` grows when fetch_tools loads new toolsets; everything

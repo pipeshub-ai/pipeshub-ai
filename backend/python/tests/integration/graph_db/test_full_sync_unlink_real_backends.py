@@ -231,8 +231,9 @@ class _Sync:
         }
 
     async def can_read(self, user_key: str, name: str) -> bool:
-        result = await self.graph._check_record_permissions(await self.record_id(name), user_key)
-        return bool((result or {}).get("permission"))
+        record_id = await self.record_id(name)
+        result = await self.graph.check_access(user_key, self.org_id, node_ids=[record_id])
+        return record_id in result.node_ids
 
     async def stats_total(self) -> int:
         result = await self.graph.get_connector_stats(self.org_id, self.connector_id)
@@ -265,7 +266,7 @@ async def _seed(graph: object) -> _Sync:
     org_id, connector_id = f"org-{run}", f"slack-{run}"
     stamps = {"createdAtTimestamp": now, "updatedAtTimestamp": now}
     assert await graph.batch_upsert_nodes(
-        [{"id": connector_id, "name": "Slack", "type": Connectors.SLACK_WORKSPACE.value,
+        [{"id": connector_id, "orgId": org_id, "name": "Slack", "type": Connectors.SLACK_WORKSPACE.value,
           "appGroup": "Slack", "scope": "team", "isActive": True, **stamps}],
         collection=CollectionNames.APPS.value,
     )
@@ -274,6 +275,15 @@ async def _seed(graph: object) -> _Sync:
         [{"id": key, "userId": key, "orgId": org_id, "email": f"{key}@example.com", "isActive": True, **stamps}
          for key in (alice, bob)],
         collection=CollectionNames.USERS.value,
+    )
+    # The connector gate, which check_access requires; no sourceUserId, so a
+    # membership still resolves only through the relations a test writes.
+    assert await graph.batch_create_edges(
+        [{"from_id": key, "from_collection": CollectionNames.USERS.value, "to_id": connector_id,
+          "to_collection": CollectionNames.APPS.value, "syncState": "NOT_STARTED", "lastSyncUpdate": now,
+          **stamps}
+         for key in (alice, bob)],
+        collection=CollectionNames.USER_APP_RELATION.value,
     )
     processor = DataSourceEntitiesProcessor(logger, GraphDataStore(logger, graph), MagicMock())
     processor.org_id = org_id
@@ -476,7 +486,7 @@ async def test_a_link_to_a_placeholder_survives_the_unlink(sync: _Sync) -> None:
 
     async def links_out() -> int:
         edges = await sync.graph.get_edges_from_node(
-            f"{RECORDS}/{await sync.record_id('t1')}", CollectionNames.RECORD_RELATIONS.value
+            f"{RECORDS}/{await sync.record_id('t1')}", CollectionNames.NODE_RELATIONS.value
         )
         return len(edges or [])
 

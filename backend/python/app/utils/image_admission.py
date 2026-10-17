@@ -135,6 +135,7 @@ class DegradeReason(str, Enum):
     DUPLICATE = "duplicate"
     OVER_REQUEST_CAP = "over_request_cap"
     OVER_CONVERSATION_CAP = "over_conversation_cap"
+    UNSUPPORTED_FORMAT = "unsupported_format"
 
 
 def content_hash(data_uri: str) -> str:
@@ -262,6 +263,9 @@ class ImageAdmission:
         # Hashes whose normalization has been decided, including the ones that
         # needed no rewrite. Without it a no-op re-decodes on every render.
         self._normalization_checked: set[str] = set()
+        # Hashes of images in a format the provider rejects that could not be
+        # converted (a corrupt SVG, unknown bytes). They degrade to text.
+        self._unsendable_hashes: set[str] = set()
 
     def trial(self) -> "ImageAdmission":
         """An arbiter that decides exactly as this one would from here on,
@@ -278,6 +282,7 @@ class ImageAdmission:
         clone._retrieved_slots_used = self._retrieved_slots_used
         clone._normalized_by_hash = self._normalized_by_hash
         clone._normalization_checked = self._normalization_checked
+        clone._unsendable_hashes = self._unsendable_hashes
         return clone
 
     @property
@@ -366,6 +371,12 @@ class ImageAdmission:
             if not self.budget.can_add():
                 degraded.append(DegradedImage(candidate, DegradeReason.OVER_CONVERSATION_CAP))
                 continue
+            # Decided before the slot is spent: an image no provider will
+            # accept would otherwise take a slot and then 400 the request.
+            self._decide_normalization(candidate.data_uri)
+            if candidate.hash in self._unsendable_hashes:
+                degraded.append(DegradedImage(candidate, DegradeReason.UNSUPPORTED_FORMAT))
+                continue
             _ = self.budget.try_consume(1)
             if retrieved:
                 self._retrieved_slots_used += 1
@@ -376,13 +387,27 @@ class ImageAdmission:
         # what the model reads still matches the record it came from.
         #
         admitted.sort(key=lambda c: (c.turn_index, c.block_index))
+        # A copy is only "shown above" if the first one actually went out;
+        # otherwise it shares the first copy's reason.
+        first_reason = {
+            d.candidate.hash: d.reason for d in degraded if d.reason is not DegradeReason.DUPLICATE
+        }
+        degraded = [
+            DegradedImage(d.candidate, first_reason[d.candidate.hash])
+            if d.reason is DegradeReason.DUPLICATE
+            and d.candidate.hash not in self._admitted_hashes
+            and d.candidate.hash in first_reason
+            else d
+            for d in degraded
+        ]
         return AdmissionResult(admitted=admitted, degraded=degraded)
 
     def _normalize(self, candidate: ImageCandidate) -> ImageCandidate:
         """Fit an admitted image to the model's per-image limits.
 
         Runs only on images that won a slot, and only rewrites the ones that
-        actually exceed a limit -- see `downscale_to_limits`. Done here rather
+        are in a format LLM APIs reject or exceed a limit -- see
+        `to_llm_image_format` and `downscale_to_limits`. Done here rather
         than at each renderer so every delivery path (tool result, user
         message, history replay) gets it from one place.
         """
@@ -397,18 +422,23 @@ class ImageAdmission:
     def _decide_normalization(self, data_uri: str) -> None:
         """Work out the admitted bytes for `data_uri`, once.
 
-        Pure apart from the two caches it fills, and safe to run on a worker
+        Pure apart from the caches it fills, and safe to run on a worker
         thread -- which is the point: `downscale_to_limits` is a Pillow decode,
         resize and re-encode, ~600 ms for a 4000x3000 image, and the render
         that calls it sits on an async request path.
         """
-        from app.utils.image_utils import downscale_to_limits
+        from app.utils.image_utils import downscale_to_limits, to_llm_image_format
 
         digest = content_hash(data_uri)
         if digest in self._normalization_checked:
             return
+        sendable = to_llm_image_format(data_uri, max_long_edge_px=self.policy.max_long_edge_px)
+        if sendable is None:
+            self._unsendable_hashes.add(digest)
+            self._normalization_checked.add(digest)
+            return
         normalized = downscale_to_limits(
-            data_uri,
+            sendable,
             max_long_edge_px=self.policy.max_long_edge_px,
             max_bytes=self.policy.max_bytes_per_image,
         )

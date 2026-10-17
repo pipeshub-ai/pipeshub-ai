@@ -10,7 +10,7 @@
  *  - NEW chats: a backend-provided `displayName` always wins outright.
  */
 import { describe, it, expect } from 'vitest';
-import { extractToolsetLabel, isSkillTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
+import { extractToolsetLabel, isSkillTool, isWebTool, toolActivityLabel, toolStatusLabel, humanizeToolName } from '../tool-display';
 
 describe('isSkillTool', () => {
   it('is true for exactly the five built-in skill tools', () => {
@@ -92,5 +92,24 @@ describe('extractToolsetLabel', () => {
   it('returns undefined for plain built-in tool names', () => {
     expect(extractToolsetLabel('run_code')).toBeUndefined();
     expect(extractToolsetLabel(undefined)).toBeUndefined();
+  });
+
+  it('gives the built-in web tools no toolset badge', () => {
+    expect(extractToolsetLabel('dynamic__web_search')).toBeUndefined();
+    expect(extractToolsetLabel('dynamic__fetch_url')).toBeUndefined();
+  });
+});
+
+describe('isWebTool', () => {
+  it('knows the web tools, with or without their prefix', () => {
+    expect(isWebTool('dynamic__web_search')).toBe(true);
+    expect(isWebTool('fetch_url')).toBe(true);
+    expect(isWebTool('dynamic__fetch_url')).toBe(true);
+  });
+
+  it('is false for anything else', () => {
+    expect(isWebTool('mcp_web_search')).toBe(false);
+    expect(isWebTool('knowledgegraph__search')).toBe(false);
+    expect(isWebTool(undefined)).toBe(false);
   });
 });

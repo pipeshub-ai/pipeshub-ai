@@ -291,6 +291,7 @@ export function useAgentBuilderReconstruction(): {
                   connectorInstanceId: kbConnectorId,
                   filters: {
                     records,
+                    ...(Array.isArray(filtersParsed.nodes) ? { nodes: filtersParsed.nodes } : {}),
                   },
                   selectedRecords: records,
                   similarity: 0.8,

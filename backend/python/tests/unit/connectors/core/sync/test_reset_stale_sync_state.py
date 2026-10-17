@@ -94,6 +94,17 @@ class TestTheSingleProcessCaseStillWorks:
         assert [n["status"] for n in _written(gp)] == [AppStatus.IDLE.value]
 
     @pytest.mark.asyncio
+    async def test_the_run_that_died_with_the_process_is_recorded_as_failed(self) -> None:
+        """Scenario BU-09: "last synced" must not show a run that never finished as a success."""
+        gp = _graph(stuck=["c1"])
+        await _sweep(gp, _manager(reports_liveness=False), workers=1, external=False)
+        (written,) = _written(gp)
+        assert written["lastSyncOutcome"] == "failed"
+        assert written["lastSyncFinishedAtTimestamp"] == written["updatedAtTimestamp"]
+        # The stored summary is the run before; left, it would read as this failed run's.
+        assert "lastSyncSummary" in written and written["lastSyncSummary"] is None
+
+    @pytest.mark.asyncio
     async def test_nothing_stale_writes_nothing(self) -> None:
         gp = _graph()
         await _sweep(gp, _manager())

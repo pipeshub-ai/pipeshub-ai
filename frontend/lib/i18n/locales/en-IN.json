@@ -261,7 +261,8 @@
       "PRESENTATION": "Presentation",
       "DATA_FILE": "Data file",
       "CODE": "Code",
-      "CODE_OUTPUT": "Code output"
+      "CODE_OUTPUT": "Code output",
+      "OTHER": "Other"
     },
     "tabs": {
       "all": "All artifacts",
@@ -278,7 +279,20 @@
     },
     "emptyShared": "Nothing shared with you yet",
     "emptySharedHint": "Artifacts your teammates share with you will show up here.",
-    "notAvailable": "This artifact is no longer available"
+    "notAvailable": "This artifact is no longer available",
+    "deleteTitle": "Delete artifact?",
+    "deleteConfirmMessage": "\"{{name}}\" and all its versions will be permanently deleted. Chats that show it will mark it as no longer available.",
+    "deleteSuccess": "\"{{name}}\" deleted",
+    "preview": "Preview",
+    "moreActionsFor": "More options for {{name}}",
+    "pageOf": "{{page}} / {{total}}",
+    "loadFailedHint": "Check your connection and try again.",
+    "noMatches": "No artifacts match your filters",
+    "noMatchesHint": "Try a different search, or clear the filters to see every artifact.",
+    "clearFilters": "Clear filters",
+    "gridView": "Grid view",
+    "listView": "List view",
+    "closeSearch": "Close search"
   },
   "notifications": {
     "title": "Notifications",
@@ -375,7 +389,8 @@
     "required": "This field is required",
     "invalidEmail": "Invalid email address",
     "invalidUrl": "Invalid URL",
-    "name": "Name"
+    "name": "Name",
+    "optional": "(optional)"
   },
   "dialog": {
     "newFolder": "New Collection Folder",
@@ -528,6 +543,8 @@
     "noCollectionsAvailable": "No collections available",
     "noCollectionsCreatePrompt": "No collections available. Please create a new one.",
     "seeMoreConnectors": "See More Connectors",
+    "connectMoreApps": "Connect more apps",
+    "connectMoreAppsHint": "More sources in, better answers out.",
     "suggestedInWorkspace": "Suggested in Workspace",
     "createSubFolder": "Create a Sub-Folder",
     "more": "More",
@@ -577,7 +594,12 @@
     "searchEmptyHint": "Couldn't find what you are searching for. Try searching for something else.",
     "adjustFiltersHint": "Select a different source or adjust your filters",
     "addFromCollectionsHint": "You can add your company files or folders from the Collections",
-    "addFilesHint": "Add your files or folders"
+    "addFilesHint": "Add your files or folders",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "Chat can take up to {{max}} selected items. Untick some and try again.",
+    "chatTooManyCollections": "Chat can search up to {{max}} collections at once, and you have more. Open a collection, or tick the ones to ask about.",
+    "chatCollectionsLoadFailed": "Couldn't load your collections for chat. Try again.",
+    "chatNoCollections": "You have no collections to ask about yet."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -598,11 +620,19 @@
     "record": "record"
   },
   "chat": {
+    "answerReady": {
+      "title": "Answer ready",
+      "open": "Open chat",
+      "unread": "New answer"
+    },
+    "jumpToNewest": "Jump to latest message",
     "recordActions": {
       "preview": "Preview",
       "open": "Open {{source}}",
       "openIn": "Open in {{source}}",
       "openInCollections": "Open in Collections",
+      "syncedJustNow": "Synced just now",
+      "syncedAgo": "Synced {{age}} ago",
       "relevance": "Relevance: {{percent}}%"
     },
     "results": "Results",
@@ -646,7 +676,11 @@
       "browseWorkspaceMcp": "Browse MCP servers",
       "browseWorkspaceMcpAria": "Open MCP servers to add or manage connections",
       "noActionMatches": "No actions match your search.",
-      "noMcpMatches": "No MCP servers match your search."
+      "noMcpMatches": "No MCP servers match your search.",
+      "notConnected": "Not connected",
+      "connect": "Connect",
+      "actionConnected": "{{name}} is connected",
+      "limitedToCount": "· {{count}} selected"
     },
     "projectResources": {
       "noConnectors": "No connectors enabled for this project.",
@@ -674,6 +708,12 @@
     "searchCollections": "Search connectors and collections",
     "loadingCollections": "Loading collections…",
     "failedToLoadCollections": "Failed to load collections",
+    "treeEmpty": "Nothing here",
+    "treeLoadFailed": "Couldn't load these items",
+    "treeRetry": "Try again",
+    "treeIncludedWith": "Included with {{name}}",
+    "treeExpand": "Show what is in {{name}}",
+    "treeCollapse": "Hide what is in {{name}}",
     "noCollectionsAvailable": "No collections available",
     "comingSoon": "Coming soon",
     "answer": "Answer",
@@ -707,6 +747,8 @@
     "copiedAsMarkdown": "Copied as markdown",
     "copiedAsText": "Copied as a text",
     "citations": "Citations",
+    "showMoreCitations_one": "Show {{count}} more citation",
+    "showMoreCitations_other": "Show {{count}} more citations",
     "markdownWithCitations": "Markdown with citations",
     "onlyTextWithoutCitations": "Only text without citations",
     "differentModesOfQuery": "Different Modes of Query",
@@ -730,10 +772,11 @@
     "viewAgent": "View agent",
     "viewAgentTooltipIndividual": "View-only: you can’t change this agent’s configuration, but you can connect tools with your own sign-in so they work in your chats with this agent.",
     "viewAgentTooltipServiceAccount": "View-only: this organization service agent is locked. You can look around, but nothing here can be edited or reconfigured.",
-    "askInContext": "Ask in \"{{title}}\"",
+    "askInContext": "Ask in '{{title}}' anything…",
     "askAnythingInContext": "Ask anything in \"{{title}}\"",
     "expandTable": "Expand table",
     "fullTableView": "Full table view",
+    "downloadCsv": "Download as CSV",
     "expandDiagram": "Expand diagram",
     "fullDiagramView": "Full diagram view",
     "renderingDiagram": "Rendering diagram…",
@@ -974,6 +1017,13 @@
     "deleteAgentDescription": "The agent named",
     "deleteAgentWarning": "will be permanently removed from Pipeshub. Chats that use it may no longer work as expected.",
     "deleteChat": "Delete",
+    "export": {
+      "menuItem": "Export",
+      "exporting": "Exporting chat…",
+      "done": "Chat exported",
+      "failed": "Could not export the chat",
+      "assistant": "Assistant"
+    },
     "deleteChatConfirm": "Are you sure?",
     "deleteChatDescription": "The chat titled",
     "deleteChatWarning": "will be permanently removed from Pipeshub. All users with shared access will lose their access.",
@@ -1162,9 +1212,9 @@
     "configuredModels": "Configured Models",
     "reasoningEffort": {
       "label": "Reasoning Effort",
-      "modelDefaultOption": "Model default",
-      "modelDefaultOptionWithLevel": "Model default ({{level}})",
-      "agentDefaultOption": "Agent default ({{level}})",
+      "overrideHint": "Click again to use the default.",
+      "defaultHintWithLevel": "Defaults to {{level}} when not set.",
+      "modelDefaultHint": "Defaults to {{level}}, this model's own default, when not set.",
       "modelDefaultLabel": "Default ({{level}})",
       "low": "Low",
       "medium": "Medium",
@@ -1185,7 +1235,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Not configured on this agent",
       "internalSearch": "Internal Search",
-      "webSearch": "Web Search"
+      "webSearch": "Web Search",
+      "deepResearch": "Deep research",
+      "deepResearchNeedsWebSearch": "Turn on web search to use deep research"
     },
     "resizePanels": "Resize chat and preview panels",
     "mobileProfileComingSoon": "Profile page on mobile is coming soon.",
@@ -1214,7 +1266,38 @@
         "expired": "{{tool}} didn't run: the request expired",
         "allowedNotRun": "You allowed {{tool}}, but it didn't run"
       }
-    }
+    },
+    "selectedAlone": "{{name}} (this item only)",
+    "noConnectorsFound": "No connectors found",
+    "treeSearching": "Searching…",
+    "treeSearchFailed": "Couldn't search. Try again.",
+    "treeSearchMatches": "Folders and items",
+    "nodeSearchTooShort": "Type at least 2 characters",
+    "mentionNodes": "Nodes",
+    "mentionNodesLabel": "Matching nodes",
+    "mentionTypeToSearch": "Type a name to search",
+    "mentionSearching": "Searching…",
+    "mentionNone": "No nodes match",
+    "mentionYourApps": "Your apps",
+    "mentionCollections": "Collections",
+    "sourceUnavailable": "A source you can't open",
+    "sourceLoading": "Loading…",
+    "mentionBack": "Back",
+    "mentionRemove": "Remove {{name}}",
+    "artifactsPanel": {
+      "generated_one": "{{count}} artifact generated",
+      "generated_other": "{{count}} artifacts generated",
+      "newerVersion": "Newer version available (v{{version}})",
+      "unavailable": "No longer available",
+      "viewSource": "View source code",
+      "loadingSource": "Loading source code",
+      "viewSourceTitle": "View the code that generated this artifact",
+      "preview": "Preview artifact",
+      "loadingPreview": "Loading preview",
+      "download": "Download artifact",
+      "downloading": "Downloading artifact"
+    },
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1810,6 +1893,11 @@
         "video": {
           "label": "Video",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Decision",
+          "badge": "Decision",
+          "sectionTab": "For Decisions"
         }
       },
       "fetchingModels": "Loading models…",
@@ -2056,10 +2144,20 @@
         "maxLength": "{{field}} must be no more than {{maxLength}} characters",
         "email": "{{field}} must be a valid email address",
         "url": "{{field}} must be a valid URL",
-        "urlProtocol": "{{field}} must use http or https"
+        "urlProtocol": "{{field}} must use http or https",
+        "numberRange": "Enter a whole number from {{min, number}} to {{max, number}}.",
+        "numberMin": "Enter a whole number of at least {{min, number}}.",
+        "numberMax": "Enter a whole number no larger than {{max, number}}."
       },
       "adminRequiredToast": "Only admins can add new actions. Ask your admin to configure this action first.",
-      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them."
+      "personalNonAdminHint": "Actions marked \"Not configured\" need to be set up by an admin before you can use them.",
+      "toolRules": {
+        "open": "Tool approvals",
+        "title": "Tool approvals: {{name}}",
+        "description": "What happens when an assistant or agent wants to use one of these tools. The same rules apply to everyone in your organisation.",
+        "readOnly": "Only an admin can change these.",
+        "toolsError": "Couldn't load this toolset's tools."
+      }
     },
     "archivedChats": {
       "title": "Archived Chats",
@@ -2446,7 +2544,13 @@
         "syncStrategyHelper": "Choose how data will be synchronized from {{name}}",
         "syncInterval": "Sync Interval",
         "syncIntervalPlaceholder": "Select interval...",
-        "syncIntervalHelper": "Set how often {{name}} data is refreshed"
+        "syncIntervalHelper": "Set how often {{name}} data is refreshed",
+        "lastRunLimit": {
+          "saved": "Last sync: {{count, number}} pages stored",
+          "stoppedAtLimit": "stopped at this limit",
+          "leftOut": "{{count, number}} left out",
+          "nearLimit": "This connector stores at least 90% of this limit. Raise it to keep more pages from this site."
+        }
       },
       "instancePanel": {
         "overview": "Overview",
@@ -2479,7 +2583,31 @@
         "recordsByType": "Records by Type",
         "noRecordTypes": "No record types available",
         "localWatcherLabel": "LOCAL WATCHER",
-        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed"
+        "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
+        "lastRun": {
+          "title": "Last sync",
+          "outcome": {
+            "succeeded": "Finished",
+            "failed": "Failed",
+            "stopped": "Stopped",
+            "skipped": "Skipped"
+          },
+          "stopReason": {
+            "max_pages": "Reached the Maximum Pages limit",
+            "time_limit": "Reached its time limit; the next sync carries on",
+            "stalled": "The site stopped answering; the next sync carries on",
+            "rate_limited": "The site kept asking for fewer requests; the next sync carries on"
+          },
+          "pagesSaved": "{{count}} pages saved",
+          "failed": "{{count}} pages failed",
+          "robotsSkipped": "{{count}} skipped by robots.txt",
+          "noindexSkipped": "{{count}} asked not to be indexed",
+          "skippedMaxPages": "{{count}} left out by Maximum Pages",
+          "pruned": "{{count}} removed, no longer on the site",
+          "sitemapUrls": "{{count}} found in sitemaps",
+          "resumed": "Carried on from an unfinished sync",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "Instance Name",
@@ -2669,6 +2797,108 @@
           "confirm": "Start reindex"
         },
         "typePrompt": "Type {{token}} to confirm."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "Start URL",
+            "help": "The first page PipesHub visits. You can't change it after saving; to crawl another site, add another connector."
+          },
+          "type": {
+            "label": "Crawl",
+            "options": {
+              "single": "Only this page",
+              "recursive": "This page and the pages it links to"
+            }
+          },
+          "discovery": {
+            "label": "Find pages using",
+            "help": "Sitemaps are fastest; links find pages a sitemap misses.",
+            "options": {
+              "sitemap_and_links": "Sitemaps and links (recommended)",
+              "links": "Links only",
+              "sitemap": "Sitemaps only"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "Stay in this section",
+            "help": "Only pages under the start URL's path, such as /docs/."
+          },
+          "max_pages": {
+            "label": "Maximum pages",
+            "help": "PipesHub keeps at most this many pages from this site. Files such as PDFs count as pages.",
+            "unit": "pages"
+          },
+          "url_should_contain": {
+            "label": "Only save pages whose URL contains",
+            "help": "Leave empty to save every page. Pages that don't match aren't visited, so their links aren't followed either."
+          },
+          "ignore_query_params": {
+            "label": "Same page, different URL",
+            "help": "URL parameters that don't change the page, such as sort or ref. Use * for all. Tracking parameters (utm_…) are always ignored."
+          },
+          "depth": {
+            "label": "Clicks from the start page",
+            "help": "How far to follow links. Pages listed in a sitemap count as one click.",
+            "unit": "clicks"
+          },
+          "max_size_mb": {
+            "label": "Largest file to download",
+            "help": "Bigger pages and files are skipped and listed in the last sync.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "Also follow links to other sites",
+            "help": "Usually off: the crawl can wander far beyond this site."
+          },
+          "use_headless_browser": {
+            "label": "Always use a browser (slower)",
+            "help": "Off: PipesHub detects pages that need JavaScript and uses a browser only for those sites."
+          },
+          "browser_like_identity": {
+            "label": "Identify as a web browser",
+            "help": "Off: requests identify as the PipesHub crawler. Turn on only for a site you may crawl that blocks crawlers; robots.txt is still respected."
+          },
+          "respect_robots_txt": {
+            "label": "Respect robots.txt",
+            "help": "Skip pages the site asks crawlers not to visit or index."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "Website"
+          },
+          "crawl": {
+            "title": "What to crawl"
+          },
+          "skip": {
+            "title": "What to skip"
+          },
+          "advanced": {
+            "title": "Advanced",
+            "description": "Crawl depth, file size, browser and crawler identity."
+          }
+        },
+        "summaryOn": "{{label}} on",
+        "summaryOff": "{{label}} off",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "Start from",
+        "custom": "Custom",
+        "suggested": "Suggested for this address: {{name}}",
+        "replaceTitle": "Replace your current settings?",
+        "replaceMessage": "{{name}} replaces your current crawl settings.",
+        "replaceConfirm": "Replace",
+        "web": {
+          "docs": "Docs site",
+          "helpCenter": "Help center",
+          "wholeSite": "Whole site",
+          "onePage": "One page"
+        }
       }
     },
     "mcpServers": {
@@ -4224,7 +4454,10 @@
     "mcpServerNeedsToolsBanner": "Choose at least one tool for {{names}}, or turn on All tools.",
     "mcpPersonalOnSharedAgentNotify": "{{name}} is your personal MCP server. It can't be added to an agent shared with your organization or running as a service account.",
     "mcpAgentApprovalsEnterprise": "Tool approvals per agent are part of the Enterprise Edition. Here, each person's own tool approvals apply.",
-    "mcpAgentApprovals": "Tool approvals per agent"
+    "mcpAgentApprovals": "Tool approvals per agent",
+    "limitSource": "Choose what {{name}} searches",
+    "limitSourceHint": "Keep the whole source ticked, or untick it and tick the folders and items the agent may search.",
+    "limitSourceCount": "Limited to {{count}} selected"
   },
   "recordView": {
     "sections": {
@@ -4672,7 +4905,8 @@
     "isAnyOf": "is any of",
     "loadingOptions": "Loading options…",
     "refreshingOptions": "Refreshing options…",
-    "loadingMore": "Loading more…"
+    "loadingMore": "Loading more…",
+    "clear": "Clear {{label}} filter"
   },
   "moveFolder": {
     "moving": "Moving...",

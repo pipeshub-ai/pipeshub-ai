@@ -319,7 +319,7 @@ class TestGetImageGenerationConfig:
 
 
 class TestGetTtsConfig:
-    """Tests for get_tts_config and _get_speech_config."""
+    """Tests for get_tts_config and _get_default_config."""
 
     @pytest.mark.asyncio
     async def test_returns_default_tts(self, mock_config_service):

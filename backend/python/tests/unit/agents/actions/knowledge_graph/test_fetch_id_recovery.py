@@ -23,8 +23,10 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view_with_ids,
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -61,6 +63,18 @@ class _Graph:
     async def get_document(self, document_key: str, collection: str) -> dict[str, Any] | None:
         self.calls.append("get_document")
         return None
+
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict[str, Any]:
+        self.calls.append("get_user_by_user_id")
+        return {"_key": user_id, "id": user_id}
+
+    async def check_access(
+        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), **_: object,
+    ) -> AccessCheck:
+        self.calls.append("check_access")
+        return AccessCheck(node_ids=frozenset(
+            node_id for node_id in node_ids if user_key in self._readable_by.get(node_id, set())
+        ))
 
 
 def _context(tool_state: dict[str, Any], graph: _Graph | None = None) -> SimpleNamespace:
@@ -214,7 +228,8 @@ class TestUnknownIdRecovery:
             return_value=([{"type": "text", "text": "content"}], ref_mapper),
         ):
             output, _ = await execute_fetch_record(
-                context=_context(state),
+                # A record in the retrieved map is still checked: this user may read it.
+                context=_context(state, _Graph(readable_by={OTHER: {"user-1"}})),
                 virtual_records={"vr-1": read_now},
                 citation_ref_mapper=ref_mapper,
                 record_ids=[OTHER, MISTYPED],

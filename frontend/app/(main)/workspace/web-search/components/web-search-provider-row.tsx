@@ -133,7 +133,8 @@ export function WebSearchProviderRow({
         {renderBadge()}
 
         {/* Set as Default */}
-        {!isDefault && !(inherited && isConfigurable) && (
+        {/* A provider that only reads pages backs up page reading; it is never the default search. */}
+        {meta.searches && !isDefault && !(inherited && isConfigurable) && (
           setDefaultTooltip ? (
             <Tooltip content={setDefaultTooltip}>
               <span style={{ display: 'inline-flex' }}>
@@ -171,6 +172,7 @@ export function WebSearchProviderRow({
               variant="ghost"
               color="gray"
               size="2"
+              aria-label={`${isConfigured ? 'Edit configuration' : 'Configure'}: ${meta.label}`}
               onClick={() => onConfigure(meta.type as ConfigurableProvider)}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
@@ -191,6 +193,7 @@ export function WebSearchProviderRow({
               variant="ghost"
               color="red"
               size="2"
+              aria-label={`Delete configuration: ${meta.label}`}
               onClick={onDelete}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}

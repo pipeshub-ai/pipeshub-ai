@@ -25,6 +25,7 @@ from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -1006,6 +1007,31 @@ class TestHandleReindex:
             assert result is True
             mock_start.assert_awaited_once()
             mock_start.await_args.args[1].close()
+
+    @pytest.mark.asyncio
+    async def test_run_reindex_of_a_group_keeps_only_children_the_user_may_access(self, service) -> None:
+        """The providers' user filter is the old model; with the batch access
+        check the children are filtered through it instead."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        batch = [MagicMock(id=rid, is_placeholder=False) for rid in ("open", "restricted")]
+        service.graph_provider.get_records_by_record_group = AsyncMock(side_effect=[batch, []])
+        service.graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"open"})),
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="confluence", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id="rg-1", depth=1, user_key="user-key", status_filters=None,
+        )
+
+        assert service.graph_provider.get_records_by_record_group.await_args.kwargs["user_key"] is None
+        service.graph_provider.check_access.assert_awaited_once_with(
+            "user-key", "org1", node_ids=["open", "restricted"],
+        )
+        reindexed = mock_conn.reindex_records.await_args.args[0]
+        assert [r.id for r in reindexed] == ["open"]
 
     @pytest.mark.asyncio
     async def test_run_reindex_pages_with_keyset_cursor(self, service):

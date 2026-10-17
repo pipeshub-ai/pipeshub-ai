@@ -661,6 +661,7 @@ class TestRunSync:
             connector._sync_spaces = AsyncMock(return_value=[mock_space])
             connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock()
 
             await connector.run_sync()
 
@@ -1161,7 +1162,12 @@ class TestFetchPagePermissions:
         connector._transform_page_restriction_to_permissions.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_none(self):
+    async def test_api_failure_returns_none_not_empty(self):
+        """Decision 76: "could not determine" is not "no restrictions".
+
+        Returning [] here is what let a 403 write a READ-restricted page as
+        unrestricted, exposing it to every member of its space.
+        """
         connector = _make_connector()
         mock_ds = MagicMock()
         mock_ds.get_page_relevant_view_restrictions_v1 = AsyncMock(
@@ -1580,11 +1586,11 @@ class TestMapConfluencePermission:
 
     def test_create_comment(self):
         c = _conn()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("create", "comment") == PermissionType.READ
 
     def test_delete_comment(self):
         c = _conn()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("delete", "comment") == PermissionType.READ
 
     def test_create_page(self):
         c = _conn()
@@ -3359,6 +3365,7 @@ class TestRunSyncCoverage:
         c._sync_spaces = AsyncMock(return_value=[space])
         c._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
         c._sync_permission_changes_from_audit_log = AsyncMock()
+        c._sweep_placeholder_records = AsyncMock()
 
         await c.run_sync()
         c._sync_users.assert_awaited_once()
@@ -3634,11 +3641,11 @@ class TestMapConfluencePermissionFullCoverage:
 
     def test_create_comment(self):
         c = _c()
-        assert c._map_confluence_permission("create", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("create", "comment") == PermissionType.READ
 
     def test_delete_comment(self):
         c = _c()
-        assert c._map_confluence_permission("delete", "comment") == PermissionType.COMMENT
+        assert c._map_confluence_permission("delete", "comment") == PermissionType.READ
 
     def test_create_page(self):
         c = _c()

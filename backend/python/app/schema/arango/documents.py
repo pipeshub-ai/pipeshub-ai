@@ -1,4 +1,5 @@
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     ConnectorScopes,
     DeleteSource,
@@ -170,6 +171,11 @@ app_schema = {
             "isAuthenticated": {"type": "boolean", "default": False},
             "pendingFullSync": {"type": "boolean", "default": False},
             "pendingResync": {"type": ["boolean", "null"]},
+            # app.connectors.core.sync.sync_runner: when the last run started and ended, and how.
+            "lastSyncStartedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
+            "lastSyncOutcome": {"type": ["string", "null"]},
+            "lastSyncSummary": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},
@@ -364,6 +370,7 @@ record_schema = {
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "uploadedBy": {"type": ["string", "null"]},  # uploader userId
             "lastIndexTimestamp": {"type": ["number", "null"]},
+            "hasIndexedCopy": {"type": "boolean"},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             # A pattern, not an enum: widening an enum on this strict schema is a
             # release that must ship before any writer of the new value.
@@ -380,6 +387,15 @@ record_schema = {
             "hideWeburl": {"type": "boolean", "default": False},
             "isInternal": {"type": "boolean", "default": False},
             "isPlaceholder": {"type": "boolean", "default": False},
+            # Permission traversal input, read per visited node. Per node and
+            # mixable within a connector; RESTRICTED applies to the node it is
+            # on and is never inherited by its children. Absent reads as OPEN,
+            # so it stays out of "required".
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
             "md5Checksum": {"type": ["string", "null"]},
             "sizeInBytes": {"type": ["number", "null"]},
             "storageDocumentId": {"type": ["string", "null"]},
@@ -823,6 +839,13 @@ record_group_schema = {
             },
             "isInternal": {"type": ["boolean", "null"], "default": False},
             "hideChildren": {"type": ["boolean", "null"], "default": False},
+            # Permission traversal input, as on records: per node, and
+            # RESTRICTED never cascades to children.
+            "accessRule": {
+                "type": "string",
+                "enum": [rule.value for rule in AccessRule],
+                "default": AccessRule.OPEN.value,
+            },
             # Whether container-filtered search may trust this group's grant
             # instead of checking each record. Null means "verify" — the safe
             # state, and the only one until a connector proves otherwise.

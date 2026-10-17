@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
+import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { FakeAIBackend, FakeSSEResponse, InMemoryChatStore, oid, settle } from './chat-test-harness'
@@ -114,6 +115,11 @@ async function callStream(handler: StreamHandler, req: never): Promise<FakeSSERe
 }
 
 describe('es_controller ownership: nobody reads or changes a conversation that is not theirs', () => {
+  let artifactCleanup: sinon.SinonStub
+  beforeEach(() => {
+    artifactCleanup = sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
+  })
+
   afterEach(() => {
     sinon.restore()
   })
@@ -131,7 +137,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     { name: 'updateTitle', handler: () => controller.updateTitle as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { title: 'Hijacked' } },
     { name: 'updateFeedback', handler: () => controller.updateFeedback as JsonHandler, params: (s) => ({ conversationId: s.chatId, messageId: s.botMessageId }), body: { isHelpful: false } },
     { name: 'archiveConversation', handler: () => controller.archiveConversation as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
-    { name: 'deleteConversationById', handler: () => controller.deleteConversationById as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
+    { name: 'deleteConversationById', handler: () => controller.deleteConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }) },
     { name: 'shareConversationById', handler: () => controller.shareConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { userIds: [String(oid())] } },
     { name: 'unshareConversationById', handler: () => controller.unshareConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { userIds: [String(RECIPIENT)] } },
     { name: 'setConversationProject', handler: () => controller.setConversationProject as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { projectId: null } },
@@ -159,6 +165,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
       expect(s.store.writes, 'writes').to.deep.equal([])
       expect(JSON.stringify(s.store.sessions.map((d) => d.toObject()))).to.equal(before)
       expect(s.ai.calls, 'AI service calls').to.deep.equal([])
+      expect(artifactCleanup.called, 'artifact cleanup').to.equal(false)
     })
   }
 
@@ -239,7 +246,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     expect(s.store.session(s.chatId)?.isArchived).to.equal(true)
 
     const deletedAgent = await callJson(
-      controller.deleteAgentConversationById as JsonHandler,
+      controller.deleteAgentConversationById(appConfig) as JsonHandler,
       request(owner, { conversationId: s.agentChatId, agentKey: AGENT_KEY }),
     )
     expect(deletedAgent.status).to.equal(200)
@@ -255,12 +262,13 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
       request(owner, { conversationId: String(oid()), agentKey: AGENT_KEY }),
     ]
     for (const req of attempts) {
-      const out = await callJson(controller.deleteAgentConversationById as JsonHandler, req)
+      const out = await callJson(controller.deleteAgentConversationById(appConfig) as JsonHandler, req)
       expect(out.status).to.equal(200)
       expect(out.body).to.deep.equal({ message: 'Conversation deleted successfully', conversation: null })
     }
     expect(s.store.writes).to.deep.equal([])
     expect(s.store.session(s.agentChatId)?.isDeleted).to.equal(false)
+    expect(artifactCleanup.called, 'artifact cleanup').to.equal(false)
   })
 
   it('deleteAgentConversationById: a database failure during the lookup is an error, not the idempotent 200', async () => {
@@ -268,7 +276,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     ;(ChatSession.findOne as unknown as sinon.SinonStub).rejects(new Error('connection to mongo-0.internal:27017 closed'))
 
     const out = await callJson(
-      controller.deleteAgentConversationById as JsonHandler,
+      controller.deleteAgentConversationById(appConfig) as JsonHandler,
       request(owner, { conversationId: s.agentChatId, agentKey: AGENT_KEY }),
     )
 

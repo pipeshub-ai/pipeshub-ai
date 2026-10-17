@@ -49,7 +49,6 @@ function appliedFilterKey(filter: StagedFilter): string {
   return [
     managedFilterKey(filter),
     listKey(filter.nodeTypes),
-    listKey('kbIds' in filter ? filter.kbIds : undefined),
     filter.searchQuery ?? '',
   ].join('\u0001');
 }
@@ -261,11 +260,11 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
   return (
     <Flex
       align="center"
-      gap={isMobile ? '2' : '3'}
+      gap={isMobile ? '2' : '2'}
       className={isMobile ? 'kb-filter-bar-mobile no-scrollbar' : undefined}
       style={{
-        minHeight: '40px',
-        padding: isMobile ? 'var(--space-2)' : 'var(--space-2) var(--space-4)',
+        minHeight: 0,
+        padding: isMobile ? 'var(--space-2)' : '8px 16px',
         borderBottom: '1px solid var(--olive-3)',
         backgroundColor: 'var(--olive-2)',
         backdropFilter: 'blur(8px)',
@@ -278,7 +277,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       {/* Pin chip widths on mobile so they scroll instead of shrinking below
           their content. Scoped by `.kb-filter-bar-mobile` so desktop is unaffected. */}
       {isMobile && <style>{`.kb-filter-bar-mobile > * { flex-shrink: 0; }`}</style>}
-      {!isMobile && <MaterialIcon name="filter_list" size={16} color="var(--slate-9)" />}
+      {!isMobile && <MaterialIcon name="filter_list" size={16} color="var(--neutral-11)" />}
 
       {/* Type Filter */}
       <FilterDropdown
@@ -329,7 +328,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
           disabled={
             connectorOptions.length === 0 && (draft.connectorIds?.length ?? 0) === 0
           }
-          pluralLabel={t('filter.connectors')}
+          pluralLabel={t('filter.connectors', { defaultValue: 'Connectors' })}
         />
       )}
 
@@ -388,20 +387,18 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       {hasAnyFilter && (
         <Flex
           align="center"
+          gap="1"
           onClick={resetFilter}
           style={{
-            height: '26px',
-            padding: '0 var(--space-2)',
-            borderRadius: 'var(--radius-2)',
-            border: '1px dashed var(--gray-a7)',
+            height: 32,
+            padding: '0 8px',
             cursor: 'pointer',
-            gap: '4px',
           }}
         >
-          <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+          <MaterialIcon name="close" size={14} color="var(--neutral-11)" />
+          <Text size="2" style={{ color: 'var(--neutral-11)', fontWeight: 400, lineHeight: '20px', whiteSpace: 'nowrap' }}>
             {t('filter.clearFilter')}
           </Text>
-          <MaterialIcon name="backspace" size={16} color="var(--gray-11)" />
         </Flex>
       )}
     </Flex>

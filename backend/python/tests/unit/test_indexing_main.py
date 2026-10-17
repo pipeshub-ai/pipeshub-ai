@@ -2470,6 +2470,27 @@ class TestRepublishStrandedRecords:
         producer.send_event.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [ProgressStatus.QUEUED.value, ProgressStatus.NOT_STARTED.value])
+    async def test_a_placeholder_is_never_republished(self, status: str) -> None:
+        """A stub ancestor has no content: the connector answers 422 to its
+        stream, so a resend only burns retries and ends the stub FAILED."""
+        graph = _sweep_graph(
+            {
+                status: [
+                    self._old_record(isPlaceholder=True),
+                    self._old_record(_key="r2"),
+                ]
+            },
+            active_ids={"live"},
+        )
+        producer = AsyncMock()
+
+        with _stranded_env():
+            assert await _run_stranded(graph, producer) == 1
+
+        assert [c.kwargs["payload"]["recordId"] for c in producer.send_event.await_args_list] == ["r2"]
+
+    @pytest.mark.asyncio
     async def test_a_dedup_parked_duplicate_is_left_to_its_twin(self):
         """A record parked behind an in-flight md5 twin is legitimately QUEUED.
 

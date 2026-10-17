@@ -280,6 +280,52 @@ async def test_a_persist_failure_is_logged_as_failed_with_counts_only(caplog):
     assert _SECRET_NAME not in caplog.text
 
 
+async def test_a_lookup_that_cannot_run_writes_nothing_and_fails_the_persist(caplog, monkeypatch) -> None:
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
+    caplog.set_level(logging.INFO)
+    graph = MagicMock(
+        find_named_entities=AsyncMock(side_effect=TimeoutError(f"bind {_SECRET_NAME}")),
+        create_named_entities_if_absent=AsyncMock(),
+    )
+    outcome = await stage.persist_named_entities(
+        SimpleNamespace(record=_record()), _extraction(),
+        graph_provider=graph, graph_data_store=_store(), enabled=True,
+    )
+    assert outcome == "failed"
+    assert graph.find_named_entities.await_count == 2
+    graph.create_named_entities_if_absent.assert_not_awaited()
+    assert _SECRET_NAME not in caplog.text
+
+
+async def test_a_lookup_that_cannot_run_is_queued_and_the_retry_links_the_survivor(monkeypatch) -> None:
+    """The first write defers instead of linking the merged-away node; the
+    retry, once the graph answers, links the node it was merged into."""
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
+    from app.modules.named_entities.keys import named_entity_key
+
+    own = named_entity_key("org-1", "person", "zebulon quartermaine")
+    merged_row = {"normKey": "zebulon quartermaine", "_key": own, "mergedInto": "survivor"}
+    graph = MagicMock(
+        find_named_entities=AsyncMock(side_effect=[TimeoutError(), TimeoutError(), [merged_row]]),
+        resolve_named_entity_redirects=AsyncMock(return_value={own: "survivor"}),
+        schedule_named_entity_persist_retry=AsyncMock(return_value=1),
+    )
+    sink = _sink(graph)
+    sink.graphdb = MagicMock(graph_data_store=_store())
+    write = AsyncMock(return_value=[])
+    with patch.object(stage.NamedEntityGraphWriter, "write", write), \
+            patch("app.services.featureflag.platform_settings.is_named_entity_extraction_enabled", AsyncMock(return_value=True)):
+        ctx = SimpleNamespace(record=_record())
+        assert await sink.persist_named_entities(ctx, _extraction()) == "failed"
+        write.assert_not_awaited()
+        graph.schedule_named_entity_persist_retry.assert_awaited_once_with("org-1", "rec-1", "persist_failed", 0)
+
+        assert await sink.persist_named_entities(ctx, _extraction(), retry_due=100, retry_attempts=1) == "written"
+    (_org_id, _record_id, resolved), kwargs = write.await_args
+    assert [(item.graph_key, item.merged_into) for item in resolved] == [("survivor", "survivor")]
+    assert kwargs == {"retry_due": 100}
+
+
 async def test_duplicate_sync_projects_named_entities_but_not_pii_or_foreign_rows():
     graph = MagicMock(
         get_taxonomy_entities_for_record=AsyncMock(return_value=[]),

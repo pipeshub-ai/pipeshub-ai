@@ -331,9 +331,39 @@ before `metadata.embeddingModel` existed are not counted as a mismatch; they
 are re-embedded in place.
 
 - Only the rebuild leader drops and recreates a collection that does not
-  match, at the start of a tick while it holds `entity_index_rebuild:leader`.
-  The passes then refill it. Two replicas dropping in turn would lose the
-  points the first one had refilled.
+  match and holds entities, at the start of a tick while it holds
+  `entity_index_rebuild:leader`. The passes then refill it. Two replicas
+  dropping in turn would lose the points the first one had refilled.
+- A collection of another dimension that holds no entities (only its stamp,
+  or nothing) is dropped and recreated by any indexing replica, on its next
+  entity call. This is a fresh install: the rebuild's first tick creates the
+  collection with the default model before an admin configures one. Nothing
+  is lost, so writes do not wait for the leader.
+- A store that keeps a collection per org applies both rules to each org's
+  collection when it first uses it after a model change. The leader drops
+  one that holds entities when the rebuild reaches that org
+  (`recreate_stale_collection`); any indexing replica recreates one that
+  holds none, such as an org's collection emptied by deletes.
+- Every drop and re-create, the leader's included, runs under a Redis lock
+  per collection (`entity_collection:recreate:<collection>`, 2 minutes), so
+  recreating one org's collection never waits on another's. The vector
+  stores delete a collection by name only: without the lock, a replica
+  acting on a stale read would drop a collection another had just recreated
+  and written to.
+  Under the lock the store reads the collection again and keeps it if
+  another replica has already recreated it for the new model. It also reads
+  the embedding config from the key-value store, not its cache: a process
+  that missed the change notification would otherwise judge the new
+  collection against the old model and drop it. Such a process drops
+  nothing and takes the stored model instead. A store that cannot take the
+  lock, or cannot reach Redis, drops nothing; its call fails and a later
+  one tries again (for the shared collection, the first after the
+  30-second retry window). "Holds" is what a
+  filtered scroll sees: on OpenSearch, points written since the last refresh do not count,
+  and those have the old dimension anyway.
+- Two replicas creating the collection at the same moment is not an error:
+  the one whose create fails uses the collection the other made when it has
+  the right dimension.
 - While the rebuild loop waits between ticks, it checks the configured model
   every 5 seconds (a cache read) and ends the wait on a change. When the
   change notification reaches the leader, it recreates within seconds of the
@@ -342,11 +372,13 @@ are re-embedded in place.
   minute later.
 - Every other store fails entity calls with the mismatch (`The indexing
   service recreates it`). That includes the query and connector services and
-  the other indexing replicas. The retry is driven by calls, not a timer: for
+  the other indexing replicas, which also log an error naming the rebuild
+  leader. The retry is driven by calls, not a timer: for
   30 seconds after a failed initialisation, entity calls fail without
   retrying, and the first call after that tries again.
-  After a restart that finds a mismatched collection, entity writes fail
-  until the leader's first tick, which comes after a 60-second startup grace.
+  After a restart that finds a mismatched collection holding entities,
+  entity writes fail until the leader's first tick, which comes after a
+  60-second startup grace.
 - If the stored point cannot be read, the switch fails, and the first entity
   call more than 30 seconds later tries again. The store does not adopt the
   new model on an unread collection.
@@ -418,14 +450,34 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 
 ## Failure policy
 
+A lookup that could not run is never read as "no match": answering it with a
+new node is how duplicates get minted. Every vector or graph lookup of the
+resolver (exact match, winner search, winner check, merge redirect) is retried
+once after 0.5 s; if it still fails, the resolver raises
+`EntityLookupUnavailableError` before anything is written. The error is always
+retryable (`MessageErrorClassifier`), so the consumer redelivers the record
+with its usual backoff and the enrichment runs again (the record is indexed
+with `extractionStatus` still `IN_PROGRESS`, which is how a resumed enrichment
+is recognised). The last attempt ends the enrichment `FAILED` and the record
+stays searchable. Only one quick retry runs in place: under a timeout storm
+each attempt can last the store's whole timeout, so more would only add load.
+
 | Failure | Behaviour |
 | --- | --- |
-| Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
+| Vector store unavailable | Retried once, then the record's resolution is deferred to redelivery; no name becomes new |
+| Winner check against the graph fails | Same as the vector store |
+| Exact-match or merge-redirect lookup fails | Same; shadow mode only logs it |
+| A lookup that ran and found nothing | The name becomes a new node, as before |
 | Model unavailable or malformed | Every name in that call becomes new; `model_error` counter; the cached model is rebuilt from config for the next record |
 | Model call slower than 60 s | Same as unavailable. The bound applies to each provider call (and each reflection retry), not to the wait for the shared indexing model slot, which is backpressure |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
-| Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
-| Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |
+
+Failed lookups are counted in
+`pipeshub_entity_resolution_lookup_errors_total{lookup,outcome}`: `failed` for
+each attempt that raised, `deferred` for each resolution given up for this
+delivery. The per-record stats keep `vector_failures` and `graph_failures`
+(failed attempts, so a record that resolved after one retry shows 1), and a
+deferred record logs `entity_resolution deferred: ...` with them.
 
 Metrics live in `app/telemetry/modules/entity_resolution_metrics.py`:
 names by outcome, model calls by result, fallbacks by reason and per-record

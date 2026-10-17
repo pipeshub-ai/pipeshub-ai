@@ -1,27 +1,79 @@
 'use client';
 
-import { Flex, Text } from '@radix-ui/themes';
+import type { ReactNode, RefObject } from 'react';
+import { Box, Button, Flex, Text } from '@radix-ui/themes';
 import { EmptyIcon } from '@/app/components/ui';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { TableSkeleton } from '@/app/components/data-display';
 import { useTranslation } from 'react-i18next';
 import type { ArtifactListItem, ArtifactsOwnership, ArtifactsSortField, ArtifactsViewMode } from '../types';
+import type { ArtifactActionHandlers } from './artifact-actions';
+import type { ArtifactsPagination } from './pagination-footer';
 import { ArtifactsListView } from './artifacts-list-view';
 import { ArtifactsGridView } from './artifacts-grid-view';
 
-interface ArtifactsDataTableProps {
+interface ArtifactsDataTableProps extends ArtifactActionHandlers {
   items: ArtifactListItem[];
   viewMode: ArtifactsViewMode;
   ownership: ArtifactsOwnership;
   isLoading: boolean;
   error: string | null;
+  /** Search, type or date filters are narrowing the list. */
+  hasActiveFilters: boolean;
   sortBy: ArtifactsSortField;
   sortOrder: 'asc' | 'desc';
   onSort: (field: ArtifactsSortField) => void;
-  onPreview: (item: ArtifactListItem) => void;
-  onDownload: (item: ArtifactListItem) => void;
-  onOpenChat: (item: ArtifactListItem) => void;
-  onShare: (item: ArtifactListItem) => void;
-  pagination: { page: number; limit: number; totalCount: number; totalPages: number };
+  onRetry: () => void;
+  onClearFilters: () => void;
+  /** Focus lands here after a delete removes the focused row. */
+  listRef?: RefObject<HTMLDivElement | null>;
+  pagination: ArtifactsPagination;
   onPageChange: (page: number) => void;
+}
+
+function CenteredState({ icon, title, hint, action }: { icon: ReactNode; title: string; hint?: string; action?: ReactNode }) {
+  return (
+    <Flex direction="column" align="center" justify="center" gap="2" style={{ flex: 1, padding: 'var(--space-6)', textAlign: 'center' }}>
+      {icon}
+      <Text size="3" weight="medium" style={{ marginTop: 'var(--space-2)' }}>
+        {title}
+      </Text>
+      {hint && (
+        <Text size="2" style={{ color: 'var(--slate-10)', maxWidth: 360 }}>
+          {hint}
+        </Text>
+      )}
+      {action && <Box style={{ marginTop: 'var(--space-3)' }}>{action}</Box>}
+    </Flex>
+  );
+}
+
+function GridSkeleton() {
+  return (
+    <Box
+      aria-busy="true"
+      style={{
+        padding: 'var(--space-4)',
+        display: 'grid',
+        gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))',
+        gap: 'var(--space-4)',
+      }}
+    >
+      {Array.from({ length: 8 }).map((_, i) => (
+        <Box
+          key={i}
+          style={{
+            height: 212,
+            borderRadius: 'var(--radius-3)',
+            border: '1px solid var(--olive-3)',
+            background: 'var(--olive-2)',
+            animation: 'shimmer-pulse 1.4s ease-in-out infinite',
+            animationDelay: `${i * 80}ms`,
+          }}
+        />
+      ))}
+    </Box>
+  );
 }
 
 export function ArtifactsDataTable({
@@ -30,78 +82,92 @@ export function ArtifactsDataTable({
   ownership,
   isLoading,
   error,
+  hasActiveFilters,
   sortBy,
   sortOrder,
   onSort,
-  onPreview,
-  onDownload,
-  onOpenChat,
-  onShare,
+  onRetry,
+  onClearFilters,
+  listRef,
   pagination,
   onPageChange,
+  ...handlers
 }: ArtifactsDataTableProps) {
   const { t } = useTranslation();
-
-  if (isLoading && items.length === 0) {
-    return (
-      <Flex align="center" justify="center" style={{ flex: 1 }}>
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
-          {t('action.loading')}
-        </Text>
-      </Flex>
-    );
-  }
+  const region = (content: ReactNode, busy = false) => (
+    <Flex
+      ref={listRef}
+      tabIndex={-1}
+      direction="column"
+      aria-label={t('nav.allArtifacts')}
+      aria-busy={busy}
+      style={{ flex: 1, minHeight: 0, outline: 'none', opacity: busy ? 0.6 : 1, transition: 'opacity 150ms ease' }}
+    >
+      {content}
+    </Flex>
+  );
 
   if (error) {
-    return (
-      <Flex align="center" justify="center" style={{ flex: 1 }}>
-        <Text size="2" style={{ color: 'var(--red-11)' }}>{error}</Text>
-      </Flex>
+    return region(
+      <CenteredState
+        icon={<MaterialIcon name="cloud_off" size={40} color="var(--slate-9)" />}
+        title={error}
+        hint={t('artifacts.loadFailedHint')}
+        action={
+          <Button variant="soft" color="gray" onClick={onRetry}>
+            <MaterialIcon name="refresh" size={16} />
+            {t('action.tryAgain')}
+          </Button>
+        }
+      />,
     );
   }
 
-  if (!isLoading && items.length === 0) {
-    return (
-      <Flex direction="column" align="center" justify="center" gap="3" style={{ flex: 1 }}>
-        <EmptyIcon />
-        <Text size="3" weight="medium">
-          {ownership === 'shared' ? t('artifacts.emptyShared') : t('artifacts.empty', { defaultValue: 'No artifacts yet' })}
-        </Text>
-        <Text size="2" style={{ color: 'var(--slate-10)' }}>
-          {ownership === 'shared'
-            ? t('artifacts.emptySharedHint')
-            : t('artifacts.emptyHint', { defaultValue: 'Files your agents create in chat will show up here.' })}
-        </Text>
-      </Flex>
+  if (isLoading && items.length === 0) {
+    return region(
+      viewMode === 'grid' ? (
+        <GridSkeleton />
+      ) : (
+        <TableSkeleton rows={8} rowHeight={48} hasCheckbox={false} columns={[{ barWidth: 0.5 }, { width: '140px' }, { barWidth: 0.7 }, { width: '120px' }, { width: '90px' }]} />
+      ),
     );
   }
 
-  if (viewMode === 'grid') {
-    return (
-      <ArtifactsGridView
+  if (items.length === 0) {
+    return region(hasActiveFilters ? (
+      <CenteredState
+        icon={<MaterialIcon name="search_off" size={40} color="var(--slate-9)" />}
+        title={t('artifacts.noMatches')}
+        hint={t('artifacts.noMatchesHint')}
+        action={
+          <Button variant="soft" color="gray" onClick={onClearFilters}>
+            {t('artifacts.clearFilters')}
+          </Button>
+        }
+      />
+    ) : (
+      <CenteredState
+        icon={<EmptyIcon />}
+        title={ownership === 'shared' ? t('artifacts.emptyShared') : t('artifacts.empty')}
+        hint={ownership === 'shared' ? t('artifacts.emptySharedHint') : t('artifacts.emptyHint')}
+      />
+    ));
+  }
+
+  const view =
+    viewMode === 'grid' ? (
+      <ArtifactsGridView items={items} pagination={pagination} onPageChange={onPageChange} {...handlers} />
+    ) : (
+      <ArtifactsListView
         items={items}
-        onPreview={onPreview}
-        onDownload={onDownload}
-        onOpenChat={onOpenChat}
-        onShare={onShare}
+        sortBy={sortBy}
+        sortOrder={sortOrder}
+        onSort={onSort}
         pagination={pagination}
         onPageChange={onPageChange}
+        {...handlers}
       />
     );
-  }
 
-  return (
-    <ArtifactsListView
-      items={items}
-      sortBy={sortBy}
-      sortOrder={sortOrder}
-      onSort={onSort}
-      onPreview={onPreview}
-      onDownload={onDownload}
-      onOpenChat={onOpenChat}
-      onShare={onShare}
-      pagination={pagination}
-      onPageChange={onPageChange}
-    />
-  );
+  return region(view, isLoading);
 }

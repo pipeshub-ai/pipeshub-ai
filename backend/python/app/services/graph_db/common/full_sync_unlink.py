@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 #: a node it did not see. The same list the old pre-sync delete used.
 FULL_SYNC_EDGE_COLLECTIONS: tuple[str, ...] = (
     CollectionNames.BELONGS_TO.value,
-    CollectionNames.RECORD_RELATIONS.value,
+    CollectionNames.NODE_RELATIONS.value,
     CollectionNames.PERMISSION.value,
     CollectionNames.INHERIT_PERMISSIONS.value,
     CollectionNames.USER_APP_RELATION.value,

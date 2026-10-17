@@ -31,6 +31,7 @@ from helper.assertions import ConnectorAssertions, RecordAssertion  # noqa: E402
 from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     assert_confluence_pages_match_graph_records,
     count_confluence_space_pages_v1_search,
+    count_run_records,
     wait_for_space_page_count_at_least,
     get_confluence_page_version_number_v1,
     wait_until_confluence_condition,
@@ -41,7 +42,10 @@ from connectors.confluence.confluence_v1_test_utils import (  # noqa: E402
     check_multiple_pages_in_search_bool,
 )
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
-from helper.graph_provider_utils import wait_for_sync_completion  # noqa: E402
+from helper.graph_provider_utils import (  # noqa: E402
+    wait_for_record_by_external_id,
+    wait_for_sync_completion,
+)
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
 
 logger = logging.getLogger("confluence-mutation")
@@ -51,6 +55,13 @@ CREATED_PAGES = "created_page_ids"
 
 def _remember_created_page(state: Dict[str, Any], page_id: str) -> None:
     state.setdefault(CREATED_PAGES, []).append(page_id)
+
+
+async def _count(graph_provider: GraphProviderProtocol, state: Dict[str, Any]) -> int:
+    """This module's view of the connector's records: the space's own content plus our pages."""
+    return await count_run_records(
+        graph_provider, state["connector_id"], own_ids=state.get(CREATED_PAGES, [])
+    )
 
 
 def _page_from_earlier_step(state: Dict[str, Any], key: str, step: str) -> str:
@@ -104,7 +115,6 @@ class TestConfluenceIncrementalSync:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         space_key = confluence_connector["space_key"]
-        before_count = await graph_provider.count_records(connector_id)
 
         title = f"TC-CF-024 Test Page {uuid.uuid4().hex[:8]}"
         content = f"<p>Test content for TC-CF-024 at {uuid.uuid4().hex}</p>"
@@ -134,12 +144,9 @@ class TestConfluenceIncrementalSync:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        await wait_for_sync_completion(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            min_records=before_count + 1,
-            timeout=180,
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=180)
+        await wait_for_record_by_external_id(
+            graph_provider, connector_id, page_id, description="TC-CF-024 new page",
         )
 
         expected = RecordAssertion(
@@ -344,9 +351,9 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         space_key = confluence_connector["space_key"]
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await _count(graph_provider, confluence_connector)
         api_before = await count_confluence_space_pages_v1_search(
-            confluence_datasource, space_key
+            confluence_datasource, space_key, own_ids=confluence_connector.get(CREATED_PAGES, [])
         )
 
         title_1 = f"Integration Test Page Alpha {uuid.uuid4().hex[:8]}"
@@ -392,9 +399,10 @@ class TestConfluenceConnectorMutation:
             description=f"TC-INCR-001: both new pages in v1 search for {space_key}",
         )
         api_after_create = await wait_for_space_page_count_at_least(
-            confluence_datasource, space_key, api_before + 2
+            confluence_datasource, space_key, api_before + 2,
+            own_ids=confluence_connector[CREATED_PAGES],
         )
-        # At least: another run may be writing to the same space.
+        # At least: something other than these tests may still be writing to the space.
         assert api_after_create >= api_before + 2, (
             f"Confluence v1 page count should increase by 2; before={api_before}, "
             f"after_create={api_after_create}"
@@ -409,15 +417,20 @@ class TestConfluenceConnectorMutation:
             timeout=180,
         )
 
+        for page_id in (page_id_1, page_id_2):
+            await wait_for_record_by_external_id(
+                graph_provider, connector_id, page_id, description="TC-INCR-001 new page",
+            )
         await assert_confluence_pages_match_graph_records(
             confluence_datasource,
             graph_provider,
             connector_id,
             space_key,
             phase="TC-INCR-001 after incremental sync",
+            own_ids=confluence_connector[CREATED_PAGES],
         )
 
-        after_count = await graph_provider.count_records(connector_id)
+        after_count = await _count(graph_provider, confluence_connector)
 
         confluence_connector["incr_page_id"] = str(new_page_1["id"])
         confluence_connector["incr_page_title"] = new_page_1["title"]
@@ -440,7 +453,7 @@ class TestConfluenceConnectorMutation:
         """TC-UPDATE-001: Update page content, verify record is updated."""
         connector_id = confluence_connector["connector_id"]
         page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await _count(graph_provider, confluence_connector)
 
         page_resp = await confluence_datasource.get_page_by_id(page_id, body_format="storage")
         page_data = page_resp.json()
@@ -472,12 +485,8 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_count = await wait_for_sync_completion(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            timeout=120,
-        )
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=120)
+        after_count = await _count(graph_provider, confluence_connector)
         assert after_count == before_count, (
             f"Record count should be stable after update; before={before_count}, after={after_count}"
         )
@@ -494,7 +503,7 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         page_id = int(_page_from_earlier_step(confluence_connector, "incr_page_id", "TC-INCR-001"))
         old_title = confluence_connector["incr_page_title"]
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await _count(graph_provider, confluence_connector)
 
         new_title = f"Renamed-{old_title}"
 
@@ -515,12 +524,8 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_count = await wait_for_sync_completion(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            timeout=120,
-        )
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=120)
+        after_count = await _count(graph_provider, confluence_connector)
 
         await graph_provider.assert_record_paths_or_names_contain(connector_id, [new_title])
         await graph_provider.assert_record_not_exists(connector_id, old_title)
@@ -542,7 +547,7 @@ class TestConfluenceConnectorMutation:
         connector_id = confluence_connector["connector_id"]
         space_id = confluence_connector["space_id"]
         page_id = _page_from_earlier_step(confluence_connector, "renamed_page_id", "TC-RENAME-001")
-        before_count = await graph_provider.count_records(connector_id)
+        before_count = await _count(graph_provider, confluence_connector)
 
         parent_title = f"Parent Page {uuid.uuid4().hex[:8]}"
         parent_resp = await confluence_datasource.create_page(
@@ -570,13 +575,11 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        after_parent_count = await wait_for_sync_completion(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            min_records=before_count + 1,
-            timeout=120,
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=120)
+        await wait_for_record_by_external_id(
+            graph_provider, connector_id, parent_id_str, description="TC-MOVE-001 parent page",
         )
+        after_parent_count = await _count(graph_provider, confluence_connector)
         assert after_parent_count == before_count + 1, (
             f"Expected 1 new record (parent page); before={before_count}, after={after_parent_count}"
         )
@@ -592,12 +595,8 @@ class TestConfluenceConnectorMutation:
         pipeshub_client.toggle_sync(connector_id, enable=False)
         pipeshub_client.toggle_sync(connector_id, enable=True)
 
-        final_count = await wait_for_sync_completion(
-            pipeshub_client,
-            graph_provider,
-            connector_id,
-            timeout=120,
-        )
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=120)
+        final_count = await _count(graph_provider, confluence_connector)
         assert final_count == after_parent_count, (
             f"Record count should be stable after move; before_move={after_parent_count}, "
             f"after_move={final_count}"

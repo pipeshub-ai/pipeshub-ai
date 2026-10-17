@@ -16,6 +16,7 @@ const TYPE_ICONS: Record<string, string> = {
   DATA_FILE: 'dataset',
   CODE: 'code',
   CODE_OUTPUT: 'terminal',
+  OTHER: 'draft',
 };
 
 function epochToIso(epoch?: number): string | undefined {

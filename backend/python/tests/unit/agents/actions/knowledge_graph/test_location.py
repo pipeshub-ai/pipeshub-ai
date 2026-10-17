@@ -16,6 +16,7 @@ from app.agents.actions.knowledge_graph.location import (
     walk_ancestors,
 )
 from app.models.entities import Connectors, OriginTypes, Record, RecordType
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 
 def _adj(
@@ -42,10 +43,10 @@ def _seg(seg_id: str, seg_type: str, name: str) -> dict[str, str]:
 
 
 class TestPickParent:
-    def test_prefers_record_relations_over_belongs_to(self) -> None:
+    def test_prefers_node_relations_over_belongs_to(self) -> None:
         edges = [
             {"parent_id": "rg1", "parent_type": "recordGroup", "via": "belongsTo"},
-            {"parent_id": "rec-p", "parent_type": "record", "via": "recordRelations"},
+            {"parent_id": "rec-p", "parent_type": "record", "via": "nodeRelations"},
             {"parent_id": "app1", "parent_type": "app", "via": "belongsTo"},
         ]
         chosen = pick_parent(edges)
@@ -78,8 +79,8 @@ class TestWalkAncestors:
                 "app1": ("app", "Jira"),
             },
             {
-                "rec3": [("rec2", "record", "recordRelations")],
-                "rec2": [("rec1", "record", "recordRelations")],
+                "rec3": [("rec2", "record", "nodeRelations")],
+                "rec2": [("rec1", "record", "nodeRelations")],
                 "rec1": [("rg2", "recordGroup", "belongsTo")],
                 "rg2": [("rg1", "recordGroup", "belongsTo")],
                 "rg1": [("app1", "app", "belongsTo")],
@@ -99,7 +100,7 @@ class TestWalkAncestors:
             },
             {
                 "story": [
-                    ("epic", "record", "recordRelations"),
+                    ("epic", "record", "nodeRelations"),
                     ("rg1", "recordGroup", "belongsTo"),
                 ],
                 "epic": [("rg1", "recordGroup", "belongsTo")],
@@ -113,8 +114,8 @@ class TestWalkAncestors:
         adj = _adj(
             {"a": ("record", "A"), "b": ("record", "B")},
             {
-                "a": [("b", "record", "recordRelations")],
-                "b": [("a", "record", "recordRelations")],
+                "a": [("b", "record", "nodeRelations")],
+                "b": [("a", "record", "nodeRelations")],
             },
         )
         trail = walk_ancestors("a", adj)
@@ -124,7 +125,7 @@ class TestWalkAncestors:
         # r0 ← r1 ← r2 ← r3; max_depth=2 walks two hops only
         adj = _adj(
             {f"r{i}": ("record", f"R{i}") for i in range(4)},
-            {f"r{i}": [(f"r{i + 1}", "record", "recordRelations")] for i in range(3)},
+            {f"r{i}": [(f"r{i + 1}", "record", "nodeRelations")] for i in range(3)},
         )
         trail = walk_ancestors("r0", adj, max_depth=2)
         assert [s["id"] for s in trail] == ["r2", "r1"]
@@ -132,7 +133,7 @@ class TestWalkAncestors:
     def test_missing_parent_node_stops_walk(self) -> None:
         adj = _adj(
             {"child": ("record", "Child")},
-            {"child": [("ghost", "record", "recordRelations")]},
+            {"child": [("ghost", "record", "nodeRelations")]},
         )
         assert walk_ancestors("child", adj) == []
 
@@ -264,7 +265,7 @@ def _jira_adjacency_payload() -> dict[str, Any]:
         },
         {
             "story": [
-                ("epic", "record", "recordRelations"),
+                ("epic", "record", "nodeRelations"),
                 ("rg1", "recordGroup", "belongsTo"),
             ],
             "epic": [("rg1", "recordGroup", "belongsTo")],
@@ -279,8 +280,8 @@ async def test_resolve_one_adjacency_and_one_permission_call() -> None:
     mock_provider.get_record_parent_adjacency = AsyncMock(
         return_value=_jira_adjacency_payload()
     )
-    mock_provider.filter_nodes_with_permission_role = AsyncMock(
-        return_value={"rg1", "epic"}
+    mock_provider.check_access = AsyncMock(
+        return_value=AccessCheck(node_ids=frozenset({"rg1", "epic"}))
     )
     locs = await resolve_ancestor_locations(
         ["story", "story"],  # dedupe walks; still one provider batch
@@ -289,9 +290,8 @@ async def test_resolve_one_adjacency_and_one_permission_call() -> None:
         user_key="uk",
     )
     mock_provider.get_record_parent_adjacency.assert_called_once()
-    mock_provider.filter_nodes_with_permission_role.assert_called_once()
-    called_nodes = mock_provider.filter_nodes_with_permission_role.call_args[0][0]
-    ids = {n["id"] for n in called_nodes}
+    mock_provider.check_access.assert_called_once()
+    ids = set(mock_provider.check_access.call_args.kwargs["node_ids"])
     assert ids == {"rg1", "epic"}  # app excluded from permission batch
     assert locs["story"] == (
         "Jira (App ID: app1) -> PROJ (Record Group ID: rg1) -> Epic (Record ID: epic)"
@@ -305,7 +305,7 @@ async def test_resolve_denied_middle_renders_prefix_only() -> None:
         return_value=_jira_adjacency_payload()
     )
     # rg1 accessible; epic (nearer the record) denied → App -> PROJ and stop.
-    mock_provider.filter_nodes_with_permission_role = AsyncMock(return_value={"rg1"})
+    mock_provider.check_access = AsyncMock(return_value=AccessCheck(node_ids=frozenset({"rg1"})))
     locs = await resolve_ancestor_locations(
         ["story"],
         graph_provider=mock_provider,
@@ -322,7 +322,7 @@ async def test_resolve_all_ancestors_denied_renders_app_only() -> None:
     mock_provider.get_record_parent_adjacency = AsyncMock(
         return_value=_jira_adjacency_payload()
     )
-    mock_provider.filter_nodes_with_permission_role = AsyncMock(return_value=set())
+    mock_provider.check_access = AsyncMock(return_value=AccessCheck())
     locs = await resolve_ancestor_locations(
         ["story"],
         graph_provider=mock_provider,
@@ -344,7 +344,7 @@ async def test_resolve_kb_no_record_group() -> None:
             {"file1": [("kb1", "app", "belongsTo")]},
         )
     )
-    mock_provider.filter_nodes_with_permission_role = AsyncMock(return_value=set())
+    mock_provider.check_access = AsyncMock(return_value=AccessCheck())
     locs = await resolve_ancestor_locations(
         ["file1"],
         graph_provider=mock_provider,
@@ -353,7 +353,7 @@ async def test_resolve_kb_no_record_group() -> None:
     )
     assert locs["file1"] == "Engineering KB (App ID: kb1)"
     # Trail is app-only → no permission candidates → no filter call.
-    mock_provider.filter_nodes_with_permission_role.assert_not_called()
+    mock_provider.check_access.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -364,7 +364,7 @@ async def test_resolve_warns_when_no_ancestor_accessible(
     mock_provider.get_record_parent_adjacency = AsyncMock(
         return_value=_jira_adjacency_payload()
     )
-    mock_provider.filter_nodes_with_permission_role = AsyncMock(return_value=set())
+    mock_provider.check_access = AsyncMock(return_value=AccessCheck())
     with caplog.at_level(logging.WARNING, "app.agents.actions.knowledge_graph.location"):
         await resolve_ancestor_locations(
             ["story"],
@@ -383,7 +383,7 @@ async def test_resolve_without_user_key_renders_app_prefix_and_warns(
     mock_provider.get_record_parent_adjacency = AsyncMock(
         return_value=_jira_adjacency_payload()
     )
-    mock_provider.filter_nodes_with_permission_role = AsyncMock()
+    mock_provider.check_access = AsyncMock()
     with caplog.at_level(logging.WARNING, "app.agents.actions.knowledge_graph.location"):
         locs = await resolve_ancestor_locations(
             ["story"],
@@ -392,7 +392,7 @@ async def test_resolve_without_user_key_renders_app_prefix_and_warns(
             user_key="",
         )
     assert locs["story"] == "Jira (App ID: app1)"
-    mock_provider.filter_nodes_with_permission_role.assert_not_called()
+    mock_provider.check_access.assert_not_called()
     assert any("no user_key" in r.message for r in caplog.records)
 
 
@@ -458,3 +458,13 @@ async def test_resolve_empty_ids_no_provider_calls() -> None:
     )
     assert result == {}
     mock_provider.get_record_parent_adjacency.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_resolve_names_no_ancestor_when_the_check_fails() -> None:
+    """Trails lose names, never gain them."""
+    mock_provider = MagicMock()
+    mock_provider.get_record_parent_adjacency = AsyncMock(return_value=_jira_adjacency_payload())
+    mock_provider.check_access = AsyncMock(side_effect=RuntimeError("graph down"))
+    locs = await resolve_ancestor_locations(["story"], graph_provider=mock_provider, org_id="org", user_key="uk")
+    assert locs["story"] == "Jira (App ID: app1)"

@@ -604,7 +604,7 @@ components:
           description: Provider id that owns this model.
         task:
           type: string
-          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition]
+          enum: [chat, embedding, ocr, image, text-to-speech, automatic-speech-recognition, decision]
         root:
           type: string
         parent:
@@ -780,7 +780,7 @@ components:
         role:
           type: string
           nullable: true
-          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them.
+          description: The caller's permission on the artifact. OWNER for artifacts the caller created; READER for artifacts shared with them. Only an OWNER may delete it.
       required:
         - artifactId
         - name
@@ -1771,6 +1771,27 @@ components:
           description: >-
             Tool name → rule, the person's own, applied in all their chats. A tool without one
             starts from its kind: `read` at allow, `write` at ask, `destructive` at block.
+    ToolsetToolRulesUpdate:
+      type: object
+      required: [tools]
+      properties:
+        tools:
+          type: object
+          additionalProperties:
+            type: string
+            enum: [allow, ask, block]
+          description: >-
+            Tool name → rule, for everyone in the organization. Each name must be a tool of the
+            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
+            at ask, `destructive` at block.
+    ToolsetToolRules:
+      allOf:
+        - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
+        - type: object
+          properties:
+            canEdit:
+              type: boolean
+              description: Whether the caller may change the rules (an admin).
     McpToolInfo:
       type: object
       properties:
@@ -5114,6 +5135,15 @@ components:
                 chain. A group with no parent is its own root, so this is null
                 only for records written before the field existed, or by
                 connectors that do not set it.
+            accessRule:
+              type: string
+              enum: [OPEN, STRICT, RESTRICTED]
+              description: |
+                How this record's own permissions combine with its ancestors'.
+                OPEN: an accessible parent, or a direct grant, is enough.
+                STRICT: every ancestor up to the connector must be accessible too.
+                RESTRICTED: strict, and a grant on the record itself is required.
+                Absent on records written before the field existed; read as OPEN.
             uploadedBy:
               type: string
               nullable: true
@@ -6929,6 +6959,26 @@ components:
               type: boolean
             hasPrev:
               type: boolean
+            nextCursor:
+              type: string
+              nullable: true
+              description: Cursor for the next page; null on the last page.
+            prevCursor:
+              type: string
+              nullable: true
+              description: Cursor for the previous page; null on the first page.
+            startIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the first item on this page, when known.
+            endIndex:
+              type: integer
+              nullable: true
+              description: 1-based index of the last item on this page, when known.
+            currentPageItems:
+              type: integer
+              nullable: true
+              description: Number of items on this page.
         filters:
           type: object
           required:
@@ -7335,27 +7385,65 @@ components:
       type: object
       additionalProperties: false
       description: |
-        App connector instance ids and knowledge-base / record-group ids that narrow retrieval
-        for a turn. For **org assistant** chat streams, send explicit `apps` / `kb` lists.
-        For **agent** chat streams, send explicit id lists, or **omit** `filters` (and `tools`)
-        to let the service use the agent’s stored knowledge and tool configuration. Sending
-        `{ "apps": [], "kb": [] }` on an agent stream means **no** knowledge sources for that
-        turn (it is not “full org default”).
+        What retrieval is narrowed to for a turn: whole apps, and selections below app
+        level (record groups, folders, records). The keys are a union. For **org assistant**
+        chat streams, send explicit lists. For **agent** chat streams, send explicit id lists,
+        or **omit** `filters` (and `tools`) to let the service use the agent’s stored knowledge
+        and tool configuration. Sending `{ "apps": [], "kb": [] }` on an agent stream means
+        **no** knowledge sources for that turn (it is not “full org default”).
+
+        A selection below app level is the whole scope of the turn: with `recordGroups`,
+        `records` or `recordsExact` present, an absent or empty `apps` / `kb` means none of
+        them. A selected node that does not exist or that the caller cannot read contributes
+        nothing; when nothing valid remains the turn searches nothing. `/search` answers 404
+        for that; a chat turn is not failed, its search simply finds nothing.
+        At most 200 ids may be sent in one request, counted across all keys, and every id must
+        be a valid UUID. A key this schema does not list is ignored by the gateway rather than
+        refused.
+
+        A selection that covers more than the configured number of nodes (50,000 by default),
+        or that touches a source still being prepared for folder-level search, is refused:
+        `/search` and the non-streaming chat routes answer 422 with the message, and a chat
+        stream ends with an error frame (`RUN_ERROR`, or `error` on the legacy protocol)
+        whose `code` is `selection_too_large` or `selection_not_ready` and whose `message`
+        says what to change. No model call is made for such a turn.
       properties:
         apps:
           type: array
           items:
             type: string
           description: |
-            Connector instance ids to scope retrieval for this turn. Each element
-            must be a valid UUID (connector app id, KB app id, record-group id, etc.).
-            Gateway validation matches Zod `appOrKbIdSchema`.
+            Whole apps: connector instance ids and collection (knowledge base) ids.
+            Each element must be a valid UUID.
         kb:
           type: array
           items:
             type: string
           description: |
-            Knowledge-base app ids to scope retrieval for this turn.
+            Older name for collection ids; treated the same as `apps`.
+            Each element must be a valid UUID.
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: |
+            Record group ids (a drive, a space, a project). Each selects the group, the
+            groups nested in it and every record that belongs to them.
+            Each element must be a valid UUID.
+        records:
+          type: array
+          items:
+            type: string
+          description: |
+            Folder or record ids. Each selects the node and everything under it
+            (child items and attachments).
+            Each element must be a valid UUID.
+        recordsExact:
+          type: array
+          items:
+            type: string
+          description: |
+            Record ids selected alone, without what is under them.
             Each element must be a valid UUID.
         entityFilters:
           type: object
@@ -7497,6 +7585,15 @@ components:
         connector:
           type: string
           description: Connector identifier associated with this node
+        extension:
+          type: string
+          description: File extension of a record node, for its icon
+        mimeType:
+          type: string
+          description: MIME type of a record node, for its icon
+        mentioned:
+          type: boolean
+          description: True when the node was picked with an @ mention in the message
 
     AppliedFilters:
       type: object
@@ -7516,6 +7613,21 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
           description: Applied knowledge-base filter nodes
+        recordGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record-group filter nodes
+        records:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied folder and record filter nodes (each with everything under it)
+        recordsExact:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+          description: Applied record filter nodes selected alone
 
     ChatAttachmentRef:
       type: object
@@ -9455,6 +9567,19 @@ components:
           items:
             type: string
           description: Knowledge-base app ids scoping this project's default retrieval.
+        recordGroups:
+          type: array
+          items:
+            type: string
+          description: |
+            Record group ids (a Drive, a Confluence space, a Jira project and
+            so on). Each is searched with the groups nested in it. At most 200
+            ids across all four keys.
+        records:
+          type: array
+          items:
+            type: string
+          description: Folder or record ids. Each is searched with everything under it.
 
     ProjectAppliedFilters:
       type: object
@@ -9466,6 +9591,14 @@ components:
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
         kb:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        recordGroups:
+          type: array
+          items:
+            $ref: '#/components/schemas/AppliedFilterNode'
+        records:
           type: array
           items:
             $ref: '#/components/schemas/AppliedFilterNode'
@@ -9872,6 +10005,10 @@ components:
         connectorId:
           type: string
           nullable: true
+        connectorInstanceName:
+          type: string
+          nullable: true
+          description: The name the admin gave the connector instance; `connector` is only its type.
         connectorName:
           type: string
           nullable: true
@@ -10380,6 +10517,12 @@ components:
             The connector instance the record came from. `connector` names only
             the kind of source (for example `SLACK`), which several instances can
             share. Absent on citations saved before this field was stored.
+        connectorInstanceName:
+          type: string
+          nullable: true
+          description: |
+            The name the connector instance had when the answer was written.
+            Absent on citations saved before this field was stored.
         recordType:
           type: string
           nullable: true
@@ -10430,6 +10573,11 @@ components:
           nullable: true
           items:
             type: string
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+          description: When the cited record was last updated at its source.
 
     PersistedSemanticSearchCitation:
       type: object
@@ -11214,24 +11362,51 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Indexed scope for a knowledge connector: record-group ids and
-        individual record ids. On GET, `filtersParsed` is this shape parsed
-        from the stored `filters` JSON string.
+        What a knowledge source is limited to. With both lists empty the agent
+        searches the whole source; otherwise it searches only the listed
+        record groups, folders and records, each with everything under it, and
+        a selection made in a chat must lie under them. On GET, `filtersParsed`
+        is this shape parsed from the stored `filters` JSON string.
+
+        On create and update, `filters` may be this object or its JSON text.
+        The two lists must hold valid UUIDs, at most 200 across both; a value
+        that cannot be read is refused with 400 rather than saved as "no
+        limit", and so is a limit that covers more nodes than one search may
+        (50,000 by default). A stored limit that cannot be read limits the
+        source to nothing.
       properties:
         recordGroups:
           type: array
           items:
             type: string
           description: >-
-            Deprecated/legacy: record-group ids for connector record-group
-            scoping (e.g. Confluence spaces, Jira projects). No longer set for
-            KB (Collection) entries — a KB is identified by its own
-            `connectorId`, not by an id in this list.
+            Record-group ids (e.g. Confluence spaces, Jira projects), each with
+            the groups nested in it. Not set for KB (Collection) entries — a KB
+            is identified by its own `connectorId`; an id equal to a source's
+            `connectorId` is ignored.
         records:
           type: array
           items:
             type: string
-          description: Individual record ids in scope.
+          description: Folder or record ids, each with everything under it.
+        nodes:
+          type: array
+          description: Names of the ids above, for display. Not used for search.
+          items:
+            type: object
+            additionalProperties: false
+            required:
+              - id
+              - name
+              - nodeType
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              nodeType:
+                type: string
+                description: "`recordGroup`, `folder` or `record`."
 
     Toolset:
       type: object
@@ -14099,6 +14274,29 @@ components:
         updatedAtTimestamp:
           type: integer
           description: Epoch milliseconds
+        lastSyncStartedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run started; absent before the first run
+        lastSyncFinishedAtTimestamp:
+          type: integer
+          format: int64
+          nullable: true
+          description: Epoch ms when the last sync run ended, however it ended; absent until a run ends
+        lastSyncOutcome:
+          type: string
+          nullable: true
+          enum: [succeeded, failed, stopped, skipped]
+          description: How the last sync run ended
+        lastSyncSummary:
+          type: object
+          nullable: true
+          additionalProperties: true
+          description: >-
+            What the last run did, in the connector's own terms. For a Web connector: pagesSaved (written this run),
+            pagesStored (kept after it, which Maximum pages caps), pagesVisited, failed, failedByStatus, robotsSkipped, noindexSkipped, skippedMaxPages,
+            deferred, pruned, sitemapUrls, stopReason (max_pages, time_limit, stalled, rate_limited or null) and resumed.
         config:
           $ref: '#/components/schemas/ConnectorSchema'
 
@@ -14737,6 +14935,7 @@ components:
             - ENABLE_SKILLS: Allow users to create, import and manage Skills (SKILL.md packages) and let agents load them (default: true)
             - ENABLE_USER_CONTEXT: Include the current user's name, email, and organization in default assistant / Universal Agent system prompts (default: true)
             - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
+            - ENABLE_KH_SCOPE_LISTING (Labs: All Records Cache): Build the All Records listing from per-connector visibility stored after each sync (Neo4j only; default: false)
           example:
             ENABLE_BETA_CONNECTORS: false
             ENABLE_SKILLS: true
@@ -14751,7 +14950,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt, decision]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -14814,6 +15013,7 @@ components:
         - imageGeneration
         - tts
         - stt
+        - decision
       properties:
         ocr:
           type: array
@@ -14851,6 +15051,14 @@ components:
         stt:
           type: array
           description: Speech-to-Text providers used to transcribe chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        decision:
+          type: array
+          description: |
+            Decision models (OpenAI Decisions API, Azure OpenAI, TypeSafe Jev). They answer
+            typed questions (yes/no, pick one, score) with calibrated probabilities instead
+            of generating text. Backend code uses the default one; no route calls it yet.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
         modelRoles:
@@ -15223,8 +15431,11 @@ components:
     # Web Search Schemas
     WebSearchProviderType:
       type: string
-      enum: [duckduckgo, serper, tavily, exa]
-      description: Supported web search provider
+      enum: [duckduckgo, serper, tavily, exa, brave, searxng, firecrawl, crawl4ai]
+      description: >-
+        Supported web search provider. crawl4ai only reads pages (it backs up the built-in page reader)
+        and cannot be the default; firecrawl both searches and reads pages. searxng, firecrawl and
+        crawl4ai take a baseUrl; firecrawl defaults to its cloud API.
 
     WebSearchSettingsUpdate:
       type: object
@@ -15252,7 +15463,7 @@ components:
           $ref: '#/components/schemas/WebSearchProviderType'
         configuration:
           type: object
-          description: Provider-specific configuration (e.g. apiKey, cx, endpoint, engine)
+          description: Provider-specific configuration (apiKey; baseUrl for searxng, firecrawl and crawl4ai)
           additionalProperties: true
         isDefault:
           type: boolean
@@ -15296,7 +15507,8 @@ components:
           type: object
           description: |
             Provider-specific configuration as stored and returned by the gateway (open record).
-            Serper, Tavily, and Exa typically include `apiKey`; additional keys may be present.
+            API providers include `apiKey` (masked for non-admins); searxng, firecrawl and crawl4ai
+            include `baseUrl`. Additional keys may be present.
           additionalProperties: true
         isDefault:
           type: boolean
@@ -15392,7 +15604,7 @@ components:
           description: |
             Unique feature flag key. Current keys: ENABLE_BETA_CONNECTORS,
             ENABLE_MCP, ENABLE_ACTIONS, ENABLE_VECTOR_STORE_REBUILD, ENABLE_SKILLS,
-            ENABLE_USER_CONTEXT, ENABLE_NAMED_ENTITY_EXTRACTION.
+            ENABLE_USER_CONTEXT, ENABLE_NAMED_ENTITY_EXTRACTION, ENABLE_KH_SCOPE_LISTING.
           example: "ENABLE_BETA_CONNECTORS"
         label:
           type: string
@@ -25429,6 +25641,41 @@ paths:
           description: The storage scoped token was missing or invalid.
         '503':
           description: A stored file could not be removed; its document was kept so the removal can be retried.
+  /document/internal/conversations/{conversationId}/purge:
+    delete:
+      tags:
+        - Internal Storage
+      summary: Remove the files the assistant stored for a conversation (service-to-service)
+      description: |
+        Removes every document filed under the conversation's `artifacts/{conversationId}`
+        and `conversations/{conversationId}` folders in the caller's organisation, every
+        version included, together with their stored files. Only those two exact folders
+        are matched, never anything below or beside them. The Node API calls it while
+        deleting a conversation, after checking that the caller owns it. Safe to repeat.
+      operationId: internalPurgeConversationDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: conversationId
+          in: path
+          required: true
+          description: Conversation id (24 hexadecimal characters).
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: How many documents were removed (0 if none were filed there).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StoragePurgeResult'
+        '400':
+          description: The conversation id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '503':
+          description: A stored file could not be removed; its document was kept so the removal can be retried.
   /document/internal/records/relocate:
     post:
       tags:
@@ -25957,6 +26204,55 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+    delete:
+      tags:
+        - Artifacts
+      summary: Delete an artifact
+      description: >-
+        Permanently deletes an artifact the caller owns: every version, its stored files,
+        and its graph record, with every share of it. Only the owner may delete; a user it
+        was shared with, directly or through a conversation, gets 403. Artifacts the gallery
+        does not show return 404.
+      operationId: deleteArtifact
+      security:
+        - bearerAuth: []
+        - oauth2: [conversation:write]
+      parameters:
+        - name: artifactId
+          in: path
+          required: true
+          schema:
+            type: string
+            maxLength: 128
+            pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'
+      responses:
+        '204':
+          description: Artifact deleted
+        '401':
+          description: Missing, invalid, expired, or revoked authentication
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not the artifact's owner, or the token lacks conversation:write
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: Artifact not found
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Storage could not delete the artifact's files; nothing was changed, retry
           content:
             application/json:
               schema:
@@ -28696,11 +28992,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -29204,11 +29510,21 @@ paths:
           in: query
           required: false
           description: |
-            Page number (1-indexed). Combined with `limit` to paginate results.
+            Page number (1-indexed, at most 50). Combined with `limit` to paginate results.
+            Prefer `cursor`: a page number is reached by reading the pages before it.
           schema:
             type: integer
             minimum: 1
             default: 1
+        - name: cursor
+          in: query
+          required: false
+          description: |
+            Opaque cursor from `pagination.nextCursor` or `pagination.prevCursor` of a previous
+            response. Send it with the same path, filters and sort as the request that returned
+            it; a cursor issued for another place, user or listing mode is refused with 400.
+          schema:
+            type: string
         - name: limit
           in: query
           required: false
@@ -31207,17 +31523,7 @@ paths:
                             modelInfo:
                               $ref: '#/components/schemas/ConversationModelInfo'
                             appliedFilters:
-                              type: object
-                              additionalProperties: false
-                              properties:
-                                apps:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
-                                kb:
-                                  type: array
-                                  items:
-                                    $ref: '#/components/schemas/AppliedFilterNode'
+                              $ref: '#/components/schemas/AppliedFilters'
                             attachments:
                               type: array
                               description: |
@@ -31576,6 +31882,12 @@ paths:
         The conversation initiator can always delete. Users the conversation has
         been shared with may delete it only when their `sharedWith.accessLevel`
         is `write`.
+
+        **Artifacts:** before the conversation is marked deleted, every artifact
+        the caller created in it is deleted for good (every version and stored
+        file), and so are older stored outputs of the conversation. If that cannot
+        be done the conversation is left in place and the error is returned
+        (for example 503); repeating the request finishes the cleanup.
       operationId: deleteConversationById
       x-pipeshub-sdk: true
       security:
@@ -33782,11 +34094,21 @@ paths:
         Matching is meaning-based, so relevant results surface even when
         the wording differs from the query.
 
-        Use optional `filters` to narrow the scope:
+        Use optional `filters` to narrow the scope (see `Filters`):
 
-        - `filters.apps` — restrict to specific connector apps (for
-          example Google Drive or Confluence).
-        - `filters.kb` — restrict to specific knowledge bases.
+        - `filters.apps` — restrict to whole apps: connector instances
+          (for example Google Drive or Confluence) and collections.
+          `filters.kb` is the older name for collections and means the
+          same.
+        - `filters.recordGroups` — restrict to record groups (a drive, a
+          space, a project), each with the groups nested in it.
+        - `filters.records` — restrict to folders or records, each with
+          everything under it.
+        - `filters.recordsExact` — restrict to records alone, without
+          what is under them.
+
+        The keys are a union. With any of the last three present, an
+        absent or empty `apps` / `kb` means no whole app.
 
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
@@ -33835,11 +34157,17 @@ paths:
         '404':
           description: |
             A referenced knowledge base or app filter could not be
-            resolved.
+            resolved, or nothing selected below app level exists or is
+            readable by the caller ("Nothing in your selection is
+            available to search").
         '422':
           description: |
-            `filters.entityFilters` matches too many records the caller can
-            read. Narrow it: a tighter range, a name, or fewer kinds.
+            The search cannot run as asked. `filters.entityFilters` matches
+            too many records the caller can read (narrow it: a tighter range,
+            a name, or fewer kinds), or the selection below app level covers
+            more nodes than one search may (50,000 by default) or touches a
+            source that is still being prepared for folder-level search. The
+            message says which and what to change.
           content:
             application/json:
               schema:
@@ -36161,6 +36489,12 @@ paths:
         - deleting a nonexistent conversation returns success with `null`
         - deleting through a different `agentKey` returns success with `null`
         - deleting an already deleted conversation returns success with `null`
+
+        **Artifacts:** before the conversation is marked deleted, every artifact
+        the caller created in it is deleted for good (every version and stored
+        file). Artifacts another participant created stay theirs. If the cleanup
+        cannot be done the conversation is left in place and the error is
+        returned (for example 503); repeating the request finishes it.
       operationId: deleteAgentConversationById
       x-pipeshub-sdk: true
       security:
@@ -39011,14 +39345,24 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     post:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use PUT /connectors/{connectorId}/config/filters-sync instead, with a body of {sync?, filters?: {sync, indexing}} (the flat filters map this route takes is ignored there: the call returns 200 and saves none of it), and only while the connector is disabled.
+        This endpoint will be removed in a future release.
       tags:
         - Connector Filters
-      summary: Save filter selections
+      summary: Save filter selections (deprecated)
       description: |
+        <b>Deprecated.</b> Save filters with
+        <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
+        PipesHub app uses. That route takes <code>{sync?, filters?: {sync, indexing}}</code>. It ignores the
+        flat <code>filters</code> map this one takes: the call still returns 200, but nothing is saved.
+        It also refuses while the connector is active, so disable it first.
+        This endpoint will be removed in a future release.<br><br>
+        What this endpoint saves goes to <code>filters.values</code>, which sync does not read:
+        sync reads <code>filters.sync</code> and <code>filters.indexing</code>.<br><br>
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
-        After viewing filter options, use this endpoint to save the
-        selected values. These determine what data will be synced.<br><br>
         <b>Request:</b><br>
         <code>filters</code> must hold at least one entry: <code>{"filters": {}}</code> is
         refused with <code>400</code>. The server stores whatever it is given under the
@@ -39418,7 +39762,9 @@ paths:
       tags:
         - Toolset Registry
       summary: Get toolset schema
-      description: Get configuration schema for a specific toolset type
+      description: >-
+        Get configuration schema for a specific toolset type. Each of its `tools` carries a `kind`
+        (`read`, `write` or `destructive`), which sets the tool's starting approval rule.
       operationId: getToolsetSchema
       security:
         - bearerAuth: []
@@ -40701,6 +41047,71 @@ paths:
           description: Status retrieved successfully
         '401':
           description: Unauthorized
+        '404':
+          description: Instance not found
+
+  /toolsets/instances/{instanceId}/tool-rules:
+    get:
+      tags:
+        - Toolset Instances
+      summary: Get a toolset instance's tool approval rules
+      description: >-
+        Which of the instance's tools run, ask for approval, or never run, for everyone in the
+        organization. Every member can read them; `canEdit` says whether the caller may change them.
+      operationId: getToolsetToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The rules
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolsetToolRules'
+        '401':
+          description: Unauthorized
+        '404':
+          description: Instance not found
+    put:
+      tags:
+        - Toolset Instances
+      summary: Set a toolset instance's tool approval rules (admin only)
+      description: Replaces the instance's rules. They apply to everyone in the organization.
+      operationId: updateToolsetToolRules
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: instanceId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        description: The rules, replacing the ones saved
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ToolsetToolRulesUpdate'
+      responses:
+        '200':
+          description: The rules saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ToolsetToolRules'
+        '400':
+          description: A rule names a tool the toolset doesn't have
+        '401':
+          description: Unauthorized
+        '403':
+          description: Only administrators can change them
         '404':
           description: Instance not found
 
@@ -43730,7 +44141,7 @@ paths:
           description: |
             Category of AI model to retrieve.
 
-            Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+            Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`, `decision`.
           schema:
             $ref: '#/components/schemas/ModelType'
       responses:
@@ -43940,7 +44351,7 @@ paths:
                                     Invalid enum value. Expected 'ocr' |
                                     'embedding' | 'llm' | 'slm' | 'reasoning' |
                                     'multiModal' | 'imageGeneration' | 'tts' |
-                                    'stt', received 'llmr'
+                                    'stt' | 'decision', received 'llmr'
                                 code:
                                   type: string
                                   description: Machine-readable error code mapped from the Zod issue code.
@@ -43971,7 +44382,7 @@ paths:
                         message: >-
                           Invalid enum value. Expected 'ocr' | 'embedding' |
                           'llm' | 'slm' | 'reasoning' | 'multiModal' |
-                          'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                          'imageGeneration' | 'tts' | 'stt' | 'decision', received 'llmr'
                         code: INVALID_ENUM
                         value: ""
         '401':
@@ -44380,7 +44791,7 @@ paths:
         - name: modelType
           in: path
           required: true
-          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
@@ -44774,7 +45185,10 @@ paths:
       tags:
         - Web Search
       summary: Add a new web search provider
-      description: Add a new web search provider (duckduckgo, serper, tavily, or exa) with provider-specific configuration.
+      description: >-
+        Add a web search provider with provider-specific configuration (apiKey, and baseUrl for
+        searxng, firecrawl and crawl4ai). The configuration is checked with a real request before it
+        is saved. A provider that only reads pages (crawl4ai) cannot be the default.
       operationId: addWebSearchProvider
       security:
         - bearerAuth: []
@@ -45092,6 +45506,7 @@ paths:
         - ENABLE_SKILLS: Enable Skills — SKILL.md packages agents can load (default: true)
         - ENABLE_USER_CONTEXT: Include user name, email, and organization in default assistant / Universal Agent system prompts (default: true)
         - ENABLE_NAMED_ENTITY_EXTRACTION: Extract typed named entities while indexing (default: false; always on when the deployment sets HIGH_ACCURACY_MODE=true)
+        - ENABLE_KH_SCOPE_LISTING (Labs: All Records Cache): Build the All Records listing from per-connector visibility stored after each sync (Neo4j only; default: false)
       operationId: setPlatformSettings
       security:
         - bearerAuth: []
@@ -46183,7 +46598,7 @@ paths:
 
         **Validation rules:**
         - `modelType` must be one of: `llm`, `slm`, `embedding`, `ocr`,
-          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`, `decision`.
         - `modelKey` must refer to an existing provider entry within that
           `modelType` bucket. A 400 is returned if the model cannot be found.
         - Both `modelType` and `modelKey` are required for every role entry.
@@ -46267,6 +46682,7 @@ paths:
               - video
               - ocr
               - reasoning
+              - decision
           description: Filter providers by capability
       responses:
         '200':
@@ -46992,6 +47408,18 @@ paths:
             maximum: 200
             default: 50
           example: 50
+        - name: connectorIds
+          in: query
+          required: false
+          description: |
+            Comma-separated connector ids (at most 200). The response then holds exactly these
+            connectors, active or not and whatever their strategy, in one page with
+            <code>hasMore: false</code>. A connector that does not exist comes back as
+            <code>missing: true</code>, and one whose settings could not be read as
+            <code>unreadable: true</code>.
+          schema:
+            type: string
+          example: "8f792208-6d61-4e16-9eda-5b1b62f28e8a,1c0b3a52-2f7e-4f3e-9d65-4c1e8f0b7a11"
       responses:
         '200':
           description: Page of scheduled connector instances
@@ -47027,9 +47455,16 @@ paths:
                         isActive:
                           type: boolean
                           example: true
+                        missing:
+                          type: boolean
+                          description: Only with connectorIds. No connector has this id.
+                        unreadable:
+                          type: boolean
+                          description: Only with connectorIds. Its settings could not be read; sync is null.
                         sync:
                           type: object
-                          description: Full sync block from etcd config
+                          nullable: true
+                          description: Full sync block from etcd config; null when unreadable
                           properties:
                             selectedStrategy:
                               type: string
