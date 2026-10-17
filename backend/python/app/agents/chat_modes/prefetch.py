@@ -254,7 +254,7 @@ async def prefetch_retrieval(
         by_relevance=relevance_ordered_context(),
         image_budget=image_budget if image_budget is not None else ImageBudget(),
         image_admission=image_admission,
-        max_chars=search_max_chars() if targeted else None,
+        max_chars=_room_for_records(omitted, per_record, virtual_record_id_to_result) if targeted else None,
     )
     flat_parts = [item for sublist in rendered.parts for item in sublist]
     formatted_context = "\n".join(
@@ -282,6 +282,16 @@ async def prefetch_retrieval(
         incomplete_notice=incomplete_notice,
         failure_notice=None if formatted_context.strip() else incomplete_notice,
     )
+
+
+def _room_for_records(
+    omitted: dict[str, int], per_record: int, records: dict[str, Any],
+) -> int:
+    """What the records may take of a targeted first-turn context: the
+    search result's size less the note and list about trimmed records, sized
+    as if every trimmed record were shown, which the real ones never exceed."""
+    suffix = more_passages_note(per_record, len(omitted), 0) + more_passages_list(omitted, records)
+    return max(search_max_chars() - len(suffix), 0)
 
 
 def filter_notice_constraint(notice: str) -> str:
