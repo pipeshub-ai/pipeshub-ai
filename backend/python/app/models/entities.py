@@ -1384,13 +1384,13 @@ class TicketRecord(Record):
         if status_val:
             specific_lines.append(f"* Status: {status_val}{self._source_status_suffix(status_val)}")
 
+        # The labels Jira's live fields use (field_registry.SYSTEM_FIELD_LABELS),
+        # so a fetch that adds them live keeps one line each, not two.
         if self.resolved_at:
-            specific_lines.append(
-                f"* {self._resolved_word().capitalize()}: {format_day_for_llm(self.resolved_at)}"
-            )
+            specific_lines.append(f"* Resolved: {format_day_for_llm(self.resolved_at)}")
 
         if self.due_date:
-            specific_lines.append(f"* Due: {format_day_for_llm(self.due_date, calendar_date=True)}")
+            specific_lines.append(f"* Due Date: {format_day_for_llm(self.due_date, calendar_date=True)}")
 
         if self.priority:
             priority_val = self.priority.value if isinstance(self.priority, Enum) else self.priority

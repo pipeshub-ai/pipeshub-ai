@@ -152,12 +152,29 @@ class TestTicketStatus:
 
     def test_header_shows_resolution_and_due_dates(self) -> None:
         ctx = _ticket(status=Status.DONE, resolved_at=RESOLVED, due_date=DUE).to_llm_context()
-        assert "* Status: DONE\n* Resolved: 2026-06-08\n* Due: 2026-06-10" in ctx
+        assert "* Status: DONE\n* Resolved: 2026-06-08\n* Due Date: 2026-06-10" in ctx
 
     def test_header_without_the_dates_is_unchanged(self) -> None:
         ctx = _ticket(status=Status.DONE).to_llm_context()
         assert "* Resolved:" not in ctx
-        assert "* Due:" not in ctx
+        assert "* Due Date:" not in ctx
+
+    def test_live_jira_fields_do_not_repeat_the_dates(self) -> None:
+        """A fetch adds Jira's live fields under their own labels; the header
+        uses the same ones, so a cancelled ticket keeps one line of each."""
+        from app.connectors.sources.atlassian.jira.enrichment.value_formatter import (
+            merge_enrichment_context,
+        )
+
+        ctx = _ticket(status=Status.CANCELLED, resolved_at=RESOLVED, due_date=DUE).to_llm_context()
+        merged = merge_enrichment_context(ctx, {
+            "Resolved": "* Resolved: 2026-06-07T23:00:00.000-0700",
+            "Due Date": "* Due Date: 2026-06-10",
+        })
+        lines = merged.splitlines()
+        assert len([line for line in lines if line.startswith(("* Resolved", "* Closed"))]) == 1
+        assert len([line for line in lines if line.startswith("* Due")]) == 1
+        assert "* Resolved: 2026-06-08" in merged
 
     def test_dates_survive_the_graph_round_trip(self) -> None:
         ticket = _ticket(id="t-1", org_id="org-1", status=Status.DONE, resolved_at=RESOLVED, due_date=DUE)
