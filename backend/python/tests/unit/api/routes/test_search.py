@@ -881,3 +881,120 @@ class TestSearchSurvivesQueryTransformationFailure:
 
         assert exc_info.value is denied
         retrieval.search_with_filters.assert_not_called()
+
+
+class TestSearchWithoutQueryRewrite:
+    """`rewriteQuery: false` searches the query as sent, with no model call."""
+
+    RESULTS = {"searchResults": [{"content": "hit"}], "status_code": 200}
+
+    def _request(self) -> MagicMock:
+        request = MagicMock()
+        request.state.user = {"userId": "user1", "orgId": "org1"}
+        request.app.container.logger.return_value = MagicMock()
+        return request
+
+    def _retrieval(self) -> MagicMock:
+        retrieval = MagicMock()
+        retrieval.llm = MagicMock()
+        retrieval.search_with_filters = AsyncMock(return_value=dict(self.RESULTS))
+        return retrieval
+
+    def _chain(self, returns: str) -> MagicMock:
+        chain = MagicMock()
+        chain.ainvoke = AsyncMock(return_value=returns)
+        return chain
+
+    async def _search(
+        self, body: SearchQuery, retrieval: MagicMock, request: MagicMock | None = None
+    ) -> tuple[JSONResponse, MagicMock, MagicMock]:
+        rewrite, expansion = self._chain("rewritten q"), self._chain("variant a\nvariant b")
+        with patch(
+            "app.api.routes.search.setup_query_transformation",
+            return_value=(rewrite, expansion),
+        ) as setup:
+            response = await search(
+                request=request or self._request(),
+                body=body,
+                retrieval_service=retrieval,
+                graph_provider=MagicMock(),
+            )
+        return response, setup, rewrite
+
+    def test_the_rewrite_stays_on_when_the_field_is_left_out(self) -> None:
+        assert SearchQuery(query="q").rewriteQuery is True
+        assert SearchQuery(query="q", rewriteQuery=False).rewriteQuery is False
+
+    @pytest.mark.asyncio
+    async def test_left_out_the_query_is_rewritten_and_expanded_as_before(self) -> None:
+        retrieval = self._retrieval()
+
+        response, setup, rewrite = await self._search(SearchQuery(query="q"), retrieval)
+
+        assert response.status_code == 200
+        setup.assert_called_once()
+        rewrite.ainvoke.assert_awaited_once()
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "rewritten q", "variant a", "variant b",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_searches_only_the_query_as_sent(self) -> None:
+        retrieval = self._retrieval()
+
+        response, setup, rewrite = await self._search(
+            SearchQuery(query="  billing retry policy  ", rewriteQuery=False), retrieval
+        )
+
+        assert response.status_code == 200
+        assert json.loads(response.body) == self.RESULTS
+        setup.assert_not_called()
+        rewrite.ainvoke.assert_not_called()
+        assert retrieval.search_with_filters.call_args.kwargs["queries"] == [
+            "billing retry policy",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_off_needs_no_chat_model(self) -> None:
+        """Retrieval needs only the embedding model, so no LLM is looked up."""
+        retrieval = self._retrieval()
+        retrieval.llm = None
+        retrieval.get_llm_instance = AsyncMock(return_value=None)
+
+        response, _, _ = await self._search(SearchQuery(query="q", rewriteQuery=False), retrieval)
+
+        assert response.status_code == 200
+        retrieval.get_llm_instance.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_off_keeps_filters_dates_and_limit(self) -> None:
+        retrieval = self._retrieval()
+        body = SearchQuery(
+            query="q", rewriteQuery=False, limit=7,
+            filters={"apps": ["c1"], "kb": []}, modifiedAfter="2026-09-01",
+        )
+
+        await self._search(body, retrieval)
+
+        kwargs = retrieval.search_with_filters.call_args.kwargs
+        assert kwargs["limit"] == 7
+        assert kwargs["filter_groups"] == {"apps": ["c1"], "kb": []}
+        assert kwargs["time_range"] == {"source_updated_after_ms": 1788220800000}
+
+    @pytest.mark.asyncio
+    async def test_the_timing_line_says_whether_the_rewrite_ran(self) -> None:
+        request = self._request()
+
+        with patch.dict("os.environ", {"PIPESHUB_CHAT_TIMING": "true"}):
+            await self._search(SearchQuery(query="q", rewriteQuery=False), self._retrieval(), request)
+
+        logger = request.app.container.logger.return_value
+        lines = [
+            call.args[0] % call.args[1:]
+            for call in logger.info.call_args_list
+            if call.args and str(call.args[0]).startswith("⏱")
+        ]
+        assert len(lines) == 1
+        assert lines[0].startswith("⏱ search total=")
+        assert "query_transform=" in lines[0] and "retrieval=" in lines[0]
+        assert lines[0].endswith("| rewrite=off queries=1")

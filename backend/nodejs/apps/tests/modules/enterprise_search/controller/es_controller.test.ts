@@ -2865,6 +2865,31 @@ describe('Enterprise Search Controller', () => {
       expect(sent[1]).to.not.have.any.keys('createdAfter', 'createdBefore', 'modifiedAfter', 'modifiedBefore')
     })
 
+    it('forwards rewriteQuery only when the caller set it', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({ statusCode: 200, data: { searchResults: [], records: [] } } as any)
+      })
+      sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saved = { _id: new mongoose.Types.ObjectId() }
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').resolves(saved as any)
+
+      for (const body of [
+        { query: 'q', limit: 10, rewriteQuery: false },
+        { query: 'q', limit: 10, rewriteQuery: true },
+        { query: 'q', limit: 10 },
+      ]) {
+        const req = createMockRequest({ body, user: { userId: VALID_OID, orgId: VALID_OID2 } })
+        await handler(req, createMockResponse(), createMockNext())
+      }
+
+      expect(sent[0]).to.deep.include({ query: 'q', rewriteQuery: false })
+      expect(sent[1]).to.deep.include({ query: 'q', rewriteQuery: true })
+      expect(sent[2]).to.not.have.property('rewriteQuery')
+    })
+
     it('passes the AI service\'s reason for refusing a date back as a 400', async () => {
       const handler = search(createMockAppConfig())
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
