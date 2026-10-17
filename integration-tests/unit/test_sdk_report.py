@@ -19,6 +19,7 @@ from sdk_tests.report import (
     Status,
     Verdict,
     case_id,
+    load_operation_catalog,
     overall_verdict,
     read_junit,
     read_releases,
@@ -26,6 +27,9 @@ from sdk_tests.report import (
     render_summary,
     slack_payloads,
 )
+
+# The operations tests.arazzo.yaml's agentLifecycle workflow calls, in order.
+AGENT_LIFECYCLE = "createAgent, getAgent, updateAgent, listAgents, deleteAgent"
 
 pytestmark = pytest.mark.unit
 
@@ -62,6 +66,23 @@ def write_all_passing(directory: Path, run: str) -> None:
 )
 def test_the_same_case_has_one_id_in_every_sdk(name: str):
     assert case_id(name) == "agentsagentlifecycle"
+
+
+def test_a_case_is_named_by_the_operation_ids_it_calls():
+    catalog = load_operation_catalog()
+
+    assert catalog[case_id("Agents Agent Lifecycle")] == AGENT_LIFECYCLE.split(", ")
+    assert catalog[case_id("test_agents_agent_lifecycle")] == AGENT_LIFECYCLE.split(", ")
+    assert catalog[case_id("TestAgents_AgentLifecycle")] == AGENT_LIFECYCLE.split(", ")
+    # The workflow id is not the operation id for these two.
+    assert catalog[case_id("Connector Knowledge Graph Navigate")] == [
+        "navigateKnowledgeGraph"
+    ]
+    assert catalog[case_id("Knowledge Base Knowledge Base Limits")] == ["getUploadLimits"]
+    assert catalog[case_id("Handwritten Record Lifecycle")][:2] == [
+        "createKnowledgeBase",
+        "uploadRecords",
+    ]
 
 
 def test_all_passing_is_ok(tmp_path: Path):
@@ -241,15 +262,25 @@ def test_summary_and_slack_name_each_failed_case(tmp_path: Path):
 
     assert summary.startswith(COMMENT_MARKER)
     assert "## SDK tests: BLOCK" in summary
-    assert "- go current: TestAgents_AgentLifecycle: expected 200, got 500" in summary
+    assert f"- go current: {AGENT_LIFECYCLE}: expected 200, got 500" in summary
+    assert "TestAgents_AgentLifecycle" not in summary
+    assert "Agents Agent Lifecycle" not in summary
     assert payloads["message"]["text"] == ":red_circle: SDK Tests: BLOCK - Nightly"
     assert payloads["message"]["blocks"][-1]["elements"][0]["url"] == (
         "https://example.test/run/1"
     )
     assert payloads["thread"] == {
         "text": "*Failed cases (1):*\n```\n"
-        "go current: TestAgents_AgentLifecycle: expected 200, got 500\n```"
+        f"go current: {AGENT_LIFECYCLE}: expected 200, got 500\n```"
     }
+    tables = [
+        block
+        for block in payloads["message"]["blocks"]
+        if block["type"] == "table"
+    ]
+    operations = [[cell["text"] for cell in row] for row in tables[1]["rows"]]
+    assert operations[0][0] == "Operations"
+    assert [row[0] for row in operations[1:]] == [AGENT_LIFECYCLE]
 
 
 def test_the_slack_table_has_one_row_per_sdk_and_run(tmp_path: Path):
@@ -334,7 +365,7 @@ def test_slack_thread_escapes_control_characters(tmp_path: Path):
     thread = slack_payloads(read_results(tmp_path), RunInfo())["thread"]
 
     assert (
-        "go current: TestAgents_AgentLifecycle: got &lt;nil&gt; &amp; 500"
+        f"go current: {AGENT_LIFECYCLE}: got &lt;nil&gt; &amp; 500"
         in (thread["text"])
     )
 
@@ -358,7 +389,7 @@ def test_a_flag_names_the_release_that_breaks(tmp_path: Path):
     assert "sdk-break-approved" in summary
     assert "| python | FLAG | 1/1 passed | 0/1 passed (v1.7.0) |" in summary
     assert "| go | OK | 1/1 passed | 1/1 passed (last release) |" in summary
-    assert "- python previous (v1.7.0): test_agents_agent_lifecycle" in summary
+    assert f"- python previous (v1.7.0): {AGENT_LIFECYCLE}" in summary
 
 
 @pytest.mark.parametrize("content", ["", "<testsuites><testsuite>"])
@@ -391,9 +422,19 @@ def test_a_go_failure_shows_the_error_from_its_body(tmp_path: Path):
     summary = render_summary(read_results(tmp_path))
 
     assert (
-        "- go current: TestAgents_AgentLifecycle: agents_test.go:33: Error: "
+        f"- go current: {AGENT_LIFECYCLE}: agents_test.go:33: Error: "
         "Received unexpected error: dial tcp 127.0.0.1:9: connection refused"
     ) in summary
+
+
+def test_a_build_failure_keeps_its_own_name(tmp_path: Path):
+    write_all_passing(tmp_path, "current")
+    write_report(tmp_path, "current", "go", FAIL.format(name="[build failed]"))
+
+    summary = render_summary(read_results(tmp_path))
+
+    assert "| [build failed] |" in summary
+    assert "- go current: [build failed]:" in summary
 
 
 def test_a_failure_with_no_message_still_renders(tmp_path: Path):
@@ -407,7 +448,7 @@ def test_a_failure_with_no_message_still_renders(tmp_path: Path):
 
     summary = render_summary(read_results(tmp_path))
 
-    assert "- go current: TestAgents_AgentLifecycle: no detail" in summary
+    assert f"- go current: {AGENT_LIFECYCLE}: no detail" in summary
 
 
 def test_current_passed_lists_only_languages_with_a_clean_current_run(
