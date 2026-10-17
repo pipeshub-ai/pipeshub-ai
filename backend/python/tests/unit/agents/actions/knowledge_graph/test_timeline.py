@@ -17,7 +17,13 @@ import pytest
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
 from app.agents.actions.knowledge_graph.ops import timeline
+from app.agents.actions.knowledge_graph.ops.entity_filters import (
+    ENTITY_ID_FILTER_KEY_CACHE_KEY,
+    RECORD_SCOPED_ENTITY_CACHE_KEY,
+)
+from app.agents.actions.knowledge_graph.ops.entity_records import EntitySearchScope
 from app.agents.actions.knowledge_graph.ops.timeline import (
+    DEFAULT_LOOKBACK_DAYS,
     MAX_PERIODS,
     PERIOD_SEARCH_LIMIT,
     SPAN_SEARCH_LIMIT,
@@ -140,11 +146,12 @@ class _Corpus:
         self, dated: dict[str, str], *, size: int = 400, failing: set[str] | None = None,
         scores: dict[str, float] | None = None, sizes: dict[str, int] | None = None,
     ) -> None:
-        self.dated = {vrid: _ms(day) for vrid, day in dated.items()}
+        self.dated = {vrid: _ms(day) if day else None for vrid, day in dated.items()}
         self.size = size
         self.failing = failing or set()
         self.scores = scores or {}
         self.sizes = sizes or {}
+        self.refuse_groups: set[str] = set()
         self.calls: list[dict[str, Any]] = []
 
     async def search_with_filters(self, **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
@@ -152,7 +159,13 @@ class _Corpus:
         time_range = kwargs.get("time_range") or {}
         lo = time_range.get("source_created_after_ms", time_range.get("source_updated_after_ms", 0))
         hi = time_range.get("source_created_before_ms", time_range.get("source_updated_before_ms", 2**62))
-        vrids = [vrid for vrid, ms in self.dated.items() if lo <= ms <= hi]
+        vrids = [
+            vrid for vrid, ms in self.dated.items()
+            # A date filter never matches a record with no source date.
+            if (ms is None and not time_range) or (ms is not None and lo <= ms <= hi)
+        ]
+        if self.refuse_groups & set(kwargs["filter_groups"]):
+            vrids = []
         if any(vrid in self.failing for vrid in vrids):
             return {"status_code": 503, "searchResults": [], "message": "vector store unavailable"}
         if not vrids:
@@ -323,35 +336,75 @@ async def test_one_overlong_match_is_named_not_allowed_to_crowd_out_later_period
     assert "rec-big" in state["known_record_ids"]
 
 
+_TODAY = _ms("2026-06-30")
+
+
 class TestTheSpan:
     @pytest.mark.asyncio
-    async def test_no_dates_takes_the_span_of_the_matching_records(self) -> None:
+    async def test_no_dates_covers_the_year_before_today_and_says_so(self) -> None:
         corpus = _Corpus(_THREE_MONTHS)
-        text = await _run(corpus)
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            text = await _run(corpus)
 
-        span_call, *period_calls = corpus.calls
-        assert span_call["time_range"] is None and span_call["limit"] == SPAN_SEARCH_LIMIT
-        assert period_calls[0]["time_range"]["source_created_after_ms"] == _ms("2026-03-03")
-        assert period_calls[-1]["time_range"]["source_created_before_ms"] == _ms("2026-05-20")
-        assert "3 periods from 2026-03-03 to 2026-05-20" in text
+        whole, *periods = corpus.calls
+        assert whole["time_range"] is None and whole["limit"] == SPAN_SEARCH_LIMIT
+        assert periods[0]["time_range"]["source_created_after_ms"] == _TODAY - DEFAULT_LOOKBACK_DAYS * 86_400_000
+        assert periods[-1]["time_range"]["source_created_before_ms"] == _TODAY
+        assert len(periods) == MAX_PERIODS
+        assert "No start was given, so this covers 2025-06-30 on" in text
+
+    @pytest.mark.asyncio
+    async def test_the_best_matches_bunched_in_one_month_do_not_narrow_the_span(self) -> None:
+        dated: dict[str, str | None] = {f"may{i:02d}": f"2026-05-{i % 28 + 1:02d}" for i in range(SPAN_SEARCH_LIMIT)}
+        dated.update({"mar-a": "2026-03-04", "mar-b": "2026-03-18", "nodate": None})
+        scores = dict.fromkeys(dated, 0.9) | {"mar-a": 0.3, "mar-b": 0.3, "nodate": 0.95}
+        corpus = _Corpus(dated, scores=scores, size=40)
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            text = await _run(corpus)
+
+        whole, *periods = corpus.calls
+        assert any(
+            c["time_range"]["source_created_after_ms"] <= _ms("2026-03-04") <= c["time_range"]["source_created_before_ms"]
+            for c in periods
+        )
+        top = await corpus.search_with_filters(**whole)
+        assert not {"mar-a", "mar-b"} & {h["virtual_record_id"] for h in top["searchResults"]}
+        assert "mar-a yyy" in text and "mar-b yyy" in text
+        undated = text.split("### No source date", 1)[1]
+        assert "nodate yyy" in undated
+        assert "Matches whose record has no source date come last." in text
 
     @pytest.mark.asyncio
     async def test_start_alone_runs_to_today(self) -> None:
         corpus = _Corpus(_THREE_MONTHS)
-        await _run(corpus, start="2026-05-01")
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            await _run(corpus, start="2026-05-01")
 
+        assert corpus.calls[0]["time_range"] == {
+            "source_created_after_ms": _ms("2026-05-01"), "source_created_before_ms": _TODAY,
+        }
         assert corpus.calls[1]["time_range"]["source_created_after_ms"] == _ms("2026-05-01")
-        assert corpus.calls[-1]["time_range"]["source_created_before_ms"] >= _ms("2026-05-20")
-        assert len(corpus.calls) <= MAX_PERIODS + 1
+        assert corpus.calls[-1]["time_range"]["source_created_before_ms"] == _TODAY
 
     @pytest.mark.asyncio
-    async def test_end_alone_starts_at_the_earliest_match_before_it(self) -> None:
+    async def test_end_alone_covers_the_year_before_it(self) -> None:
         corpus = _Corpus(_THREE_MONTHS)
-        await _run(corpus, end="2026-04-30")
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            await _run(corpus, end="2026-04-30")
 
         assert corpus.calls[0]["time_range"] == {"source_created_before_ms": _end_of("2026-04-30")}
-        assert corpus.calls[1]["time_range"]["source_created_after_ms"] == _ms("2026-03-03")
+        start = _end_of("2026-04-30") - DEFAULT_LOOKBACK_DAYS * 86_400_000
+        assert corpus.calls[1]["time_range"]["source_created_after_ms"] == start
         assert corpus.calls[-1]["time_range"]["source_created_before_ms"] == _end_of("2026-04-30")
+
+    @pytest.mark.asyncio
+    async def test_a_match_older_than_a_year_extends_the_span_back(self) -> None:
+        corpus = _Corpus({**_THREE_MONTHS, "old": "2024-11-05"})
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            text = await _run(corpus)
+
+        assert corpus.calls[1]["time_range"]["source_created_after_ms"] == _ms("2024-11-05")
+        assert "old yyy" in text
 
     @pytest.mark.asyncio
     async def test_modified_places_records_by_their_last_update(self) -> None:
@@ -417,3 +470,49 @@ class TestWhatTheModelCanCite:
         summary = timeline.timeline_result_summary({}, MagicMock(content=text, is_error=False))
         assert summary.startswith("Searched 3 periods, found 4 records")
         assert "Thread apr" in summary
+
+
+class TestEntityFilters:
+    @pytest.mark.asyncio
+    async def test_an_entity_filter_that_matches_nothing_is_dropped_once_and_said(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        corpus.refuse_groups = {"departments"}
+        state = _state(corpus, **{ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}})
+        text = await _run(corpus, state, start="2026-03-01", end="2026-05-31", entity_ids=["dept-1"])
+
+        with_filter = [c for c in corpus.calls if "departments" in c["filter_groups"]]
+        without = [c for c in corpus.calls if "departments" not in c["filter_groups"]]
+        assert len(with_filter) == len(without) == 4
+        assert "these results are NOT limited to it" in text
+        assert "apr yyy" in text
+
+    @pytest.mark.asyncio
+    async def test_a_matching_entity_filter_is_kept(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        state = _state(corpus, **{ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}})
+        text = await _run(corpus, state, start="2026-03-01", end="2026-05-31", entity_ids=["dept-1"])
+
+        assert all(c["filter_groups"]["departments"] == ["Engineering"] for c in corpus.calls)
+        assert "NOT limited" not in text
+
+    @pytest.mark.asyncio
+    async def test_an_empty_record_group_stays_empty(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        state = _state(corpus, **{RECORD_SCOPED_ENTITY_CACHE_KEY: {"grp-1": "record_group"}})
+        empty = EntitySearchScope(virtual_ids=[], truncated=False)
+        with patch.object(timeline, "resolve_entity_virtual_ids", AsyncMock(return_value=empty)):
+            result = json.loads(await _run(corpus, state, start="2026-03-01", end="2026-05-31", entity_ids=["grp-1"]))
+
+        assert result["result_count"] == 0 and corpus.calls == []
+
+
+@pytest.mark.asyncio
+async def test_status_lines_are_inside_the_size_and_the_footer_survives() -> None:
+    corpus = _Corpus({"mar": "2026-01-03", "oct": "2026-06-20"}, size=3_000, sizes={"mar": 3_000, "oct": 3_000})
+    with patch.object(timeline, "TIMELINE_RESULT_CHARS", 7_000), \
+            patch.object(timeline, "_now_ms", return_value=_TODAY):
+        text = await _run(corpus, start="2026-01-01")
+
+    assert len(text) <= 7_000
+    assert text.count("No matching records.") == 4
+    assert text.rstrip().endswith("created_after/created_before.")

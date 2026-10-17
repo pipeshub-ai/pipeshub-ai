@@ -1307,9 +1307,11 @@ class KnowledgeGraph:
             "period gets its own share. The whole result is about the size of one search result.\n\n"
             "Pass start and end when the question names a period ('between March and May 2026' -> "
             "start='2026-03-01', end='2026-05-31'), widened by a week or so where it is vague "
-            "('late July', 'mid-September'). Omit both to cover every date the matching records "
-            "span; pass only start for 'since ...'. To keep to one channel, project or space, "
-            "pass its record_group entityId from knowledgegraph__search_entities in entity_ids.\n\n"
+            "('late July', 'mid-September'). With no start it covers the year before end, reaching "
+            "further back when the best matches are older; pass only start for 'since ...'. "
+            "Matches whose record has no source date are listed last. To keep to one channel, "
+            "project or space, pass its record_group entityId from "
+            "knowledgegraph__search_entities in entity_ids.\n\n"
             "Each period shows a sample, not every record. Answer period by period and cite the "
             "blocks under each period's heading. For a period that matters and looks thin, search "
             "it with knowledgegraph__search and its date filters, or read a record in full."
@@ -1326,7 +1328,8 @@ class KnowledgeGraph:
                 type=ParameterType.STRING,
                 description=(
                     "First day of the span, 'YYYY-MM-DD' (start of that day, UTC) or an ISO 8601 "
-                    "datetime with a timezone. Omit to start at the earliest matching record."
+                    "datetime with a timezone. Omit to cover the year before end, or further back "
+                    "to the earliest of the best matches."
                 ),
                 required=False,
             ),
@@ -1334,8 +1337,7 @@ class KnowledgeGraph:
                 name="end",
                 type=ParameterType.STRING,
                 description=(
-                    "Last day of the span, inclusive, same formats as start. Omit to end today "
-                    "when start is given, or at the latest matching record when neither is."
+                    "Last day of the span, inclusive, same formats as start. Omit to end today."
                 ),
                 required=False,
             ),

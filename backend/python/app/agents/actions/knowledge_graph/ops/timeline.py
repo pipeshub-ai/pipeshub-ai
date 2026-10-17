@@ -8,10 +8,12 @@ moment, so the answer covers that moment and misses the rest of the span.
 This tool splits the span into at most ``MAX_PERIODS`` periods and runs the
 same semantic search once per period, with that period as a hard date filter,
 beside one plain search over the whole span. Each hit of the whole-span search
-is filed under the period its record is dated in, so the periods together hold
-at least what a plain search finds, plus what it ranked too low to return.
-Without dates, the whole-span search also sets the span: from the earliest to
-the latest matching record.
+is filed under the period its record is dated in (or, with no source date, in
+a bucket of its own), so the periods together hold at least what a plain search
+finds, plus what it ranked too low to return. Without a start, the span reaches
+back ``DEFAULT_LOOKBACK_DAYS`` from the end, or further to the earliest record
+the whole-span search found; it is never narrowed to where the best matches
+cluster.
 
 Each period's best blocks are shown under its own heading, oldest period
 first, within one search result's size (``DEFAULT_MAX_RESULT_CHARS``), so a
@@ -105,6 +107,9 @@ _DATE_FIELDS = {
 }
 # A span this short is cut into weeks rather than months.
 _WEEKLY_SPAN_DAYS = 31
+# Without a start, how far back from the end a timeline reaches at least.
+DEFAULT_LOOKBACK_DAYS = 365
+_DAY_MS = 24 * 60 * 60 * 1000
 
 
 def timeline_summaries_enabled() -> bool:
@@ -132,6 +137,10 @@ def _utc(ms: int) -> datetime:
 
 def _ms(dt: datetime) -> int:
     return int(dt.timestamp() * 1000)
+
+
+def _now_ms() -> int:
+    return _ms(datetime.now(timezone.utc))
 
 
 def _day(ms: int) -> str:
@@ -225,8 +234,20 @@ def _json(status: str, message: str) -> str:
 @dataclass
 class _Scope:
     filter_groups: dict[str, Any]
+    entity_filter_groups: dict[str, list[str]]
+    """Department/category/topic/language filters, kept apart so an empty
+    timeline can retry without them, as knowledgegraph__search does."""
     virtual_record_ids: list[str] | None
-    notes: str
+    notes: list[str]
+
+    def groups(self, *, with_entities: bool) -> dict[str, Any]:
+        if not with_entities:
+            return self.filter_groups
+        merged: dict[str, Any] = merge_filter_groups(self.filter_groups, self.entity_filter_groups)
+        for key in (STRICT_SCOPE_FILTER_KEY, "entityFilters"):
+            if key in self.filter_groups:
+                merged[key] = self.filter_groups[key]
+        return merged
 
 
 async def _resolve_scope(
@@ -252,9 +273,7 @@ async def _resolve_scope(
     if requested and len(unknown) == len(requested):
         return _json("error", UNKNOWN_ENTITY_IDS_MESSAGE.format(ids=unknown))
 
-    filter_groups: dict[str, Any] = merge_filter_groups(
-        scope.to_filter_groups(), resolve_entity_filter_groups(state, entity_ids),
-    )
+    filter_groups: dict[str, Any] = dict(scope.to_filter_groups())
     if agent_filters.get(STRICT_SCOPE_FILTER_KEY):
         filter_groups[STRICT_SCOPE_FILTER_KEY] = True
     if agent_filters.get("entityFilters"):
@@ -287,18 +306,23 @@ async def _resolve_scope(
                 "Note: the requested record group has more records than one search can "
                 "cover, so only part of it was searched."
             )
-    return _Scope(filter_groups, virtual_record_ids, "".join(f"{n}\n" for n in notes))
+    return _Scope(filter_groups, resolve_entity_filter_groups(state, entity_ids), virtual_record_ids, notes)
 
 
 @dataclass
 class _PeriodHits:
-    period: Period
+    period: Period | None
+    """None for the bucket of matches whose record has no source date."""
     results: list[dict[str, Any]]
     records: dict[str, Any]
     failed: bool = False
     weight: int = 0
-    """Records of the whole-span search dated in this period: where the
-    matches are densest, the period gets more of the result."""
+    """Records of the whole-span search filed here: where the matches are
+    densest, the period gets more of the result."""
+
+    @property
+    def label(self) -> str:
+        return self.period.label if self.period is not None else "No source date"
 
 
 def _hit_key(hit: dict[str, Any]) -> tuple[Any, Any, Any]:
@@ -308,33 +332,111 @@ def _hit_key(hit: dict[str, Any]) -> tuple[Any, Any, Any]:
     return vrid, block, hit.get("content") if block is None else None
 
 
-def _add_whole_span_hits(hits: list[_PeriodHits], whole: dict[str, Any], date_field: str) -> None:
+def _add_whole_span_hits(
+    hits: list[_PeriodHits], undated: _PeriodHits, whole: dict[str, Any], date_field: str,
+) -> None:
     """File each hit of the whole-span search under the period its record is
-    dated in, beside that period's own hits.
+    dated in, beside that period's own hits, or under ``undated``.
 
-    The whole-span search is a plain search over the span, so the periods
+    The whole-span search is a plain search over the span, so the buckets
     together always hold at least what that search found; the per-period
     searches add what it ranked too low to return.
     """
     records = whole.get("virtual_to_record_map") or {}
-    seen = [{_hit_key(hit) for hit in period_hits.results} for period_hits in hits]
-    placed: list[set[str]] = [set() for _ in hits]
+    buckets = [*hits, undated]
+    seen = [{_hit_key(hit) for hit in bucket.results} for bucket in buckets]
+    placed: list[set[str]] = [set() for _ in buckets]
     for hit in whole.get("searchResults") or []:
-        vrid = _hit_key(hit)[0]
-        date = record_date_ms(records.get(vrid), date_field)
-        if date is None:
-            continue
-        for index, period_hits in enumerate(hits):
-            if not period_hits.period.start_ms <= date <= period_hits.period.end_ms:
+        key = _hit_key(hit)
+        date = record_date_ms(records.get(key[0]), date_field)
+        index = len(hits)
+        if date is not None:
+            index = next(
+                (i for i, h in enumerate(hits) if h.period.start_ms <= date <= h.period.end_ms), -1,
+            )
+            if index < 0:
                 continue
-            if _hit_key(hit) not in seen[index]:
-                seen[index].add(_hit_key(hit))
-                period_hits.results.append(hit)
-            period_hits.records.setdefault(vrid, records[vrid])
-            placed[index].add(vrid)
-            break
-    for period_hits, vrids in zip(hits, placed):
-        period_hits.weight = len(vrids)
+        if key not in seen[index]:
+            seen[index].add(key)
+            buckets[index].results.append(hit)
+        if key[0] in records:
+            buckets[index].records.setdefault(key[0], records[key[0]])
+        placed[index].add(key[0])
+    for bucket, vrids in zip(buckets, placed):
+        bucket.weight = len(vrids)
+
+
+def _failed(result: Any, log: logging.Logger) -> bool:  # noqa: ANN401
+    if isinstance(result, BaseException):
+        log.warning("knowledgegraph__search_timeline: a search failed: %s", result)
+        return True
+    return result is None or result.get("status_code", 200) in _FAILED_SEARCH_STATUS_CODES
+
+
+@dataclass
+class _Collected:
+    hits: list[_PeriodHits]
+    """The periods, oldest first, then the undated bucket when it has matches."""
+    start_ms: int
+    end_ms: int
+
+
+async def _collect(
+    search: Any,  # noqa: ANN401
+    start_ms: int | None,
+    end_ms: int | None,
+    date_field: str,
+    log: logging.Logger,
+) -> _Collected | str:
+    """Run the whole-span and per-period searches and file what they found.
+
+    Without a start, the span is the ``DEFAULT_LOOKBACK_DAYS`` before the end,
+    reaching further back to the earliest record the whole-span search found.
+    It is never narrowed to where the best matches are: they bunch around one
+    moment, which is what a timeline has to get past. With no end either, that
+    search has no date filter, so a match whose record has no source date is
+    still found (and listed apart).
+    """
+    after_key, before_key = _DATE_FIELDS[date_field][2:4]
+
+    def period_searches(periods: list[Period]) -> list[Any]:
+        return [search({after_key: p.start_ms, before_key: p.end_ms}, PERIOD_SEARCH_LIMIT) for p in periods]
+
+    if start_ms is None:
+        whole: Any = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
+        whole_failed = _failed(whole, log)
+        end_ms = end_ms if end_ms is not None else _now_ms()
+        start_ms = end_ms - DEFAULT_LOOKBACK_DAYS * _DAY_MS
+        span = None if whole_failed else span_of(whole.get("virtual_to_record_map") or {}, date_field)
+        if span is not None:
+            start_ms = min(start_ms, span[0])
+        periods = plan_periods(start_ms, end_ms)
+        per_period = await asyncio.gather(*period_searches(periods), return_exceptions=True)
+    else:
+        end_ms = end_ms if end_ms is not None else _now_ms()
+        periods = plan_periods(start_ms, end_ms)
+        whole, *per_period = await asyncio.gather(
+            search({after_key: start_ms, before_key: end_ms}, SPAN_SEARCH_LIMIT),
+            *period_searches(periods),
+            return_exceptions=True,
+        )
+        whole_failed = _failed(whole, log)
+    log.info(
+        "knowledgegraph__search_timeline: periods=%d field=%s", len(periods), date_field,
+    )
+
+    hits = [
+        _PeriodHits(period, [], {}, failed=True) if _failed(result, log)
+        else _PeriodHits(period, list(result.get("searchResults") or []),
+                         dict(result.get("virtual_to_record_map") or {}))
+        for period, result in zip(periods, per_period)
+    ]
+    undated = _PeriodHits(None, [], {})
+    if not whole_failed:
+        _add_whole_span_hits(hits, undated, whole, date_field)
+    if whole_failed and all(h.failed for h in hits):
+        return _json("error", "The timeline searches failed. Try again, or use knowledgegraph__search.")
+    return _Collected([*hits, undated] if undated.results else hits, start_ms, end_ms)
 
 
 async def execute_timeline_search(
@@ -361,91 +463,64 @@ async def execute_timeline_search(
         return bounds_error.replace(after_arg, "start").replace(before_arg, "end")
     start_ms = (bounds or {}).get(after_key)
     end_ms = (bounds or {}).get(before_key)
+    if end_ms is not None:
+        end_ms = min(end_ms, _now_ms())
+    if start_ms is not None and end_ms is not None and start_ms > end_ms:
+        return _json("error", "start must be on or before end — got an inverted range.")
 
     log = state.get("logger", logger)
     retrieval_service = state.get("retrieval_service")
-    graph_provider = state.get("graph_provider")
-    if not retrieval_service or not graph_provider:
+    if not retrieval_service or not state.get("graph_provider"):
         return _json("error", "Retrieval services not available")
-    org_id = state.get("org_id", "")
-    user_id = state.get("user_id", "")
 
     try:
         scope = await _resolve_scope(state, source_ids, entity_ids)
         if isinstance(scope, str):
             return scope
 
-        async def search(time_range: dict[str, int] | None, limit: int) -> dict[str, Any] | None:
-            return await retrieval_service.search_with_filters(
-                queries=[query],
-                org_id=org_id,
-                user_id=user_id,
-                limit=limit,
-                filter_groups=scope.filter_groups,
-                time_range=time_range,
-                virtual_record_ids_from_tool=scope.virtual_record_ids,
-            )
+        def searcher(filter_groups: dict[str, Any]) -> Any:  # noqa: ANN401
+            async def search(time_range: dict[str, int] | None, limit: int) -> dict[str, Any] | None:
+                return await retrieval_service.search_with_filters(
+                    queries=[query],
+                    org_id=state.get("org_id", ""),
+                    user_id=state.get("user_id", ""),
+                    limit=limit,
+                    filter_groups=filter_groups,
+                    time_range=time_range,
+                    virtual_record_ids_from_tool=scope.virtual_record_ids,
+                )
+            return search
 
-        def failed(result: Any) -> bool:  # noqa: ANN401
-            if isinstance(result, BaseException):
-                log.warning("knowledgegraph__search_timeline: a search failed: %s", result)
-                return True
-            return result is None or result.get("status_code", 200) in _FAILED_SEARCH_STATUS_CODES
-
-        now_ms = _ms(datetime.now(timezone.utc))
-        if end_ms is not None:
-            end_ms = min(end_ms, now_ms)
-        if start_ms is None:
-            whole: Any = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
-            if failed(whole):
-                message = whole.get("message") if isinstance(whole, dict) else None
-                return _json("error", message or "Retrieval service unavailable")
-            span = span_of(whole.get("virtual_to_record_map") or {}, date_field)
-            if span is None:
-                return _json("success", "No results found")
-            start_ms = span[0]
-            end_ms = end_ms if end_ms is not None else span[1]
-            periods = plan_periods(start_ms, end_ms)
-            per_period = await asyncio.gather(
-                *(search({after_key: p.start_ms, before_key: p.end_ms}, PERIOD_SEARCH_LIMIT) for p in periods),
-                return_exceptions=True,
-            )
-        else:
-            if end_ms is None:
-                end_ms = now_ms
-            if start_ms > end_ms:
-                return _json("error", "start must be on or before end — got an inverted range.")
-            periods = plan_periods(start_ms, end_ms)
-            whole, *per_period = await asyncio.gather(
-                search({after_key: start_ms, before_key: end_ms}, SPAN_SEARCH_LIMIT),
-                *(search({after_key: p.start_ms, before_key: p.end_ms}, PERIOD_SEARCH_LIMIT) for p in periods),
-                return_exceptions=True,
-            )
-            if failed(whole):
-                whole = None
-        log.info(
-            "knowledgegraph__search_timeline: query_chars=%d periods=%d field=%s",
-            len(query), len(periods), date_field,
+        with_entities = bool(scope.entity_filter_groups)
+        collected = await _collect(
+            searcher(scope.groups(with_entities=with_entities)), start_ms, end_ms, date_field, log,
         )
-
-        hits = [
-            _PeriodHits(period, [], {}, failed=True) if failed(result)
-            else _PeriodHits(period, list(result.get("searchResults") or []),
-                             dict(result.get("virtual_to_record_map") or {}))
-            for period, result in zip(periods, per_period)
-        ]
-        if whole is not None:
-            _add_whole_span_hits(hits, whole, date_field)
-
-        if all(h.failed and not h.results for h in hits):
-            return _json("error", "The timeline searches failed. Try again, or use knowledgegraph__search.")
-        if not any(h.results for h in hits):
+        notes = list(scope.notes)
+        if with_entities and isinstance(collected, _Collected) and not any(h.results for h in collected.hits):
+            # Entity filters are a hard AND at the graph layer; a missing edge
+            # empties the scope although matching records exist.
+            retried = await _collect(
+                searcher(scope.groups(with_entities=False)), start_ms, end_ms, date_field, log,
+            )
+            if isinstance(retried, _Collected) and any(h.results for h in retried.hits):
+                collected = retried
+                notes.append(
+                    "Note: nothing matched inside the requested department/category/topic/"
+                    "language, so these results are NOT limited to it."
+                )
+        if isinstance(collected, str):
+            return collected
+        if not any(h.results for h in collected.hits):
             message = "No results found in any period."
-            if any(h.failed for h in hits):
+            if any(h.failed for h in collected.hits):
                 message += " Some periods could not be searched, so this does not show the information is missing."
             return _json("success", message)
-
-        return await _render_timeline(state, query, date_field, scope.notes, hits)
+        if start_ms is None:
+            notes.append(
+                f"No start was given, so this covers {_day(collected.start_ms)} on: a year before the "
+                "end, or the earliest of the best matches if that is older. Pass start to look further back."
+            )
+        return await _render_timeline(state, query, date_field, "".join(f"{n}\n" for n in notes), collected)
     except Exception as exc:
         log.error("knowledgegraph__search_timeline error: %s", exc, exc_info=True)
         return _json("error", f"Timeline search error: {exc}")
@@ -516,8 +591,18 @@ class _Shown:
     images: list[dict[str, Any]] = field(default_factory=list)
 
 
+def _status_line(period_hits: _PeriodHits, has_matches: bool) -> str:  # noqa: FBT001
+    if not has_matches:
+        if period_hits.failed:
+            return f"{_NOT_SEARCHED} Search it again before drawing conclusions about it.\n"
+        return "No matching records.\n"
+    if period_hits.failed:
+        return f"{_NOT_SEARCHED} These are its matches from the search of the whole span.\n"
+    return ""
+
+
 async def _render_timeline(
-    state: ChatState, query: str, date_field: str, notes: str, hits: list[_PeriodHits],
+    state: ChatState, query: str, date_field: str, notes: str, collected: _Collected,
 ) -> str | list[Part]:
     from app.modules.retrieval.context.renderer import KnowledgeRenderer
     from app.utils.chat_helpers import (
@@ -527,6 +612,7 @@ async def _render_timeline(
     )
     from app.utils.image_admission import admission_from_state
 
+    hits = collected.hits
     contexts = await _build_contexts(state, hits)
     ref_mapper = state.get("citation_ref_mapper")
     if not isinstance(ref_mapper, CitationRefMapper):
@@ -537,36 +623,34 @@ async def _render_timeline(
     image_admission = admission_from_state(state)
     shortener = get_record_id_shortener_if_enabled(state)
 
+    dated = sum(1 for h in hits if h.period is not None)
     placed_by = "created" if date_field == "created" else "last modified"
+    undated_note = (
+        " Matches whose record has no source date come last." if dated < len(hits) else ""
+    )
     header = (
-        f'Timeline for "{query}": {len(hits)} period{"s" if len(hits) != 1 else ""} from '
-        f"{_day(hits[0].period.start_ms)} to {_day(hits[-1].period.end_ms)}, oldest first. Records "
-        f"are placed by the date they were {placed_by} at their source. Each period shows its "
+        f'Timeline for "{query}": {dated} period{"s" if dated != 1 else ""} from '
+        f"{_day(collected.start_ms)} to {_day(collected.end_ms)}, oldest first. Records are placed by "
+        f"the date they were {placed_by} at their source.{undated_note} Each period shows its "
         "best-matching blocks: a sample, not every record.\n"
         f"{notes}"
     )
     footer = _footer(date_field)
-    headings = [f"\n### {h.period.label}\n" for h in hits]
-    budget = TIMELINE_RESULT_CHARS - len(header) - len(footer) - sum(len(s) for s in headings)
-    shares = _shares(budget, [
-        h.weight if context is not None and context.ranked else None for h, context in zip(hits, contexts)
-    ])
+    has_matches = [context is not None and bool(context.ranked) for context in contexts]
+    headings = [f"\n### {h.label}\n" for h in hits]
+    status = [_status_line(h, matched) for h, matched in zip(hits, has_matches)]
+    budget = TIMELINE_RESULT_CHARS - len(header) - len(footer) - sum(map(len, headings)) - sum(map(len, status))
+    shares = _shares(budget, [h.weight if matched else None for h, matched in zip(hits, has_matches)])
 
     shown = _Shown(sections=[header])
+    # Negative after a period overspends, so later periods give it back
+    # instead of the size cap cutting the newest period and the footer.
     carry = 0
-    for heading, period_hits, context, period_share in zip(headings, hits, contexts, shares):
-        shown.sections.append(heading)
+    for heading, line, period_hits, context, period_share in zip(headings, status, hits, contexts, shares):
+        shown.sections.append(heading + line)
         if context is None or not context.ranked:
-            shown.sections.append(
-                f"{_NOT_SEARCHED} Search it again before drawing conclusions about it.\n"
-                if period_hits.failed else "No matching records.\n"
-            )
             continue
         share = period_share + carry
-        if period_hits.failed:
-            note = f"{_NOT_SEARCHED} These are its matches from the search of the whole span.\n"
-            shown.sections.append(note)
-            share -= len(note)
         renderer = KnowledgeRenderer(
             context.virtual_record_id_to_result,
             ref_mapper=ref_mapper,
@@ -577,7 +661,7 @@ async def _render_timeline(
             image_admission=image_admission,
         )
         used = _render_period(renderer, context, period_hits, date_field, max(share, 0), shown, shortener)
-        carry = max(share - used, 0)
+        carry = share - used
     shown.sections.append(footer)
 
     state["citation_ref_mapper"] = ref_mapper
