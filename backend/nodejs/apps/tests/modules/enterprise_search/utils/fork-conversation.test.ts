@@ -11,6 +11,7 @@ import {
   FORK_TITLE_MAX_LENGTH,
   FORK_TITLE_PREFIX,
   stripMessageForCopy,
+  copyArtifactsForFork,
   copySessionUpToMessage,
   resolveForkProjectId,
   expirePendingApprovals,
@@ -353,19 +354,27 @@ describe('copySessionUpToMessage with artifacts', () => {
     return { source, forkPoint, owner, orgId }
   }
 
-  const fork = (
+  // The two steps runFork takes: copy first, outside any transaction, then write the chat.
+  const fork = async (
     { source, forkPoint, owner, orgId }: ReturnType<typeof seedWithArtifacts>,
     copyArtifacts: sinon.SinonStub,
-  ) =>
-    copySessionUpToMessage(
+  ) => {
+    const artifacts = await copyArtifactsForFork(
+      source,
+      String(forkPoint._id),
+      new Types.ObjectId(),
+      copyArtifacts as never,
+    )
+    return copySessionUpToMessage(
       source,
       String(forkPoint._id),
       String(owner),
       String(orgId),
       { sessionType: 'chat' },
       null,
-      copyArtifacts as never,
+      artifacts,
     )
+  }
 
   it('copies each artifact up to the fork point and points the copied messages at the copies', async () => {
     const store = new InMemoryChatStore()
@@ -428,12 +437,11 @@ describe('copySessionUpToMessage with artifacts', () => {
     expect((store.messagesOf(result.conversation._id)[1] as any).content).to.contain('record:old')
   })
 
-  it('fails the fork, and removes it, when an artifact could not be copied', async () => {
+  it('fails before writing anything when an artifact could not be copied', async () => {
     const store = new InMemoryChatStore()
     store.install()
     const seeded = seedWithArtifacts(store)
-    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    const sessionsBefore = store.sessions.length
     const copyArtifacts = sinon.stub().resolves({ copies: [], failed: [{ artifactId: 'old', reason: 'error' }] })
 
     try {
@@ -443,17 +451,15 @@ describe('copySessionUpToMessage with artifacts', () => {
       expect((error as { statusCode?: number }).statusCode).to.equal(500)
     }
 
-    expect(deleteSession.calledOnce).to.equal(true)
-    expect(deleteMessages.calledOnce).to.equal(true)
-    expect(store.writes).to.not.include('message.insert')
+    expect(store.sessions).to.have.length(sessionsBefore)
+    expect(store.writes).to.deep.equal([])
   })
 
-  it('fails the fork when the copy service cannot be reached', async () => {
+  it('fails before writing anything when the copy service cannot be reached', async () => {
     const store = new InMemoryChatStore()
     store.install()
     const seeded = seedWithArtifacts(store)
-    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
-    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    const sessionsBefore = store.sessions.length
 
     try {
       await fork(seeded, sinon.stub().rejects(new Error('connectors down')))
@@ -461,6 +467,51 @@ describe('copySessionUpToMessage with artifacts', () => {
     } catch (error) {
       expect((error as Error).message).to.equal('connectors down')
     }
-    expect(deleteSession.calledOnce).to.equal(true)
+
+    expect(store.sessions).to.have.length(sessionsBefore)
+    expect(store.writes).to.deep.equal([])
+  })
+
+  it('copies the artifacts before the fork chat exists, then files the chat under the same id', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    const sessionsBefore = store.sessions.length
+    const forkId = new Types.ObjectId()
+    let sessionsWhenCopying = -1
+    const copyArtifacts = sinon.stub().callsFake(async () => {
+      sessionsWhenCopying = store.sessions.length
+      return { copies: [copied], failed: [] }
+    })
+
+    const artifacts = await copyArtifactsForFork(seeded.source, String(seeded.forkPoint._id), forkId, copyArtifacts as never)
+    const result = await copySessionUpToMessage(
+      seeded.source,
+      String(seeded.forkPoint._id),
+      String(seeded.owner),
+      String(seeded.orgId),
+      { sessionType: 'chat' },
+      null,
+      artifacts,
+    )
+
+    expect(sessionsWhenCopying).to.equal(sessionsBefore)
+    expect(copyArtifacts.firstCall.args[0]).to.equal(String(forkId))
+    expect(String(result.conversation._id)).to.equal(String(forkId))
+  })
+
+  it('answers 404, and copies nothing, when the fork point is not a message of the chat', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    const copyArtifacts = sinon.stub()
+
+    try {
+      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId(), copyArtifacts as never)
+      expect.fail('expected a 404')
+    } catch (error) {
+      expect(error).to.be.instanceOf(NotFoundError)
+    }
+    expect(copyArtifacts.called).to.equal(false)
   })
 })

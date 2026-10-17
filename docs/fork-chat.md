@@ -49,9 +49,13 @@ When the deployment has a replica set, the whole fork runs in one transaction. W
 
 An artifact is reachable by anyone with a permission edge to its record, not by conversation. If the fork kept the original's artifact id it would see the original's later versions and its edits would be written into the original. So the fork copies them.
 
-1. After the fork session is created, Node scans the copied range for artifact cards (`::artifact[name](record:ID){mime|docId|recordId|TYPE|version}`) and records the highest version each artifact shows (`fork-artifacts.ts`, `collectArtifactRefs`).
-2. Node calls the connectors service, as the caller, with `POST /api/v1/artifacts/copy` (`forkArtifactCopier` in `es_controller.ts`). For each artifact the registry (`ArtifactRegistryService.copy_to_conversation`) creates a new artifact owned by the fork and copies versions 1 up to that highest version. Later versions stay behind.
-3. Node rewrites the copied messages: the card (record id, document id, `record:` url, version) and every other occurrence of the old artifact or document id in the text and in `parts`, because a replayed tool call shows those ids to the model (`pointMessageAtCopies`).
+1. `runFork` allocates the fork's id first. Before anything is written, Node scans the copied range for artifact cards (`::artifact[name](record:ID){mime|docId|recordId|TYPE|version}`) and records the highest version each artifact shows (`fork-artifacts.ts`, `collectArtifactRefs`).
+2. Node calls the connectors service, as the caller, with `POST /api/v1/artifacts/copy` (`forkArtifactCopier` in `es_controller.ts`). For each artifact the registry (`ArtifactRegistryService.copy_to_conversation`) creates a new artifact owned by the caller, filed under the fork's conversation id, and copies versions 1 up to that highest version. Later versions stay behind. The route accepts the scopes of the two fork routes (`conversation:chat`, `agent:execute`), so any client that may fork may copy.
+3. Only then is the fork's chat written, under the id the artifacts were filed under, and Node rewrites the copied messages: the card (record id, document id, `record:` url, version) and every other occurrence of the old artifact or document id in the text and in `parts`, because a replayed tool call shows those ids to the model (`pointMessageAtCopies`).
+
+The copy runs **before** the MongoDB transaction, not inside it. It uploads every version again and can take minutes, longer than MongoDB lets a transaction live (60 seconds by default), and `withTransaction` runs its callback again on a transient error, which would copy everything a second time. A retried transaction reuses the artifacts already copied.
+
+Because the copies are filed under the fork's conversation id, deleting a chat deletes the artifacts of that chat only: deleting the original leaves the fork's copies, and deleting the fork removes its copies.
 
 Version numbers in the copy normally match the source. When two source versions have identical content the copy keeps one, so a card's version is mapped through the copy's own table.
 
@@ -63,21 +67,25 @@ What is not covered: an artifact that is only named inside a tool call and has n
 | --- | --- |
 | Source chat or message not found, or caller is not the owner | `404`, nothing written |
 | An artifact is gone (`not_found`) or no longer readable (`forbidden`) | The fork continues. Its card is left as it was |
-| An artifact copy fails for any other reason (`error`), or the connectors service cannot be reached | The fork fails with `500` and the new chat is removed |
+| An artifact copy fails for any other reason (`error`), or the connectors service cannot be reached | The fork fails with `500`. No chat was written yet, so there is nothing to remove in MongoDB |
 | Message copy fails with a transaction | The transaction rolls back |
 | Message copy fails without a transaction | The new messages and the new session are deleted |
 | One artifact fails half way through its versions | The half-built copy is marked deleted |
+| The fork fails after some artifacts were copied | The copies are removed by asking the connectors service to delete the artifacts filed under the fork's id (the same call that deleting a chat makes) |
 
-The artifact copy is attempted once. A retry after a timeout would leave a second, unused copy. If a later step fails after some artifacts were copied, those copies stay behind unreferenced; there is no cleanup call for them yet.
+The artifact copy is attempted once. A retry after a timeout would leave a second, unused copy.
+
+The removal of copies is best effort: if it fails, the original error is still the one returned, and the failure is logged. The copies then stay behind unreferenced. That also happens when the caller's token may fork but may not delete (that call needs `conversation:write` or `agent:write`).
 
 ## Tests
 
-- Node unit: `tests/modules/enterprise_search/utils/fork-conversation.test.ts`, `fork-artifacts.test.ts`, `controller/fork-artifact-copier.test.ts`, `controller/es_controller.ownership.test.ts`.
+- Node unit: `tests/modules/enterprise_search/utils/fork-conversation.test.ts`, `fork-artifacts.test.ts`, `controller/fork-artifact-copier.test.ts`, `controller/fork-artifact-flow.test.ts` (copy before the chat is written, removal of copies on failure), `controller/es_controller.ownership.test.ts`.
 - Node against a real MongoDB (skipped unless `FORK_TEST_MONGO_URI` is set; run once with a replica set and `REPLICA_SET_AVAILABLE=true`, once standalone): `fork-conversation.mongo.test.ts`, `fork-conversation.history.mongo.test.ts` (what the model is shown after a fork).
-- Python: `tests/unit/services/artifact_registry/test_copy_to_conversation.py`, `tests/unit/connectors/api/test_artifacts_router_copy.py`.
+- Python: `tests/unit/services/artifact_registry/test_copy_to_conversation.py` (including deleting the original or the fork), `tests/unit/connectors/api/test_artifacts_router_copy.py` (including which scopes may call it).
 - Frontend: `message-actions-fork.test.tsx`.
 
 ## Not verified
 
 - Forking an agent chat that contains artifacts has not been run end to end; the Agents UI was not available in the build used for testing.
+- The removal of copies after a failed fork is covered by tests with the delete call stubbed; it has not been run against a live connectors service.
 - Citations are shared by id. Deleting either chat soft-deletes them (existing delete behaviour). How the other chat's citation panel renders afterwards has not been checked.

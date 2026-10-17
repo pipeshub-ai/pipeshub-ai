@@ -291,7 +291,9 @@ class ArtifactCopyRequest(BaseModel):
 
 @artifacts_router.post(
     "/api/v1/artifacts/copy",
-    dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE, OAuthScopes.KB_WRITE))],
+    # The scopes of the two fork routes that call this: a client allowed to fork
+    # must be allowed to copy what the fork carries over.
+    dependencies=[Depends(require_scopes(OAuthScopes.CONVERSATION_CHAT, OAuthScopes.AGENT_EXECUTE))],
 )
 async def copy_artifacts_to_conversation(
     request: Request,
