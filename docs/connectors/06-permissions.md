@@ -130,9 +130,10 @@ A record with `parent_external_record_id` inherits from its parent record, so at
 | Group membership changed | `on_new_user_groups` replaces the members; `on_user_group_member_added` / `_removed` for single changes. |
 | An item moved, same external id | Re-send it with `on_new_records` carrying the new parent and group ids. Stale hierarchy and inheritance edges are removed. |
 | An item moved and its external id changed (path-keyed sources) | `on_records_moved([(old_external_id, new_record, permissions)], permissions_fetched=True)` when the list is complete; without `permissions_fetched` the grants are added to, not replaced. |
-| An item or container was deleted | `on_record_deleted`, `on_record_group_deleted`. Children of a deleted record are re-parented. |
+| An item was deleted | `delete_record_by_external_id(connector_id, external_id)`: its attachments go with it, its other children are re-pointed at what it hung under. |
+| A container was deleted | `on_record_group_deleted`: the group's whole subtree goes. |
 
-In a full sync, the first write of an existing record replaces its grants, and anything the run did not write loses its links at the end (only if `full_sync_coverage()` says the run read everything). If a full sync deliberately does not re-read some access (for example it skipped a container after an error), say so through `full_sync_coverage()`. To keep particular stored nodes through the cleanup without rewriting them, use the processor's `note_kept_records`, `note_kept_user_groups` and `note_kept_record_group`.
+In a full sync, the first write of an existing record replaces its grants. At the end, what the run did not write is cleaned up according to `full_sync_coverage()`: with the default, it loses its links; with a date window (`window_start_ms`), what lies before the window keeps its structure and inheritance but loses its own grants; with `complete=False` (part of the source skipped after an error), nothing is cleaned up. Use `complete=False` only for an error skip, never for a window (`01-high-level-design.md`). To keep particular stored nodes through the cleanup without rewriting them, use the processor's `note_kept_records`, `note_kept_user_groups` and `note_kept_record_group`.
 
 ## Rules
 
