@@ -32,10 +32,8 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
 
-# Connector suites kept out of the nightly shards: CIFS is not registered yet, and
-# Zendesk runs only when dispatched. A shard must not select them, and the core job
-# must exclude them, or their tests fall into core.
-HELD_OUT_CONNECTORS = frozenset({"cifs", "zendesk"})
+# CIFS is not registered yet, so it stays out of nightly shards and core.
+HELD_OUT_CONNECTORS = frozenset({"cifs"})
 
 # Suites with a job of their own, named after their marker. "demo" must start on
 # a stack no other suite has touched; "ai_agents" costs model calls, so its job
