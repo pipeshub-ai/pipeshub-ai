@@ -362,6 +362,17 @@ export const reindexConnectorSchema = z.object({
  */
 const getConnectorStatsSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
+  query: z.object({
+    // Accept counts taken up to this many seconds ago instead of counting
+    // again; the connector service keeps recent counts. Left out, the counts
+    // are fresh, as before. Same bounds as the connector service.
+    maxAgeSeconds: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().int().min(0).max(600),
+      )
+      .optional(),
+  }),
 });
 
 /**

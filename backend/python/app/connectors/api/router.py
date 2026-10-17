@@ -64,6 +64,10 @@ from app.config.constants.service import (
     config_node_constants,
 )
 from app.config.redaction import REDACTED_PLACEHOLDER
+from app.connectors.api.connector_stats_cache import (
+    MAX_AGE_SECONDS_LIMIT,
+    connector_stats_cache,
+)
 from app.edition_config import (
     allowed_connector_list_scopes,
     annotate_oauth_inheritance,
@@ -2588,21 +2592,41 @@ async def reindex_single_record(
 async def get_connector_stats_endpoint(
     request: Request,
     connector_id: str,
-    graph_provider: IGraphDBProvider = Depends(get_graph_provider)
+    graph_provider: IGraphDBProvider = Depends(get_graph_provider),
+    max_age_seconds: Annotated[
+        int | None,
+        Query(
+            alias="maxAgeSeconds",
+            ge=0,
+            le=MAX_AGE_SECONDS_LIMIT,
+            description=(
+                "Accept counts taken up to this many seconds ago instead of counting "
+                "again. Left out or 0, the counts are fresh. `countedAt` and "
+                "`ageSeconds` in the response say when they were taken."
+            ),
+        ),
+    ] = None,
 )-> dict[str, Any]:
     try:
         logger = request.app.container.logger()
         connector_registry = request.app.state.connector_registry
         org_id = request.state.user.get("orgId")
 
+        # Access is checked on every call, before any kept counts are read.
         await authorize_connector_stats(
             request, graph_provider, connector_registry, connector_id, org_id
         )
 
+        if max_age_seconds:
+            kept = connector_stats_cache.get(org_id, connector_id, max_age_seconds)
+            if kept is not None:
+                return {"success": True, "data": kept}
+
         # Fetch stats from graph provider
         result = await graph_provider.get_connector_stats(org_id, connector_id)
         if result["success"]:
-             return {"success": True, "data": result["data"]}
+            data = connector_stats_cache.put(org_id, connector_id, result["data"])
+            return {"success": True, "data": data}
         else:
             raise HTTPException(status_code=HttpStatusCode.NOT_FOUND.value, detail=f"No data found for connector {connector_id}")
     except HTTPException:

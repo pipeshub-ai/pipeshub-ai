@@ -6711,6 +6711,19 @@ components:
                     type: integer
                   indexingStatus:
                     $ref: '#/components/schemas/ConnectorIndexingStatusCounts'
+            countedAt:
+              type: integer
+              format: int64
+              description: |
+                When these counts were taken, in epoch milliseconds. Older than the request
+                only when the caller passed `maxAgeSeconds`.
+              example: 1792224000000
+            ageSeconds:
+              type: integer
+              description: |
+                How old the counts are, in whole seconds. `0` for counts taken for this
+                request; up to `maxAgeSeconds` for counts kept from an earlier one.
+              example: 42
 
     ConnectorIndexingStatusCounts:
       type: object
@@ -37997,6 +38010,19 @@ paths:
           description: Connector instance ID
           schema:
             type: string
+        - name: maxAgeSeconds
+          in: query
+          required: false
+          description: |
+            Accept counts taken up to this many seconds ago instead of counting again.
+            Counting walks every record of the connector, which takes seconds on a large
+            one; recent counts come back at once. Left out or `0`, the counts are fresh.
+            `countedAt` and `ageSeconds` in the response say when they were taken.
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 600
+          example: 300
       responses:
         '200':
           description: Connector statistics

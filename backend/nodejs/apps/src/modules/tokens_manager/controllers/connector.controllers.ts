@@ -1704,6 +1704,11 @@ export const getConnectorStats =
 
       const queryParams = new URLSearchParams();
       queryParams.append('connector_id', req.params.connectorId);
+      // Sent only when the caller set it; without it the counts are fresh.
+      const { maxAgeSeconds } = req.query as { maxAgeSeconds?: number };
+      if (typeof maxAgeSeconds === 'number') {
+        queryParams.append('maxAgeSeconds', String(maxAgeSeconds));
+      }
 
       const response = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/stats?${queryParams.toString()}`,

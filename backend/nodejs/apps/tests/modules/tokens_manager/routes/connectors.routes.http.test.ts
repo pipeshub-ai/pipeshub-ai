@@ -106,6 +106,27 @@ describe('Connector routes over HTTP', () => {
       expect(forwarded.query.getAll('connector_id')).to.deep.equal([CONNECTOR_ID])
     })
 
+    it('forwards maxAgeSeconds only when the caller set it', async () => {
+      h.backend.on('GET', '/api/v1/stats', { status: 200, body: { indexed: 12 } })
+      const token = sessionToken(h, member)
+
+      await call(h, 'GET', `/${CONNECTOR_ID}/stats?maxAgeSeconds=300`, token)
+      await call(h, 'GET', `/${CONNECTOR_ID}/stats`, token)
+
+      const [withAge, fresh] = h.backend.callsTo('GET', '/api/v1/stats')
+      expect(withAge!.query.getAll('maxAgeSeconds')).to.deep.equal(['300'])
+      expect(withAge!.query.getAll('connector_id')).to.deep.equal([CONNECTOR_ID])
+      expect(fresh!.query.has('maxAgeSeconds')).to.equal(false)
+    })
+
+    it('refuses a maxAgeSeconds that is not a whole number from 0 to 600', async () => {
+      for (const value of ['-1', '601', '1.5', 'soon']) {
+        const r = await call(h, 'GET', `/${CONNECTOR_ID}/stats?maxAgeSeconds=${value}`, sessionToken(h, member))
+        expect(r.status, value).to.equal(400)
+      }
+      expect(h.backend.calls).to.have.length(0)
+    })
+
     it("passes on the connector service's own 404 wording", async () => {
       h.backend.on('GET', '/api/v1/stats', { status: 404, body: { detail: 'Connector not found' } })
 
