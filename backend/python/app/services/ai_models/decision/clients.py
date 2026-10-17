@@ -331,10 +331,11 @@ def _typesafe_answer(row: dict[str, Any], question: DecisionQuestion) -> Decisio
     if row.get("type") == "refusal":
         return DecisionAnswer(name=question.name, type=question.type, refused=True)
     answer = DecisionAnswer(name=question.name, type=question.type, confidence=_float(row.get("confidence")))
-    probabilities = row.get("probabilities") if isinstance(row.get("probabilities"), dict) else {}
+    probabilities = _probability_map(row.get("probabilities"))
     if isinstance(question, PredicateQuestion):
-        answer.probability = _float(row.get("noul"))
-        if answer.probability is not None:
+        # TypeSafe documents the yes/no value as "noul"; Microsoft's Foundry docs don't name it.
+        answer.probability = _float(row.get("noul", row.get("probability")))
+        if answer.probability is not None and answer.confidence is None:
             # Noul has no confidence of its own; TypeSafe's docs suggest |2p - 1|.
             answer.confidence = abs(2 * answer.probability - 1)
     elif isinstance(question, ChoiceQuestion):
@@ -351,6 +352,19 @@ def _typesafe_answer(row: dict[str, Any], question: DecisionQuestion) -> Decisio
             if _float(value) is not None
         }
     return answer
+
+
+def _probability_map(raw: object) -> dict[str, object]:
+    """``{option: p}``, also from the ``[{"value"|"label": …, "probability": p}]`` list shape."""
+    if isinstance(raw, dict):
+        return {str(key): value for key, value in raw.items()}
+    if isinstance(raw, list):
+        return {
+            str(item.get("value", item.get("label"))): item.get("probability")
+            for item in raw
+            if isinstance(item, dict) and ("value" in item or "label" in item)
+        }
+    return {}
 
 
 def _level_label(labels: list[str], index: object) -> str:

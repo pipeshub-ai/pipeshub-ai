@@ -272,3 +272,25 @@ def test_factory_refuses_metadata_endpoint() -> None:
     entry = {"configuration": {"model": "jev-latest", "apiKey": "k", "endpoint": "http://169.254.169.254"}}
     with pytest.raises(ValueError, match="never allowed"):
         get_decision_model("typesafe", entry)
+
+
+async def test_system_one_reader_accepts_probability_field_and_list_probabilities() -> None:
+    seen: list[httpx.Request] = []
+    payload = {
+        "answers": {
+            "urgent": {"type": "noul", "probability": 0.25},
+            "team": {
+                "type": "choice",
+                "choice": "payments",
+                "probabilities": [{"value": "payments", "probability": 0.7}, {"value": "technical", "probability": 0.3}],
+            },
+            "severity": {"type": "score", "score": 0.4, "probabilities": [{"value": 0, "probability": 0.6}, {"value": 1, "probability": 0.4}]},
+        }
+    }
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    with _mock([httpx.Response(200, json=payload)], seen):
+        result = await model.decide("x", QUESTIONS)
+    assert result.answers["urgent"].probability == 0.25
+    assert result.answers["team"].probabilities == {"payments": 0.7, "technical": 0.3}
+    assert result.answers["severity"].probabilities == {"Low": 0.6, "High": 0.4}
+    assert not any(answer.missing for answer in result.answers.values())
