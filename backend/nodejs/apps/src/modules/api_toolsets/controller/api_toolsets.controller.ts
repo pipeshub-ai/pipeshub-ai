@@ -29,7 +29,11 @@ export const API_TOOLSETS_PROXY_TIMEOUT_MS = 150_000;
 type HttpMethodValue = (typeof HttpMethod)[keyof typeof HttpMethod];
 type PathBuilder = (req: AuthenticatedUserRequest) => string;
 
-const BODY_METHODS = new Set<HttpMethodValue>([HttpMethod.POST, HttpMethod.PUT, HttpMethod.PATCH]);
+const BODY_METHODS = new Set<HttpMethodValue>([
+  HttpMethod.POST,
+  HttpMethod.PUT,
+  HttpMethod.PATCH,
+]);
 
 // The caller's identity and request correlation; every other client header is dropped.
 const PROXY_FORWARD_HEADERS: readonly string[] = [
@@ -39,7 +43,9 @@ const PROXY_FORWARD_HEADERS: readonly string[] = [
   'accept-language',
 ];
 
-function buildProxyHeaders(req: AuthenticatedUserRequest): Record<string, string> {
+function buildProxyHeaders(
+  req: AuthenticatedUserRequest,
+): Record<string, string> {
   const headers: Record<string, string> = {};
   for (const name of PROXY_FORWARD_HEADERS) {
     const value = req.headers[name];
@@ -52,8 +58,10 @@ function buildProxyHeaders(req: AuthenticatedUserRequest): Record<string, string
   return headers;
 }
 
-const instancePath = (suffix = '') => (req: AuthenticatedUserRequest) =>
-  `/instances/${encodeURIComponent(String(req.params.instanceId))}${suffix}`;
+const instancePath =
+  (suffix = '') =>
+  (req: AuthenticatedUserRequest) =>
+    `/instances/${encodeURIComponent(String(req.params.instanceId))}${suffix}`;
 
 /** `sendsOnce`: never resent, because a repeat could create a second toolset or reuse a sign-in. */
 function proxy(
@@ -63,10 +71,14 @@ function proxy(
   { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
 ) {
   return (appConfig: AppConfig) =>
-    async (req: AuthenticatedUserRequest, res: Response, next: NextFunction): Promise<void> => {
+    async (
+      req: AuthenticatedUserRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
       try {
-        const { userId } = req.user || {};
-        if (!userId) {
+        const userId = req.user?.userId as unknown;
+        if (typeof userId !== 'string' || userId === '') {
           throw new UnauthorizedError('User authentication required');
         }
         // The OAuth callback's query carries the authorization code and state.
@@ -79,33 +91,68 @@ function proxy(
           method,
           buildProxyHeaders(req),
           BODY_METHODS.has(method) ? req.body : undefined,
-          { timeoutMs: API_TOOLSETS_PROXY_TIMEOUT_MS, retries: sendsOnce ? 1 : 3 },
+          {
+            timeoutMs: API_TOOLSETS_PROXY_TIMEOUT_MS,
+            retries: sendsOnce ? 1 : 3,
+          },
         );
-        handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
-      } catch (error: any) {
+        handleConnectorResponse(
+          connectorResponse,
+          res,
+          action,
+          `${action} failed`,
+        );
+      } catch (error: unknown) {
         logger.error(`Error in API toolsets proxy: ${action}`, {
-          error: error.message,
-          userId: req.user?.userId,
-          status: error.response?.status || error.statusCode,
+          error: error instanceof Error ? error.message : String(error),
+          userId: req.user?.userId as unknown,
         });
         next(handleBackendError(error, action));
       }
     };
 }
 
-export const validateApiToolsetSpec = proxy(HttpMethod.POST, () => '/validate', 'Validate API toolset spec');
+export const validateApiToolsetSpec = proxy(
+  HttpMethod.POST,
+  () => '/validate',
+  'Validate API toolset spec',
+);
 
-export const listApiToolsets = proxy(HttpMethod.GET, () => '/instances', 'List API toolsets');
+export const listApiToolsets = proxy(
+  HttpMethod.GET,
+  () => '/instances',
+  'List API toolsets',
+);
 
-export const createApiToolset = proxy(HttpMethod.POST, () => '/instances', 'Create API toolset');
+export const createApiToolset = proxy(
+  HttpMethod.POST,
+  () => '/instances',
+  'Create API toolset',
+);
 
-export const getApiToolset = proxy(HttpMethod.GET, instancePath(), 'Get API toolset');
+export const getApiToolset = proxy(
+  HttpMethod.GET,
+  instancePath(),
+  'Get API toolset',
+);
 
-export const getApiToolsetConfig = proxy(HttpMethod.GET, instancePath('/config'), 'Get API toolset settings');
+export const getApiToolsetConfig = proxy(
+  HttpMethod.GET,
+  instancePath('/config'),
+  'Get API toolset settings',
+);
 
-export const updateApiToolset = proxy(HttpMethod.PUT, instancePath(), 'Update API toolset');
+export const updateApiToolset = proxy(
+  HttpMethod.PUT,
+  instancePath(),
+  'Update API toolset',
+);
 
-export const deleteApiToolset = proxy(HttpMethod.DELETE, instancePath(), 'Delete API toolset');
+export const deleteApiToolset = proxy(
+  HttpMethod.DELETE,
+  instancePath(),
+  'Delete API toolset',
+);
 
 export const saveApiToolsetCredentials = proxy(
   HttpMethod.PUT,
@@ -131,7 +178,11 @@ export const deleteApiToolsetSharedCredentials = proxy(
   'Delete API toolset shared credential',
 );
 
-export const testApiToolset = proxy(HttpMethod.POST, instancePath('/test'), 'Test API toolset');
+export const testApiToolset = proxy(
+  HttpMethod.POST,
+  instancePath('/test'),
+  'Test API toolset',
+);
 
 // Starts a sign-in (stores its state), so it is sent once although it is a GET.
 export const getApiToolsetOAuthUrl = proxy(

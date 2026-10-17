@@ -15,8 +15,9 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
  * @module api_toolsets/container
  */
 export class ApiToolsetsContainer {
-  private static instance: Container;
-  private static logger: Logger = Logger.getInstance({ service: 'ApiToolsets' });
+  private static logger: Logger = Logger.getInstance({
+    service: 'ApiToolsets',
+  });
 
   static async initialize(
     configurationManagerConfig: ConfigurationManagerConfig,
@@ -34,22 +35,16 @@ export class ApiToolsetsContainer {
       .toConstantValue(configurationManagerConfig);
 
     const { jwtSecret, scopedJwtSecret } = config;
-    if (!jwtSecret || !scopedJwtSecret) {
+    if (jwtSecret === '' || scopedJwtSecret === '') {
       throw new Error('JWT secrets are missing in configuration');
     }
     const authTokenService = new AuthTokenService(jwtSecret, scopedJwtSecret);
     container
       .bind<AuthMiddleware>('AuthMiddleware')
-      .toConstantValue(new AuthMiddleware(container.get('Logger'), authTokenService));
+      .toConstantValue(
+        new AuthMiddleware(container.get('Logger'), authTokenService),
+      );
 
-    this.instance = container;
     return container;
-  }
-
-  static getInstance(): Container {
-    if (!this.instance) {
-      throw new Error('API toolsets container not initialized');
-    }
-    return this.instance;
   }
 }

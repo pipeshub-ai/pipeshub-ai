@@ -746,7 +746,7 @@ export class Application {
     // API Toolsets routes (tools from an internal API's OpenAPI spec -> Python connectors service)
     this.app.use(
       '/api/v1/api-toolsets',
-      createApiToolsetsRouter(this.apiToolsetsContainer)
+      createApiToolsetsRouter(this.apiToolsetsContainer),
     );
     // PipesHub's OAuth client id for MCP servers that support Client ID Metadata Documents. Here,
     // ahead of the static files and the SPA fallback, which answer a .json path with 404.
