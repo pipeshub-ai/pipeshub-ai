@@ -19,7 +19,9 @@
 #   - root-owned files after the marker: a volume restored as root (found by
 #     the top-level check), the docker-compose.yml fallback for older images
 #     and process_monitor.sh run as root (both drop the markers);
-#   - a planted marker symlink does not make root write outside the volume;
+#   - a marker the runtime user created, or a hard link to a root-owned
+#     leftover, is not trusted; a planted marker symlink does not make root
+#     write outside the volume;
 #   - -xdev: a nested mount is neither changed nor makes the check walk again;
 #   - a start as uid 1000 just execs.
 #
@@ -96,11 +98,12 @@ PROBE
     (env "$@" setsid -w sh "$ENTRYPOINT" /tmp/probe.sh 2>/tmp/entrypoint.err) 2>/dev/null
   }
   full_passes() { grep -c -- ' -exec ' "$CALLS"; }
-  # Entries not owned by the app, other than the nested mount's contents.
-  unowned() { /usr/bin/find "${VOLUMES[@]}" -xdev \( ! -uid 1000 -o ! -gid 1000 \) -print; }
+  # Entries not owned by the app, other than the root-owned markers and the
+  # nested mount's contents.
+  unowned() { /usr/bin/find "${VOLUMES[@]}" -xdev ! -name "$MARKER" \( ! -uid 1000 -o ! -gid 1000 \) -print; }
   markers_present() {
     local v; for v in "${VOLUMES[@]}"; do
-      [[ -f "$v/$MARKER" && "$(stat -c %u:%g "$v/$MARKER")" == 1000:1000 ]] || return 1
+      [[ -f "$v/$MARKER" && ! -L "$v/$MARKER" && "$(stat -c %u:%g:%h "$v/$MARKER")" == 0:0:1 ]] || return 1
     done
   }
   markers_absent() { local v; for v in "${VOLUMES[@]}"; do [[ ! -e "$v/$MARKER" ]] || return 1; done; }
@@ -118,7 +121,7 @@ PROBE
     check "startup is not blocked" 'started_as_app'
     check "log names the entry and the reason" 'grep -qF "/root/.cache/huggingface: ownership pass did not finish at /root/.cache/huggingface/ro (" /tmp/entrypoint.err && grep -qi "read-only file system" /tmp/entrypoint.err'
     check "no marker on that volume" '[[ ! -e /root/.cache/huggingface/$MARKER ]]'
-    check "the other volumes are migrated" '[[ -f /root/.local/$MARKER && -z "$(/usr/bin/find /root/.local \( ! -uid 1000 -o ! -gid 1000 \) -print)" ]]'
+    check "the other volumes are migrated" '[[ -f /root/.local/$MARKER && -z "$(/usr/bin/find /root/.local ! -name "$MARKER" \( ! -uid 1000 -o ! -gid 1000 \) -print)" ]]'
     finish
   fi
 
@@ -127,7 +130,7 @@ PROBE
   start
   check "every entry handed to 1000:1000" '[[ -z "$(unowned)" ]]'
   check "symlink changed without following it" '[[ "$(stat -c %u /etc/passwd)" == 0 && "$(stat -c %u /root/.local/passwd-link)" == 1000 ]]'
-  check "marker written in each volume, owned by 1000" 'markers_present'
+  check "marker written in each volume, root-owned, one link" 'markers_present'
   check "command runs as uid/gid 1000" 'started_as_app && grep -qE "^Gid:\s+1000\s" /tmp/probe.out'
   check "no capabilities, no_new_privs" 'grep -qE "^CapEff:\s+0+$" /tmp/probe.out && grep -qE "^CapBnd:\s+0+$" /tmp/probe.out && grep -qE "^NoNewPrivs:\s+1$" /tmp/probe.out'
   check "nested mount (-xdev) left alone" '[[ "$(stat -c %u /data/pipeshub/nested/inside)" == 0 ]]'
@@ -182,11 +185,27 @@ PROBE
   timeout 20 setpriv --reuid=1000 --regid=1000 --clear-groups bash "$INSIDE_DIR/process_monitor.sh" >/dev/null 2>&1
   check "process_monitor.sh as uid 1000 keeps them" 'markers_present && [[ "$(stat -c %Y /root/.local/$MARKER)" == "$markers_snapshot" ]]'
 
+  echo "marker created by the runtime user after a pass that did not finish"
+  docs=/root/.local/PipesHub/org1/PipesHub
+  mkdir -p "$docs/left/current" && echo z >"$docs/left/current/f"
+  rm -f /root/.local/$MARKER
+  setpriv --reuid=1000 --regid=1000 --clear-groups touch /root/.local/$MARKER
+  start
+  check "it is not trusted: full pass" '[[ "$(full_passes)" == 1 ]]'
+  check "the leftover is fixed, a root marker replaces it" '[[ -z "$(unowned)" ]] && markers_present'
+
+  echo "hard link to a root-owned leftover named as the marker"
+  mkdir -p "$docs/linked" && echo l >"$docs/linked/f"
+  rm -f /root/.local/$MARKER && ln "$docs/linked/f" /root/.local/$MARKER
+  start
+  check "it is not trusted: full pass, leftover fixed" '[[ "$(full_passes)" == 1 && -z "$(unowned)" ]] && markers_present'
+
   echo "planted marker symlink"
   seed_root_owned
   ln -s /etc/planted-by-app /root/.local/$MARKER
   start
   check "root wrote nothing outside the volume" '[[ ! -e /etc/planted-by-app ]]'
+  check "the symlink is replaced by a real marker" 'markers_present'
   check "command still started" 'started_as_app'
 
   echo "start as uid 1000"
