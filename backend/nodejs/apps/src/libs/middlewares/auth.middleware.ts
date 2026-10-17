@@ -18,7 +18,7 @@ import { parseScopeString } from '../../modules/oauth_provider/services/scope.va
 import { Users } from '../../modules/user_management/schema/users.schema';
 import { Org } from '../../modules/user_management/schema/org.schema';
 import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
-import { ServiceAccountDelegation } from '../../modules/oauth_provider/schema/service-account-delegation.schema';
+import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
 
@@ -273,66 +273,9 @@ export class AuthMiddleware {
     // is no value to clamp that both halves would agree on, so the only
     // answer that fails closed is no token at all.
     if (payload.act?.sub !== undefined) {
-      if (user.role === 'admin') {
-        // The subject was promoted after this token was issued. Delegation
-        // refuses administrators at mint time precisely so that no machine
-        // credential carries admin rights; honouring this token would hand
-        // out exactly that, for the rest of its lifetime.
-        throw new UnauthorizedError(
-          'This token acts for someone who is now an administrator',
-        );
-      }
-      if (user.kind === 'service') {
-        throw new UnauthorizedError('This token acts for a service account');
-      }
-
-      const actor = await Users.findOne({
-        _id: { $eq: payload.act.sub },
-        orgId: { $eq: orgId },
-        kind: 'service',
-        isDeleted: false,
-      })
-        .select('isDisabled')
-        .lean()
-        .exec();
-
-      // Also closes the race the issuing path cannot: an exchange that read
-      // the service account as enabled can still insert its token after the
-      // disable has swept the existing ones. Checking here, on every request,
-      // means the sweep never had to win.
-      if (!actor || actor.isDisabled === true) {
-        throw new UnauthorizedError(
-          'The service account behind this token is no longer active',
-        );
-      }
-
-      // And the allow-list entry that authorised this token in the first
-      // place. Re-checking the other two rules but not this one would have
-      // been the odd omission: an administrator withdrawing a permission is
-      // the most deliberate way of saying "stop", more so than a promotion or
-      // a disabled account, and it was the only one of the three that did not
-      // take effect until the token expired.
-      //
-      // It also closes the window the issuing path cannot. The exchange reads
-      // the allow-list and then writes a token; a revocation landing between
-      // the two produces a token that never had a live row behind it, and
-      // revoking rows at that moment cannot catch an insert that has not
-      // happened yet. Reading the row on every request means neither side has
-      // to win the race.
-      const stillAllowed = await ServiceAccountDelegation.findOne({
-        orgId: { $eq: orgId },
-        serviceAccountId: { $eq: payload.act.sub },
-        subjectUserId: { $eq: userId },
-      })
-        .select('_id')
-        .lean()
-        .exec();
-
-      if (!stillAllowed) {
-        throw new UnauthorizedError(
-          'This service account may no longer act as this person',
-        );
-      }
+      // The rules live in one place because OAuthAuthMiddleware needs the
+      // same ones for the OIDC endpoints; see delegation-guard.ts.
+      await assertDelegationStillHolds(payload.act.sub, userId, orgId, user);
     }
 
     email = user.email;

@@ -107,6 +107,12 @@ only when it was issued. Withdrawing a permission, promoting the person to
 administrator, or switching the service account off all take effect at once
 rather than after the token's last few minutes.
 
+That means every path, including the OpenID endpoints. `/oauth2/userinfo` is
+authenticated by a different middleware from the rest of the API, so the rules
+live in one shared place and both call it. Otherwise a delegated token carrying
+`profile` or `email` would go on returning the person's name and address there
+for the rest of its five minutes after the permission behind it was withdrawn.
+
 Disabling a service account also revokes the tokens it obtained, rather than
 leaving them to be refused one by one. Deleting one empties its allow-list, so
 restoring the account under the same name does not bring back a list of people

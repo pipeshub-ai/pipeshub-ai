@@ -11,6 +11,57 @@ import {
   InvalidTokenError,
   ExpiredTokenError,
 } from '../../../libs/errors/oauth.errors'
+import { Users } from '../../user_management/schema/users.schema'
+import { assertDelegationStillHolds } from '../services/delegation-guard'
+
+/**
+ * A delegated token has to satisfy the rules that issued it on every request,
+ * including here.
+ *
+ * AuthMiddleware re-checks them for `/api` and `/mcp`, and the Python
+ * services follow because they ask `GET /api/v1/users/me/role`. The OIDC
+ * endpoints go through this middleware instead, which verifies the signature
+ * and that the stored row is unrevoked and nothing else — so without this,
+ * `/oauth2/userinfo` would keep returning the person's name and email for the
+ * rest of the five minutes after their allow-list row was deleted, after they
+ * were promoted, or after the service account behind the token was switched
+ * off. Refused as an invalid token so the answer keeps its RFC 6750 shape and
+ * says why.
+ */
+async function assertDelegatedTokenStillHolds(
+  payload: OAuthTokenPayload,
+): Promise<void> {
+  const actorId = payload.act?.sub
+  if (actorId === undefined) return
+
+  const subject = await Users.findOne({
+    _id: { $eq: payload.userId },
+    orgId: { $eq: payload.orgId },
+    isDeleted: false,
+  })
+    .select('role kind isDisabled')
+    .lean()
+    .exec()
+
+  if (!subject) {
+    throw new InvalidTokenError(
+      'This token acts for someone who no longer exists',
+    )
+  }
+
+  try {
+    await assertDelegationStillHolds(
+      actorId,
+      payload.userId,
+      payload.orgId,
+      subject,
+    )
+  } catch (error) {
+    throw new InvalidTokenError(
+      error instanceof Error ? error.message : 'Delegation is no longer valid',
+    )
+  }
+}
 
 /**
  * Build RFC 6750 compliant WWW-Authenticate header
@@ -89,6 +140,8 @@ export class OAuthAuthMiddleware {
       if (scopes.length === 0) {
         throw new InvalidTokenError('Token carries no scopes');
       }
+
+      await assertDelegatedTokenStillHolds(payload);
 
       // Attach OAuth info to request
       req.oauth = {
@@ -324,6 +377,23 @@ export function scopeCheck(
               error_description: `Required scopes: ${requiredScopes.join(' ')}`,
             })
             return
+          }
+
+          try {
+            await assertDelegatedTokenStillHolds(payload);
+          } catch (error) {
+            // Answered here rather than thrown: the catch below falls through
+            // to the next middleware, and a token whose delegation has been
+            // withdrawn must be refused rather than handed on to be
+            // authenticated some other way.
+            res.status(401).json({
+              error: 'invalid_token',
+              error_description:
+                error instanceof Error
+                  ? error.message
+                  : 'Delegation is no longer valid',
+            });
+            return;
           }
 
           // Attach OAuth info
