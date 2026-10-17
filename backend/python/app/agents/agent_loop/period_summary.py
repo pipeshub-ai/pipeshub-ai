@@ -15,7 +15,9 @@ came up ... in September"). It misses questions with no time words at all;
 the tool's own description covers those.
 
 The section is turn-volatile (``extra_sections``), so the cached prompt prefix
-is the same whether or not it fires.
+is the same whether or not it fires. Enterprise-search chat also skips its
+upfront search for such a question (``timeline_replaces_prefetch``), so the
+model does not answer from that one bunched result.
 """
 
 from __future__ import annotations
@@ -23,7 +25,10 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Any
 
-from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
+from app.agents.actions.knowledge_graph.ops.timeline import (
+    TIMELINE_TOOL_NAME,
+    timeline_summaries_enabled,
+)
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.hooks.middleware.context import AgentLifecycleContext
@@ -99,6 +104,15 @@ def asks_for_period_summary(query: str | None) -> bool:
     return any(pattern.search(query) for pattern in _RECAP_PATTERNS) and bool(_TIME_CUE.search(query))
 
 
+def timeline_replaces_prefetch(query: str | None) -> bool:
+    """Whether enterprise-search chat skips its one upfront search for this
+    question. That search is the top matches overall, bunched around one
+    moment; handed to the model as the context to answer from, it would be the
+    summary the timeline exists to replace. The model searches with the
+    timeline tool instead, pointed there by the hint section."""
+    return timeline_summaries_enabled() and asks_for_period_summary(query)
+
+
 def _timeline_granted(scope: Any) -> bool:  # noqa: ANN401
     registry = scope.runtime.tool_registry
     if registry is None or not registry.has(TIMELINE_TOOL_NAME):
@@ -130,4 +144,5 @@ __all__ = [
     "PERIOD_SUMMARY_SECTION",
     "asks_for_period_summary",
     "period_summary_hint",
+    "timeline_replaces_prefetch",
 ]

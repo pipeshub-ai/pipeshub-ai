@@ -233,20 +233,21 @@ def _json(status: str, message: str) -> str:
 
 @dataclass
 class _Scope:
-    filter_groups: dict[str, Any]
+    filter_groups: dict[str, list[str]]
     entity_filter_groups: dict[str, list[str]]
     """Department/category/topic/language filters, kept apart so an empty
     timeline can retry without them, as knowledgegraph__search does."""
+    controls: dict[str, Any]
+    """``strictScope`` and the request's ``entityFilters``: set on the merged
+    groups, never merged, since they are not lists of names."""
     virtual_record_ids: list[str] | None
     notes: list[str]
 
     def groups(self, *, with_entities: bool) -> dict[str, Any]:
-        if not with_entities:
-            return self.filter_groups
-        merged: dict[str, Any] = merge_filter_groups(self.filter_groups, self.entity_filter_groups)
-        for key in (STRICT_SCOPE_FILTER_KEY, "entityFilters"):
-            if key in self.filter_groups:
-                merged[key] = self.filter_groups[key]
+        merged: dict[str, Any] = merge_filter_groups(
+            self.filter_groups, self.entity_filter_groups if with_entities else None,
+        )
+        merged.update(self.controls)
         return merged
 
 
@@ -273,11 +274,11 @@ async def _resolve_scope(
     if requested and len(unknown) == len(requested):
         return _json("error", UNKNOWN_ENTITY_IDS_MESSAGE.format(ids=unknown))
 
-    filter_groups: dict[str, Any] = dict(scope.to_filter_groups())
+    controls: dict[str, Any] = {}
     if agent_filters.get(STRICT_SCOPE_FILTER_KEY):
-        filter_groups[STRICT_SCOPE_FILTER_KEY] = True
+        controls[STRICT_SCOPE_FILTER_KEY] = True
     if agent_filters.get("entityFilters"):
-        filter_groups["entityFilters"] = agent_filters["entityFilters"]
+        controls["entityFilters"] = agent_filters["entityFilters"]
 
     notes: list[str] = []
     if unknown:
@@ -306,7 +307,13 @@ async def _resolve_scope(
                 "Note: the requested record group has more records than one search can "
                 "cover, so only part of it was searched."
             )
-    return _Scope(filter_groups, resolve_entity_filter_groups(state, entity_ids), virtual_record_ids, notes)
+    return _Scope(
+        filter_groups=scope.to_filter_groups(),
+        entity_filter_groups=resolve_entity_filter_groups(state, entity_ids),
+        controls=controls,
+        virtual_record_ids=virtual_record_ids,
+        notes=notes,
+    )
 
 
 @dataclass
@@ -403,7 +410,11 @@ async def _collect(
         return [search({after_key: p.start_ms, before_key: p.end_ms}, PERIOD_SEARCH_LIMIT) for p in periods]
 
     if start_ms is None:
-        whole: Any = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
+        whole: Any
+        try:
+            whole = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
+        except Exception as exc:  # noqa: BLE001 - the period searches still run without it
+            whole = exc
         whole_failed = _failed(whole, log)
         end_ms = end_ms if end_ms is not None else _now_ms()
         start_ms = end_ms - DEFAULT_LOOKBACK_DAYS * _DAY_MS
@@ -514,7 +525,11 @@ async def execute_timeline_search(
             message = "No results found in any period."
             if any(h.failed for h in collected.hits):
                 message += " Some periods could not be searched, so this does not show the information is missing."
-            return _json("success", message)
+            message += (
+                " Before concluding it does not exist, search with knowledgegraph__search and no "
+                "date filters: a record's source date may fall outside this span."
+            )
+            return _json("success", " ".join([message, *notes]))
         if start_ms is None:
             notes.append(
                 f"No start was given, so this covers {_day(collected.start_ms)} on: a year before the "

@@ -339,6 +339,42 @@ async def test_one_overlong_match_is_named_not_allowed_to_crowd_out_later_period
 _TODAY = _ms("2026-06-30")
 
 
+class TestUndatedAndFailedWithoutDates:
+    @pytest.mark.asyncio
+    async def test_a_failed_whole_span_search_still_runs_the_periods(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        real = corpus.search_with_filters
+
+        async def flaky(**kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+            if kwargs["limit"] == SPAN_SEARCH_LIMIT:
+                raise TimeoutError("vector store timed out")
+            return await real(**kwargs)
+
+        corpus.search_with_filters = flaky  # type: ignore[method-assign]
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            text = await _run(corpus)
+
+        assert len(corpus.calls) == MAX_PERIODS
+        assert all(f"{vrid} yyy" in text for vrid in _THREE_MONTHS)
+
+    @pytest.mark.asyncio
+    async def test_matches_that_are_all_undated_are_shown_not_reported_missing(self) -> None:
+        corpus = _Corpus({"a": None, "b": None})
+        with patch.object(timeline, "_now_ms", return_value=_TODAY):
+            text = await _run(corpus)
+
+        assert isinstance(text, str)
+        undated = text.split("### No source date", 1)[1]
+        assert "a yyy" in undated and "b yyy" in undated
+
+    @pytest.mark.asyncio
+    async def test_an_empty_timeline_says_to_search_without_dates(self) -> None:
+        corpus = _Corpus({})
+        result = json.loads(await _run(corpus, start="2026-03-01", end="2026-05-31"))
+
+        assert "search with knowledgegraph__search and no date filters" in result["message"]
+
+
 class TestTheSpan:
     @pytest.mark.asyncio
     async def test_no_dates_covers_the_year_before_today_and_says_so(self) -> None:
@@ -485,6 +521,22 @@ class TestEntityFilters:
         assert len(with_filter) == len(without) == 4
         assert "these results are NOT limited to it" in text
         assert "apr yyy" in text
+
+    @pytest.mark.asyncio
+    async def test_a_project_scoped_chat_with_an_entity_filter_that_matches_nothing_retries(self) -> None:
+        corpus = _Corpus(_THREE_MONTHS)
+        corpus.refuse_groups = {"departments"}
+        state = _state(
+            corpus,
+            filters={"apps": ["slack-1"], "kb": [], "strictScope": True},
+            **{ENTITY_ID_FILTER_KEY_CACHE_KEY: {"dept-1": ("departments", "Engineering")}},
+        )
+        text = await _run(corpus, state, start="2026-03-01", end="2026-05-31", entity_ids=["dept-1"])
+
+        assert isinstance(text, str) and "apr yyy" in text
+        assert "these results are NOT limited to it" in text
+        assert all(c["filter_groups"]["strictScope"] is True for c in corpus.calls)
+        assert any("departments" not in c["filter_groups"] for c in corpus.calls)
 
     @pytest.mark.asyncio
     async def test_a_matching_entity_filter_is_kept(self) -> None:
