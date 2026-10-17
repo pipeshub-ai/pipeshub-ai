@@ -42,10 +42,10 @@ vi.mock('../../../store', () => {
 
 import { MessageActions } from '../message-actions';
 
-const renderActions = (messageId?: string) =>
+const renderActions = (messageId?: string, isLastMessage = false) =>
   render(
     <Theme>
-      <MessageActions content="Q3 sales were 4M." messageId={messageId} />
+      <MessageActions content="Q3 sales were 4M." messageId={messageId} isLastMessage={isLastMessage} />
     </Theme>,
   );
 
@@ -62,26 +62,38 @@ beforeEach(() => {
 describe('fork button on a message', () => {
   it('is not offered before the message has an id to fork at', () => {
     renderActions(undefined);
-    expect(screen.queryByLabelText('chat.fork')).toBeNull();
+    expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
   });
 
   it('is not offered on a chat that was shared with the user', () => {
     h.slot.isOwner = false;
     renderActions('msg-2');
-    expect(screen.queryByLabelText('chat.fork')).toBeNull();
+    expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
   });
 
   it('is still offered while ownership is not known yet', () => {
     h.slot.isOwner = null;
     renderActions('msg-2');
+    expect(screen.getByLabelText('chat.forkFromHere')).toBeTruthy();
+  });
+
+  it('says "fork from here" on a message in the middle of the chat', () => {
+    renderActions('msg-2', false);
+    expect(screen.getByLabelText('chat.forkFromHere')).toBeTruthy();
+    expect(screen.queryByLabelText('chat.fork')).toBeNull();
+  });
+
+  it('says "fork chat" on the last message', () => {
+    renderActions('msg-9', true);
     expect(screen.getByLabelText('chat.fork')).toBeTruthy();
+    expect(screen.queryByLabelText('chat.forkFromHere')).toBeNull();
   });
 
   it('forks an assistant chat at that message and opens the new chat', async () => {
     h.forkConversation.mockResolvedValue({ id: 'fork-9', title: 'Fork of A', projectId: undefined, forkedFrom: {}, messageCount: 2 });
     renderActions('msg-2');
 
-    fireEvent.click(screen.getByLabelText('chat.fork'));
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?conversationId=fork-9'));
     expect(h.forkConversation).toHaveBeenCalledWith('conv-1', 'msg-2');
@@ -94,7 +106,7 @@ describe('fork button on a message', () => {
     h.forkAgentConversation.mockResolvedValue({ id: 'fork-3', title: 'Fork of A', forkedFrom: {}, messageCount: 4 });
     renderActions('msg-4');
 
-    fireEvent.click(screen.getByLabelText('chat.fork'));
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?agentId=agent-7&conversationId=fork-3'));
     expect(h.forkAgentConversation).toHaveBeenCalledWith('agent-7', 'conv-1', 'msg-4');
@@ -106,7 +118,7 @@ describe('fork button on a message', () => {
     h.slot.projectId = 'proj-old';
     renderActions('msg-2');
 
-    fireEvent.click(screen.getByLabelText('chat.fork'));
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?projectId=proj-1&conversationId=fork-5'));
   });
@@ -116,7 +128,7 @@ describe('fork button on a message', () => {
     h.slot.projectId = 'proj-lost';
     renderActions('msg-2');
 
-    fireEvent.click(screen.getByLabelText('chat.fork'));
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.push).toHaveBeenCalledWith('/chat/?conversationId=fork-6'));
   });
@@ -126,7 +138,7 @@ describe('fork button on a message', () => {
     h.forkConversation.mockRejectedValue(new Error('nope'));
     renderActions('msg-2');
 
-    fireEvent.click(screen.getByLabelText('chat.fork'));
+    fireEvent.click(screen.getByLabelText('chat.forkFromHere'));
 
     await waitFor(() => expect(h.toastError).toHaveBeenCalledWith('chat.toasts.forkError'));
     expect(h.push).not.toHaveBeenCalled();
