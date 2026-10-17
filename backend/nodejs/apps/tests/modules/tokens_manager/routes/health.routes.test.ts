@@ -13,6 +13,7 @@ describe('tokens_manager/routes/health.routes', () => {
   let mockMongo: any
   let mockKV: any
   let mockAppConfig: any
+  let mockAuthMiddleware: any
   let container: any
   let cmContainer: any
   let router: any
@@ -50,8 +51,11 @@ describe('tokens_manager/routes/health.routes', () => {
       },
     }
 
+    mockAuthMiddleware = { authenticate: sinon.stub().callsFake((_req: any, _res: any, next: any) => next()) }
+
     container = {
       get: sinon.stub().callsFake((key: string) => {
+        if (key === 'AuthMiddleware') return mockAuthMiddleware
         if (key === 'RedisService') return mockRedis
         if (key === 'KafkaService') return mockKafka
         if (key === 'MongoService') return mockMongo
@@ -1576,6 +1580,77 @@ describe('tokens_manager/routes/health.routes', () => {
         expect(jsonArg.services.parsing).to.equal('unknown')
         expect(jsonArg.services.extraction).to.equal('unknown')
       })
+    })
+  })
+
+  describe('GET /vector-db/memory', () => {
+    const report = {
+      status: 'insufficient',
+      neededBytes: 12 * 1024 ** 3,
+      indexBytes: 10 * 1024 ** 3,
+      baseBytes: 2 * 1024 ** 3,
+      availableBytes: 4 * 1024 ** 3,
+      availableSource: 'configured',
+      points: 5_000_000,
+      nodes: 1,
+      collections: [],
+    }
+
+    function memoryRoute() {
+      return router.stack.find(
+        (l: any) => l.route && l.route.path === '/vector-db/memory' && l.route.methods.get,
+      ).route
+    }
+
+    it('authenticates, checks scope and admin before the handler', () => {
+      const stack = memoryRoute().stack
+      expect(stack).to.have.length(4)
+      const next = sinon.stub()
+      stack[0].handle({}, {}, next)
+      expect(mockAuthMiddleware.authenticate.calledOnce).to.be.true
+      expect(next.calledOnce).to.be.true
+      expect(stack[2].handle.name).to.equal('userAdminCheck')
+    })
+
+    it('passes the report through and forwards only allowlisted headers', async () => {
+      const axiosModule = require('axios')
+      const get = sinon.stub(axiosModule, 'get').resolves({ status: 200, data: report })
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler(
+        { headers: { authorization: 'Bearer t', cookie: 'session=x' } },
+        res,
+        sinon.stub(),
+      )
+
+      expect(get.firstCall.args[0]).to.equal('http://localhost:8088/health/vector-db/memory')
+      expect(get.firstCall.args[1].headers).to.deep.equal({ authorization: 'Bearer t' })
+      expect(res.status.calledWith(200)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal(report)
+    })
+
+    it('answers 502 unknown when the connector service fails', async () => {
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').resolves({ status: 503, data: { status: 'unknown' } })
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler({ headers: {} }, res, sinon.stub())
+
+      expect(res.status.calledWith(502)).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ status: 'unknown' })
+    })
+
+    it('answers 502 unknown when the connector service is unreachable', async () => {
+      const axiosModule = require('axios')
+      sinon.stub(axiosModule, 'get').rejects(new Error('ECONNREFUSED'))
+      const handler = findHandler('/vector-db/memory', 'get')
+      const res = mockRes()
+
+      await handler({ headers: {} }, res, sinon.stub())
+
+      expect(res.status.calledWith(502)).to.be.true
     })
   })
 })

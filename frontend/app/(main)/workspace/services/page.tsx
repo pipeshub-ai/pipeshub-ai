@@ -25,6 +25,7 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
+import { VectorDbMemoryWarning, type VectorDbMemoryReport } from './vector-db-memory';
 
 // ========================================
 // Service metadata
@@ -238,6 +239,7 @@ export default function ServicesPage() {
   const [localServiceNames, setLocalServiceNames] = useState<Record<string, string> | null>(null);
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
+  const [vectorDbMemory, setVectorDbMemory] = useState<VectorDbMemoryReport | null>(null);
 
   const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
   const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
@@ -250,13 +252,17 @@ export default function ServicesPage() {
 
   const fetchHealth = useCallback(async (showToast = false) => {
     try {
-      const [infraResp, servicesResp] = await Promise.allSettled([
+      const [infraResp, servicesResp, memoryResp] = await Promise.allSettled([
         apiClient.get('/api/v1/health', { suppressErrorToast: true }),
         apiClient.get('/api/v1/health/services', { suppressErrorToast: true }),
+        apiClient.get<VectorDbMemoryReport>('/api/v1/health/vector-db/memory', {
+          suppressErrorToast: true,
+        }),
       ]);
 
       const infraData = infraResp.status === 'fulfilled' ? infraResp.value.data : null;
       const servicesData = servicesResp.status === 'fulfilled' ? servicesResp.value.data : null;
+      setVectorDbMemory(memoryResp.status === 'fulfilled' ? memoryResp.value.data : null);
 
       setLocalInfra(infraData?.services ?? null);
       setLocalApp(servicesData?.services ?? null);
@@ -375,12 +381,14 @@ export default function ServicesPage() {
           {/* Service rows */}
           <Flex direction="column" gap="2" style={{ padding: '12px 14px' }}>
             {infraServiceList.map((meta) => (
-              <ServiceRow
-                key={meta.key}
-                meta={meta}
-                status={localInfra?.[meta.key as keyof typeof localInfra]}
-                displayName={localServiceNames?.[meta.key]}
-              />
+              <React.Fragment key={meta.key}>
+                <ServiceRow
+                  meta={meta}
+                  status={localInfra?.[meta.key as keyof typeof localInfra]}
+                  displayName={localServiceNames?.[meta.key]}
+                />
+                {meta.key === 'vectorDb' && <VectorDbMemoryWarning report={vectorDbMemory} />}
+              </React.Fragment>
             ))}
           </Flex>
         </Flex>

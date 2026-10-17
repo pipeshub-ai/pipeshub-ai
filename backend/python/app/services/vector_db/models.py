@@ -354,6 +354,70 @@ class VectorDBHealth:
     message: str | None = None
 
 
+@dataclass(frozen=True)
+class CollectionMemoryFootprint:
+    """The part of one collection that every search touches, in bytes."""
+
+    name: str
+    points: int
+    quantization: str
+    always_ram: bool
+    quantized_vectors_bytes: int
+    hnsw_bytes: int
+    sparse_index_bytes: int
+    payload_index_bytes: int
+
+    @property
+    def index_bytes(self) -> int:
+        return (
+            self.quantized_vectors_bytes
+            + self.hnsw_bytes
+            + self.sparse_index_bytes
+            + self.payload_index_bytes
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "points": self.points,
+            "quantization": self.quantization,
+            "alwaysRam": self.always_ram,
+            "indexBytes": self.index_bytes,
+            "quantizedVectorsBytes": self.quantized_vectors_bytes,
+            "hnswBytes": self.hnsw_bytes,
+            "sparseIndexBytes": self.sparse_index_bytes,
+            "payloadIndexBytes": self.payload_index_bytes,
+        }
+
+
+@dataclass
+class VectorDBMemoryReport:
+    """How much memory the vector database needs for fast search, against what it has."""
+
+    status: str
+    needed_bytes: int
+    index_bytes: int
+    base_bytes: int
+    available_bytes: int | None
+    available_source: str | None
+    points: int
+    nodes: int
+    collections: list[CollectionMemoryFootprint] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "neededBytes": self.needed_bytes,
+            "indexBytes": self.index_bytes,
+            "baseBytes": self.base_bytes,
+            "availableBytes": self.available_bytes,
+            "availableSource": self.available_source,
+            "points": self.points,
+            "nodes": self.nodes,
+            "collections": [c.to_dict() for c in self.collections],
+        }
+
+
 @dataclass
 class VectorCollectionInfo:
     """Provider-neutral collection metadata."""

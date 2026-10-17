@@ -3639,6 +3639,12 @@
           "label": "Servicio de extracción",
           "description": "Clasificación de documentos y extracción de metadatos basada en LLM"
         }
+      },
+      "vectorDbMemory": {
+        "title": "El índice de búsqueda no cabe en la memoria de la base de datos vectorial",
+        "message": "El índice de búsqueda necesita unos {{needed}} GB de memoria para ser rápido; la base de datos vectorial tiene unos {{available}} GB, así que las búsquedas leen del disco y van aún más lentas cuando se ejecutan varias a la vez.",
+        "messageHost": "El índice de búsqueda necesita unos {{needed}} GB de memoria para ser rápido; el servidor de la base de datos vectorial solo tiene unos {{available}} GB en total, así que las búsquedas leen del disco y van aún más lentas cuando se ejecutan varias a la vez.",
+        "guide": "Guía de dimensionamiento de la base de datos vectorial"
       }
     },
     "tenants": {

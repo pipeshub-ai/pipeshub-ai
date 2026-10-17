@@ -3898,6 +3898,12 @@
           "label": "提取服务",
           "description": "基于 LLM 的文档分类和元数据提取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜索索引超出了向量数据库的内存",
+        "message": "搜索索引需要约 {{needed}} GB 内存才能保持快速；向量数据库只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "messageHost": "搜索索引需要约 {{needed}} GB 内存才能保持快速；运行向量数据库的服务器总共只有约 {{available}} GB，因此搜索会从磁盘读取，多个搜索同时运行时会更慢。",
+        "guide": "向量数据库容量规划指南"
       }
     },
     "tenants": {

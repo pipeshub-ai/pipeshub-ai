@@ -17889,6 +17889,111 @@ paths:
                         type: string
                   build:
                     $ref: '#/components/schemas/BuildInfo'
+  /health/vector-db/memory:
+    get:
+      tags:
+        - Health
+      summary: Whether the vector database has the memory to keep search fast
+      description: |
+        Estimates the memory search needs to stay fast (quantized vectors, HNSW
+        graph, sparse index and payload indexes of every collection, plus about
+        2 GiB for Qdrant itself) and compares it with the memory Qdrant has.
+        The memory figure is `QDRANT_MEMORY_LIMIT`, which compose and Helm set
+        from the same value as Qdrant's container limit; without it, the host RAM
+        Qdrant reports can only prove a shortfall. Advisory: it never changes a
+        service's health status. Org admins only. Sizing guidance:
+        https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/deployment/vector-db-sizing.md
+      operationId: getVectorDbMemoryReport
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: Memory report, or `{"status":"unsupported"}` for a vector database the estimate does not cover
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - status
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - ok
+                      - insufficient
+                      - unknown
+                      - unsupported
+                    description: |
+                      `insufficient` when the estimate exceeds the memory Qdrant has and
+                      the index is at least 1 GiB; `unknown` when the memory Qdrant has is
+                      not known well enough to say it is enough.
+                  neededBytes:
+                    type: integer
+                    format: int64
+                  indexBytes:
+                    type: integer
+                    format: int64
+                  baseBytes:
+                    type: integer
+                    format: int64
+                  availableBytes:
+                    type: integer
+                    format: int64
+                    nullable: true
+                  availableSource:
+                    type: string
+                    nullable: true
+                    description: '`configured` (QDRANT_MEMORY_LIMIT) or `host` (the RAM Qdrant reports)'
+                  points:
+                    type: integer
+                    format: int64
+                  nodes:
+                    type: integer
+                  collections:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        points:
+                          type: integer
+                          format: int64
+                        quantization:
+                          type: string
+                        alwaysRam:
+                          type: boolean
+                        indexBytes:
+                          type: integer
+                          format: int64
+                        quantizedVectorsBytes:
+                          type: integer
+                          format: int64
+                        hnswBytes:
+                          type: integer
+                          format: int64
+                        sparseIndexBytes:
+                          type: integer
+                          format: int64
+                        payloadIndexBytes:
+                          type: integer
+                          format: int64
+        '401':
+          description: Unauthorized
+        '403':
+          description: Not an org admin, or missing config:read
+        '502':
+          description: The connector service could not produce the report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    enum:
+                      - unknown
   /models:
     get:
       tags:

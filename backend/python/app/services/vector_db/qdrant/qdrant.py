@@ -5,8 +5,10 @@ Supports: sparse + dense named vectors, RRF prefetch/fusion.
 """
 
 import asyncio
+import os
 import threading
 import time
+from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
 
 from qdrant_client import AsyncQdrantClient  # type: ignore
@@ -56,15 +58,23 @@ from app.services.vector_db.models import (
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
+    VectorDBMemoryReport,
     VectorPoint,
 )
 from app.services.vector_db.qdrant.config import QdrantConfig
 from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
+from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
 from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.utils.logger import create_logger
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
+
+# Qdrant cannot see its own container limit (its telemetry reports host RAM), so
+# the deployment states it here; compose and Helm set it from the same value
+# they give Qdrant's memory limit.
+QDRANT_MEMORY_LIMIT_ENV = "QDRANT_MEMORY_LIMIT"
+_MEMORY_REPORT_CONCURRENCY = 8
 
 
 def _report_upsert_failure(error: BaseException) -> None:
@@ -460,6 +470,57 @@ class QdrantService(IVectorDBService):
                 latency_ms=round(latency_ms, 2),
                 message=str(e),
             )
+
+    async def _rest_get(self, url: str, **kwargs: object) -> dict:
+        # Raw JSON rather than the client's typed models: those are generated
+        # for one server version, and the telemetry model of the pinned client
+        # already fails to parse a newer server's response.
+        response = await self.client.http.client.request(  # type: ignore[union-attr]
+            type_=dict, method="GET", url=url, **kwargs
+        )
+        return (response or {}).get("result") or {}
+
+    async def memory_report(self) -> VectorDBMemoryReport | None:
+        self._assert_connected()
+        listing = await self.client.get_collections()  # type: ignore[union-attr]
+        names = [c.name for c in listing.collections]
+        gate = asyncio.Semaphore(_MEMORY_REPORT_CONCURRENCY)
+
+        async def _info(name: str) -> dict:
+            async with gate:
+                return await self._rest_get(f"/collections/{quote(name, safe='')}")
+
+        infos = dict(zip(names, await asyncio.gather(*(_info(n) for n in names))))
+
+        host_ram_bytes = None
+        try:
+            telemetry = await self._rest_get("/telemetry", params={"details_level": 1})
+            ram_kib = ((telemetry.get("app") or {}).get("system") or {}).get("ram_size")
+            host_ram_bytes = int(ram_kib) * 1024 if ram_kib else None
+        except Exception as e:
+            logger.debug("Qdrant telemetry unavailable for the memory report: %s", e)
+
+        nodes = 1
+        try:
+            cluster = await self._rest_get("/cluster")
+            nodes = max(len(cluster.get("peers") or {}), 1)
+        except Exception as e:
+            logger.debug("Qdrant cluster status unavailable for the memory report: %s", e)
+
+        raw_limit = os.getenv(QDRANT_MEMORY_LIMIT_ENV)
+        configured = parse_memory_size(raw_limit)
+        if raw_limit and configured is None:
+            logger.warning(
+                "%s=%r is not a memory size (for example 6G or 8Gi); ignoring it",
+                QDRANT_MEMORY_LIMIT_ENV,
+                raw_limit,
+            )
+        return assess_memory(
+            infos,
+            configured_limit_bytes=configured,
+            host_ram_bytes=host_ram_bytes,
+            nodes=nodes,
+        )
 
     # ------------------------------------------------------------------
     # Collection management

@@ -1644,6 +1644,88 @@ class TestVectorDbHealthCheck:
         assert response.status_code == 200
 
 
+class TestVectorDbMemoryCheck:
+    """/health/vector-db/memory: advisory, authenticated, never fails the probe."""
+
+    def test_route_requires_authentication(self) -> None:
+        from app.connectors_main import EXCLUDE_PATHS
+
+        assert "/health/vector-db/memory" not in EXCLUDE_PATHS
+
+    @pytest.mark.asyncio
+    async def test_returns_the_report(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+        from app.services.vector_db.models import VectorDBMemoryReport
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=VectorDBMemoryReport(
+            status="insufficient",
+            needed_bytes=12 * 1024**3,
+            index_bytes=10 * 1024**3,
+            base_bytes=2 * 1024**3,
+            available_bytes=4 * 1024**3,
+            available_source="configured",
+            points=5_000_000,
+            nodes=1,
+        ))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        body = json.loads(response.body)
+        assert body["status"] == "insufficient"
+        assert body["neededBytes"] == 12 * 1024**3
+        assert body["availableBytes"] == 4 * 1024**3
+        assert body["availableSource"] == "configured"
+
+    @pytest.mark.asyncio
+    async def test_creates_and_caches_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(return_value=None)
+
+        with patch(
+            "app.services.vector_db.vector_db_provider_factory.VectorDBProviderFactory.create_provider",
+            new_callable=AsyncMock,
+            return_value=provider,
+        ):
+            response = await vector_db_memory_check(request)
+
+        assert response.status_code == 200
+        assert json.loads(response.body) == {"status": "unsupported"}
+        assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    async def test_failure_is_503_and_keeps_the_provider(self) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.container = _make_container()
+        request.app.state = SimpleNamespace()
+        provider = MagicMock()
+        provider.memory_report = AsyncMock(side_effect=RuntimeError("qdrant down"))
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 503
+        assert json.loads(response.body)["status"] == "unknown"
+        assert request.app.state._vector_db_health_provider is provider
+
+
 class TestGraphDbHealthNeo4jUnhealthy:
     @pytest.mark.asyncio
     async def test_neo4j_connectivity_failure(self):

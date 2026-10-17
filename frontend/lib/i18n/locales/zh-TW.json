@@ -3898,6 +3898,12 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜尋索引超出了向量資料庫的記憶體",
+        "message": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；向量資料庫只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "messageHost": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；執行向量資料庫的伺服器總共只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "guide": "向量資料庫容量規劃指南"
       }
     },
     "tenants": {

@@ -1362,6 +1362,44 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
         )
 
 
+@app.get("/health/vector-db/memory")
+async def vector_db_memory_check(request: Request) -> JSONResponse:
+    """Whether the vector database has the memory to keep search fast.
+
+    Advisory only: it never changes the health status, and it is not in
+    EXCLUDE_PATHS because it reports collection sizes; the Node.js API calls it
+    for admins with the caller's token. Reuses the provider cached by
+    ``/health/vector-db``.
+    """
+    from app.services.vector_db.vector_db_provider_factory import (
+        VectorDBProviderFactory,
+    )
+    from app.utils.logger import create_logger
+
+    try:
+        provider = getattr(request.app.state, "_vector_db_health_provider", None)
+        if provider is None:
+            container = request.app.container  # type: ignore[attr-defined]
+            provider = await VectorDBProviderFactory.create_provider(
+                logger=create_logger("vector_db_health"),
+                config_service=container.config_service(),
+            )
+            request.app.state._vector_db_health_provider = provider
+
+        report = await provider.memory_report()
+        if report is None:
+            return JSONResponse(status_code=200, content={"status": "unsupported"})
+        return JSONResponse(status_code=200, content=report.to_dict())
+    except Exception:
+        request.app.container.logger().warning(
+            "Vector DB memory report failed", exc_info=True
+        )
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unknown", "error": "Vector DB memory report failed"},
+        )
+
+
 # Include routes - more specific routes first
 app.include_router(entity_router)
 app.include_router(toolsets_router)

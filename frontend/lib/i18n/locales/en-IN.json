@@ -3604,6 +3604,12 @@
           "label": "Extraction Service",
           "description": "LLM-based document classification and metadata extraction"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Search index doesn't fit in the vector database's memory",
+        "message": "The search index needs about {{needed}} GB of memory to stay fast; the vector database has about {{available}} GB, so searches read from disk and slow down further when several run at once.",
+        "messageHost": "The search index needs about {{needed}} GB of memory to stay fast; the server running the vector database has only about {{available}} GB in total, so searches read from disk and slow down further when several run at once.",
+        "guide": "Vector database sizing guide"
       }
     },
     "tenants": {

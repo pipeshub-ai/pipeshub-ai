@@ -4000,6 +4000,12 @@
           "label": "Služba Extraction",
           "description": "Klasifikace dokumentů a extrakce metadat pomocí LLM"
         }
+      },
+      "vectorDbMemory": {
+        "title": "Vyhledávací index se nevejde do paměti vektorové databáze",
+        "message": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; vektorová databáze má asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "messageHost": "Vyhledávací index potřebuje asi {{needed}} GB paměti, aby zůstal rychlý; server s vektorovou databází má celkem jen asi {{available}} GB, takže vyhledávání čte z disku a při více souběžných dotazech se dál zpomaluje.",
+        "guide": "Průvodce dimenzováním vektorové databáze"
       }
     },
     "tenants": {
