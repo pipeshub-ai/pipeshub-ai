@@ -26,8 +26,13 @@ class TestResolveValidatedBaseUrl:
     def test_empty_uses_configured(self) -> None:
         assert resolve_validated_base_url("", CONFIGURED) == CONFIGURED
 
-    def test_matching_scheme_and_host_is_trusted(self) -> None:
-        assert resolve_validated_base_url("https://app.example.com/foo/", CONFIGURED) == "https://app.example.com/foo"
+    def test_matching_scheme_and_host_uses_configured(self) -> None:
+        assert resolve_validated_base_url("https://app.example.com/foo/", CONFIGURED) == CONFIGURED
+
+    def test_matching_origin_keeps_configured_sub_path(self) -> None:
+        # Browsers send only their origin; the redirect URI must keep the configured sub-path.
+        configured = "https://app.example.com/pipeshub"
+        assert resolve_validated_base_url("https://app.example.com", configured) == configured
 
     def test_mismatched_host_rejected(self) -> None:
         assert resolve_validated_base_url("https://evil.com", CONFIGURED) == CONFIGURED
