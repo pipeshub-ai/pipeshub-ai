@@ -39,6 +39,7 @@ from app.events.dedup import (
 )
 from app.events.processor import Processor
 from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
+from app.modules.reconciliation.service import ReconciliationMetadata
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
@@ -689,6 +690,24 @@ class EventProcessor:
         await pipeline.delete_points_for_virtual_record(
             virtual_record_id, RecordContext.from_graph_document(doc)
         )
+        # The VRID is kept, so without this the next diff would pair unchanged
+        # blocks with the points just deleted and embed nothing.
+        orchestrator = self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None)
+        try:
+            if orchestrator is None:
+                raise RuntimeError("no sink orchestrator to reset the reconciliation metadata")
+            org_id = doc.get("orgId")
+            await orchestrator.blob_storage.save_reconciliation_metadata(
+                org_id, _record_key(doc), virtual_record_id, ReconciliationMetadata().to_dict(),
+                document_path=await orchestrator.blob_storage.get_actual_content_path(org_id, virtual_record_id),
+                connector_id=doc.get("connectorId"),
+                record_group_id=doc.get("recordGroupId"),
+            )
+        except Exception as e:
+            raise IndexingError(
+                "Could not reset the stored block list of an emptied record",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
+            ) from e
 
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""

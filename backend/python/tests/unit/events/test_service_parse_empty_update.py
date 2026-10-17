@@ -32,6 +32,8 @@ def _with_pipeline(ep) -> MagicMock:
     pipeline = MagicMock()
     pipeline.delete_points_for_virtual_record = AsyncMock()
     ep.processor.indexing_pipeline = pipeline
+    ep.sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
+    ep.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="path/vrid-1")
     return pipeline
 
 
@@ -46,6 +48,7 @@ async def test_an_empty_parse_of_an_update_drops_the_old_vectors() -> None:
 
     pipeline.delete_points_for_virtual_record.assert_awaited_once()
     assert pipeline.delete_points_for_virtual_record.await_args.args[0] == "vrid-1"
+    ep.sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
     written = [c.args[2] for c in ep.graph_provider.update_node.await_args_list if "indexingStatus" in c.args[2]]
     assert written[-1]["indexingStatus"] == "EMPTY" and written[-1]["hasIndexedCopy"] is False
 

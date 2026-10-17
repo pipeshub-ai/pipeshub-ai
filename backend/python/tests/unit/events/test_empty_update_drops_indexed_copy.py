@@ -33,6 +33,8 @@ def _empty_update(event_type: str = EventTypes.UPDATE_RECORD.value) -> dict[str,
 def _processor() -> MagicMock:
     processor = MagicMock()
     processor.indexing_pipeline = AsyncMock()
+    processor.sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="path/vr-1")
     return processor
 
 
@@ -59,6 +61,9 @@ async def test_an_update_to_empty_content_drops_the_old_vectors_and_the_indexed_
     processor.indexing_pipeline.delete_points_for_virtual_record.assert_awaited_once()
     assert processor.indexing_pipeline.delete_points_for_virtual_record.await_args.args[0] == "vr-1"
     assert ep.graph_provider.get_records_by_virtual_record_id.await_args.kwargs["raise_on_error"] is True
+    # The VRID is kept, so the stored block list must be emptied with the vectors.
+    saved = processor.sink_orchestrator.blob_storage.save_reconciliation_metadata.await_args
+    assert saved.args[2] == "vr-1" and not any(saved.args[3].values())
     assert _status_writes(ep)[-1] == {
         "indexingStatus": "EMPTY", "hasIndexedCopy": False, "processingStartedAt": None,
     }
@@ -111,3 +116,16 @@ async def test_no_holder_at_all_deletes_nothing() -> None:
     await _drain(ep, _empty_update())
 
     processor.indexing_pipeline.delete_points_for_virtual_record.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_block_list_reset_retries_the_event() -> None:
+    processor = _processor()
+    processor.sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock(side_effect=OSError("blob"))
+    ep = _make_event_processor(processor=processor)
+    ep.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+
+    with pytest.raises(IndexingError):
+        await _drain(ep, _empty_update())
+
+    assert all(w["indexingStatus"] != "EMPTY" for w in _status_writes(ep))
