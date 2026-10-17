@@ -11,6 +11,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -260,12 +261,10 @@ class AzureOpenAIDecisionModel(TypeSafeDecisionModel):
 
 
 def _azure_resource_root(endpoint: str) -> str:
-    # Admins often paste the ".../openai/v1/" URL other Azure screens show.
-    root = endpoint.strip().rstrip("/")
-    for suffix in ("/openai/v1", "/openai"):
-        if root.lower().endswith(suffix):
-            return root[: -len(suffix)]
-    return root
+    # The decision route is on the resource root; admins often paste a longer URL
+    # (".../openai/v1/", or a Foundry project's ".../api/projects/<name>").
+    parts = urlsplit(endpoint.strip())
+    return f"{parts.scheme}://{parts.netloc}" if parts.scheme and parts.netloc else endpoint.strip().rstrip("/")
 
 
 def _openai_question(question: DecisionQuestion) -> dict[str, Any]:

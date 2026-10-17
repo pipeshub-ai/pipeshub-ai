@@ -74,6 +74,7 @@ import { AIModelConfiguration, AIModelsConfig, SystemPromptsConfig } from '../ty
 import {
   AiModelsConfigRepository,
   AiModelsWriteAborted,
+  ensureAiModelBuckets,
   findModelEntry,
 } from '../services/aiModelsConfig.repository';
 import { WebSearchConfig } from '../types/web-search.types';
@@ -2933,7 +2934,12 @@ export const getAIModelsConfig =
       const aiConfig = await readStoredAiModelsConfig(keyValueStoreService);
       res
         .status(200)
-        .json(aiConfig ? stripAiModelsStoredConfig(aiConfig) : {})
+        // A config saved before a model type existed has no bucket for it.
+        .json(
+          aiConfig
+            ? stripAiModelsStoredConfig(ensureAiModelBuckets(aiConfig))
+            : {},
+        )
         .end();
     } catch (error: any) {
       logger.error('Error getting ai models config', { error });

@@ -1448,6 +1448,20 @@ describe('ConfigurationManager Controller', () => {
 
       expect(res.status.calledWith(200)).to.be.true
     })
+
+    it('fills buckets a config saved before a model type existed does not have', async () => {
+      mockEncService.decrypt.returns(JSON.stringify({ llm: [{ provider: 'openai' }] }))
+      const kvs = createMockKeyValueStore({
+        get: sinon.stub().resolves('encrypted:ai-config'),
+      })
+      const res = createMockResponse()
+
+      await getAIModelsConfig(kvs)(createMockRequest(), res, createMockNext())
+
+      const body = res.json.firstCall.args[0]
+      expect(body.decision).to.deep.equal([])
+      expect(body.llm).to.have.length(1)
+    })
   })
 
   // -----------------------------------------------------------------------

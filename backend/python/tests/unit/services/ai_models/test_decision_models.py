@@ -294,3 +294,15 @@ async def test_system_one_reader_accepts_probability_field_and_list_probabilitie
     assert result.answers["team"].probabilities == {"payments": 0.7, "technical": 0.3}
     assert result.answers["severity"].probabilities == {"Low": 0.6, "High": 0.4}
     assert not any(answer.missing for answer in result.answers.values())
+
+
+def test_azure_endpoint_is_reduced_to_the_resource_root() -> None:
+    for endpoint in (
+        "https://res.openai.azure.com/",
+        "https://res.openai.azure.com/openai/v1/",
+        "https://res.services.ai.azure.com/api/projects/my-project",
+        "https://res.services.ai.azure.com/api/projects/my-project/openai/v1",
+    ):
+        model = AzureOpenAIDecisionModel("decision-prod", api_key="k", endpoint=endpoint)
+        host = endpoint.split("/")[2]
+        assert model._url() == f"https://{host}/providers/microsoft/v1/systemone", endpoint
