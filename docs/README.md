@@ -14,6 +14,7 @@ In-repo design docs:
 - [Fork chat — start a new chat from any message: approach, what is written to MongoDB, what is copied, failure handling](./fork-chat.md)
 - [Retrieval context — how search hits become the ranked, cited records the agent reads](./retrieval-context.md)
 - [Search record cut — fusing deeper and spreading a search's results across records (`FUSION_RECORD_CUT`)](./search-record-cut.md)
+- [API Toolsets — agent tools from the OpenAPI spec of an internal REST API: setup, writing a spec agents use well, security, design](./api-toolsets.md)
 - [Answer rules — the ANSWER_COMPOSITION_RULES, THOROUGH_RETRIEVAL and MULTI_STEP_ANSWER_RULES switches](./answer-rules.md)
 - [Vector database sizing — how much memory Qdrant needs for a given corpus, and the Services page warning](./deployment/vector-db-sizing.md)
 - [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)
