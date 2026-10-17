@@ -1338,7 +1338,9 @@ export const saveConnectorInstanceFilterOptions =
         throw new BadRequestError('Filters are required');
       }
 
-      logger.info(`Saving filter options for instance ${connectorId}`);
+      logger.warn(
+        `Deprecated POST /connectors/${connectorId}/filters was called; use PUT /connectors/:connectorId/config/filters-sync instead. This endpoint will be removed in a future release.`,
+      );
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(

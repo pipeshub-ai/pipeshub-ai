@@ -39527,10 +39527,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     post:
+      deprecated: true
+      x-speakeasy-deprecation-message: >-
+        Use PUT /connectors/{connectorId}/config/filters-sync instead.
+        This endpoint will be removed in a future release.
       tags:
         - Connector Filters
-      summary: Save filter selections
+      summary: Save filter selections (deprecated)
       description: |
+        <b>Deprecated.</b> Save filters with
+        <code>PUT /connectors/{connectorId}/config/filters-sync</code> instead, which is what the
+        PipesHub app uses. This endpoint will be removed in a future release.<br><br>
         Save the user's filter selections for a connector.<br><br>
         <b>Overview:</b><br>
         After viewing filter options, use this endpoint to save the

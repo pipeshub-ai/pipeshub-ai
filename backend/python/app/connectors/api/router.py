@@ -7608,7 +7608,7 @@ def _find_filter_field_config(
     return None
 
 
-@router.post("/api/v1/connectors/{connector_id}/filters", dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
+@router.post("/api/v1/connectors/{connector_id}/filters", deprecated=True, dependencies=[Depends(require_scopes(OAuthScopes.CONNECTOR_WRITE)), Depends(require_connector_not_locked)])
 async def save_connector_instance_filters(
     connector_id: str,
     request: Request,
@@ -7616,6 +7616,9 @@ async def save_connector_instance_filters(
 ) -> dict[str, Any]:
     """
     Save filter selections for a connector instance.
+
+    Deprecated: the app saves filters through
+    ``PUT /api/v1/connectors/{connector_id}/config/filters-sync``. Removed in a later release.
 
     Args:
         connector_id: Unique instance key
@@ -7631,6 +7634,11 @@ async def save_connector_instance_filters(
     container = request.app.container
     logger = container.logger()
     connector_registry = request.app.state.connector_registry
+    logger.warning(
+        "Deprecated POST /api/v1/connectors/%s/filters was called; use PUT "
+        "/api/v1/connectors/{connector_id}/config/filters-sync instead",
+        connector_id,
+    )
 
     try:
         # Get and validate user context
