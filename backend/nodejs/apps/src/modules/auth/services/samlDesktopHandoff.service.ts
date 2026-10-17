@@ -4,12 +4,14 @@ import { ICacheService } from '../../../libs/services/cache/cacheService.interfa
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
 
 /**
- * Hands SAML sign-in tokens to the desktop app.
+ * Hands SAML sign-in tokens to the client that started the sign-in.
  *
- * The SAML assertion lands in the user's browser, not the app, and the only
- * way back is a `pipeshub://` deep link that any local app could register for.
- * So the link carries a short-lived code, never the tokens, and redeeming the
- * code needs the PKCE verifier that only the app that started the flow holds.
+ * The SAML assertion lands in the user's browser, so tokens must not travel in
+ * cookies (readable by page scripts) or links. The redirect carries a
+ * short-lived code, never the tokens. A sign-in that started on the PipesHub
+ * login page also stores a PKCE challenge; redeeming then needs the verifier
+ * from that tab. An IdP-initiated sign-in (Okta app tile) has no such start,
+ * so the code alone is enough — still single-use and 120s.
  */
 
 const HANDOFF_TTL_SECONDS = 120;
@@ -26,7 +28,7 @@ export interface SamlDesktopTokens {
 }
 
 interface HandoffRecord extends SamlDesktopTokens {
-  codeChallenge: string;
+  codeChallenge?: string;
 }
 
 export function isValidDesktopState(value: unknown): value is string {
@@ -45,26 +47,35 @@ function s256(verifier: string): string {
 export class SamlDesktopHandoffService {
   constructor(@inject('RedisService') private redisService: ICacheService) {}
 
-  async issue(tokens: SamlDesktopTokens, codeChallenge: string): Promise<string> {
+  async issue(tokens: SamlDesktopTokens, codeChallenge?: string): Promise<string> {
     const code = randomBytes(32).toString('hex');
-    const record: HandoffRecord = { ...tokens, codeChallenge };
+    const record: HandoffRecord = { ...tokens };
+    if (codeChallenge) record.codeChallenge = codeChallenge;
     await this.redisService.set(`${KEY_PREFIX}${code}`, record, {
       ttl: HANDOFF_TTL_SECONDS,
     });
     return code;
   }
 
-  async redeem(code: string, codeVerifier: string): Promise<SamlDesktopTokens> {
-    if (!/^[0-9a-f]{64}$/.test(code) || !CODE_VERIFIER_PATTERN.test(codeVerifier)) {
+  async redeem(code: string, codeVerifier?: string): Promise<SamlDesktopTokens> {
+    if (!/^[0-9a-f]{64}$/.test(code)) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
     }
     const key = `${KEY_PREFIX}${code}`;
     const record = await this.redisService.get<HandoffRecord>(key);
-    // Deleted before the verifier check, so a wrong guess burns the code. The
-    // get/delete pair is not atomic, but a racing caller still needs the verifier.
+    // Deleted before the verifier check, so a wrong guess burns a PKCE code.
     await this.redisService.delete(key);
-    if (!record || s256(codeVerifier) !== record.codeChallenge) {
+    if (!record) {
       throw new UnauthorizedError('Invalid or expired sign-in code');
+    }
+    if (record.codeChallenge) {
+      if (
+        !codeVerifier ||
+        !CODE_VERIFIER_PATTERN.test(codeVerifier) ||
+        s256(codeVerifier) !== record.codeChallenge
+      ) {
+        throw new UnauthorizedError('Invalid or expired sign-in code');
+      }
     }
     return { accessToken: record.accessToken, refreshToken: record.refreshToken };
   }

@@ -20736,13 +20736,23 @@ paths:
           in: query
           required: false
           description: |
-            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
-            and `code_challenge`; without both it is ignored. The callback then sends
-            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
-            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
+            How the callback hands tokens back. The callback never sets cookies; it
+            redirects to `/auth/sign-in/samlSso/success` with a single-use `code`,
+            redeemed at `/saml/exchange`.
+
+            - `web`: a browser sign-in. Needs `code_challenge`.
+            - `desktop`: a sign-in started by the PipesHub desktop app. Needs `state`
+              and `code_challenge`; the success page also echoes `state` (and
+              `saml_error` on failure), and the code is redeemed at `/saml/desktop/exchange`.
+
+            A request to this `/signIn` route is always SP-initiated. Omitting
+            `client` or a valid `code_challenge` still completes at the IdP, but
+            the callback redirects to `{frontendUrl}/login?saml_error=sign_in_restart`.
+            An IdP-initiated sign-in (Okta app tile) never hits this route; that
+            callback issues a one-time `code` with no PKCE.
           schema:
             type: string
-            enum: [desktop]
+            enum: [web, desktop]
         - name: state
           in: query
           required: false
@@ -20752,7 +20762,7 @@ paths:
         - name: code_challenge
           in: query
           required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
+          description: PKCE S256 challenge (43 base64url characters) for the handoff code.
           schema:
             type: string
       responses:
@@ -20817,8 +20827,10 @@ paths:
           description: |
             Redirect to the frontend. All outcomes use this status code.
 
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
-            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
+            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success?code=<code>`.
+            No cookies are set. The single-use `code` is redeemed at `/saml/exchange`.
+            A PipesHub-started sign-in also sends the PKCE verifier; an IdP-initiated
+            sign-in redeems the code alone.
 
             **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
 
@@ -20827,6 +20839,7 @@ paths:
             | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
             | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
             | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
+            | `sign_in_restart`   | A `web`/`desktop` start was missing a valid PKCE challenge; start again from the login page |
             | `unknown`           | Unexpected server-side error during callback processing                 |
             | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
           headers:
@@ -20837,20 +20850,15 @@ paths:
                 type: string
               examples:
                 success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success"
+                  value: "https://app.example.com/auth/sign-in/samlSso/success?code=0123abcd"
                 error_sso_disabled:
                   value: "https://app.example.com/login?saml_error=saml_sso_disabled"
                 error_jit_disabled:
                   value: "https://app.example.com/login?saml_error=jit_disabled"
                 error_auth_failed:
                   value: "https://app.example.com/login?saml_error=auth_failed"
-            Set-Cookie:
-              description: |
-                Set on successful authentication only.
-                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
-                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
-              schema:
-                type: string
+                error_sign_in_restart:
+                  value: "https://app.example.com/login?saml_error=sign_in_restart"
 
         '400':
           description: Invalid or malformed SAML response
@@ -20880,15 +20888,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthError'
 
+  /saml/exchange:
+    post:
+      tags:
+        - SAML
+      summary: Redeem a SAML handoff code
+      description: |
+        Exchanges the single-use code from a browser SAML sign-in for PipesHub tokens.
+        The code expires after 2 minutes and is consumed by the first attempt.
+        `codeVerifier` is required when the sign-in started from PipesHub (`client=web`);
+        omit it for an IdP-initiated code.
+      operationId: exchangeSamlCode
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                code:
+                  type: string
+                  description: Handoff code from the success page redirect
+                codeVerifier:
+                  type: string
+                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`. Omit for IdP-initiated sign-in.
+              required:
+                - code
+      responses:
+        '200':
+          description: Signed in
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  accessToken:
+                    type: string
+                  refreshToken:
+                    type: string
+        '401':
+          description: Unknown, expired, already used, or verifier mismatch
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /saml/desktop/exchange:
     post:
       tags:
         - SAML
       summary: Redeem a desktop SAML handoff code
       description: |
-        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
-        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
-        consumed by the first attempt, whether or not the verifier matches.
+        Same as `/saml/exchange`, for the code from a desktop SAML sign-in (see
+        `client=desktop` on `/saml/signIn`).
       operationId: exchangeSamlDesktopCode
       security: []
       requestBody:
