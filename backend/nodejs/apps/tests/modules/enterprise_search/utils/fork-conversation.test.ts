@@ -317,3 +317,150 @@ describe('copySessionUpToMessage', () => {
     })
   })
 })
+
+describe('copySessionUpToMessage with artifacts', () => {
+  afterEach(() => {
+    sinon.restore()
+  })
+
+  const card = (version: number) =>
+    `::artifact[report.md](record:old){text/markdown|doc-old|old|DOCUMENT|${version}}`
+  const copied = {
+    sourceArtifactId: 'old',
+    sourceDocumentId: 'doc-old',
+    artifactId: 'new',
+    documentId: 'doc-new',
+    versions: [
+      { from: 1, to: 1 },
+      { from: 2, to: 2 },
+    ],
+  }
+
+  const seedWithArtifacts = (store: InMemoryChatStore) => {
+    const orgId = oid()
+    const owner = oid()
+    const source = store.addSession({ orgId, userId: owner, initiator: owner, title: 'Report', sessionType: 'chat' })
+    store.addMessage(source, { messageType: 'user_query', content: 'write a report' })
+    store.addMessage(source, {
+      messageType: 'bot_response',
+      content: `Done\n\n${card(1)}`,
+      parts: [{ type: 'tool_call', toolCallId: 'c1', args: '{"artifact_id":"old"}', resultPreview: 'saved old' }],
+    })
+    store.addMessage(source, { messageType: 'user_query', content: 'edit it' })
+    const forkPoint = store.addMessage(source, { messageType: 'bot_response', content: `Edited\n\n${card(2)}` })
+    store.addMessage(source, { messageType: 'user_query', content: 'edit again' })
+    store.addMessage(source, { messageType: 'bot_response', content: `Edited again\n\n${card(3)}` })
+    return { source, forkPoint, owner, orgId }
+  }
+
+  const fork = (
+    { source, forkPoint, owner, orgId }: ReturnType<typeof seedWithArtifacts>,
+    copyArtifacts: sinon.SinonStub,
+  ) =>
+    copySessionUpToMessage(
+      source,
+      String(forkPoint._id),
+      String(owner),
+      String(orgId),
+      { sessionType: 'chat' },
+      null,
+      copyArtifacts as never,
+    )
+
+  it('copies each artifact up to the fork point and points the copied messages at the copies', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    const copyArtifacts = sinon.stub().resolves({ copies: [copied], failed: [] })
+
+    const result = await fork(seeded, copyArtifacts)
+
+    expect(copyArtifacts.calledOnce).to.equal(true)
+    expect(copyArtifacts.firstCall.args[0]).to.equal(String(result.conversation._id))
+    expect(copyArtifacts.firstCall.args[1]).to.deep.equal([{ artifactId: 'old', upToVersion: 2 }])
+
+    const rows = store.messagesOf(result.conversation._id) as any[]
+    expect(rows).to.have.length(4)
+    expect(rows[1].content).to.equal('Done\n\n::artifact[report.md](record:new){text/markdown|doc-new|new|DOCUMENT|1}')
+    expect(rows[3].content).to.equal('Edited\n\n::artifact[report.md](record:new){text/markdown|doc-new|new|DOCUMENT|2}')
+    expect(rows[1].parts[0].args).to.equal('{"artifact_id":"new"}')
+    expect(rows[1].parts[0].resultPreview).to.equal('saved new')
+  })
+
+  it('leaves the original conversation pointing at its own artifact', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+
+    await fork(seeded, sinon.stub().resolves({ copies: [copied], failed: [] }))
+
+    const original = store.messagesOf(seeded.source._id) as any[]
+    expect(original).to.have.length(6)
+    expect(original[1].content).to.contain('record:old')
+    expect(original[1].parts[0].args).to.equal('{"artifact_id":"old"}')
+    expect(original[5].content).to.equal(`Edited again\n\n${card(3)}`)
+  })
+
+  it('does not ask for a copy when no copied message shows an artifact', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const orgId = oid()
+    const owner = oid()
+    const source = store.addSession({ orgId, userId: owner, initiator: owner, title: 'Plain', sessionType: 'chat' })
+    const first = store.addMessage(source, { messageType: 'bot_response', content: 'hello' })
+    store.addMessage(source, { messageType: 'bot_response', content: card(1) })
+    const copyArtifacts = sinon.stub()
+
+    await fork({ source, forkPoint: first, owner, orgId }, copyArtifacts)
+
+    expect(copyArtifacts.called).to.equal(false)
+  })
+
+  it('keeps going when an artifact is gone or no longer readable, leaving its card as it was', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    const copyArtifacts = sinon.stub().resolves({ copies: [], failed: [{ artifactId: 'old', reason: 'not_found' }] })
+
+    const result = await fork(seeded, copyArtifacts)
+
+    expect(result.messageCount).to.equal(4)
+    expect((store.messagesOf(result.conversation._id)[1] as any).content).to.contain('record:old')
+  })
+
+  it('fails the fork, and removes it, when an artifact could not be copied', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    const deleteMessages = sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
+    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+    const copyArtifacts = sinon.stub().resolves({ copies: [], failed: [{ artifactId: 'old', reason: 'error' }] })
+
+    try {
+      await fork(seeded, copyArtifacts)
+      expect.fail('expected the fork to fail')
+    } catch (error) {
+      expect((error as { statusCode?: number }).statusCode).to.equal(500)
+    }
+
+    expect(deleteSession.calledOnce).to.equal(true)
+    expect(deleteMessages.calledOnce).to.equal(true)
+    expect(store.writes).to.not.include('message.insert')
+  })
+
+  it('fails the fork when the copy service cannot be reached', async () => {
+    const store = new InMemoryChatStore()
+    store.install()
+    const seeded = seedWithArtifacts(store)
+    sinon.stub(ChatSessionMessage, 'deleteMany').resolves({} as never)
+    const deleteSession = sinon.stub(ChatSession, 'deleteOne').resolves({} as never)
+
+    try {
+      await fork(seeded, sinon.stub().rejects(new Error('connectors down')))
+      expect.fail('expected the fork to fail')
+    } catch (error) {
+      expect((error as Error).message).to.equal('connectors down')
+    }
+    expect(deleteSession.calledOnce).to.equal(true)
+  })
+})

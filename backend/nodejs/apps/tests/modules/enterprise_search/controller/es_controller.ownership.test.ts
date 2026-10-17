@@ -143,7 +143,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     { name: 'setConversationProject', handler: () => controller.setConversationProject as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { projectId: null } },
     { name: 'setConversationProjectVisibility', handler: () => controller.setConversationProjectVisibility as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { visibility: 'project' } },
     { name: 'cancelConversationStream', handler: () => controller.cancelConversationStream(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId }), body: { runId: 'run-1' } },
-    { name: 'forkConversation', handler: () => controller.forkConversation as JsonHandler, params: (s) => ({ conversationId: s.chatId, messageId: s.botMessageId }) },
+    { name: 'forkConversation', handler: () => controller.forkConversation(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.chatId, messageId: s.botMessageId }) },
   ]
 
   const agentCases: JsonCase[] = [
@@ -152,7 +152,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     { name: 'updateAgentFeedback', handler: () => controller.updateAgentFeedback as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY, messageId: s.agentBotMessageId }), body: { isHelpful: false } },
     { name: 'archiveAgentConversation', handler: () => controller.archiveAgentConversation as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }) },
     { name: 'cancelAgentConversationStream', handler: () => controller.cancelAgentConversationStream(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }), body: { runId: 'run-1' } },
-    { name: 'forkAgentConversation', handler: () => controller.forkAgentConversation as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY, messageId: s.agentBotMessageId }) },
+    { name: 'forkAgentConversation', handler: () => controller.forkAgentConversation(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY, messageId: s.agentBotMessageId }) },
   ]
 
   for (const c of [...chatCases, ...agentCases]) {
@@ -218,7 +218,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     const s = setup()
     const beforeCount = s.store.sessions.length
     const out = await callJson(
-      controller.forkConversation as JsonHandler,
+      controller.forkConversation(appConfig) as JsonHandler,
       request(owner, { conversationId: s.chatId, messageId: s.botMessageId }),
     )
     expect(out.status, 'fork status').to.equal(201)
@@ -237,7 +237,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
     ;(ProjectService.getAccessibleProjectIds as sinon.SinonStub).resolves([projectId])
 
     const out = await callJson(
-      controller.forkConversation as JsonHandler,
+      controller.forkConversation(appConfig) as JsonHandler,
       request(stranger, { conversationId: s.chatId, messageId: s.botMessageId }),
     )
 

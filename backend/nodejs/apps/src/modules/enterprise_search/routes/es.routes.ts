@@ -433,7 +433,7 @@ export function createConversationalRouter(container: Container): Router {
     authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_CHAT),
     ValidationMiddleware.validate(forkConversationParamsSchema),
-    forkConversation,
+    forkConversation(appConfig),
   );
 
   /**
@@ -766,7 +766,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     authenticate,
     requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     ValidationMiddleware.validate(forkAgentConversationParamsSchema),
-    forkAgentConversation,
+    forkAgentConversation(appConfig),
   );
 
   /**
