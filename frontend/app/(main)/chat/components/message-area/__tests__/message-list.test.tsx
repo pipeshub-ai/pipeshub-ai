@@ -744,17 +744,41 @@ describe('MessageList — day separators', () => {
     expect(separators().map((el) => el.textContent)).toEqual(['Today']);
   });
 
-  it('adds a label whenever the day changes, oldest first', () => {
+  it('adds a label whenever the group changes, oldest first', () => {
     show([
-      userAt('u1', 'First', daysAgoIso(10)), assistant('a1', 'A'),
-      userAt('u2', 'Second', daysAgoIso(1)), assistant('a2', 'B'),
-      userAt('u3', 'Third', daysAgoIso(0)), assistant('a3', 'C'),
+      userAt('u1', 'First', daysAgoIso(30)), assistant('a1', 'A'),
+      userAt('u2', 'Second', daysAgoIso(4)), assistant('a2', 'B'),
+      userAt('u3', 'Third', daysAgoIso(1)), assistant('a3', 'C'),
+      userAt('u4', 'Fourth', daysAgoIso(0)), assistant('a4', 'D'),
     ]);
 
-    const labels = separators().map((el) => el.textContent);
-    expect(labels).toHaveLength(3);
-    expect(labels.slice(1)).toEqual(['Yesterday', 'Today']);
-    expect(labels[0]).not.toMatch(/Today|Yesterday/);
+    expect(separators().map((el) => el.textContent)).toEqual([
+      'Older',
+      'Last 7 days',
+      'Yesterday',
+      'Today',
+    ]);
+  });
+
+  it('shows one label for a chat used on several different days of the same group', () => {
+    show([
+      userAt('u1', 'First', daysAgoIso(8)), assistant('a1', 'A'),
+      userAt('u2', 'Second', daysAgoIso(6)), assistant('a2', 'B'),
+      userAt('u3', 'Third', daysAgoIso(4)), assistant('a3', 'C'),
+      userAt('u4', 'Fourth', daysAgoIso(2)), assistant('a4', 'D'),
+    ]);
+
+    expect(separators().map((el) => el.textContent)).toEqual(['Last 7 days']);
+  });
+
+  it('shows "Older" instead of a date for a chat from long ago', () => {
+    show([
+      userAt('u1', 'Ancient', daysAgoIso(400)), assistant('a1', 'A'),
+      userAt('u2', 'Old', daysAgoIso(40)), assistant('a2', 'B'),
+      userAt('u3', 'Older still', daysAgoIso(9)), assistant('a3', 'C'),
+    ]);
+
+    expect(separators().map((el) => el.textContent)).toEqual(['Older']);
   });
 
   it('places each label directly above the first question of its day', () => {
@@ -786,13 +810,6 @@ describe('MessageList — day separators', () => {
 
     expect(separators().map((el) => el.textContent)).toEqual(['Today']);
     expect(screen.getByText('Stopped early')).toBeTruthy();
-  });
-
-  it('includes the year for a day in a different year', () => {
-    show([userAt('u1', 'Ancient', daysAgoIso(400)), assistant('a1', 'A')]);
-
-    const [label] = separators();
-    expect(label.textContent).toMatch(/\b\d{4}\b/);
   });
 
   it('exposes the label as a separator to assistive technology', () => {

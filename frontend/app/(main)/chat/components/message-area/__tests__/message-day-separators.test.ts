@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest';
-import { findDayStarts, getDayLabel, localDayKey } from '../message-day-separators';
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { findGroupStarts, GROUP_LABEL_KEY } from '../message-day-separators';
+import { groupByTime, TIME_GROUP_KEYS } from '@/lib/utils/group-by-time';
 import type { MessagePair } from '../message-pairs';
 
 function pair(key: string, createdAt?: string): MessagePair {
@@ -16,106 +17,139 @@ function pair(key: string, createdAt?: string): MessagePair {
 const local = (y: number, m: number, d: number, h = 12, min = 0) =>
   new Date(y, m - 1, d, h, min).toISOString();
 
-describe('localDayKey', () => {
-  it('gives the same key for two times on one local day', () => {
-    expect(localDayKey(local(2026, 10, 15, 0, 1))).toBe(localDayKey(local(2026, 10, 15, 23, 59)));
+// Thursday 15 Oct 2026, midday. Today = 15th, yesterday = 14th,
+// "Previous 7 Days" = 7th..13th, anything before the 7th is "Older".
+const now = new Date(2026, 9, 15, 12, 0);
+
+const groupOf = (iso: string) => findGroupStarts([pair('a', iso)], now).get('a');
+
+describe('findGroupStarts — which group a message falls in', () => {
+  it('calls anything from today "Today", from the first minute to the last', () => {
+    expect(groupOf(local(2026, 10, 15, 0, 0))).toBe('Today');
+    expect(groupOf(local(2026, 10, 15, 23, 59))).toBe('Today');
   });
 
-  it('gives different keys for neighbouring days, including across a month end', () => {
-    expect(localDayKey(local(2026, 10, 31))).not.toBe(localDayKey(local(2026, 11, 1)));
+  it('calls anything from yesterday "Yesterday"', () => {
+    expect(groupOf(local(2026, 10, 14, 0, 0))).toBe('Yesterday');
+    expect(groupOf(local(2026, 10, 14, 23, 59))).toBe('Yesterday');
   });
 
-  it('does not confuse the same day number in different months or years', () => {
-    expect(localDayKey(local(2026, 1, 11))).not.toBe(localDayKey(local(2026, 11, 1)));
-    expect(localDayKey(local(2025, 10, 15))).not.toBe(localDayKey(local(2026, 10, 15)));
+  it('puts the seven days before yesterday in "Previous 7 Days"', () => {
+    expect(groupOf(local(2026, 10, 13, 23, 59))).toBe('Previous 7 Days');
+    expect(groupOf(local(2026, 10, 10))).toBe('Previous 7 Days');
+    expect(groupOf(local(2026, 10, 7, 0, 0))).toBe('Previous 7 Days');
   });
 
-  it.each([undefined, '', 'not a date'])('returns null for %j', (value) => {
-    expect(localDayKey(value as string | undefined)).toBeNull();
+  it('puts everything before that in "Older", never a date', () => {
+    expect(groupOf(local(2026, 10, 6, 23, 59))).toBe('Older');
+    expect(groupOf(local(2026, 9, 1))).toBe('Older');
+    expect(groupOf(local(2025, 12, 31))).toBe('Older');
+  });
+
+  it('counts "yesterday" across a month end', () => {
+    const firstOfMonth = new Date(2026, 10, 1, 9, 0);
+    expect(findGroupStarts([pair('a', local(2026, 10, 31))], firstOfMonth).get('a')).toBe('Yesterday');
+  });
+
+  it('counts "Previous 7 Days" across a month end', () => {
+    const fifthOfMonth = new Date(2026, 10, 5, 9, 0);
+    expect(findGroupStarts([pair('a', local(2026, 10, 29))], fifthOfMonth).get('a')).toBe('Previous 7 Days');
+    expect(findGroupStarts([pair('a', local(2026, 10, 27))], fifthOfMonth).get('a')).toBe('Older');
+  });
+
+  it('counts "Yesterday" across a year end', () => {
+    const newYearsDay = new Date(2027, 0, 1, 9, 0);
+    expect(findGroupStarts([pair('a', local(2026, 12, 31))], newYearsDay).get('a')).toBe('Yesterday');
+  });
+
+  it('uses the same boundaries as the sidebar', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(now);
+    try {
+      for (let daysAgo = 0; daysAgo <= 20; daysAgo += 1) {
+        for (const hour of [0, 12, 23]) {
+          const at = new Date(2026, 9, 15 - daysAgo, hour, 30);
+          const sidebar = TIME_GROUP_KEYS.find(
+            (key) => groupByTime([at.getTime()], (ms) => ms)[key]?.length === 1,
+          );
+          expect(findGroupStarts([pair('a', at.toISOString())], now).get('a')).toBe(sidebar);
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
-describe('findDayStarts', () => {
-  it('marks the first message and each message that opens a new day', () => {
+describe('findGroupStarts — where the labels go', () => {
+  it('marks the first message and each message that opens a new group', () => {
     const pairs = [
-      pair('a', local(2026, 10, 13, 9)),
-      pair('b', local(2026, 10, 13, 17)),
-      pair('c', local(2026, 10, 14, 9)),
-      pair('d', local(2026, 10, 15, 9)),
-      pair('e', local(2026, 10, 15, 10)),
+      pair('a', local(2026, 9, 1)),
+      pair('b', local(2026, 9, 20)),
+      pair('c', local(2026, 10, 9)),
+      pair('d', local(2026, 10, 12)),
+      pair('e', local(2026, 10, 14)),
+      pair('f', local(2026, 10, 15, 9)),
+      pair('g', local(2026, 10, 15, 10)),
     ];
-    expect([...findDayStarts(pairs).keys()]).toEqual(['a', 'c', 'd']);
+    const starts = findGroupStarts(pairs, now);
+    expect([...starts.keys()]).toEqual(['a', 'c', 'e', 'f']);
+    expect([...starts.values()]).toEqual(['Older', 'Previous 7 Days', 'Yesterday', 'Today']);
   });
 
-  it('returns the timestamp that opens the day', () => {
-    const at = local(2026, 10, 13, 9);
-    expect(findDayStarts([pair('a', at)]).get('a')).toBe(at);
+  it('shows one label for many different days in the same group', () => {
+    const pairs = [
+      pair('a', local(2026, 10, 7)),
+      pair('b', local(2026, 10, 9)),
+      pair('c', local(2026, 10, 11)),
+      pair('d', local(2026, 10, 13)),
+    ];
+    expect([...findGroupStarts(pairs, now).keys()]).toEqual(['a']);
+  });
+
+  it('shows one "Older" label however long ago the messages are', () => {
+    const pairs = [
+      pair('a', local(2024, 1, 3)),
+      pair('b', local(2025, 6, 20)),
+      pair('c', local(2026, 9, 30)),
+    ];
+    expect([...findGroupStarts(pairs, now).keys()]).toEqual(['a']);
   });
 
   it('marks nothing for an empty list', () => {
-    expect(findDayStarts([]).size).toBe(0);
+    expect(findGroupStarts([], now).size).toBe(0);
   });
 
-  it('never marks a message without a timestamp, and does not split the day it sits in', () => {
+  it('never marks a message without a timestamp, and does not split the group it sits in', () => {
     const pairs = [
       pair('a', local(2026, 10, 15, 9)),
       pair('b', undefined),
       pair('c', local(2026, 10, 15, 11)),
     ];
-    expect([...findDayStarts(pairs).keys()]).toEqual(['a']);
+    expect([...findGroupStarts(pairs, now).keys()]).toEqual(['a']);
   });
 
   it('skips messages with an unparsable timestamp', () => {
-    expect(findDayStarts([pair('a', 'garbage')]).size).toBe(0);
+    expect(findGroupStarts([pair('a', 'garbage')], now).size).toBe(0);
   });
 
   it('starts the first dated message even when undated ones come before it', () => {
     const pairs = [pair('a', undefined), pair('b', local(2026, 10, 15))];
-    expect([...findDayStarts(pairs).keys()]).toEqual(['b']);
+    expect([...findGroupStarts(pairs, now).keys()]).toEqual(['b']);
   });
 
-  it('marks a return to an earlier calendar day as a new day', () => {
+  it('marks a return to a more recent group as a new group', () => {
     const pairs = [pair('a', local(2026, 10, 15)), pair('b', local(2026, 10, 14))];
-    expect([...findDayStarts(pairs).keys()]).toEqual(['a', 'b']);
+    expect([...findGroupStarts(pairs, now).keys()]).toEqual(['a', 'b']);
   });
 });
 
-describe('getDayLabel', () => {
-  const now = new Date(2026, 9, 15, 10, 30);
-
-  it('calls the current local day Today, even late at night', () => {
-    expect(getDayLabel(local(2026, 10, 15, 0, 5), 'en-US', now)).toEqual({ kind: 'today' });
-    expect(getDayLabel(local(2026, 10, 15, 23, 59), 'en-US', now)).toEqual({ kind: 'today' });
+describe('GROUP_LABEL_KEY', () => {
+  it('has a label for every group', () => {
+    expect(Object.keys(GROUP_LABEL_KEY).sort()).toEqual([...TIME_GROUP_KEYS].sort());
   });
+});
 
-  it('calls the day before Yesterday', () => {
-    expect(getDayLabel(local(2026, 10, 14, 23, 59), 'en-US', now)).toEqual({ kind: 'yesterday' });
-    expect(getDayLabel(local(2026, 10, 14, 0, 0), 'en-US', now)).toEqual({ kind: 'yesterday' });
-  });
-
-  it('finds Yesterday across a month boundary', () => {
-    const firstOfMonth = new Date(2026, 10, 1, 8);
-    expect(getDayLabel(local(2026, 10, 31), 'en-US', firstOfMonth)).toEqual({ kind: 'yesterday' });
-  });
-
-  it('shows a short date, without the year, for earlier days this year', () => {
-    expect(getDayLabel(local(2026, 10, 13), 'en-US', now)).toEqual({ kind: 'date', text: 'Oct 13' });
-  });
-
-  it('adds the year for days in other years', () => {
-    expect(getDayLabel(local(2025, 12, 31), 'en-US', now)).toEqual({ kind: 'date', text: 'Dec 31, 2025' });
-  });
-
-  it('formats the date in the reader’s language', () => {
-    const label = getDayLabel(local(2026, 10, 13), 'de-DE', now);
-    expect(label).toEqual({ kind: 'date', text: '13. Okt.' });
-  });
-
-  it('treats a future timestamp as a plain date, not Today', () => {
-    expect(getDayLabel(local(2026, 10, 20), 'en-US', now)).toEqual({ kind: 'date', text: 'Oct 20' });
-  });
-
-  it('returns null for an unparsable timestamp', () => {
-    expect(getDayLabel('nope', 'en-US', now)).toBeNull();
-  });
+afterEach(() => {
+  vi.useRealTimers();
 });

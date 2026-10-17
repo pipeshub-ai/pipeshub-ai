@@ -20,7 +20,7 @@ import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { buildMessagePairs, extractTextContent } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { findDayStarts, getDayLabel } from './message-day-separators';
+import { findGroupStarts, GROUP_LABEL_KEY } from './message-day-separators';
 import { shouldShowJumpToNewest } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -253,7 +253,7 @@ export function MessageList() {
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
 
-  const dayStarts = useMemo(() => findDayStarts(messagePairs), [messagePairs]);
+  const groupStarts = useMemo(() => findGroupStarts(messagePairs), [messagePairs]);
 
   // ── Jump to newest ─────────────────────────────────────────────────
   const [showJumpToNewest, setShowJumpToNewest] = useState(false);
@@ -1091,19 +1091,14 @@ export function MessageList() {
 
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
-            const dayStartIso = dayStarts.get(pair.key);
-            const dayLabel = dayStartIso ? getDayLabel(dayStartIso, i18n.language) : null;
+            const groupStart = groupStarts.get(pair.key);
             return (
               <React.Fragment key={pair.key}>
-              {dayLabel && (
+              {groupStart && (
                 <Flex align="center" gap="3" role="separator" data-testid="day-separator">
                   <Box style={{ flex: 1, height: 1, background: 'var(--olive-5)' }} />
                   <Text size="1" color="gray">
-                    {dayLabel.kind === 'today'
-                      ? t('timeGroup.today')
-                      : dayLabel.kind === 'yesterday'
-                        ? t('timeGroup.yesterday')
-                        : dayLabel.text}
+                    {t(GROUP_LABEL_KEY[groupStart])}
                   </Text>
                   <Box style={{ flex: 1, height: 1, background: 'var(--olive-5)' }} />
                 </Flex>

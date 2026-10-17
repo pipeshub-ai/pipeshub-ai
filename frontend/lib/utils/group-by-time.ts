@@ -52,8 +52,11 @@ function startOfLocalDay(d: Date): number {
  * @returns { todayStart, yesterdayStart, prev7Start } in epoch ms, local time.
  * "Previous 7" covers [prev7Start, yesterdayStart).
  */
-function getTimeBoundariesMs(): { todayStart: number; yesterdayStart: number; prev7Start: number } {
-  const now = new Date();
+function getTimeBoundariesMs(now: Date = new Date()): {
+  todayStart: number;
+  yesterdayStart: number;
+  prev7Start: number;
+} {
   const todayStart = startOfLocalDay(now);
 
   const y = new Date(todayStart);
@@ -126,6 +129,15 @@ function resolveBucket(
 }
 
 // ── Public API ──
+
+/**
+ * The bucket a single timestamp falls in, using the same boundaries as
+ * {@link groupByTime}. `now` is injectable so callers can test around midnight.
+ */
+export function getTimeGroupKey(ts: number, now: Date = new Date()): TimeGroupKey {
+  const { todayStart, yesterdayStart, prev7Start } = getTimeBoundariesMs(now);
+  return rawBucket(Number.isFinite(ts) ? ts : 0, todayStart, yesterdayStart, prev7Start);
+}
 
 /**
  * Group items into time buckets.
