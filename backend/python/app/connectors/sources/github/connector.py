@@ -180,7 +180,7 @@ class GitHubPersonalProjectsSync(ProjectsSync):
                 authorize_url=AUTHORIZE_URL,
                 token_url=TOKEN_URL,
                 redirect_uri=AUTH_REDIRECT_URI,
-                scopes=OAuthScopeConfig(personal_sync=["user", "repo"], team_sync=[], agent=[]),
+                scopes=OAuthScopeConfig(personal_sync=["read:user", "repo"], team_sync=[], agent=[]),
                 fields=[
                     AuthField(
                         name="clientId",
