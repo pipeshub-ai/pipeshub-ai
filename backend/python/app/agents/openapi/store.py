@@ -84,6 +84,20 @@ class ApiToolsetStore:
     async def delete_credentials(self, instance_id: str, owner_id: str) -> None:
         await self._config.delete_config(get_credentials_path(instance_id, owner_id))
 
+    async def remove_org(self, org_id: str) -> int:
+        """Every toolset of a deleted org, with its credentials. Returns how many toolsets went."""
+        instances = await self.list_instances(org_id)
+        for instance in instances:
+            await self.delete_instance(instance.id)
+        return len(instances)
+
+    async def remove_owner(self, org_id: str, owner_id: str) -> int:
+        """A deleted user's credentials for every toolset of their org. Returns how many went."""
+        instances = await self.list_instances(org_id)
+        for instance in instances:
+            await self.delete_credentials(instance.id, owner_id)
+        return len(instances)
+
     async def delete_instance_credentials(self, instance_id: str) -> None:
         """Every user's and the shared credential for one instance."""
         for key in await self._config.list_keys_in_directory(get_credentials_prefix(instance_id)):
