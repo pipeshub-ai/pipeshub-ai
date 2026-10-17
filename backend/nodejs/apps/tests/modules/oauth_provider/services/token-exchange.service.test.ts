@@ -91,10 +91,14 @@ function makeService(
     .returns({ exec: async () => ({ clientId: `svc-system:${orgId}` }) } as any);
 
   return {
+    // Built as the Enterprise edition does. The exchange logic is shared
+    // between editions; only whether it is offered differs, and that has its
+    // own test.
     service: new TokenExchangeService(
       logger as any,
       tokens as any,
       delegations as any,
+      true,
     ),
     tokens,
     delegations,
@@ -476,4 +480,47 @@ describe('TokenExchangeService', () => {
       expect(tokens.generateTokens.firstCall.args[3]).to.deep.equal(['kb:read']);
     });
   });
-});
+
+  /**
+   * The Community edition refuses the capability rather than merely lacking a
+   * screen to reach it.
+   *
+   * This is the check that makes the edition boundary hold: the allow-list is
+   * an ordinary database collection, so without this a row written straight
+   * into Mongo would be enough to turn delegation on in a build that does not
+   * offer it.
+   */
+  describe('an edition that does not offer delegation', () => {
+    it('refuses before reading anything', async () => {
+      const { service, delegations, tokens } = makeService()
+      const community = new TokenExchangeService(
+        (service as any).logger,
+        (service as any).oauthTokenService,
+        (service as any).delegationService,
+        false,
+      )
+
+      let message = ''
+      let code = ''
+      try {
+        await community.exchange({
+          subjectToken: 'svc-token',
+          requestedSubject: 'person@example.com',
+        } as any)
+      } catch (err: any) {
+        code = err.code ?? err.error ?? ''
+        message = err.message ?? ''
+      }
+
+      // The error class prefixes and upper-cases its code.
+      expect(code.toLowerCase()).to.contain('unsupported_grant_type')
+      expect(message).to.contain('Enterprise')
+
+      // Nothing was looked up, so a hand-written allow-list row changes
+      // nothing here.
+      expect((delegations.isDelegationAllowed as any).called).to.equal(false)
+      expect((delegations.resolveSubject as any).called).to.equal(false)
+      void tokens
+    })
+  })
+})

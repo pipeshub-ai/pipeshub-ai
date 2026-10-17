@@ -85,9 +85,27 @@ export class TokenExchangeService {
     @inject('Logger') private logger: Logger,
     @inject('OAuthTokenService') private oauthTokenService: OAuthTokenService,
     @inject('DelegationService') private delegationService: DelegationService,
+    /**
+     * Whether this edition offers delegation at all. Injected rather than
+     * imported so the Enterprise behaviour stays testable from the edition
+     * that does not ship it: the logic below is shared, and only this value
+     * differs.
+     */
+    @inject('DelegationAvailable') private delegationAvailable: boolean,
   ) {}
 
   async exchange(request: TokenExchangeRequest): Promise<TokenResponse> {
+    // Checked before anything is read, so an allow-list row written directly
+    // into the database buys nothing on a build that does not offer this.
+    if (!this.delegationAvailable) {
+      throw new TokenExchangeError(
+        'unsupported_grant_type',
+        'Delegation — a service account acting on behalf of a named person — ' +
+          'is an Enterprise capability and is not available in this edition. ' +
+          'Service accounts acting with their own access are.',
+      );
+    }
+
     if (
       request.subjectTokenType !== undefined &&
       request.subjectTokenType !== ACCESS_TOKEN_TYPE

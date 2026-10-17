@@ -1,7 +1,7 @@
 import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import { AuthMiddleware } from '../../../config';
+import { AuthMiddleware, DELEGATION_AVAILABLE } from '../../../config';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -195,10 +195,17 @@ export class OAuthProviderContainer {
           ),
         );
 
+      // One place decides whether this edition offers delegation; everything
+      // that needs to know reads it from here.
+      container
+        .bind<boolean>('DelegationAvailable')
+        .toConstantValue(DELEGATION_AVAILABLE)
+
       const tokenExchangeService = new TokenExchangeService(
         logger,
         oauthTokenService,
         delegationService,
+        DELEGATION_AVAILABLE,
       );
       container
         .bind<TokenExchangeService>('TokenExchangeService')
