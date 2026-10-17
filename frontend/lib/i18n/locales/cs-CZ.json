@@ -2541,17 +2541,11 @@
       "panels": {
         "google": "Konfigurace ověřování Google",
         "microsoft": "Konfigurace ověřování Microsoft",
-        "samlSso": "Konfigurace SAML SSO",
-        "oauth": "Konfigurace OAuth 2.0",
         "github": "Konfigurace ověřování GitHub"
       },
       "jit": {
         "title": "Povolit zřizování účtů Just-In-Time (JIT)",
         "description": "Automaticky vytvářet uživatelské účty při prvním přihlášení pomocí {{providerName}}"
-      },
-      "xmlUpload": {
-        "parseError": "Z tohoto souboru se nepodařilo načíst metadata SAML. Zkontrolujte, zda jde o platný XML soubor s metadaty IdP.",
-        "readError": "Nepodařilo se přečíst soubor."
       },
       "riskDialog": {
         "title": "Potvrďte změny ověřování",
@@ -2564,6 +2558,25 @@
       "userMethods": {
         "heading": "Metody přihlašování uživatelů",
         "subtitle": "Určuje, které metody přihlašování jsou k dispozici všem uživatelům ve všech organizacích."
+      },
+      "signInRemoval": {
+        "title_one": "Přihlášení přes {{methods}} bylo v PipesHub 1.0 odstraněno",
+        "title_few": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "title_many": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "title_other": "Přihlášení přes {{methods}} byla v PipesHub 1.0 odstraněna",
+        "nowSignsInWith": "Tento pracovní prostor se nyní přihlašuje pomocí {{methods}}.",
+        "peopleIntro": "Tito lidé se už přihlásili, ale zatím nemají heslo:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "a {{count}} dalších",
+        "howToSetPassword": "Kdo z nich se nepřihlašuje přes Google, Microsoft nebo OTP zaslané e-mailem, si musí nastavit heslo. Může použít „Zapomenuté heslo“ na přihlašovací stránce, což vyžaduje nastavený e-mail (SMTP), nebo mu ten, kdo spravuje server PipesHub, může vytvořit odkaz pro nastavení hesla podle průvodce upgradem na PipesHub 1.0.",
+        "methodNames": {
+          "password": "heslo",
+          "otp": "OTP zaslané e-mailem",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4861,9 +4874,6 @@
       "emailVerifiedDescription": "Vaše e-mailová adresa byla aktualizována. Přihlaste se svým novým e-mailem.",
       "emailVerifyFailedTitle": "Ověření e-mailu se nezdařilo",
       "emailVerifyFailedDescription": "Odkaz může být neplatný nebo jeho platnost vypršela.",
-      "samlErrorTitle": "Chyba při přihlašování pomocí SAML",
-      "samlSignInFailedTitle": "Přihlášení se nezdařilo",
-      "samlSignInFailedDescription": "SAML SSO se nepodařilo dokončit. Zkuste to prosím znovu.",
       "orgEmailVerifiedTitle": "Organizace ověřena",
       "orgEmailVerifiedDescription": "Vaše organizace je nyní aktivní. Pokračujte přihlášením.",
       "orgEmailVerifyFailedTitle": "Ověření se nezdařilo",
@@ -4893,13 +4903,10 @@
       "signInWithEmailOtp": "Přihlásit se pomocí OTP zaslaného e-mailem",
       "orContinueWith": "nebo pokračujte přes {{provider}}",
       "orContinueWithAny": "nebo pokračujte kteroukoli z těchto možností",
-      "orContinueWithSso": "nebo pokračujte přes jednotné přihlášení (SSO)",
       "googleNotConfigured": "Přihlášení přes Google není pro vaši organizaci nakonfigurováno.",
       "microsoftNotConfigured": "Přihlášení přes Microsoft není pro vaši organizaci nakonfigurováno.",
-      "oauthNotConfigured": "Přihlášení přes OAuth není pro vaši organizaci nakonfigurováno.",
       "googleUnavailable": "Přihlášení přes Google je momentálně nedostupné. Kontaktujte svého správce.",
       "microsoftUnavailable": "Přihlášení přes Microsoft je momentálně nedostupné. Kontaktujte svého správce.",
-      "oauthUnavailable": "Přihlášení přes OAuth je momentálně nedostupné. Kontaktujte svého správce.",
       "showPassword": "Zobrazit heslo",
       "hidePassword": "Skrýt heslo",
       "accountDisabled": "Váš účet byl deaktivován.",
