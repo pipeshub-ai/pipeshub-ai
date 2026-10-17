@@ -1321,7 +1321,6 @@ class AzureBlobConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
@@ -1353,7 +1352,6 @@ class AzureBlobConnector(BaseConnector):
                     existing_record = None
 
                 if existing_record:
-                    is_move = True
                     self._moved_record_ids.add(existing_record.id)
                     self.logger.info(
                         f"Move/rename detected: {normalized_name} - file moved from {existing_record.external_record_id} to {external_record_id}"
@@ -1377,9 +1375,6 @@ class AzureBlobConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             record_name = normalized_name.rstrip("/").split("/")[-1] or normalized_name.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 

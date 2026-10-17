@@ -865,18 +865,18 @@ class TestShouldIncludeFile:
         ) is True
 
 
-class TestClearParentChildEdges:
+class TestUpdatesKeepTheOldParentForTheProcessor:
     @pytest.mark.asyncio
-    async def test_empty_list(self, nextcloud_connector):
-        await nextcloud_connector._clear_parent_child_edges_for_records([])
-
-    @pytest.mark.asyncio
-    async def test_deletes_edges(self, nextcloud_connector):
-        nextcloud_connector.data_entities_processor.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
-        record = MagicMock()
-        record.id = "rec-1"
-        await nextcloud_connector._clear_parent_child_edges_for_records([(record, [])])
-        nextcloud_connector.data_entities_processor.delete_parent_child_edge_to_record.assert_awaited_once()
+    async def test_an_update_leaves_the_parent_edge_to_the_processor(self, nextcloud_connector):
+        # The processor reads the record's old storage path from its parent edge
+        # before it repoints it; deleting the edge first left the content behind.
+        proc = nextcloud_connector.data_entities_processor
+        proc.delete_parent_child_edge_to_record = AsyncMock(return_value=1)
+        proc.on_new_records = AsyncMock()
+        update = MagicMock(is_deleted=False, is_updated=True, record=MagicMock(id="rec-1"), new_permissions=[])
+        assert await nextcloud_connector._handle_record_updates(update) is True
+        proc.delete_parent_child_edge_to_record.assert_not_awaited()
+        proc.on_new_records.assert_awaited_once()
 
 
 class TestStreamRecord:

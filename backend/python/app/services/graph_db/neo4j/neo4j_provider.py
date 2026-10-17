@@ -212,10 +212,18 @@ _ALIAS_HEAL_BATCH = 1000
 # sits inside the pattern so expansion stops at the first non-canonical edge
 # instead of enumerating every RECORD_RELATION path and filtering afterwards.
 # Needs $relation_types bound to CANONICAL_PARENT_RELATION_TYPES.
+# Of several canonical edges between the same parent and child only the one
+# with the lowest element id is followed: each parallel edge would otherwise
+# double the paths enumerated at its level (2^depth for a chain of them).
 CANONICAL_ANCESTOR_STEPS = """((child)<-[rel:RECORD_RELATION]-(parent)
                 WHERE rel.relationshipType IN $relation_types
                   AND (child.externalParentId = parent.externalRecordId
-                       OR child.externalParentId = parent.id)){0,100}"""
+                       OR child.externalParentId = parent.id)
+                  AND NOT EXISTS {
+                      MATCH (child)<-[twin:RECORD_RELATION]-(parent)
+                      WHERE twin.relationshipType IN $relation_types
+                        AND elementId(twin) < elementId(rel)
+                  }){0,100}"""
 
 # Cypher's default match mode only keeps relationships distinct; Arango's
 # path traversals use uniqueVertices: "path", so drop paths that revisit a node.
@@ -4169,6 +4177,41 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         )
         return rows[0]["vrids"] if rows else []
 
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        # Level by level with a visited set: a variable-length match enumerates
+        # every path, which doubles at each group with two parent edges.
+        sub_groups_query = """
+        UNWIND $frontier AS gid
+        MATCH (sub:RecordGroup)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+        RETURN collect(DISTINCT sub.id) AS ids
+        """
+        visited = {record_group_id}
+        frontier = [record_group_id]
+        for _ in range(50):  # same depth bound as get_record_group_path
+            if not frontier:
+                break
+            rows = await self.client.execute_query(
+                sub_groups_query, parameters={"frontier": frontier}, txn_id=transaction,
+            )
+            found = rows[0]["ids"] if rows else []
+            frontier = [g for g in found if g not in visited]
+            visited.update(frontier)
+        rows = await self.client.execute_query(
+            """
+            UNWIND $groups AS gid
+            MATCH (r:Record)-[:BELONGS_TO]->(:RecordGroup {id: gid})
+            WHERE r.virtualRecordId IS NOT NULL
+            RETURN collect(DISTINCT r.virtualRecordId) AS vrids
+            """,
+            parameters={"groups": list(visited)},
+            txn_id=transaction,
+        )
+        return rows[0]["vrids"] if rows else []
+
     async def get_record_group_path(
         self,
         record_group_id: str,
@@ -4178,7 +4221,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     ) -> list[str]:
         query = f"""
         MATCH path = (start:RecordGroup {{id: $record_group_id}})
-            ((:RecordGroup)-[:BELONGS_TO]->(:RecordGroup)){{0,50}}
+            ((child:RecordGroup)-[edge:BELONGS_TO]->(parent:RecordGroup)
+                WHERE NOT EXISTS {{
+                    MATCH (child)-[twin:BELONGS_TO]->(parent)
+                    WHERE elementId(twin) < elementId(edge)
+                }}){{0,50}}
             (:RecordGroup)
         WITH nodes(path) AS path_nodes
         WHERE {NO_REPEATED_PATH_NODES}

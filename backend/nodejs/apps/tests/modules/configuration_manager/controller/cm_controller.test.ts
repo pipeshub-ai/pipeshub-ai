@@ -293,6 +293,55 @@ describe('ConfigurationManager Controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
+    describe('local storage with several app replicas (Helm)', () => {
+      const saved = process.env.PIPESHUB_APP_MAX_REPLICAS
+      afterEach(() => {
+        if (saved === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = saved
+      })
+
+      it('is refused, since each pod would keep its own files', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: { storageType: 'local' } }), res, next)
+
+        expect(kvs.set.called).to.be.false
+        expect(next.calledOnce).to.be.true
+        const error = next.firstCall.args[0]
+        expect(error.statusCode ?? error.status).to.equal(400)
+        expect(error.message).to.contain('up to 6 app replicas')
+      })
+
+      it('is still saved for a single replica', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+
+        await handler(createMockRequest({ body: { storageType: 'local' } }), res, createMockNext())
+
+        expect(kvs.set.calledOnce).to.be.true
+        expect(res.status.calledWith(200)).to.be.true
+      })
+
+      it('does not affect S3 with several replicas', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const kvs = createMockKeyValueStore()
+        const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)
+        const res = createMockResponse()
+
+        await handler(createMockRequest({
+          body: { storageType: 's3', s3AccessKeyId: 'a', s3SecretAccessKey: 'b', s3BucketName: 'bucket', s3Region: 'us-east-1' },
+        }), res, createMockNext())
+
+        expect(kvs.set.calledOnce).to.be.true
+      })
+    })
+
     it('should save S3 storage config in IAM role mode (no credentials provided)', async () => {
       const kvs = createMockKeyValueStore()
       const handler = createStorageConfig(kvs, { endpoint: 'http://localhost:3003' } as any)

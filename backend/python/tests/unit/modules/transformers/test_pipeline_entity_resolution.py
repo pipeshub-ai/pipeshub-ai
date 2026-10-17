@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 from app.models.blocks import SemanticMetadata
 from app.modules.transformers.pipeline import IndexingPipeline
+from tests.support.sink_orchestrator import delegate_store_blob
 
 
 def _metadata() -> SemanticMetadata:
@@ -22,6 +23,7 @@ def _pipeline(order, metadata) -> tuple:
     sink = MagicMock()
     sink.resolve_entities = AsyncMock(side_effect=lambda ctx: order.append("resolve"))
     sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
+    sink.store_blob = delegate_store_blob(sink)
     sink.vector_store.index_record_summary = AsyncMock(side_effect=lambda *a, **k: order.append("summary"))
     sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
     sink.extract_named_entities = AsyncMock(return_value=MagicMock())

@@ -1168,19 +1168,31 @@ def _merge_graph_into_blob_record(
     blob_record: dict[str, Any],
     base_doc: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Merge graph base doc fields into a blob record (blob values take priority via setdefault)."""
+    """Merge graph base doc fields into a blob record; the graph wins where it has a value.
+
+    Deduplicated content is stored once for every record that shares it, so the
+    stored copy's name, link and ids can belong to another record (even one in a
+    connector this user cannot see). The record being described is the graph's.
+    """
     if not base_doc or not isinstance(base_doc, dict):
         return blob_record
     merged = dict(blob_record)
     record_key = base_doc.get("id") or base_doc.get("_key")
+    # A copy stored by another record says nothing about this one, not even
+    # where the graph has no value.
+    copy_of_another = bool(record_key) and blob_record.get("id") not in (None, record_key)
     if record_key:
         merged["id"] = record_key
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         val = base_doc.get(graph_key)
         if val:
-            merged.setdefault(record_key_name, val)
-    # A link the graph hides stays hidden, whatever the blob copy says.
-    merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
+            merged[record_key_name] = val
+        elif copy_of_another:
+            merged.pop(record_key_name, None)
+    # A link the graph hides stays hidden, whatever the blob copy says; another
+    # record's copy does not hide this one's.
+    stored_hides = not copy_of_another and merged.get("hide_weburl")
+    merged["hide_weburl"] = bool(stored_hides or base_doc.get("hideWeburl"))
     return merged
 
 def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:

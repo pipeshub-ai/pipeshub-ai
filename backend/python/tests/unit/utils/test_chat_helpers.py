@@ -7392,3 +7392,60 @@ class TestRenderBlocksWithImagesBudgetAccounting:
 
         assert budget.used == 1
         assert any("conversation image limit" in item["text"] for item in content)
+
+
+class TestLinkedContextNamesTheGraphRecord:
+    """L11: a stored copy shared by several records carries one record's name and
+    link; linked-record context must describe the record it was asked about."""
+
+    def test_graph_identity_wins_over_the_stored_copy(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        stored = {"id": "rec-x", "record_name": "X budget", "weburl": "https://x/1",
+                  "connector_id": "conn-x", "block_containers": {"blocks": []}}
+        graph = {"_key": "rec-y", "recordName": "Y plan", "webUrl": "https://y/9",
+                 "connectorId": "conn-y", "connectorName": "DRIVE"}
+        merged = _merge_graph_into_blob_record(stored, graph)
+        assert merged["id"] == "rec-y"
+        assert merged["record_name"] == "Y plan"
+        assert merged["weburl"] == "https://y/9"
+        assert merged["connector_id"] == "conn-y"
+        assert merged["block_containers"] == {"blocks": []}
+
+    def test_stored_value_kept_where_the_graph_has_none(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "r", "record_name": "Kept", "mime_type": "text/plain"}, {"_key": "r"},
+        )
+        assert merged["record_name"] == "Kept" and merged["mime_type"] == "text/plain"
+
+    def test_another_records_copy_lends_nothing_the_graph_lacks(self) -> None:
+        # The shared copy was stored by record X; this is record Y, whose graph
+        # node has no link or external id. X's must not show up as Y's.
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "x", "record_name": "X", "weburl": "https://private/x", "external_record_id": "ext-x",
+             "block_containers": {"blocks": []}},
+            {"_key": "y", "recordName": "Y"},
+        )
+        assert merged["id"] == "y" and merged["record_name"] == "Y"
+        assert "weburl" not in merged and "external_record_id" not in merged
+        assert merged["block_containers"] == {"blocks": []}
+
+    def test_another_records_copy_does_not_hide_this_records_link(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "x", "weburl": "https://x/1", "hide_weburl": True},
+            {"_key": "y", "webUrl": "https://y/9", "hideWeburl": False},
+        )
+        assert merged["weburl"] == "https://y/9" and merged["hide_weburl"] is False
+
+    def test_a_link_hidden_by_this_records_copy_or_the_graph_stays_hidden(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        own = _merge_graph_into_blob_record({"id": "y", "hide_weburl": True}, {"_key": "y", "webUrl": "https://y/9"})
+        graph = _merge_graph_into_blob_record({"id": "x"}, {"_key": "y", "webUrl": "https://y/9", "hideWeburl": True})
+        assert own["hide_weburl"] is True and graph["hide_weburl"] is True

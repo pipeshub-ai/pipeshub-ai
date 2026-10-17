@@ -121,6 +121,9 @@ class SmbStorageHelper:
             self._ensure_dir(share, new_dir)
         smbclient.rename(self._unc(share, old_path), self._unc(share, new_path), **self._kwargs())
 
+    def rename_directory(self, share: str, old_dir: str, new_dir: str) -> None:
+        smbclient.rename(self._unc(share, old_dir), self._unc(share, new_dir), **self._kwargs())
+
     def clear_objects(self, share: str, prefix: str) -> None:
         folder = require_run_folder(prefix).rstrip("/")
         files = self.list_objects(share, prefix)

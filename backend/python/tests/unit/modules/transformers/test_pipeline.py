@@ -19,6 +19,7 @@ from app.models.blocks import (
 from app.modules.transformers.pipeline import IndexingPipeline
 from app.modules.transformers.transformer import ReconciliationContext, TransformContext
 from app.utils import indexing_timing as timing
+from tests.support.sink_orchestrator import delegate_store_blob
 
 _SENTINEL = object()
 
@@ -88,6 +89,7 @@ def sink_orchestrator():
     sink = AsyncMock()
     sink.blob_storage = MagicMock()
     sink.blob_storage.apply = AsyncMock()
+    sink.store_blob = delegate_store_blob(sink)
     sink.vector_store = MagicMock()
     sink.vector_store.index_record_summary = AsyncMock()
     sink.resolve_entities = AsyncMock()
@@ -223,6 +225,34 @@ class TestApplyEmptyMetadataPath:
 
         call_args = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args
         assert call_args.kwargs["document_path"] is None
+
+    @pytest.mark.asyncio
+    async def test_empties_the_metadata_even_when_storage_cannot_say_where_content_is(
+        self, pipeline, doc_extraction, sink_orchestrator
+    ) -> None:
+        # Left as it was, the old block hashes would mark returning content as
+        # unchanged, so it would never be embedded again.
+        from app.modules.transformers.blob_storage import StorageLookupUnavailableError
+
+        record = _make_record(blocks=[], block_groups=[], record_id="rec-3")
+        record.virtual_record_id = "vr-3"
+        record.org_id = "org-1"
+        ctx = _make_ctx(record)
+        ctx.event_type = EventTypes.UPDATE_RECORD.value
+        ctx.prev_virtual_record_id = "vr-3"
+
+        sink_orchestrator.vector_store.purge_record_vectors = AsyncMock()
+        sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(
+            side_effect=StorageLookupUnavailableError("503")
+        )
+        sink_orchestrator.blob_storage.save_reconciliation_metadata = AsyncMock()
+
+        await pipeline.apply(ctx)
+
+        sink_orchestrator.blob_storage.save_reconciliation_metadata.assert_awaited_once()
+        kwargs = sink_orchestrator.blob_storage.save_reconciliation_metadata.call_args.kwargs
+        # Existing metadata is reset in place; none is created at a guessed path.
+        assert kwargs["document_path"] is None and kwargs["create_if_missing"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -419,6 +449,7 @@ class TestEnrich:
 
         doc_extraction.apply = AsyncMock(side_effect=track_extraction)
         sink_orchestrator.blob_storage.apply = AsyncMock(side_effect=track_blob)
+        sink_orchestrator.store_blob = delegate_store_blob(sink_orchestrator)
         sink_orchestrator.vector_store.index_record_summary = AsyncMock(
             side_effect=track_summary
         )

@@ -2460,6 +2460,21 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record in *record_group_id*
+        or in a record group nested beneath it -- the content stored under the
+        group's storage prefix.
+
+        Raises on a query failure: an empty list means "holds no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
     async def get_record_group_path(
         self,
         record_group_id: str,

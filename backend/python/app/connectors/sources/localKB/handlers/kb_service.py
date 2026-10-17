@@ -1245,8 +1245,9 @@ class KnowledgeBaseService:
             
             current_name = current_folder.get("recordName", "")
             
-            # Early exit if name hasn't changed
-            if current_name.lower() == name.lower():
+            # Early exit if name hasn't changed. Case counts: "reports" -> "Reports"
+            # is a rename the user asked for, and the stored path follows the name.
+            if current_name == name:
                 self.logger.info(f"↩️ Folder name unchanged, skipping update")
                 return {
                     "success": True,

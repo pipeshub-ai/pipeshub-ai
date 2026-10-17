@@ -10,6 +10,7 @@ import pytest
 
 from app.events.events import EventProcessor
 from app.models.blocks import SemanticMetadata
+from tests.support.sink_orchestrator import delegate_store_blob
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +41,7 @@ def _make_event_processor():
     sink_orchestrator.persist_named_entities = AsyncMock()
     sink_orchestrator.blob_storage = MagicMock()
     sink_orchestrator.blob_storage.apply = AsyncMock()
+    sink_orchestrator.store_blob = delegate_store_blob(sink_orchestrator)
     sink_orchestrator.vector_store = MagicMock()
     sink_orchestrator.vector_store.index_record_summary = AsyncMock()
 

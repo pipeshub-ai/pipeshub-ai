@@ -734,6 +734,19 @@ components:
               type: integer
             aborted:
               type: boolean
+    StoredRecordDocument:
+      type: object
+      description: A processed-content document (`record_{id}` or `metadata_{id}`).
+      properties:
+        _id:
+          type: string
+        documentName:
+          type: string
+        documentPath:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
     StoragePurgeResult:
       type: object
       required:
@@ -25884,6 +25897,87 @@ paths:
           description: The storage scoped token was missing or invalid.
         '503':
           description: A stored file could not be removed; its document was kept so the removal can be retried.
+  /document/internal/records/flat-documents:
+    get:
+      tags:
+        - Internal Storage
+      summary: List processed-content documents still in the flat layout (service-to-service)
+      description: |
+        Pages the organisation's live `record_{id}` / `metadata_{id}` documents
+        filed at the pre-hierarchical path `records/{id}`, in document-id order.
+        The connectors service moves them into the hierarchical layout.
+      operationId: internalListFlatRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          description: The `_id` of the last document of the previous page.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+        - name: limit
+          in: query
+          required: false
+          description: Documents per page (default 500).
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+      responses:
+        '200':
+          description: One page of flat documents; fewer than `limit` means the last page.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoredRecordDocument'
+        '400':
+          description: The paging parameters are not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
+  /document/internal/records/{virtualRecordId}/documents:
+    get:
+      tags:
+        - Internal Storage
+      summary: List a virtual record's live processed-content documents (service-to-service)
+      description: |
+        The virtual record's live `record_{virtualRecordId}` and
+        `metadata_{virtualRecordId}` documents wherever they are filed, newest
+        first. A writer whose mapping was never recorded (it stopped between
+        storing and mapping) reuses what it stored instead of adding a second copy.
+      operationId: internalListVirtualRecordDocuments
+      security:
+        - scopedToken: []
+      parameters:
+        - name: virtualRecordId
+          in: path
+          required: true
+          description: Virtual record id (letters, digits, `-` and `_`); matched exactly, never as a prefix.
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{1,128}$'
+      responses:
+        '200':
+          description: The virtual record's live documents (none when nothing is stored).
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  documents:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/StoredRecordDocument'
+        '400':
+          description: The virtual record id is not valid.
+        '401':
+          description: The storage scoped token was missing or invalid.
   /document/internal/records/relocate:
     post:
       tags:
@@ -25912,6 +26006,7 @@ paths:
               properties:
                 fromConnectorId:
                   type: string
+                  pattern: '^[A-Za-z0-9_-]{1,64}$'
                 moves:
                   type: array
                   minItems: 1
@@ -25928,6 +26023,7 @@ paths:
                         description: Relative path under `records/`, without `..` segments.
                       connectorId:
                         type: string
+                        pattern: '^[A-Za-z0-9_-]{1,64}$'
                       recordGroupId:
                         type: string
       responses:
@@ -25972,6 +26068,7 @@ paths:
           required: true
           schema:
             type: string
+            pattern: '^[A-Za-z0-9_-]{1,64}$'
         - name: after
           in: query
           required: false

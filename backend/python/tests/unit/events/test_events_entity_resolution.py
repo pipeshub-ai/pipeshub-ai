@@ -9,6 +9,7 @@ import pytest
 
 from app.models.blocks import SemanticMetadata
 from app.utils import indexing_timing as timing
+from tests.support.sink_orchestrator import delegate_store_blob
 from unit.events.test_orchestrator_flow import (
     _make_event_data,
     _make_event_processor,
@@ -38,6 +39,7 @@ async def test_resolution_runs_before_summary_enrich_and_blob() -> None:
     sink.resolve_entities = AsyncMock(side_effect=lambda ctx: order.append("resolve"))
     sink.vector_store.index_record_summary = AsyncMock(side_effect=lambda *a, **k: order.append("summary"))
     sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
+    sink.store_blob = delegate_store_blob(sink)
     sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
     sink.extract_named_entities = AsyncMock(return_value=None)
     sink.persist_named_entities = AsyncMock(side_effect=lambda ctx, extraction: order.append("entities"))

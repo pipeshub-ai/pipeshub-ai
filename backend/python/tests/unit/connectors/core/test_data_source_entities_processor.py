@@ -812,10 +812,13 @@ class TestOnNewRecordGroupsMovesBlobsOnRename:
             connector_id="conn-1",
         )
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v1", "v2"])
         await proc.on_new_record_groups([(rg, [])])
 
+        # Named content only: another group whose name sanitizes the same shares the prefix.
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project"
+            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project",
+            virtual_record_ids=["v1", "v2"],
         )
 
     @pytest.mark.asyncio
@@ -2533,12 +2536,14 @@ class TestUpdateRecordGroupNameMovesBlobs:
         )
         proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v9"])
         await proc.update_record_group_name(
             "ext-folder", "New Space", old_name="Old Space", connector_id="conn-1"
         )
 
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space"
+            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space",
+            virtual_record_ids=["v9"],
         )
 
     @pytest.mark.asyncio
@@ -3009,7 +3014,7 @@ class TestNameChangedTriggersMove:
         )
 
         assert len(moves) == 1
-        assert moves[0][3] == "vrid-abc-123"
+        assert moves[0][3] == ("vrid-abc-123",)
 
 
 # ===========================================================================

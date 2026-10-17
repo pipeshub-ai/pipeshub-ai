@@ -1083,7 +1083,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
 
             if existing_record:
                 # Found by path - check if revision (composite) changed (content change)
@@ -1118,7 +1117,6 @@ class S3CompatibleBaseConnector(BaseConnector):
                 if existing_record:
                     # Same composite can only match same key; if path differs it's a move/rename (key changed, etag same)
                     if existing_record.external_record_id != external_record_id:
-                        is_move = True
                         self._moved_record_ids.add(existing_record.id)
                         self.logger.info(
                             f"Move/rename detected: {normalized_key} - file moved from {existing_record.external_record_id} to {external_record_id}"
@@ -1146,9 +1144,6 @@ class S3CompatibleBaseConnector(BaseConnector):
 
             record_name = normalized_key.rstrip("/").split("/")[-1] or normalized_key.rstrip("/")
 
-            # For moves/renames, remove old parent relationship before processing
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 

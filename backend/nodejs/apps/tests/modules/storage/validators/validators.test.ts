@@ -11,6 +11,9 @@ import {
   RollBackToPreviousVersionSchema,
   DocumentIdParamsWithVersion,
   MissingDocumentsSchema,
+  ConnectorIdParams,
+  ConnectorVirtualRecordsSchema,
+  RelocateVirtualRecordsSchema,
 } from '../../../../src/modules/storage/validators/validators'
 
 import { MAX_MISSING_DOCUMENT_IDS } from '../../../../src/modules/storage/constants/constants'
@@ -87,6 +90,47 @@ describe('storage/validators/validators', () => {
       const result = UploadNewSchema.safeParse(data)
       expect(result.success).to.be.false
     })
+  })
+
+  describe('connector ids on the handover routes', () => {
+    // Both feed the records/<connectorId> scope a relocation is allowed to move from.
+    const move = { virtualRecordId: 'v1', newPath: 'records/kb2/A', connectorId: 'kb2' }
+    it('accepts real ids', () => {
+      expect(ConnectorVirtualRecordsSchema.safeParse({ params: { connectorId: 'kb1' }, query: {}, headers: { authorization: 'Bearer token' } }).success).to.be.true
+      expect(RelocateVirtualRecordsSchema.safeParse({
+        headers: { authorization: 'Bearer token' }, body: { fromConnectorId: 'kb1', moves: [move] },
+      }).success).to.be.true
+    })
+    it('rejects an id that names a sub-folder', () => {
+      expect(ConnectorVirtualRecordsSchema.safeParse({ params: { connectorId: 'kb1/Keep' }, query: {}, headers: { authorization: 'Bearer token' } }).success).to.be.false
+      expect(RelocateVirtualRecordsSchema.safeParse({
+        headers: { authorization: 'Bearer token' }, body: { fromConnectorId: 'kb1/Keep', moves: [move] },
+      }).success).to.be.false
+      expect(RelocateVirtualRecordsSchema.safeParse({
+        headers: { authorization: 'Bearer token' },
+        body: { fromConnectorId: 'kb1', moves: [{ ...move, connectorId: 'kb2/x' }] },
+      }).success).to.be.false
+    })
+  })
+
+  describe('ConnectorIdParams', () => {
+    const parse = (connectorId: string) =>
+      ConnectorIdParams.safeParse({ params: { connectorId }, headers: { authorization: 'Bearer token' } })
+
+    for (const connectorId of ['c2013ab9-061b-4ff7-935d-3c59939ad7df', 'gmail_1', 'A']) {
+      it(`accepts the connector id ${connectorId}`, () => {
+        expect(parse(connectorId).success).to.be.true
+      })
+    }
+
+    // The id becomes the prefix records/<connectorId> whose files are deleted;
+    // Express decodes %2F, so "<other>/<folder>" named another connector's folder.
+    for (const connectorId of ['other-connector/Folder', '..', 'a/../b', 'c1%2Fx', 'c1 x', '', 'x'.repeat(65)]) {
+      it(`rejects ${JSON.stringify(connectorId)}`, () => {
+        const result = parse(connectorId)
+        expect(result.success).to.be.false
+      })
+    }
   })
 
   describe('DocumentIdParams', () => {

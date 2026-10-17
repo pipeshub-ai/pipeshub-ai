@@ -49,6 +49,15 @@ const virtualRecordIdSchema = z
   .string()
   .regex(/^[A-Za-z0-9_-]{1,128}$/, 'Not a virtual record id');
 
+// Same rule as the connector routes: the id becomes a storage prefix, and a
+// decoded "%2F" would otherwise name another connector's folder.
+const connectorIdSchema = z
+  .string()
+  .regex(
+    /^[A-Za-z0-9_-]{1,64}$/,
+    'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+  );
+
 export const PurgeVirtualRecordParams = z.object({
   params: z.object({
     virtualRecordId: virtualRecordIdSchema,
@@ -80,7 +89,7 @@ export const MoveTreeSchema = z.object({
 export const RelocateVirtualRecordsSchema = z.object({
   headers: Headers,
   body: z.object({
-    fromConnectorId: z.string().min(1),
+    fromConnectorId: connectorIdSchema,
     moves: z
       .array(
         z.object({
@@ -90,7 +99,7 @@ export const RelocateVirtualRecordsSchema = z.object({
             (p) => p.startsWith('records/'),
             'newPath must be under records/',
           ),
-          connectorId: z.string().min(1),
+          connectorId: connectorIdSchema,
           recordGroupId: z.string().min(1).optional(),
         }),
       )
@@ -101,7 +110,7 @@ export const RelocateVirtualRecordsSchema = z.object({
 
 export const ConnectorVirtualRecordsSchema = z.object({
   params: z.object({
-    connectorId: z.string().min(1),
+    connectorId: connectorIdSchema,
   }),
   query: z.object({
     after: z.string().regex(OBJECT_ID_REGEX, 'Not a document id').optional(),
@@ -225,7 +234,7 @@ export const RollBackToPreviousVersionSchema = GetBufferSchema.extend({
 
 export const ConnectorIdParams = z.object({
   params: z.object({
-    connectorId: z.string().min(1),
+    connectorId: connectorIdSchema,
   }),
   headers: Headers,
 });
@@ -246,4 +255,10 @@ export const CreateDocumentSchema = z.object({
   query: z.object({}),
   params: z.object({}),
   headers: Headers,
+});
+export const FlatRecordDocumentsQuery = z.object({
+  query: z.object({
+    after: documentIdSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(1000).optional(),
+  }),
 });

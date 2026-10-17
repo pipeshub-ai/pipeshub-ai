@@ -143,6 +143,27 @@ class SinkOrchestrator(Transformer):
     # Phase 1: INDEX — vector store + blob.  Document becomes searchable.
     # ------------------------------------------------------------------
 
+    async def store_blob(self, ctx: TransformContext) -> None:
+        """Write the record's stored copy. Every write goes through here so a SQL
+        table is always stored with at most LIMIT_SQL_ROW_BLOCKS_TO rows; the
+        record keeps all of its rows for the vector store."""
+        record = ctx.record
+        is_sql = any(
+            bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
+            for bg in record.block_containers.block_groups
+        ) if record.block_containers and record.block_containers.block_groups else False
+        if not is_sql or self.LIMIT_SQL_ROW_BLOCKS_TO is None:
+            await self.blob_storage.apply(ctx)
+            return
+        full_block_containers = record.block_containers
+        record.block_containers = self._build_limited_sql_block_container(
+            full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
+        )
+        try:
+            await self.blob_storage.apply(ctx)
+        finally:
+            record.block_containers = full_block_containers
+
     async def index(self, ctx: TransformContext) -> None:
         """Phase 1: write to BlobStorage and VectorStore.
 
@@ -151,33 +172,16 @@ class SinkOrchestrator(Transformer):
         enrichment (``extractionStatus``) is left unchanged here.
         """
         record = ctx.record
-        full_block_containers = None
         skip_blob = bool(ctx.settings.get("skip_blob"))
         skip_vector_store = bool(ctx.settings.get("skip_vector_store")) or bool(
             ctx.settings.get("sink_only")
         )
 
         if not skip_blob:
-            is_sql = any(
-                bg.sub_type in (GroupSubType.SQL_TABLE, GroupSubType.SQL_VIEW)
-                for bg in record.block_containers.block_groups
-            ) if record.block_containers and record.block_containers.block_groups else False
-
-            if is_sql and self.LIMIT_SQL_ROW_BLOCKS_TO is not None:
-                full_block_containers = record.block_containers
-                record.block_containers = self._build_limited_sql_block_container(
-                    full_block_containers, self.LIMIT_SQL_ROW_BLOCKS_TO
-                )
-
             with stage("images.describe"):
                 await self._describe_images(ctx)
-
-            try:
-                with stage("blob.write"):
-                    await self.blob_storage.apply(ctx)
-            finally:
-                if full_block_containers is not None:
-                    record.block_containers = full_block_containers
+            with stage("blob.write"):
+                await self.store_blob(ctx)
 
         record_id = record.id
         with stage("graph.read"):

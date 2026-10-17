@@ -677,6 +677,11 @@ describe('storage/utils/utils', () => {
         'root/README',
       )
     })
+
+    it('keeps a long name whole: object stores take it, and old keys must still resolve', () => {
+      const name = 'a'.repeat(400)
+      expect(getCurrentFilePath('root', name, '.pdf', true)).to.equal(`root/current/${name}.pdf`)
+    })
   })
 
   // -------------------------------------------------------------------------

@@ -1137,7 +1137,6 @@ class AzureFilesConnector(BaseConnector):
                 self.connector_id, external_record_id
             )
 
-            is_move = False
 
             if existing_record:
                 stored_revision = existing_record.external_revision_id or ""
@@ -1162,7 +1161,6 @@ class AzureFilesConnector(BaseConnector):
                 )
 
                 if existing_record:
-                    is_move = True
                     self.logger.info(
                         f"Move/rename detected: {normalized_path} - file moved from {existing_record.external_record_id} to {external_record_id}"
                     )
@@ -1195,9 +1193,6 @@ class AzureFilesConnector(BaseConnector):
             record_id = existing_record.id if existing_record else str(uuid.uuid4())
             record_name = normalized_path.rstrip("/").split("/")[-1] or normalized_path.rstrip("/")
 
-            # For moves/renames, remove old parent relationship
-            if is_move and existing_record:
-                await self.data_entities_processor.delete_parent_child_edge_to_record(record_id)
 
             version = 0 if not existing_record else existing_record.version + 1
 

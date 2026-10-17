@@ -229,3 +229,31 @@ class KBClient(APIClient):
         resp = self.post(f"/record/{record_id}/restore")
         resp.raise_for_status()
         return resp.json()
+
+    def rename_kb(self, kb_id: str, name: str) -> dict[str, Any]:
+        resp = self.put(f"/{kb_id}", json={"kbName": name})
+        resp.raise_for_status()
+        return resp.json()
+
+    def rename_folder(self, kb_id: str, folder_id: str, name: str) -> dict[str, Any]:
+        resp = self.put(f"/{kb_id}/folder/{folder_id}", json={"folderName": name})
+        resp.raise_for_status()
+        return resp.json()
+
+    def rename_record(self, record_id: str, name: str) -> dict[str, Any]:
+        """Rename a file record. The route takes multipart form data, as for a new version."""
+        self._client._ensure_access_token()
+        resp = requests.put(
+            f"{self._client.base_url}{self.BASE}/record/{record_id}",
+            headers={"Authorization": f"Bearer {self._client._access_token}"},
+            files={"recordName": (None, name)},
+            timeout=self._client.timeout_seconds,
+        )
+        resp.raise_for_status()
+        return resp.json()
+
+    def move_record(self, kb_id: str, record_id: str, new_parent_id: str | None) -> dict[str, Any]:
+        """Move a file or folder to another folder, or to the root with ``None``."""
+        resp = self.put(f"/{kb_id}/record/{record_id}/move", json={"newParentId": new_parent_id})
+        resp.raise_for_status()
+        return resp.json()

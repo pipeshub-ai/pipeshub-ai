@@ -741,7 +741,7 @@ class TestProcessAzureFilesItem:
         assert record is not None
         assert record.id == "moved-1"
         assert record.version == 2
-        proc.delete_parent_child_edge_to_record.assert_awaited()
+        proc.delete_parent_child_edge_to_record.assert_not_awaited()  # the processor repoints it after reading the old path
 
     @pytest.mark.asyncio
     async def test_process_string_last_modified(self, conn):

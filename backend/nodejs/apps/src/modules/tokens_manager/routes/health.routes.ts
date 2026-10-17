@@ -9,6 +9,9 @@ import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
 import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
+import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+
+const STORAGE_WARNING_TIMEOUT_MS = 2000;
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -37,6 +40,8 @@ export interface HealthStatus {
     redisMode: string;
   };
   build: BuildInfo;
+  // Configuration that works but loses data or misbehaves; status stays healthy.
+  warnings?: string[];
 }
 
 export function createHealthRouter(
@@ -218,6 +223,25 @@ export function createHealthRouter(
         }
       }
 
+      const warnings: string[] = [];
+      // Warning only: a stalled store must not hold the health answer.
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const replicaProblem = await Promise.race([
+          configuredLocalStorageReplicaProblem(keyValueStoreService),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), STORAGE_WARNING_TIMEOUT_MS);
+          }),
+        ]);
+        if (replicaProblem) warnings.push(replicaProblem);
+      } catch (error) {
+        logger.warn(
+          'Could not read the storage configuration for the health warnings',
+          error,
+        );
+      }
+      clearTimeout(timer);
+
       const health: HealthStatus = {
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -231,6 +255,7 @@ export function createHealthRouter(
           redisMode: process.env.REDIS_MODE || 'standalone',
         },
         build,
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
 
       res.status(200).json(health);
