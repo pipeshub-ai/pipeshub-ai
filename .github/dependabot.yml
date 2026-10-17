@@ -25,21 +25,22 @@ updates:
     groups:
       python-minor-and-patch:
         update-types: [minor, patch]
-    # Upper bounds in pyproject.toml are deliberate; Dependabot would raise them.
+    # Upper bounds in pyproject.toml are deliberate; Dependabot would raise them. There is no
+    # lockfile here, so ignores are version ranges: update-types needs a current version.
     ignore:
       # 1.13 stopped setting request.options, so msgraph-core's 429/503 retry stopped running.
       - dependency-name: "microsoft-kiota-http"
-        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+        versions: [">=1.13"]
       - dependency-name: "Pillow"
-        update-types: ["version-update:semver-major"]
+        versions: [">=12"]
       - dependency-name: "protobuf"
-        update-types: ["version-update:semver-major"]
+        versions: [">=6"]
       - dependency-name: "reportlab"
-        update-types: ["version-update:semver-major"]
+        versions: [">=5"]
       - dependency-name: "fpdf2"
-        update-types: ["version-update:semver-major"]
+        versions: [">=3"]
       - dependency-name: "mariadb"
-        update-types: ["version-update:semver-major"]
+        versions: [">=3"]
 
   - package-ecosystem: uv
     directory: /integration-tests
@@ -50,9 +51,9 @@ updates:
         update-types: [minor, patch]
     ignore:
       - dependency-name: "Pillow"
-        update-types: ["version-update:semver-major"]
+        versions: [">=12"]
       - dependency-name: "protobuf"
-        update-types: ["version-update:semver-major"]
+        versions: [">=6"]
 
   - package-ecosystem: github-actions
     directory: /
