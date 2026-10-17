@@ -12575,6 +12575,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
@@ -12760,6 +12770,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13143,6 +13163,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           default: true
@@ -13328,6 +13358,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own. Null when unset.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: When false, this agent omits user name/email/org from its system prompt.
@@ -13473,6 +13513,16 @@ components:
           nullable: true
           enum: [none, low, medium, high, max]
           description: Agent-level reasoning effort used when a chat request omits its own.
+        apiToolsetTools:
+          type: array
+          maxItems: 500
+          description: |
+            API toolset operations the agent may call, each `<toolsetId>:<operation>`
+            (see `/api-toolsets`). A service-account agent may only use toolsets with a
+            shared credential.
+          items:
+            type: string
+            pattern: '^[0-9a-f]{32}:[A-Za-z0-9_-]{1,64}$'
         sendUserContext:
           type: boolean
           description: |
