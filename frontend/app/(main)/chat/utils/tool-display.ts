@@ -98,7 +98,8 @@ function replaceToolCall(parts: MessagePart[], next: MessagePart): MessagePart[]
  * split out reliably; they get a generic "MCP" chip and the server name comes
  * from the backend's `displayName`. */
 export function extractToolsetLabel(toolName: string | undefined): string | undefined {
-  if (!toolName) return undefined;
+  // Built-in web tools are not a toolset: their `dynamic__` prefix would read as "Dynamic".
+  if (!toolName || isWebTool(toolName)) return undefined;
   if (!toolName.includes('__')) return isMcpTool(toolName) ? 'MCP' : undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;

@@ -213,6 +213,15 @@ reads, junk from providers), `test_fetch_scenarios.py` (formats, safety, fallbac
 rendering, budgets), `test_regressions.py` (one test per bug the QA pass found). Every web test
 runs behind a socket guard; a test that reaches the network fails.
 
+Live check (opt-in): `PIPESHUB_LIVE_WEB=1 pytest tests/integration/test_web_live_sites.py` runs
+the same tools with nothing faked against pipeshub.com and docs.pipeshub.com: pages, `llms.txt`,
+a 404, a free-engine search and a citation. It skips without the variable. The search test skips
+only when every attempt was refused by the free engines (blocked, rate limited, timed out).
+
+Browser: `frontend/tests/e2e/chat/chat-web-tools.spec.ts` (step cards, deep research toggle) and
+`frontend/tests/e2e/workspace/web-search.spec.ts` (adding self-hosted providers) mock the API with
+`page.route()`, so they need only a signed-in admin.
+
 Manual checks on a running instance (chat with web search on):
 
 | ID | Steps | Expected |

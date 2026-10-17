@@ -172,6 +172,7 @@ export function WebSearchProviderRow({
               variant="ghost"
               color="gray"
               size="2"
+              aria-label={`${isConfigured ? 'Edit configuration' : 'Configure'}: ${meta.label}`}
               onClick={() => onConfigure(meta.type as ConfigurableProvider)}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}
@@ -192,6 +193,7 @@ export function WebSearchProviderRow({
               variant="ghost"
               color="red"
               size="2"
+              aria-label={`Delete configuration: ${meta.label}`}
               onClick={onDelete}
               disabled={anyActionInProgress}
               style={{ cursor: anyActionInProgress ? 'not-allowed' : 'pointer' }}

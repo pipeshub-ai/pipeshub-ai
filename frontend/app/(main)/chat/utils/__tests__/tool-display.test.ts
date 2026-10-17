@@ -93,6 +93,11 @@ describe('extractToolsetLabel', () => {
     expect(extractToolsetLabel('run_code')).toBeUndefined();
     expect(extractToolsetLabel(undefined)).toBeUndefined();
   });
+
+  it('gives the built-in web tools no toolset badge', () => {
+    expect(extractToolsetLabel('dynamic__web_search')).toBeUndefined();
+    expect(extractToolsetLabel('dynamic__fetch_url')).toBeUndefined();
+  });
 });
 
 describe('isWebTool', () => {

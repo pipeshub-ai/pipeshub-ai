@@ -55,6 +55,13 @@ class TestMalformedInput:
         document = parse_body("text/html; charset*=utf-8''utf-8", body, url="https://a.example/")
         assert "Café menu" in document.blocks[0].content
 
+    def test_html_comments_are_not_page_text(self) -> None:
+        body = b"<html><body><!-- Start of bodyStart --><main><!--$--><p>Real words here.</p><!--/$--></main></body></html>"
+        document = parse_body("text/html", body, url="https://a.example/")
+        text = " ".join(block.content for block in document.blocks)
+        assert "Real words here." in text
+        assert "bodyStart" not in text and "$" not in text
+
     def test_a_lookalike_domain_is_shown_in_punycode(self) -> None:
         assert display_domain("https://аpple.com/") == "xn--pple-43d.com"
         assert display_domain("https://www.example.com/") == "example.com"
