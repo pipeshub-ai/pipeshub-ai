@@ -9847,7 +9847,9 @@ components:
         projectId:
           type: string
           format: objectId
-          description: Copied project link, when the source conversation belonged to a project
+          description: |
+            Project the fork is linked to. Present only when the source conversation
+            belonged to a project that the caller can still view; otherwise omitted.
         forkedFrom:
           type: object
           additionalProperties: false
@@ -9869,7 +9871,6 @@ components:
           type: object
           additionalProperties: false
           required:
-            - requestId
             - timestamp
             - duration
           properties:
@@ -33076,7 +33077,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ForkConversationResponse'
         '400':
-          description: Invalid conversation, message or agent id
+          description: Invalid conversation or message id
         '401':
           description: Unauthorized
         '404':
