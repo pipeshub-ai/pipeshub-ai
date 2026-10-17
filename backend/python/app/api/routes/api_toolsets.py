@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import Field
@@ -30,10 +30,12 @@ from app.agents.openapi.spec_compiler import MAX_SPEC_BYTES, SpecError, compile_
 from app.agents.openapi.store import ApiToolsetStore
 from app.api.middlewares.auth import require_scopes
 from app.api.middlewares.caller_role import fetch_caller_role
-from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, OAuthScopes
 from app.services.featureflag.platform_settings import is_api_toolsets_enabled
+
+if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
 
 logger = logging.getLogger(__name__)
 

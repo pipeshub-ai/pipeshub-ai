@@ -27,7 +27,7 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-cs")
 from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
-from app.api.routes.api_toolsets import router as api_toolsets_router
+from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
