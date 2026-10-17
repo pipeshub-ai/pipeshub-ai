@@ -3,8 +3,8 @@
 ``tests/integration/graph_db/test_search_keeps_indexed_copy_real_backends.py`` covers
 the accessible-record maps. This covers the other two ways search reads access:
 ``filter_accessible_virtual_record_ids``, which adjudicates retrieved hits (grep,
-storage search, and search with ENABLE_CONTAINER_PERMISSION_FILTER on), and the
-direct grants ``get_accessible_containers`` returns on that container path.
+storage search, and the container path), and ``get_accessible_containers``, which
+on the container path names the gated apps and leaves every record to that check.
 
 Seeds through the provider API, and the Arango run applies the strict records
 schema first, so it also proves ``hasIndexedCopy`` is declared there.
@@ -165,7 +165,8 @@ async def _seed(w: _World) -> None:
         collection=CollectionNames.USERS.value,
     )
     await g.batch_upsert_nodes(
-        [{"id": w.connector_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
+        # orgId: the connector gate counts only the apps of the caller's org.
+        [{"id": w.connector_id, "orgId": w.org_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
           "scope": "team", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now,
           # The container path refuses an app whose vector points lack membership arrays.
           "vectorMembershipBackfilled": True}],
@@ -223,7 +224,9 @@ async def test_retrieved_hits_of_a_record_waiting_to_be_indexed_are_kept(world: 
 async def test_the_container_path_grants_a_record_waiting_to_be_indexed(world: _World) -> None:
     containers = await world.graph.get_accessible_containers(world.user_id, world.org_id)
     assert containers.fallback_reason is None, containers.fallback_reason
-    assert dict(containers.direct_records) == {world.vrids[n]: world.ids[n] for n in SEARCHABLE}
+    # The container scope is the gated app; no record is granted up front.
+    assert world.connector_id in containers.app_ids
+    assert dict(containers.direct_records) == {}
 
     adjudicated = await world.graph.filter_accessible_virtual_record_ids(
         list(world.vrids.values()), world.user_id, world.org_id,

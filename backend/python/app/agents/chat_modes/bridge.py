@@ -84,6 +84,13 @@ from app.modules.demo_data.chat import (
     note_org_real_data,
 )
 from app.modules.retrieval.provenance import note_retrieved_by
+from app.modules.retrieval.selection_scope import (
+    SelectionNotReadyError,
+    SelectionTooLargeError,
+    prepare_turn_scope,
+    selection_error,
+    unreadable_scope_error,
+)
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, get_message_content
 from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.image_admission import admission_from_state
@@ -442,7 +449,28 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
         )
         has_sql_connector = connector_instances_have_sql(connector_instances)
         has_slack_connector = connector_instances_have_slack(connector_instances)
-        filters = dict(query_info.get("filters") or {})
+        project_sources = query_info.get("allowedFilters")
+        filters = await prepare_turn_scope(
+            graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""),
+            query_info.get("filters"),
+            project_sources=project_sources if isinstance(project_sources, dict) else None,
+        )
+        # A turn that can only search, over sources the user cannot read, would
+        # otherwise retry its search tools until the run's time budget is spent.
+        unreadable = None
+        if policy.has_knowledge and not policy.include_web_search and not resolved_attachments.virtual_record_ids:
+            try:
+                unreadable = await unreadable_scope_error(
+                    graph_provider, user_info.get("userId", ""), user_info.get("orgId", ""), filters,
+                )
+            except Exception as exc:
+                log.warning("run_chat_stream: readable-scope check failed, running the turn: %s", exc)
+        if unreadable is not None:
+            error_code, user_message = unreadable
+            if cancellation_registry is not None:
+                await cancellation_registry.unregister(run_id)
+            yield _pre_stream_error_frame(protocol, user_message, error_code)
+            return
         if resolved_attachments.virtual_record_ids:
             # Widened, never narrowed: an attachment scoped search must not
             # accidentally EXCLUDE the rest of the org's knowledge the user
@@ -472,6 +500,12 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             chat_state["available_connectors"] = available_connectors
         exclude_from_state(chat_state, demo_excluded)
         await note_org_real_data(chat_state, graph_provider, user_info.get("orgId", ""), log)
+    except (SelectionTooLargeError, SelectionNotReadyError) as exc:
+        error_code, user_message = selection_error(exc)
+        if cancellation_registry is not None:
+            await cancellation_registry.unregister(run_id)
+        yield _pre_stream_error_frame(protocol, user_message, error_code)
+        return
     except Exception as exc:
         log.error("run_chat_stream: failed to build initial state: %s", exc, exc_info=True)
         error_code, user_message = classify_exception(exc)

@@ -13,6 +13,7 @@ from googleapiclient.http import MediaIoBaseDownload
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    FOLDER_MIME_TYPES,
     PermissionModel,
     Connectors,
     ExtensionTypes,
@@ -93,7 +94,6 @@ from app.connectors.sources.google.drive.utils.drive_mime import (
     export_extension_for,
     export_mime_for,
     is_not_exportable,
-    permission_for_drive_item,
     permission_for_shared_drive,
     resolve_extension,
     shared_for_indexing,
@@ -530,7 +530,6 @@ class GoogleDriveIndividualConnector(BaseConnector):
             mime_type = metadata.get("mimeType", "")
             is_file = mime_type != MimeTypes.GOOGLE_DRIVE_FOLDER.value
             is_shared = shared_for_indexing(metadata)
-            resolved_permission = permission_for_drive_item(metadata, permission_type)
 
             # Get timestamps
             created_time = metadata.get("createdTime")
@@ -564,7 +563,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 weburl=metadata.get("webViewLink", None),
-                mime_type=mime_type if mime_type else MimeTypes.UNKNOWN.value,
+                # Every folder is written as text/directory, not Google's own folder type.
+                mime_type=MimeTypes.FOLDER.value if not is_file else (mime_type or MimeTypes.UNKNOWN.value),
                 is_file=is_file,
                 size_in_bytes=int(metadata.get("size", 0) or 0),
                 extension=file_extension,
@@ -585,15 +585,9 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 file_record.indexing_status = existing_record.indexing_status
                 file_record.extraction_status = existing_record.extraction_status
 
-            # Handle Permissions
-            new_permissions = [
-                Permission(
-                    external_id=user_id,
-                    email=user_email,
-                    type=resolved_permission,
-                    entity_type=EntityType.USER
-                )
-            ]
+            # The drive inherits the app. A file inherits its folder, or the drive.
+            new_permissions: list[Permission] = []
+            file_record.rewrite_permissions = True
 
             # Compare permissions
             old_permissions = []
@@ -782,7 +776,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
             )
             return
 
-        if existing_record.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value:
+        if existing_record.mime_type in FOLDER_MIME_TYPES:
             self.logger.info(
                 "📁 Folder %s exited folder-filter scope; deleting folder and descendants",
                 existing_record.record_name,
@@ -1824,10 +1818,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             connector_name=self.connector_name,
             connector_id=self.connector_id,
             external_group_id=drive_id,
+            inherit_permissions=True,
         )
 
-        permissions = [Permission(external_id=user_id, email=user_email, type=PermissionType.OWNER, entity_type=EntityType.USER)]
-        await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
         return record_group
 
     async def _create_app_user(self, user_about: Dict) -> None:

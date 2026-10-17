@@ -185,4 +185,11 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: true,
     advanced: true,
   },
+  {
+    key: 'ENABLE_KH_SCOPE_LISTING',
+    label: 'All Records Cache',
+    description:
+      'Store, for each connector, who can see which of its records and how they sort, refreshed after every sync, and build the All Records page from that instead of working out access on every request. The page shows the same records either way. The page is built the usual way for a connector that is syncing or cannot use the cache (permissions set on whole groups, items in several places), and for a search, a filter other than source or connector, or sorting by size or type. Neo4j only. Disable to always build the page on each request.',
+    defaultEnabled: false,
+  },
 ];

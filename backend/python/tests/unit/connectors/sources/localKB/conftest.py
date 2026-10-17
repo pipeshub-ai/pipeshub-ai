@@ -15,6 +15,8 @@ def mock_logger():
 @pytest.fixture
 def mock_graph_provider():
     provider = AsyncMock()
+    # Nobody holds a grant on the KB yet; a test about existing members says so.
+    provider.get_kb_permissions = AsyncMock(return_value={"users": {}, "teams": {}})
     # Like the real providers: a list, empty when nothing was uploaded.
     provider.get_uploaded_document_ids = AsyncMock(return_value=[])
     # The folder-depth checks compare these with a number; a bare mock can't be compared.

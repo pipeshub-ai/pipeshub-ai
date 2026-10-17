@@ -78,6 +78,18 @@ export interface IAppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  mentioned?: boolean;
+}
+
+/** The nodes a user selected for a turn, by the filter key each is sent under. */
+export interface IAppliedFilters {
+  apps?: IAppliedFilterNode[];
+  kb?: IAppliedFilterNode[];
+  recordGroups?: IAppliedFilterNode[];
+  records?: IAppliedFilterNode[];
+  recordsExact?: IAppliedFilterNode[];
 }
 
 export interface IChatAttachmentRef {
@@ -176,10 +188,7 @@ export interface IMessage {
   createdAt?: Date;
   updatedAt?: Date;
   modelInfo?: IAIModel;
-  appliedFilters?: {
-    apps?: IAppliedFilterNode[];
-    kb?: IAppliedFilterNode[];
-  };
+  appliedFilters?: IAppliedFilters;
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];

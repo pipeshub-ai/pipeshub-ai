@@ -85,7 +85,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
@@ -723,17 +723,7 @@ class LocalFsConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return folder_record, perms
+        return folder_record, []
 
     def _build_parent_folder_records(
         self,
@@ -1336,17 +1326,7 @@ class LocalFsConnector(BaseConnector):
         ):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return file_record, perms
+        return file_record, []
 
     async def _ensure_owner_and_record_group(
         self,
@@ -1373,21 +1353,9 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             group_type=RecordGroupType.DRIVE,
             web_url=f"file://{root}",
+            inherit_permissions=True,
         )
-        await self.data_entities_processor.on_new_record_groups(
-            [
-                (
-                    record_group,
-                    [
-                        Permission(
-                            email=owner.email,
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                        )
-                    ],
-                )
-            ]
-        )
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
         return owner, rg_external
 

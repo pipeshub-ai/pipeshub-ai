@@ -509,6 +509,8 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.attached: list[tuple[str, list[str]]] = []
         self.record_groups: list[Any] = []
+        self.app_users: list[Any] = []
+        self.team_app_edges: list[str] = []
         self.fail_writes = False
         self.unreadable_file_records: set[str] = set()
         # ENABLE_SOFT_DELETE on: a delete keeps the record, marked, and says so.
@@ -592,10 +594,10 @@ class FakeRecordsDb:
         self.record_groups.extend(groups)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        pass
+        self.app_users.extend(users)
 
     async def ensure_team_app_edge(self, connector_id: str) -> None:
-        pass
+        self.team_app_edges.append(connector_id)
 
     async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace:
         return SimpleNamespace(id=user_id, email="owner@example.com", source_user_id=user_id,
@@ -632,7 +634,7 @@ class FakeCheckpointStore:
         self.sync_points.pop(key, None)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
 
 

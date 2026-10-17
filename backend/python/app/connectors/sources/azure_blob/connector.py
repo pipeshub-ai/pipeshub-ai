@@ -83,7 +83,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
 from app.connectors.core.base.error.stream_errors import (
@@ -683,36 +683,6 @@ class AzureBlobConnector(BaseConnector):
             if not container_name:
                 continue
 
-            permissions = []
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                # Use cached creator_email from init() instead of querying DB
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
             lm_ms = ts_map.get(container_name)
             record_group = RecordGroup(
                 name=container_name,
@@ -726,8 +696,9 @@ class AzureBlobConnector(BaseConnector):
                 ),
                 source_created_at=lm_ms,
                 source_updated_at=lm_ms,
+                inherit_permissions=True,
             )
-            record_groups.append((record_group, permissions))
+            record_groups.append((record_group, []))
 
         if record_groups:
             await self.data_entities_processor.on_new_record_groups(record_groups)
@@ -1366,7 +1337,9 @@ class AzureBlobConnector(BaseConnector):
             # Prepare record data
             record_type = RecordType.FOLDER if is_folder else RecordType.FILE
             extension = get_file_extension(normalized_name) if is_file else None
-            mime_type = blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else blob.get("content_type") or get_mimetype_for_azure_blob(normalized_name))
 
             parent_path = get_parent_path_from_blob_name(normalized_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None
@@ -1467,52 +1440,8 @@ class AzureBlobConnector(BaseConnector):
     async def _create_azure_blob_permissions(
         self, container_name: str, blob_name: str
     ) -> list[Permission]:
-        """Create permissions for an Azure blob based on connector scope.
-
-        Uses cached creator_email from init() to avoid repeated database queries.
-        """
-        try:
-            permissions = []
-
-            if self.scope == ConnectorScope.TEAM.value:
-                permissions.append(
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id
-                    )
-                )
-            else:
-                # Use cached creator_email instead of querying DB for each blob
-                if self.creator_email:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                            email=self.creator_email,
-                            external_id=self.created_by
-                        )
-                    )
-
-                if not permissions:
-                    permissions.append(
-                        Permission(
-                            type=PermissionType.READ,
-                            entity_type=EntityType.ORG,
-                            external_id=self.data_entities_processor.org_id
-                        )
-                    )
-
-            return permissions
-        except Exception as e:
-            self.logger.warning(f"Error creating permissions for {blob_name}: {e}")
-            return [
-                Permission(
-                    type=PermissionType.READ,
-                    entity_type=EntityType.ORG,
-                    external_id=self.data_entities_processor.org_id
-                )
-            ]
+        """Blobs inherit their parent folder or the container. No permission edges."""
+        return []
 
     async def test_connection_and_access(self) -> bool:
         """Test connection and access."""
@@ -1829,7 +1758,9 @@ class AzureBlobConnector(BaseConnector):
             is_file = not is_folder
 
             extension = get_file_extension(blob_name) if is_file else None
-            mime_type = blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name, is_folder=is_folder)
+            # A folder marker's own content type is not a folder mimeType.
+            mime_type = (MimeTypes.FOLDER.value if is_folder
+                         else blob_metadata.get("content_type") or get_mimetype_for_azure_blob(blob_name))
 
             parent_path = get_parent_path_from_blob_name(blob_name)
             parent_external_id = f"{container_name}/{parent_path}" if parent_path else None

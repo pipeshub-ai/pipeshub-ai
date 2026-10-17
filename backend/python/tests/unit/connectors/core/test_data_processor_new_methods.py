@@ -450,6 +450,17 @@ class TestOnUserGroupMemberAdded:
         tx.batch_create_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_the_membership_edge_is_a_user_grant(self) -> None:
+        """Access queries follow only USER-typed edges into a group, as on_new_user_groups writes them."""
+        proc, tx = _make_processor()
+        tx.get_user_by_email.return_value = _make_user()
+        tx.get_user_group_by_external_id.return_value = _make_user_group()
+        tx.get_edge.return_value = None
+        await proc.on_user_group_member_added("ext-g1", "alice@x.com", PermissionType.WRITE, "conn-1")
+        (edges,), _ = tx.batch_create_edges.await_args
+        assert edges[0]["type"] == "USER"
+
+    @pytest.mark.asyncio
     async def test_exception_returns_false(self):
         proc, tx = _make_processor()
         tx.get_user_by_email.side_effect = Exception("db down")
@@ -788,3 +799,41 @@ class TestDeleteGroupOrganizationEdges:
         tx.delete_edge.side_effect = Exception("db error")
         await proc._delete_group_organization_edges(tx, "group-1")
         proc.logger.error.assert_called()
+
+
+# ===========================================================================
+# get_groups_with_access_to_record
+# ===========================================================================
+
+
+class TestGetGroupsWithAccessToRecord:
+    """A file shared through a group names no user; the group sits on it or on a folder or group above it."""
+
+    @pytest.mark.asyncio
+    async def test_groups_are_collected_up_the_records_and_record_groups_nearest_first(self) -> None:
+        proc, _ = _make_processor()
+        file = MagicMock(id="rec-file", connector_id="c-1", parent_external_record_id="ext-folder")
+        folder = MagicMock(id="rec-folder", parent_external_record_id=None, external_record_group_id="ext-rg")
+        record_group = MagicMock(id="rg-1", parent_external_group_id="ext-parent-rg")
+        parent_group = MagicMock(id="rg-0", parent_external_group_id=None)
+        on_folder, on_group, on_parent = _make_user_group("g-folder"), _make_user_group("g-rg"), _make_user_group("g-parent")
+        proc.get_record_by_external_id = AsyncMock(side_effect=lambda _c, ext: folder if ext == "ext-folder" else None)
+        proc.get_record_group_by_external_id = AsyncMock(
+            side_effect=lambda _c, ext: {"ext-rg": record_group, "ext-parent-rg": parent_group}.get(ext)
+        )
+        grants = {"rec-folder": [on_folder], "rg-1": [on_group, on_folder], "rg-0": [on_parent]}
+        proc.get_groups_with_permission_to_node = AsyncMock(side_effect=lambda node_id, _c: grants.get(node_id, []))
+
+        groups = await proc.get_groups_with_access_to_record(file)
+
+        assert [g.id for g in groups] == ["g-folder", "g-rg", "g-parent"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_no_parent_or_group_has_only_its_own_groups(self) -> None:
+        proc, _ = _make_processor()
+        record = MagicMock(id="rec-1", connector_id="c-1", parent_external_record_id=None, external_record_group_id=None)
+        proc.get_groups_with_permission_to_node = AsyncMock(return_value=[_make_user_group("g-1")])
+        proc.get_record_group_by_external_id = AsyncMock()
+
+        assert [g.id for g in await proc.get_groups_with_access_to_record(record)] == ["g-1"]
+        proc.get_record_group_by_external_id.assert_not_awaited()

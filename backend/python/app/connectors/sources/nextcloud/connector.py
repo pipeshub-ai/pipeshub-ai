@@ -77,7 +77,7 @@ from app.models.entities import (
     RecordGroupType,
     RecordType,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.nextcloud.nextcloud import (
@@ -894,6 +894,7 @@ class NextcloudConnector(BaseConnector):
                 weburl=web_url,
                 signed_url=None,
                 parent_external_record_id=parent_external_record_id,
+                parent_record_type=RecordType.FILE if parent_external_record_id else None,
                 size_in_bytes=size,
                 is_file=is_file,
                 preview_renderable=is_file,
@@ -910,11 +911,8 @@ class NextcloudConnector(BaseConnector):
 
             if file_id:
                 path_to_external_id[clean_path] = file_id
-            owner_permission = [Permission(
-                                email=user_email,
-                                type=PermissionType.OWNER,
-                                entity_type=EntityType.USER
-            )]
+            file_record.inherit_permissions = True
+            file_record.rewrite_permissions = True
             return RecordUpdate(
                 record=file_record,
                 is_new=is_new,
@@ -924,7 +922,7 @@ class NextcloudConnector(BaseConnector):
                 content_changed=content_changed,
                 permissions_changed=True,
                 old_permissions=[],
-                new_permissions=owner_permission,
+                new_permissions=[],
                 external_record_id=file_id
             )
 
@@ -1173,6 +1171,10 @@ class NextcloudConnector(BaseConnector):
                     resave is not None and record_id in resave
                 )
                 if not (record_update.is_updated or relink):
+                    # Unchanged and not written: without this the unlink after a full
+                    # sync cuts its only path to the app.
+                    if file_record:
+                        self.data_entities_processor.note_kept_records(self.connector_id, [file_record.id])
                     continue
                 await flush()  # folders sort first, so any new folder above this one is stored
                 update = record_update if record_update.is_updated else dataclasses.replace(
@@ -1344,15 +1346,10 @@ class NextcloudConnector(BaseConnector):
                 connector_name=Connectors.NEXTCLOUD,
                 connector_id=self.connector_id,
                 group_type=RecordGroupType.DRIVE,
+                inherit_permissions=True,
             )
 
-            user_permission = Permission(
-                email=self.current_user_email,
-                type=PermissionType.OWNER,
-                entity_type=EntityType.USER
-            )
-
-            await self.data_entities_processor.on_new_record_groups([(record_group, [user_permission])])
+            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
             sync_point_key = "activity_cursor"
             checkpoint = await self.activity_sync_point.read_sync_point(sync_point_key) or {}

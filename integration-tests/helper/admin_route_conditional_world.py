@@ -418,8 +418,8 @@ class World:
 
     # ----------------------------------------------------------------- records
 
-    def _note(self, caller: str) -> tuple[str, str]:
-        """A private knowledge base of ``caller``'s holding one note: (record id, its text)."""
+    def _note(self, caller: str) -> tuple[str, str, str]:
+        """A private knowledge base of ``caller``'s holding one note: (record id, its text, the base's id)."""
         from helper.clients.kb_client import KBClient  # noqa: PLC0415 - needs the helper dir on sys.path
         from messaging.test_e2e_record_pipeline import (  # noqa: PLC0415 - needs the backend on sys.path
             _extract_kb_id,
@@ -438,14 +438,15 @@ class World:
         )
         if not record_id:
             raise RuntimeError(f"Uploading a note to {kb_name} returned no record id.")
-        return record_id, text
+        return record_id, text, kb_id
 
     def _build_records(self) -> dict[str, str]:
-        admin_record, admin_text = self._note(ADMIN)
-        member_record, member_text = self._note(CREATOR)
+        admin_record, admin_text, _ = self._note(ADMIN)
+        member_record, member_text, member_kb = self._note(CREATOR)
         return {
             "admin_record": admin_record, "admin_record_text": admin_text,
             "member_record": member_record, "member_record_text": member_text,
+            "member_kb": member_kb,
         }
 
     def _build_signed_link(self) -> dict[str, str]:

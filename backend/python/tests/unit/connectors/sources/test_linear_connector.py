@@ -454,6 +454,33 @@ class TestLinearConnectorTeams:
             assert rg.parent_external_group_id == "team-parent"
 
 
+    @pytest.mark.asyncio
+    async def test_only_a_team_without_sub_teams_is_declared(self) -> None:
+        """A declared group admits every group below it, and a private sub-team
+        is hidden from its parent team's members."""
+        from app.models.entities import PermissionModel
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.organization_url_key = "test-org"
+        team = lambda tid, parent=None: {  # noqa: E731
+            "id": tid, "name": tid, "key": tid.upper(), "private": False,
+            "parent": {"id": parent, "name": parent} if parent else None, "members": {"nodes": []},
+        }
+        mock_ds = MagicMock()
+        mock_ds.teams = AsyncMock(return_value=_mock_teams_response(
+            [team("eng"), team("fe", parent="eng"), team("ops")], has_next=False,
+        ))
+
+        with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+            _, record_groups = await connector._fetch_teams()
+            models = {rg.external_group_id: rg.permission_model for rg, _ in record_groups}
+            assert models == {"eng": None, "fe": PermissionModel.RECORD_GROUP_LEVEL,
+                              "ops": PermissionModel.RECORD_GROUP_LEVEL}
+
+            _, record_groups = await connector._fetch_teams(team_ids=["ops"])
+            assert all(rg.permission_model is None for rg, _ in record_groups)
+
 # ===================================================================
 # LinearConnector - Sync orchestration
 # ===================================================================
@@ -2738,6 +2765,35 @@ class TestFetchProjectsForTeamBatch:
             assert has_project
 
     @pytest.mark.asyncio
+    async def test_multi_team_project_is_written_once_before_its_children(self) -> None:
+        """A project in two teams comes back in both passes. Only its first synced team writes it,
+        and it is written before its documents and links so they find their parent in that team."""
+        project_data = _make_project_data_fullcov(content="")
+        project_data["teams"] = {"nodes": [{"id": "team-b"}, {"id": "team-a"}]}
+        child = MagicMock(name="project-document")
+
+        async def run(team_id: str) -> list:
+            connector = _make_connector_fullcov()
+            connector.data_source = MagicMock()
+            connector.sync_filters = None
+            connector.indexing_filters = None
+            mock_ds = MagicMock()
+            mock_ds.projects = AsyncMock(return_value=_mock_paginated("projects", [project_data]))
+            mock_ds.project = AsyncMock(return_value=_mock_response(data={"project": project_data}))
+            connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+            connector._prepare_project_related_records = AsyncMock(return_value=[(child, [])])
+            with patch.object(connector, "_get_fresh_datasource", new_callable=AsyncMock, return_value=mock_ds):
+                batches = [b async for b in connector._fetch_projects_for_team_batch(
+                    team_id=team_id, team_key=team_id, synced_team_ids={"team-a", "team-b"})]
+            return [record for batch in batches for record, _ in batch]
+
+        assert await run("team-b") == []
+        written = await run("team-a")
+        assert isinstance(written[0], ProjectRecord) and written[1] is child
+        assert written[0].external_record_group_id == "team-a"
+        assert written[0].shared_with_me_record_group_ids == ["team-b"]
+
+    @pytest.mark.asyncio
     async def test_empty_project_list(self):
         connector = _make_connector_fullcov()
         connector.data_source = MagicMock()
@@ -4294,10 +4350,12 @@ class TestMarkRecordDeleted:
         connector._tx_store.get_records_by_parent = AsyncMock(
             side_effect=[[child], []]
         )
-        connector._tx_store.delete_records_and_relations = AsyncMock()
+        connector.data_entities_processor.on_records_deleted_cascade = AsyncMock()
 
         await connector._mark_record_and_children_deleted("ext-parent", "issue")
-        assert connector._tx_store.delete_records_and_relations.call_count == 2
+        connector.data_entities_processor.on_records_deleted_cascade.assert_awaited_once_with(
+            ["parent-id", "child-id"], connector.connector_id, cascade_children=False, include_trashed_roots=True,
+        )
 
 
 # ===================================================================

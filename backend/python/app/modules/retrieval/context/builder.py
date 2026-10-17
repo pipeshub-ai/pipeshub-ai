@@ -86,6 +86,7 @@ class KnowledgeContextBuilder:
         if include_fk_children:
             await enrich_virtual_record_id_to_result_with_fk_children(
                 records, self._blob_store, self._org_id, self._graph_provider, ranked,
+                user_id=self._user_id,
             )
         if ranked and self._graph_provider:
             await enrich_records_with_graph_context(

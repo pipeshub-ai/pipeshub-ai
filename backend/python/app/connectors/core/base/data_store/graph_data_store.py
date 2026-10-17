@@ -2,6 +2,7 @@ import asyncio
 import functools
 import logging
 import random
+import re
 from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from logging import Logger
@@ -9,10 +10,10 @@ from typing import AsyncContextManager, Optional, TypeVar
 
 # Import Neo4j exceptions with fallback for compatibility
 try:
-    from neo4j.exceptions import TransientError
+    from neo4j.exceptions import DriverError, Neo4jError, TransientError
     NEO4J_AVAILABLE = True
 except ImportError:
-    TransientError = None
+    DriverError = Neo4jError = TransientError = None
     NEO4J_AVAILABLE = False
 
 from app.config.constants.arangodb import CollectionNames
@@ -22,14 +23,10 @@ from app.connectors.core.base.data_store.data_store import (
 )
 from app.exceptions.graph_db_exceptions import GraphWriteError
 from app.models.entities import (
-    Anyone,
-    AnyoneSameOrg,
-    AnyoneWithLink,
     AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
-    Domain,
     FileRecord,
     Org,
     Person,
@@ -69,11 +66,16 @@ def ensure_written(result: bool | None, what: str) -> None:
         raise GraphWriteError(f"The graph database did not save {what}")
 
 
-def _is_deadlock_error(exception: Exception) -> bool:
-    """
-    Check if exception is a Neo4j deadlock error.
-    Module-level function used by both the decorator and GraphDataStore.
-    """
+_WRITE_CONFLICT = re.compile(r'write-write conflict|"errorNum"\s*:\s*1200\b')
+
+
+def is_write_conflict(exception: Exception) -> bool:
+    """An ArangoDB write-write conflict (errorNum 1200): another transaction wrote
+    the same document; running the whole transaction again is the remedy."""
+    return bool(_WRITE_CONFLICT.search(str(exception)))
+
+
+def _names_deadlock(exception: BaseException) -> bool:
     if NEO4J_AVAILABLE and TransientError and isinstance(exception, TransientError):
         return "DeadlockDetected" in str(exception)
 
@@ -84,6 +86,33 @@ def _is_deadlock_error(exception: Exception) -> bool:
         "TransientError" in exception_type and
         "DeadlockDetected" in exception_str
     )
+
+
+def _is_deadlock_error(exception: Exception) -> bool:
+    """
+    Check if exception is a Neo4j deadlock error, or was raised because of one:
+    the driver answers each statement after the deadlock with "Transaction
+    failed", raised from it.
+    Module-level function used by both the decorator and GraphDataStore.
+    """
+    seen: set[int] = set()
+    error: BaseException | None = exception
+    while error is not None and id(error) not in seen:
+        if _names_deadlock(error):
+            return True
+        seen.add(id(error))
+        error = error.__cause__ or error.__context__
+    return False
+
+
+is_transient_conflict = _is_deadlock_error
+
+
+def ends_explicit_transaction(exception: BaseException) -> bool:
+    """A failure the Neo4j server or driver reported. The explicit transaction
+    it was raised in runs no further statement, so going on after it only moves
+    the failure to the next one."""
+    return NEO4J_AVAILABLE and isinstance(exception, (Neo4jError, DriverError))
 
 
 def _is_retryable(instance: object, exception: Exception) -> bool:
@@ -165,9 +194,10 @@ class GraphTransactionStore(TransactionStore):
     Graph database transaction-aware data store using IGraphDBProvider.
     """
 
-    def __init__(self, graph_provider: IGraphDBProvider, txn: str) -> None:
+    def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
+        self.explicit = explicit  # the caller asked for one real transaction
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -221,6 +251,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def get_record_by_path(self, connector_id: str, path: list[str], external_record_group_id: str) -> dict | None:
         return await self.graph_provider.get_record_by_path(connector_id, path, external_record_group_id, transaction=self.txn)
+
+    async def get_records_by_file_path(self, connector_id: str, path: str) -> list[Record]:
+        return await self.graph_provider.get_records_by_file_path(connector_id, path, transaction=self.txn)
 
     async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_document(
@@ -311,7 +344,9 @@ class GraphTransactionStore(TransactionStore):
         return await self.graph_provider.get_file_record_by_id(id, transaction=self.txn)
 
     async def get_record_group_by_id(self, id: str) -> Optional[RecordGroup]:
-        return await self.graph_provider.get_record_group_by_id(id, transaction=self.txn)
+        # Both providers return the raw document.
+        doc = await self.graph_provider.get_record_group_by_id(id, transaction=self.txn)
+        return RecordGroup.from_arango_base_record_group(doc) if doc else None
 
     async def create_record_groups_relation(self, child_id: str, parent_id: str) -> None:
         """
@@ -376,10 +411,6 @@ class GraphTransactionStore(TransactionStore):
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
-    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
-        self._memo_drop(("record_group", connector_id, external_id))
-        return await self.graph_provider.delete_record_group_by_external_id(connector_id, external_id, transaction=self.txn)
-
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
@@ -412,9 +443,15 @@ class GraphTransactionStore(TransactionStore):
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
+        browse_root: bool | None = None,
     ) -> int:
         return await self.graph_provider.link_record_to_group(
-            record_id, record_group_id, inherit=inherit, leaving_group_id=leaving_group_id, transaction=self.txn
+            record_id,
+            record_group_id,
+            inherit=inherit,
+            leaving_group_id=leaving_group_id,
+            browse_root=browse_root,
+            transaction=self.txn,
         )
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
@@ -450,7 +487,9 @@ class GraphTransactionStore(TransactionStore):
 
         When *cascade_children* is True (default), the full PARENT_CHILD +
         ATTACHMENT subtree is deleted.  When False, only ATTACHMENT edges are
-        traversed — child records linked via PARENT_CHILD survive.
+        traversed — child records linked via PARENT_CHILD survive, and each one
+        that keeps a record group is listed under the result's ``reparented`` key
+        for the caller to re-point.
         """
         self._memo_forget_all_records()
         return await self.graph_provider.delete_records_recursive(
@@ -874,18 +913,6 @@ class GraphTransactionStore(TransactionStore):
     async def batch_upsert_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_orgs(orgs, transaction=self.txn)
 
-    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
-        return await self.graph_provider.batch_upsert_domains(domains, transaction=self.txn)
-
-    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
-        return await self.graph_provider.batch_upsert_anyone(anyone, transaction=self.txn)
-
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
-        return await self.graph_provider.batch_upsert_anyone_with_link(anyone_with_link, transaction=self.txn)
-
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
-        return await self.graph_provider.batch_upsert_anyone_same_org(anyone_same_org, transaction=self.txn)
-
     async def commit(self) -> None:
         """
         Commit the transaction.
@@ -953,17 +980,34 @@ class GraphTransactionStore(TransactionStore):
         )
 
     async def create_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        """Create INHERIT_PERMISSIONS edge from a record to its parent *record*.
+
+        A nested record inherits from the record directly above it, not from its
+        group, so a restriction part way down a tree takes effect.
+        """
         record_edge = {
                     "from_id": child_record_id,
                     "from_collection": CollectionNames.RECORDS.value,
                     "to_id": parent_record_id,
-                    "to_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_collection": CollectionNames.RECORDS.value,
                     "createdAtTimestamp": get_epoch_timestamp_in_ms(),
                     "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
                 }
         await self.graph_provider.batch_create_edges(
             [record_edge], collection=CollectionNames.INHERIT_PERMISSIONS.value, transaction=self.txn
         )
+
+    async def delete_inherit_permissions_relation_record(self, child_record_id: str, parent_record_id: str) -> None:
+        """Remove that edge when a record stops inheriting from its parent record."""
+        await self.graph_provider.delete_edge(
+            child_record_id,
+            CollectionNames.RECORDS.value,
+            parent_record_id,
+            CollectionNames.RECORDS.value,
+            CollectionNames.INHERIT_PERMISSIONS.value,
+            transaction=self.txn,
+        )
+
     async def get_sync_point(self, sync_point_key: str, *, raise_on_error: bool = False) -> Optional[dict]:
         return await self.graph_provider.get_sync_point(
             sync_point_key,
@@ -990,22 +1034,6 @@ class GraphTransactionStore(TransactionStore):
     async def create_orgs(self, orgs: list[Org]) -> None:
         return await self.graph_provider.batch_upsert_nodes([org.to_arango_base_org() for org in orgs],
                     collection=CollectionNames.ORGS.value, transaction=self.txn)
-
-    async def create_domains(self, domains: list[Domain]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([domain.to_arango_base_domain() for domain in domains],
-                    collection=CollectionNames.DOMAINS.value, transaction=self.txn)
-
-    async def create_anyone(self, anyone: list[Anyone]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone_item.to_arango_base_anyone() for anyone_item in anyone],
-                    collection=CollectionNames.ANYONE.value, transaction=self.txn)
-
-    async def create_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone_with_link_item.to_arango_base_anyone_with_link() for anyone_with_link_item in anyone_with_link],
-                    collection=CollectionNames.ANYONE_WITH_LINK.value, transaction=self.txn)
-
-    async def create_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
-        return await self.graph_provider.batch_upsert_nodes([anyone_same_org_item.to_arango_base_anyone_same_org() for anyone_same_org_item in anyone_same_org],
-                    collection=CollectionNames.ANYONE_SAME_ORG.value, transaction=self.txn)
 
     async def create_sync_point(self, sync_point_key: str, sync_point_data: dict) -> None:
         return await self.graph_provider.upsert_sync_point(sync_point_key, sync_point_data, collection=CollectionNames.SYNC_POINTS.value, transaction=self.txn)
@@ -1104,9 +1132,9 @@ class GraphTransactionStore(TransactionStore):
     async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
         return await self.graph_provider.batch_delete_edges(edges, collection=collection, transaction=self.txn)
 
-    async def batch_upsert_record_relations(self, edges: list[dict]) -> None:
+    async def batch_upsert_node_relations(self, edges: list[dict]) -> None:
         """Batch upsert record relation edges with relationshipType in UPSERT match condition."""
-        return await self.graph_provider.batch_upsert_record_relations(edges, transaction=self.txn)
+        return await self.graph_provider.batch_upsert_node_relations(edges, transaction=self.txn)
 
     async def batch_create_entity_relations(self, edges: list[dict]) -> None:
         """Batch create entity relation edges with edgeType in UPSERT match condition."""
@@ -1146,10 +1174,6 @@ class GraphTransactionStore(TransactionStore):
         self._memo_forget_record(record_key)
         return await self.graph_provider.delete_records_and_relations(record_key, hard_delete=hard_delete, transaction=self.txn)
 
-    async def process_file_permissions(self, org_id: str, file_key: str, permissions: list[dict]) -> None:
-        """Process file permissions"""
-        return await self.graph_provider.process_file_permissions(org_id, file_key, permissions, transaction=self.txn)
-
     async def get_nodes_by_field_in(
         self, collection: str, field: str, values: list, return_fields: list[str] = None
     ) -> list[dict]:
@@ -1161,7 +1185,7 @@ class GraphTransactionStore(TransactionStore):
     async def remove_nodes_by_field(self, collection: str, field: str, value) -> int:
         """Remove nodes matching field value"""
         return await self.graph_provider.remove_nodes_by_field(
-            collection, field, value, transaction=self.txn
+            collection, field, field_value=value, transaction=self.txn
         )
 
     async def get_nodes_by_filters(
@@ -1239,6 +1263,8 @@ class GraphDataStore(DataStoreProvider):
         """
         Create a graph database transaction store context manager.
 
+        ``explicit`` is handed to the provider only when a caller sets it.
+
         With HTTP provider (ArangoHTTPProvider):
         - begin_transaction() returns transaction ID (string) - fully async
         - All operations pass txn_id in HTTP headers
@@ -1256,7 +1282,7 @@ class GraphDataStore(DataStoreProvider):
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
-        tx_store = GraphTransactionStore(self.graph_provider, txn)
+        tx_store = GraphTransactionStore(self.graph_provider, txn, explicit=explicit is True)
 
         try:
             yield tx_store

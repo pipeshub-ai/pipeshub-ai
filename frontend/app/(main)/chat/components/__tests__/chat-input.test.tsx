@@ -23,6 +23,17 @@ const speech = vi.hoisted(() => ({
   onError: null as null | ((error: string) => void),
 }));
 const device = vi.hoisted(() => ({ isMobile: false }));
+const mentionField = vi.hoisted(() => ({ rendered: vi.fn<(mentionsOff: boolean | undefined) => void>() }));
+
+vi.mock('@/chat/components/mention-composer-field', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/chat/components/mention-composer-field')>();
+  type FieldProps = Omit<React.ComponentProps<typeof actual.MentionComposerField>, 'ref'>;
+  const Spy = React.forwardRef<HTMLTextAreaElement, FieldProps>(function MentionComposerFieldSpy(props, ref) {
+    mentionField.rendered(props.mentionsOff);
+    return <actual.MentionComposerField {...props} ref={ref} />;
+  });
+  return { ...actual, MentionComposerField: Spy };
+});
 
 vi.mock('next/navigation', () => ({ useRouter: () => router }));
 
@@ -238,12 +249,12 @@ describe('ChatInput — typing and sending', () => {
   it('sends what the user typed and clears the box', () => {
     const { onSend } = renderInput();
 
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
     type('What changed in the Q3 plan?');
-    expect(sendButton().disabled).toBe(false);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('false');
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('What changed in the Q3 plan?', undefined);
+    expect(onSend).toHaveBeenCalledWith('What changed in the Q3 plan?', undefined, undefined);
     expect(composer().value).toBe('');
   });
 
@@ -263,7 +274,7 @@ describe('ChatInput — typing and sending', () => {
     expect(onSend).not.toHaveBeenCalled();
 
     fireEvent.keyDown(composer(), { key: 'Enter' });
-    expect(onSend).toHaveBeenCalledWith('Line one', undefined);
+    expect(onSend).toHaveBeenCalledWith('Line one', undefined, undefined);
   });
 
   it('does not send a message made only of spaces', () => {
@@ -273,7 +284,7 @@ describe('ChatInput — typing and sending', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
   });
 
   it('offers Stop instead of Send while an answer is streaming, and stops it', () => {
@@ -308,7 +319,7 @@ describe('ChatInput — typing and sending', () => {
 
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
-    expect(onSend).toHaveBeenCalledWith('Next question', undefined);
+    expect(onSend).toHaveBeenCalledWith('Next question', undefined, undefined);
   });
 
   it('waits for the agent tools to finish loading before it can send', () => {
@@ -319,7 +330,7 @@ describe('ChatInput — typing and sending', () => {
     const { onSend } = renderInput();
     type('Book a meeting');
 
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
     fireEvent.keyDown(composer(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
   });
@@ -356,7 +367,7 @@ describe('ChatInput — attachments', () => {
     expect(screen.getAllByLabelText('Uploading report.pdf').length).toBeGreaterThan(0);
 
     type('Summarise the attached report');
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
     fireEvent.keyDown(composer(), { key: 'Enter' });
     expect(onSend).not.toHaveBeenCalled();
 
@@ -365,7 +376,7 @@ describe('ChatInput — attachments', () => {
     expect(screen.getByText('2 KB')).toBeTruthy();
 
     fireEvent.click(sendButton());
-    expect(onSend).toHaveBeenCalledWith('Summarise the attached report', [ref('rec-1')]);
+    expect(onSend).toHaveBeenCalledWith('Summarise the attached report', [ref('rec-1')], undefined);
     expect(screen.queryByText('report.pdf')).toBeNull();
   });
 
@@ -375,7 +386,7 @@ describe('ChatInput — attachments', () => {
     await act(async () => pick(pdf()));
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('', [ref('rec-1')]);
+    expect(onSend).toHaveBeenCalledWith('', [ref('rec-1')], undefined);
   });
 
   it('refuses an unsupported file type and says which types are allowed', () => {
@@ -444,7 +455,7 @@ describe('ChatInput — attachments', () => {
     type('Compare these');
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('Compare these', [ref('rec-ok')]);
+    expect(onSend).toHaveBeenCalledWith('Compare these', [ref('rec-ok')], undefined);
   });
 
   it('keeps a failed attachment and its retry when there is nothing else to send', async () => {
@@ -454,7 +465,7 @@ describe('ChatInput — attachments', () => {
     const { onSend } = renderInput({ onUploadFile });
 
     await act(async () => pick(pdf()));
-    expect(sendButton().disabled).toBe(true);
+    expect(sendButton().getAttribute('aria-disabled')).toBe('true');
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(onSend).not.toHaveBeenCalled();
@@ -731,7 +742,7 @@ describe('ChatInput — agent checks before sending', () => {
 
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
-    expect(onSend).toHaveBeenCalledWith('Find my tickets', undefined);
+    expect(onSend).toHaveBeenCalledWith('Find my tickets', undefined, undefined);
   });
 
   it('with every tool selected, refuses when two instances of one type are connected', () => {
@@ -748,6 +759,35 @@ describe('ChatInput — agent checks before sending', () => {
 
     expect(onSend).not.toHaveBeenCalled();
     expect(toastTitles()[0]).toContain('(slack)');
+  });
+});
+
+describe('ChatInput — @ in agent and project chats', () => {
+  const projectScope = (knowledgeDefaults: { apps: string[]; kb: string[]; records?: string[] }) => ({
+    projectId: 'p1',
+    connectors: [],
+    knowledgeCollectionRows: [],
+    knowledgeDefaults,
+    linkedKnowledgeBaseId: 'kb-uploads',
+    toolGroups: [],
+    mcpGroups: [],
+    toolCatalogFullNames: [],
+  });
+
+  it('turns @ off in a project chat', () => {
+    useChatStore.setState({ projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }) });
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+  });
+
+  it('turns @ off in an agent chat', () => {
+    renderInput({ isAgentChat: true, agentId: 'agent-1' });
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(true);
+  });
+
+  it('keeps @ outside agent and project chats', () => {
+    renderInput();
+    expect(mentionField.rendered).toHaveBeenLastCalledWith(false);
   });
 });
 
@@ -960,7 +1000,7 @@ describe('ChatInput — compact widget', () => {
     fireEvent.change(line, { target: { value: 'What is this doc about?' } });
     fireEvent.keyDown(line, { key: 'Enter' });
 
-    expect(onSend).toHaveBeenCalledWith('What is this doc about?', undefined);
+    expect(onSend).toHaveBeenCalledWith('What is this doc about?', undefined, undefined);
   });
 
   it('expands into the full composer when the user asks for more', () => {
@@ -971,13 +1011,16 @@ describe('ChatInput — compact widget', () => {
     expect(document.activeElement).toBe(composer());
   });
 
-  it('offers Stop in the widget while an answer streams', () => {
-    const slotId = startStreamingSlot();
-    renderInput({ variant: 'widget' });
+  it('sends a new question while a chat left on the chat page is still answering', () => {
+    startStreamingSlot();
+    const { onSend } = renderInput({ variant: 'widget' });
+    fireEvent.change(screen.getByPlaceholderText('Ask anything...'), { target: { value: 'Hi' } });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Stop generating' }));
+    expect(screen.queryByRole('button', { name: 'Stop generating' })).toBeNull();
+    fireEvent.click(sendButton());
 
-    expect(streaming.cancelStreamForSlot).toHaveBeenCalledWith(slotId);
+    expect(onSend).toHaveBeenCalledWith('Hi', undefined, undefined);
+    expect(streaming.cancelStreamForSlot).not.toHaveBeenCalled();
   });
 
   it('has a named send button in the widget too', () => {
@@ -986,7 +1029,7 @@ describe('ChatInput — compact widget', () => {
 
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('Hi', undefined);
+    expect(onSend).toHaveBeenCalledWith('Hi', undefined, undefined);
   });
 });
 
@@ -1121,7 +1164,7 @@ describe('ChatInput — keeping an unsent message', () => {
     fireEvent.click(sendButton());
     pause();
 
-    expect(onSend).toHaveBeenCalledWith('Which vendors renew in Q4?', undefined);
+    expect(onSend).toHaveBeenCalledWith('Which vendors renew in Q4?', undefined, undefined);
     expect(composer().value).toBe('');
     expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
   });
@@ -1340,7 +1383,7 @@ describe('ChatInput — keeping an unsent message', () => {
     pause();
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('Still works', undefined);
+    expect(onSend).toHaveBeenCalledWith('Still works', undefined, undefined);
     vi.restoreAllMocks();
   });
 

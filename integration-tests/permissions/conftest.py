@@ -2,7 +2,9 @@
 
 The feature under test is permission resolution, not a connector sync, so the graph is
 seeded directly through the provider: a connector reached only through a link, one the
-user owns outright, and one where only the source account has access. Driving it through
+user owns outright, and one where only the source account has access. Each connector is
+written the way a sync writes it: the App over its record groups and each group over its
+root record on the hierarchy edge, the record inheriting from its group. Driving it through
 a real Jira/GitLab sync would need a fixture account whose source email differs from the
 PipesHub login, which none of the shared tenants can offer.
 
@@ -17,7 +19,7 @@ from typing import TYPE_CHECKING, Any, AsyncGenerator
 
 import pytest_asyncio
 
-from app.config.constants.arangodb import CollectionNames, Connectors
+from app.config.constants.arangodb import AccessRule, CollectionNames, Connectors, RecordRelations
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -96,6 +98,7 @@ async def seeded_graph(graph_provider: "GraphProviderProtocol") -> AsyncGenerato
     perm = CollectionNames.PERMISSION.value
     belongs = CollectionNames.BELONGS_TO.value
     inherit = CollectionNames.INHERIT_PERMISSIONS.value
+    hierarchy = CollectionNames.NODE_RELATIONS.value
     user_app = CollectionNames.USER_APP_RELATION.value
 
     await graph_provider.batch_upsert_nodes(
@@ -111,6 +114,7 @@ async def seeded_graph(graph_provider: "GraphProviderProtocol") -> AsyncGenerato
     await graph_provider.batch_upsert_nodes([
         {"id": rg, "groupName": rg, "connectorId": app, "connectorName": _CONNECTOR,
          "orgId": ORG, "groupType": "PROJECT", "externalGroupId": rg,
+         "accessRule": AccessRule.OPEN.value,
          "createdAtTimestamp": _NOW, "updatedAtTimestamp": _NOW}
         for rg, (app, _, _) in GROUPS.items()
     ], rgs)
@@ -119,6 +123,7 @@ async def seeded_graph(graph_provider: "GraphProviderProtocol") -> AsyncGenerato
          "externalRecordId": RECORD_OF[rg], "origin": "CONNECTOR", "connectorId": app,
          "connectorName": _CONNECTOR, "orgId": ORG, "indexingStatus": "COMPLETED",
          "isDeleted": False, "virtualRecordId": f"v-{RECORD_OF[rg]}", "version": 1,
+         "accessRule": AccessRule.OPEN.value,
          "createdAtTimestamp": _NOW, "updatedAtTimestamp": _NOW}
         for rg, (app, _, _) in GROUPS.items()
     ], recs)
@@ -142,6 +147,10 @@ async def seeded_graph(graph_provider: "GraphProviderProtocol") -> AsyncGenerato
         edges.append(([_edge(rg, rgs, app, apps, createdAtTimestamp=_NOW) for rg, (app, _, _) in GROUPS.items()], belongs))
         edges.append(([_edge(RECORD_OF[rg], recs, rg, rgs, createdAtTimestamp=_NOW) for rg in GROUPS], belongs))
         edges.append(([_edge(RECORD_OF[rg], recs, rg, rgs, createdAtTimestamp=_NOW) for rg in GROUPS], inherit))
+        # No group inherits from its App: passing a connector's gate alone must open nothing in it
+        parent_child = {"relationshipType": RecordRelations.PARENT_CHILD.value, "createdAtTimestamp": _NOW}
+        edges.append(([_edge(app, apps, rg, rgs, **parent_child) for rg, (app, _, _) in GROUPS.items()], hierarchy))
+        edges.append(([_edge(rg, rgs, RECORD_OF[rg], recs, **parent_child) for rg in GROUPS], hierarchy))
         edges.append(([_edge(RECORD_OF[rg], recs, RECORD_OF[rg], CollectionNames.FILES.value,
                              createdAtTimestamp=_NOW) for rg in GROUPS], CollectionNames.IS_OF_TYPE.value))
         grants = [_edge(who, users, rg, rgs, type="USER", role=role, createdAtTimestamp=_NOW)

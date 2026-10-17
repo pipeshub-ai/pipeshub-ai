@@ -31,7 +31,7 @@ from app.agents.actions.knowledge_graph.ops.results import (
     dedupe_append_final_results,
     tool_output,
 )
-from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, _clean_kb
+from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
 from app.modules.agents.qna.chat_state import remember_shown_results
@@ -526,17 +526,7 @@ async def _execute_search(
         source_ids_norm = normalize_source_ids(source_ids)
 
         agent_filters = state.get("filters", {}) or {}
-        if is_placeholder_agent:
-            raw_apps: list[str] = list(state.get("apps") or [])
-            raw_kbs: list[str] = list(state.get("kb") or [])
-        else:
-            raw_apps = list(agent_filters.get("apps") or [])
-            raw_kbs = list(agent_filters.get("kb") or [])
-
-        base_scope = KnowledgeScope(
-            app_ids=tuple(raw_apps),
-            kb_ids=_clean_kb(raw_kbs),
-        )
+        base_scope = search_scope(state)
 
         explicit_ids = bool(source_ids_norm)
         narrowed_scope: KnowledgeScope | None = None

@@ -35,6 +35,7 @@ import {
   type StreamChatRequest,
   type ToolApprovalAnswer,
 } from './types';
+import { hasAnyFilter } from './utils/tree-selection';
 import {
   buildCitationMapsFromApi,
 } from './components/message-area/response-tabs/citations';
@@ -123,6 +124,17 @@ function readKbCollectionsFromMessage(
   return out.length > 0 ? out : undefined;
 }
 
+/** The record groups, folders and records the composer has selected. */
+function selectionBelowAppLevel(
+  settings: ChatSettings
+): Pick<ChatKnowledgeFilters, 'recordGroups' | 'records' | 'recordsExact'> {
+  return {
+    recordGroups: [...(settings.filters.recordGroups ?? [])],
+    records: [...(settings.filters.records ?? [])],
+    ...(settings.filters.recordsExact?.length ? { recordsExact: [...settings.filters.recordsExact] } : {}),
+  };
+}
+
 /** Mirrors chat-send scope resolution from the last user message that carried KB attachments. */
 function resolveAssistantFiltersFromSlot(
   slot: { messages: ThreadMessageLike[] },
@@ -142,10 +154,11 @@ function resolveAssistantFiltersFromSlot(
       return {
         apps: [...new Set([...storeApps, ...msgRootIds])],
         kb: [...msgKbIds],
+        ...selectionBelowAppLevel(settings),
       };
     }
   }
-  return { apps: [...storeApps], kb: [...storeKb] };
+  return { apps: [...storeApps], kb: [...storeKb], ...selectionBelowAppLevel(settings) };
 }
 
 /**
@@ -170,9 +183,10 @@ export function resolveAssistantFiltersForChatSubmit(
       return {
         apps: [...new Set([...storeApps, ...msgRootIds])],
         kb: [...msgKbIds],
+        ...selectionBelowAppLevel(settings),
       };
     }
-    return { apps: [...storeApps], kb: [...storeKb] };
+    return { apps: [...storeApps], kb: [...storeKb], ...selectionBelowAppLevel(settings) };
   }
 
   return resolveAssistantFiltersFromSlot(slot, settings);
@@ -268,7 +282,7 @@ export function buildStreamChatRequestForSlot(
       ? (currentState.projectKnowledgeScope ?? projectScope.knowledgeDefaults)
       : null;
 
-  const resolvedFilters = resolvedScopedKnowledge
+  const resolvedFilters: ChatKnowledgeFilters = resolvedScopedKnowledge
     ? {
         apps: resolvedScopedKnowledge.apps.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
@@ -276,12 +290,24 @@ export function buildStreamChatRequestForSlot(
         kb: resolvedScopedKnowledge.kb.filter(
           (id): id is string => typeof id === 'string' && id.trim().length > 0
         ),
+        ...(resolvedScopedKnowledge.recordGroups?.length
+          ? { recordGroups: [...resolvedScopedKnowledge.recordGroups] }
+          : {}),
+        ...(resolvedScopedKnowledge.records?.length ? { records: [...resolvedScopedKnowledge.records] } : {}),
+        ...(resolvedScopedKnowledge.recordsExact?.length
+          ? { recordsExact: [...resolvedScopedKnowledge.recordsExact] }
+          : {}),
       }
     : isAgent
       ? { apps: [], kb: [] }
       : buildAssistantApiFilters(assistantFilters);
 
   const metaCache = currentState.collectionMetaCache;
+  // Which nodes the question names with @: those show as chips in it when it is read back.
+  const rawMentionIds = outgoingMessage?.metadata?.custom?.mentionIds;
+  const mentionIds = new Set(
+    Array.isArray(rawMentionIds) ? rawMentionIds.filter((id): id is string => typeof id === 'string') : []
+  );
   const buildAppliedFilterNodes = (ids: string[]): AppliedFilterNode[] =>
     ids
       .filter((id) => id.trim().length > 0)
@@ -292,14 +318,26 @@ export function buildStreamChatRequestForSlot(
           name: meta?.name ?? currentState.collectionNamesCache[id] ?? id,
           nodeType: meta?.nodeType ?? '',
           connector: meta?.connector ?? '',
+          ...(meta?.extension ? { extension: meta.extension } : {}),
+          ...(meta?.mimeType ? { mimeType: meta.mimeType } : {}),
+          mentioned: mentionIds.has(id),
         };
       });
 
-  const hasFilters = resolvedFilters.apps.length > 0 || resolvedFilters.kb.length > 0;
+  const hasFilters = hasAnyFilter(resolvedFilters);
   const appliedFilters: AppliedFilters | undefined = hasFilters
     ? {
         apps: buildAppliedFilterNodes(resolvedFilters.apps),
         kb: buildAppliedFilterNodes(resolvedFilters.kb),
+        ...(resolvedFilters.recordGroups?.length
+          ? { recordGroups: buildAppliedFilterNodes(resolvedFilters.recordGroups) }
+          : {}),
+        ...(resolvedFilters.records?.length
+          ? { records: buildAppliedFilterNodes(resolvedFilters.records) }
+          : {}),
+        ...(resolvedFilters.recordsExact?.length
+          ? { recordsExact: buildAppliedFilterNodes(resolvedFilters.recordsExact) }
+          : {}),
       }
     : isAgent
       ? { apps: [], kb: [] }

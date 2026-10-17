@@ -180,24 +180,6 @@ class TestChatAttachmentUpload:
 
 
 class TestConnectorRoutes:
-    async def test_records_list(self) -> None:
-        from app.connectors.api.router import get_records
-
-        request = MagicMock()
-        request.state.user = {"userId": "u1", "orgId": "org-1"}
-        request.app.container.logger.return_value = MagicMock()
-        graph = AsyncMock()
-        graph.get_user_by_user_id = AsyncMock(side_effect=_read_fails)
-
-        with pytest.raises(HTTPException) as exc:
-            await get_records(
-                request=request, graph_provider=graph, page=1, limit=20, search=None,
-                record_types=None, origins=None, connectors=None, indexing_status=None,
-                permissions=None, date_from=None, date_to=None,
-                sort_by="createdAtTimestamp", sort_order="desc", source="all",
-            )
-        _assert_outage(exc.value)
-
     async def test_knowledge_base_connector_stats(self) -> None:
         from app.connectors.api.connector_resolvers import authorize_connector_stats
 

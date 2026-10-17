@@ -3,7 +3,7 @@
 import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -20,7 +20,9 @@ import {
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
   ReindexScopeDialog,
+  ChatWidgetWrapper,
 } from './components';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
 import { SelectionActionBar } from '@/config';
@@ -55,7 +57,7 @@ import {
   applyClientSideFilters,
   isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
-import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters } from './utils';
+import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters, toTablePagination } from './utils';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -67,10 +69,11 @@ import {
   buildFilterUrl,
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
-import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
+import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl, pushKbUrl, replaceKbUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { UPLOAD_BATCH_CONFIG } from './constants/upload-batch.constants';
 import { createSizeBatches } from './utils/batch-files';
+import { canDeleteKbTableItem, needsCollectionContext, type KbTableItem } from './utils/kb-table-item-actions';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
 import {
@@ -109,7 +112,11 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
+import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
+import { usePendingChatStore } from '@/lib/store/pending-chat-store';
+import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
 import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError } from '@/lib/api/api-error';
+import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
 import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
 import { canOpenRecentlyDeleted } from './recently-deleted/utils';
@@ -118,6 +125,12 @@ import { canOpenRecentlyDeleted } from './recently-deleted/utils';
 // would otherwise clear the loading flag a newer fetch just set.
 let allRecordsFetchGeneration = 0;
 let collectionsFetchGeneration = 0;
+
+// An app's or record group's subType is its connector name, which picks the chip icon;
+// a record's subType is its record type.
+function connectorOfCurrentNode(node: { nodeType: string; subType?: string }): string {
+  return node.nodeType === 'app' || node.nodeType === 'recordGroup' ? (node.subType ?? '') : '';
+}
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -158,7 +171,7 @@ function KnowledgeBasePageContent() {
     setTableDataError,
     setSelectedNode,
     setCollectionsPagination,
-    setCollectionsPage,
+    setCollectionsCursor,
     setCollectionsLimit,
     collectionsPagination,
     clearTableData,
@@ -213,7 +226,6 @@ function KnowledgeBasePageContent() {
     rawFilter.indexingStatus?.join(','),
     rawFilter.origins?.join(','),
     rawFilter.connectorIds?.join(','),
-    rawFilter.kbIds?.join(','),
     rawFilter.sizeRange,
     rawFilter.createdAfter,
     rawFilter.createdBefore,
@@ -346,7 +358,9 @@ function KnowledgeBasePageContent() {
       store.setAllRecordsSort(parsed.sort);
       store.setAllRecordsLimit(parsed.limit);
       store.setAllRecordsSearchQuery(parsed.searchQuery);
-      store.setAllRecordsPage(parsed.page);
+      // Last: the setters above each clear the cursor, so hydrating it first
+      // would be undone by them.
+      store.setAllRecordsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     } else {
       const parsed = parseCollectionsParams(searchParams);
@@ -354,7 +368,7 @@ function KnowledgeBasePageContent() {
       store.setSort(parsed.sort);
       store.setCollectionsLimit(parsed.limit);
       store.setSearchQuery(parsed.searchQuery);
-      store.setCollectionsPage(parsed.page);
+      store.setCollectionsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     }
   }, [searchParams]);
@@ -376,13 +390,13 @@ function KnowledgeBasePageContent() {
       ? serializeAllRecordsParams(
           store.allRecordsFilter,
           store.allRecordsSort,
-          { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+          { cursor: store.allRecordsPagination.cursor, limit: store.allRecordsPagination.limit },
           debouncedAllRecordsSearchQuery
         )
       : serializeCollectionsParams(
           store.filter,
           store.sort,
-          { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+          { cursor: store.collectionsPagination.cursor, limit: store.collectionsPagination.limit },
           debouncedSearchQuery
         );
 
@@ -393,14 +407,13 @@ function KnowledgeBasePageContent() {
     if (newUrl !== currentUrl) {
       // Update the hydration ref so the read-effect skips this URL (it came from us, not navigation)
       lastHydratedUrl.current = new URL(newUrl, 'http://x').searchParams.toString();
-      router.replace(newUrl);
+      replaceKbUrl(newUrl);
     }
   }, [
-    filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
-    allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
+    filter, sort, collectionsPagination.cursor, collectionsPagination.limit, debouncedSearchQuery,
+    allRecordsFilter, allRecordsSort, allRecordsPagination.cursor, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
     searchParams,
-    router,
   ]);
 
   // Check if any filters are active (for empty state messaging)
@@ -427,8 +440,7 @@ function KnowledgeBasePageContent() {
       filter.updatedAfter ||
       filter.updatedBefore ||
       filter.origins?.length ||
-      filter.connectorIds?.length ||
-      filter.kbIds?.length
+      filter.connectorIds?.length
     );
   }, [isAllRecordsMode, allRecordsFilter, filter]);
 
@@ -508,10 +520,10 @@ function KnowledgeBasePageContent() {
   const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   /**
-   * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
-   * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
+   * The cursor we last fetched for, so a filter/sort reset (cursor → null) does
+   * not also trigger the pagination effect when the cursor actually changes.
    */
-  const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
+  const prevAllRecordsCursorRef = useRef(allRecordsPagination.cursor);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -590,7 +602,7 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number) => {
     allRecordsFetchRef.current?.abort();
     const controller = new AbortController();
     allRecordsFetchRef.current = controller;
@@ -614,6 +626,11 @@ function KnowledgeBasePageContent() {
         currentAllRecordsSort,
         currentPagination
       );
+      // Sending a cursor as well would repeat this page: the cursor wins.
+      if (page && page > 1) {
+        delete params.cursor;
+        params.page = page;
+      }
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
       let data;
@@ -631,13 +648,23 @@ function KnowledgeBasePageContent() {
       }
       if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
-      // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
-      // without overwriting user-controlled page/limit to avoid triggering effect loops
+      // Sync what the response decided (totals, indices, the two cursors)
+      // without touching the cursor the user asked for — overwriting that would
+      // re-trigger the effect watching it.
       if (data.pagination) {
-        syncAllRecordsPaginationMeta(data.pagination);
+        syncAllRecordsPaginationMeta(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error) {
       if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring; the
+      // effect watching the cursor issues that fetch.
+      const rejectedCursor = useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(null);
+        return;
+      }
       console.error('Error fetching all records:', error);
       setAllRecordsTableError('Failed to load records');
     } finally {
@@ -690,25 +717,25 @@ function KnowledgeBasePageContent() {
     // setAllRecordsFilter / setAllRecordsSort reset page to 1; sync ref so pagination effect
     // does not duplicate-fetch when page changes (e.g. 2 → 1), without a skip flag that can
     // stick when page stays 1 and the pagination effect never runs.
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
-  // All Records mode: Re-fetch when pagination page changes
+  // All Records mode: Re-fetch when the cursor moves (Next/Previous)
   useEffect(() => {
     if (!isAllRecordsMode) return;
-    if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-    prevAllRecordsPageRef.current = allRecordsPagination.page;
+    if (allRecordsPagination.cursor === prevAllRecordsCursorRef.current) return;
+    prevAllRecordsCursorRef.current = allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-  }, [allRecordsPagination.page]);
+  }, [allRecordsPagination.cursor]);
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
     if (!isAllRecordsMode || allRecordsPagination.limit === DEFAULT_PAGE_SIZE) return;
     // setAllRecordsLimit resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.limit]);
 
@@ -789,10 +816,15 @@ function KnowledgeBasePageContent() {
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        // The rows are ready: the sidebar path opened below is separate work and
+        // must not hold the table's loader.
+        setIsLoadingTableData(false);
 
         // Update pagination from response
         if (data.pagination) {
-          setCollectionsPagination(data.pagination);
+          setCollectionsPagination(
+            toTablePagination(data.pagination, currentPagination.cursor)
+          );
         }
         setSelectedNode({ nodeType, nodeId });
 
@@ -848,6 +880,13 @@ function KnowledgeBasePageContent() {
 
       } catch (error) {
         if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+        // A refused cursor goes back to the first page instead of erroring;
+        // clearing it rewrites the URL, which re-runs this fetch without one.
+        const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+        if (isRejectedCursorError(error, rejectedCursor)) {
+          useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+          return;
+        }
         const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
         const isNotFound =
           status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
@@ -983,10 +1022,19 @@ function KnowledgeBasePageContent() {
       setTableData(data);
       setSelectedNode(null);
       if (data.pagination) {
-        setCollectionsPagination(data.pagination);
+        setCollectionsPagination(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error: unknown) {
       if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring;
+      // clearing it rewrites the URL, which re-runs this fetch without one.
+      const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+        return;
+      }
       setTableDataError(
         getUserFacingErrorMessage(
           error,
@@ -1072,8 +1120,8 @@ function KnowledgeBasePageContent() {
     }
 
     // setAllRecordsSearchQuery resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
@@ -1166,8 +1214,8 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
-      prevAllRecordsPageRef.current =
-        useKnowledgeBaseStore.getState().allRecordsPagination.page;
+      prevAllRecordsCursorRef.current =
+        useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
       // Immediate refetch when clearing search (bypasses debounce).
       // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
       const nt = searchParams.get('nodeType');
@@ -1217,7 +1265,6 @@ function KnowledgeBasePageContent() {
     try {
       const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
         onlyContainers: true,
-        page: 1,
         limit: SIDEBAR_PAGINATION_PAGE_SIZE,
         include: 'counts',
         sortBy: 'name',
@@ -1234,12 +1281,9 @@ function KnowledgeBasePageContent() {
         const p = response.pagination;
         state.setAppChildPagination(
           selectedApp.id,
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : { hasNext: false, nextPage: 1 }
+          p?.nextCursor
+            ? { hasNext: p.hasNext, nextCursor: p.nextCursor }
+            : { hasNext: false, nextCursor: null }
         );
 
         if (!isKbCollectionsHubApp(selectedApp)) {
@@ -1255,12 +1299,7 @@ function KnowledgeBasePageContent() {
       storeChildrenList(
         nodeId,
         response.items,
-        sidebarNodeChildrenMetaFromResponse(
-          response.pagination,
-          response.items.length,
-          SIDEBAR_PAGINATION_PAGE_SIZE,
-          nodeType
-        )
+        sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType)
       );
       state.addNodes(response.items);
 
@@ -1436,28 +1475,27 @@ function KnowledgeBasePageContent() {
       });
       setIsCreateFolderDialogOpen(true);
     } else if (currentNode?.nodeType === 'folder') {
-      // Inside a folder — find the KB root from breadcrumbs (app or kb nodeType)
-      const kbBreadcrumb = tableData?.breadcrumbs?.find(
-        (b) => b.nodeType === 'app' || b.nodeType === 'kb'
-      );
-      const kbId = kbBreadcrumb?.id ?? tableData?.breadcrumbs?.[0]?.id;
-      if (kbId) {
-        setCreateFolderContext({
-          type: 'subfolder' as const,
-          kbId,
-          parentId: currentNode.id,
-          parentName: currentNode.name,
+      const kbId = tableData?.breadcrumbs?.find((b) => b.nodeType === 'app')?.id;
+      if (!kbId) {
+        toast.error('Failed to create folder', {
+          description: `Could not find the collection "${currentNode.name}" belongs to.`,
         });
-        setIsCreateFolderDialogOpen(true);
-      } else {
-        // Fallback: no KB root found — create a new collection
-        setCreateFolderContext({ type: 'collection' });
-        setIsCreateFolderDialogOpen(true);
+        return;
       }
-    } else {
-      // No KB context (at root or no currentNode) — create new collection
+      setCreateFolderContext({
+        type: 'subfolder' as const,
+        kbId,
+        parentId: currentNode.id,
+        parentName: currentNode.name,
+      });
+      setIsCreateFolderDialogOpen(true);
+    } else if (!currentNode) {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
+    } else {
+      toast.error('Failed to create folder', {
+        description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
+      });
     }
   }, [tableData, canCreateCollection]);
 
@@ -2187,6 +2225,17 @@ function KnowledgeBasePageContent() {
     }
   }, [getPreviewErrorMessage]);
 
+  // Search and filter results come from anywhere below the current place: open a row's
+  // parent as plain navigation, without the search or the filters that found the row.
+  const handleGoToParent = useCallback(
+    (item: KnowledgeHubNode) => {
+      if (!item.parent?.id) return;
+      setIsSearchOpen(false);
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.parent.nodeType, nodeId: item.parent.id }));
+    },
+    [isAllRecordsMode, setIsSearchOpen]
+  );
+
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(
     (item: KnowledgeBaseItem | KnowledgeHubNode) => {
@@ -2211,7 +2260,12 @@ function KnowledgeBasePageContent() {
         if (isNavigableContainer) {
           // Use clean nav URL — filters don't carry over when drilling into a new container
           setIsSearchOpen(false);
-          router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
+          // The sidebar lists an app's children once the app is open: start that
+          // read with the table's instead of after it (the loader shares it).
+          if (isAllRecordsMode && item.nodeType === 'app') {
+            void fetchAppDirectChildren(item.id).catch(() => {});
+          }
+          pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
         } else if (item.nodeType === 'record') {
           handlePreviewFile(item);
         }
@@ -2221,13 +2275,13 @@ function KnowledgeBasePageContent() {
           setIsSearchOpen(false);
           setCurrentFolderId(item.id);
           // Use clean nav URL to clear search params when navigating into folders
-          router.push(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
+          pushKbUrl(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
         } else {
           handlePreviewFile(item);
         }
       }
     },
-    [selectedKbId, router, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
+    [selectedKbId, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
   );
 
 
@@ -2329,12 +2383,12 @@ function KnowledgeBasePageContent() {
     (breadcrumb: Breadcrumb) => {
       setIsSearchOpen(false);
       if (breadcrumb.id === 'all-records-root') {
-        router.push(buildCleanNavUrl(isAllRecordsMode, {}));
+        pushKbUrl(buildCleanNavUrl(isAllRecordsMode, {}));
         return;
       }
-      router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
     },
-    [router, isAllRecordsMode, setIsSearchOpen]
+    [isAllRecordsMode, setIsSearchOpen]
   );
 
   const executeReindex = useCallback(
@@ -2664,14 +2718,12 @@ function KnowledgeBasePageContent() {
   const handleDelete = useCallback((item: KnowledgeBaseItem) => {
     if (!canDeleteCollection) return;
     const isHubNode = 'nodeType' in item && 'origin' in item;
-    // 'app'/'kb' nodes have no nodeType here — deleteNode's fallback path
-    // (nodeType neither 'folder' nor 'record') routes them to
-    // deleteKnowledgeBase, which is what deleting a collection needs.
     let nodeType: NodeType | undefined;
     if (isHubNode) {
       const hubNode = item as unknown as KnowledgeHubNode;
       if (hubNode.nodeType === 'record') nodeType = 'record';
       else if (hubNode.nodeType === 'folder' || hubNode.nodeType === 'recordGroup') nodeType = 'folder';
+      else if (hubNode.nodeType === 'app') nodeType = 'app';
     } else {
       nodeType = item.type === 'folder' ? 'folder' : 'record';
     }
@@ -2728,14 +2780,16 @@ function KnowledgeBasePageContent() {
   // Bulk Selection Actions
   // ========================================
 
-  // Get selected items as array
-  const selectedItemsArray = useMemo(() => {
-    const currentItems = isAllRecordsMode ? allRecordsItems : tableItems;
-    const selectedSet = isAllRecordsMode ? selectedRecords : selectedItems;
-    return currentItems.filter(item => selectedSet.has(item.id));
-  }, [isAllRecordsMode, allRecordsItems, tableItems, selectedRecords, selectedItems]);
-
-  const selectedCount = isAllRecordsMode ? selectedRecords.size : selectedItems.size;
+  // Every bulk action works on the rows ticked on any page, not only the one on screen.
+  const tickedRows = useTickedRows<KbTableItem>(
+    isAllRecordsMode ? allRecordsItems : tableItems,
+    isAllRecordsMode ? selectedRecords : selectedItems
+  );
+  const selectedCount = tickedRows.length;
+  // The bar offers Delete only when every ticked row may be deleted, as each row's menu does.
+  const bulkDeleteDenied = !canDeleteCollection || !tickedRows.every(canDeleteKbTableItem);
+  const bulkDeleteNeedsCollection =
+    !selectedKbId && tickedRows.some((row) => needsCollectionContext(row, 'delete'));
 
   // Handle deselect all
   const handleDeselectAll = useCallback(() => {
@@ -2746,15 +2800,25 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, clearRecordSelection, clearSelection]);
 
-  // Handle bulk chat
+  // Open a new chat scoped to the ticked rows; nothing is sent until the user asks.
   const handleBulkChat = useCallback(() => {
-    const selectedIds = selectedItemsArray.map(item => item.id);
-    router.push(`/chat?recordIds=${selectedIds.join(',')}`);
-  }, [selectedItemsArray, router]);
+    const selectedNodes = tickedRows.map(toPendingChatNode);
+    if (selectedNodes.length === 0) return;
+    if (selectedNodes.length > MAX_SELECTED_NODES) {
+      toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
+      return;
+    }
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: { selectedNodes },
+      referrerPage: '/knowledge-base',
+    });
+    router.push('/chat');
+  }, [tickedRows, router, t]);
 
   // Handle bulk reindex
   const handleBulkReindex = useCallback(async () => {
-    const items = selectedItemsArray.map(item => {
+    const items = tickedRows.map(item => {
       const hubItem = ('nodeType' in item) ? (item as KnowledgeHubNode) : undefined;
       return {
         id: item.id,
@@ -2765,19 +2829,19 @@ function KnowledgeBasePageContent() {
       };
     });
     await bulkReindexSelected(items, refreshData);
-  }, [selectedItemsArray, bulkReindexSelected, refreshData]);
+  }, [tickedRows, bulkReindexSelected, refreshData]);
 
   // Handle bulk delete click (opens dialog)
   const handleBulkDeleteClick = useCallback(() => {
-    if (!canDeleteCollection) return;
+    if (bulkDeleteDenied) return;
     setIsBulkDeleteDialogOpen(true);
-  }, [canDeleteCollection]);
+  }, [bulkDeleteDenied]);
 
   // Handle bulk delete confirm
   const handleBulkDeleteConfirm = useCallback(async () => {
     setIsBulkDeleting(true);
     try {
-      const items = selectedItemsArray.map(item => {
+      const items = tickedRows.map(item => {
         // Determine node type
         const isKnowledgeHubNodeItem = 'nodeType' in item && 'origin' in item;
         let nodeType: 'kb' | 'app' | 'folder' | 'record' = 'record';
@@ -2802,7 +2866,7 @@ function KnowledgeBasePageContent() {
     } finally {
       setIsBulkDeleting(false);
     }
-  }, [selectedItemsArray, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
+  }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
   // Derive current title based on mode
   const currentTitle = useMemo(() => {
@@ -2814,7 +2878,7 @@ function KnowledgeBasePageContent() {
 
     if (isAllRecordsMode) {
       if (allRecordsSidebarSelection.type === 'all') {
-        return 'All';
+        return 'All Records';
       } else if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
@@ -2832,6 +2896,53 @@ function KnowledgeBasePageContent() {
     allRecordsSearchQuery,
     searchQuery,
     allRecordsTableData?.currentNode?.name,
+  ]);
+
+  const chatScopeNode = useMemo((): MentionNode | null => {
+    if (isAllRecordsMode) {
+      const nodeId = searchParams.get('nodeId');
+      const nodeType = searchParams.get('nodeType');
+      const current = allRecordsTableData?.currentNode;
+      if (nodeId && nodeType && current?.name && current.id === nodeId) {
+        return {
+          id: nodeId,
+          name: current.name,
+          nodeType: current.nodeType || nodeType,
+          connector: connectorOfCurrentNode(current),
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'collection') {
+        return {
+          id: allRecordsSidebarSelection.id,
+          name: allRecordsSidebarSelection.name,
+          nodeType: 'kb',
+          connector: '',
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'connector' && allRecordsSidebarSelection.itemId) {
+        return {
+          id: allRecordsSidebarSelection.itemId,
+          name: allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType,
+          nodeType: 'app',
+          connector: allRecordsSidebarSelection.connectorType,
+        };
+      }
+      return null;
+    }
+    const current = tableData?.currentNode;
+    if (!current?.id || !current.name) return null;
+    return {
+      id: current.id,
+      name: current.name,
+      nodeType: current.nodeType,
+      connector: connectorOfCurrentNode(current),
+    };
+  }, [
+    isAllRecordsMode,
+    searchParams,
+    allRecordsTableData?.currentNode,
+    allRecordsSidebarSelection,
+    tableData?.currentNode,
   ]);
 
   // All Records mode: Prepend "All Records" root breadcrumb
@@ -2923,18 +3034,34 @@ function KnowledgeBasePageContent() {
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
-          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
           extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
-          onPageChange={(page) => {
-            if (isAllRecordsMode) {
-              useKnowledgeBaseStore.getState().setAllRecordsPage(page);
-            } else {
-              setCollectionsPage(page);
+          onCursorChange={(cursor, direction) => {
+            if (!isAllRecordsMode) {
+              setCollectionsCursor(cursor);
+              return;
             }
+            const nt = searchParams.get('nodeType') ?? undefined;
+            const nid = searchParams.get('nodeId') ?? undefined;
+            if (cursor) {
+              // Mark it seen first so the cursor effect does not fetch again.
+              prevAllRecordsCursorRef.current = cursor;
+              useKnowledgeBaseStore.getState().setAllRecordsCursor(cursor);
+              void fetchAllRecordsTableData(nt, nid);
+              return;
+            }
+            // hasNext without a cursor: setting null does not change the position, so the effect never fetches.
+            if (direction !== 'next' && direction !== 'prev') return;
+            const pag = useKnowledgeBaseStore.getState().allRecordsTableData?.pagination;
+            const limit = Math.max(1, pag?.limit || 1);
+            const current = pag?.page && pag.page > 0
+              ? pag.page
+              : Math.floor(((pag?.startIndex ?? 1) - 1) / limit) + 1;
+            const target = direction === 'next' ? current + 1 : Math.max(1, current - 1);
+            void fetchAllRecordsTableData(nt, nid, target > 1 ? target : undefined);
           }}
           onLimitChange={(limit) => {
             if (isAllRecordsMode) {
@@ -2945,6 +3072,7 @@ function KnowledgeBasePageContent() {
           }}
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
+          onGoToParent={handleGoToParent}
           onRename={!isAllRecordsMode ? handleRename : undefined}
           onReindex={handleReindexClick}
           onReplace={
@@ -2959,42 +3087,49 @@ function KnowledgeBasePageContent() {
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
+          hasCollectionContext={Boolean(selectedKbId)}
         />
 
-        {/* Selection Action Bar - shows when items are selected.
-            Hidden in All Records "All" and connector views (mirrors the checkbox guard
-            above). Rows in those views are top-level aggregates that aren't individually
-            reindexable, and stale selections from a prior view shouldn't surface here. */}
-        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
-          <SelectionActionBar
-            selectedCount={selectedCount}
-            onDeselectAll={handleDeselectAll}
-            onChat={handleBulkChat}
-            onReindex={handleBulkReindex}
-            onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
-            deletePermissionDenied={!canDeleteCollection}
-            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-          />
-        )}
+        {/* Rows in the All Records "All" and connector views are whole sources: they
+            can scope a chat but are not reindexed from here. */}
+        <SelectionActionBar
+          selectedCount={selectedCount}
+          onDeselectAll={handleDeselectAll}
+          onChat={handleBulkChat}
+          onReindex={
+            isAllRecordsMode &&
+            (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')
+              ? undefined
+              : handleBulkReindex
+          }
+          onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
+          deletePermissionDenied={bulkDeleteDenied}
+          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+        />
 
-        {/* Chat Bar (temporarily disabled)
-        {selectedCount === 0 &&
-        <Box
-          style={{ 
-            position: 'absolute',
-            bottom: 'var(--space-6)',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-          }}
-        >
-          <ChatWidgetWrapper
-            currentTitle={currentTitle}
-            selectedKbId={selectedKbId}
-            isAllRecordsMode={isAllRecordsMode}
-          />
-        </Box>
-        } */}
+        {selectedCount === 0 && (
+          <>
+            <Flex
+              justify="center"
+              style={{
+                position: 'absolute',
+                bottom: 64,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 'min(800px, calc(100% - 48px))',
+                zIndex: 20,
+                pointerEvents: 'none',
+              }}
+            >
+              <ChatWidgetWrapper
+                currentTitle={currentTitle}
+                selectedKbId={selectedKbId}
+                isAllRecordsMode={isAllRecordsMode}
+                scopeNode={chatScopeNode}
+              />
+            </Flex>
+          </>
+        )}
       </Flex>
 
       {/* Force reindex confirmation (table, grid, and sidebar) */}

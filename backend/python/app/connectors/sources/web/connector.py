@@ -120,7 +120,7 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.utils.api_call import make_api_call
@@ -906,13 +906,8 @@ class WebConnector(BaseConnector):
             if user.email
         ]
 
-    async def create_record_group(self, app_users: List[AppUser]) -> None:
-        """
-        Create a record group with external_group_id as self.url and give permissions to all app_users.
-
-        Args:
-            app_users: List of AppUser objects to grant permissions to
-        """
+    async def create_record_group(self) -> None:
+        """Create the site's record group. It inherits the app, so it carries no grants of its own."""
         try:
             if not self.url:
                 self.logger.warning("⚠️ Cannot create record group: URL not set")
@@ -922,7 +917,6 @@ class WebConnector(BaseConnector):
             parsed_url = urlparse(self.url)
             record_group_name = parsed_url.netloc or self.url
 
-            # Create record group
             record_group = RecordGroup(
                 org_id=self.data_entities_processor.org_id,
                 name=record_group_name,
@@ -933,30 +927,11 @@ class WebConnector(BaseConnector):
                 web_url=self.url,
                 created_at=get_epoch_timestamp_in_ms(),
                 updated_at=get_epoch_timestamp_in_ms(),
+                inherit_permissions=True,
             )
 
-            # Create READ permissions: TEAM scope uses org; PERSONAL uses app_users
-            if not app_users and self.scope == ConnectorScope.TEAM.value:
-                permissions = [
-                    Permission(
-                        type=PermissionType.READ,
-                        entity_type=EntityType.ORG,
-                        external_id=self.data_entities_processor.org_id,
-                    )
-                ]
-            else:
-                permissions = [
-                    Permission(
-                        email=app_user.email,
-                        type=PermissionType.READ,
-                        entity_type=EntityType.USER,
-                    )
-                    for app_user in app_users
-                    if app_user.email
-                ]
-
-            # Create/update record group with permissions
-            await self.data_entities_processor.on_new_record_groups([(record_group, permissions)])
+            # An empty list, not None: it also clears grants an older sync stored on the group.
+            await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
         except Exception as e:
             self.logger.error(f"❌ Failed to create record group: {e}", exc_info=True)
@@ -1060,28 +1035,25 @@ class WebConnector(BaseConnector):
                 await self.data_entities_processor.ensure_team_app_edge(
                     self.connector_id
                 )
-                app_users = []
             else:
                 # Personal: create user-app edge only for the creator
                 if self.created_by:
                     creator_user = await self.data_entities_processor.get_user_by_user_id(self.created_by)
                     if creator_user and getattr(creator_user, "email", None):
-                        app_users = self.get_app_users([creator_user])
-                        await self.data_entities_processor.on_new_app_users(app_users)
+                        await self.data_entities_processor.on_new_app_users(
+                            self.get_app_users([creator_user])
+                        )
                     else:
                         self.logger.warning(
                             "Creator user not found or has no email for created_by %s; skipping user-app edges.",
                             self.created_by,
                         )
-                        app_users = []
                 else:
                     self.logger.warning(
                         "Personal connector has no created_by; skipping user-app edges."
                     )
-                    app_users = []
 
-            # Step 2: create record group with permissions
-            await self.create_record_group(app_users)
+            await self.create_record_group()
 
             # Reset state for new sync
             self.visited_urls.clear()

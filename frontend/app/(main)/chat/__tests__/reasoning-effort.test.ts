@@ -97,7 +97,7 @@ const { ChatApi } = await import('../api');
 const { normalizeReasoningEffort } = await import('../types');
 const { applyConversationModelInfoToStore } = await import('../utils/apply-conversation-model-info');
 const { getModelDefaultReasoningEffort } = await import('../store');
-const { getAppliedReasoningEffortLabel, getDefaultEffortOptionLabel, ReasoningEffortSelector } = await import(
+const { getAppliedReasoningEffortLabel, ReasoningEffortSelector } = await import(
   '../components/chat-panel/expansion-panels/model-selector/model-selector-panel'
 );
 
@@ -476,29 +476,24 @@ describe('reasoning effort picker', () => {
     return onSelect;
   }
 
-  it('marks the default option when nothing is picked, naming the model default', () => {
+  it("marks the default level when nothing is picked and says it is the model's own", () => {
     renderPicker({ value: null, modelDefault: 'medium' });
-    expect(screen.getByRole('radio', { name: 'Model default (Medium)' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByRole('radio', { name: 'Medium' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText("Defaults to Medium, this model's own default, when not set.")).toBeTruthy();
+  });
+
+  it('marks the pick over the default and says how to clear it', () => {
+    const onSelect = renderPicker({ value: 'high', modelDefault: 'medium' });
+    expect(screen.getByRole('radio', { name: 'High' }).getAttribute('aria-checked')).toBe('true');
     expect(screen.getByRole('radio', { name: 'Medium' }).getAttribute('aria-checked')).toBe('false');
-  });
-
-  it('clears the pick when the default option is chosen', () => {
-    const onSelect = renderPicker({ value: 'high' });
-    fireEvent.click(screen.getByRole('radio', { name: 'Model default' }));
-    expect(onSelect).toHaveBeenCalledWith(null);
-  });
-
-  it('keeps a pick when its option is chosen again', () => {
-    const onSelect = renderPicker({ value: 'high' });
+    expect(screen.getByText('Click again to use the default.')).toBeTruthy();
     fireEvent.click(screen.getByRole('radio', { name: 'High' }));
     expect(onSelect).toHaveBeenCalledWith('high');
   });
 
-  it("names the agent's default over the model's", () => {
-    const t = ((_key: string, opts: string | { defaultValue: string; level: string }) =>
-      typeof opts === 'string' ? opts : opts.defaultValue.replace('{{level}}', opts.level)) as never;
-    expect(getDefaultEffortOptionLabel(t, 'low', 'max')).toBe('Agent default (Low)');
-    expect(getDefaultEffortOptionLabel(t, null, 'max')).toBe('Model default (Max)');
-    expect(getDefaultEffortOptionLabel(t, null, null)).toBe('Model default');
+  it("marks the agent's default over the model's", () => {
+    renderPicker({ value: null, agentDefault: 'low', modelDefault: 'max' });
+    expect(screen.getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('Defaults to Low when not set.')).toBeTruthy();
   });
 });

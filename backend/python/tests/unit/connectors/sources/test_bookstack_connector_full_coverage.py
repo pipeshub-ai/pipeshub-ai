@@ -834,7 +834,8 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
 
 
 class TestParseBookstackPermissions:
@@ -850,8 +851,8 @@ class TestParseBookstackPermissions:
             "fallback_permissions": {},
         }
         result = await connector._parse_bookstack_permissions(data, {}, "book")
-        assert len(result) == 1
-        assert result[0].type == PermissionType.OWNER
+        # Everyone Else does not inherit, so it overrides every role and ownership grants nothing.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_owner_no_email(self, connector):
@@ -1985,7 +1986,7 @@ class TestBookStackCoverageGaps:
         connector.data_source.list_audit_log = AsyncMock(side_effect=[
             _make_response(data={"data": []}),
             _make_response(data={"data": [{"detail": "(1) UpdatedBook"}]}),
-            _make_response(data={"data": [{"detail": "(2) DeletedBook"}]}),
+            _make_response(data={"data": [{"detail": "(2) DeletedBook"}], "total": 1}),
             _make_response(data={"data": [{"detail": "(3) PermBook", "loggable_type": "book"}]}),
         ])
         connector._handle_record_group_create_event = AsyncMock()

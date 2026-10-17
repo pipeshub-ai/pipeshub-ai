@@ -1193,6 +1193,7 @@ class TestProcessDriveItem:
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_signed_url = AsyncMock(return_value="https://signed.com")
         c._get_item_permissions = AsyncMock(return_value=[])
+        c._drive_item_has_unique_permissions = AsyncMock(return_value=False)
 
         existing = MagicMock()
         existing.id = "existing-id"

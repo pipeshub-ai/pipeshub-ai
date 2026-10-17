@@ -110,7 +110,9 @@ class FakeRecordsDb:
             existing = self.record_groups.get(group.external_group_id)
             group.id = existing.id if existing else str(uuid.uuid4())
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions or [])
+            # As the processor: None means the grants could not be read, so the stored ones stay.
+            if permissions is not None or group.external_group_id not in self.record_group_permissions:
+                self.record_group_permissions[group.external_group_id] = list(permissions or [])
 
     async def on_new_app_users(self, users: list[AppUser]) -> None:
         for user in users:
@@ -205,7 +207,7 @@ class FakeDataStore:
         self.db = db
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[FakeDataStore]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
     async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any]) -> list[dict[str, Any]]:

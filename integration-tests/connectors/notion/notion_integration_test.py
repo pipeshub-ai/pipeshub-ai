@@ -58,7 +58,7 @@ _ROOT = Path(__file__).resolve().parents[2]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus  # noqa: E402
+from app.config.constants.arangodb import CollectionNames, MimeTypes, ProgressStatus  # noqa: E402
 from app.models.blocks import BlockSubType, BlockType, GroupSubType  # noqa: E402
 from app.models.entities import RecordType  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
@@ -422,17 +422,28 @@ class TestNotionFullSync:
         notion_source_helper: NotionSourceHelper,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-WS-002: every synced user gets a READ permission edge to the workspace group."""
+        """TC-WS-002: the workspace group inherits the app and carries no per-user grant;
+        every synced user reaches it through their link to the app."""
         connector_id = notion_connector["connector_id"]
         expected_users = await notion_source_helper.person_users_with_email()
 
-        edges = await graph_provider.count_permission_edges_to_record_groups(
+        grants = await graph_provider.count_permission_edges_to_record_groups(
             connector_id, notion_seed.workspace_id
         )
-        assert edges == len(expected_users), (
-            f"workspace PERMISSION edges {edges} != synced users {len(expected_users)}"
+        assert grants == 0, f"the workspace inherits the app, but carries {grants} PERMISSION edge(s)"
+        workspace = await graph_provider.get_record_group_by_external_id(connector_id, notion_seed.workspace_id)
+        assert workspace is not None, "workspace RecordGroup missing"
+        inherits = await graph_provider.find_edges_between(
+            CollectionNames.RECORD_GROUPS.value, workspace.id,
+            CollectionNames.APPS.value, connector_id,
+            CollectionNames.INHERIT_PERMISSIONS.value,
         )
-        logger.info("TC-WS-002 passed: %d workspace permission edges", edges)
+        assert len(inherits) == 1, f"expected the workspace to inherit the app, found {len(inherits)} edge(s)"
+        app_users = await graph_provider.count_user_app_relation_edges(connector_id)
+        assert app_users >= len(expected_users), (
+            f"{app_users} users linked to the app; every synced user ({len(expected_users)}) should be"
+        )
+        logger.info("TC-WS-002 passed: workspace inherits the app, %d users linked", app_users)
 
     @pytest.mark.order(5)
     async def test_tc_conn_001_connection_test(

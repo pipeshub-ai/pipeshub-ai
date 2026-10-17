@@ -61,6 +61,8 @@ services:
       - STRICT_MODE=${STRICT_MODE:-false}
       # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
       - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
+      # The pinned Zammad (6.4) can't count tickets; list them every sync so a delete lands.
+      - ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS=${ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS:-0}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
       - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}

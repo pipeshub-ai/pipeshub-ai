@@ -16,7 +16,7 @@ import io
 import json
 import re
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -57,17 +57,17 @@ graph_retry_skipped = pytest.mark.xfail(
 )
 
 
-def json_response(payload: object, status: int = 200, headers: Optional[dict[str, str]] = None) -> httpx.Response:
+def json_response(payload: object, status: int = 200, headers: dict[str, str] | None = None) -> httpx.Response:
     return httpx.Response(
         status, content=json.dumps(payload).encode(), headers={"content-type": "application/json", **(headers or {})}
     )
 
 
-def graph_error(status: int, code: str, message: str = "error", headers: Optional[dict[str, str]] = None) -> httpx.Response:
+def graph_error(status: int, code: str, message: str = "error", headers: dict[str, str] | None = None) -> httpx.Response:
     return json_response({"error": {"code": code, "message": message}}, status=status, headers=headers)
 
 
-def page(values: list, *, next_link: Optional[str] = None, delta_link: Optional[str] = None) -> dict[str, Any]:
+def page(values: list, *, next_link: str | None = None, delta_link: str | None = None) -> dict[str, Any]:
     body: dict[str, Any] = {"value": values}
     if next_link:
         body["@odata.nextLink"] = next_link
@@ -91,7 +91,7 @@ class MicrosoftCloudStub:
         self.unrouted: list[str] = []
         self.tokens_issued = 0
         self.token_lifetime_s = 3600
-        self.token_failure: Optional[httpx.Response] = None
+        self.token_failure: httpx.Response | None = None
         self.on("POST", TOKEN_PATH, self._issue_token)
 
     def on(self, method: str, path: str, response: object) -> "MicrosoftCloudStub":
@@ -204,8 +204,10 @@ class FakeCheckpointStore:
     def __init__(self) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
+        # Stored nodes ("records/<id>", "recordGroups/<id>") that have an inheritPermissions edge.
+        self.inheriting: set[str] = set()
 
-    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> Optional[dict[str, Any]]:
+    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> dict[str, Any] | None:
         stored = self.sync_points.get(key)
         return dict(stored) if stored is not None else None
 
@@ -216,15 +218,20 @@ class FakeCheckpointStore:
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)
 
-    def values_for(self, key_suffix: str) -> Optional[dict[str, Any]]:
+    def values_for(self, key_suffix: str) -> dict[str, Any] | None:
         for key, value in self.sync_points.items():
             if key.endswith(key_suffix):
                 return value
         return None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
+
+    async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> list[dict[str, Any]]:
+        if edge_collection == "inheritPermissions" and from_node_id in self.inheriting:
+            return [{"_from": from_node_id}]
+        return []
 
 
 class FakeConfigService:
@@ -262,6 +269,7 @@ class FakeRecordsDb:
         self.record_batches: list[list[Any]] = []
         self.record_groups: dict[str, Any] = {}
         self.record_group_permissions: dict[str, list[Any]] = {}
+        self.record_group_writes: list[tuple[Any, list[Any] | None]] = []
         self.app_users: list[Any] = []
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
@@ -276,11 +284,13 @@ class FakeRecordsDb:
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
+        # The store the processor reads stored edges from (the connector's data store provider).
+        self.edge_store: Any = None
 
     def add_active_user(self, email: str) -> None:
         self.active_users.append(type("ActiveUser", (), {"email": email})())
 
-    def seed_record(self, record: Record, permissions: Optional[list[Any]] = None) -> None:
+    def seed_record(self, record: Record, permissions: list[Any] | None = None) -> None:
         self.records[record.external_record_id] = record
         self.record_permissions[record.external_record_id] = list(permissions or [])
 
@@ -289,7 +299,7 @@ class FakeRecordsDb:
         assert len(matches) == 1, f"expected one record named {name!r}, found {len(matches)}"
         return matches[0]
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         """A base ``Record`` rebuilt from the stored node, as both graph providers return it.
 
         No file-only fields (``quick_xor_hash``, ``path``, ``is_file``); those come
@@ -302,7 +312,7 @@ class FakeRecordsDb:
             return None
         return Record.from_arango_base_record(stored.to_arango_base_record())
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None) -> list[Record]:
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None) -> list[Record]:
         """Children as base ``Record`` objects, the way ``Record.from_arango_base_record`` builds them.
 
         Production returns no subclass fields (no ``is_file``), so neither does this.
@@ -319,7 +329,7 @@ class FakeRecordsDb:
             children.append(Record.model_validate(stored.model_dump(include=set(Record.model_fields))))
         return children
 
-    async def get_file_record_by_id(self, record_id: str) -> Optional[FileRecord]:
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
         """A ``FileRecord`` rebuilt from the file and record nodes; None when no file node exists.
 
         A read that fails raises ``GraphQueryError``, as both providers do.
@@ -334,7 +344,13 @@ class FakeRecordsDb:
             return None
         return FileRecord.from_arango_record(stored.to_arango_record(), stored.to_arango_base_record())
 
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         self.record_batches.append([rec for rec, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
@@ -352,6 +368,19 @@ class FakeRecordsDb:
         self.permission_updates.append((record, list(permissions)))
         self.record_permissions[record.external_record_id] = list(permissions)
 
+    async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
+        """Whether the stored node has an inherit edge, read from the edge store as the processor
+        does; without one, from the flag the node was saved with."""
+        if not stored_id:
+            return False
+        if self.edge_store is not None:
+            return bool(await self.edge_store.get_edges_from_node(f"{collection}/{stored_id}", "inheritPermissions"))
+        stored = (
+            self.record_groups.values() if collection == "recordGroups" else self.records.values()
+        )
+        node = next((n for n in stored if getattr(n, "id", None) == stored_id), None)
+        return bool(node is not None and getattr(node, "inherit_permissions", False))
+
     async def on_record_deleted(self, record_id: str, **_: object) -> None:
         self.deleted.append(record_id)
         for external_id, record in list(self.records.items()):
@@ -359,10 +388,19 @@ class FakeRecordsDb:
                 del self.records[external_id]
                 self.record_permissions.pop(external_id, None)
 
-    async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_record_groups(self, groups: list[tuple[Any, list[Any] | None]]) -> None:
+        """Like the real processor: ``None`` grants are unknown and keep the stored ones, ``[]`` removes them."""
         for group, permissions in groups:
+            self.record_group_writes.append((group, permissions))
+            stored = self.record_groups.get(group.external_group_id)
+            if stored is not None:
+                group.id = stored.id
             self.record_groups[group.external_group_id] = group
-            self.record_group_permissions[group.external_group_id] = list(permissions)
+            if permissions is not None:
+                self.record_group_permissions[group.external_group_id] = list(permissions)
+
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> object | None:
+        return self.record_groups.get(external_id)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
         self.app_users.extend(users)

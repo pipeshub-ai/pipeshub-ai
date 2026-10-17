@@ -409,8 +409,9 @@ class TestBookStackPermissions:
             "fallback_permissions": {"inheriting": False},
         }
         perms = await bookstack_connector._parse_bookstack_permissions(permissions_data, {}, "page")
-        # 1 owner + 1 read + 1 write
-        assert len(perms) == 3
+        # Everyone Else is set, so an override reaches every role and ownership grants nothing.
+        assert len(perms) == 2
+        assert all(p.type != PermissionType.OWNER for p in perms)
 
     async def test_parse_bookstack_permissions_fallback_book(self, bookstack_connector):
         bookstack_connector.data_source = MagicMock()
@@ -429,8 +430,9 @@ class TestBookStackPermissions:
         perms = await bookstack_connector._parse_bookstack_permissions(
             permissions_data, roles_details, "book"
         )
-        # 1 owner + 1 from role 100 (write because create-all)
-        assert len(perms) == 2
+        # Role 100 (write because create-all); the owner has no *-view-own role, so no owner grant.
+        assert len(perms) == 1
+        assert perms[0].type == PermissionType.WRITE
 
 
 # ===========================================================================
@@ -1661,7 +1663,8 @@ class TestCreateRecordGroupWithPermissions:
             item, "book", {}, None
         )
         assert result is not None
-        assert result[1] == []
+        # Unknown, not empty: the processor keeps the stored grants (RG-5).
+        assert result[1] is None
 
 
 class TestParseBookstackPermissions:
@@ -1677,8 +1680,8 @@ class TestParseBookstackPermissions:
             "fallback_permissions": {},
         }
         result = await connector._parse_bookstack_permissions(data, {}, "book")
-        assert len(result) == 1
-        assert result[0].type == PermissionType.OWNER
+        # Everyone Else does not inherit, so it overrides every role and ownership grants nothing.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_owner_no_email(self, connector):

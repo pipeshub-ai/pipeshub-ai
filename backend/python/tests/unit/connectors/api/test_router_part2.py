@@ -3061,6 +3061,48 @@ class TestGetActiveAgentInstances:
         assert "connectors" in result
 
 
+class TestConnectorListRoutesSurfaceRegistryErrors:
+    """A graph failure inside the real registry must reach the client as a 500, not an empty list."""
+
+    def _request_with_failing_registry(self) -> MagicMock:
+        from app.connectors.core.registry.connector_registry import ConnectorRegistry
+
+        gp = AsyncMock()
+        gp.get_filtered_connector_instances.side_effect = RuntimeError("graph down")
+        gp.get_user_connector_instances.side_effect = RuntimeError("graph down")
+        registry_container = MagicMock()
+        registry_container.data_store = AsyncMock(return_value=MagicMock(graph_provider=gp))
+        req = _make_request()
+        req.app.state.connector_registry = ConnectorRegistry(registry_container)
+        return req
+
+    async def test_list_returns_500(self) -> None:
+        from app.connectors.api.router import get_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_connector_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None,
+                is_authenticated=None, is_active=None, connector_type=None,
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_agents_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_agent_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_agent_instances(
+                self._request_with_failing_registry(), scope=None, page=1, limit=20, search=None
+            )
+        assert exc_info.value.status_code == 500
+
+    async def test_active_returns_500(self) -> None:
+        from app.connectors.api.router import get_active_connector_instances
+
+        with pytest.raises(HTTPException) as exc_info:
+            await get_active_connector_instances(self._request_with_failing_registry())
+        assert exc_info.value.status_code == 500
+
+
 # ===========================================================================
 # Route handler tests: get_oauth_config_registry
 # ===========================================================================

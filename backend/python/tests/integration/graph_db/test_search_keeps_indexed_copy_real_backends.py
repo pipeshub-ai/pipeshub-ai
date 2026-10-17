@@ -30,7 +30,8 @@ ARANGO_DB = "search_keeps_indexed_copy_it"
 _DOC_COLLECTIONS = (
     "users", "records", "recordGroups", "groups", "roles", "organizations", "anyone", "apps", "teams",
 )
-_EDGE_COLLECTIONS = ("permission", "belongsTo", "inheritPermissions", "authenticatedAs")
+# userAppRelation: the connector gate reads it, even where no edge is seeded.
+_EDGE_COLLECTIONS = ("permission", "belongsTo", "inheritPermissions", "authenticatedAs", "userAppRelation")
 _NEO4J_LABELS = {"users": "User", "records": "Record", "apps": "App"}
 _NEO4J_EDGES = {"permission": "PERMISSION", "belongsTo": "BELONGS_TO"}
 
