@@ -4,17 +4,12 @@ import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import type { VectorDbMemoryReport } from './api';
+
+export type { VectorDbMemoryReport };
 
 export const VECTOR_DB_SIZING_GUIDE_URL =
   'https://github.com/pipeshub-ai/pipeshub-ai/blob/main/docs/deployment/vector-db-sizing.md';
-
-/** Response of GET /api/v1/health/vector-db/memory. */
-export interface VectorDbMemoryReport {
-  status: 'ok' | 'insufficient' | 'unknown' | 'unsupported';
-  neededBytes?: number;
-  availableBytes?: number | null;
-  availableSource?: 'configured' | 'host' | null;
-}
 
 const GIB = 1024 ** 3;
 

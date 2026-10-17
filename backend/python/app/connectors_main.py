@@ -1366,15 +1366,19 @@ async def vector_db_health_check(request: Request) -> JSONResponse:
 async def vector_db_memory_check(request: Request) -> JSONResponse:
     """Whether the vector database has the memory to keep search fast.
 
-    Advisory only: it never changes the health status, and it is not in
-    EXCLUDE_PATHS because it reports collection sizes; the Node.js API calls it
-    for admins with the caller's token. Reuses the provider cached by
-    ``/health/vector-db``.
+    Advisory only: it never changes the health status. It reports collection
+    names and sizes and the host's RAM, so it is not in EXCLUDE_PATHS and it
+    refuses non-admins itself: the Node.js route checks too, but this port can
+    be reachable directly. Reuses the provider cached by ``/health/vector-db``.
     """
+    from app.api.middlewares.auth import is_request_admin
     from app.services.vector_db.vector_db_provider_factory import (
         VectorDBProviderFactory,
     )
     from app.utils.logger import create_logger
+
+    if not is_request_admin(request):
+        return JSONResponse(status_code=403, content={"detail": "Admin access required"})
 
     try:
         provider = getattr(request.app.state, "_vector_db_health_provider", None)

@@ -1194,6 +1194,9 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+  # Qdrant's memory limit decides search speed once the index grows
+  # (docs/deployment/vector-db-sizing.md); keep an operator's value.
+  QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "")"
 
   # Same for the private-address switch: dropping it on --reconfigure would let AI
   # model endpoints reach internal addresses again without anyone noticing.
@@ -1359,6 +1362,10 @@ $(optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES "$PIPESHUB_BLOCK_PRIVATE_AD
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
+# Qdrant's container memory limit, also given to the app for the Services page
+# warning. Search stays fast only while the index fits; size it from
+# docs/deployment/vector-db-sizing.md.
+$(optional_env_line QDRANT_MEMORY_LIMIT "$QDRANT_MEMORY_LIMIT" "6G")
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values

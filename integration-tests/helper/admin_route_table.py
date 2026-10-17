@@ -264,6 +264,7 @@ ADMIN_BODIES: dict[tuple[str, str], Any] = {
 PYTHON_BEHIND_NODE_ADMIN = frozenset({
     "connectors/api/router.py::cleanup_vector_store",
     "connectors/api/router.py::reindex_vector_store",
+    "connectors_main.py::vector_db_memory_check",
 })
 
 # Python handlers that ask whether the caller is an admin but let members

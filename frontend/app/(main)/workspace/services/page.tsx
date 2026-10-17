@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, useMemo } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
@@ -25,7 +25,8 @@ import {
   type AppServices,
 } from '@/lib/store/services-health-store';
 import { apiClient } from '@/lib/api';
-import { VectorDbMemoryWarning, type VectorDbMemoryReport } from './vector-db-memory';
+import { VectorDbMemoryWarning } from './vector-db-memory';
+import { getVectorDbMemoryReport, type VectorDbMemoryReport } from './api';
 
 // ========================================
 // Service metadata
@@ -240,6 +241,8 @@ export default function ServicesPage() {
   const [localDeployment, setLocalDeployment] = useState<Deployment | null>(null);
   const [localLastChecked, setLocalLastChecked] = useState(lastChecked);
   const [vectorDbMemory, setVectorDbMemory] = useState<VectorDbMemoryReport | null>(null);
+  // Each refresh starts a new memory request; only the latest may set the state.
+  const memoryRequest = useRef(0);
 
   const infraServiceList = useMemo(() => buildInfraServices(localDeployment, t), [localDeployment, t]);
   const appServiceList = useMemo(() => buildAppServices(t, localApp), [t, localApp]);
@@ -250,19 +253,24 @@ export default function ServicesPage() {
     }
   }, [isProfileInitialized, isAdmin, router]);
 
+  // Advisory and slower than the health checks (it reads every collection), so
+  // it never holds up the status rows.
+  const fetchVectorDbMemory = useCallback(async () => {
+    const request = ++memoryRequest.current;
+    const report = await getVectorDbMemoryReport();
+    if (request === memoryRequest.current) setVectorDbMemory(report);
+  }, []);
+
   const fetchHealth = useCallback(async (showToast = false) => {
+    void fetchVectorDbMemory();
     try {
-      const [infraResp, servicesResp, memoryResp] = await Promise.allSettled([
+      const [infraResp, servicesResp] = await Promise.allSettled([
         apiClient.get('/api/v1/health', { suppressErrorToast: true }),
         apiClient.get('/api/v1/health/services', { suppressErrorToast: true }),
-        apiClient.get<VectorDbMemoryReport>('/api/v1/health/vector-db/memory', {
-          suppressErrorToast: true,
-        }),
       ]);
 
       const infraData = infraResp.status === 'fulfilled' ? infraResp.value.data : null;
       const servicesData = servicesResp.status === 'fulfilled' ? servicesResp.value.data : null;
-      setVectorDbMemory(memoryResp.status === 'fulfilled' ? memoryResp.value.data : null);
 
       setLocalInfra(infraData?.services ?? null);
       setLocalApp(servicesData?.services ?? null);
@@ -285,7 +293,7 @@ export default function ServicesPage() {
       setIsLoading(false);
       setIsRefreshing(false);
     }
-  }, [addToast, t]);
+  }, [addToast, t, fetchVectorDbMemory]);
 
   useEffect(() => {
     if (!isProfileInitialized || isAdmin === false) return;

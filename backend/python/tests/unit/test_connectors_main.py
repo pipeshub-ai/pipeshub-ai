@@ -1661,6 +1661,7 @@ class TestVectorDbMemoryCheck:
 
         request = MagicMock()
         request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
         provider = MagicMock()
         provider.memory_report = AsyncMock(return_value=VectorDBMemoryReport(
             status="insufficient",
@@ -1692,6 +1693,7 @@ class TestVectorDbMemoryCheck:
         request = MagicMock()
         request.app.container = _make_container()
         request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
         provider = MagicMock()
         provider.memory_report = AsyncMock(return_value=None)
 
@@ -1715,6 +1717,7 @@ class TestVectorDbMemoryCheck:
         request = MagicMock()
         request.app.container = _make_container()
         request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user={"role": "admin"})
         provider = MagicMock()
         provider.memory_report = AsyncMock(side_effect=RuntimeError("qdrant down"))
         request.app.state._vector_db_health_provider = provider
@@ -1724,6 +1727,25 @@ class TestVectorDbMemoryCheck:
         assert response.status_code == 503
         assert json.loads(response.body)["status"] == "unknown"
         assert request.app.state._vector_db_health_provider is provider
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user", [None, {}, {"role": "member"}, {"role": "Member"}])
+    async def test_non_admins_are_refused_before_the_report(self, user: dict | None) -> None:
+        from types import SimpleNamespace
+
+        from app.connectors_main import vector_db_memory_check
+
+        request = MagicMock()
+        request.app.state = SimpleNamespace()
+        request.state = SimpleNamespace(user=user)
+        provider = MagicMock()
+        provider.memory_report = AsyncMock()
+        request.app.state._vector_db_health_provider = provider
+
+        response = await vector_db_memory_check(request)
+
+        assert response.status_code == 403
+        provider.memory_report.assert_not_awaited()
 
 
 class TestGraphDbHealthNeo4jUnhealthy:
