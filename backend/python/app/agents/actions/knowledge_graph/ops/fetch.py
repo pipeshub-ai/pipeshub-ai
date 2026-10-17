@@ -240,10 +240,12 @@ async def execute_fetch_record(
     ``query`` (``TARGETED_RETRIEVAL`` only) asks for part of each record: its
     blocks most relevant to the query, within ``FOCUSED_READ_MAX_CHARS`` per
     record, rather than the whole record. A record that fits that size is read
-    whole; a continuation (``start_block`` > 0) reads in order as before.
+    whole; a continuation (``start_block`` > 0) reads in order from there,
+    within the same size. Ignored under THOROUGH_RETRIEVAL's full-read policy.
     """
     from app.agent_loop_lib.tools.base import ToolOutput
     from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+    from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
     from app.agents.agent_loop.tool_adapter import _to_tool_output
     from app.modules.agents.qna.chat_state import remember_record_ids
     from app.modules.retrieval.context.targeted import (
@@ -309,7 +311,13 @@ async def execute_fetch_record(
     # records must not each get a full window's worth. Sized from the model
     # actually answering.
     budget = resolve_render_budget(context.context_length, max_blocks=block_cap)
-    focus = (query or "").strip() if targeted_retrieval_enabled() else ""
+    # Under THOROUGH_RETRIEVAL's full-read policy the records are read whole.
+    focus = (
+        (query or "").strip()
+        if targeted_retrieval_enabled()
+        and not context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY)
+        else ""
+    )
     focused_limit = focused_read_chars() if focus else None
     if focused_limit is not None:
         # A focused read asks for a part: each record gets the focused size,

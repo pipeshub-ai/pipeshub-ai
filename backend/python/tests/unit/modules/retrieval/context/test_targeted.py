@@ -156,6 +156,11 @@ class TestCapPassagesPerRecord:
         assert _children(capped.units[0]) == [0, 3]
         assert capped.repeats_dropped == 2
 
+    def test_a_trimmed_section_counts_only_the_replies_it_still_holds(self) -> None:
+        capped = cap_passages_per_record([_thread("t", 40, {20: 0.9})], 2)
+        # The section's own block_index (0, its first reply) was cut and is not shown.
+        assert shown_block_keys(capped.units) == {("t", 19), ("t", 20)}
+
     def test_shown_block_keys_reads_every_block_a_unit_renders(self) -> None:
         keys = shown_block_keys([_leaf("a", 3, 0.9), _thread("t", 2, {}), "junk", {"block_index": 1}])
         assert keys == {("a", 3), ("t", 0), ("t", 1)}

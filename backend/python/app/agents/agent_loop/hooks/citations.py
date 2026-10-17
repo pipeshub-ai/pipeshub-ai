@@ -225,6 +225,14 @@ class _FetchFullRecordTool(Tool):
     def name(self) -> str:
         return _FETCH_FULL_RECORD_TOOL_NAME
 
+    def _focused_reads(self) -> bool:
+        """Whether this request's fetch takes a `query`: TARGETED_RETRIEVAL on,
+        and not under THOROUGH_RETRIEVAL's full-read policy, which reads the
+        records an answer rests on whole."""
+        return targeted_retrieval_enabled() and not self._context.tool_state.get(
+            READ_RECORDS_IN_FULL_STATE_KEY,
+        )
+
     @property
     def display_name(self) -> str | None:
         return "Fetching additional data"
@@ -240,7 +248,7 @@ class _FetchFullRecordTool(Tool):
         description = _FETCH_FULL_RECORD_DESCRIPTION
         if self._context.tool_state.get(READ_RECORDS_IN_FULL_STATE_KEY):
             description = description.replace(_SKIP_CASE, _FULL_READ_SKIP_CASE)
-        if targeted_retrieval_enabled():
+        if self._focused_reads():
             description += _focused_read_description()
         return description
 
@@ -289,7 +297,7 @@ class _FetchFullRecordTool(Tool):
                 required=False,
             ),
         ]
-        if targeted_retrieval_enabled():
+        if self._focused_reads():
             parameters.append(ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
@@ -339,7 +347,7 @@ class _FetchFullRecordTool(Tool):
         # must get a correctable error, not a silent empty fetch.
         accepted = (
             (*self._ACCEPTED_ARGS, *self._FOCUSED_ARGS)
-            if targeted_retrieval_enabled() else self._ACCEPTED_ARGS
+            if self._focused_reads() else self._ACCEPTED_ARGS
         )
         unexpected = sorted(set(kwargs) - set(accepted))
         if unexpected:
