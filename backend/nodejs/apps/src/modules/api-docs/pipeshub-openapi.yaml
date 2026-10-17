@@ -14986,7 +14986,7 @@ components:
           description: |
             Decision models (OpenAI Decisions API, Azure OpenAI, TypeSafe Jev). They answer
             typed questions (yes/no, pick one, score) with calibrated probabilities instead
-            of generating text. Code calls the default one through the query service.
+            of generating text. Backend code uses the default one; no route calls it yet.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
         modelRoles:
@@ -44477,7 +44477,7 @@ paths:
           description: |
             Category of AI model to retrieve.
 
-            Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+            Must be one of: `llm`, `embedding`, `ocr`, `slm`, `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`, `decision`.
           schema:
             $ref: '#/components/schemas/ModelType'
       responses:
@@ -44687,7 +44687,7 @@ paths:
                                     Invalid enum value. Expected 'ocr' |
                                     'embedding' | 'llm' | 'slm' | 'reasoning' |
                                     'multiModal' | 'imageGeneration' | 'tts' |
-                                    'stt', received 'llmr'
+                                    'stt' | 'decision', received 'llmr'
                                 code:
                                   type: string
                                   description: Machine-readable error code mapped from the Zod issue code.
@@ -44718,7 +44718,7 @@ paths:
                         message: >-
                           Invalid enum value. Expected 'ocr' | 'embedding' |
                           'llm' | 'slm' | 'reasoning' | 'multiModal' |
-                          'imageGeneration' | 'tts' | 'stt', received 'llmr'
+                          'imageGeneration' | 'tts' | 'stt' | 'decision', received 'llmr'
                         code: INVALID_ENUM
                         value: ""
         '401':
@@ -45127,7 +45127,7 @@ paths:
         - name: modelType
           in: path
           required: true
-          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt)
+          description: Model category (ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision)
           schema:
             $ref: '#/components/schemas/ModelType'
         - name: modelKey
@@ -46930,7 +46930,7 @@ paths:
 
         **Validation rules:**
         - `modelType` must be one of: `llm`, `slm`, `embedding`, `ocr`,
-          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`.
+          `reasoning`, `multiModal`, `imageGeneration`, `tts`, `stt`, `decision`.
         - `modelKey` must refer to an existing provider entry within that
           `modelType` bucket. A 400 is returned if the model cannot be found.
         - Both `modelType` and `modelKey` are required for every role entry.

@@ -215,7 +215,7 @@ async def get_image_generation_config(config_service: ConfigurationService) -> d
     return _select_default_config(ai_models.get("imageGeneration") or [])
 
 
-async def _get_speech_config(
+async def _get_default_config(
     config_service: ConfigurationService,
     bucket: str,
 ) -> dict | None:
@@ -233,26 +233,21 @@ async def _get_speech_config(
 
 async def get_tts_config(config_service: ConfigurationService) -> dict | None:
     """Return the active TTS model config, or ``None`` if unset."""
-    return await _get_speech_config(config_service, "tts")
+    return await _get_default_config(config_service, "tts")
 
 
 async def get_stt_config(config_service: ConfigurationService) -> dict | None:
     """Return the active STT model config, or ``None`` if unset."""
-    return await _get_speech_config(config_service, "stt")
+    return await _get_default_config(config_service, "stt")
 
 
 async def get_decision_config(config_service: ConfigurationService) -> dict | None:
-    """Return the active decision model config, or ``None`` if none is configured."""
-    ai_models = await _load_ai_models(config_service)
-    if not ai_models:
-        return None
-    return _select_default_config(ai_models.get("decision") or [])
+    return await _get_default_config(config_service, "decision")
 
 
 async def get_decision_model_instance(
     config_service: ConfigurationService,
 ) -> Tuple[DecisionModel, dict] | None:
-    """Build the default decision model, or return ``None`` if none is configured."""
     config = await get_decision_config(config_service)
     if not config:
         return None

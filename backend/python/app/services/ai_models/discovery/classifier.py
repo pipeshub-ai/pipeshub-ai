@@ -15,6 +15,14 @@ from app.services.ai_models.discovery.types import DiscoveredModel, RawModel
 
 _EXCLUDE = re.compile(r"(moderation|guard|realtime|\bre-?rank\b|search)", re.IGNORECASE)
 
+# Chat models these providers also serve on their decision endpoint. The ids match
+# the chat model's, so neither the catalog nor an ID rule can tell. Dated snapshots
+# ("gpt-6-luna-2026-10-06") match by prefix.
+_DECISION_MODEL_PREFIXES: dict[str, tuple[str, ...]] = {
+    "openAI": ("gpt-6-luna",),
+    "azureOpenAI": ("gpt-6-luna",),
+}
+
 
 def _id_capabilities(model_id: str) -> list[str] | None:
     """Return ID-rule capabilities, an empty list to drop the model, or None."""
@@ -37,12 +45,6 @@ def _id_capabilities(model_id: str) -> list[str] | None:
         capabilities.append("imageGeneration")
     return capabilities or None
 
-
-# Models a provider also serves on its decision endpoint. Their ids match chat
-# models, so neither the catalog nor an ID rule can tell.
-_DECISION_MODEL_IDS: dict[str, frozenset[str]] = {
-    "openAI": frozenset({"gpt-6-luna"}),
-}
 
 
 def _deprecated_from_catalog(entry: dict) -> bool | None:
@@ -84,7 +86,7 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         source = "heuristic"
     if not capabilities:
         return None
-    if raw.id in _DECISION_MODEL_IDS.get(provider_id, frozenset()) and "decision" not in capabilities:
+    if raw.id.lower().startswith(_DECISION_MODEL_PREFIXES.get(provider_id, ())) and "decision" not in capabilities:
         capabilities = [*capabilities, "decision"]
 
     context_length = raw.context_length

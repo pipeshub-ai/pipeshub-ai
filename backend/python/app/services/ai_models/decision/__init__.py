@@ -1,22 +1,6 @@
-"""Decision models: typed classification calls (yes/no, pick one, score) with calibrated probabilities.
+"""Decision models: typed yes/no, choice and score answers with calibrated probabilities.
 
-Usage::
-
-    from app.services.ai_models.decision import ChoiceQuestion, DecisionOption
-    from app.utils.llm import get_decision_model_instance
-
-    built = await get_decision_model_instance(config_service)
-    if built is None:
-        ...  # no decision model configured
-    model, _config = built
-    result = await model.decide(
-        "I was charged twice for my order.",
-        [ChoiceQuestion(name="team", instructions="Which team should handle this?", options=[
-            DecisionOption(value="billing", description="Payments and refunds"),
-            DecisionOption(value="technical", description="Problems using the product"),
-        ])],
-    )
-    result.answers["team"].choice
+Usage is described in docs/ai-models.md.
 """
 
 from app.services.ai_models.decision.clients import (
@@ -25,7 +9,7 @@ from app.services.ai_models.decision.clients import (
     OpenAIDecisionModel,
     TypeSafeDecisionModel,
 )
-from app.services.ai_models.decision.factory import DecisionProvider, get_decision_model
+from app.services.ai_models.decision.factory import get_decision_model
 from app.services.ai_models.decision.types import (
     ChoiceQuestion,
     DecisionAnswer,
@@ -48,7 +32,6 @@ __all__ = [
     "DecisionModel",
     "DecisionModelError",
     "DecisionOption",
-    "DecisionProvider",
     "DecisionQuestion",
     "DecisionResult",
     "DecisionUsage",

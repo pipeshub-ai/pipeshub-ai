@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from abc import ABC, abstractmethod
 from collections.abc import Sequence
 from typing import Any
@@ -25,7 +26,10 @@ from app.services.ai_models.decision.types import (
     PredicateQuestion,
     ScoreQuestion,
 )
+from app.services.base_client import parse_retry_after
 from app.utils.model_egress import guarded_async_client
+
+logger = logging.getLogger(__name__)
 
 OPENAI_BASE_URL = "https://api.openai.com/v1"
 TYPESAFE_BASE_URL = "https://api.typesafe.ai"
@@ -33,8 +37,9 @@ TYPESAFE_BASE_URL = "https://api.typesafe.ai"
 _REQUEST_TIMEOUT_S = 30.0
 # 529 is TypeSafe's "temporarily overloaded".
 _RETRY_STATUSES = frozenset({429, 500, 502, 503, 504, 529})
-_MAX_ATTEMPTS = 3
+MAX_ATTEMPTS = 3
 _BACKOFF_S = 0.5
+# A longer Retry-After than this is not worth waiting for inside a request.
 _MAX_RETRY_AFTER_S = 5.0
 
 
@@ -47,6 +52,9 @@ def _float(value: object) -> float | None:
 
 
 def _error_message(response: httpx.Response) -> str:
+    if response.status_code in (401, 403):
+        # Auth errors can echo part of the key; the status says enough.
+        return "the provider refused the credentials"
     try:
         body = response.json()
     except ValueError:
@@ -59,14 +67,12 @@ def _error_message(response: httpx.Response) -> str:
     return str(body)[:300]
 
 
-def _retry_delay(response: httpx.Response, attempt: int) -> float:
-    header = response.headers.get("retry-after")
-    try:
-        if header is not None:
-            return min(float(header), _MAX_RETRY_AFTER_S)
-    except ValueError:
-        pass
-    return _BACKOFF_S * (2 ** attempt)
+def _retry_delay(response: httpx.Response, attempt: int) -> float | None:
+    """Seconds to wait before the next attempt, or None when the provider asks for longer."""
+    retry_after = parse_retry_after(response.headers.get("retry-after"))
+    if retry_after is None:
+        return _BACKOFF_S * (2 ** attempt)
+    return retry_after if retry_after <= _MAX_RETRY_AFTER_S else None
 
 
 class DecisionModel(ABC):
@@ -82,15 +88,25 @@ class DecisionModel(ABC):
         self.model_name = model_name
 
     async def decide(
-        self, input: DecisionInput, questions: Sequence[DecisionQuestion]
+        self,
+        input: DecisionInput,
+        questions: Sequence[DecisionQuestion],
+        *,
+        max_attempts: int = MAX_ATTEMPTS,
     ) -> DecisionResult:
         if not questions:
             raise ValueError("A decision request needs at least one question")
         names = [question.name for question in questions]
         if len(set(names)) != len(names):
             raise ValueError("Question names must be unique within a request")
-        payload = await self._post(self._request_body(input, questions))
-        return self._parse(payload, questions)
+        payload = await self._post(self._request_body(input, questions), max_attempts)
+        result = self._parse(payload, questions)
+        if all(answer.missing for answer in result.answers.values()):
+            logger.warning(
+                "%s decision response had no answer we could read; check the endpoint serves this API",
+                self.provider,
+            )
+        return result
 
     @abstractmethod
     def _url(self) -> str: ...
@@ -104,28 +120,30 @@ class DecisionModel(ABC):
     @abstractmethod
     def _parse(self, payload: dict[str, Any], questions: Sequence[DecisionQuestion]) -> DecisionResult: ...
 
-    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+    async def _post(self, body: dict[str, Any], max_attempts: int) -> dict[str, Any]:
         url = self._url()
         headers = {"Content-Type": "application/json", **self._headers()}
         async with guarded_async_client(url, timeout=_REQUEST_TIMEOUT_S) as client:
-            for attempt in range(_MAX_ATTEMPTS):
+            for attempt in range(max_attempts):
                 try:
                     response = await client.post(url, json=body, headers=headers)
                 except httpx.TimeoutException as exc:
                     raise DecisionModelError(f"{self.provider} decision request timed out") from exc
                 except httpx.HTTPError as exc:
                     raise DecisionModelError(f"{self.provider} decision request failed: {exc}") from exc
-                if response.status_code in _RETRY_STATUSES and attempt < _MAX_ATTEMPTS - 1:
-                    await asyncio.sleep(_retry_delay(response, attempt))
-                    continue
-                if response.status_code >= 400:
-                    message = (
+                if response.status_code in _RETRY_STATUSES and attempt < max_attempts - 1:
+                    delay = _retry_delay(response, attempt)
+                    if delay is not None:
+                        await asyncio.sleep(delay)
+                        continue
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    raise DecisionModelError(
                         f"{self.provider} decision request returned HTTP {response.status_code}: "
-                        f"{_error_message(response)}"
-                    )
-                    # The httpx error underneath carries the status for provider_error_code.
-                    cause = httpx.HTTPStatusError(message, request=response.request, response=response)
-                    raise DecisionModelError(message, status_code=response.status_code) from cause
+                        f"{_error_message(response)}",
+                        status_code=response.status_code,
+                    ) from exc
                 try:
                     payload = response.json()
                 except ValueError as exc:
@@ -327,9 +345,8 @@ def _level_label(labels: list[str], index: object) -> str:
 def _fill_missing(
     answers: dict[str, DecisionAnswer], questions: Sequence[DecisionQuestion]
 ) -> dict[str, DecisionAnswer]:
-    """A question the provider left unanswered counts as refused."""
     for question in questions:
-        answers.setdefault(question.name, DecisionAnswer(name=question.name, type=question.type, refused=True))
+        answers.setdefault(question.name, DecisionAnswer(name=question.name, type=question.type, missing=True))
     return answers
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from app.services.ai_models.decision.clients import (
@@ -15,12 +14,6 @@ from app.utils.aimodels import require_allowed_endpoint, select_model_name
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
-
-
-class DecisionProvider(str, Enum):
-    OPENAI = "openAI"
-    AZURE_OPENAI = "azureOpenAI"
-    TYPESAFE = "typesafe"
 
 
 def _endpoint(configuration: Mapping[str, Any]) -> str | None:
@@ -53,14 +46,13 @@ def _typesafe(configuration: Mapping[str, Any], model_name: str) -> DecisionMode
 
 
 _DECISION_BUILDERS: dict[str, Callable[[Mapping[str, Any], str], DecisionModel]] = {
-    DecisionProvider.OPENAI.value: _openai,
-    DecisionProvider.AZURE_OPENAI.value: _azure_openai,
-    DecisionProvider.TYPESAFE.value: _typesafe,
+    "openAI": _openai,
+    "azureOpenAI": _azure_openai,
+    "typesafe": _typesafe,
 }
 
 
 def get_decision_model(provider: str, config: dict, model_name: str | None = None) -> DecisionModel:
-    """Build the client for one stored decision model entry."""
     configuration = config["configuration"]
     require_allowed_endpoint(_endpoint(configuration))
     model_name = select_model_name(

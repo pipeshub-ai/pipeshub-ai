@@ -2077,8 +2077,7 @@ async def perform_stt_health_check(
 async def perform_decision_health_check(model_config: dict, logger: Logger) -> JSONResponse:
     """Ask each configured decision model one yes/no question.
 
-    A decision call is billed on input tokens only and this one is a few dozen,
-    so a real call is cheap and also proves the account can use the endpoint.
+    A real call proves the key, the model and that the endpoint speaks the decision API.
     """
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
@@ -2101,16 +2100,20 @@ async def perform_decision_health_check(model_config: dict, logger: Logger) -> J
             logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
             return await _model_setup_failed_response("decision model", model_config, model_name, e)
         try:
-            result = await asyncio.wait_for(
-                model.decide(
-                    "Hello, can you help me?",
-                    [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
-                ),
-                timeout=30.0,
+            # One attempt: the client's own timeout then decides, not a retry loop
+            # that would outlast the admin's wait.
+            result = await model.decide(
+                "Hello, can you help me?",
+                [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
+                max_attempts=1,
             )
             answer = result.answers["is_greeting"]
-            if not answer.refused and answer.probability is None:
-                raise RuntimeError("The decision model returned no probability for a yes/no question")
+            if answer.refused or answer.missing or answer.probability is None:
+                return _config_error(
+                    f"{_provider_display_name(provider)} answered, but not with a usable decision. "
+                    "Check that the model and endpoint serve the decision API, then try again.",
+                    model_config, model_name, error_code="invalid_response",
+                )
             checked = JSONResponse(
                 status_code=200,
                 content={

@@ -117,7 +117,9 @@ async def test_openai_refusal_and_missing_answers_are_refused() -> None:
     model = OpenAIDecisionModel("gpt-6-luna", api_key="sk-test")
     with _mock([httpx.Response(200, json=payload)], seen):
         result = await model.decide("text", QUESTIONS)
-    assert all(answer.refused for answer in result.answers.values())
+    assert result.answers["urgent"].refused
+    assert not result.answers["urgent"].missing
+    assert result.answers["team"].missing and result.answers["severity"].missing
     assert result.answers["team"].choice is None
 
 
@@ -205,8 +207,28 @@ async def test_auth_failure_raises_with_status_the_health_check_can_classify() -
     with _mock([httpx.Response(401, json=error)], seen), pytest.raises(DecisionModelError) as caught:
         await model.decide("x", QUESTIONS[:1])
     assert caught.value.status_code == 401
-    assert "Incorrect API key provided" in str(caught.value)
+    assert "Incorrect API key" not in str(caught.value)
     assert provider_error_code(caught.value) == "auth_error"
+    assert len(seen) == 1
+
+
+async def test_long_retry_after_is_not_waited_for() -> None:
+    seen: list[httpx.Request] = []
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    with _mock([httpx.Response(429, headers={"retry-after": "30"}, json={})], seen), pytest.raises(
+        DecisionModelError
+    ) as caught:
+        await model.decide("x", QUESTIONS[:1])
+    assert caught.value.status_code == 429
+    assert len(seen) == 1
+    assert provider_error_code(caught.value) == "rate_limit"
+
+
+async def test_single_attempt_does_not_retry() -> None:
+    seen: list[httpx.Request] = []
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    with _mock([httpx.Response(503, json={})], seen), pytest.raises(DecisionModelError):
+        await model.decide("x", QUESTIONS[:1], max_attempts=1)
     assert len(seen) == 1
 
 

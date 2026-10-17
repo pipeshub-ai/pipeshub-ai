@@ -45,6 +45,8 @@ def test_openai_luna_is_both_a_chat_and_a_decision_model() -> None:
     assert "decision" in model.capabilities
     other = classify("openAI", RawModel(id="gpt-6-sol"))
     assert "decision" not in other.capabilities
+    dated = classify("azureOpenAI", RawModel(id="gpt-6-luna-2026-10-06", capabilities=["llm"]))
+    assert dated.capabilities == ["llm", "decision"]
 
 
 def test_decision_tab_drops_unclassified_models() -> None:
@@ -93,6 +95,19 @@ async def test_health_check_reports_a_bad_key_as_a_settings_error() -> None:
         response = await perform_decision_health_check(_entry(), MagicMock())
     assert response.status_code == 400
     assert json.loads(response.body)["details"]["error_code"] == "auth_error"
+
+
+async def test_health_check_fails_when_the_response_has_no_answer() -> None:
+    model = MagicMock()
+    model.decide = AsyncMock(return_value=DecisionResult(
+        model="x",
+        answers={"is_greeting": DecisionAnswer(name="is_greeting", type="predicate", missing=True)},
+    ))
+    with patch("app.api.routes.health.get_decision_model", return_value=model):
+        response = await perform_decision_health_check(_entry(), MagicMock())
+    assert response.status_code == 400
+    assert json.loads(response.body)["details"]["error_code"] == "invalid_response"
+    assert model.decide.await_args.kwargs["max_attempts"] == 1
 
 
 async def test_health_check_without_model_name_fails() -> None:

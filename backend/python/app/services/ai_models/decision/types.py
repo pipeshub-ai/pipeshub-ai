@@ -72,12 +72,15 @@ class DecisionAnswer(BaseModel):
     - choice: ``choice`` and ``probabilities`` keyed by option value.
     - score: ``score`` (probability-weighted level index, may fall between levels) and
       ``probabilities`` keyed by level label.
-    ``refused`` answers carry no values; the caller decides the fallback.
+    ``refused`` (the provider declined) and ``missing`` (the response had no
+    readable answer for it, often a wrong endpoint or format) carry no values;
+    the caller decides the fallback.
     """
 
     name: str
     type: Literal["predicate", "choice", "score"]
     refused: bool = False
+    missing: bool = False
     probability: float | None = None
     choice: str | None = None
     score: float | None = None
