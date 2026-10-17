@@ -12,10 +12,21 @@ import * as path from 'path';
  */
 const RECORD_ROUTE = /^\/record\/[^/]+(?:\/(.*))?$/;
 
+/** Null when the decoded pathname (e.g. an encoded `..%2f`) escapes the export. */
 export function resolveStaticExportPath(
   staticDir: string,
   pathname: string,
   exists: (filePath: string) => boolean = fs.existsSync,
+): string | null {
+  const resolved = resolveWithinExport(staticDir, pathname, exists);
+  const relative = path.relative(staticDir, resolved);
+  return relative.startsWith('..') || path.isAbsolute(relative) ? null : resolved;
+}
+
+function resolveWithinExport(
+  staticDir: string,
+  pathname: string,
+  exists: (filePath: string) => boolean,
 ): string {
   const record = RECORD_ROUTE.exec(pathname);
   if (record) {
