@@ -105,7 +105,9 @@ moves characters from breadth to depth:
   record that fits is read whole. Without a query, a fetch reads as before.
   The prompt's record-reading rules add when to use it: a specific detail the
   passages point to but do not state. Under `THOROUGH_RETRIEVAL`, which reads
-  those records in full, that rule is not added.
+  those records in full, neither the rule nor the `query` parameter is
+  offered, and a `query` is ignored. A continuation (`start_block`) with a
+  `query` reads on in order within the same focused size.
 - The first-turn context in internal-search chats is fitted the same way.
 
 Off, none of this runs: results, the fetch tool's schema and the prompt are
