@@ -69,11 +69,15 @@ def convert(src, out_dir):
         elif in_fence:
             body.append(line)
         else:
-            line = re.sub(r"\]\((\d[\w.\-]*)\.md\)", r"](/changelog/platform?version=\1)", line)
             line = re.sub(r"\]\(#([^)\s]+)\)", lambda m: f"](#{ids[m.group(1)]})", line)
+            # Every version is on one page, so a version link is an in-page anchor: 0.6.0-beta -> #v0-6-0-beta.
+            line = re.sub(r"\]\((\d[\w.\-]*)\.md\)",
+                          lambda m: "](#v" + re.sub(r"[^0-9a-z]+", "-", m.group(1).lower()) + ")", line)
             heading = re.match(r"#{2,6} (.+)", line)
             anchor = heading and github_slug(heading.group(1))
-            body.append(escape(line) + (f" {{#{ids[anchor]}}}" if anchor in ids else ""))
+            line = escape(line) + (f" {{#{ids[anchor]}}}" if anchor in ids else "")
+            # The page uses ## for the version, so sections move down one level.
+            body.append("#" + line if heading else line)
 
     front = ["---", f"title: {json.dumps(version)}", f"version: {json.dumps(version)}",
              f"date: {json.dumps(date)}", f"channel: {json.dumps(channel)}",
