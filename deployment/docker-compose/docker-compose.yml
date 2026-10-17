@@ -440,7 +440,7 @@ services:
     networks:
       - pipeshub
       - sandbox-control
-      - web-readers
+      - web-gateway
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -610,8 +610,21 @@ services:
   # ---------------------------------------------------------------------------
   # Web search and page reading — profiles: search-searxng, fetch-crawl4ai
   # Both fetch whatever the web search or a page link points them at, so they sit on
-  # web-readers only: they reach the internet and the app, not the databases.
+  # web-readers only, with the internet and the gateway: they can't reach the app or the
+  # databases. The app reaches them through the gateway as http://searxng:8080 and
+  # http://crawl4ai:11235.
   # ---------------------------------------------------------------------------
+  web-readers-gateway:
+    profiles: ["search-searxng", "fetch-crawl4ai"]
+    image: nginx:1.27.5-alpine
+    restart: always
+    volumes:
+      - ./web-readers-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      web-gateway:
+        aliases: [searxng, crawl4ai]
+      web-readers: {}
+
   searxng:
     profiles: ["search-searxng"]
     image: searxng/searxng:2026.9.30-a9d990033
@@ -623,7 +636,8 @@ services:
     volumes:
       - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
     networks:
-      - web-readers
+      web-readers:
+        aliases: [searxng-reader]
 
   crawl4ai:
     profiles: ["fetch-crawl4ai"]
@@ -632,9 +646,12 @@ services:
     restart: always
     environment:
       - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+    # Refuse to start without a token, so the server never runs open to the other reader.
+    command: ["bash", "-c", "test -n \"$$CRAWL4AI_API_TOKEN\" || { echo 'Set CRAWL4AI_API_TOKEN in .env' >&2; exit 1; }; exec bash entrypoint.sh"]
     shm_size: 1g
     networks:
-      - web-readers
+      web-readers:
+        aliases: [crawl4ai-reader]
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
@@ -813,6 +830,11 @@ networks:
   sandbox-control:
     driver: bridge
     internal: true
-  # App <-> the optional web search and page-reading servers, which need the internet.
+  # App <-> web-readers-gateway only. Internal: no route out.
+  web-gateway:
+    driver: bridge
+    internal: true
+  # web-readers-gateway <-> the optional web search and page-reading servers, which need
+  # the internet. The app is not on it.
   web-readers:
     driver: bridge

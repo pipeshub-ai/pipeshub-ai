@@ -429,7 +429,7 @@ export function ConfigurePanel({
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {`This will permanently remove your ${providerMeta.label} API key. ${
                   existingProvider?.isDefault
-                    ? 'DuckDuckGo will become the default web search provider.'
+                    ? 'The next search provider you added will become the default, or DuckDuckGo if there is none.'
                     : 'You can reconfigure it later.'
                 }`}
               </Text>

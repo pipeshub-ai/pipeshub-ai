@@ -16,11 +16,18 @@ import { WebSearchProviderRow, ConfigurePanel } from './components';
 import {
   DUCKDUCKGO_PROVIDER_ID,
   WEB_SEARCH_PROVIDER_META,
+  defaultProviderLabel,
   type ConfigurableProvider,
   type ConfiguredWebSearchProvider,
   type WebSearchProviderAgentUsage,
   type WebSearchProviderType,
 } from './types';
+
+/** After the default is deleted the server promotes the next search provider; name whichever it chose. */
+async function newDefaultNotice(): Promise<string> {
+  const { providers } = await WebSearchApi.getConfig();
+  return `${defaultProviderLabel(providers)} is now the default web search provider.`;
+}
 
 // ============================================================
 // Page
@@ -131,29 +138,13 @@ export default function WebSearchPage() {
     async ({ provider, wasDefault }: { provider: ConfigurableProvider; wasDefault: boolean }) => {
       const meta = WEB_SEARCH_PROVIDER_META.find((m) => m.type === provider);
       const label = meta?.label ?? provider;
-      try {
-        if (wasDefault) {
-          await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
-        }
-        addToast({
-          variant: 'success',
-          title: `${label} removed`,
-          description: wasDefault
-            ? 'DuckDuckGo is now the default web search provider.'
-            : 'Configuration deleted successfully.',
-          duration: 4000,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Please try again.';
-        addToast({
-          variant: 'error',
-          title: 'Failed to reset default provider',
-          description: message,
-          duration: 5000,
-        });
-      } finally {
-        loadData(false);
-      }
+      addToast({
+        variant: 'success',
+        title: `${label} removed`,
+        description: wasDefault ? await newDefaultNotice() : 'Configuration deleted successfully.',
+        duration: 4000,
+      });
+      loadData(false);
     },
     [addToast, loadData],
   );
@@ -222,15 +213,10 @@ export default function WebSearchPage() {
     setIsDeleting(true);
     try {
       await WebSearchApi.deleteProvider(deleteTarget.providerKey);
-      if (wasDefault) {
-        await WebSearchApi.setDefaultProvider(DUCKDUCKGO_PROVIDER_ID);
-      }
       addToast({
         variant: 'success',
         title: `${label} removed`,
-        description: wasDefault
-          ? 'DuckDuckGo is now the default web search provider.'
-          : 'Configuration deleted successfully.',
+        description: wasDefault ? await newDefaultNotice() : 'Configuration deleted successfully.',
         duration: 4000,
       });
       setDeleteTarget(null);

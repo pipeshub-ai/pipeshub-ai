@@ -111,11 +111,14 @@ class TestTool:
         payload = json.loads(await create_fetch_url_tool(service(error), CALLER).ainvoke({"url": "https://example.com"}))
         assert payload["ok"] is False
         assert payload["error_type"] == error_type
-        assert "fetch those URLs next" in payload["error"]
+        assert "fetch those URLs next" in payload["hint"]
+        assert "fetch those URLs next" not in payload["error"]  # the step card shows `error` to people
 
     async def test_unexpected_exception_is_contained(self) -> None:
         payload = json.loads(await create_fetch_url_tool(service(RuntimeError("boom")), CALLER).ainvoke({"url": "https://example.com"}))
-        assert payload["ok"] is False and "boom" in payload["error"]
+        assert payload["ok"] is False and payload["retryable"] is False
+        assert "boom" not in payload["error"]
+        assert "fetch those URLs next" in payload["hint"]
 
     async def test_records_metrics(self) -> None:
         with patch("app.web.tools.fetch_url.record_fetch") as record:

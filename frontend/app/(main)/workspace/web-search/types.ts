@@ -212,3 +212,11 @@ export const WEB_SEARCH_PROVIDER_META: WebSearchProviderMeta[] = [
 ];
 
 export const ALL_WEB_SEARCH_PROVIDER_TYPES: WebSearchProviderType[] = WEB_SEARCH_PROVIDER_META.map((m) => m.type);
+
+/** The label of the provider marked default, or DuckDuckGo's when none is (the server's fallback). */
+export function defaultProviderLabel(
+  providers: Pick<ConfiguredWebSearchProvider, 'provider' | 'isDefault'>[],
+): string {
+  const type = providers.find((p) => p.isDefault)?.provider ?? DUCKDUCKGO_PROVIDER_ID;
+  return WEB_SEARCH_PROVIDER_META.find((m) => m.type === type)?.label ?? type;
+}

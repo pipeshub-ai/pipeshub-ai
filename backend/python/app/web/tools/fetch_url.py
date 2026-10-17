@@ -19,7 +19,7 @@ from app.web.services import WebFetchService
 logger = logging.getLogger(__name__)
 
 _URL_FALLBACK_HINT = (
-    " If other relevant URLs are available and the current context is not "
+    "If other relevant URLs are available and the current context is not "
     "sufficient to answer the query, fetch those URLs next."
 )
 
@@ -107,13 +107,15 @@ def create_fetch_url_tool(
         except WebError as e:
             record_fetch(e.error_type, time.monotonic() - started)
             logger.warning("Fetch URL failed for %s: %s (%s)", redact_url(url), e.error_type, e.message)
-            payload = e.to_tool_payload()
-            payload["error"] += _URL_FALLBACK_HINT
-            return json.dumps(payload)
-        except Exception as e:
+            # The hint is for the model; `error` is what the step card shows people.
+            return json.dumps({**e.to_tool_payload(), "hint": _URL_FALLBACK_HINT})
+        except Exception:
             record_fetch("upstream_error", time.monotonic() - started)
             logger.exception("Unexpected error fetching URL %s", redact_url(url))
-            return json.dumps({"ok": False, "error_type": "upstream_error", "error": str(e) + _URL_FALLBACK_HINT})
+            return json.dumps({
+                "ok": False, "error_type": "upstream_error", "error": "The page could not be read",
+                "retryable": False, "hint": _URL_FALLBACK_HINT,
+            })
 
         page = outcome.value
         record_fetch("ok", time.monotonic() - started)

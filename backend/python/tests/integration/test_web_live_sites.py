@@ -28,7 +28,7 @@ pytestmark = [
 SITE = "https://pipeshub.com/"
 DOCS = "https://docs.pipeshub.com/"
 OUR_HOSTS = ("pipeshub.com", "docs.pipeshub.com")
-_ENGINE_REFUSALS = {"blocked", "rate_limited", "timed_out"}
+_ENGINE_REFUSALS = {"blocked", "rate_limited", "timeout"}
 
 
 @pytest.fixture(autouse=True)

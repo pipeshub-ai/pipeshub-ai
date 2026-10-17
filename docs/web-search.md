@@ -159,7 +159,10 @@ instructions still apply.
   Add `search-searxng` and/or `fetch-crawl4ai` to `COMPOSE_PROFILES` in `.env`, set
   `SEARXNG_SECRET` and `CRAWL4AI_API_TOKEN` there, then add the provider under Workspace → Web
   search at `http://searxng:8080` or `http://crawl4ai:11235`. Both sit on their own
-  `web-readers` network, which reaches the internet and the app but not the databases.
+  `web-readers` network, which reaches the internet but neither the app nor the databases.
+  The app reaches them through `web-readers-gateway`, a TCP proxy that is the only container
+  on both `web-readers` and the internal `web-gateway` network, and only connects onward to
+  the readers (`web-readers-gateway/nginx.conf`).
 - SearXNG answers JSON only when `search.formats` lists it; `searxng/settings.yml` does, and a
   server that doesn't is reported as `not_configured` with the fix.
 - Crawl4AI below 0.9.4 fails the health check: earlier servers let anyone who can reach them run
