@@ -6,6 +6,7 @@
 
 export { isElectron } from './is-electron';
 export { applyElectronOverrides } from './apply-electron-overrides';
+export { canGoBackInApp } from './in-app-back';
 export {
   setSessionApiBaseUrl,
   getElectronApiBaseUrl,

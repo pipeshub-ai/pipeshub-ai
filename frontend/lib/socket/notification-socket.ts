@@ -1,4 +1,5 @@
 import { io, type Socket } from 'socket.io-client';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 
 let socket: Socket | null = null;
 /** Access token used for the current socket handshake (detect stale reuse). */
@@ -6,7 +7,9 @@ let connectedWithToken: string | null = null;
 
 function getSocketBaseUrl(): string {
   if (typeof window === 'undefined') return '';
-  const base = process.env.NEXT_PUBLIC_API_BASE_URL;
+  // The desktop app's own origin is app://, so the server URL must come from the
+  // same source the HTTP client uses.
+  const base = getApiBaseUrl();
   if (base && base.length > 0) {
     return base.replace(/\/$/, '');
   }
