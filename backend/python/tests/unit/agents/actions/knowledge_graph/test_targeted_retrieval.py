@@ -212,7 +212,7 @@ class TestPrefetch:
     async def test_on_it_is_held_to_one_search_result(self, targeted: None) -> None:
         records, units = _corpus(hits_per_record=12)
         prefetched = await self._prefetch(records, units)
-        assert len(prefetched.formatted_context) <= 32_000 + 2_000
+        assert len(prefetched.formatted_context) <= 32_000
         assert "matching passages not shown" in prefetched.formatted_context
 
 
@@ -291,6 +291,20 @@ class TestFocusedRead:
         text = await _fetch(_fetch_context(_ranking("s", [3])), [_long_record("s", blocks=8)], query="tag")
         assert all(f"s para {i} " in text for i in range(8))
         assert "Focused read" not in text
+
+    @pytest.mark.asyncio
+    async def test_no_record_of_a_focused_read_takes_more_than_its_size(self, targeted: None) -> None:
+        records = [_long_record("big"), _long_record("small", blocks=3)]
+        retrieval = MagicMock()
+        retrieval.search_with_filters = AsyncMock(side_effect=lambda **kw: {"searchResults": [
+            {"metadata": {"virtualRecordId": kw["virtual_record_ids_from_tool"][0], "blockIndex": 100}, "score": 1.0},
+        ]})
+        text = await _fetch(_fetch_context(retrieval), records, query="tag")
+
+        big = text[: text.index("Record ID: rec-small")]  # records are read in the order named
+        # The small record's unused room does not go to the big one.
+        assert len(big) <= 16_000 + 600
+        assert all(f"small para {i} " in text for i in range(3))
 
     @pytest.mark.asyncio
     async def test_a_query_is_ignored_while_the_switch_is_off(self, off: None) -> None:

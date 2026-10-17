@@ -302,10 +302,11 @@ async def execute_fetch_record(
     # actually answering.
     budget = resolve_render_budget(context.context_length, max_blocks=block_cap)
     focus = (query or "").strip() if targeted_retrieval_enabled() else ""
-    if focus:
+    focused_limit = focused_read_chars() if focus else None
+    if focused_limit is not None:
         # A focused read asks for a part: each record gets the focused size,
         # never more than the read it replaces.
-        budget.max_chars = min(budget.max_chars, focused_read_chars() * max(len(record_ids), 1))
+        budget.max_chars = min(budget.max_chars, focused_limit * max(len(record_ids), 1))
 
     structured_tool = create_fetch_full_record_tool(
         virtual_records,
@@ -397,6 +398,10 @@ async def execute_fetch_record(
                 parts.append(note)
                 continue
             limit = remaining - sum(shares[1:])
+            if focused_limit is not None:
+                # Room a smaller record left is not passed on: each record of a
+                # focused read keeps to the focused size.
+                limit = min(limit, focused_limit)
             budget.allot(record_key, limit)
             fits = estimates[position] <= limit
             # A continuation follows the pointer the model was handed, and an
