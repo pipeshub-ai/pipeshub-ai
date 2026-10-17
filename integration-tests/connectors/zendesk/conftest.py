@@ -10,8 +10,15 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 import pytest_asyncio
 
+from ai_models_setup import SeededAIModel
+from connectors.zendesk.constants import (
+    ZENDESK_TEST_ARTICLE_ID,
+    ZENDESK_TEST_TICKET_ID,
+)
+from helper.clients.ai_models_client import AIModelsClient
 from helper.graph_provider import GraphProviderProtocol
 from helper.graph_provider_utils import wait_for_sync_completion
 from helper.oauth_token_helper import inject_access_token
@@ -21,10 +28,34 @@ from pipeshub_client import PipeshubClient
 logger = logging.getLogger("zendesk-live-it")
 REQUIRED_ENV = (
     "ZENDESK_TEST_SUBDOMAIN",
-    "ZENDESK_TEST_TICKET_ID",
-    "ZENDESK_TEST_ARTICLE_ID",
     "SECRET_KEY",
 )
+
+
+@pytest.fixture(scope="session")
+def ai_models_configured(pipeshub_client: PipeshubClient) -> SeededAIModel:
+    """Use the admin account's existing models for this read-only source suite."""
+    models_client = AIModelsClient(pipeshub_client)
+    selected: dict[str, dict[str, Any]] = {}
+    for model_type in ("llm", "embedding"):
+        response = models_client.get_models_by_type(model_type)
+        response.raise_for_status()
+        models = response.json().get("models") or []
+        defaults = [model for model in models if model.get("isDefault")]
+        if len(defaults) != 1:
+            pytest.fail(
+                f"Zendesk live tests need one default {model_type} model in "
+                "the PipesHub admin account."
+            )
+        selected[model_type] = defaults[0]
+    llm = selected["llm"]
+    return SeededAIModel(
+        model_type="llm",
+        provider=llm["provider"],
+        model_name=llm["configuration"]["model"],
+        model_key=llm["modelKey"],
+        owned=False,
+    )
 
 
 def _access_token() -> str:
@@ -63,11 +94,16 @@ async def zendesk_source() -> dict[str, Any]:
     assert subdomain and all(c.isalnum() or c == "-" for c in subdomain), (
         "Invalid Zendesk subdomain"
     )
-    ticket_id = os.environ["ZENDESK_TEST_TICKET_ID"].strip()
-    article_id = os.environ["ZENDESK_TEST_ARTICLE_ID"].strip()
-    assert ticket_id.isdecimal() and article_id.isdecimal(), (
-        "Zendesk fixture IDs must be numeric"
-    )
+    if not all(
+        isinstance(value, int) and not isinstance(value, bool) and value > 0
+        for value in (ZENDESK_TEST_TICKET_ID, ZENDESK_TEST_ARTICLE_ID)
+    ):
+        pytest.fail(
+            "Set ZENDESK_TEST_TICKET_ID and ZENDESK_TEST_ARTICLE_ID to seeded "
+            "record IDs in connectors/zendesk/constants.py."
+        )
+    ticket_id = ZENDESK_TEST_TICKET_ID
+    article_id = ZENDESK_TEST_ARTICLE_ID
 
     async with httpx.AsyncClient(
         base_url=f"https://{subdomain}.zendesk.com",
