@@ -53,7 +53,7 @@ dependencies = [
   "selectolax>=0.3.21",
   "httpx==0.28.1",
   "PyGithub==2.8.1",
-  "python-gitlab==6.4.0",
+  "python-gitlab==8.6.0",
   "google-api-python-client==2.161.0",
   "google-auth-oauthlib==1.2.1",
   "google-cloud-storage==2.18.0",
