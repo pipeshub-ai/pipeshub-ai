@@ -9914,6 +9914,15 @@ components:
             `createdBefore`. Records with no source date are left out whenever a bound on
             that date is set.
           example: "2026-09-30T23:59:59Z"
+        rewriteQuery:
+          type: boolean
+          default: true
+          description: |
+            Whether the AI model rewrites the query and adds expanded variants before
+            searching. Set it to `false` to search the query exactly as sent, with no
+            model call: faster, and suited to callers that write their own queries, such
+            as an agent. The results can differ from a search with the rewrite.
+          example: false
 
     SemanticSearchBoundingBox:
       type: object
