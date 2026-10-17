@@ -57,8 +57,6 @@ export class IamService {
   }
 
   //Create a new user via IAM backend
-  //Note: Currently not used for SAML JIT provisioning as it requires admin authentication and doesn't handle group assignment.
-  //SAML JIT uses direct DB access via userController.provisionSamlUser()
   async createUser(userData: any, authServiceToken: string) {
     try {
       const config = {

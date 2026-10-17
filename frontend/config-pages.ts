@@ -11,8 +11,6 @@ export { default as ConnectorsTeamPage } from '@/app/(main)/workspace/connectors
 export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connectors/personal/connectorsPersonalPage';
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';
 export { default as ProfilePage } from '@/app/(main)/workspace/profile/profilePage';
-export { default as SamlSsoSuccessPage } from '@/app/(public)/auth/sign-in/samlSso/success/samlSsoSuccessPage';
-export { default as OAuthAuthCallbackPage } from '@/app/(public)/auth/oauth/callback/oauthCallbackPage';
 
 // Pages without implementations fall back to Next.js 404
 export { notFound as TenantsPage } from 'next/navigation';
@@ -25,3 +23,6 @@ export { notFound as OrgsFeatureFlagsPage } from 'next/navigation';
 export { notFound as OAuthAppsPage } from 'next/navigation';
 export { notFound as GroupsPermissionsPage } from 'next/navigation';
 export { notFound as GithubAuthCallbackPage } from 'next/navigation';
+export { notFound as SamlSsoSuccessPage } from 'next/navigation';
+export { notFound as OAuthAuthCallbackPage } from 'next/navigation';
+export { notFound as AuthSignInErrorPage } from 'next/navigation';

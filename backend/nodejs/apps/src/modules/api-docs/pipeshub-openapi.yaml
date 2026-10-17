@@ -46,10 +46,6 @@ tags:
     description: User authentication including multi-step MFA, password reset, OTP login, and token management
   - name: Organization Auth Config
     description: Admin configuration of authentication methods including MFA steps and allowed providers
-  - name: SAML
-    description: SAML 2.0 Single Sign-On integration with enterprise Identity Providers
-  - name: OAuth
-    description: OAuth 2.0 token exchange for third-party authentication providers
   - name: OAuth Provider
     description: |
       PipesHub OAuth 2.0 Authorization Server implementing RFC 6749, RFC 7636 (PKCE), and OpenID Connect.
@@ -317,7 +313,7 @@ tags:
   - name: SMTP Configuration
     description: Configure SMTP email server for sending notifications and invitations.
   - name: Authentication Configuration
-    description: Configure authentication providers including Azure AD, Microsoft, Google OAuth, SAML SSO, and custom OAuth 2.0.
+    description: Configure the Google and Microsoft sign-in providers.
   - name: Platform Settings
     description: Platform-wide settings including file upload limits, feature flags, and custom system prompts.
   - name: AI Models Providers
@@ -926,16 +922,13 @@ components:
       properties:
         type:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [otp, password, google, microsoft]
           description: |
             Type of authentication method:
             - `password`: Email/password authentication
             - `otp`: One-time password via email (6-digit, expires in 10 minutes)
             - `google`: Google OAuth 2.0
             - `microsoft`: Microsoft OAuth 2.0
-            - `azureAd`: Azure Active Directory
-            - `samlSso`: SAML 2.0 Single Sign-On
-            - `oauth`: Generic OAuth 2.0 provider
       required:
         - type
 
@@ -1039,7 +1032,7 @@ components:
           type: array
           items:
             type: string
-            enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+            enum: [otp, password, google, microsoft]
           description: List of allowed authentication methods for the current step
           example: ["password", "google", "otp"]
         message:
@@ -1085,56 +1078,6 @@ components:
           type: boolean
           description: Whether just-in-time user provisioning is enabled for Microsoft
 
-    AuthProviderAzureAdPublicConfig:
-      type: object
-      additionalProperties: false
-      description: Public Azure AD OAuth settings returned to clients
-      properties:
-        tenantId:
-          type: string
-          description: Azure AD tenant ID
-        clientId:
-          type: string
-          description: Azure AD client ID
-        enableJit:
-          type: boolean
-          description: Whether just-in-time user provisioning is enabled for Azure AD
-
-    AuthProviderOAuthPublicConfig:
-      type: object
-      additionalProperties: false
-      description: Public generic OAuth provider settings returned to clients
-      properties:
-        providerName:
-          type: string
-          description: Custom OAuth provider display name
-        clientId:
-          type: string
-          description: OAuth client ID
-        tokenEndpoint:
-          type: string
-          description: OAuth token endpoint URL
-        authorizationUrl:
-          type: string
-          description: OAuth authorization URL
-        clientSecret:
-          type: string
-          description: Client secret (omitted when stripped for public responses)
-        userInfoEndpoint:
-          type: string
-          description: UserInfo endpoint URL
-        scope:
-          type: string
-          description: Default OAuth scopes
-        enableJit:
-          type: boolean
-          description: Whether just-in-time user provisioning is enabled for this provider
-      required:
-        - providerName
-        - clientId
-        - tokenEndpoint
-        - authorizationUrl
-
     AuthProviders:
       type: object
       additionalProperties: false
@@ -1144,14 +1087,6 @@ components:
           $ref: '#/components/schemas/AuthProviderGooglePublicConfig'
         microsoft:
           $ref: '#/components/schemas/AuthProviderMicrosoftPublicConfig'
-        azuread:
-          $ref: '#/components/schemas/AuthProviderAzureAdPublicConfig'
-        oauth:
-          $ref: '#/components/schemas/AuthProviderOAuthPublicConfig'
-        saml:
-          type: object
-          description: Present when SAML SSO is an allowed method; may be an empty object
-          additionalProperties: true
 
     AuthenticateRequest:
       type: object
@@ -1163,13 +1098,10 @@ components:
         - `otp`: `{ otp: "123456" }` (6-digit code)
         - `google`: `"google-id-token-string"`
         - `microsoft`: `{ accessToken: "...", idToken: "..." }`
-        - `azureAd`: `{ accessToken: "...", idToken: "..." }`
-        - `oauth`: `{ accessToken: "...", idToken: "..." }`
-        - `samlSso`: not accepted by `/userAccount/authenticate`, which answers `400`. SAML sign-in runs as a browser redirect: send the browser to `/saml/signIn` instead
       properties:
         method:
           type: string
-          enum: [samlSso, otp, password, google, microsoft, azureAd, oauth]
+          enum: [otp, password, google, microsoft]
           description: Authentication method to use
         credentials:
           oneOf:
@@ -15175,20 +15107,6 @@ components:
           additionalProperties: true
 
     # Authentication Configuration Schemas
-    AzureAdAuthConfig:
-      type: object
-      description: Azure Active Directory authentication configuration
-      properties:
-        clientId:
-          type: string
-          description: Azure AD application client ID
-          example: "12345678-1234-1234-1234-123456789abc"
-        tenantId:
-          type: string
-          description: Azure AD tenant ID (use 'common' for multi-tenant)
-          default: "common"
-          example: "common"
-
     MicrosoftAuthConfig:
       type: object
       description: Microsoft authentication configuration
@@ -15210,32 +15128,6 @@ components:
           type: string
           description: Google OAuth client ID
           example: "123456789-abc.apps.googleusercontent.com"
-
-    SSOAuthConfig:
-      type: object
-      description: SAML SSO authentication configuration
-      properties:
-        entryPoint:
-          type: string
-          format: uri
-          description: Identity provider SSO URL
-          example: "https://idp.example.com/sso/saml"
-        certificate:
-          type: string
-          description: X.509 certificate for signature validation (PEM format)
-        emailKey:
-          type: string
-          description: SAML attribute name for user email
-          example: "email"
-        enableJit:
-          type: boolean
-          description: Enable Just-In-Time (JIT) user provisioning
-          default: true
-          example: true
-        samlPlatform:
-          type: string
-          description: Name of the SAML platform or provider (e.g., Okta, Azure AD)
-          example: "Okta"
 
     GenericOAuthConfig:
       type: object
@@ -19858,10 +19750,9 @@ paths:
         - `otp`: `{ "credentials": { "otp": "123456" } }` (6-digit code, valid for 10 minutes)
         - `google`: `{ "credentials": "google-id-token-string" }`
         - `microsoft`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `azureAd`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `oauth`: `{ "credentials": { "accessToken": "...", "idToken": "..." } }`
-        - `samlSso`: not accepted here; this endpoint answers `400`. SAML sign-in runs as a browser
-          redirect: send the browser to `/saml/signIn` instead
+
+        SAML (`samlSso`), generic OAuth (`oauth`) and Azure AD (`azureAd`) sign-in were removed in 1.0;
+        this endpoint answers `400` for them. Azure AD accounts sign in with `microsoft`.
 
         **Multi-Step Response:**
 
@@ -19906,7 +19797,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/AuthenticateResponse'
         '400':
-          description: Invalid request, method not allowed, invalid credential format, `samlSso` sent here instead of `/saml/signIn`, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
+          description: Invalid request, method not allowed (including a method removed in 1.0), invalid credential format, or wrong or missing password. A wrong password, an email with no account and a locked account all get the same message
           content:
             application/json:
               schema:
@@ -20114,70 +20005,6 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: User not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '500':
-          description: Internal server error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /userAccount/oauth/exchange:
-    post:
-      tags:
-        - OAuth
-      summary: Exchange OAuth authorization code for tokens
-      description: |
-        Exchange an OAuth authorization code for access and ID tokens.
-        Used after the OAuth authorization flow redirects back to the application.
-
-        **Supported Providers:**
-
-        - Generic OAuth 2.0 providers configured in org settings
-
-        **Flow:**
-
-        1. User is redirected to OAuth provider's authorization URL
-        2. User authorizes and is redirected back with a code
-        3. This endpoint exchanges the code for tokens
-        4. Tokens can then be used with the `/userAccount/authenticate` endpoint
-      operationId: exchangeOAuthCode
-      security: []
-      requestBody:
-        description: "Request payload"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/OAuthExchangeRequest'
-        required: true
-      responses:
-        '200':
-          description: Tokens retrieved successfully
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/OAuthExchangeResponse'
-        '400':
-          description: |
-            Bad request. Possible causes: missing required parameters (code, provider, redirectUri),
-            no organization found in the system, OAuth not configured (missing tokenEndpoint or
-            clientSecret), token exchange HTTP error from the provider, or email not present in
-            the OAuth provider's userInfo response.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '401':
-          description: Failed to fetch user information from the OAuth provider using the exchanged access token
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        '404':
-          description: User account not found and JIT provisioning is disabled — contact your administrator
           content:
             application/json:
               schema:
@@ -20506,6 +20333,97 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /orgAuthConfig/signInRemoval:
+    get:
+      tags:
+        - Organization Auth Config
+      summary: Get what the 1.0 upgrade turned off for this workspace
+      description: |
+        Lists the sign-in methods the 1.0 upgrade removed from this workspace's policy
+        (SAML SSO and generic OAuth), and the people who have signed in but never set a
+        password. Those people need email OTP, Google, Microsoft, or a password: they can use
+        "Forgot password" (needs email set up), or the server operator can create a single-use
+        set-password link with `node dist/scripts/set-password-link.js <email>`.
+
+        Both lists are empty when the upgrade removed nothing.
+
+        **Admin Access Required:** Only organization admins can view this.
+      operationId: getSignInRemoval
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: What was removed, and who has no password
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [removedMethods, peopleWithoutPassword]
+                properties:
+                  removedMethods:
+                    type: array
+                    items:
+                      type: string
+                      enum: [samlSso, oauth]
+                  peopleWithoutPassword:
+                    type: array
+                    items:
+                      type: object
+                      required: [userId, email]
+                      properties:
+                        userId:
+                          type: string
+                        fullName:
+                          type: string
+                        email:
+                          type: string
+        '401':
+          description: Unauthorized - invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          description: The caller is not an admin of this organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /userAccount/updateAppConfig:
+    post:
+      tags:
+        - User Account
+      summary: Reload authentication settings (Internal)
+      description: |
+        Internal endpoint the configuration manager calls after settings such as the frontend
+        URL change, so the authentication service picks them up without a restart.
+      operationId: updateAuthAppConfig
+      security:
+        - scopedToken: []
+      responses:
+        '200':
+          description: Settings reloaded
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+        '401':
+          description: Missing or invalid service token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /orgAuthConfig/updateAuthMethod:
     post:
       tags:
@@ -20521,16 +20439,13 @@ paths:
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
-        - `samlSso` is only allowed in a single-step policy; it can't be combined with other steps
+        - `samlSso` and `oauth` were removed in 1.0 and are refused; use `microsoft` in place of `azureAd`
 
         **Available Methods:**
         - `password`: Email/password authentication
         - `otp`: One-time password via email
         - `google`: Google OAuth 2.0
         - `microsoft`: Microsoft OAuth 2.0
-        - `azureAd`: Azure Active Directory
-        - `samlSso`: SAML 2.0 Single Sign-On
-        - `oauth`: Generic OAuth 2.0 provider
 
         **Example - Single Factor (Password or Google):**
 
@@ -20588,7 +20503,7 @@ paths:
             Bad request. Possible causes:
             - `authMethod` field missing from request body
             - Validation failure (duplicate steps, duplicate methods, out-of-range order, empty methods array)
-            - `samlSso` used in a policy with more than one step
+            - A method removed in 1.0 (`samlSso`, `oauth`) or the old name `azureAd`
           content:
             application/json:
               schema:
@@ -20691,282 +20606,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
-  # ==================== SAML ENDPOINTS ====================
-  /saml/signIn:
-    get:
-      tags:
-        - SAML
-      summary: Initiate SAML sign-in flow
-      description: |
-        Initiate SAML Single Sign-On authentication by redirecting to the Identity Provider (IDP).
-        <br><br>
-        <b>Usage:</b><br>
-        1. Call <code>/userAccount/initAuth</code> to get a session token<br>
-        2. If <code>samlSso</code> is in the allowed methods, redirect the user to this endpoint<br>
-        3. User authenticates with their IDP<br>
-        4. IDP redirects back to <code>/saml/signIn/callback</code> with SAML response<br>
-        5. Callback completes authentication and returns tokens
-        <br><br>
-        <b>Note:</b> This is a browser redirect endpoint, not a typical API call.
-        The user's browser should be redirected to this URL.
-        <br><br>
-        <b>Prerequisites:</b><br>
-        - Organization must have SAML SSO configured via <code>/saml/updateAppConfig</code><br>
-        - User must belong to an organization with SAML enabled
-      operationId: signInViaSAML
-      security: []
-      parameters:
-        - name: email
-          in: query
-          required: true
-          description: User's email address
-          schema:
-            type: string
-            format: email
-        - name: sessionToken
-          in: query
-          required: false
-          description: |
-            Session token from `/userAccount/initAuth`. Optional but recommended
-            for maintaining authentication state across the SAML flow.
-          schema:
-            type: string
-        - name: client
-          in: query
-          required: false
-          description: |
-            `desktop` for a sign-in started by the PipesHub desktop app. Needs `state`
-            and `code_challenge`; without both it is ignored. The callback then sends
-            no cookies and redirects to `/auth/sign-in/samlSso/success` with `state`
-            and a single-use `code` (or `saml_error`), redeemed at `/saml/desktop/exchange`.
-          schema:
-            type: string
-            enum: [desktop]
-        - name: state
-          in: query
-          required: false
-          description: Desktop flow identifier, echoed back on the success page. Starts with `phd.`.
-          schema:
-            type: string
-        - name: code_challenge
-          in: query
-          required: false
-          description: PKCE S256 challenge (43 base64url characters) for the desktop handoff code.
-          schema:
-            type: string
-      responses:
-        '302':
-          description: Redirect to SAML Identity Provider login page
-          headers:
-            Location:
-              description: IDP SSO URL
-              schema:
-                type: string
-        '400':
-          description: Invalid request (missing or malformed parameters)
-        '404':
-          description: User not found or SAML not configured for organization
-
-  /saml/signIn/callback:
-    post:
-      tags:
-        - SAML
-      summary: SAML sign-in callback
-      operationId: samlSignInCallback
-      description: |
-        Handles the callback from the SAML Identity Provider (IDP)
-        after successful user authentication.
-
-        This endpoint is invoked by the IDP and not directly by clients.
-
-        Flow:
-        1. IDP posts SAMLResponse and RelayState
-        2. Server validates the SAML assertion signature
-        3. Server extracts user identity
-        4. Server completes authentication
-        5. Redirects to frontend with authentication result
-
-        RelayState contains the session token or state used to resume
-        the authentication process.
-
-        **Important:** All outcomes — both success and failure — are delivered
-        as `302` redirects. This endpoint does not return JSON error bodies.
-        Errors are communicated via a `saml_error` query parameter on the
-        redirect URL. Clients should inspect this parameter after landing on
-        the frontend login page.
-
-      security: []
-
-      requestBody:
-        description: "SAML response from Identity Provider"
-        required: false
-        content:
-          application/x-www-form-urlencoded:
-            schema:
-              type: object
-              properties:
-                SAMLResponse:
-                  type: string
-                  description: Base64-encoded SAML response
-                RelayState:
-                  type: string
-                  description: Relay state from the original request
-      responses:
-        '302':
-          description: |
-            Redirect to the frontend. All outcomes use this status code.
-
-            **Success:** Redirects to `{frontendUrl}/auth/sign-in/samlSso/success`.
-            Access and refresh tokens are delivered as `Secure; SameSite=None` cookies.
-
-            **Failure:** Redirects to `{frontendUrl}/login?saml_error=<code>`.
-
-            | `saml_error` value  | Meaning                                                                 |
-            |---------------------|-------------------------------------------------------------------------|
-            | `auth_failed`       | Passport rejected the SAML assertion (invalid signature, expired, etc.) |
-            | `saml_sso_disabled` | SAML SSO is not enabled for this organization                           |
-            | `jit_disabled`      | User has no account and Just-In-Time provisioning is disabled           |
-            | `unknown`           | Unexpected server-side error during callback processing                 |
-            | *(raw message)*     | Passport parse error surfaced before the custom callback fired          |
-          headers:
-            Location:
-              description: |
-                Frontend success URL or `{frontendUrl}/login?saml_error=<code>` on failure.
-              schema:
-                type: string
-              examples:
-                success:
-                  value: "https://app.example.com/auth/sign-in/samlSso/success"
-                error_sso_disabled:
-                  value: "https://app.example.com/login?saml_error=saml_sso_disabled"
-                error_jit_disabled:
-                  value: "https://app.example.com/login?saml_error=jit_disabled"
-                error_auth_failed:
-                  value: "https://app.example.com/login?saml_error=auth_failed"
-            Set-Cookie:
-              description: |
-                Set on successful authentication only.
-                - `accessToken`: JWT access token, expires in 1 hour (`Secure; SameSite=None`)
-                - `refreshToken`: JWT refresh token, expires in 7 days (`Secure; SameSite=None`)
-              schema:
-                type: string
-
-        '400':
-          description: Invalid or malformed SAML response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '401':
-          description: SAML assertion validation failed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '404':
-          description: Session expired or user not found
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-        '500':
-          description: Internal server error during SAML processing
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AuthError'
-
-  /saml/desktop/exchange:
-    post:
-      tags:
-        - SAML
-      summary: Redeem a desktop SAML handoff code
-      description: |
-        Exchanges the single-use code from a desktop SAML sign-in (see `client=desktop`
-        on `/saml/signIn`) for PipesHub tokens. The code expires after 2 minutes and is
-        consumed by the first attempt, whether or not the verifier matches.
-      operationId: exchangeSamlDesktopCode
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                code:
-                  type: string
-                  description: Handoff code from the success page redirect
-                codeVerifier:
-                  type: string
-                  description: PKCE verifier matching the `code_challenge` sent to `/saml/signIn`
-              required:
-                - code
-                - codeVerifier
-      responses:
-        '200':
-          description: Signed in
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  accessToken:
-                    type: string
-                  refreshToken:
-                    type: string
-        '401':
-          description: Unknown, expired, already used, or verifier mismatch
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-
-  /saml/updateAppConfig:
-    post:
-      tags:
-        - SAML
-      summary: Reload SAML application configuration (Internal)
-      description: |
-        Internal endpoint to reload SAML configuration from the configuration manager.
-        This is called by other services when SAML settings are updated.<br><br>
-        <b>Purpose:</b><br>
-        When SAML configuration is updated in the Configuration Manager, this endpoint
-        is called to reload the settings into the authentication service without restart.<br><br>
-        <b>Effects:</b><br>
-        <ul>
-        <li>Reloads AppConfig from configuration files</li>
-        <li>Rebinds authentication controllers with new config</li>
-        <li>Updates SAML passport strategy settings</li>
-        </ul>
-        <b>Note:</b> This is an internal service-to-service endpoint.
-      operationId: updateSamlAppConfig
-      security:
-        - scopedToken: []
-      responses:
-        '200':
-          description: Configuration reloaded successfully
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
-        '400':
-          description: Invalid SAML response
-          content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  error:
-                    type: string
 
   /users/health:
     get:
@@ -44139,56 +43778,6 @@ paths:
           description: Unauthorized
 
   # -------------------- Authentication Configuration --------------------
-  /configurationManager/authConfig/azureAd:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure Azure AD authentication
-      description: Set up Azure Active Directory as an authentication provider for user login.
-      operationId: setAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure Azure AD authentication"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AzureAdAuthConfig'
-      responses:
-        '200':
-          description: Azure AD configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get Azure AD configuration
-      description: Retrieve Azure AD authentication configuration.
-      operationId: getAzureAdAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      parameters:
-        - $ref: '#/components/parameters/RevealStoredSecrets'
-      responses:
-        '200':
-          description: Azure AD configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/AzureAdAuthConfig'
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
   /configurationManager/authConfig/microsoft:
     post:
       tags:
@@ -44284,111 +43873,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/GoogleAuthConfig'
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
-  /configurationManager/authConfig/sso:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure SAML SSO authentication
-      description: Set up SAML 2.0 Single Sign-On with your identity provider (Okta, OneLogin, etc.).
-      operationId: setSsoAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure SAML SSO authentication"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/SSOAuthConfig'
-      responses:
-        '200':
-          description: SSO configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get SAML SSO configuration
-      description: "Get SAML SSO configuration."
-      operationId: getSsoAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      responses:
-        '200':
-          description: SSO configuration retrieved
-          content:
-            application/json:
-              schema:
-                allOf:
-                  - $ref: '#/components/schemas/SSOAuthConfig'
-                  - type: object
-                    properties:
-                      spEntityId:
-                        type: string
-                        description: Service Provider entity ID derived from SAML_SP_ENTITY_ID env var or the frontend public URL
-                        example: "https://app.example.com"
-        '401':
-          description: Unauthorized
-        '403':
-          description: The caller is not an admin of this organization
-
-  /configurationManager/authConfig/oauth:
-    post:
-      tags:
-        - Authentication Configuration
-      summary: Configure generic OAuth provider
-      description: Set up a custom OAuth 2.0 authentication provider.
-      operationId: setOAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:write]
-      requestBody:
-        required: true
-        description: "Request body for Configure generic OAuth provider"
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/GenericOAuthConfig'
-      responses:
-        '200':
-          description: OAuth configuration saved
-        '400':
-          description: Invalid configuration
-        '401':
-          description: Unauthorized
-        '403':
-          description: Admin access required
-
-    get:
-      tags:
-        - Authentication Configuration
-      summary: Get generic OAuth configuration
-      description: "Get generic OAuth configuration."
-      operationId: getGenericOAuthConfig
-      security:
-        - bearerAuth: []
-        - oauth2: [config:read]
-      parameters:
-        - $ref: '#/components/parameters/RevealStoredSecrets'
-      responses:
-        '200':
-          description: OAuth configuration retrieved
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/GenericOAuthConfig'
         '401':
           description: Unauthorized
         '403':

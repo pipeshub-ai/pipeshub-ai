@@ -18,6 +18,7 @@ import { ConfirmationDialog } from '../components/confirmation-dialog';
 import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { AuthMethodRow } from './components/auth-method-row';
 import { ConfigurePanel } from './components/configure-panel';
+import { SignInRemovalNotice } from './components/sign-in-removal-notice';
 import { useToastStore } from '@/lib/store/toast-store';
 import {
   AuthMethodsApi,
@@ -30,6 +31,7 @@ import {
   type AuthMethodState,
   type ConfigurableMethod,
   type ConfigStatus,
+  type SignInRemovalStatus,
 } from './types';
 
 // ============================================================
@@ -60,9 +62,8 @@ export default function AuthenticationPage() {
   const [configStatus, setConfigStatus] = useState<ConfigStatus>({
     google: false,
     microsoft: false,
-    samlSso: false,
-    oauth: false,
   });
+  const [signInRemoval, setSignInRemoval] = useState<SignInRemovalStatus | null>(null);
   const [smtpConfigured, setSmtpConfigured] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -82,14 +83,13 @@ export default function AuthenticationPage() {
   const loadData = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [authResp, smtpOk, googleCfg, microsoftCfg, samlCfg, oauthCfg] =
+      const [authResp, smtpOk, googleCfg, microsoftCfg, removalResp] =
         await Promise.allSettled([
           AuthMethodsApi.getAuthMethods(),
           SmtpApi.checkSmtpConfigured(),
           AuthConfigApi.getGoogleConfig(),
           AuthConfigApi.getMicrosoftConfig(),
-          AuthConfigApi.getSamlConfig(),
-          AuthConfigApi.getOAuthConfig(),
+          AuthMethodsApi.getSignInRemovalStatus(),
         ]);
 
       // Parse enabled methods
@@ -118,17 +118,14 @@ export default function AuthenticationPage() {
         microsoftCfg.status === 'fulfilled' &&
         !!(microsoftCfg.value?.clientId) &&
         !!(microsoftCfg.value?.tenantId);
-      const samlSso =
-        samlCfg.status === 'fulfilled' &&
-        !!(samlCfg.value?.entryPoint) &&
-        !!(samlCfg.value?.certificate) &&
-        !!(samlCfg.value?.emailKey);
-      const oauth =
-        oauthCfg.status === 'fulfilled' &&
-        !!(oauthCfg.value?.clientId) &&
-        !!(oauthCfg.value?.providerName);
+      setConfigStatus({ google, microsoft });
 
-      setConfigStatus({ google, microsoft, samlSso, oauth });
+      // The notice is optional: without it the page still works.
+      if (removalResp.status === 'fulfilled') {
+        setSignInRemoval(removalResp.value);
+      } else {
+        console.warn('[authentication] could not load sign-in removal status:', removalResp.reason);
+      }
     } finally {
       setIsLoading(false);
     }
@@ -214,7 +211,7 @@ export default function AuthenticationPage() {
       (m) => (m.type === 'password' || m.type === 'otp') && m.enabled,
     );
     const hasAnyAlternative = methods.some(
-      (m) => (['google', 'microsoft', 'samlSso', 'oauth'] as const).includes(m.type as 'google' | 'microsoft' | 'samlSso' | 'oauth') && m.enabled,
+      (m) => (m.type === 'google' || m.type === 'microsoft') && m.enabled,
     );
 
     if (!hasPasswordOrOtp && hasAnyAlternative) {
@@ -245,9 +242,8 @@ export default function AuthenticationPage() {
   const enabledAlternativeLabels = AUTH_METHOD_META
     .filter(
       (meta) =>
-        (['google', 'microsoft', 'samlSso', 'oauth'] as const).includes(
-          meta.type as 'google' | 'microsoft' | 'samlSso' | 'oauth',
-        ) && methods.find((m) => m.type === meta.type)?.enabled,
+        (meta.type === 'google' || meta.type === 'microsoft') &&
+        methods.find((m) => m.type === meta.type)?.enabled,
     )
     .map((meta) => meta.label);
 
@@ -293,6 +289,11 @@ export default function AuthenticationPage() {
             {t('workspaceMenu.documentation')}
           </Button>
         </Flex>
+
+        <SignInRemovalNotice
+          status={signInRemoval}
+          enabledMethods={savedMethods.filter((m) => m.enabled).map((m) => m.type)}
+        />
 
         {/* ── Authentication Methods section ── */}
         <Flex

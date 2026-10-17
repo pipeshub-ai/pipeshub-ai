@@ -2418,17 +2418,11 @@
       "panels": {
         "google": "設定 Google 驗證",
         "microsoft": "設定 Microsoft 驗證",
-        "samlSso": "設定 SAML SSO",
-        "oauth": "設定 OAuth 2.0",
         "github": "設定 GitHub 驗證"
       },
       "jit": {
         "title": "啟用即時（JIT）佈建",
         "description": "使用者首次以 {{providerName}} 登入時自動建立使用者帳戶"
-      },
-      "xmlUpload": {
-        "parseError": "無法從此檔案解析 SAML 中繼資料。請確認它是有效的 IdP 中繼資料 XML。",
-        "readError": "讀取檔案失敗。"
       },
       "riskDialog": {
         "title": "確認驗證變更",
@@ -2441,6 +2435,22 @@
       "userMethods": {
         "heading": "使用者登入方式",
         "subtitle": "控制所有組織中每位使用者可使用的登入方式。"
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0 已移除 {{methods}} 登入",
+        "nowSignsInWith": "此工作區現在使用{{methods}}登入。",
+        "peopleIntro": "以下人員曾經登入過，但尚未設定密碼：",
+        "person": "{{name}}（{{email}}）",
+        "andMore": "以及其他 {{count}} 人",
+        "howToSetPassword": "未使用 Google、Microsoft 或電子郵件驗證碼登入的人員需要設定密碼。他們可以在登入頁面使用「忘記密碼」（需要已設定電子郵件 SMTP），也可以由執行 PipesHub 伺服器的人員依照 PipesHub 1.0 升級指南為其建立設定密碼的連結。",
+        "methodNames": {
+          "password": "密碼",
+          "otp": "電子郵件驗證碼",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -4699,9 +4709,6 @@
       "emailVerifiedDescription": "您的電子郵件地址已更新。請使用新的電子郵件登入。",
       "emailVerifyFailedTitle": "電子郵件驗證失敗",
       "emailVerifyFailedDescription": "連結可能無效或已過期。",
-      "samlErrorTitle": "使用 SAML 登入時發生錯誤",
-      "samlSignInFailedTitle": "登入失敗",
-      "samlSignInFailedDescription": "SAML SSO 無法完成。請再試一次。",
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
@@ -4731,13 +4738,10 @@
       "signInWithEmailOtp": "使用電子郵件 OTP 登入",
       "orContinueWith": "或使用 {{provider}} 繼續",
       "orContinueWithAny": "或使用其中任一方式繼續",
-      "orContinueWithSso": "或使用單一登入（SSO）繼續",
       "googleNotConfigured": "您的組織尚未設定 Google 登入。",
       "microsoftNotConfigured": "您的組織尚未設定 Microsoft 登入。",
-      "oauthNotConfigured": "您的組織尚未設定 OAuth 登入。",
       "googleUnavailable": "Google 登入目前無法使用。請聯絡您的管理員。",
       "microsoftUnavailable": "Microsoft 登入目前無法使用。請聯絡您的管理員。",
-      "oauthUnavailable": "OAuth 登入目前無法使用。請聯絡您的管理員。",
       "showPassword": "顯示密碼",
       "hidePassword": "隱藏密碼",
       "accountDisabled": "您的帳戶已停用。",

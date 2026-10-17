@@ -4,23 +4,21 @@ import sinon from 'sinon'
 import * as cmConfig from '../../../../src/modules/configuration_manager/config/config'
 import * as encryptorModule from '../../../../src/libs/encryptor/encryptor'
 import { BadRequestError } from '../../../../src/libs/errors/http.errors'
+import { configPaths } from '../../../../src/modules/configuration_manager/paths/paths'
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets'
 import {
   getGoogleAuthConfig,
-  getOAuthConfig,
+  getMicrosoftAuthConfig,
   setGoogleAuthConfig,
   setMicrosoftAuthConfig,
-  setOAuthConfig,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
 
 // Sign-in provider configs follow HIDE_SECRET_CONFIG on the admin routes, reveal on
 // request, stay readable on the internal route, and keep stored values when a masked
 // form is saved back.
 
-const STORED_OAUTH = {
-  providerName: 'Okta',
-  clientId: 'oauth-client',
-  clientSecret: 'oauth-secret',
+const STORED_GOOGLE = {
+  clientId: 'google-client',
   enableJit: true,
 }
 
@@ -65,27 +63,26 @@ describe('sign-in provider secrets', () => {
   })
 
   describe('reads', () => {
-    it('masks client id and secret on the admin route when hidden', async () => {
+    it('masks the client id on the admin route when hidden', async () => {
       const res = response()
-      await getOAuthConfig(store(STORED_OAUTH))(request(), res, sinon.stub())
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(request(), res, sinon.stub())
       expect(res.json.firstCall.args[0]).to.deep.equal({
-        ...STORED_OAUTH,
+        ...STORED_GOOGLE,
         clientId: CONFIG_SECRET_PLACEHOLDER,
-        clientSecret: CONFIG_SECRET_PLACEHOLDER,
       })
     })
 
     it('returns the stored values when the admin asks to see them', async () => {
       const res = response()
-      await getOAuthConfig(store(STORED_OAUTH))(request({ reveal: 'true' }), res, sinon.stub())
-      expect(res.json.firstCall.args[0]).to.deep.equal(STORED_OAUTH)
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(request({ reveal: 'true' }), res, sinon.stub())
+      expect(res.json.firstCall.args[0]).to.deep.equal(STORED_GOOGLE)
     })
 
     it('ignores a reveal from an OAuth-app token', async () => {
       const res = response()
       const req = { ...request({ reveal: 'true' }), user: { userId: 'u1', orgId: 'o1', isOAuth: true } }
-      await getOAuthConfig(store(STORED_OAUTH))(req, res, sinon.stub())
-      expect(res.json.firstCall.args[0].clientSecret).to.equal(CONFIG_SECRET_PLACEHOLDER)
+      await getGoogleAuthConfig(store(STORED_GOOGLE))(req, res, sinon.stub())
+      expect(res.json.firstCall.args[0].clientId).to.equal(CONFIG_SECRET_PLACEHOLDER)
     })
 
     it('gives the internal route (sign-in) the stored values while hidden', async () => {
@@ -104,17 +101,17 @@ describe('sign-in provider secrets', () => {
 
   describe('saves', () => {
     it('keeps the stored secret when the masked form is saved back', async () => {
-      const kvs = store(STORED_OAUTH)
-      const body = { ...STORED_OAUTH, clientId: CONFIG_SECRET_PLACEHOLDER, clientSecret: CONFIG_SECRET_PLACEHOLDER }
-      await setOAuthConfig(kvs)(request({}, body), response(), sinon.stub())
-      expect(written(kvs)).to.include({ clientId: 'oauth-client', clientSecret: 'oauth-secret' })
+      const kvs = store(STORED_GOOGLE)
+      const body = { ...STORED_GOOGLE, clientId: CONFIG_SECRET_PLACEHOLDER }
+      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub())
+      expect(written(kvs)).to.include({ clientId: 'google-client' })
     })
 
     it('takes a newly typed secret over the stored one', async () => {
-      const kvs = store(STORED_OAUTH)
-      const body = { ...STORED_OAUTH, clientId: CONFIG_SECRET_PLACEHOLDER, clientSecret: 'rotated' }
-      await setOAuthConfig(kvs)(request({}, body), response(), sinon.stub())
-      expect(written(kvs)).to.include({ clientId: 'oauth-client', clientSecret: 'rotated' })
+      const kvs = store(STORED_GOOGLE)
+      const body = { ...STORED_GOOGLE, clientId: 'rotated' }
+      await setGoogleAuthConfig(kvs)(request({}, body), response(), sinon.stub())
+      expect(written(kvs)).to.include({ clientId: 'rotated' })
     })
 
     it('builds the Microsoft authority from the stored tenant, not the placeholder', async () => {
@@ -134,6 +131,51 @@ describe('sign-in provider secrets', () => {
       await setGoogleAuthConfig(kvs)(request({}, { clientId: CONFIG_SECRET_PLACEHOLDER }), response(), next)
       expect(kvs.set.called).to.equal(false)
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+    })
+  })
+
+  describe('Microsoft settings before the Azure AD ones are copied', () => {
+    function storeByPath(values: Record<string, Record<string, unknown>>): any {
+      return {
+        get: sinon.stub().callsFake(async (path: string) =>
+          values[path] ? `encrypted:${JSON.stringify(values[path])}` : null,
+        ),
+        set: sinon.stub().resolves(),
+      }
+    }
+
+    it('serves the Azure AD settings while Microsoft has none', async () => {
+      const res = response()
+      const kvs = storeByPath({ [configPaths.auth.azureAD]: { clientId: 'az-id', tenantId: 't' } })
+      await getMicrosoftAuthConfig(kvs, false)(request(), res, sinon.stub())
+      expect(res.json.firstCall.args[0]).to.deep.equal({ clientId: 'az-id', tenantId: 't' })
+    })
+
+    it('serves the Azure AD settings when the Microsoft ones have no client id', async () => {
+      const res = response()
+      const kvs = storeByPath({
+        [configPaths.auth.microsoft]: { tenantId: 'common' },
+        [configPaths.auth.azureAD]: { clientId: 'az-id', tenantId: 't' },
+      })
+      await getMicrosoftAuthConfig(kvs, false)(request(), res, sinon.stub())
+      expect(res.json.firstCall.args[0]).to.include({ clientId: 'az-id' })
+    })
+
+    it('keeps saved Microsoft settings and never reads Azure AD', async () => {
+      const res = response()
+      const kvs = storeByPath({
+        [configPaths.auth.microsoft]: { clientId: 'ms-id', tenantId: 't' },
+        [configPaths.auth.azureAD]: { clientId: 'az-id', tenantId: 't' },
+      })
+      await getMicrosoftAuthConfig(kvs, false)(request(), res, sinon.stub())
+      expect(res.json.firstCall.args[0]).to.include({ clientId: 'ms-id' })
+      expect(kvs.get.calledWith(configPaths.auth.azureAD)).to.equal(false)
+    })
+
+    it('answers an empty object when neither is set up', async () => {
+      const res = response()
+      await getMicrosoftAuthConfig(storeByPath({}), false)(request(), res, sinon.stub())
+      expect(res.json.firstCall.args[0]).to.deep.equal({})
     })
   })
 })
