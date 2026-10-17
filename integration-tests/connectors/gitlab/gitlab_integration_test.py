@@ -1726,7 +1726,8 @@ class TestGitLabIncremental:
                     connector_id, RecordType.PULL_REQUEST.value, scoped=True,
                 )
 
-                new_title = f"IT fixture: incremental MR update target (do not close) [{GL_IT_RUN_ID}]"
+                title_prefix = "IT fixture: incremental MR update target (do not close) ["
+                new_title = f"{title_prefix}{GL_IT_RUN_ID}]"
                 # A commit on the MR's branch, so the diff blocks change too — an MR
                 # update that only touches metadata would not exercise the block
                 # rebuild.
@@ -1755,7 +1756,11 @@ class TestGitLabIncremental:
                     "an updated MR must reuse its record; a second record means the "
                     "upsert keyed on something other than the MR's global id"
                 )
-                assert after.record_name == new_title
+                # Another run may retitle this shared MR before our resync, the same way.
+                assert after.record_name.startswith(title_prefix), after.record_name
+                assert after.record_name != before.record_name, (
+                    f"the retitle never reached the record ({after.record_name!r})"
+                )
                 assert after.version == first_version + 1, (
                     f"version {after.version} after an update, expected "
                     f"{first_version + 1}"

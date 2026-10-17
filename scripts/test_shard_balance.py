@@ -95,6 +95,11 @@ class TestCatchesMistakes(unittest.TestCase):
         problems, _ = run(workflow=workflow)
         self.assertTrue(any("the average shard" in p for p in problems), problems)
 
+    def test_a_shard_of_one_suite_may_run_past_the_average(self) -> None:
+        """Nothing can move off a one-suite shard, so it is the floor, not drift."""
+        problems, _ = run(minutes={"alpha": 5.0, "beta": 5.0, "gamma": 50.0})
+        self.assertFalse(any("the average shard" in p for p in problems), problems)
+
     def test_a_shard_with_no_matching_job_is_reported(self) -> None:
         """The real silent skip: core excludes the suites and no job selects them."""
         workflow = MATRIX + WORKFLOW.split("}}\n", 1)[1] + '      CONN_SHARD_3: "delta"\n'
@@ -221,28 +226,24 @@ class TestThisRepo(unittest.TestCase):
         )
         self.assertEqual(problems, [], "\n".join(report + problems))
 
-    def test_the_shard_holding_nextcloud_starts_its_containers(self) -> None:
-        """nextcloud and bookstack need the selfhosted-sources compose profile."""
+    def test_every_source_container_suite_starts_its_containers(self) -> None:
+        """The test step starts a source container only for the suites that need it."""
         workflow = balance.WORKFLOW.read_text(encoding="utf-8")
-        shards = balance.shard_markers(workflow)
-        owners = {shard for shard, names in shards.items()
-                  if "nextcloud" in names or "bookstack" in names}
-        self.assertEqual(len(owners), 1, f"split across shards: {owners}")
-        owner = owners.pop()
-        self.assertIn(
-            f"matrix.shard == '{owner}'",
-            workflow,
-            f"{owner} runs nextcloud/bookstack but does not start selfhosted-sources",
-        )
+        for case in (
+            'nextcloud|bookstack) PROFILES+=",selfhosted-sources"',
+            'zammad)              PROFILES+=",zammad-source"',
+            'smb)                 PROFILES+=",smb-source"',
+        ):
+            self.assertIn(case, workflow)
 
     def test_the_ai_agents_shard_never_runs_on_a_pull_request(self) -> None:
         """Every ai_agents test costs model calls; the nightly runs them, a PR must not."""
         workflow = balance.WORKFLOW.read_text(encoding="utf-8")
         line = balance._MATRIX_LINE.search(workflow).group(0)
-        pr_list = line.split("github.event_name == 'pull_request' && ", 1)[1].split("'", 2)[1]
-        self.assertNotIn("ai_agents", pr_list)
+        pr_side = line.split("github.event_name == 'pull_request' && ", 1)[1].split(")", 1)[0]
+        # A pull request's shards come from scripts/it_select.py, which never picks ai_agents.
+        self.assertEqual(pr_side, "needs.setup.outputs.pr_shards")
         self.assertIn("ai_agents", balance.matrix_solo_shards(workflow))
-
 
 if __name__ == "__main__":
     unittest.main()

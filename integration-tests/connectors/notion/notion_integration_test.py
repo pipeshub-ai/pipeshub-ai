@@ -10,8 +10,9 @@ pre-provisioned objects are that root page and ``NOTION_TEST_ROOT_DATABASE_ID``.
 
 Two invariants this suite depends on — do not "fix" either without reading the connector:
 
-1. **One IT run at a time per workspace.** ``_sync_objects_by_type`` searches workspace-wide with
-   no scoping filter, so concurrent runs would see each other's content and break every count.
+1. **Runs share the workspace.** ``_sync_objects_by_type`` searches workspace-wide with
+   no scoping filter, so a concurrent run's ``PHIT-`` tree lands in this graph too. Assertions
+   compare this run's seeded ids, and TC-SYNC-001 drops the other run's records by title.
 2. **Count assertions must use ``scoped=True``.** The connector only ever calls
    ``on_new_records`` — it has no delete path. A trashed page leaves scope when a full sync
    rebuilds ``BELONGS_TO``; its record document survives. Unscoped totals are meaningless here.
@@ -115,6 +116,7 @@ from connectors.notion.notion_test_utils import (  # noqa: E402
     full_sync,
     incremental_sync,
     pages_sync_point_key,
+    prefixed_external_ids,
     scoped_external_ids,
     wait_for_search_visibility,
     wait_past_checkpoint,
@@ -215,6 +217,14 @@ class TestNotionFullSync:
         foreign_pages, foreign_data_sources = await foreign_run_object_ids(
             notion_source_helper, notion_seed
         )
+        # Search stops listing a concurrent run's tree once that run trashes it, but its
+        # records stay in this graph (the connector never deletes), so go by name there too.
+        foreign_pages |= await prefixed_external_ids(
+            graph_provider, connector_id, RecordType.WEBPAGE.value
+        ) - notion_seed.expected_page_ids - {notion_seed.archived_page_id}
+        foreign_data_sources |= await prefixed_external_ids(
+            graph_provider, connector_id, RecordType.DATASOURCE.value
+        ) - notion_seed.expected_data_source_ids - {notion_seed.archived_data_source_id}
         # Only what actually landed in the graph counts. Search also returns trashed data
         # sources from earlier runs; they never sync, and counting them broke the total below.
         foreign_pages &= graph_pages

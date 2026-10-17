@@ -77,13 +77,13 @@ on:
           - neo4j
           - both
       run_mode:
-        description: 'When graph_db is "both": run the two backends sequentially in one job (default) or as parallel jobs on separate runners'
+        description: 'When graph_db is "both": run the two backends as parallel jobs on separate runners (default) or sequentially in one job'
         required: true
-        default: 'sequential'
+        default: 'parallel'
         type: choice
         options:
-          - sequential
           - parallel
+          - sequential
       message_broker:
         description: 'Message broker to use'
         required: true
@@ -121,6 +121,26 @@ concurrency:
 env:
   PIPESHUB_BASE_URL: http://localhost:3000
   PYTEST_WORKERS: ${{ github.event.inputs.pytest_workers || '2' }}
+  # Connector shards, one source of truth. The `core` shard is everything these
+  # and the `demo` shard do not own, built in the test step from the same values.
+  # Each job runs one graph backend, so a shard's wall clock is its suites'
+  # minutes on that backend; Neo4j is the slower leg (the scenario matrix runs
+  # there only). Packed to about 40 min of Neo4j tests each, the length of
+  # notion alone. google_drive_workspace runs about 80 min on Neo4j by itself, so
+  # it has shard 2 alone and sets the run's wall clock; no split can shorten
+  # either. Shard 5 keeps nextcloud and bookstack (selfhosted-sources), 7 zammad
+  # (zammad-source), 9 smb (smb-source): the test step starts those containers
+  # only where their suite runs. New connector suites go on the last shard.
+  # Rebalance with scripts/shard_balance.py when a suite grows.
+  CONN_SHARD_1: "notion"
+  CONN_SHARD_2: "google_drive_workspace"
+  CONN_SHARD_3: "confluence or github_teams or sharepoint"
+  CONN_SHARD_4: "web or rss or local_fs"
+  CONN_SHARD_5: "nextcloud or bookstack or mariadb"
+  CONN_SHARD_6: "gitlab or google_drive_individual"
+  CONN_SHARD_7: "jira or linear or zammad"
+  CONN_SHARD_8: "s3 or minio or gcs or github"
+  CONN_SHARD_9: "azure_blob or azure_files or postgres or smb"
 
 jobs:
   # Which parts the run tests on besides the graph databases (always both).
@@ -130,16 +150,37 @@ jobs:
     name: Pick the setup to test
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read # dorny/paths-filter lists a pull request's files
     outputs:
       message_broker: ${{ steps.pick.outputs.message_broker }}
       label: ${{ steps.pick.outputs.label }}
       is_default: ${{ steps.pick.outputs.is_default }}
+      # Pull requests only: the shards and connector suites their changes reach.
+      pr_shards: ${{ steps.select.outputs.shards }}
+      pr_markers: ${{ steps.select.outputs.markers }}
     steps:
       - name: Checkout the picker
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-          sparse-checkout: scripts
+          sparse-checkout: |
+            scripts
+            .github
+      - name: List the changed files by suite
+        if: github.event_name == 'pull_request'
+        id: paths
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          filters: .github/integration-test-paths.yml
+          list-files: json
+      - name: Pick the shards and suites the changes reach
+        if: github.event_name == 'pull_request'
+        id: select
+        env:
+          FILTER_OUTPUTS: ${{ toJSON(steps.paths.outputs) }}
+        run: python3 scripts/it_select.py
       - name: Pick the setup
         id: pick
         env:
@@ -154,7 +195,8 @@ jobs:
     if: >-
       github.event_name != 'pull_request' ||
       (github.event.pull_request.head.repo.full_name == github.repository &&
-       !contains(github.event.pull_request.labels.*.name, 'skip-it'))
+       !contains(github.event.pull_request.labels.*.name, 'skip-it') &&
+       needs.setup.outputs.pr_shards != '[]')
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
 
@@ -163,16 +205,19 @@ jobs:
       matrix:
         # One job per value; "both" runs both backends sequentially in one job.
         # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
-        # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
+        # it-neo4j + it-arango) widen that. Cron runs the two as parallel jobs, and
+        # so does a dispatch unless it asks for run_mode sequential.
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || (github.event_name == 'schedule' && '["arango","neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Four
+        # slow connector suites do not all serialize on one worker. Nine
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
-        # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
-        # CONN_SHARD_4 (one source of truth); "core" is everything those four
-        # and "demo" do not own, so the six partition -m "integration" exactly.
+        # Each shard's marker is derived in the test step from CONN_SHARD_<n>
+        # (one source of truth); "core" is everything those and "demo" do not
+        # own, so together they partition -m "integration" exactly.
+        # A pull request runs only the shards its changed files reach (the setup
+        # job's pr_shards, see scripts/it_select.py); none means no job at all.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
         # "demo" runs only the Acme Corp demo questions, on a stack where no
@@ -186,7 +231,7 @@ jobs:
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]') || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && needs.setup.outputs.pr_shards) || '["connectors-1","connectors-2","connectors-3","connectors-4","connectors-5","connectors-6","connectors-7","connectors-8","connectors-9","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -259,11 +304,8 @@ jobs:
       MCP_FIXTURE_TEST_URL: http://localhost:8097
       MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
       # Nextcloud and BookStack run in the compose stack too, behind the
-      # selfhosted-sources profile: only the shard that runs their tests
-      # (connectors-1, or a dispatch of just one of them) starts them.
-      # The Neo4j stack keeps Kafka behind the kafka profile, so a Kafka
-      # run has to enable it or the app has no broker to reach. Compose
-      # ignores the empty entry left when only one profile is on.
+      # selfhosted-sources profile; the "Pick the tests" step sets
+      # COMPOSE_PROFILES so only the shard that runs their tests starts them.
       NEXTCLOUD_TEST_URL: http://localhost:8090
       NEXTCLOUD_CONNECTOR_URL: http://nextcloud-source
       BOOKSTACK_TEST_URL: http://localhost:8094
@@ -271,7 +313,6 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
@@ -369,22 +410,6 @@ jobs:
       SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
       SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
       SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
-      # Connector shards, one source of truth. The `core` shard is everything
-      # these four and the `demo` shard do not own, built in the test step
-      # from the same values.
-      # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two, and the job
-      # times out at 300 min): shard 1 ~194 min, shard 2 ~125 min, shard 3
-      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
-      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
-      # and shard 3 zammad (zammad-source). The two Google Drive suites have
-      # shard 4: together they pushed shard 2 past the job timeout.
-      # A new connector suite goes on CONN_SHARD_4; shards 1-3 are full.
-      # Rebalance with scripts/shard_balance.py when a suite grows.
-      CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
-      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -412,6 +437,62 @@ jobs:
         with:
           ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
+
+      # Before the image build: the profiles decide which source containers exist.
+      - name: Pick the tests and source containers for this shard
+        env:
+          PR_MARKERS: ${{ needs.setup.outputs.pr_markers }}
+        run: |
+          # Each shard runs its slice; `core` is everything the connector lists
+          # and the demo shard do not own, built here so the lists live in one
+          # place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
+          case "$SHARD" in
+            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
+            connectors-1) MARKERS="$CONN_SHARD_1" ;;
+            connectors-2) MARKERS="$CONN_SHARD_2" ;;
+            connectors-3) MARKERS="$CONN_SHARD_3" ;;
+            connectors-4) MARKERS="$CONN_SHARD_4" ;;
+            connectors-5) MARKERS="$CONN_SHARD_5" ;;
+            connectors-6) MARKERS="$CONN_SHARD_6" ;;
+            connectors-7) MARKERS="$CONN_SHARD_7" ;;
+            connectors-8) MARKERS="$CONN_SHARD_8" ;;
+            connectors-9) MARKERS="$CONN_SHARD_9" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not ($CONN_SHARD_5) and not ($CONN_SHARD_6) and not ($CONN_SHARD_7) and not ($CONN_SHARD_8) and not ($CONN_SHARD_9) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
+            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
+          esac
+          # Source containers only where their suites run. Not on core: its
+          # expression names every connector, to leave them out.
+          PROFILES=""
+          if [[ "$SHARD" == connectors-* || "$SHARD" == dispatch ]]; then
+            # A pull request keeps only the suites its changes reach (empty: all).
+            if [[ "$SHARD" == connectors-* && -n "$PR_MARKERS" ]]; then
+              kept=()
+              for m in ${MARKERS// or / }; do
+                if [[ " $PR_MARKERS " == *" $m "* ]]; then kept+=("$m"); fi
+              done
+              MARKERS="${kept[*]}"
+              MARKERS="${MARKERS// / or }"
+            fi
+            for m in ${MARKERS// or / }; do
+              case "$m" in
+                nextcloud|bookstack) PROFILES+=",selfhosted-sources" ;;
+                zammad)              PROFILES+=",zammad-source" ;;
+                smb)                 PROFILES+=",smb-source" ;;
+              esac
+            done
+          fi
+          # The Neo4j stack keeps Kafka behind the kafka profile, so a Kafka run
+          # has to enable it or the app has no broker to reach.
+          if [ "$MESSAGE_BROKER" = "kafka" ]; then PROFILES+=",kafka"; fi
+          echo "Markers: $MARKERS"
+          echo "Compose profiles: ${PROFILES#,}"
+          {
+            echo "MARKERS=$MARKERS"
+            echo "COMPOSE_PROFILES=${PROFILES#,}"
+          } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
         if: env.RUN_PLAYWRIGHT == 'true'
@@ -588,21 +669,6 @@ jobs:
           TEST_GRAPH_DB_TYPE: neo4j
         run: |
           source .venv/bin/activate
-          # Each shard runs its slice; `core` is everything the three connector
-          # lists and the demo shard do not own, built here so the lists live in
-          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
-          # runs exactly the selected marker.
-          case "$SHARD" in
-            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
-            connectors-1) MARKERS="$CONN_SHARD_1" ;;
-            connectors-2) MARKERS="$CONN_SHARD_2" ;;
-            connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
-            demo)         MARKERS="demo" ;;
-            ai_agents)    MARKERS="ai_agents" ;;
-            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
-          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
@@ -780,21 +846,6 @@ jobs:
           TEST_ARANGO_DB_NAME: es
         run: |
           source .venv/bin/activate
-          # Each shard runs its slice; `core` is everything the three connector
-          # lists and the demo shard do not own, built here so the lists live in
-          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
-          # runs exactly the selected marker.
-          case "$SHARD" in
-            dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
-            connectors-1) MARKERS="$CONN_SHARD_1" ;;
-            connectors-2) MARKERS="$CONN_SHARD_2" ;;
-            connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            connectors-4) MARKERS="$CONN_SHARD_4" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
-            demo)         MARKERS="demo" ;;
-            ai_agents)    MARKERS="ai_agents" ;;
-            *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
-          esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
           # distributed and skips teardown. -n 0 runs in-process and restores it.
           WORKERS="$PYTEST_WORKERS"
@@ -1009,8 +1060,11 @@ jobs:
           mkdir -p reports
           zip -r reports.zip reports/
 
+      # Slack is reporting only: an outage or rate limit must not turn a passing
+      # job red. A test failure still fails its own test step.
       - name: Send Slack report
         if: ${{ !cancelled() }}
+        continue-on-error: true
         id: slack-message
         uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52 # v2.1.0
         with:
@@ -1119,6 +1173,7 @@ jobs:
 
       - name: Upload reports zip to Slack
         if: ${{ !cancelled() }}
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}
@@ -1158,6 +1213,7 @@ jobs:
 
       - name: Send failed tests list to Slack thread
         if: ${{ !cancelled() && (steps.test-results.outputs.TOTAL_FAILED != '0' || steps.test-results.outputs.TOTAL_ERRORS != '0' || steps.test-results.outputs.UNIT_FAILED != '0' || steps.test-results.outputs.UNIT_ERRORS != '0' || steps.test-results.outputs.PW_FAILED != '0' || steps.test-results.outputs.PW_ERRORS != '0') }}
+        continue-on-error: true
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
           CHANNEL_ID: ${{ vars.SLACK_CI_CHANNEL_ID }}

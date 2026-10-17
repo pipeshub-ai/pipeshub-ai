@@ -18,7 +18,7 @@ from app.models.entities import RecordType  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
-from connectors.notion.constants import SYNC_TIMEOUT  # type: ignore[import-not-found]
+from connectors.notion.constants import SYNC_TIMEOUT, TITLE_PREFIX  # type: ignore[import-not-found]
 
 logger = logging.getLogger("notion-test-utils")
 
@@ -268,4 +268,19 @@ async def scoped_external_ids(
         str(r.get("externalRecordId"))
         for r in records
         if r.get("externalRecordId") is not None
+    }
+
+
+async def prefixed_external_ids(
+    graph_provider: GraphProviderProtocol, connector_id: str, record_type: str
+) -> set[str]:
+    """External ids of in-scope records of one type whose name carries ``TITLE_PREFIX``."""
+    records = await graph_provider.fetch_records_by_type(
+        connector_id, record_type, scoped=True
+    )
+    return {
+        str(r.get("externalRecordId"))
+        for r in records
+        if r.get("externalRecordId") is not None
+        and str(r.get("recordName") or "").startswith(TITLE_PREFIX)
     }

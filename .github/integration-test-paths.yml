@@ -1,0 +1,111 @@
+# Which integration-test suites a pull request's changes can reach. Read by
+# dorny/paths-filter in the setup job of integration-tests.yml; the selection
+# itself is scripts/it_select.py.
+#
+# A filter named after a connector marker lists every path that can change that
+# suite's result: its connector source, its test folder, and the source or test
+# folders it imports (checked with an import graph, see scripts/it_select.py).
+# A changed file that no filter here names makes the pull request run every
+# shard, so a path missing from this file costs time, never coverage. Leave a
+# connector out when shared code imports it (google, atlassian, microsoft,
+# local_fs, network_share, localKB today): its changes have to run everything.
+
+azure_blob:
+  - 'backend/python/app/connectors/sources/azure_blob/**'
+  - 'integration-tests/connectors/azure_blob/**'
+azure_files:
+  - 'backend/python/app/connectors/sources/azure_files/**'
+  - 'integration-tests/connectors/azure_files/**'
+bookstack:
+  - 'backend/python/app/connectors/sources/bookstack/**'
+  - 'integration-tests/connectors/bookstack/**'
+confluence:
+  - 'integration-tests/connectors/confluence/**'
+gcs:
+  - 'backend/python/app/connectors/sources/google_cloud_storage/**'
+  - 'integration-tests/connectors/gcs/**'
+# The personal GitHub connector and its tests build on GitHub Teams, whose tests build on Jira's.
+github:
+  - 'backend/python/app/connectors/sources/github/**'
+  - 'backend/python/app/connectors/sources/github_teams/**'
+  - 'integration-tests/connectors/github_personal/**'
+  - 'integration-tests/connectors/github_teams/**'
+  - 'integration-tests/connectors/jira/**'
+github_teams:
+  - 'backend/python/app/connectors/sources/github_teams/**'
+  - 'integration-tests/connectors/github_teams/**'
+  - 'integration-tests/connectors/jira/**'
+gitlab:
+  - 'backend/python/app/connectors/sources/gitlab/**'
+  - 'integration-tests/connectors/gitlab/**'
+  - 'integration-tests/connectors/jira/**'
+google_drive_individual:
+  - 'integration-tests/connectors/google_drive_individual/**'
+  - 'integration-tests/connectors/google_drive_workspace/**'
+google_drive_workspace:
+  - 'integration-tests/connectors/google_drive_workspace/**'
+jira:
+  - 'integration-tests/connectors/jira/**'
+linear:
+  - 'backend/python/app/connectors/sources/linear/**'
+  - 'integration-tests/connectors/linear/**'
+local_fs:
+  - 'integration-tests/connectors/local_fs/**'
+mariadb:
+  - 'backend/python/app/connectors/sources/mariadb/**'
+  - 'integration-tests/connectors/mariadb/**'
+# MinIO reuses the S3 connector and the S3 test helpers.
+minio:
+  - 'backend/python/app/connectors/sources/minio/**'
+  - 'backend/python/app/connectors/sources/s3/**'
+  - 'integration-tests/connectors/minio/**'
+  - 'integration-tests/connectors/s3/**'
+nextcloud:
+  - 'backend/python/app/connectors/sources/nextcloud/**'
+  - 'integration-tests/connectors/nextcloud/**'
+notion:
+  - 'backend/python/app/connectors/sources/notion/**'
+  - 'integration-tests/connectors/notion/**'
+postgres:
+  - 'backend/python/app/connectors/sources/postgres/**'
+  - 'integration-tests/connectors/postgres/**'
+# RSS reuses the Web connector.
+rss:
+  - 'backend/python/app/connectors/sources/rss/**'
+  - 'backend/python/app/connectors/sources/web/**'
+  - 'integration-tests/connectors/rss/**'
+s3:
+  - 'backend/python/app/connectors/sources/s3/**'
+  - 'integration-tests/connectors/s3/**'
+sharepoint:
+  - 'integration-tests/connectors/sharepoint/**'
+smb:
+  - 'backend/python/app/connectors/sources/smb/**'
+  - 'integration-tests/connectors/smb/**'
+web:
+  - 'backend/python/app/connectors/sources/web/**'
+  - 'integration-tests/connectors/web/**'
+zammad:
+  - 'backend/python/app/connectors/sources/zammad/**'
+  - 'integration-tests/connectors/zammad/**'
+
+# Not a marker: the UI only matters to the Playwright tests, which run in core.
+frontend:
+  - 'frontend/**'
+# Not a marker: changes that cannot affect a running stack. Not '**/*.md': some
+# markdown is runtime or test input (agent skill packs, parser fixtures).
+no_stack:
+  - '*.md'
+  - '**/README.md'
+  - 'frontend/docs/**'
+  - 'docs/**'
+  - 'changelog/**'
+  - 'loadtest/**'
+  - 'backend/python/tests/**'
+  - 'backend/nodejs/apps/tests/**'
+  - 'deployment/helm/**'
+
+# Every changed file, to find the ones no filter above names. The action lists a
+# rename as a delete of the old path plus an add of the new one, so both count.
+all:
+  - '**'

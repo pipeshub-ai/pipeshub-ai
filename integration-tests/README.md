@@ -277,22 +277,41 @@ pytest -m "integration and not slow" -v             # exclude slow
 
 **How CI splits this suite.** The nightly run does not run the whole suite in one
 job: `.github/workflows/integration-tests.yml` divides the connector suites across
-four shards (`CONN_SHARD_1` … `CONN_SHARD_4`), and a fifth `core` shard runs
-everything those four do not name, plus the browser tests. A sixth `demo` shard
+nine shards (`CONN_SHARD_1` … `CONN_SHARD_9`), and a `core` shard runs
+everything those do not name, plus the browser tests. A `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. A seventh
+workspace has data of its own; `core` leaves the `demo` marker out. An
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
 the nightly and on a full manual run, never on a pull request, and `core` leaves
 its marker out. The model-settings part (`-m ai_models`) also runs weekly
-against a local Ollama model in `integration-tests-ollama.yml`. Each shard
-brings up its own stack and runs both graph databases, so a shard's wall clock is
-roughly the sum of its two legs, and has to stay under the job's 300-minute timeout.
+against a local Ollama model in `integration-tests-ollama.yml`. Each shard runs
+once per graph database, as separate jobs with their own runner and stack, so the
+two backends run at the same time (a pull request runs Neo4j only, unless a label
+asks for more). The connector shards are packed to about the length of
+notion, which has a shard to itself. google_drive_workspace, about twice as long,
+has one too and sets the run's wall clock.
 
-Adding a connector means adding its marker to `CONN_SHARD_4`, the shard new
-connector suites go on (shards 1–3 are full). Connector
+Suites running at the same time share the connectors' external accounts (the
+Notion workspace, the Confluence space, the Jira site and so on), so every suite
+names what it creates per run and asserts only on its own objects. When you add
+a suite that writes to a shared account, do the same: put a run id in every name
+you create, delete only your own objects (or other runs' only once they are
+hours old), and leave other runs' objects out of every count.
+
+**Which shards a pull request runs.** The setup job lists the pull request's
+changed files with `dorny/paths-filter` against
+`.github/integration-test-paths.yml`, and `scripts/it_select.py` turns the result
+into the shards (and, inside a connector shard, the suites) to run. A connector's
+filter names its source folder, its test folder, and any folder it imports. A
+changed file that no filter names (shared backend code, the stack, this workflow)
+runs every shard; docs and unit tests alone run none; frontend changes run
+`core`.
+
+Adding a connector means adding its marker to the last shard line (`CONN_SHARD_9`
+today), where new connector suites go. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that
@@ -309,7 +328,7 @@ marker, when a shard list and the job matrix disagree, when the `demo` job and
 `core` would both run the demo (or neither would), or when one shard drifts
 well past the others. The measurements
 live in `scripts/shard_durations.json`; refresh them from a recent nightly's
-`reports-both-<shard>` artifacts (`*-results.xml`) when they look stale. The same
+`reports-<backend>-<shard>` artifacts (`*-results.xml`) when they look stale. The same
 check runs in CI through `python3 -m unittest discover -s scripts`.
 
 **Pull requests and secrets.** `integration-tests.yml` runs on `pull_request`.
