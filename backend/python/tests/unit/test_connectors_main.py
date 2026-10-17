@@ -1745,6 +1745,7 @@ class TestVectorDbMemoryCheck:
         response = await vector_db_memory_check(request)
 
         assert response.status_code == 403
+        assert json.loads(response.body) == {"detail": "Admin access required"}
         provider.memory_report.assert_not_awaited()
 
 

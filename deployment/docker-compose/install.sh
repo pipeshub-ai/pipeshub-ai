@@ -1196,7 +1196,7 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
   # Qdrant's memory limit decides search speed once the index grows
   # (docs/deployment/vector-db-sizing.md); keep an operator's value.
-  QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "")"
+  QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
 
   # Same for the private-address switch: dropping it on --reconfigure would let AI
   # model endpoints reach internal addresses again without anyone noticing.

@@ -405,6 +405,8 @@ class VectorDBMemoryReport:
     collections: list[CollectionMemoryFootprint] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        # The HTTP body: the verdict and totals an admin needs to size Qdrant.
+        # Per-collection names and counts stay server-side.
         return {
             "status": self.status,
             "neededBytes": self.needed_bytes,
@@ -414,7 +416,6 @@ class VectorDBMemoryReport:
             "availableSource": self.available_source,
             "points": self.points,
             "nodes": self.nodes,
-            "collections": [c.to_dict() for c in self.collections],
         }
 
 

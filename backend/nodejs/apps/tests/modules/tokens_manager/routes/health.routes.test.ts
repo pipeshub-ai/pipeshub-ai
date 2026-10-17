@@ -1593,7 +1593,6 @@ describe('tokens_manager/routes/health.routes', () => {
       availableSource: 'configured',
       points: 5_000_000,
       nodes: 1,
-      collections: [],
     }
 
     function memoryRoute() {

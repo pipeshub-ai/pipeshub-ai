@@ -286,10 +286,15 @@ class TestAssessMemory:
         assert report["status"] == STATUS_INSUFFICIENT
         assert set(report) == {
             "status", "neededBytes", "indexBytes", "baseBytes", "availableBytes",
-            "availableSource", "points", "nodes", "collections",
+            "availableSource", "points", "nodes",
         }
-        assert report["collections"][0]["name"] == "records"
-        assert report["collections"][0]["quantization"] == "scalar"
+
+    def test_to_dict_leaves_out_collection_names_and_counts(self) -> None:
+        report = assess_memory(
+            {"records": LARGE_COLLECTION}, configured_limit_bytes=4 * GIB, host_ram_bytes=None
+        )
+        assert report.collections[0].name == "records"
+        assert "records" not in repr(report.to_dict())
 
 
 class TestQdrantServiceMemoryReport:

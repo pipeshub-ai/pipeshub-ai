@@ -17950,35 +17950,6 @@ paths:
                     format: int64
                   nodes:
                     type: integer
-                  collections:
-                    type: array
-                    items:
-                      type: object
-                      properties:
-                        name:
-                          type: string
-                        points:
-                          type: integer
-                          format: int64
-                        quantization:
-                          type: string
-                        alwaysRam:
-                          type: boolean
-                        indexBytes:
-                          type: integer
-                          format: int64
-                        quantizedVectorsBytes:
-                          type: integer
-                          format: int64
-                        hnswBytes:
-                          type: integer
-                          format: int64
-                        sparseIndexBytes:
-                          type: integer
-                          format: int64
-                        payloadIndexBytes:
-                          type: integer
-                          format: int64
         '401':
           description: Unauthorized
         '403':
