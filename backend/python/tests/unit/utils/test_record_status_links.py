@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.utils.chat_helpers import (
     build_address_links_info,
     describe_search_records,
@@ -219,6 +220,13 @@ class TestReadRecordsCarryTheirLinks:
         records_map = {"vr1": {"id": "slack-1", "record_name": "eng", "context_metadata": "Record ID: slack-1"}}
         graph = _graph({"slack-1": {"mentioned_in": [], "links_to": ["pr-1"]}}, {"pr-1"})
         graph.config_service = MagicMock()
+        # A read checks the record itself first, in one batch.
+        graph.get_user_by_user_id = AsyncMock(return_value={"id": "user-key"})
+        graph.check_access = AsyncMock(
+            side_effect=lambda _user_key, _org_id, node_ids=(), **_: AccessCheck(
+                node_ids=frozenset(node_ids) & {"slack-1"},
+            ),
+        )
 
         with patch("app.utils.fetch_full_record._apply_live_ticket_context_metadata", new=AsyncMock()):
             result = await _fetch_multiple_records_impl(
