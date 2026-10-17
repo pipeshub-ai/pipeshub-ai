@@ -23,8 +23,10 @@ from app.agents.actions.knowledge_graph.views import (
     render_navigation_view_with_ids,
 )
 from app.modules.agents.qna.chat_state import remember_record_ids
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from pathlib import Path
 
     from app.agent_loop_lib.tools.base import ToolOutput
@@ -66,9 +68,9 @@ class _Graph:
         self.calls.append("get_user_by_user_id")
         return {"_key": user_id, "id": user_id}
 
-    async def check_access(self, user_key: str, org_id: str, *, node_ids=(), **_: object):  # noqa: ANN001, ANN201
-        from app.services.graph_db.interface.graph_db_provider import AccessCheck
-
+    async def check_access(
+        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), **_: object,
+    ) -> AccessCheck:
         self.calls.append("check_access")
         return AccessCheck(node_ids=frozenset(
             node_id for node_id in node_ids if user_key in self._readable_by.get(node_id, set())

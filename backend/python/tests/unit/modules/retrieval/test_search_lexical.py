@@ -9,7 +9,10 @@ import pytest
 import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.lexical_search import LexicalSearchUnavailableError
-from app.services.graph_db.interface.graph_db_provider import AccessCheck, AccessibleContainers
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.models import (
     SearchResult,
