@@ -23,9 +23,10 @@ from app.agents.actions.storage_search.storage_search import (
     is_local_storage,
 )
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import CollectionNames, ProgressStatus
+from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import config_node_constants
 from app.modules.demo_data.access import excluded_demo_connector_ids
+from app.services.graph_db.common.record_visibility import is_searchable_record
 from app.services.graph_db.interface.graph_db_provider import (
     STRICT_SCOPE_FILTER_KEY,
     AccessibleContainers,
@@ -1740,7 +1741,7 @@ async def merge_pattern_match_results(
     graph_by_vrid = {
         vrid: rec for vrid, rec in graph_by_vrid.items()
         if rec.get("connectorId") not in excluded_apps
-        and rec.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and is_searchable_record(rec)
     }
 
     if time_range:

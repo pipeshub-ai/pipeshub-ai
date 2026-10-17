@@ -16,6 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from app.exceptions.fastapi_responses import Status
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import render_knowledge
@@ -29,7 +30,13 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.utils.image_admission import ImageAdmission
 
-__all__ = ["PrefetchResult", "filter_notice_constraint", "prefetch_retrieval"]
+__all__ = [
+    "PrefetchResult",
+    "filter_notice_constraint",
+    "prefetch_retrieval",
+    "search_failure_constraint",
+    "search_incomplete_constraint",
+]
 
 # Statuses `RetrievalService.search_with_filters()` uses for "the backend
 # itself failed/is unavailable" -- as opposed to "ran fine, found nothing"
@@ -40,6 +47,16 @@ _RETRIEVAL_ERROR_STATUS_CODES = frozenset({202, 404, 500, 503})
 # The request's own filter was refused (an entity filter too broad for what the
 # user can read, or unusable): not "nothing found", and the user has to be told.
 _FILTER_REFUSED_STATUS_CODE = 422
+# Of the error statuses, the ones where the search itself could not run. The
+# rest (nothing indexed yet, nothing this user can read) are answers.
+_SEARCH_FAILED_STATUSES = frozenset({
+    Status.ERROR.value,
+    Status.SEARCH_INDEX_UNAVAILABLE.value,
+    Status.PERMISSION_CHECK_UNAVAILABLE.value,
+    Status.VECTOR_DB_NOT_READY.value,
+})
+# The raised exception's text describes our infrastructure, not the search.
+_SEARCH_RAISED_NOTICE = "The search could not run."
 
 
 @dataclass
@@ -67,6 +84,11 @@ class PrefetchResult:
     ranked_results: list[dict[str, Any]] = field(default_factory=list)
     # Why the request's filter could not be applied; the answer must say so.
     filter_notice: str | None = field(default=None)
+    # Why the search failed outright, so the model does not read its empty
+    # context as "nothing matched". None for a search that ran.
+    failure_notice: str | None = field(default=None)
+    # The search ran, but part of the index did not answer.
+    incomplete_notice: str | None = field(default=None)
 
 
 def _is_followup(previous_conversations: list[dict[str, Any]] | None) -> bool:
@@ -138,6 +160,7 @@ async def prefetch_retrieval(
             citation_ref_mapper=ref_mapper,
             is_empty=True,
             error_message=str(exc),
+            failure_notice=_SEARCH_RAISED_NOTICE,
         )
 
     status_code = result.get("status_code", 500)
@@ -154,6 +177,7 @@ async def prefetch_retrieval(
             filter_notice=message,
         )
     if status_code in _RETRIEVAL_ERROR_STATUS_CODES:
+        message = result.get("message", "Search failed")
         return PrefetchResult(
             formatted_context="",
             final_results=[],
@@ -161,9 +185,14 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
-            error_message=result.get("message", "Search failed"),
+            error_message=message,
+            failure_notice=(
+                message if result.get("status") in _SEARCH_FAILED_STATUSES
+                else result.get("searchIncomplete") or None
+            ),
         )
 
+    incomplete_notice = result.get("searchIncomplete") or None
     search_results = result.get("searchResults", [])
     virtual_to_record_map = result.get("virtual_to_record_map", {})
 
@@ -188,6 +217,8 @@ async def prefetch_retrieval(
             tool_records=[],
             citation_ref_mapper=ref_mapper,
             is_empty=True,
+            # Nothing found in the part that answered is no finding at all.
+            failure_notice=incomplete_notice,
         )
 
     if image_admission is not None and is_multimodal_llm:
@@ -220,6 +251,8 @@ async def prefetch_retrieval(
         is_empty=not formatted_context.strip(),
         collected_images=rendered.images,
         ranked_results=rendered.ranked,
+        incomplete_notice=incomplete_notice,
+        failure_notice=None if formatted_context.strip() else incomplete_notice,
     )
 
 
@@ -230,3 +263,27 @@ def filter_notice_constraint(notice: str) -> str:
         "and how to narrow the filter. Do not answer as if no documents matched."
     )
 
+
+def search_failure_constraint(notice: str, *, can_search: bool) -> str:
+    """What the model is told when the search run before its first turn failed."""
+    then = (
+        "Search again with the search tool. If that fails too, tell the user the "
+        "knowledge base could not be searched just now."
+        if can_search
+        else "Tell the user the knowledge base could not be searched just now."
+    )
+    return (
+        f"The knowledge base search run for this question did not complete: {notice} "
+        f"Its empty result does not show that nothing matches. {then} "
+        "Do not answer as if no documents matched."
+    )
+
+
+def search_incomplete_constraint(notice: str, *, can_search: bool) -> str:
+    """Leads the prefetched context when part of the index did not answer."""
+    then = (
+        "search again before saying it does not."
+        if can_search
+        else "do not say it does not exist."
+    )
+    return f"Note: {notice} A document missing from the context below may still exist; {then}\n\n"

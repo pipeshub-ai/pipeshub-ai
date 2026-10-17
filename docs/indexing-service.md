@@ -83,6 +83,8 @@ stateDiagram-v2
 
 `extractionStatus` moves independently (`NOT_STARTED → IN_PROGRESS → COMPLETED | FAILED`) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`.
 
+A record also stays searchable while `hasIndexedCopy` is true. Indexing sets it with every `COMPLETED` write and clears it when a record turns out `EMPTY`; nothing else touches it, and connector upserts merge rather than replace, so it survives a re-queue. An edited record queued again (`NOT_STARTED`, `QUEUED`, `IN_PROGRESS`), or one whose re-index failed, therefore keeps serving its previous copy until the new one is indexed. The search gate is `aql_searchable_record` / `cypher_searchable_record` in `app/services/graph_db/common/record_visibility.py`. Records indexed before the field existed are marked by `backfill_indexed_copy_flags`, which the indexing service runs at startup once the schema is ensured. A type that is not reconciled block by block still loses its vectors while it is processed, because the handler deletes them first.
+
 ### 2.2 Data flow for one record (happy path)
 
 ```mermaid
@@ -132,6 +134,7 @@ Failure paths from the same wrapper (`redis_streams/indexing_consumer.py::_proce
 | Terminal exception (`MessageErrorClassifier` → TERMINAL) | Record marked FAILED via the disposition sink, message ACKed. |
 | Transient exception, attempts < `MAX_DELIVERY_ATTEMPTS` (3) | Record reverted `IN_PROGRESS → QUEUED`, message re-published to the same lane with `_retry_not_before` (15s, 60s, 240s backoff) and `_retry_tracking_id`, original ACKed. |
 | Transient, attempts exhausted | Dead-lettered: record FAILED, message ACKed, next MD5 duplicate triggered. |
+| Final attempt fails after the record is indexed (a re-read shows `indexingStatus=COMPLETED`, `extractionStatus=IN_PROGRESS`, from this attempt or an earlier one) | Only the enrichment ends: `extractionStatus=FAILED` with "Try Reindex", the record stays searchable and its queued copies are released. |
 | `ParseAdmissionTimeout` (no parse slot within `RECORD_PROCESSING_TIMEOUT`) | Re-queued **without** counting an attempt; delivery counter bounds it (`REDIS_MAX_DELIVERIES`). |
 | Content fetch answered 429 with a `Retry-After` (the source, or the connector's quota reserve, will not serve it yet) | Not a failure. The handler writes the record `QUEUED` with `retryNotBefore` and a reason naming the source and the time, and ends normally, so the message is ACKed, no attempt is counted and no worker slot is held while it waits. The stranded-record sweep sends it again once that time has passed (section 4.6). A wait that would end more than `INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS` (24h) after the first one began ends the record FAILED with a reason saying so. A 429 without `Retry-After` takes the transient row above. |
 | `RECORD_PROCESSING_TIMEOUT` (1800s) elapsed inside the handler | Task cancelled, handler leaves the record IN_PROGRESS, counted as a transient failure. |

@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
-from jose import JWTError
+from jwt import PyJWTError as JWTError
 
 from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (

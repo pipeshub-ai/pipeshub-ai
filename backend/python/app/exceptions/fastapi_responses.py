@@ -14,3 +14,6 @@ class Status(Enum):
     PERMISSION_CHECK_UNAVAILABLE = "permission_check_unavailable"
     # A filter the search cannot run as given: malformed, or matching too many records.
     INVALID_FILTER = "invalid_filter"
+    # The vector store timed out or could not be reached, after a retry. Not
+    # EMPTY_RESPONSE: nothing was searched, so nothing is known to be missing.
+    SEARCH_INDEX_UNAVAILABLE = "search_index_unavailable"

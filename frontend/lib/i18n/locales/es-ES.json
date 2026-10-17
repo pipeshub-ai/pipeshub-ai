@@ -620,6 +620,12 @@
     "record": "registro"
   },
   "chat": {
+    "answerReady": {
+      "title": "Respuesta lista",
+      "open": "Abrir chat",
+      "unread": "Nueva respuesta"
+    },
+    "jumpToNewest": "Ir al mensaje más reciente",
     "recordActions": {
       "preview": "Vista previa",
       "open": "Abrir {{source}}",
@@ -670,7 +676,10 @@
       "browseWorkspaceMcp": "Explorar servidores MCP",
       "browseWorkspaceMcpAria": "Abrir los servidores MCP para añadir o gestionar conexiones",
       "noActionMatches": "Ninguna acción coincide con su búsqueda.",
-      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda."
+      "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda.",
+      "notConnected": "No conectado",
+      "connect": "Conectar",
+      "actionConnected": "{{name}} está conectado"
     },
     "projectResources": {
       "noConnectors": "No hay conectores habilitados para este proyecto.",
@@ -761,6 +770,7 @@
     "askAnythingInContext": "Pregunta lo que quieras en \"{{title}}\"",
     "expandTable": "Expandir tabla",
     "fullTableView": "Vista completa de la tabla",
+    "downloadCsv": "Descargar como CSV",
     "expandDiagram": "Expandir diagrama",
     "fullDiagramView": "Vista completa del diagrama",
     "renderingDiagram": "Renderizando diagrama…",
@@ -962,6 +972,13 @@
     "deleteAgentDescription": "El agente llamado",
     "deleteAgentWarning": "será eliminado permanentemente de Pipeshub. Los chats que lo utilicen podrían dejar de funcionar como se espera.",
     "deleteChat": "Eliminar",
+    "export": {
+      "menuItem": "Exportar",
+      "exporting": "Exportando el chat…",
+      "done": "Chat exportado",
+      "failed": "No se pudo exportar el chat",
+      "assistant": "Asistente"
+    },
     "deleteChatConfirm": "¿Estás seguro?",
     "deleteChatDescription": "El chat titulado",
     "deleteChatWarning": "será eliminado permanentemente de Pipeshub. Todos los usuarios con acceso compartido perderán su acceso.",
@@ -2120,7 +2137,14 @@
         "numberMax": "Introduce un número entero de hasta {{max, number}}."
       },
       "adminRequiredToast": "Solo los administradores pueden añadir acciones nuevas. Pida a su administrador que configure primero esta acción.",
-      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas."
+      "personalNonAdminHint": "Las acciones marcadas como \"No configurada\" debe configurarlas un administrador antes de que pueda usarlas.",
+      "toolRules": {
+        "open": "Aprobaciones de herramientas",
+        "title": "Aprobaciones de herramientas: {{name}}",
+        "description": "Qué ocurre cuando un asistente o agente quiere usar una de estas herramientas. Las mismas reglas se aplican a todos en tu organización.",
+        "readOnly": "Solo un administrador puede cambiarlas.",
+        "toolsError": "No se pudieron cargar las herramientas de este conjunto."
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "Suba y complete los campos obligatorios (marcados con *) para continuar.",

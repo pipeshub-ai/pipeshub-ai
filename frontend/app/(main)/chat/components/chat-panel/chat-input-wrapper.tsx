@@ -245,6 +245,7 @@ export function ChatInputWrapper() {
       onDeleteFile={handleDeleteFile}
       isAgentChat={isAgentChat}
       agentId={effectiveAgentId}
+      persistDraft
     />
   );
 }

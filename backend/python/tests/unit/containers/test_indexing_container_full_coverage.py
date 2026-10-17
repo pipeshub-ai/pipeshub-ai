@@ -97,6 +97,7 @@ class TestInitializeContainer:
         container.logger.return_value = logger
         mock_graph_provider = MagicMock()
         mock_graph_provider.ensure_schema = AsyncMock()
+        mock_graph_provider.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_graph_provider)
         return container, logger
 
@@ -117,6 +118,7 @@ class TestInitializeContainer:
         container, logger = self._make_mock_container()
         mock_gp = MagicMock()
         mock_gp.ensure_schema = AsyncMock()
+        mock_gp.records_accept_indexed_copy = AsyncMock(return_value=True)
         container.graph_provider = AsyncMock(return_value=mock_gp)
         await initialize_container(container)
         assert container._graph_provider is mock_gp

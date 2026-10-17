@@ -11,7 +11,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import Response
-from jose import jwt
+import jwt
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.routes.extraction import router as extraction_router

@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
 
@@ -165,7 +166,7 @@ class TestOwnLabelsAreMarked:
         scripted_model()
         fake_graph.find_taxonomy_nodes = AsyncMock(side_effect=RuntimeError("graph unavailable"))
         meta = metadata_factory(topics=["Release checklist"])
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EntityLookupUnavailableError):
             await make_resolver("apply").resolve(ctx_factory("r9", "acme", meta))
         assert meta.own_labels is True
 

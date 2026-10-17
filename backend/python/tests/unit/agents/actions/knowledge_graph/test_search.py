@@ -884,6 +884,78 @@ class TestEmptyNarrowedSearch:
         assert parsed["message"] == NARROWED_SEARCH_EMPTY_MESSAGE
 
 
+class TestSearchThatDidNotCoverEverything:
+    """A search that ran on only part of what was asked says so, and an empty
+    one is not reported as "nothing found"."""
+
+    _INCOMPLETE = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+
+    @staticmethod
+    async def _render(state: dict[str, Any], **kwargs: Any) -> str:  # noqa: ANN401
+        with _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            return await execute_search(state, "pricing", **kwargs)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_results_from_some_sources_name_the_ones_that_failed(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found(), RuntimeError("vector store down")]
+
+        result = await self._render(_state(retrieval), source_ids=["private-kb-app", "wiki"])
+
+        assert "Top 1 block" in result
+        assert "Note: 1 of the sources you named could not be searched; these results come from the rest." in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_results_from_part_of_the_index_say_what_is_missing(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{**_found(), "searchIncomplete": self._INCOMPLETE}]
+
+        result = await self._render(_state(retrieval))
+
+        assert f"Note: {self._INCOMPLETE}" in result
+        assert "search again before saying it does not" in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_full_search_carries_no_gap_note(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+
+        result = await self._render(_state(retrieval))
+
+        assert "could not be searched" not in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_nothing_found_in_part_of_the_index_is_not_no_results(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{**_empty(), "searchIncomplete": self._INCOMPLETE}]
+
+        parsed = json.loads(await execute_search(_state(retrieval), "pricing"))
+
+        assert parsed["status"] == "error"
+        assert parsed["message"].startswith(self._INCOMPLETE)
+        assert "No results found" not in parsed["message"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_store_that_did_not_answer_is_an_error_with_its_reason(self, mock_parse) -> None:
+        message = "The search index took too long to respond, so no results are shown. Please try again in a minute."
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{
+            "status": "search_index_unavailable", "status_code": 503, "message": message,
+            "searchResults": [], "records": [],
+        }]
+
+        parsed = json.loads(await execute_search(_state(retrieval), "pricing"))
+
+        assert parsed == {"status": "error", "status_code": 503, "message": message}
+
+
 class TestGrepHitsDoNotDisplaceLoadedRecords:
     """A grep hit enters the records map as its graph record, with no blocks.
     It once replaced the record prefetch had loaded for the same content, so a

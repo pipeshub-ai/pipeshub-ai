@@ -51,6 +51,7 @@ from app.services.vector_db.models import (
     MRLConfig,
     QuantizationType,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
@@ -58,6 +59,7 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.qdrant.config import QdrantConfig
+from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
 from app.services.vector_db.qdrant.utils import QdrantUtils
 from app.utils.logger import create_logger
 from app.services.resource_governor.feedback import get_default_downstream_feedback
@@ -425,6 +427,9 @@ class QdrantService(IVectorDBService):
 
     def get_capabilities(self) -> VectorDBCapabilities:
         return _QDRANT_CAPABILITIES
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        return classify_qdrant_search_error(error)
 
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()

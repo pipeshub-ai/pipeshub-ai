@@ -894,6 +894,45 @@ describe('Toolsets Controller', () => {
   })
 
   // -----------------------------------------------------------------------
+  // getToolsetToolRules / updateToolsetToolRules
+  // -----------------------------------------------------------------------
+  describe('toolset tool approvals', () => {
+    it('should call next with BadRequestError when instanceId is missing', async () => {
+      const { getToolsetToolRules, updateToolsetToolRules } = require('../../../../src/modules/toolsets/controller/toolsets_controller')
+      for (const make of [getToolsetToolRules, updateToolsetToolRules]) {
+        const next = createMockNext()
+        await make(createMockAppConfig())(createMockRequest({ params: {} }), createMockResponse(), next)
+        expect(next.calledOnce).to.be.true
+      }
+      expect(executeStub.called).to.be.false
+    })
+
+    it('should read the rules from the instance', async () => {
+      const { getToolsetToolRules } = require('../../../../src/modules/toolsets/controller/toolsets_controller')
+      executeStub.resolves({ statusCode: 200, data: { tools: {}, canEdit: false } })
+      const req = createMockRequest({ params: { instanceId: 'inst-1' } })
+
+      await getToolsetToolRules(createMockAppConfig())(req, createMockResponse(), createMockNext())
+
+      expect(executeStub.firstCall.args[0]).to.include('/toolsets/instances/inst-1/tool-rules')
+      expect(executeStub.firstCall.args[1]).to.equal('GET')
+    })
+
+    it('should send the new rules on', async () => {
+      const { updateToolsetToolRules } = require('../../../../src/modules/toolsets/controller/toolsets_controller')
+      executeStub.resolves({ statusCode: 200, data: { tools: { create_issue: 'allow' }, canEdit: true } })
+      const body = { tools: { create_issue: 'allow' } }
+      const req = createMockRequest({ params: { instanceId: 'inst-1' }, body })
+
+      await updateToolsetToolRules(createMockAppConfig())(req, createMockResponse(), createMockNext())
+
+      expect(executeStub.firstCall.args[0]).to.include('/toolsets/instances/inst-1/tool-rules')
+      expect(executeStub.firstCall.args[1]).to.equal('PUT')
+      expect(executeStub.firstCall.args[3]).to.deep.equal(body)
+    })
+  })
+
+  // -----------------------------------------------------------------------
   // listToolsetOAuthConfigs
   // -----------------------------------------------------------------------
   describe('listToolsetOAuthConfigs', () => {

@@ -698,6 +698,12 @@
     "record": "記錄"
   },
   "chat": {
+    "answerReady": {
+      "title": "回答已完成",
+      "open": "開啟對話",
+      "unread": "新回答"
+    },
+    "jumpToNewest": "跳到最新訊息",
     "recordActions": {
       "preview": "預覽",
       "open": "開啟 {{source}}",
@@ -748,7 +754,10 @@
       "browseWorkspaceMcp": "瀏覽 MCP 伺服器",
       "browseWorkspaceMcpAria": "開啟 MCP 伺服器以新增或管理連線",
       "noActionMatches": "沒有符合您搜尋的動作。",
-      "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。"
+      "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。",
+      "notConnected": "未連線",
+      "connect": "連線",
+      "actionConnected": "{{name}} 已連線"
     },
     "projectResources": {
       "noConnectors": "此專案未啟用任何連接器。",
@@ -844,6 +853,13 @@
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
+    "export": {
+      "menuItem": "匯出",
+      "exporting": "正在匯出聊天…",
+      "done": "聊天已匯出",
+      "failed": "無法匯出聊天",
+      "assistant": "助理"
+    },
     "renaming": "重新命名中...",
     "archiving": "封存中...",
     "chatRenamed": "對話已重新命名",
@@ -862,6 +878,7 @@
     "askAnythingInContext": "在「{{title}}」中隨時提問",
     "expandTable": "展開表格",
     "fullTableView": "完整表格檢視",
+    "downloadCsv": "下載為 CSV",
     "expandDiagram": "展開圖表",
     "fullDiagramView": "完整圖表檢視",
     "renderingDiagram": "正在繪製圖表…",
@@ -2236,7 +2253,14 @@
         "numberMax": "請輸入不大於 {{max, number}} 的整數。"
       },
       "adminRequiredToast": "只有管理員可以新增動作。請請管理員先設定此動作。",
-      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。"
+      "personalNonAdminHint": "標示為「未設定」的動作需由管理員先完成設定，您才能使用。",
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
+        "readOnly": "只有管理員可以變更這些規則。",
+        "toolsError": "無法載入此工具集的工具。"
+      }
     },
     "rightPanel": {
       "primaryDisabledHint": "請向上捲動並填寫必填欄位（標有 * 者）以繼續。",

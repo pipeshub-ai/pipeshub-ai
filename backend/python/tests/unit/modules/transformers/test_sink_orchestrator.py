@@ -610,6 +610,22 @@ class TestIndexedWriteWhenEnrichmentFollows:
         assert row["processingStartedAt"] is None
 
 
+class TestIndexedCopyFlag:
+    """Completing a record marks it as holding an indexed copy, which keeps it in
+    search when an edit queues it again."""
+
+    @pytest.mark.asyncio
+    async def test_the_completed_write_marks_an_indexed_copy(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["indexingStatus"] == "COMPLETED"
+        assert row["hasIndexedCopy"] is True
+
+
 class TestIndexedWriteWhenRecordWasDeleted:
     """A record deleted while it was being indexed must stay deleted: recreated
     as a bare node, it keeps its vectors from the orphan sweep for good."""

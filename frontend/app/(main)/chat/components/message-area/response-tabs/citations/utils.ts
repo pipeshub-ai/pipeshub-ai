@@ -39,9 +39,20 @@ function titleCaseConnectorKey(connector: string): string {
   return connector.toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// Names the older, single knowledge-base app carried: not a collection a person named.
+const GENERIC_COLLECTION_APP_NAMES = new Set(['knowledge base', 'kb', 'collections']);
+
+function namedSource(instanceName: string | undefined, isCollections: boolean): string | undefined {
+  const name = instanceName?.trim();
+  if (!name) return undefined;
+  if (isCollections && GENERIC_COLLECTION_APP_NAMES.has(name.toLowerCase())) return undefined;
+  return name;
+}
+
 /**
  * Resolve connector key → display config. `instanceName` is the connector's own
- * name, stamped on citations by the backend; older citations lack it.
+ * name, stamped on citations by the backend; older citations lack it. Each
+ * collection is its own app named after the collection, so it is named the same way.
  */
 export function getConnectorConfig(connector: string, instanceName?: string): ConnectorConfig {
   const resolved = resolveConnectorType(connector);
@@ -54,7 +65,7 @@ export function getConnectorConfig(connector: string, instanceName?: string): Co
   if (isLocalFs) label = i18n.t('connectorTypes.localFs');
   return {
     label,
-    sourceLabel: (!isCollections && instanceName) || label,
+    sourceLabel: namedSource(instanceName, isCollections) || label,
     icon: iconConfig.svg || '/icons/connectors/GDrive.svg',
   };
 }

@@ -2,15 +2,17 @@
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Button, Flex, SegmentedControl, Text, TextField, Tooltip } from '@radix-ui/themes';
+import { Badge, Box, Button, Flex, SegmentedControl, Text, TextField, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { toast } from '@/lib/store/toast-store';
 import { isProcessedError } from '@/lib/api';
 import { McpServersApi } from '../api';
 import { ownRulesToSave, startingRule, toolDisplayName, toolRuleRows, type McpRuleTool } from '../tool-rules';
-import type { McpToolKind, McpToolRule } from '../types';
+import type { McpToolKind, McpToolRule, McpToolRules } from '../types';
 
 const RULES: McpToolRule[] = ['allow', 'ask', 'block'];
+// A rule someone can only look at: what the call will do, at a glance.
+const RULE_COLORS = { allow: 'green', ask: 'amber', block: 'red' } as const satisfies Record<McpToolRule, string>;
 type GroupId = McpToolKind | 'notOffered';
 const GROUPS: Array<{ id: GroupId; hint?: string }> = [
   { id: 'destructive', hint: 'workspace.mcpServers.toolRules.groupHint.destructive' },
@@ -30,10 +32,31 @@ function groupOf(row: McpRuleTool): GroupId {
   return row.kind ?? 'write';
 }
 
+/** Where a list's rules are read and saved. */
+export interface ToolRulesApi {
+  /** `canEdit` false: the caller may only look at them. */
+  get: (instanceId: string) => Promise<McpToolRules & { canEdit?: boolean }>;
+  save: (instanceId: string, rules: McpToolRules) => Promise<unknown>;
+}
+
+/** An MCP server's: the person's own rules, which they always edit. */
+const MCP_RULES_API: ToolRulesApi = {
+  get: (instanceId) => McpServersApi.getMyToolRules(instanceId),
+  save: (instanceId, rules) => McpServersApi.updateMyToolRules(instanceId, rules),
+};
+
+export interface ToolRulesEditorOptions {
+  api?: ToolRulesApi;
+  /** Only the listed tools have rules. An MCP server's list can change, so a rule for a tool it
+   * doesn't offer now is kept and shown; a toolset's list is its own, so such a rule is dropped. */
+  listedOnly?: boolean;
+}
+
 export interface McpToolRulesEditor {
   loading: boolean;
   loadError: string | null;
   saving: boolean;
+  canEdit: boolean;
   rows: McpRuleTool[];
   /** The rule as shown: the person's saved one, else where the tool starts. */
   rule: (row: McpRuleTool) => McpToolRule;
@@ -45,11 +68,18 @@ export interface McpToolRulesEditor {
   save: () => Promise<boolean>;
 }
 
-/** Loads, edits and saves the caller's own rules for one server. `tools` is what it offers now. */
-export function useToolRulesEditor(instanceId: string, tools: McpRuleTool[], enabled = true): McpToolRulesEditor {
+/** Loads, edits and saves the rules for one server's or toolset's tools (by default, the caller's
+ * own rules for an MCP server). `tools` is what it offers now. */
+export function useToolRulesEditor(
+  instanceId: string,
+  tools: McpRuleTool[],
+  enabled = true,
+  { api = MCP_RULES_API, listedOnly = false }: ToolRulesEditorOptions = {}
+): McpToolRulesEditor {
   const { t } = useTranslation();
   const [savedRules, setSavedRules] = useState<Record<string, McpToolRule>>({});
   const [rules, setRules] = useState<Record<string, McpToolRule>>({});
+  const [canEdit, setCanEdit] = useState(true);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -61,11 +91,13 @@ export function useToolRulesEditor(instanceId: string, tools: McpRuleTool[], ena
     setRules({});
     setLoadError(null);
     setLoading(true);
-    McpServersApi.getMyToolRules(instanceId)
+    api
+      .get(instanceId)
       .then((saved) => {
         if (cancelled) return;
         setSavedRules(saved.tools ?? {});
         setRules(saved.tools ?? {});
+        setCanEdit(saved.canEdit !== false);
       })
       .catch((error) => {
         if (!cancelled) setLoadError(errorDetail(error) ?? t('workspace.mcpServers.toolRules.loadError'));
@@ -76,9 +108,9 @@ export function useToolRulesEditor(instanceId: string, tools: McpRuleTool[], ena
     return () => {
       cancelled = true;
     };
-  }, [enabled, instanceId]);
+  }, [enabled, instanceId, api]);
 
-  const rows = useMemo(() => toolRuleRows(tools, Object.keys(rules)), [tools, rules]);
+  const rows = useMemo(() => (listedOnly ? tools : toolRuleRows(tools, Object.keys(rules))), [listedOnly, tools, rules]);
 
   const changes = useMemo(() => {
     const before = ownRulesToSave(rows, savedRules).tools;
@@ -89,7 +121,7 @@ export function useToolRulesEditor(instanceId: string, tools: McpRuleTool[], ena
   const save = async (): Promise<boolean> => {
     setSaving(true);
     try {
-      await McpServersApi.updateMyToolRules(instanceId, ownRulesToSave(rows, rules));
+      await api.save(instanceId, ownRulesToSave(rows, rules));
       setSavedRules(rules);
       toast.success(t('workspace.mcpServers.toolRules.saved'));
       return true;
@@ -106,6 +138,7 @@ export function useToolRulesEditor(instanceId: string, tools: McpRuleTool[], ena
     loading,
     loadError,
     saving,
+    canEdit,
     rows,
     rule: (row) => rules[row.name] ?? startingRule(row.kind),
     setRule: (name, rule) => setRules((prev) => ({ ...prev, [name]: rule })),
@@ -242,7 +275,7 @@ interface McpToolRulesListProps {
   toolsUnknown?: boolean;
 }
 
-/** The person's own rules, one per tool. */
+/** One rule per tool: a control to change it, or, for someone who can't, what it is. */
 export function McpToolRulesList({ editor, maxListHeight, toolsUnknown = false }: McpToolRulesListProps) {
   const { t } = useTranslation();
   const { query, setQuery, shown, searchable } = useSearch(editor.rows);
@@ -282,28 +315,34 @@ export function McpToolRulesList({ editor, maxListHeight, toolsUnknown = false }
           renderRow={(row) => (
             <Flex key={row.name} align="center" justify="between" gap="3" wrap="wrap" style={ROW_STYLE}>
               <ToolSummary row={row} />
-              <SegmentedControl.Root
-                size="1"
-                aria-label={row.name}
-                // Equal segments whatever is chosen, so the controls line up down the list; on a
-                // narrow screen they shrink and their labels wrap rather than push the page wide.
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-                  flex: '0 1 26rem',
-                  minWidth: 0,
-                  height: 'auto',
-                  minHeight: 'var(--space-5)',
-                }}
-                value={editor.rule(row)}
-                onValueChange={(value) => !editor.saving && editor.setRule(row.name, value as McpToolRule)}
-              >
-                {RULES.map((rule) => (
-                  <SegmentedControl.Item key={rule} value={rule} style={{ whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.2 }}>
-                    {t(`workspace.mcpServers.toolRules.rule.${rule}`)}
-                  </SegmentedControl.Item>
-                ))}
-              </SegmentedControl.Root>
+              {editor.canEdit ? (
+                <SegmentedControl.Root
+                  size="1"
+                  aria-label={row.name}
+                  // Equal segments whatever is chosen, so the controls line up down the list; on a
+                  // narrow screen they shrink and their labels wrap rather than push the page wide.
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
+                    flex: '0 1 26rem',
+                    minWidth: 0,
+                    height: 'auto',
+                    minHeight: 'var(--space-5)',
+                  }}
+                  value={editor.rule(row)}
+                  onValueChange={(value) => !editor.saving && editor.setRule(row.name, value as McpToolRule)}
+                >
+                  {RULES.map((rule) => (
+                    <SegmentedControl.Item key={rule} value={rule} style={{ whiteSpace: 'normal', textAlign: 'center', lineHeight: 1.2 }}>
+                      {t(`workspace.mcpServers.toolRules.rule.${rule}`)}
+                    </SegmentedControl.Item>
+                  ))}
+                </SegmentedControl.Root>
+              ) : (
+                <Badge size="2" variant="soft" color={RULE_COLORS[editor.rule(row)]}>
+                  {t(`workspace.mcpServers.toolRules.rule.${editor.rule(row)}`)}
+                </Badge>
+              )}
             </Flex>
           )}
         />

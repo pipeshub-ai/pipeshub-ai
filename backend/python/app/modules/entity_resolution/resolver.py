@@ -5,10 +5,12 @@ record keeps the names extracted from its own content; the resolution decides
 which canonical node each of them links to in the graph and the entity index.
 See the package docstring for the three tiers.
 
-Failure policy: a vector-store or model failure never fails the record. The
-names involved simply become new nodes and a counter is bumped. A graph
-failure in the exact-match tier raises in ``APPLY`` mode, because the graph
-write that follows would fail anyway; in ``SHADOW`` mode it is logged.
+Failure policy: a lookup that could not run is never read as "no match".
+A vector or graph lookup that still fails after one retry raises
+``EntityLookupUnavailableError`` before anything is written, and the record's
+enrichment is redelivered (``app.modules.entity_resolution.lookup``); in
+``SHADOW`` mode it is logged. A model failure never fails the record: the names
+of that call become new nodes and a counter is bumped.
 """
 
 from __future__ import annotations
@@ -16,12 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from langchain_core.messages import HumanMessage
 
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.languages import canonical_language
+from app.modules.entity_resolution.lookup import run_lookup
 from app.modules.entity_resolution.models import (
     CATEGORY,
     LANGUAGE,
@@ -52,6 +56,7 @@ from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
 
@@ -60,6 +65,8 @@ if TYPE_CHECKING:
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
     from app.modules.transformers.transformer import TransformContext
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+
+T = TypeVar("T")
 
 LLM_ROLE = "indexing"
 
@@ -131,6 +138,15 @@ class EntityResolver:
         stats = ResolutionStats()
         try:
             names, resolution = await self._resolve(org_id, metadata, mode, stats)
+        except EntityLookupUnavailableError:
+            self.logger.warning(
+                "entity_resolution deferred: a lookup could not run mode=%s org=%s record=%s %s",
+                mode.value, org_id, getattr(record, "id", "?"),
+                " ".join(f"{k}={v}" for k, v in stats.as_dict().items()),
+            )
+            if mode is ResolutionMode.SHADOW:
+                return None
+            raise
         except Exception:
             if mode is ResolutionMode.SHADOW:
                 self.logger.warning(
@@ -172,7 +188,7 @@ class EntityResolver:
         resolution = EntityResolution(org_id=org_id, mode=mode, stats=stats)
         names = self._collect_names(metadata, stats)
 
-        existing = await self._tier0(org_id, names)
+        existing = await self._tier0(org_id, names, stats)
         unresolved: list[ExtractedName] = []
         for name in names:
             node = existing.get((name.kind.collection, name.normalized))
@@ -205,7 +221,8 @@ class EntityResolver:
         Tier 0 skips merged nodes, so their names come back as new, with the
         merged node's own key; creating "it" would be a no-op and the record
         would link to the hidden node. One lookup per collection with new
-        names. A failed lookup keeps the names new, as before merges existed.
+        names; one that cannot run raises, since keeping the names new would
+        link the record to a hidden node.
         """
         new_by_collection: dict[str, list[ResolvedEntity]] = {}
         for entity in resolution.entries.values():
@@ -213,14 +230,13 @@ class EntityResolver:
                 new_by_collection.setdefault(entity.kind.collection, []).append(entity)
         by_index = {name.index: name for name in names}
         for collection, entities in new_by_collection.items():
-            try:
-                targets = await self._redirect_targets(org_id, collection, [e.key for e in entities])
-            except Exception:
-                self.logger.warning(
-                    "entity_resolution: merge redirect lookup failed for org %s collection %s",
-                    org_id, collection, exc_info=True,
-                )
-                continue
+            targets = await self._graph_lookup(
+                "redirect",
+                lambda collection=collection, entities=entities: self._redirect_targets(
+                    org_id, collection, [e.key for e in entities],
+                ),
+                resolution.stats,
+            )
             for entity in entities:
                 winner = targets.get(entity.key)
                 if winner is None:
@@ -326,22 +342,34 @@ class EntityResolver:
 
     # ---- tier 0 ------------------------------------------------------
 
+    async def _graph_lookup(
+        self, lookup: str, call: Callable[[], Awaitable[T]], stats: ResolutionStats,
+    ) -> T:
+        def failed() -> None:
+            stats.graph_failures += 1
+
+        return await run_lookup(call, lookup=lookup, logger=self.logger, on_failure=failed)
+
     async def _tier0(
-        self, org_id: str, names: list[ExtractedName]
+        self, org_id: str, names: list[ExtractedName], stats: ResolutionStats,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         by_collection: dict[str, list[str]] = {}
         for name in names:
             by_collection.setdefault(name.kind.collection, []).append(name.normalized)
-        return await self._lookup_existing(org_id, by_collection)
+        return await self._lookup_existing(org_id, by_collection, stats)
 
     async def _lookup_existing(
-        self, org_id: str, by_collection: dict[str, list[str]]
+        self, org_id: str, by_collection: dict[str, list[str]], stats: ResolutionStats,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         found: dict[tuple[str, str], dict[str, Any]] = {}
         for collection, normalized_names in by_collection.items():
             wanted = set(normalized_names)
-            rows = await self.graph_provider.find_taxonomy_nodes(
-                collection, org_id, sorted(wanted)
+            rows = await self._graph_lookup(
+                "exact",
+                lambda collection=collection, wanted=wanted: self.graph_provider.find_taxonomy_nodes(
+                    collection, org_id, sorted(wanted),
+                ),
+                stats,
             )
             nodes: list[tuple[dict[str, Any], str | None, list[str]]] = []
             for row in rows or []:
@@ -375,7 +403,9 @@ class EntityResolver:
         self, org_id: str, unresolved: list[ExtractedName], stats: ResolutionStats
     ) -> dict[int, tuple[WinnerCandidate, ...]]:
         """Up to ``MERGE_CANDIDATES`` live nodes per unresolved name, best
-        first. The right node is often second (KG-12), so one is not enough."""
+        first. The right node is often second (KG-12), so one is not enough.
+        Raises ``EntityLookupUnavailableError`` when a search or the winner
+        check cannot run: those names are not known to be new."""
         offered: dict[int, tuple[WinnerCandidate, ...]] = {n.index: () for n in unresolved}
         if self.entity_vector_store is None or not unresolved:
             return offered
@@ -384,19 +414,20 @@ class EntityResolver:
         for name in unresolved:
             groups.setdefault((name.kind.entity_type.value, name.kind.level), []).append(name)
 
+        store = self.entity_vector_store
+
+        def vector_failed() -> None:
+            stats.vector_failures += 1
+
         for (entity_type, level), group in groups.items():
-            try:
-                matches = await self.entity_vector_store.find_candidates(
+            matches = await run_lookup(
+                lambda group=group, entity_type=entity_type, level=level: store.find_candidates(
                     [n.display for n in group], org_id, entity_type, level=level, k=MERGE_CANDIDATES,
-                )
-            except Exception:
-                stats.vector_failures += 1
-                metrics.record_fallback("vector_error", len(group))
-                self.logger.warning(
-                    "entity_resolution: winner lookup failed for %s/%s; treating %d "
-                    "names as new", entity_type, level, len(group), exc_info=True,
-                )
-                continue
+                ),
+                lookup="candidates",
+                logger=self.logger,
+                on_failure=vector_failed,
+            )
             found: dict[int, list[WinnerCandidate]] = {}
             for name, name_matches in zip(group, matches):
                 for match in name_matches or []:
@@ -408,9 +439,8 @@ class EntityResolver:
             live = await self._live_node_ids(
                 org_id, group[0].kind.collection,
                 {w.entity_id for winners in found.values() for w in winners},
+                stats,
             )
-            if live is None:
-                continue
             for index, winners in found.items():
                 kept = tuple(w for w in winners if w.entity_id in live)
                 stats.stale_winners += len(winners) - len(kept)
@@ -420,30 +450,25 @@ class EntityResolver:
         return offered
 
     async def _live_node_ids(
-        self, org_id: str, collection: str, ids: set[str],
-    ) -> set[str] | None:
-        """The ``ids`` that are canonical nodes of ``org_id`` in the graph, or
-        ``None`` when the check could not run.
+        self, org_id: str, collection: str, ids: set[str], stats: ResolutionStats,
+    ) -> set[str]:
+        """The ``ids`` that are canonical nodes of ``org_id`` in the graph.
 
         The vector store can point at a node that was deleted, or at a legacy
         node shared across orgs (created before resolution, or copied onto a
         duplicate); merging into either would write this org's aliases where
-        they do not belong. A failed check offers no winner, like a failed
+        they do not belong. A check that cannot run raises like a failed
         vector lookup, and is counted as an error rather than as stale winners.
         """
-        try:
-            rows = await self.graph_provider.get_nodes_by_field_in(
+        rows = await self._graph_lookup(
+            "winner_check",
+            lambda: self.graph_provider.get_nodes_by_field_in(
                 collection, "id", sorted(ids),
                 return_fields=["id", "orgId", "normalizedName", "mergedInto"],
                 raise_on_error=True,
-            )
-        except Exception:
-            metrics.record_fallback("winner_check_error", len(ids))
-            self.logger.warning(
-                "entity_resolution: winner check failed for org %s collection %s (%d ids); "
-                "offering no winners", org_id, collection, len(ids), exc_info=True,
-            )
-            return None
+            ),
+            stats,
+        )
         live = {
             str(row.get("id") or row.get("_key"))
             for row in rows or []
@@ -629,7 +654,7 @@ class EntityResolver:
             if (head.kind.collection, normalized) not in resolution.entries:
                 pending_lookup.setdefault(head.kind.collection, []).append(normalized)
         looked_up = (
-            await self._lookup_existing(org_id, pending_lookup) if pending_lookup else {}
+            await self._lookup_existing(org_id, pending_lookup, stats) if pending_lookup else {}
         )
 
         for leader, group in sorted(components.items()):

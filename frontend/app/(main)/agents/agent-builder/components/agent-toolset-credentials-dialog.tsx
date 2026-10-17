@@ -231,6 +231,7 @@ export function AgentToolsetCredentialsDialog({
   const handleOAuthAuthenticate = async () => {
     setError(null);
     await beginOAuth(
+      'oauth_agent_toolset',
       async () => {
         const result = await ToolsetsApi.getAgentToolsetOAuthUrl(
           agentKey,
@@ -240,10 +241,7 @@ export function AgentToolsetCredentialsDialog({
         if (!result.success || !result.authorizationUrl) {
           throw new Error(t('agentBuilder.oauthUrlFailed'));
         }
-        return {
-          authorizationUrl: result.authorizationUrl,
-          windowName: 'oauth_agent_toolset',
-        };
+        return result.authorizationUrl;
       },
       {
         onTimeout: () => setError(t('agentBuilder.authTimeout')),

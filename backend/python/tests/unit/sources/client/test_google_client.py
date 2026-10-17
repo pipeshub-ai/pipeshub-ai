@@ -977,6 +977,8 @@ class TestToolsetRefreshScopes:
             ("gmail", "v1", ("app.agents.actions.google.gmail.gmail", "Gmail")),
             ("drive", "v3", ("app.agents.actions.google.drive.drive", "GoogleDrive")),
             ("calendar", "v3", ("app.agents.actions.google.calendar.calendar", "GoogleCalendar")),
+            ("docs", "v1", ("app.agents.actions.google.docs.docs", "GoogleDocs")),
+            ("sheets", "v4", ("app.agents.actions.google.sheets.sheets", "GoogleSheets")),
         ],
     )
     @patch("app.sources.client.google.google.build")

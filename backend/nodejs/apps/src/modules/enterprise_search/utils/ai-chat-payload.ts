@@ -126,7 +126,7 @@ const nullable = (value: unknown): unknown => value || null;
  * `/chat`. The project's tool scope is applied after the request's own
  * `tools`, so a project always narrows what the caller asked for.
  */
-/** The answer to a tool approval card, for the agent paths (where MCP tools run). */
+/** The answer to a tool approval card, for the agent paths (where MCP and toolset tools run). */
 const assignToolApprovalToPayload = (
   payload: Record<string, unknown>,
   body: Record<string, unknown>,

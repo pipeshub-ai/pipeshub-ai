@@ -5,7 +5,7 @@ from typing import Any
 
 import pytest
 
-from app.agents.mcp.tool_kind import name_words, tool_kind
+from app.agents.mcp.tool_kind import name_words, tool_kind, toolset_tool_kind
 
 
 class TestTheName:
@@ -60,3 +60,20 @@ class TestTheServersHints:
     ])
     def test_only_booleans_count(self, annotations: Any) -> None:  # noqa: ANN401
         assert tool_kind("create_issue", annotations) == ("write", "none")
+
+
+class TestAToolsetsTypeTag:
+    @pytest.mark.parametrize(("type_tag", "expected"), [
+        ("read", "read"), ("search", "read"), ("utility", "read"),
+        ("write", "write"), ("create", "write"), ("update", "write"), ("action", "write"),
+        ("delete", "destructive"), ("destructive", "destructive"),
+        # An unknown or missing tag changes data: the tool asks.
+        ("misc", "write"), (None, "write"),
+    ])
+    def test_sets_the_kind(self, type_tag: str | None, expected: str) -> None:
+        assert toolset_tool_kind("create_issue", type_tag) == expected
+
+    @pytest.mark.parametrize("type_tag", ["read", "search", "write", None])
+    def test_a_deleting_name_still_wins(self, type_tag: str | None) -> None:
+        assert toolset_tool_kind("delete_message", type_tag) == "destructive"
+        assert toolset_tool_kind("remove_reaction", type_tag) == "destructive"

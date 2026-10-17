@@ -25,7 +25,7 @@ import { useThemeAppearance } from '@/app/components/theme-provider';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import { useChatStore, ASSISTANT_CTX, getUniversalCombinedCatalog } from '@/chat/store';
-import { ToolsetsApi } from '@/app/(main)/toolsets/api';
+import { MAX_TOOLSETS_LIST_LIMIT, ToolsetsApi } from '@/app/(main)/toolsets/api';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   useFeatureFlagsStore,
@@ -35,8 +35,10 @@ import {
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
+import { toast } from '@/lib/store/toast-store';
 import { CollectionsTab } from './connectors-collections/collections-tab';
 import { McpConnectRows, mcpServersToConnect } from './mcp-connect-rows';
+import { ToolsetConnectRows, actionName, actionsToConnect } from './toolset-connect-rows';
 import type { CollectionScopeSelection } from './connectors-collections/collections-tab';
 import {
   bareToolFullName,
@@ -257,7 +259,23 @@ let _actionsPageCache: {
   page: number;
   hasMore: boolean;
   lastFetchedAt: number;
-} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0 };
+  /** The person's actions not signed in to yet, listed with a Connect button. */
+  toConnect: BuilderSidebarToolset[];
+} = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [] };
+
+/** Without this list the tab still shows the connected actions, so a failure only hides Connect. */
+async function loadActionsToConnect(): Promise<BuilderSidebarToolset[]> {
+  try {
+    const { toolsets } = await ToolsetsApi.getAllMyToolsets({
+      authStatus: 'not-authenticated',
+      limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
+    });
+    return toolsets;
+  } catch (err) {
+    console.error('[UniversalAgentResourcesPanel] Failed to load actions to connect', err);
+    return [];
+  }
+}
 
 /**
  * Module-level MCP cache, mirroring `_actionsPageCache`. `getMyMcpServers` isn't paginated —
@@ -281,7 +299,8 @@ interface UniversalAgentResourcesPanelProps {
  *
  * - Connectors / Collections: delegate to CollectionsTab (same data path as assistant;
  *   optional “all connectors by default” hint is derived there for main `/chat` without an agent).
- * - Actions: loads from GET /api/v1/toolsets/my-toolsets (authenticated instances only).
+ * - Actions: loads from GET /api/v1/toolsets/my-toolsets — connected instances' tools, then the
+ *   ones still to sign in to, each with a Connect button.
  * - Tool selection is stored in `universalAgentStreamTools` (ASSISTANT_CTX, not agent-scoped).
  * - Shows a model-gate warning when no reasoning-capable model is configured.
  */
@@ -297,6 +316,9 @@ export function UniversalAgentResourcesPanel({
   const actionsEnabled = useFeatureFlagsStore(selectActionsEnabled);
   const isAdmin = useUserStore(selectIsAdmin) ?? false;
   const [mcpInstances, setMcpInstances] = useState<McpMyServerEntry[]>(() => _mcpCache.instances);
+  const [unconnectedActions, setUnconnectedActions] = useState<BuilderSidebarToolset[]>(
+    () => _actionsPageCache.toConnect
+  );
 
   const settings = useChatStore((s) => s.settings);
   const setFilters = useChatStore((s) => s.setFilters);
@@ -343,41 +365,61 @@ export function UniversalAgentResourcesPanel({
   const [hasNextPage, setHasNextPage] = useState(false);
   const isFetchingPageRef = useRef(false);
 
-  // Load a single page and append it to the module-level cache then rebuild groups.
+  /**
+   * Load a single page and append it to the module-level cache then rebuild groups. Page 1 also
+   * reloads the actions still to connect. `quiet` (after a sign-in): refresh in place, reloading
+   * every page already shown, and keep what is shown if the refresh fails.
+   */
   const loadPage = useCallback(
-    async (page: number) => {
-      if (isFetchingPageRef.current) return;
+    async (page: number, { quiet = false }: { quiet?: boolean } = {}) => {
+      if (isFetchingPageRef.current) return undefined;
       isFetchingPageRef.current = true;
 
       if (page === 1) {
-        _actionsPageCache = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0 };
-        setToolsLoading(true);
+        if (!quiet) {
+          _actionsPageCache = { toolsets: [], page: 0, hasMore: false, lastFetchedAt: 0, toConnect: [] };
+          setToolsLoading(true);
+        }
       } else {
         setIsLoadingMore(true);
       }
 
+      const lastPage = quiet ? Math.max(page, _actionsPageCache.page) : page;
       try {
-        const result = await ToolsetsApi.getMyToolsets({
-          page,
-          limit: ACTIONS_PAGE_SIZE,
-          authStatus: 'authenticated',
-        });
+        const [results, toConnect] = await Promise.all([
+          Promise.all(
+            Array.from({ length: lastPage - page + 1 }, (_, i) =>
+              ToolsetsApi.getMyToolsets({
+                page: page + i,
+                limit: ACTIONS_PAGE_SIZE,
+                authStatus: 'authenticated',
+              })
+            )
+          ),
+          page === 1 ? loadActionsToConnect() : Promise.resolve(_actionsPageCache.toConnect),
+        ]);
+        const result = results[results.length - 1]!;
 
         _actionsPageCache = {
-          toolsets: [..._actionsPageCache.toolsets, ...result.toolsets],
-          page,
+          toolsets: [...(page === 1 ? [] : _actionsPageCache.toolsets), ...results.flatMap((r) => r.toolsets)],
+          page: lastPage,
           hasMore: result.hasNext,
           lastFetchedAt: page === 1 ? Date.now() : _actionsPageCache.lastFetchedAt,
+          toConnect,
         };
+        setUnconnectedActions(toConnect);
 
         // Rebuild from full accumulated list so instanceId-based discriminators are stable.
         const groups = buildCatalogToolGroups(_actionsPageCache.toolsets);
         const catalogFullNames = groups.flatMap((g) => g.fullNames);
         hydrateResources({ toolGroups: groups, toolCatalogFullNames: catalogFullNames });
         setHasNextPage(result.hasNext);
+        return groups;
       } catch (err) {
         console.error('[UniversalAgentResourcesPanel] Failed to load my-toolsets page', page, err);
-        if (page === 1) {
+        if (quiet) {
+          toast.error(t('chat.universalAgent.toolsLoadError', { defaultValue: 'Failed to load available actions.' }));
+        } else if (page === 1) {
           // Mark cache so the initial-load effect does not retry in a tight loop on failure.
           _actionsPageCache = { ..._actionsPageCache, lastFetchedAt: Date.now() };
           setToolsError(
@@ -387,6 +429,7 @@ export function UniversalAgentResourcesPanel({
           );
           setToolsLoading(false);
         }
+        return undefined;
       } finally {
         if (page > 1) setIsLoadingMore(false);
         isFetchingPageRef.current = false;
@@ -619,6 +662,27 @@ export function UniversalAgentResourcesPanel({
     const q = search.trim().toLowerCase();
     return q ? mcpToConnect.filter(({ entry }) => entry.name.toLowerCase().includes(q)) : mcpToConnect;
   }, [mcpToConnect, search]);
+
+  const toolsetsToConnect = useMemo(
+    () => actionsToConnect(unconnectedActions, new Set(toolGroups.map((g) => g.instanceId))),
+    [unconnectedActions, toolGroups]
+  );
+  const filteredToolsetsToConnect = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return q ? toolsetsToConnect.filter((ts) => actionName(ts).toLowerCase().includes(q)) : toolsetsToConnect;
+  }, [toolsetsToConnect, search]);
+
+  const handleActionConnected = useCallback(
+    async (instanceId: string) => {
+      // A Load more still running would turn this refresh away.
+      while (isFetchingPageRef.current) await new Promise((resolve) => setTimeout(resolve, 100));
+      const groups = await loadPage(1, { quiet: true });
+      const connected = groups?.find((g) => g.instanceId === instanceId);
+      // Someone who picked tools by hand gets the new action's on; "all tools" already has them.
+      if (connected) setGroupToolsEnabled(connected.fullNames, true);
+    },
+    [loadPage, setGroupToolsEnabled]
+  );
 
   const handleMcpConnected = useCallback(
     async (instanceId: string) => {
@@ -990,14 +1054,14 @@ export function UniversalAgentResourcesPanel({
           />
         )}
 
-        {/* Actions — from my-toolsets (authenticated instances) */}
+        {/* Actions — from my-toolsets: connected actions' tools, then the ones to connect */}
         {tab === 'actions' &&
           renderResourceGroupsTab({
             groups: filteredToolGroups,
             keyPrefix: 'toolset',
             loading: toolsLoading,
             error: toolsError,
-            hasAnyBeforeFilter: toolGroups.length > 0,
+            hasAnyBeforeFilter: toolGroups.length > 0 || toolsetsToConnect.length > 0,
             loadingText: t('chat.universalAgent.loadingTools', { defaultValue: 'Loading actions…' }),
             noDataText: t('chat.universalAgent.noActions', {
               defaultValue: 'No authenticated actions found. Connect integrations in Workspace → Actions.',
@@ -1048,6 +1112,21 @@ export function UniversalAgentResourcesPanel({
                 </button>
               </Flex>
             ) : null,
+            extraRows:
+              filteredToolsetsToConnect.length > 0 ? (
+                <ToolsetConnectRows
+                  toolsets={filteredToolsetsToConnect}
+                  rowStyle={OLIVE_ROW}
+                  renderIcon={(ts) => (
+                    <UniversalToolsetRowIcon
+                      toolsetSlug={ts.toolsetType ?? ts.name}
+                      label={actionName(ts)}
+                      iconPath={ts.iconPath || undefined}
+                    />
+                  )}
+                  onConnected={(id) => void handleActionConnected(id)}
+                />
+              ) : undefined,
           })}
 
         {/* MCP — from my-mcp-servers: connected servers' tools, then the ones to connect */}

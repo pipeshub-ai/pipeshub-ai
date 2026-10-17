@@ -140,6 +140,9 @@ MAX_TICKET_READ_ATTEMPTS = 3
 MIN_SPLIT_WINDOW_MS = 60_000
 GRAPH_RECORDS_PAGE_SIZE = 500
 FILTER_CLEANUP_SYNC_POINT_KEY = "filter_cleanup:excluded_groups"
+# A Zammad before 6.5 can't count tickets, so finding deleted ones means listing every
+# held ticket. That runs at most this often per group; 6.5 and later check every sync.
+FULL_TICKET_LISTING_INTERVAL_MS = 24 * 60 * 60 * 1000
 # Attachment records are "<ticket>_<article>_<attachment>".
 TICKET_ATTACHMENT_ID_PATTERN = re.compile(r"^(\d+)_\d+_\d+$")
 
@@ -1517,7 +1520,9 @@ class ZammadConnector(BaseConnector):
                 return ticket_ids
             offset += TICKET_ID_LISTING_PAGE_SIZE
 
-    async def _unlisted_ticket_ids(self, group_id: int, group_name: str, held: list[str]) -> list[str]:
+    async def _unlisted_ticket_ids(
+        self, group_id: int, group_name: str, held: list[str], *, full_listing_recent: bool = False,
+    ) -> tuple[list[str], bool] | None:
         """The held tickets Zammad's search does not return for this group.
 
         Held tickets are first counted in chunks, among their own ids: a chunk
@@ -1526,25 +1531,33 @@ class ZammadConnector(BaseConnector):
         count) is listed, in id ranges around its tickets, each narrow enough
         that its pages stay inside Elasticsearch's result window. A range that
         fails is left out of the answer, so its tickets are kept this sync.
+
+        Returns the unlisted ids and whether every listed range was read, or
+        None when this Zammad can't count and ``full_listing_recent`` says the
+        full listing already ran within its interval.
         """
         query = self._build_ticket_search_query(group_id, last_sync_time=None)
         # A range of this many ids holds at most this many tickets, so offset + limit never passes the window.
         span = SEARCH_RESULT_WINDOW - TICKET_ID_LISTING_PAGE_SIZE
         held_ids = sorted(int(t) for t in held)
         unlisted: list[str] = []
+        all_read = True
         for start in range(0, len(held_ids), TICKET_ID_COUNT_CHUNK):
             chunk = held_ids[start:start + TICKET_ID_COUNT_CHUNK]
             if await self._search_returns_all(query, chunk):
                 continue
+            if self._ticket_count_unsupported and full_listing_recent:
+                return None
             for low, high in self._id_ranges(chunk, span):
                 listed = await self._list_ticket_ids_in_range(query, low, high)
                 if listed is None:
                     self.logger.warning(
                         f"Could not list tickets {low}-{high} of group '{group_name}'; keeping them this sync"
                     )
+                    all_read = False
                     continue
                 unlisted.extend(str(t) for t in chunk if low <= t <= high and str(t) not in listed)
-        return unlisted
+        return unlisted, all_read
 
     async def _search_returns_all(self, query: str, ticket_ids: list[int]) -> bool:
         """Whether Zammad's search matches every one of ``ticket_ids`` for ``query``, by one count.
@@ -1641,25 +1654,48 @@ class ZammadConnector(BaseConnector):
         The incremental search only returns tickets updated since the checkpoint,
         so a deleted ticket never appears in it. This checks the graph's tickets
         against the group's search instead (see ``_unlisted_ticket_ids``). It reads everything afresh each sync,
-        so a failed read or delete is simply repeated next time.
+        so a failed read or delete is simply repeated next time. On a Zammad that can't count (before 6.5)
+        that means listing every held ticket, so it runs at most once per FULL_TICKET_LISTING_INTERVAL_MS.
         """
         external_group_id = f"group_{group_id}"
         try:
             by_ticket = await self._records_by_ticket_in_group(external_group_id)
             if not by_ticket:
                 return
+            point = await self.tickets_sync_point.read_sync_point(group_name) or {}
+            last_full = point.get("full_listing_at") or 0
+            full_listing_recent = get_epoch_timestamp_in_ms() - last_full < FULL_TICKET_LISTING_INTERVAL_MS
+            outcome = await self._unlisted_ticket_ids(
+                group_id, group_name, list(by_ticket), full_listing_recent=full_listing_recent,
+            )
+            if outcome is None:
+                self.logger.info(
+                    f"Zammad can't count tickets (before 6.5); group '{group_name}' was fully checked for "
+                    "deleted tickets less than a day ago, so it is not listed again this sync"
+                )
+                return
+            unlisted, all_read = outcome
             removed = 0
-            for ticket_id in await self._unlisted_ticket_ids(group_id, group_name, list(by_ticket)):
+            settled_all = True
+            for ticket_id in unlisted:
                 try:
                     if await self._settle_ticket(
                         ticket_id, by_ticket[ticket_id], external_group_id,
                         f"ticket {ticket_id} left group '{group_name}'",
                     ):
                         removed += 1
+                    else:
+                        settled_all = False
                 except Exception as e:
+                    settled_all = False
                     self.logger.warning(f"Could not settle ticket {ticket_id} of group '{group_name}': {e}")
             if removed:
                 self.logger.info(f"🗑️ Settled {removed} tickets no longer listed in group '{group_name}'")
+            # Only a full listing that read everything and settled everything starts the next interval.
+            if self._ticket_count_unsupported and all_read and settled_all:
+                await self.tickets_sync_point.update_sync_point(
+                    group_name, {"full_listing_at": get_epoch_timestamp_in_ms()},
+                )
         except Exception as e:
             self.logger.warning(f"Could not check group '{group_name}' for deleted tickets: {e}", exc_info=True)
 

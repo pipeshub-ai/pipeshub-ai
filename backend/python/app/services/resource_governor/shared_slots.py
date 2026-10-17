@@ -26,16 +26,14 @@ from __future__ import annotations
 
 import logging
 import os
+import tempfile
 import threading
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 try:
     import fcntl
 except ImportError:  # pragma: no cover - not POSIX
     fcntl = None  # type: ignore[assignment]
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -158,6 +156,19 @@ class SharedSlots:
                 if index in self._held_here:
                     self._held_here.discard(index)
                     _unlock(self._slot_fds[index])
+
+
+def shared_slots_directory(name: str) -> Path | None:
+    """Where this container's workers share the slots called *name*.
+
+    Every worker of a container opens the same directory; another container
+    has its own /tmp. Per uid so a directory left by another user on a shared
+    host cannot block startup. ``None`` without POSIX file locks, as on
+    Windows, which has no uids to name the directory by either.
+    """
+    if fcntl is None:
+        return None
+    return Path(tempfile.gettempdir()) / f"{name}-{os.getuid()}"
 
 
 def open_shared_slots(directory: Path, capacity: int) -> SharedSlots | None:

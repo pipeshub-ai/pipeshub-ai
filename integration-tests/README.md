@@ -281,7 +281,7 @@ nine shards (`CONN_SHARD_1` … `CONN_SHARD_9`), and a `core` shard runs
 everything those do not name, plus the browser tests. A `demo` shard
 runs only the Acme Corp demo questions (`-m demo`) on a stack nothing else has
 indexed into, because the demo's answers are prompted differently once a
-workspace has data of its own; `core` leaves the `demo` marker out. A sixth
+workspace has data of its own; `core` leaves the `demo` marker out. An
 `ai_agents` shard runs `ai_agents/` (AI model settings, Agent Builder agents
 calling tools, MCP, and the agent harness's skills, coding tool and artifacts)
 against a real model. Every test there costs model calls, so that shard runs on
@@ -290,8 +290,9 @@ its marker out. The model-settings part (`-m ai_models`) also runs weekly
 against a local Ollama model in `integration-tests-ollama.yml`. Each shard runs
 once per graph database, as separate jobs with their own runner and stack, so the
 two backends run at the same time (a pull request runs Neo4j only, unless a label
-asks for more). The connector shards are packed to about the length of the
-longest suite, notion, which has a shard to itself.
+asks for more). The connector shards are packed to about the length of
+notion, which has a shard to itself. google_drive_workspace, about twice as long,
+has one too and sets the run's wall clock.
 
 Suites running at the same time share the connectors' external accounts (the
 Notion workspace, the Confluence space, the Jira site and so on), so every suite
@@ -309,7 +310,8 @@ changed file that no filter names (shared backend code, the stack, this workflow
 runs every shard; docs and unit tests alone run none; frontend changes run
 `core`.
 
-Adding a connector means adding its marker to one of those shard lines. Connector
+Adding a connector means adding its marker to the last shard line (`CONN_SHARD_9`
+today), where new connector suites go. Connector
 tests are also marked `integration`, so a marker in none of them is not skipped —
 it falls into `core`, which makes that shard longer and undoes the balance. A
 `CONN_SHARD_N` with no matching `connectors-N` job in the matrix is the case that

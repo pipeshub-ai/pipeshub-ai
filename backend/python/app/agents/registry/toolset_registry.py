@@ -32,9 +32,9 @@ STANDARD_TOOLSET_MODULES = (
     'app.agents.actions.google.drive.drive',
     'app.agents.actions.google.calendar.calendar',
     'app.agents.actions.google.gmail.gmail',
+    'app.agents.actions.google.docs.docs',
+    'app.agents.actions.google.sheets.sheets',
     'app.agents.actions.internal_tools.intrim_tools',
-    # 'app.agents.actions.google.docs.docs',
-    # 'app.agents.actions.google.sheets.sheets',
     # Other toolsets
     'app.agents.actions.slack.slack',
     'app.agents.actions.jira.jira',

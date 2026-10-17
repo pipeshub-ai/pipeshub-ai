@@ -5,8 +5,8 @@ from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+import jwt
 import pytest
-from jose import jwt
 
 from app.api.middlewares import caller_role
 from app.api.middlewares.caller_role import (

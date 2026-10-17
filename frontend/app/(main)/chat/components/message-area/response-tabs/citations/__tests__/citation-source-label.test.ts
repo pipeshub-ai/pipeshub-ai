@@ -54,6 +54,18 @@ describe('citation source label', () => {
     expect(config.sourceLabel).toBe(i18n.t('nav.collections'));
   });
 
+  it('names the collection a citation came from, as it names a connector', () => {
+    const config = getConnectorConfig('KB', 'Q3 Finance');
+
+    expect(config.sourceLabel).toBe('Q3 Finance');
+    expect(config.label).toBe(i18n.t('nav.collections'));
+  });
+
+  it('keeps Collections for a collection citation saved without a name', () => {
+    expect(getConnectorConfig('KB').sourceLabel).toBe(i18n.t('nav.collections'));
+    expect(getConnectorConfig('KB', '  ').sourceLabel).toBe(i18n.t('nav.collections'));
+  });
+
   it('keeps the instance name from a saved answer and while streaming', () => {
     const names = { connectorInstanceName: 'Marketing SharePoint' };
 

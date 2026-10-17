@@ -3,6 +3,9 @@
 A server says so in a tool's annotations (`readOnlyHint`, `destructiveHint`), but a server can
 claim anything, so a name with a deleting word in it counts as deleting whatever the hints say.
 A name never makes a tool read-only. A tool without hints changes data: it isn't denied, it asks.
+
+A toolset tool (Jira, Slack, ...) says so in its `type` tag. Those tags are ours, so unlike a
+server's hints a tag can make a tool read-only; a deleting name still wins.
 """
 from __future__ import annotations
 
@@ -54,3 +57,14 @@ def tool_kind(name: str, annotations: Optional[dict[str, Any]]) -> tuple[ToolKin
         # The spec's default for a missing destructiveHint is true; a tool isn't denied on that alone.
         return "write", "server"
     return "write", "none"
+
+
+_READ_TYPE_TAGS = frozenset({"read", "search", "utility"})
+_DELETING_TYPE_TAGS = frozenset({"delete", "destructive"})
+
+
+def toolset_tool_kind(name: str, type_tag: Optional[str]) -> ToolKind:
+    """A toolset tool's kind from its name and its `type` tag; an unknown tag changes data."""
+    if deletes_by_name(name) or type_tag in _DELETING_TYPE_TAGS:
+        return "destructive"
+    return "read" if type_tag in _READ_TYPE_TAGS else "write"

@@ -107,6 +107,8 @@ beforeEach(() => {
   useAuthStore.setState({ accessToken: jwtExpiringIn(3600), refreshToken: 'r' });
   useChatStore.setState({ ...initialState, slots: {}, activeSlotId: null, pendingConversations: {}, conversations: [] });
   useToastStore.getState().clearAll();
+  // The chat only ever runs on /chat; whether a finished answer is "in view" depends on it.
+  window.history.replaceState(null, '', '/chat/');
   vi.spyOn(console, 'error').mockImplementation(() => {});
   vi.spyOn(console, 'warn').mockImplementation(() => {});
 });
@@ -1950,5 +1952,174 @@ describe('a long run of questions, loaded one page at a time', () => {
     await loadOlderMessagesForSlot(slotId);
 
     expect(slot(slotId).messagePagination).toEqual({ currentPage: 2, hasOlderMessages: false, isLoadingOlder: false });
+  });
+});
+
+describe('an answer that finishes while another chat is open', () => {
+  const toasts = () => useToastStore.getState().toasts;
+  const unread = () => [...useChatStore.getState().unreadConversationIds];
+
+  /** Open `other` as the visible chat, so `slotId` runs in the background. */
+  function viewAnotherChat(): string {
+    const other = useChatStore.getState().createSlot('conv-other');
+    useChatStore.setState({ activeSlotId: other });
+    return other;
+  }
+
+  beforeEach(() => {
+    useChatStore.setState({ unreadConversationIds: new Set() });
+  });
+
+  it('tells the user a new chat is ready and marks it unread', async () => {
+    const slotId = newSlot();
+    viewAnotherChat();
+    respondWith([
+      frame('CUSTOM', { name: 'conversation_created', value: { conversationId: 'conv-real', title: 'Quarterly revenue' } }),
+      frame('RUN_FINISHED', { result: { conversation: finishedConversation('Revenue was $4.2M.') } }),
+    ]);
+
+    await streamMessageForSlot(slotId, Q, request());
+
+    expect(toasts().map((t) => ({ variant: t.variant, title: t.title, description: t.description, href: t.action?.href }))).toEqual([
+      { variant: 'info', title: 'Answer ready', description: 'Quarterly revenue', href: '/chat/?conversationId=conv-real' },
+    ]);
+    expect(unread()).toEqual(['conv-real']);
+  });
+
+  it('does the same for a new message in an existing chat', async () => {
+    const slotId = newSlot('conv-old');
+    viewAnotherChat();
+    useChatStore.setState({ conversations: [{ id: 'conv-old', title: 'Old chat' } as never] });
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('ok'), _id: 'conv-old' } } })]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
+
+    expect(toasts()).toHaveLength(1);
+    expect(toasts()[0].description).toBe('Old chat');
+    expect(unread()).toEqual(['conv-old']);
+  });
+
+  it('does the same when a regenerated answer is saved', async () => {
+    const slotId = newSlot('conv-1');
+    viewAnotherChat();
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: {} })]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+    });
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(toasts().map((t) => t.title)).toEqual(['Answer ready']);
+    expect(unread()).toEqual(['conv-1']);
+  });
+
+  it('says nothing when the user is watching that chat', async () => {
+    const slotId = newSlot('conv-old');
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('ok'), _id: 'conv-old' } } })]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
+
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
+  });
+
+  it('says nothing about a regenerated answer the user is watching', async () => {
+    const slotId = newSlot('conv-1');
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith([frame('TEXT_MESSAGE_START'), frame('TEXT_MESSAGE_CONTENT', { delta: 'new' }), frame('RUN_FINISHED', { result: {} })]);
+    vi.spyOn(apiClient, 'get').mockResolvedValueOnce({
+      data: { conversation: { ...finishedConversation('new answer'), id: 'conv-1' } },
+    });
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
+  });
+
+  it('still tells the user when they have left the chat area', async () => {
+    const slotId = newSlot('conv-old');
+    window.history.replaceState(null, '', '/knowledge-base/');
+    respondWith([frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('ok'), _id: 'conv-old' } } })]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
+
+    expect(toasts().map((t) => t.title)).toEqual(['Answer ready']);
+    expect(unread()).toEqual(['conv-old']);
+  });
+
+  it('says nothing when the answer fails', async () => {
+    const slotId = newSlot('conv-old');
+    viewAnotherChat();
+    respondWith([frame('RUN_ERROR', { message: 'The AI model is not responding right now.', code: 'stream_error' })]);
+
+    await streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-old' }));
+
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
+  });
+
+  it('says nothing when a regenerate request fails', async () => {
+    const slotId = newSlot('conv-1');
+    viewAnotherChat();
+    useChatStore.getState().updateSlot(slotId, {
+      messages: [
+        { id: 'q1', role: 'user', content: [{ type: 'text', text: 'Q' }] },
+        { id: 'a1', role: 'assistant', content: [{ type: 'text', text: 'old answer' }] },
+      ],
+    });
+    respondWith(jsonResponse(500, {}));
+
+    await streamRegenerateForSlot(slotId, 'a1', { modelKey: 'm1', modelName: 'gpt-5', modelFriendlyName: 'GPT-5' });
+
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
+  });
+
+  it('says nothing when the user stopped the run, even if the server still finishes it', async () => {
+    fakeApi({ 'POST /api/v1/conversations/conv-1/cancel': { status: 200, data: { cancelled: true } } });
+    const slotId = newSlot('conv-1');
+    viewAnotherChat();
+    const encoder = new TextEncoder();
+    let close!: (...lastFrames: string[]) => void;
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(encoder.encode(frame('TEXT_MESSAGE_START')));
+            controller.enqueue(encoder.encode(frame('TEXT_MESSAGE_CONTENT', { delta: 'Revenue was' })));
+            close = (...lastFrames) => {
+              for (const f of lastFrames) controller.enqueue(encoder.encode(f));
+              controller.close();
+            };
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const run = streamMessageForSlot(slotId, Q, request({ conversationId: 'conv-1' }));
+    await vi.waitFor(() => expect(slot(slotId).streamingContent).toBe('Revenue was'));
+
+    vi.useFakeTimers();
+    cancelStreamForSlot(slotId);
+    close(frame('RUN_FINISHED', { result: { conversation: { ...finishedConversation('Revenue was'), _id: 'conv-1' } } }));
+    await run;
+    await vi.advanceTimersByTimeAsync(5_000);
+    vi.useRealTimers();
+
+    expect(slot(slotId).isStreaming).toBe(false);
+    expect(toasts()).toEqual([]);
+    expect(unread()).toEqual([]);
   });
 });

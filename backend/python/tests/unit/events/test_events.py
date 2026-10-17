@@ -2680,6 +2680,7 @@ class TestProcessedTwinAttachOrdering:
         assert fields_of[("status", "r1")] == {
             "isDirty": False,
             "indexingStatus": ProgressStatus.COMPLETED.value,
+            "hasIndexedCopy": True,
             "processingStartedAt": None,
             "lastIndexTimestamp": 100,
             "extractionStatus": ProgressStatus.COMPLETED.value,

@@ -146,6 +146,7 @@ vi.mock('@/app/(main)/workspace/users/api', () => ({
 const getProject = vi.fn();
 vi.mock('@/chat/project-api', () => ({ ProjectApi: { get: (...args: unknown[]) => getProject(...args) } }));
 vi.mock('@/chat/hooks/use-project-scope-hydration', () => ({ useProjectScopeHydration: () => {} }));
+vi.mock('@/chat/hooks/use-hydrate-unread-conversations', () => ({ useHydrateUnreadConversations: () => {} }));
 
 const toastError = vi.fn();
 vi.mock('@/lib/store/toast-store', () => ({

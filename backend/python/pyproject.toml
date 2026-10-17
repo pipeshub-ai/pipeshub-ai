@@ -295,6 +295,8 @@ dependencies = [
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
     "python-dotenv==1.2.2",
+    # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
+    "PyJWT==2.15.0",
     "pyyaml>=6.0",
     "redshift_connector==2.1.8",
     "regex>=2024.11.6",
@@ -303,7 +305,6 @@ dependencies = [
     # when the agent declares packages=["reportlab"] / ["fpdf2"].
     "reportlab>=4.0.0,<5.0.0",
     "fpdf2>=2.7.0,<3.0.0",
-    "python-jose==3.5.0",
     "python-multipart==0.0.31",
     "pysbd==0.3.4",
     "pysmb==1.2.15",

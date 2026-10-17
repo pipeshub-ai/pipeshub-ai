@@ -60,6 +60,18 @@ class VectorStoreError(IndexingError):
     pass
 
 
+class EntityLookupUnavailableError(IndexingError):
+    """An entity-resolution lookup (vector or graph) could not run.
+
+    Never the same as "no match": answering it with a new node is how
+    duplicates are minted. Always retryable, whatever the underlying cause,
+    since the record's content is fine; the record's resolution runs again on
+    redelivery.
+    """
+
+    pass
+
+
 class MetadataProcessingError(IndexingError):
     """Raised when there's an error processing document metadata"""
 

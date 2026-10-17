@@ -126,19 +126,21 @@ env:
   # Each job runs one graph backend, so a shard's wall clock is its suites'
   # minutes on that backend; Neo4j is the slower leg (the scenario matrix runs
   # there only). Packed to about 40 min of Neo4j tests each, the length of
-  # notion alone, which no split can shorten. Shard 5 keeps nextcloud and
-  # bookstack (selfhosted-sources), 7 zammad (zammad-source), 2 smb (smb-source):
-  # the test step starts those containers only where their suite runs.
+  # notion alone. google_drive_workspace runs about 80 min on Neo4j by itself, so
+  # it has shard 2 alone and sets the run's wall clock; no split can shorten
+  # either. Shard 5 keeps nextcloud and bookstack (selfhosted-sources), 7 zammad
+  # (zammad-source), 9 smb (smb-source): the test step starts those containers
+  # only where their suite runs. New connector suites go on the last shard.
   # Rebalance with scripts/shard_balance.py when a suite grows.
   CONN_SHARD_1: "notion"
-  CONN_SHARD_2: "google_drive_workspace or github or smb"
+  CONN_SHARD_2: "google_drive_workspace"
   CONN_SHARD_3: "confluence or github_teams or sharepoint"
   CONN_SHARD_4: "web or rss or local_fs"
   CONN_SHARD_5: "nextcloud or bookstack or mariadb"
   CONN_SHARD_6: "gitlab or google_drive_individual"
   CONN_SHARD_7: "jira or linear or zammad"
-  CONN_SHARD_8: "s3 or minio or gcs"
-  CONN_SHARD_9: "azure_blob or azure_files or postgres"
+  CONN_SHARD_8: "s3 or minio or gcs or github"
+  CONN_SHARD_9: "azure_blob or azure_files or postgres or smb"
 
 jobs:
   # Which parts the run tests on besides the graph databases (always both).

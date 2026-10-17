@@ -65,7 +65,7 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
     const request = buildStreamChatRequestForSlot(slotId, query, undefined, {
       approvalId: approval.approvalId,
       decision,
-      ...(remember ? { remember: true } : {}),
+      ...(remember && approval.canRemember !== false ? { remember: true } : {}),
     });
     if (!request) return;
     void streamMessageForSlot(slotId, query, request, { reuseRowId: rowId });
@@ -165,12 +165,14 @@ export function ToolApprovalCard({ approval, isLatest, rowId }: ToolApprovalCard
             {t('chat.toolApproval.deny')}
           </Button>
         </Flex>
-        <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
-          <Flex gap="2" align="center">
-            <Checkbox size="1" checked={remember} onCheckedChange={(value) => setRemember(value === true)} />
-            {t('chat.toolApproval.dontAskAgain')}
-          </Flex>
-        </Text>
+        {approval.canRemember !== false && (
+          <Text as="label" size="1" style={{ color: 'var(--slate-11)', cursor: 'pointer' }}>
+            <Flex gap="2" align="center">
+              <Checkbox size="1" checked={remember} onCheckedChange={(value) => setRemember(value === true)} />
+              {t('chat.toolApproval.dontAskAgain')}
+            </Flex>
+          </Text>
+        )}
       </Flex>
     </Box>
   );
