@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
-from contextlib import AbstractContextManager
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import httpx
@@ -24,6 +23,10 @@ from app.services.ai_models.decision import (
     get_decision_model,
 )
 from app.utils.user_errors import provider_error_code
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from contextlib import AbstractContextManager
 
 QUESTIONS = [
     PredicateQuestion(name="urgent", instructions="Is this urgent?"),

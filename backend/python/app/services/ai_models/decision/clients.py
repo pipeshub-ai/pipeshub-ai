@@ -10,8 +10,7 @@ import asyncio
 import json
 import logging
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -28,6 +27,9 @@ from app.services.ai_models.decision.types import (
 )
 from app.services.base_client import parse_retry_after
 from app.utils.model_egress import guarded_async_client
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -89,7 +91,7 @@ class DecisionModel(ABC):
 
     async def decide(
         self,
-        input: DecisionInput,
+        content: DecisionInput,
         questions: Sequence[DecisionQuestion],
         *,
         max_attempts: int = MAX_ATTEMPTS,
@@ -99,7 +101,7 @@ class DecisionModel(ABC):
         names = [question.name for question in questions]
         if len(set(names)) != len(names):
             raise ValueError("Question names must be unique within a request")
-        payload = await self._post(self._request_body(input, questions), max_attempts)
+        payload = await self._post(self._request_body(content, questions), max_attempts)
         result = self._parse(payload, questions)
         if all(answer.missing for answer in result.answers.values()):
             logger.warning(
@@ -115,7 +117,7 @@ class DecisionModel(ABC):
     def _headers(self) -> dict[str, str]: ...
 
     @abstractmethod
-    def _request_body(self, input: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]: ...
+    def _request_body(self, content: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]: ...
 
     @abstractmethod
     def _parse(self, payload: dict[str, Any], questions: Sequence[DecisionQuestion]) -> DecisionResult: ...
@@ -180,10 +182,10 @@ class OpenAIDecisionModel(DecisionModel):
             headers["OpenAI-Organization"] = self._organization
         return headers
 
-    def _request_body(self, input: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]:
+    def _request_body(self, content: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]:
         return {
             "model": self.model_name,
-            "input": _as_text(input),
+            "input": _as_text(content),
             "questions": [_openai_question(question) for question in questions],
         }
 
@@ -229,9 +231,9 @@ class TypeSafeDecisionModel(DecisionModel):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self._api_key}"}
 
-    def _request_body(self, input: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]:
+    def _request_body(self, content: DecisionInput, questions: Sequence[DecisionQuestion]) -> dict[str, Any]:
         return {
-            "state": input,
+            "state": content,
             "model": self.model_name,
             "questions": {question.name: _typesafe_question(question) for question in questions},
         }

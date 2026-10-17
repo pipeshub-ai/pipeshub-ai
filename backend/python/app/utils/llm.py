@@ -247,7 +247,7 @@ async def get_decision_config(config_service: ConfigurationService) -> dict | No
 
 async def get_decision_model_instance(
     config_service: ConfigurationService,
-) -> Tuple[DecisionModel, dict] | None:
+) -> tuple[DecisionModel, dict] | None:
     config = await get_decision_config(config_service)
     if not config:
         return None

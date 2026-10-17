@@ -8,14 +8,25 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 
 import app.config.ai_models.providers  # noqa: F401  -- populate the registry
-from app.api.routes.health import SUPPORTED_HEALTH_CHECK_TYPES, perform_decision_health_check
+from app.api.routes.health import (
+    SUPPORTED_HEALTH_CHECK_TYPES,
+    perform_decision_health_check,
+)
 from app.config.ai_models.registry import ai_model_registry
 from app.config.ai_models.types import CAPABILITY_TO_MODEL_TYPE
-from app.services.ai_models.decision import DecisionAnswer, DecisionModelError, DecisionResult
+from app.services.ai_models.decision import (
+    DecisionAnswer,
+    DecisionModelError,
+    DecisionResult,
+)
 from app.services.ai_models.discovery.classifier import classify
 from app.services.ai_models.discovery.registry import discovery_registry
 from app.services.ai_models.discovery.service import _for_capability
-from app.services.ai_models.discovery.types import DiscoveredModel, DiscoveryResult, RawModel
+from app.services.ai_models.discovery.types import (
+    DiscoveredModel,
+    DiscoveryResult,
+    RawModel,
+)
 from app.utils.llm import get_decision_config, get_decision_model_instance
 
 
