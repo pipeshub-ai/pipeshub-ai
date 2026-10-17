@@ -246,7 +246,7 @@ docker run --rm --name "$NAME" --network none --memory 256m --cpus 1 --pids-limi
   "$IMAGE" bash "$INSIDE_DIR/test.sh" --inside
 status=$?
 docker run --rm --name "$NAME" --network none --memory 256m --cpus 1 --pids-limit 256 \
-  --mount type=volume,dst=/root/.cache/huggingface/ro,readonly \
+  --tmpfs /root/.cache/huggingface/ro:ro,size=1m \
   -v "$TMP_ROOT:$INSIDE_DIR:ro" \
   "$IMAGE" bash "$INSIDE_DIR/test.sh" --inside readonly || status=1
 (( STATIC_FAILS )) && exit 1
