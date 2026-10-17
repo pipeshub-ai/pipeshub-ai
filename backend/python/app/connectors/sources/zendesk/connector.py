@@ -365,6 +365,7 @@ class ZendeskConnector(BaseConnector):
         self._refresh_ticket_grants = False
         self._role_ticket_access: dict[str, str] = {}
         self._roles_complete = False
+        self._custom_status_labels: dict[str, str] = {}
         self._ticket_sync_complete = False
         self._stale_help_center_group_ids: list[str] = []
         self._current_help_center_group_ids: list[str] = []
@@ -548,6 +549,7 @@ class ZendeskConnector(BaseConnector):
         self._role_ticket_access, self._roles_complete = (
             await self._fetch_custom_role_ticket_access()
         )
+        self._custom_status_labels = await self._fetch_custom_status_labels()
 
         # Without the roles an agent's access is unknown, so memberships are only added
         # to: a rebuild would drop every custom-role agent until the next good sync.
@@ -991,6 +993,37 @@ class ZendeskConnector(BaseConnector):
             ticket_access = (role.get("configuration") or {}).get("ticket_access")
             access[str(role_id)] = str(ticket_access or "")
         return access, True
+
+    async def _fetch_custom_status_labels(self) -> dict[str, str]:
+        """Map custom status id -> the label agents see, e.g. "In Progress".
+
+        A ticket's ``status`` is only the category ("open") its custom status sits in,
+        so this is what tells "In Progress" from plain "Open". Non-fatal: without it a
+        ticket falls back to its category.
+        """
+        datasource = await self._get_fresh_datasource()
+        try:
+            response = await self._call_api_with_retry(
+                datasource.list_custom_statuses, "zendesk/list_custom_statuses"
+            )
+        except httpx.HTTPStatusError as e:
+            self.logger.warning("Zendesk: custom statuses unavailable (%s) — using status categories", e)
+            return {}
+        if response is None or not response.success:
+            self.logger.info(
+                "Zendesk: no custom statuses (HTTP %s) — using status categories",
+                getattr(response, "status_code", None),
+            )
+            return {}
+        return {
+            str(status["id"]): status["agent_label"]
+            for status in self._extract_list(response.data, "custom_statuses")
+            if status.get("id") is not None and status.get("agent_label")
+        }
+
+    def _source_status(self, ticket_data: dict[str, Any]) -> str | None:
+        label = self._custom_status_labels.get(str(ticket_data.get("custom_status_id")))
+        return label or ticket_data.get("status")
 
     def _has_all_tickets_access(
         self, user_data: dict[str, Any], role_ticket_access: dict[str, str]
@@ -2028,6 +2061,7 @@ class ZendeskConnector(BaseConnector):
             source_created_at=created_at,
             source_updated_at=updated_at,
             status=status,
+            source_status=self._source_status(ticket_data),
             priority=priority,
             type=item_type,
             reporter_email=requester.get("email"),

@@ -165,6 +165,8 @@ class ValueMapper:
         "sub-task": ItemType.SUBTASK,
         "incident": ItemType.INCIDENT,
         "incidents": ItemType.INCIDENT,
+        "problem": ItemType.PROBLEM,
+        "problems": ItemType.PROBLEM,
         "improvement": ItemType.IMPROVEMENT,
         "improvements": ItemType.IMPROVEMENT,
         "enhancement": ItemType.IMPROVEMENT,

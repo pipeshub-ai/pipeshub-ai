@@ -3205,6 +3205,38 @@ class ZendeskDataSource:
             )
 
 
+    async def list_custom_statuses(
+        self,
+        headers: dict[str, Any] | None = None
+    ) -> ZendeskResponse:
+        """List custom ticket statuses (accounts without them answer 403/404).
+
+        Not paginated: the endpoint returns every status in one response.
+        """
+        try:
+            request = HTTPRequest(
+                method="GET",
+                url=f"{self.base_url}/custom_statuses.json",
+                headers=dict(headers or {}),
+                query={}
+            )
+            response = await self.http.execute(request=request)
+
+            return ZendeskResponse(
+                success=response.status < SUCCESS_CODE_IS_LESS_THAN,
+                data=response.json() if response.is_json else None,
+                error=response.text() if response.status >= SUCCESS_CODE_IS_LESS_THAN else None,
+                status_code=response.status,
+                headers=response.headers
+            )
+
+        except Exception as e:
+            return ZendeskResponse(
+                success=False,
+                error=str(e)
+            )
+
+
     async def show_group(
         self,
         group_id: int,
