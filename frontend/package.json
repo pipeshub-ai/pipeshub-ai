@@ -52,7 +52,7 @@
     "@radix-ui/themes": "^3.2.1",
     "@react-oauth/google": "^0.13.4",
     "@tiptap/extension-link": "^2.27.2",
-    "@tiptap/extension-placeholder": "^2.27.2",
+    "@tiptap/extension-placeholder": "^3.32.0",
     "@tiptap/react": "^2.27.2",
     "@tiptap/starter-kit": "^2.27.2",
     "@types/react-syntax-highlighter": "^15.5.13",
