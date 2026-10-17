@@ -145,6 +145,17 @@ class TestSearchFindsWithLess:
         assert "v0 para 7 " in result and "v0 para 9 " not in result
 
     @pytest.mark.asyncio
+    async def test_under_the_full_read_policy_a_trimmed_result_asks_for_no_query(self, targeted: None) -> None:
+        records = {"v0": _record("v0")}
+        units = [_unit("v0", i, 0.9 - i / 100, chars=100) for i in range(12)]
+
+        result = await _search(_state(read_records_in_full=True), records, units)
+
+        assert "4 more matching passages not shown" in result
+        assert "with that record's ID to read it before answering" in result
+        assert "`query`" not in result
+
+    @pytest.mark.asyncio
     async def test_a_long_thread_keeps_the_reply_that_matched_and_its_neighbours(self, targeted: None) -> None:
         records = {"t0": _record("t0", blocks=80)}
         result = await _search(_state(), records, [_thread_unit("t0", 80, matched=57)])
@@ -200,7 +211,7 @@ class TestSearchFindsWithLess:
 
 class TestPrefetch:
     @staticmethod
-    async def _prefetch(records: dict[str, Any], units: list[dict[str, Any]]) -> Any:  # noqa: ANN401
+    async def _prefetch(records: dict[str, Any], units: list[dict[str, Any]], **kwargs: Any) -> Any:  # noqa: ANN401
         retrieval = AsyncMock()
         retrieval.search_with_filters.return_value = {
             "status_code": 200, "searchResults": [{"virtual_record_id": "x"}], "virtual_to_record_map": {},
@@ -217,7 +228,7 @@ class TestPrefetch:
             return await prefetch_retrieval(
                 query="q", org_id="o1", user_id="u1", retrieval_service=retrieval,
                 graph_provider=object(), blob_store=object(), filters={}, limit=50,
-                is_multimodal_llm=False, previous_conversations=None, logger=MagicMock(),
+                is_multimodal_llm=False, previous_conversations=None, logger=MagicMock(), **kwargs,
             )
 
     @pytest.mark.asyncio
@@ -232,6 +243,22 @@ class TestPrefetch:
         prefetched = await self._prefetch(records, units)
         assert len(prefetched.formatted_context) <= 32_000
         assert "matching passages not shown" in prefetched.formatted_context
+        assert "`query`" in prefetched.formatted_context
+
+    @pytest.mark.asyncio
+    async def test_under_the_full_read_policy_it_asks_for_no_query(self, targeted: None) -> None:
+        records, units = _corpus(hits_per_record=12)
+        prefetched = await self._prefetch(records, units, read_in_full=True)
+        assert "matching passages not shown" in prefetched.formatted_context
+        assert "`query`" not in prefetched.formatted_context
+        assert len(prefetched.formatted_context) <= 32_000
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_tools_is_not_asked_to_read_a_record(self, targeted: None) -> None:
+        records, units = _corpus(hits_per_record=12)
+        prefetched = await self._prefetch(records, units, can_fetch=False)
+        assert "knowledgegraph__fetch_record" not in prefetched.formatted_context
+        assert len(prefetched.formatted_context) <= 32_000
 
 
 def _long_record(name: str, blocks: int = 200, chars: int = 600) -> dict[str, Any]:

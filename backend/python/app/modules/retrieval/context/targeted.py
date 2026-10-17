@@ -304,12 +304,22 @@ def cap_passages_per_record(
     return PassageCap(units=units, omitted=omitted, repeats_dropped=repeats_dropped)
 
 
-def more_passages_note(per_record: int, omitted_records: int, repeats_dropped: int) -> str:
+def more_passages_note(
+    per_record: int, omitted_records: int, repeats_dropped: int, *, focused_reads: bool = True,
+) -> str:
     """The line at the top of a result whose records were trimmed.
 
     Names no record, so it is the same size whatever ids it would print; the
     records themselves are listed at the end (``more_passages_list``).
+
+    ``focused_reads`` is whether the fetch tool takes a ``query`` in this
+    request; under THOROUGH_RETRIEVAL's full-read policy it does not, and the
+    note asks for the record read whole instead.
     """
+    how = (
+        "with that record's ID and a `query` naming the detail"
+        if focused_reads else "with that record's ID to read it"
+    )
     lines: list[str] = []
     if omitted_records:
         lines.append(
@@ -318,7 +328,7 @@ def more_passages_note(per_record: int, omitted_records: int, repeats_dropped: i
             "(listed at the end). When the question asks for a specific detail (a "
             "value, version, tag, name, field, setting, rule, status or date) that "
             f"the passages below do not state word for word, call `{FETCH_TOOL}` "
-            "with that record's ID and a `query` naming the detail before answering."
+            f"{how} before answering."
         )
     if repeats_dropped:
         lines.append(
@@ -330,7 +340,7 @@ def more_passages_note(per_record: int, omitted_records: int, repeats_dropped: i
 
 
 def more_passages_list(
-    omitted: Mapping[str, int], records: Mapping[str, Any],
+    omitted: Mapping[str, int], records: Mapping[str, Any], *, focused_reads: bool = True,
 ) -> str:
     """The records of a result that had more matching passages than it shows.
 
@@ -351,9 +361,13 @@ def more_passages_list(
         )
     if not rows:
         return ""
+    how = (
+        f"read the part you need with `{FETCH_TOOL}` and a `query`"
+        if focused_reads else f"read them with `{FETCH_TOOL}`"
+    )
     return (
-        "\n\nRecords with more matching passages than shown above — read the part "
-        f"you need with `{FETCH_TOOL}` and a `query`:\n" + "\n".join(rows)
+        f"\n\nRecords with more matching passages than shown above — {how}:\n"
+        + "\n".join(rows)
     )
 
 
