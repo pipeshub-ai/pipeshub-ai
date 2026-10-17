@@ -889,9 +889,16 @@ class AzureFilesConnector(BaseConnector):
                         # folder and those above it are never listed. Only once it is known
                         # to exist do they count as part of the tree.
                         parts = directory_path.split("/")
-                        seen.update(
-                            f"{share_name}/{'/'.join(parts[:i])}" for i in range(1, len(parts) + 1)
-                        )
+                        ancestors = [f"{share_name}/{'/'.join(parts[:i])}" for i in range(1, len(parts) + 1)]
+                        seen.update(ancestors)
+                        # Not written by this walk: noted as kept, or the unlink after a full
+                        # sync cuts the links of everything below them to the app.
+                        for ancestor in ancestors:
+                            stored = await self.data_entities_processor.get_record_by_external_id(
+                                self.connector_id, ancestor,
+                            )
+                            if stored:
+                                self.data_entities_processor.note_kept_records(self.connector_id, [stored.id])
 
                     items = response.data or []
                     self.logger.debug(

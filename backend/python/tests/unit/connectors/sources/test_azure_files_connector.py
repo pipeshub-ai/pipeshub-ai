@@ -2765,6 +2765,22 @@ class TestFolderFilter:
         assert {"s1", "s1/reports", "s1/reports/2026", "s1/reports/2026/q1.pdf"} == seen
 
     @pytest.mark.asyncio
+    async def test_include_notes_the_chosen_folder_and_its_parents_as_kept(self, conn):
+        """Not written by the walk, so noted: otherwise the unlink after a full sync
+        cuts the links of everything under them to the app."""
+        conn.sync_filters = _folder_filter(["reports/2026"])
+        self._prepare(conn, {"reports/2026": [_file_item("q1.pdf", path="reports/2026/q1.pdf")]})
+        stored = {"s1/reports": "rec-reports", "s1/reports/2026": "rec-2026"}
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _cid, ext_id: MagicMock(id=stored[ext_id]) if ext_id in stored else None,
+        )
+
+        await conn._sync_share("s1")
+
+        kept = [c.args[1] for c in conn.data_entities_processor.note_kept_records.call_args_list]
+        assert ["rec-reports"] in kept and ["rec-2026"] in kept
+
+    @pytest.mark.asyncio
     async def test_exclude_does_not_enter_the_excluded_folder(self, conn):
         conn.sync_filters = _folder_filter(["tmp"], exclude=True)
         visited = self._prepare(conn, {
