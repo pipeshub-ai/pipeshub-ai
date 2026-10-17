@@ -83,7 +83,14 @@ sequenceDiagram
 
 ## Decision models
 
-A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). Admins add them under **Workspace → AI Models → For Decisions**, like any other model type. They are stored in the `decision` bucket of `/services/aiModels`.
+A decision model answers typed questions about an input with calibrated probabilities instead of generated text: yes/no (`predicate`), one option out of a set (`choice`), or a position on an ordered scale (`score`). They are stored in the `decision` bucket of `/services/aiModels`, like any other model type.
+
+The **For Decisions** tab in Workspace → AI Models is hidden until a feature uses decision models (`'decision'` is commented out of `CAPABILITY_SECTION_ORDER` in `frontend/app/(main)/workspace/ai-models/types.ts`). Until then, add one through the configuration API:
+
+```bash
+curl -X POST {node}/api/v1/configurationManager/ai-models/providers \n  -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \n  -d '{"modelType": "decision", "provider": "openAI", "isDefault": true,
+       "configuration": {"model": "gpt-6-luna", "apiKey": "sk-..."}}'
+```
 
 | Provider | Models | Endpoint |
 | --- | --- | --- |
@@ -91,7 +98,7 @@ A decision model answers typed questions about an input with calibrated probabil
 | Azure OpenAI (Microsoft Foundry) | a `Microsoft-Decision-1` deployment, addressed by deployment name | `POST {endpoint}/providers/microsoft/v1/systemone` (System One format), `api-key` header |
 | TypeSafe | `jev-latest`, `jev-preview`, `jev-1.14.0`, `jev-1.13.0` | `POST {base}/v1/systemone` (default base `https://api.typesafe.ai`) |
 
-Saving a model runs one yes/no question against it. The model list offers TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI (which then no longer shows as a chat model); other deployments are typed in by name. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
+Saving a model runs one yes/no question against it. Model discovery (`POST .../ai-models/discover` with `capability: "decision"`) lists TypeSafe's Jev models, `gpt-6-luna` on OpenAI, and `Microsoft-Decision-1` on Azure OpenAI, which is then no longer offered as a chat model. Code uses the default decision model through `get_decision_model_instance` (`app/utils/llm.py`), which returns `None` when none is configured:
 
 ```python
 from app.services.ai_models.decision import ChoiceQuestion, DecisionOption
