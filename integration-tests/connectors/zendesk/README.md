@@ -1,6 +1,6 @@
 # Live Zendesk connector tests
 
-This suite runs **19 tests** against a real Zendesk tenant, the running PipesHub
+This suite runs **20 tests** against a real Zendesk tenant, the running PipesHub
 API, and the configured Neo4j or ArangoDB graph. The Zendesk API is never mocked.
 It creates a temporary PipesHub connector and removes it after the module.
 Zendesk source content is read-only.
@@ -16,19 +16,39 @@ Prepare a small, dedicated Zendesk test tenant with:
   comments, and Help Center articles. The token must have at least the `read`
   scope. No write scope is needed.
 
-Set these variables in `integration-tests/.env.local` or `.env.prod` (or as
-environment variables), alongside the normal PipesHub and graph settings from
-the [integration test guide](../../README.md):
+Set these Zendesk variables in `integration-tests/.env.local` or `.env.prod`
+(or as environment variables):
 
 ```text
 ZENDESK_TEST_SUBDOMAIN=your-subdomain
 ZENDESK_TEST_CLIENT_ID=your-oauth-client-id
 ZENDESK_TEST_CLIENT_SECRET=your-oauth-client-secret
 ZENDESK_TEST_ACCESS_TOKEN_FILE=/tmp/zendesk-access-token
-ZENDESK_TEST_TICKET_ID=12345
-ZENDESK_TEST_ARTICLE_ID=67890
 SECRET_KEY=the-same-value-as-the-running-pipeshub-stack
 ```
+
+The authorize and token URLs are derived from `ZENDESK_TEST_SUBDOMAIN`; they
+are not separate test variables. `ZENDESK_TEST_CLIENT_ID` and
+`ZENDESK_TEST_CLIENT_SECRET` belong to the Zendesk OAuth client. The plain
+`CLIENT_ID` and `CLIENT_SECRET` above belong to PipesHub's API client.
+
+The running PipesHub stack also needs `PIPESHUB_BASE_URL`; either
+`CLIENT_ID`/`CLIENT_SECRET` for the PipesHub API or, in local mode,
+`PIPESHUB_TEST_USER_EMAIL`/`PIPESHUB_TEST_USER_PASSWORD` so the suite can create
+an API client; and graph settings (`TEST_GRAPH_DB_TYPE=neo4j`,
+`TEST_NEO4J_URI`, `TEST_NEO4J_USERNAME`, `TEST_NEO4J_PASSWORD`, optionally
+`TEST_NEO4J_DATABASE`). The token injection helper must reach the same KV store
+as the app (`REDIS_HOST`, `REDIS_PORT`, and `REDIS_PASSWORD` when Redis requires
+one). `SECRET_KEY` must match the app. The PipesHub admin account must already
+have one default LLM and one default embedding model configured; the Zendesk
+suite reuses those models. See the [integration test guide](../../README.md) for the
+ArangoDB and remote stack alternatives.
+
+Set `ZENDESK_TEST_TICKET_ID` and `ZENDESK_TEST_ARTICLE_ID` in
+[`constants.py`](constants.py) to the numeric IDs of the seeded ticket and
+article. They are fixed test records, so their IDs live in source control
+instead of GitHub secrets. The suite fails with a setup message until both IDs
+are set.
 
 Put `ZENDESK_TEST_REFRESH_TOKEN=your-current-refresh-token` in
 `integration-tests/.env.refresh_tokens`. That ignored file is updated after
@@ -52,7 +72,6 @@ value expires and is not used by CI.
 The GitHub Actions **Integration Tests** workflow offers `zendesk` as a manual
 dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID`,
 `ZENDESK_TEST_CLIENT_SECRET`, `ZENDESK_TEST_REFRESH_TOKEN`,
-`ZENDESK_TEST_TICKET_ID`, `ZENDESK_TEST_ARTICLE_ID`, and
 `ZENDESK_TEST_SECRETS_WRITE_TOKEN` in the protected `integration-test-dev`
 environment. Use a fine-grained GitHub token scoped to this repository with
 `Environments: write` permission for the write token. Each run refreshes the
