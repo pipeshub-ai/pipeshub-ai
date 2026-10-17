@@ -44,3 +44,18 @@ test('does not treat a route that only starts with "record" as a record URL', ()
     path.join(OUT, 'records', 'abc', 'index.html'),
   );
 });
+
+// The handler decodes the pathname, so an encoded separator can smuggle `..` past URL parsing.
+for (const pathname of ['/..%2f..%2fetc/passwd', '/../../etc/passwd', '/%2e%2e/secret']) {
+  test(`refuses a path that escapes the export: ${pathname}`, () => {
+    assert.equal(resolveStaticExportPath(OUT, decodeURIComponent(pathname), has()), null);
+  });
+}
+
+test('a record URL with traversal still only reaches the record shell', () => {
+  assert.equal(
+    resolveStaticExportPath(OUT, decodeURIComponent('/record/x/..%2f..%2f..%2fetc%2fpasswd'), has()),
+    path.join(OUT, 'record', 'index.html'),
+  );
+});
+

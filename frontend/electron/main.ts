@@ -308,6 +308,7 @@ app.whenReady().then(() => {
     const pathname = decodeURIComponent(url.pathname);
 
     const filePath = resolveStaticExportPath(STATIC_DIR, pathname);
+    if (!filePath) return new Response(null, { status: 404 });
 
     // pathToFileURL, not string concatenation: the install path can contain
     // spaces and a bare drive letter is not a valid file:// host.
