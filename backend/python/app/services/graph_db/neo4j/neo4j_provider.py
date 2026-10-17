@@ -6594,7 +6594,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             WITH DISTINCT r
             WHERE r:Record
               AND r.connectorId = $connectorId
-              AND r.indexingStatus = $completedStatus
+              AND {cypher_searchable_record("r")}
               AND {live_record}
               AND r.virtualRecordId IS NOT NULL AND r.id IS NOT NULL
               {metadata_filter_clause}{time_range_filter_clause}
@@ -17805,6 +17805,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         // One row: the driver builds a record object per row returned.
         RETURN collect({{id: ok.id, vrid: ok.virtualRecordId,
                         connectorId: ok.connectorId, indexingStatus: ok.indexingStatus,
+                        hasIndexedCopy: coalesce(ok.hasIndexedCopy, false),
                         isInternal: coalesce(ok.isInternal, false),
                         groupIds: [(ok)-[:BELONGS_TO]->(kh_og:RecordGroup) | kh_og.id]}}) AS items
         """

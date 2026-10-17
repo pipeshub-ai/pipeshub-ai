@@ -24,6 +24,7 @@ from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
+    is_searchable_record,
 )
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.kh_breadcrumbs import browse_scope
@@ -6455,7 +6456,8 @@ class IGraphDBProvider(ABC):
             vrid, record_id = row.get("vrid"), row.get("id")
             if vrid not in asked_vrids or not record_id:
                 continue
-            if indexed_only and row.get("indexingStatus") != ProgressStatus.COMPLETED.value:
+            # An edited record queued again keeps serving its previous indexed copy.
+            if indexed_only and not is_searchable_record(row):
                 continue
             if connector_ids is not None and row.get("connectorId") not in connector_ids:
                 continue

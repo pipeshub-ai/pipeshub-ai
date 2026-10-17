@@ -1366,13 +1366,13 @@ class RetrievalService:
                 return None
             vector_filter = await self.vector_db_service.filter_collection(
                 must={"orgId": org_id, "virtualRecordId": scoped_virtual_ids},
-                should=selection.should_clauses() if selection else None,
+                **({"should": selection.should_clauses()} if selection else {}),
             )
             return vector_filter, scoped_virtual_ids
         scope_virtual_ids = list(accessible_virtual_id_to_record_id.keys())
         vector_filter = await self.vector_db_service.filter_collection(
             must={"orgId": org_id, "virtualRecordId": scope_virtual_ids},
-            should=selection.should_clauses() if selection else None,
+            **({"should": selection.should_clauses()} if selection else {}),
         )
         return vector_filter, scope_virtual_ids
 
@@ -1721,10 +1721,29 @@ class RetrievalService:
             return LexicalSearchResult.nothing(0)
         requests_legs = await self._lexical_legs(queries)
         filters = _graph_filters(filter_groups)
-        containers, accessible, _user = await self._resolve_search_scope(user_id, org_id, filters, None)
+        # A selection below app level and an allow-list hold this search as
+        # they hold search_with_filters.
+        scope_request = {
+            key: values for key, values in (filter_groups or {}).items() if key in _SELECTION_REQUEST_KEYS
+        }
+        selection: SelectionScope | None = None
+        scopes: list[SelectionScope] = []
+        if scope_request:
+            resolved = await self._resolve_selection(user_id, org_id, filters, scope_request)
+            if isinstance(resolved, dict):
+                if resolved.get("status") == Status.PERMISSION_CHECK_UNAVAILABLE.value:
+                    raise PermissionVerificationUnavailableError(resolved.get("message") or "")
+                return LexicalSearchResult.nothing(len(queries))
+            selection, scopes = resolved
+            if selection is not None:
+                filters = {k: v for k, v in filters.items() if k not in CONTAINER_SCOPE_FILTER_KEYS}
+                filters["apps"] = sorted(selection.connector_ids)
+        containers, accessible, user = await self._resolve_search_scope(user_id, org_id, filters, None)
         if (containers is not None and containers.is_empty) or (containers is None and not accessible):
             return LexicalSearchResult.nothing(len(queries))
-        permission_filter = await self._permission_filter(org_id, containers, accessible, virtual_record_ids)
+        permission_filter = await self._permission_filter(
+            org_id, containers, accessible, virtual_record_ids, selection,
+        )
         if permission_filter is None:
             return LexicalSearchResult.nothing(len(queries))
         vector_filter, _scope = permission_filter
@@ -1760,13 +1779,24 @@ class RetrievalService:
                     self._result_merger,
                 )
 
-        if containers is not None:
-            returned = {
-                vid
-                for batch in batches
-                for point in batch
-                if (vid := (point.payload.get("metadata") or {}).get("virtualRecordId"))
-            }
+        returned = {
+            vid
+            for batch in batches
+            for point in batch
+            if (vid := (point.payload.get("metadata") or {}).get("virtualRecordId"))
+        }
+        user_key = ((user or {}).get("_key") or (user or {}).get("id")) or ""
+        if containers is not None and returned and scopes:
+            check = await self.graph_provider.check_access(
+                user_key, org_id, virtual_record_ids=returned, indexed_only=True,
+                connector_ids=(
+                    frozenset(containers.scope_connector_ids)
+                    if containers.scope_connector_ids is not None else None
+                ),
+                scopes=scopes,
+            )
+            accessible = dict(check.records_by_vrid)
+        elif containers is not None:
             accessible = (
                 await self.graph_provider.filter_accessible_virtual_record_ids(
                     list(returned),
@@ -1779,6 +1809,13 @@ class RetrievalService:
                 if returned
                 else {}
             ) or {}
+        else:
+            # The enumerated map does not apply the access rules: every hit is
+            # checked, as search_with_filters checks its hits.
+            accessible = await self._keep_permitted_hits(
+                [{"metadata": {"virtualRecordId": vid}} for vid in returned], accessible, user_key, org_id,
+                scope_connector_ids=requested_scope_ids(filters), scopes=scopes,
+            )
 
         hits: list[list[LexicalHit]] = []
         for batch in batches:

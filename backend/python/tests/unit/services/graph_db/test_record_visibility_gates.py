@@ -186,7 +186,7 @@ class TestPermissionMap:
         # Every grant seeds one walk, and that walk alone returns records.
         paths = query.count("RETURN {virtualRecordId: record.virtualRecordId, recordId: record._key}")
         assert paths == 1
-        assert query.count("FILTER record.indexingStatus == @completedStatus") == paths
+        assert query.count(f"FILTER {aql_searchable_record('record')}") == paths
         assert query.count(f"FILTER {aql_live_record('record')}") == paths
         assert query.index(aql_live_record("record")) < query.index("COLLECT virtualRecordId")
 
@@ -204,7 +204,7 @@ class TestPermissionMap:
         (query,) = _neo4j_queries(provider)
         paths = query.count("RETURN r.virtualRecordId AS virtualId, r.id AS recordId")
         assert paths == 1
-        assert query.count("r.indexingStatus = $completedStatus") == paths
+        assert query.count(cypher_searchable_record("r")) == paths
         assert query.count(f"AND {cypher_live_record('r')}") == paths
 
     async def test_neo4j_kb_map_filters_every_path(self) -> None:

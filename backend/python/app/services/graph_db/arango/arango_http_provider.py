@@ -17068,6 +17068,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return [
             {
                 **{k: r[k] for k in ("id", "vrid", "connectorId", "indexingStatus", "isInternal")},
+                "hasIndexedCopy": r.get("hasIndexedCopy") is True,
                 "groupIds": r.get("groupIds") or [],
             }
             for r in rows
@@ -17274,7 +17275,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET kh_walk = kh_app != null AND NOT kh_is_app AND NOT kh_ok
             FILTER kh_ok OR kh_attachment OR kh_walk
             RETURN {{id: t._key, vrid: t.virtualRecordId, connectorId: t.connectorId,
-                     indexingStatus: t.indexingStatus, isInternal: t.isInternal == true,
+                     indexingStatus: t.indexingStatus, hasIndexedCopy: t.hasIndexedCopy == true,
+                     isInternal: t.isInternal == true,
                      groupIds: (FOR kh_rowgrp IN 1..1 OUTBOUND t {CollectionNames.BELONGS_TO.value}
                                     FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", kh_rowgrp)
                                     RETURN kh_rowgrp._key),
@@ -21999,7 +22001,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         OPTIONS {{uniqueVertices: "global", order: "bfs"}}
                         FILTER IS_SAME_COLLECTION("{CollectionNames.RECORDS.value}", record)
                         FILTER record.connectorId == @connectorId
-                        FILTER record.indexingStatus == @completedStatus
+                        FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
                         RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
