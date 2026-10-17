@@ -1995,6 +1995,11 @@
         "video": {
           "label": "视频",
           "badge": "多模态"
+        },
+        "decision": {
+          "label": "决策",
+          "badge": "决策",
+          "sectionTab": "用于决策"
         }
       },
       "fetchingModels": "正在加载模型…",

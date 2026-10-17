@@ -1995,6 +1995,11 @@
         "video": {
           "label": "비디오",
           "badge": "멀티모달"
+        },
+        "decision": {
+          "label": "의사결정",
+          "badge": "의사결정",
+          "sectionTab": "의사결정용"
         }
       },
       "fetchingModels": "모델을 불러오는 중…",

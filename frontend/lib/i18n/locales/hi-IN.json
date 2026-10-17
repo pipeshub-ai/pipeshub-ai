@@ -1859,6 +1859,11 @@
         "video": {
           "label": "वीडियो",
           "badge": "मल्टीमॉडल"
+        },
+        "decision": {
+          "label": "निर्णय",
+          "badge": "निर्णय",
+          "sectionTab": "निर्णयों के लिए"
         }
       },
       "fetchingModels": "मॉडल लोड हो रहे हैं…",

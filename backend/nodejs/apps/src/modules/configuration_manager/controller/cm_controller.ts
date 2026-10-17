@@ -2778,6 +2778,7 @@ const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
   'imageGeneration',
   'tts',
   'stt',
+  'decision',
 ] as const;
 
 export const createAIModelsConfig =
@@ -2972,6 +2973,7 @@ export const getAIModelsProviders =
             imageGeneration: [],
             tts: [],
             stt: [],
+            decision: [],
           },
           message: 'No AI models found',
         });

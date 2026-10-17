@@ -9,7 +9,7 @@ import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { useBrand } from '@/lib/branding';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { CAPABILITY_SECTION_ORDER, LLM_SECTION_MODEL_TYPES } from '../types';
+import { CAPABILITY_SECTION_ORDER, modelTypesForSection } from '../types';
 import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
@@ -43,14 +43,6 @@ interface ProviderGridProps {
   hideCapabilityBadges?: boolean;
   /** Passed to configured-models list; false hides built-in embedding row (e.g. onboarding). */
   showEmbeddingBuiltinPlaceholder?: boolean;
-}
-
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
 }
 
 function providerMatchesSearch(

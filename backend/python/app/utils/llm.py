@@ -7,6 +7,7 @@ from langchain_core.language_models.chat_models import BaseChatModel
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.services.ai_models.decision import DecisionModel, get_decision_model
 from app.utils.aimodels import (
     STTAdapter,
     TTSAdapter,
@@ -238,6 +239,24 @@ async def get_tts_config(config_service: ConfigurationService) -> dict | None:
 async def get_stt_config(config_service: ConfigurationService) -> dict | None:
     """Return the active STT model config, or ``None`` if unset."""
     return await _get_speech_config(config_service, "stt")
+
+
+async def get_decision_config(config_service: ConfigurationService) -> dict | None:
+    """Return the active decision model config, or ``None`` if none is configured."""
+    ai_models = await _load_ai_models(config_service)
+    if not ai_models:
+        return None
+    return _select_default_config(ai_models.get("decision") or [])
+
+
+async def get_decision_model_instance(
+    config_service: ConfigurationService,
+) -> Tuple[DecisionModel, dict] | None:
+    """Build the default decision model, or return ``None`` if none is configured."""
+    config = await get_decision_config(config_service)
+    if not config:
+        return None
+    return get_decision_model(config["provider"], config), config
 
 
 async def get_tts_model_instance(

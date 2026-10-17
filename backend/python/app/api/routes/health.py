@@ -21,6 +21,7 @@ from pydantic import BaseModel, Field
 from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
 from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.ai_models.decision import PredicateQuestion, get_decision_model
 from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
@@ -52,7 +53,7 @@ _OUTBOUND_PROBE_TIMEOUT_S = 5.0
 # is rejected rather than reported healthy -- Node's model-type validator is
 # wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
 # that falls through would register a model nothing had checked.
-SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt", "decision"})
 
 # Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
@@ -2073,6 +2074,57 @@ async def perform_stt_health_check(
     return checked
 
 
+async def perform_decision_health_check(model_config: dict, logger: Logger) -> JSONResponse:
+    """Ask each configured decision model one yes/no question.
+
+    A decision call is billed on input tokens only and this one is a few dozen,
+    so a real call is cheap and also proves the account can use the endpoint.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    model_names = iter_model_names(configuration)
+    if not model_names:
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": "No valid model names found in configuration",
+                "details": {"provider": provider, "model": configuration.get("model", "")},
+            },
+        )
+
+    checked: JSONResponse | None = None
+    for model_name in model_names:
+        try:
+            model = get_decision_model(provider=provider, config=model_config, model_name=model_name)
+        except Exception as e:
+            logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+        try:
+            result = await asyncio.wait_for(
+                model.decide(
+                    "Hello, can you help me?",
+                    [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
+                ),
+                timeout=30.0,
+            )
+            answer = result.answers["is_greeting"]
+            if not answer.refused and answer.probability is None:
+                raise RuntimeError("The decision model returned no probability for a yes/no question")
+            checked = JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": "Decision model is reachable",
+                    "details": {"provider": provider, "model": model_name},
+                },
+            )
+        except Exception as e:
+            logger.error(f"Decision health check failed for {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+    return checked
+
+
 async def _check_embedding(request: Request, model_config: dict, logger: Logger) -> JSONResponse:
     return await perform_embedding_health_check(request, model_config, logger)
 
@@ -2093,12 +2145,17 @@ async def _check_stt(_request: Request, model_config: dict, logger: Logger) -> J
     return await perform_stt_health_check(model_config, logger)
 
 
+async def _check_decision(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_decision_health_check(model_config, logger)
+
+
 _HEALTH_CHECKERS = {
     "embedding": _check_embedding,
     "llm": _check_llm,
     "imageGeneration": _check_image,
     "tts": _check_tts,
     "stt": _check_stt,
+    "decision": _check_decision,
 }
 
 

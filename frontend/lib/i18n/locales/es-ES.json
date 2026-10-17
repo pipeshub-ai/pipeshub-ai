@@ -1883,6 +1883,11 @@
         "video": {
           "label": "Vídeo",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Decisión",
+          "badge": "Decisión",
+          "sectionTab": "Para decisiones"
         }
       },
       "fetchingModels": "Cargando modelos…",

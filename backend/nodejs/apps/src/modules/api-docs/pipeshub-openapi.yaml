@@ -14878,7 +14878,7 @@ components:
 
     ModelType:
       type: string
-      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt]
+      enum: [llm, embedding, ocr, slm, reasoning, multiModal, imageGeneration, tts, stt, decision]
       description: Type of AI model
 
     AIModelProviderConfig:
@@ -14941,6 +14941,7 @@ components:
         - imageGeneration
         - tts
         - stt
+        - decision
       properties:
         ocr:
           type: array
@@ -14978,6 +14979,14 @@ components:
         stt:
           type: array
           description: Speech-to-Text providers used to transcribe chat audio.
+          items:
+            $ref: '#/components/schemas/AIModelProviderConfig'
+        decision:
+          type: array
+          description: |
+            Decision models (OpenAI Decisions API, Azure OpenAI, TypeSafe Jev). They answer
+            typed questions (yes/no, pick one, score) with calibrated probabilities instead
+            of generating text. Code calls the default one through the query service.
           items:
             $ref: '#/components/schemas/AIModelProviderConfig'
         modelRoles:
@@ -47005,6 +47014,7 @@ paths:
               - video
               - ocr
               - reasoning
+              - decision
           description: Filter providers by capability
       responses:
         '200':

@@ -1,0 +1,243 @@
+"""Decision model clients: wire formats, parsing, retries and errors for each provider."""
+
+from __future__ import annotations
+
+import json
+from unittest.mock import patch
+
+import httpx
+import pytest
+from pydantic import ValidationError
+
+from app.services.ai_models.decision import (
+    AzureOpenAIDecisionModel,
+    ChoiceQuestion,
+    DecisionModelError,
+    DecisionOption,
+    OpenAIDecisionModel,
+    PredicateQuestion,
+    ScoreLevel,
+    ScoreQuestion,
+    TypeSafeDecisionModel,
+    get_decision_model,
+)
+from app.utils.user_errors import provider_error_code
+
+QUESTIONS = [
+    PredicateQuestion(name="urgent", instructions="Is this urgent?"),
+    ChoiceQuestion(
+        name="team",
+        instructions="Which team should handle this?",
+        options=[
+            DecisionOption(value="billing", description="Payments and refunds"),
+            DecisionOption(value="technical"),
+        ],
+    ),
+    ScoreQuestion(
+        name="severity",
+        instructions="How severe is it?",
+        levels=[ScoreLevel(label="Low"), ScoreLevel(label="High", description="Fully blocked")],
+    ),
+]
+
+
+def _mock(responses: list[httpx.Response], seen: list[httpx.Request]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return responses.pop(0)
+
+    def factory(_url, *, timeout):
+        return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
+
+    return patch("app.services.ai_models.decision.clients.guarded_async_client", factory)
+
+
+@pytest.fixture(autouse=True)
+def _no_sleep():
+    with patch("app.services.ai_models.decision.clients.asyncio.sleep", return_value=None):
+        yield
+
+
+OPENAI_RESPONSE = {
+    "answers": [
+        {"type": "predicate", "name": "urgent", "probability": 0.8},
+        {
+            "type": "choice",
+            "name": "team",
+            "choice": "billing",
+            "probabilities": [
+                {"value": "billing", "probability": 0.9},
+                {"value": "technical", "probability": 0.1},
+            ],
+            "confidence": 0.87,
+        },
+        {
+            "type": "score",
+            "name": "severity",
+            "score": 0.3,
+            "probabilities": [
+                {"value": 0, "label": "Low", "probability": 0.7},
+                {"value": 1, "label": "High", "probability": 0.3},
+            ],
+            "confidence": 0.4,
+        },
+    ],
+}
+
+
+async def test_openai_sends_the_decisions_format_and_parses_answers():
+    seen: list[httpx.Request] = []
+    model = OpenAIDecisionModel("gpt-6-luna", api_key="sk-test", organization="org-1")
+    with _mock([httpx.Response(200, json=OPENAI_RESPONSE)], seen):
+        result = await model.decide({"text": "charged twice"}, QUESTIONS)
+
+    request = seen[0]
+    assert str(request.url) == "https://api.openai.com/v1/decisions"
+    assert request.headers["authorization"] == "Bearer sk-test"
+    assert request.headers["openai-organization"] == "org-1"
+    body = json.loads(request.content)
+    assert body["model"] == "gpt-6-luna"
+    assert body["input"] == '{"text": "charged twice"}'
+    assert body["questions"][0] == {"type": "predicate", "name": "urgent", "instructions": "Is this urgent?"}
+    assert body["questions"][1]["choices"][1] == {"value": "technical", "description": "technical"}
+    assert body["questions"][2]["levels"][1] == {"label": "High", "description": "Fully blocked"}
+
+    assert result.answers["urgent"].probability == 0.8
+    assert result.answers["team"].choice == "billing"
+    assert result.answers["team"].probabilities == {"billing": 0.9, "technical": 0.1}
+    assert result.answers["severity"].score == 0.3
+    assert result.answers["severity"].probabilities == {"Low": 0.7, "High": 0.3}
+
+
+async def test_openai_refusal_and_missing_answers_are_refused():
+    seen: list[httpx.Request] = []
+    payload = {"answers": [{"type": "refusal", "name": "urgent"}]}
+    model = OpenAIDecisionModel("gpt-6-luna", api_key="sk-test")
+    with _mock([httpx.Response(200, json=payload)], seen):
+        result = await model.decide("text", QUESTIONS)
+    assert all(answer.refused for answer in result.answers.values())
+    assert result.answers["team"].choice is None
+
+
+async def test_openai_custom_base_url():
+    seen: list[httpx.Request] = []
+    model = OpenAIDecisionModel("gpt-6-luna", api_key="k", base_url="https://gateway.example.com/v1/")
+    with _mock([httpx.Response(200, json={"answers": []})], seen):
+        await model.decide("x", QUESTIONS[:1])
+    assert str(seen[0].url) == "https://gateway.example.com/v1/decisions"
+
+
+async def test_azure_uses_deployment_api_key_header_and_v1_path():
+    seen: list[httpx.Request] = []
+    model = get_decision_model(
+        "azureOpenAI",
+        {
+            "configuration": {
+                "model": "gpt-6-luna",
+                "deploymentName": "luna-decisions",
+                "apiKey": "az-key",
+                "endpoint": "https://res.openai.azure.com/",
+            },
+            "isDefault": True,
+        },
+    )
+    assert isinstance(model, AzureOpenAIDecisionModel)
+    with _mock([httpx.Response(200, json=OPENAI_RESPONSE)], seen):
+        await model.decide("x", QUESTIONS)
+    assert str(seen[0].url) == "https://res.openai.azure.com/openai/v1/decisions"
+    assert seen[0].headers["api-key"] == "az-key"
+    assert "authorization" not in seen[0].headers
+    assert json.loads(seen[0].content)["model"] == "luna-decisions"
+
+
+async def test_typesafe_sends_system_one_format_and_parses_answers():
+    seen: list[httpx.Request] = []
+    payload = {
+        "model": "jev-1.13.0",
+        "answers": {
+            "urgent": {"type": "noul", "noul": 0.9},
+            "team": {"type": "choice", "choice": "technical", "probabilities": {"billing": 0.2, "technical": 0.8}, "confidence": 0.6},
+            "severity": {"type": "score", "score": 1.0, "legend": {"0": "Low", "1": "High"}, "probabilities": {"0": 0.0, "1": 1.0}, "confidence": 1.0},
+        },
+        "usage": {"input_tokens": 120, "output_tokens": 9},
+    }
+    model = TypeSafeDecisionModel("jev-latest", api_key="ts-key")
+    with _mock([httpx.Response(200, json=payload)], seen):
+        result = await model.decide({"ticket": "payouts failing"}, QUESTIONS)
+
+    request = seen[0]
+    assert str(request.url) == "https://api.typesafe.ai/v1/systemone"
+    assert request.headers["authorization"] == "Bearer ts-key"
+    body = json.loads(request.content)
+    assert body["state"] == {"ticket": "payouts failing"}
+    assert body["questions"]["urgent"] == {"type": "noul", "instructions": "Is this urgent?"}
+    assert body["questions"]["team"]["criteria"] == {"billing": "Payments and refunds", "technical": None}
+    assert body["questions"]["severity"]["criteria"] == ["Low", "High: Fully blocked"]
+
+    assert result.model == "jev-1.13.0"
+    assert result.answers["urgent"].probability == 0.9
+    assert result.answers["urgent"].confidence == pytest.approx(0.8)
+    assert result.answers["team"].choice == "technical"
+    assert result.answers["severity"].probabilities == {"Low": 0.0, "High": 1.0}
+    assert result.usage.input_tokens == 120
+
+
+async def test_retries_rate_limit_then_succeeds():
+    seen: list[httpx.Request] = []
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    responses = [
+        httpx.Response(429, headers={"retry-after": "1"}, json={"error": "slow down"}),
+        httpx.Response(529, json={"error": "overloaded"}),
+        httpx.Response(200, json={"answers": {"urgent": {"type": "noul", "noul": 0.1}}}),
+    ]
+    with _mock(responses, seen):
+        result = await model.decide("x", QUESTIONS[:1])
+    assert len(seen) == 3
+    assert result.answers["urgent"].probability == 0.1
+
+
+async def test_auth_failure_raises_with_status_the_health_check_can_classify():
+    seen: list[httpx.Request] = []
+    model = OpenAIDecisionModel("gpt-6-luna", api_key="bad")
+    error = {"error": {"message": "Incorrect API key provided", "code": "invalid_api_key"}}
+    with _mock([httpx.Response(401, json=error)], seen), pytest.raises(DecisionModelError) as caught:
+        await model.decide("x", QUESTIONS[:1])
+    assert caught.value.status_code == 401
+    assert "Incorrect API key provided" in str(caught.value)
+    assert provider_error_code(caught.value) == "auth_error"
+    assert len(seen) == 1
+
+
+async def test_rejects_empty_and_duplicate_questions():
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    with pytest.raises(ValueError):
+        await model.decide("x", [])
+    with pytest.raises(ValueError):
+        await model.decide("x", [QUESTIONS[0], QUESTIONS[0]])
+
+
+def test_question_validation():
+    with pytest.raises(ValidationError):
+        ChoiceQuestion(name="c", instructions="?", options=[DecisionOption(value="a")])
+    with pytest.raises(ValidationError):
+        ChoiceQuestion(name="c", instructions="?", options=[DecisionOption(value="a"), DecisionOption(value="a")])
+    with pytest.raises(ValidationError):
+        ScoreQuestion(name="s", instructions="?", levels=[ScoreLevel(label=str(i)) for i in range(11)])
+
+
+def test_factory_builds_each_provider_and_rejects_unknown():
+    entry = {"configuration": {"model": "jev-latest", "apiKey": "k"}, "isDefault": True}
+    assert isinstance(get_decision_model("typesafe", entry), TypeSafeDecisionModel)
+    assert isinstance(get_decision_model("openAI", {**entry, "configuration": {"model": "gpt-6-luna", "apiKey": "k"}}), OpenAIDecisionModel)
+    with pytest.raises(ValueError, match="Unsupported decision model provider"):
+        get_decision_model("anthropic", entry)
+    with pytest.raises(ValueError, match="endpoint"):
+        get_decision_model("azureOpenAI", entry)
+    with pytest.raises(ValueError, match="No decision model configured"):
+        get_decision_model("typesafe", {"configuration": {"apiKey": "k"}})
+
+
+def test_factory_refuses_metadata_endpoint():
+    entry = {"configuration": {"model": "jev-latest", "apiKey": "k", "endpoint": "http://169.254.169.254"}}
+    with pytest.raises(ValueError, match="never allowed"):
+        get_decision_model("typesafe", entry)

@@ -657,9 +657,10 @@ export const aiModelsConfigSchema = z.object({
       imageGeneration: z.array(modelConfigurationSchema).optional(),
       tts: z.array(modelConfigurationSchema).optional(),
       stt: z.array(modelConfigurationSchema).optional(),
+      decision: z.array(modelConfigurationSchema).optional(),
     })
     .strict({
-      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt',
+      message: 'Valid properties for aiModels are ocr, embedding, llm, slm, reasoning, multiModal, imageGeneration, tts, stt, decision',
     })
     .refine(
       (data) => {

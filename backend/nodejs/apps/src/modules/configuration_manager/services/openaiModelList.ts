@@ -15,6 +15,7 @@ const TASK_BY_TYPE: Record<string, string> = {
   imageGeneration: 'image',
   tts: 'text-to-speech',
   stt: 'automatic-speech-recognition',
+  decision: 'decision',
 };
 
 export interface OpenAIModelObject {

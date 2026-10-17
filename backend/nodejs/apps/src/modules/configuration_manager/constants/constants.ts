@@ -45,6 +45,7 @@ export const AI_MODEL_TYPES = [
   'imageGeneration',
   'tts',
   'stt',
+  'decision',
 ] as const;
 
 export type AIModelType = (typeof AI_MODEL_TYPES)[number];
@@ -63,6 +64,7 @@ export const aiModelsTypes = {
   IMAGE_GENERATION: 'imageGeneration',
   TTS: 'tts',
   STT: 'stt',
+  DECISION: 'decision',
 } as const;
 
 /**

@@ -38,6 +38,13 @@ def _id_capabilities(model_id: str) -> list[str] | None:
     return capabilities or None
 
 
+# Models a provider also serves on its decision endpoint. Their ids match chat
+# models, so neither the catalog nor an ID rule can tell.
+_DECISION_MODEL_IDS: dict[str, frozenset[str]] = {
+    "openAI": frozenset({"gpt-6-luna"}),
+}
+
+
 def _deprecated_from_catalog(entry: dict) -> bool | None:
     raw = entry.get("deprecation_date")
     if not raw:
@@ -77,6 +84,8 @@ def classify(provider_id: str, raw: RawModel) -> DiscoveredModel | None:
         source = "heuristic"
     if not capabilities:
         return None
+    if raw.id in _DECISION_MODEL_IDS.get(provider_id, frozenset()) and "decision" not in capabilities:
+        capabilities = [*capabilities, "decision"]
 
     context_length = raw.context_length
     is_multimodal = raw.is_multimodal

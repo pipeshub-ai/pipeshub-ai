@@ -1859,6 +1859,11 @@
         "video": {
           "label": "Video",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Decision",
+          "badge": "Decision",
+          "sectionTab": "For Decisions"
         }
       },
       "fetchingModels": "Loading models…",
