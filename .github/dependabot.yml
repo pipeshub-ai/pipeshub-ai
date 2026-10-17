@@ -25,6 +25,21 @@ updates:
     groups:
       python-minor-and-patch:
         update-types: [minor, patch]
+    # Upper bounds in pyproject.toml are deliberate; Dependabot would raise them.
+    ignore:
+      # 1.13 stopped setting request.options, so msgraph-core's 429/503 retry stopped running.
+      - dependency-name: "microsoft-kiota-http"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "Pillow"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "protobuf"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "reportlab"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "fpdf2"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "mariadb"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: uv
     directory: /integration-tests
@@ -33,6 +48,11 @@ updates:
     groups:
       integration-tests-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: "Pillow"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "protobuf"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: /
@@ -49,3 +69,7 @@ updates:
     groups:
       base-images:
         update-types: [minor, patch]
+    ignore:
+      # python:3.12 is a two-part tag, so 3.12 -> 3.13 reads as a minor; the runtime moves on purpose only.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]
