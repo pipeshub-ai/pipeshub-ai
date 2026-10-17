@@ -181,13 +181,13 @@ class TestSalesforce:
         assert _registered(conn) == ("admin@corp.com", self.USER_ID)
         assert f"WHERE Id = '{self.USER_ID}'" in conn._fetch_first_record.await_args.kwargs["soql"]
 
-    async def test_a_token_stored_before_the_identity_url_was_kept_links_nobody(self) -> None:
+    async def test_a_token_stored_before_the_identity_url_was_kept_syncs_as_before_without_a_warning(self) -> None:
         conn = self._conn({"access_token": "tok"})
 
         await SalesforceConnector._register_authenticated_identity(conn, "59.0")
 
         conn._fetch_first_record.assert_not_awaited()
-        assert _registered(conn) == (None, None)
+        conn.register_authenticated_source_user.assert_not_awaited()
 
     async def test_an_id_that_is_not_a_salesforce_id_never_reaches_soql(self) -> None:
         conn = self._conn({"id": "https://login.salesforce.com/id/00D/005' OR Email != '"})

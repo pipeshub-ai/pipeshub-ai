@@ -2351,14 +2351,14 @@ class SalesforceConnector(BaseConnector):
     async def _register_authenticated_identity(self, api_version: str) -> None:
         """Record which source account this connector is authenticated as, so a creator whose
         PipesHub email differs still resolves that account's permissions for this connector."""
-        user: Optional[SalesforceRawRecord] = None
         try:
             user_id = await self._authenticated_user_id()
-            if user_id:
-                user = await self._fetch_first_record(
-                    api_version=api_version,
-                    soql=f"SELECT Id, Email FROM User WHERE Id = '{user_id}'",
-                )
+            if not user_id:
+                return
+            user = await self._fetch_first_record(
+                api_version=api_version,
+                soql=f"SELECT Id, Email FROM User WHERE Id = '{user_id}'",
+            )
         except Exception as e:
             self.logger.debug("Could not read the authenticated Salesforce user: %s", e)
             return
