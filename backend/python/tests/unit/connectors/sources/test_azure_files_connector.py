@@ -2765,7 +2765,7 @@ class TestFolderFilter:
         assert {"s1", "s1/reports", "s1/reports/2026", "s1/reports/2026/q1.pdf"} == seen
 
     @pytest.mark.asyncio
-    async def test_include_notes_the_chosen_folder_and_its_parents_as_kept(self, conn):
+    async def test_include_notes_the_chosen_folder_and_its_parents_as_kept(self, conn) -> None:
         """Not written by the walk, so noted: otherwise the unlink after a full sync
         cuts the links of everything under them to the app."""
         conn.sync_filters = _folder_filter(["reports/2026"])

@@ -165,7 +165,8 @@ async def _seed(w: _World) -> None:
         collection=CollectionNames.USERS.value,
     )
     await g.batch_upsert_nodes(
-        [{"id": w.connector_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
+        # orgId: the connector gate counts only the apps of the caller's org.
+        [{"id": w.connector_id, "orgId": w.org_id, "name": "Drive", "type": "Drive", "appGroup": "Google Workspace",
           "scope": "team", "isActive": True, "createdAtTimestamp": now, "updatedAtTimestamp": now,
           # The container path refuses an app whose vector points lack membership arrays.
           "vectorMembershipBackfilled": True}],
