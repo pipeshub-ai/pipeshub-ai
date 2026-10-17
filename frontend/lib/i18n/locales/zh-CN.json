@@ -811,6 +811,7 @@
     "dislike": "没帮助",
     "copy": "复制",
     "fork": "分叉对话",
+    "forkFromHere": "从此处分叉",
     "regenerate": "重新生成",
     "readAloud": "朗读",
     "stopReading": "停止朗读",

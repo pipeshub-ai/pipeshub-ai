@@ -135,6 +135,7 @@ export function MessageActions({
   const { t, i18n } = useTranslation();
   const router = useRouter();
   const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
+  const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
   const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
 
   // ── Like popover state ──
@@ -734,14 +735,14 @@ export function MessageActions({
         </Tooltip>
 
         {messageId && canFork && (
-          <Tooltip content={t('chat.fork')} side="top">
+          <Tooltip content={forkLabel} side="top">
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               disabled={isForking}
               onClick={handleFork}
-              aria-label={t('chat.fork')}
+              aria-label={forkLabel}
               style={{
                 margin: 0,
                 cursor: isForking ? 'default' : 'pointer',

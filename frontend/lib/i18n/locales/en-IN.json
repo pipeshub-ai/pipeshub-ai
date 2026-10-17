@@ -726,6 +726,7 @@
     "dislike": "Not helpful",
     "copy": "Copy",
     "fork": "Fork chat",
+    "forkFromHere": "Fork from here",
     "regenerate": "Regenerate",
     "readAloud": "Read aloud",
     "stopReading": "Stop reading",
