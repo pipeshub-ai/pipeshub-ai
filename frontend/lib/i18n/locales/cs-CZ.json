@@ -814,7 +814,7 @@
     "micTooltip": "Hlasový vstup",
     "uploadYourFile": "Nahrajte svůj soubor",
     "supportsFileTypes": "Podporované typy: {{types}}.",
-    "uploadFilesLimit": "Nejvýše {{count}} souborů na zprávu",
+    "uploadFilesLimit": "Limit souborů na zprávu: {{count}}",
     "uploadFilesRemaining": "Zbývá {{remaining}} z {{total}} souborů",
     "dropFilesHere": "Přetáhněte soubory sem",
     "loadingConversation": "Načítání konverzace...",
@@ -2764,9 +2764,9 @@
         "syncIntervalPlaceholder": "Vyberte interval...",
         "syncIntervalHelper": "Nastavte, jak často se mají data {{name}} obnovovat",
         "lastRunLimit": {
-          "saved": "Poslední synchronizace: uloženo {{count, number}} stránek",
+          "saved": "Poslední synchronizace – uložené stránky: {{count, number}}",
           "stoppedAtLimit": "zastaveno na tomto limitu",
-          "leftOut": "{{count, number}} vynecháno",
+          "leftOut": "vynecháno: {{count, number}}",
           "nearLimit": "Tento konektor ukládá nejméně 90 % tohoto limitu. Zvyšte jej, abyste z tohoto webu uchovali více stránek."
         }
       },
@@ -2816,13 +2816,13 @@
             "stalled": "Web přestal odpovídat; příští synchronizace naváže",
             "rate_limited": "Web opakovaně žádal o méně požadavků; příští synchronizace naváže"
           },
-          "pagesSaved": "{{count}} stránek uloženo",
-          "failed": "{{count}} stránek selhalo",
-          "robotsSkipped": "{{count}} přeskočeno kvůli robots.txt",
-          "noindexSkipped": "{{count}} s žádostí o neindexování",
-          "skippedMaxPages": "{{count}} vynecháno kvůli limitu Maximum stránek",
-          "pruned": "{{count}} odstraněno, již nejsou na webu",
-          "sitemapUrls": "{{count}} nalezeno v sitemapách",
+          "pagesSaved": "Uložené stránky: {{count}}",
+          "failed": "Neúspěšné stránky: {{count}}",
+          "robotsSkipped": "Přeskočeno kvůli robots.txt: {{count}}",
+          "noindexSkipped": "S žádostí o neindexování: {{count}}",
+          "skippedMaxPages": "Vynecháno kvůli limitu Maximum stránek: {{count}}",
+          "pruned": "Odstraněno, již nejsou na webu: {{count}}",
+          "sitemapUrls": "Nalezeno v sitemapách: {{count}}",
           "resumed": "Navázáno na nedokončenou synchronizaci",
           "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
         }
@@ -4417,15 +4417,15 @@
     "agentConfigSubtitle": "Definujte chování agenta a úvodní uvítací zprávu pro uživatele.",
     "useAsDefault": "Použít jako výchozí",
     "editSection": "Upravit sekci",
-    "showAll": "Zobrazit vše ({{count}} řádků)",
-    "lineCount": "{{count}} řádků",
+    "showAll": "Zobrazit vše (řádky: {{count}})",
+    "lineCount": "Řádky: {{count}}",
     "instructionsLabel": "Instrukce",
     "startingMessageLabel": "Úvodní zpráva",
     "defaultReasoningEffortLabel": "Výchozí míra uvažování",
     "defaultReasoningEffortHint": "Záložní míra uvažování použitá v případě, že si ji uživatel v chatu nezvolí.",
     "sendUserContextLabel": "Odesílat kontext uživatele a organizace",
     "sendUserContextHint": "Pokud je vypnuto, tento agent neobdrží ve svém systémovém promptu jméno, e-mail ani organizaci uživatele. Místo toho se bude spoléhat na nástroje, akce a zdroje znalostí.",
-    "moreItems": "+{{count}} dalších",
+    "moreItems": "Další: +{{count}}",
     "toolsetNodeSubtitle": "Sada nástrojů",
     "toolsLabel": "Nástroje",
     "noToolsSelected": "Nejsou vybrány žádné nástroje",
@@ -4625,7 +4625,7 @@
     "mcpAgentApprovals": "Schvalování nástrojů pro jednotlivé agenty",
     "limitSource": "Vyberte, co {{name}} prohledává",
     "limitSourceHint": "Ponechte zaškrtnutý celý zdroj, nebo jej odškrtněte a zaškrtněte složky a položky, které smí agent prohledávat.",
-    "limitSourceCount": "Omezeno na {{count}} vybraných"
+    "limitSourceCount": "Omezeno na vybrané položky: {{count}}"
   },
   "recordView": {
     "sections": {
