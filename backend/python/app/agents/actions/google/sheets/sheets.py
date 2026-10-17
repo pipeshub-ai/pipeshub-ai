@@ -335,7 +335,8 @@ class GoogleSheets:
             ToolParameter(name="spreadsheet_id", type=ParameterType.STRING, description="The spreadsheet id", required=True),
             ToolParameter(name="range", type=ParameterType.STRING, description=_RANGE_HELP, required=True),
         ],
-        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="delete")],
+        # A write, not a delete: it empties cells but keeps the sheet, and a write still asks before running.
+        tags=[Tag(key="category", value="spreadsheets"), Tag(key="type", value="write")],
         args_summary=args_template("Clearing {range} in Google Sheet {spreadsheet_id}", "range", "spreadsheet_id"),
         result_summary=confirmation("Cleared {range}", "range"),
     )

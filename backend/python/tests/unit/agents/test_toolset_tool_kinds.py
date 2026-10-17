@@ -66,6 +66,8 @@ def test_deleting_tools_and_only_they_are_tagged_as_deleting() -> None:
     ("/tools/mariadb/execute_query", "write"),
     ("/tools/slack/send_message", "write"),
     ("/tools/jira/search_issues", "read"),
+    # Empties cells, keeps the sheet: a write, which still asks before running.
+    ("/tools/sheets/clear_values", "write"),
 ])
 def test_a_tools_kind(path: str, kind: str) -> None:
     assert _kind(path) == kind
