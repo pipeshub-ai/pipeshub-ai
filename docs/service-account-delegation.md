@@ -15,9 +15,12 @@ read as a named person instead, for a few minutes at a time, so an integration
 can answer "what can *this* person see" rather than returning the union of what
 everyone can see.
 
-This is off until someone turns it on. A service account with an empty
-allow-list can act as nobody, so the feature exists on every instance and
-grants nothing until an administrator names a person.
+This is off until someone turns it on, and on a Community build nobody can.
+A service account with an empty allow-list can act as nobody, and the grant
+route that would fill the allow-list is the 501 stub described above, so there
+is no writer and the capability stays dormant. On an Enterprise build the same
+sentence has its usual meaning: the feature is present and grants nothing until
+an administrator names a person.
 
 ## What an administrator does
 
