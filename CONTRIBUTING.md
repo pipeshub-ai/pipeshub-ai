@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md)
+**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md) · [Čeština](docs/i18n/cs/CONTRIBUTING.md)
 
 This English file is current. The translations may lag; use this page for labeled issues and local setup until they catch up.
 

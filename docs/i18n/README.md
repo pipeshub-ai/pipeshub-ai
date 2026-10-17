@@ -21,6 +21,7 @@ The **English** documents in the repository root are the **canonical source of t
 | Türkçe | `tr` | [README](tr/README.md) | [CONTRIBUTING](tr/CONTRIBUTING.md) | [Davranış Kuralları](tr/CODE_OF_CONDUCT.md) | [Güvenlik](tr/SECURITY.md) |
 | Tiếng Việt | `vi` | [README](vi/README.md) | [CONTRIBUTING](vi/CONTRIBUTING.md) | [Quy tắc ứng xử](vi/CODE_OF_CONDUCT.md) | [Bảo mật](vi/SECURITY.md) |
 | Italiano | `it` | [README](it/README.md) | [CONTRIBUTING](it/CONTRIBUTING.md) | [Codice di Condotta](it/CODE_OF_CONDUCT.md) | [Sicurezza](it/SECURITY.md) |
+| Čeština | `cs` | [README](cs/README.md) | [CONTRIBUTING](cs/CONTRIBUTING.md) | [Kodex chování](cs/CODE_OF_CONDUCT.md) | [Bezpečnost](cs/SECURITY.md) |
 
 ## Contributing a translation
 
