@@ -147,6 +147,20 @@ def format_epoch_ms_for_llm(epoch_ms: float) -> str:
     return f"{utc:%Y-%m-%d %H:%M:%S} UTC ({readable})"
 
 
+def format_day_for_llm(epoch_ms: float, *, calendar_date: bool = False) -> str:
+    """``2026-09-25``: the day a moment fell on, in the user's time zone.
+
+    Short on purpose: it goes on status lines repeated for every record and
+    every record linked to one. A ``calendar_date`` (a due date) has no time
+    of day; it is stored as midnight UTC and shown as that same day, since in
+    a zone west of UTC that midnight is the evening before.
+    """
+    moment = datetime.fromtimestamp(epoch_ms / 1000, tz=timezone.utc)
+    if not calendar_date:
+        moment = moment.astimezone(_llm_zone())
+    return f"{moment:%Y-%m-%d}"
+
+
 def get_epoch_timestamp_in_ms() -> int:
     now = datetime.now(timezone.utc).timestamp()
     return int(now * 1000)

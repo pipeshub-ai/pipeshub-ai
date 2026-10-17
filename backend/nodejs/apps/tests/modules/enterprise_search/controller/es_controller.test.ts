@@ -4744,6 +4744,40 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('search (deep paths)', () => {
+    it('saves a record without the linked records read for this user, and returns them to this user', async () => {
+      // A saved search can be shared, and its records are returned as stored;
+      // linkedRecords were filtered for the user who ran it.
+      const handler = search(createMockAppConfig())
+      const linked = [{ relation: 'linksTo', recordId: 'pr-1', recordName: 'Fix', recordType: 'PULL_REQUEST', connector: 'GITHUB' }]
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 200,
+        data: {
+          searchResults: [],
+          records: [{ _key: 'rec1', recordName: 'Thread', statusSummary: 'Open', linkedRecords: linked }],
+        },
+      } as any)
+      let savedSearch: any
+      sinon.stub(EnterpriseSemanticSearch.prototype, 'save').callsFake(async function (this: any) {
+        savedSearch = this
+        return this
+      })
+
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0])).to.be.false
+      const stored = JSON.parse(savedSearch.records.get('rec1'))
+      expect(stored).to.deep.equal({ _key: 'rec1', recordName: 'Thread', statusSummary: 'Open' })
+      const body = res.json.firstCall.args[0]
+      expect(body.searchResponse.records[0].linkedRecords).to.deep.equal(linked)
+    })
+
     it('should handle search with records array in response', async () => {
       const handler = search(createMockAppConfig())
 
