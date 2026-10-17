@@ -70,7 +70,7 @@ export function buildDesktopDeepLink(
 /**
  * Integrations whose OAuth the backend starts (connectors, toolsets, MCP servers). The
  * backend prefixes their `state` with the same marker when the desktop app asked for the
- * authorize URL (`app/utils/desktop_oauth_state.py`), so {@link isDesktopOAuthState} works
+ * authorize URL (`app/utils/desktop_state.py`), so {@link isDesktopOAuthState} works
  * on their callback pages too.
  */
 export type DesktopIntegrationFamily = 'connector' | 'toolset' | 'mcp';
