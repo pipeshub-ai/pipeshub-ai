@@ -102,7 +102,7 @@ if built:
     model, _config = built
     result = await model.decide("I was charged twice.", [
         ChoiceQuestion(name="team", instructions="Which team should handle this?", options=[
-            DecisionOption(value="billing", description="Payments and refunds"),
+            DecisionOption(value="payments", description="Payments and refunds"),
             DecisionOption(value="technical", description="Problems using the product"),
         ]),
     ])

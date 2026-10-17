@@ -34,7 +34,7 @@ QUESTIONS = [
         name="team",
         instructions="Which team should handle this?",
         options=[
-            DecisionOption(value="billing", description="Payments and refunds"),
+            DecisionOption(value="payments", description="Payments and refunds"),
             DecisionOption(value="technical"),
         ],
     ),
@@ -69,9 +69,9 @@ OPENAI_RESPONSE = {
         {
             "type": "choice",
             "name": "team",
-            "choice": "billing",
+            "choice": "payments",
             "probabilities": [
-                {"value": "billing", "probability": 0.9},
+                {"value": "payments", "probability": 0.9},
                 {"value": "technical", "probability": 0.1},
             ],
             "confidence": 0.87,
@@ -108,8 +108,8 @@ async def test_openai_sends_the_decisions_format_and_parses_answers() -> None:
     assert body["questions"][2]["levels"][1] == {"label": "High", "description": "Fully blocked"}
 
     assert result.answers["urgent"].probability == 0.8
-    assert result.answers["team"].choice == "billing"
-    assert result.answers["team"].probabilities == {"billing": 0.9, "technical": 0.1}
+    assert result.answers["team"].choice == "payments"
+    assert result.answers["team"].probabilities == {"payments": 0.9, "technical": 0.1}
     assert result.answers["severity"].score == 0.3
     assert result.answers["severity"].probabilities == {"Low": 0.7, "High": 0.3}
 
@@ -163,7 +163,7 @@ async def test_typesafe_sends_system_one_format_and_parses_answers() -> None:
         "model": "jev-1.13.0",
         "answers": {
             "urgent": {"type": "noul", "noul": 0.9},
-            "team": {"type": "choice", "choice": "technical", "probabilities": {"billing": 0.2, "technical": 0.8}, "confidence": 0.6},
+            "team": {"type": "choice", "choice": "technical", "probabilities": {"payments": 0.2, "technical": 0.8}, "confidence": 0.6},
             "severity": {"type": "score", "score": 1.0, "legend": {"0": "Low", "1": "High"}, "probabilities": {"0": 0.0, "1": 1.0}, "confidence": 1.0},
         },
         "usage": {"input_tokens": 120, "output_tokens": 9},
@@ -178,7 +178,7 @@ async def test_typesafe_sends_system_one_format_and_parses_answers() -> None:
     body = json.loads(request.content)
     assert body["state"] == {"ticket": "payouts failing"}
     assert body["questions"]["urgent"] == {"type": "noul", "instructions": "Is this urgent?"}
-    assert body["questions"]["team"]["criteria"] == {"billing": "Payments and refunds", "technical": None}
+    assert body["questions"]["team"]["criteria"] == {"payments": "Payments and refunds", "technical": None}
     assert body["questions"]["severity"]["criteria"] == ["Low", "High: Fully blocked"]
 
     assert result.model == "jev-1.13.0"
