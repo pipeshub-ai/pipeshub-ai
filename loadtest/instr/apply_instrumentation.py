@@ -109,52 +109,86 @@ def patch_chatbot(src: str, path: str) -> str:
     return src
 
 
+# (phase, alternatives): the first alternative whose anchor appears once in the
+# function is applied, so one patcher serves several builds. A phase with no
+# matching anchor is skipped with a warning and its time folds into the next
+# mark; only the terminal mark the phase table counts turns by is mandatory.
 BRIDGE_EDITS = [
-    (
+    ("connector_probe", [(
         "        blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)\n",
         '        _phase_mark("connector_probe")\n'
         "        blob_store = BlobStorage(logger=log, config_service=config_service, graph_provider=graph_provider)\n",
-    ),
-    (
-        '        filters = dict(query_info.get("filters") or {})\n',
-        '        _phase_mark("attachments")\n'
-        '        filters = dict(query_info.get("filters") or {})\n',
-    ),
-    (
+    )]),
+    ("attachments", [
+        (
+            '        query_info = {**query_info, "attachments": attachments, "previous_conversations": previous_conversations}\n',
+            '        query_info = {**query_info, "attachments": attachments, "previous_conversations": previous_conversations}\n'
+            '        _phase_mark("attachments")\n',
+        ),
+        (
+            '        filters = dict(query_info.get("filters") or {})\n',
+            '        _phase_mark("attachments")\n'
+            '        filters = dict(query_info.get("filters") or {})\n',
+        ),
+    ]),
+    ("connector_prefetch", [(
+        "                demo_exclusions_for_run(graph_provider, config_service, user_info, log),\n            )\n        )\n",
+        "                demo_exclusions_for_run(graph_provider, config_service, user_info, log),\n            )\n        )\n"
+        '        _phase_mark("connector_prefetch")\n',
+    )]),
+    ("chat_state", [(
         '        chat_state["citation_ref_mapper"] = ref_mapper\n',
         '        chat_state["citation_ref_mapper"] = ref_mapper\n'
         '        _phase_mark("chat_state")\n',
-    ),
-    (
+    )]),
+    ("connector_prefetch_legacy", [(
         "                log=log,\n            )\n    except Exception as exc:\n",
         "                log=log,\n            )\n"
         '        _phase_mark("connector_prefetch")\n'
         "    except Exception as exc:\n",
-    ),
-    (
+    )]),
+    ("agent_create", [(
         "            prefetch_result = await prefetch_task if prefetch_task is not None else None\n",
         '            _phase_mark("agent_create")\n'
         "            prefetch_result = await prefetch_task if prefetch_task is not None else None\n"
         '            _phase_mark("retrieval_wait")\n',
-    ),
-    (
+    )]),
+    ("llm_stream", [(
         "                result = agent.last_stream_result\n",
         "                result = agent.last_stream_result\n"
         '                _phase_mark("llm_stream")\n',
-    ),
-    (
-        "                    streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,\n                )\n",
-        "                    streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,\n                )\n"
-        '                _phase_mark("finalize")\n',
-    ),
+    )]),
+    ("finalize", [
+        (
+            "                    agent_cancelled=result.cancelled,\n                )\n",
+            "                    agent_cancelled=result.cancelled,\n                )\n"
+            '                _phase_mark("finalize")\n',
+        ),
+        (
+            "                    streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,\n                )\n",
+            "                    streamed_answer=streamer.streamed_answer, reasoning_turns=streamer.reasoning_turns,\n                )\n"
+            '                _phase_mark("finalize")\n',
+        ),
+    ]),
 ]
+REQUIRED_PHASES = {"llm_stream"}
 
 
 def patch_bridge(src: str, path: str) -> str:
     src = _insert_shim(src, path, "from __future__ import annotations\n")
-    for find, repl in BRIDGE_EDITS:
-        region = _slice(src, path, "async def run_chat_stream(", "__all__ = ")
-        src = _sub(src, path, region, find, repl)
+    for phase, alternatives in BRIDGE_EDITS:
+        if phase.endswith("_legacy") and f'{MARKER}("{phase[:-len("_legacy")]}")' in src:
+            continue
+        lo, hi = _slice(src, path, "async def run_chat_stream(", "__all__ = ")
+        body = src[lo:hi]
+        hit = next(((f, r) for f, r in alternatives if body.count(f) == 1), None)
+        if hit is None:
+            if phase in REQUIRED_PHASES:
+                raise PatchError(f"{path}: no anchor for required phase {phase!r} in run_chat_stream")
+            if not phase.endswith("_legacy"):
+                print(f"WARN  {path}: no anchor for phase {phase!r} in this build, skipped", file=sys.stderr)
+            continue
+        src = _sub(src, path, (lo, hi), *hit)
     return src
 
 

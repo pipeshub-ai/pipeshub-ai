@@ -14,6 +14,10 @@
 # Both are monotonic counters, so CPU% over an interval is exact rather than
 # sampled, and a burst between samples still shows up in the total.
 #
+# Container memory is memory.current minus inactive_file, the figure `docker
+# stats` shows. Raw memory.current counts reclaimable page cache, so a datastore
+# that streams files looks like it is leaking.
+#
 # Uvicorn workers are multiprocessing.spawn children, so their argv is
 # "spawn_main(...)" and pgrep -f app.query_main only ever matches the idle
 # master -- they are found by parent PID instead.
@@ -22,25 +26,46 @@ set -uo pipefail
 OUTDIR=${1:?usage: resource_sampler.sh <outdir> <seconds> [interval]}
 SECS=${2:-300}
 INTERVAL=${3:-2}
-CONTAINER=${PIPESHUB_CONTAINER:-pipeshub-ai}
 CSV="$OUTDIR/resources.csv"
+NOTES="$OUTDIR/resources.log"
 mkdir -p "$OUTDIR"
+# shellcheck source=_common.sh
+. "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_common.sh"
+detect_docker || exit 1
+: > "$NOTES"
 
-SUDO=""
-[ "$(id -u)" -ne 0 ] && command -v sudo >/dev/null 2>&1 && SUDO="sudo"
-DOCKER="$SUDO docker"
-
+# Default: every running container of the app container's compose project, so a
+# stack on Kafka, etcd or OpenSearch is sampled without anyone listing it.
+if [ -z "${PIPESHUB_STACK_CONTAINERS:-}" ]; then
+    proj=$($DOCKER inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$CONTAINER" 2>/dev/null)
+    if [ -n "$proj" ]; then
+        PIPESHUB_STACK_CONTAINERS=$($DOCKER ps --filter "label=com.docker.compose.project=$proj" \
+            --format '{{.Names}}' 2>/dev/null | tr -d '\r' | sort | tr '\n' ' ')
+    fi
+fi
 CONTAINERS="${PIPESHUB_STACK_CONTAINERS:-$CONTAINER mongodb neo4j qdrant redis}"
 CLK=$(getconf CLK_TCK 2>/dev/null || echo 100)
 
-# container id -> cgroup dir
+# container -> host cgroup dir, or "exec" when the host cannot read it (Docker
+# Desktop keeps cgroups inside its VM). Under cgroup v2 a container sees its own
+# cgroup at /sys/fs/cgroup, so reading from inside gives the same counters.
 declare -A CG
 for c in $CONTAINERS; do
     cid=$($DOCKER inspect "$c" --format '{{.Id}}' 2>/dev/null) || continue
     [ -n "$cid" ] || continue
-    d="/sys/fs/cgroup/system.slice/docker-${cid}.scope"
-    [ -r "$d/cpu.stat" ] || d=$($SUDO find /sys/fs/cgroup -maxdepth 4 -type d -name "*${cid}*" 2>/dev/null | head -1)
-    [ -n "$d" ] && CG[$c]="$d"
+    d=""
+    for cand in "/sys/fs/cgroup/system.slice/docker-${cid}.scope" "/sys/fs/cgroup/docker/${cid}"; do
+        [ -r "$cand/cpu.stat" ] && { d=$cand; break; }
+    done
+    if [ -n "$d" ]; then
+        CG[$c]=$d
+    elif $DOCKER exec "$c" cat /sys/fs/cgroup/cpu.stat >/dev/null 2>&1; then
+        CG[$c]=exec
+    else
+        echo "skipped container $c: cgroup counters not readable from host or inside" >> "$NOTES"
+        continue
+    fi
+    echo "container $c: ${CG[$c]}" >> "$NOTES"
 done
 
 # tracked processes inside the app container: name -> pid list
@@ -79,51 +104,63 @@ read_procs() {
       done' 2>/dev/null | tr -d '\r'
 }
 
+# "<usage_usec> <memory.current> <inactive_file>" from a cpu.stat, memory.current
+# and memory.stat concatenated in that order.
+parse_cg() {
+    awk '/^usage_usec/{u=$2} /^inactive_file/{i=$2} NF==1 && $1 ~ /^[0-9]+$/{m=$1}
+         END{if (u != "") print u, (m == "" ? 0 : m), (i == "" ? 0 : i)}'
+}
+
 read_cg() {
-    local c d
+    local c d line
     for c in "${!CG[@]}"; do
         d=${CG[$c]}
-        u=$($SUDO awk '/^usage_usec/{print $2}' "$d/cpu.stat" 2>/dev/null)
-        m=$($SUDO cat "$d/memory.current" 2>/dev/null)
-        [ -n "$u" ] && echo "$c $u ${m:-0}"
+        if [ "$d" = exec ]; then
+            line=$($DOCKER exec "$c" cat /sys/fs/cgroup/cpu.stat /sys/fs/cgroup/memory.current \
+                /sys/fs/cgroup/memory.stat 2>/dev/null | tr -d '\r' | parse_cg)
+        else
+            line=$(cat "$d/cpu.stat" "$d/memory.current" "$d/memory.stat" 2>/dev/null | parse_cg)
+        fi
+        [ -n "$line" ] && echo "$c $line"
     done
 }
 
 echo "ts,scope,name,cpu_pct,rss_mb" > "$CSV"
 
-declare -A P0 R0 C0 M0
-while read -r pid ticks rss; do P0[$pid]=$ticks; R0[$pid]=$rss; done < <(read_procs)
-while read -r c usec mem; do C0[$c]=$usec; M0[$c]=$mem; done < <(read_cg)
+declare -A P0 C0
+while read -r pid ticks _; do P0[$pid]=$ticks; done < <(read_procs)
+while read -r c usec _; do C0[$c]=$usec; done < <(read_cg)
 T0=$(date +%s.%N)
 
 END=$(( $(date +%s) + SECS ))
 while [ "$(date +%s)" -lt "$END" ]; do
     sleep "$INTERVAL"
     NOW=$(date +%s); T1=$(date +%s.%N)
-    DT=$(echo "$T1 - $T0" | bc)
-    [ "$(echo "$DT <= 0" | bc)" = "1" ] && continue
+    DT=$(awk -v a="$T0" -v b="$T1" 'BEGIN{print b - a}')
+    awk -v d="$DT" 'BEGIN{exit !(d <= 0)}' && continue
 
     while read -r pid ticks rss; do
         a=${P0[$pid]:-}
-        if [ -n "$a" ]; then
-            pct=$(echo "scale=2; ($ticks - $a) / ($CLK * $DT) * 100" | bc)
-            mb=$(echo "scale=1; $rss * 4096 / 1048576" | bc)
+        if [ -n "$a" ] && [ "$ticks" -ge "$a" ]; then
             name=$(echo "$PROCSPEC" | awk -F: -v P="$pid" '{n=$1; for(i=2;i<=NF;i++){split($i,a," "); for(j in a) if(a[j]==P) print n}}' | head -1)
-            echo "$NOW,process,${name:-pid$pid}:$pid,$pct,$mb" >> "$CSV"
+            awk -v t="$NOW" -v n="${name:-pid$pid}:$pid" -v d="$ticks" -v a="$a" -v clk="$CLK" -v dt="$DT" -v r="$rss" \
+                'BEGIN{printf "%s,process,%s,%.2f,%.1f\n", t, n, (d - a) / (clk * dt) * 100, r * 4096 / 1048576}' >> "$CSV"
         fi
-        P0[$pid]=$ticks; R0[$pid]=$rss
+        P0[$pid]=$ticks
     done < <(read_procs)
 
-    while read -r c usec mem; do
+    while read -r c usec mem inactive; do
         a=${C0[$c]:-}
-        if [ -n "$a" ]; then
-            pct=$(echo "scale=2; ($usec - $a) / (1000000 * $DT) * 100" | bc)
-            mb=$(echo "scale=1; $mem / 1048576" | bc)
-            echo "$NOW,container,$c,$pct,$mb" >> "$CSV"
+        # A counter that went backwards means the container restarted (an OOM
+        # kill, say); skip that interval rather than plot a negative CPU.
+        if [ -n "$a" ] && [ "$usec" -ge "$a" ]; then
+            awk -v t="$NOW" -v n="$c" -v u="$usec" -v a="$a" -v dt="$DT" -v m="$mem" -v i="$inactive" \
+                'BEGIN{used = m - i; if (used < 0) used = m
+                       printf "%s,container,%s,%.2f,%.1f\n", t, n, (u - a) / (1000000 * dt) * 100, used / 1048576}' >> "$CSV"
         fi
-        C0[$c]=$usec; M0[$c]=$mem
+        C0[$c]=$usec
     done < <(read_cg)
 
-    echo "$NOW,host,loadavg,$(cut -d' ' -f1 /proc/loadavg),0" >> "$CSV"
+    echo "$NOW,host,loadavg,$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || echo 0),0" >> "$CSV"
     T0=$T1
 done

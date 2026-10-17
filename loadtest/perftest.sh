@@ -71,10 +71,10 @@ say() { echo "$@" | tee -a "$REPORT"; }
 # --- guard: an expired token turns every request into a 401, which looks
 # --- exactly like a throughput collapse. Fail fast instead.
 if [ "$USERS" -gt 0 ]; then
-  probe=$(curl -s -o /dev/null -w '%{http_code}' -X POST "$HOST/api/v1/conversations/stream" \
-    -H "Authorization: Bearer ${TOKENS[0]}" -H "Content-Type: application/json" \
-    -H "Accept: text/event-stream" -d "{\"query\":\"ping\",\"chatMode\":\"internal_search\"}" \
-    --max-time 60 2>/dev/null) || true
+  # A read, not a chat turn: a probe turn outlives curl's timeout and completes
+  # inside the measured window, adding one phantom turn to every trial.
+  probe=$(curl -s -o /dev/null -w '%{http_code}' "$HOST/api/v1/conversations/" \
+    -H "Authorization: Bearer ${TOKENS[0]}" --max-time 30 2>/dev/null) || true
   # curl already prints 000 when it never got a response; appending a fallback
   # to the same capture produced "HTTP 000000".
   [ -n "$probe" ] || probe=000
@@ -119,17 +119,30 @@ say "== started $(date -u +%H:%M:%SZ)"
 START=$(log_mark)
 WALL_START=$(date -u +%s)
 
-# --- CPU profile (py-spy attaches to the live process; --gil samples only
-# --- while Python is actually executing, so idle threads never appear)
-if command -v py-spy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/py-spy" ]; then
+# --- profile (py-spy attaches to the live process)
+#   cpu  --gil: samples only while Python is executing, so idle threads never appear
+#   wall --idle: every thread all the time, including threads blocked in sync I/O.
+#        Awaits still show as the event loop's select(), not as the coroutine.
+# Two recorders: the SVG is py-spy's interactive one; speedscope keeps the timeline
+# and per-thread split, and cpu.raw for top_functions.py is folded from it.
+FLAME=${PIPESHUB_FLAME:-cpu}
+case "$FLAME" in
+  cpu)  PYSPY_MODE=(--gil) ;;
+  wall) PYSPY_MODE=(--idle) ;;
+  off)  ;;
+  *) say "ABORT: PIPESHUB_FLAME must be cpu, wall or off, got '$FLAME'."; exit 1 ;;
+esac
+if [ "$FLAME" = off ]; then
+  :
+elif command -v py-spy >/dev/null 2>&1 || [ -x "$HOME/.local/bin/py-spy" ]; then
   PYSPY=$(command -v py-spy || echo "$HOME/.local/bin/py-spy")
   QPID=$(query_pid 2>/dev/null || true)
   if [ -n "$QPID" ]; then
     detect_sudo
-    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses --gil --nonblocking \
-      -d "$SECS" -r 100 -f flamegraph -o "$OUTDIR/cpu.svg" >/dev/null 2>&1 &
-    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses --gil --nonblocking \
-      -d "$SECS" -r 100 -f raw -o "$OUTDIR/cpu.raw" >/dev/null 2>&1 &
+    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses "${PYSPY_MODE[@]}" --nonblocking \
+      -d "$SECS" -r 100 -f flamegraph -o "$OUTDIR/$FLAME.svg" >/dev/null 2>&1 &
+    $SUDO "$PYSPY" record --pid "$QPID" --subprocesses "${PYSPY_MODE[@]}" --nonblocking \
+      -d "$SECS" -r 100 -f speedscope -o "$OUTDIR/$FLAME.speedscope.json" >/dev/null 2>&1 &
   else
     say "   (py-spy: no query process found — skipping CPU profile)"
   fi
@@ -164,16 +177,17 @@ MEM_PID=$!
 # errors.
 TURN_MAX_SECONDS=${PIPESHUB_TURN_MAX_SECONDS:-${PIPESHUB_MAX_TIME:-300}}
 
-# Query order per user, drawn from a PRNG seeded on (label, user index): random
+# Query order per user, drawn from a PRNG seeded on (seed, user index): random
 # across users but reproducible, so two arms of an A/B see the SAME sequence
-# rather than merely the same distribution.
+# rather than merely the same distribution. The seed defaults to the label, so
+# arms with different labels need PIPESHUB_SEED set alike (qprof.sh does this).
 mapfile -t USER_SEQ < <("$PYTHON" -c '
 import random, sys
 label, users, nq, turns = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), int(sys.argv[4])
 for u in range(1, users + 1):
     rng = random.Random(f"{label}:{u}")
     print(" ".join(str(rng.randrange(nq)) for _ in range(turns)))
-' "$LABEL" "$USERS" "${#BODIES[@]}" 500)
+' "${PIPESHUB_SEED:-$LABEL}" "$USERS" "${#BODIES[@]}" 500)
 
 # --- load: each user asks, reads the whole answer, thinks, repeats
 THINK=${PIPESHUB_THINK_TIME:-3}
@@ -249,11 +263,24 @@ fi
 
 say ""
 say "==================== CPU (top functions, real work only) ===================="
-if [ -s "$OUTDIR/cpu.raw" ]; then
-  "$PYTHON" "$HERE/instr/top_functions.py" "$OUTDIR/cpu.raw" | tee -a "$REPORT"
-  say "   flame graph: $OUTDIR/cpu.svg"
-else
+# py-spy writes when its duration ends, which can trail the load loop by a beat.
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  [ "$FLAME" = off ] || [ -s "$OUTDIR/$FLAME.speedscope.json" ] && break
+  sleep 2
+done
+if [ "$FLAME" = off ]; then
+  say "   (profiling off)"
+elif [ ! -s "$OUTDIR/$FLAME.speedscope.json" ]; then
   say "   (no profile captured)"
+else
+  if [ "$FLAME" = cpu ]; then
+    "$PYTHON" "$HERE/instr/speedscope_to_raw.py" "$OUTDIR/cpu.speedscope.json" "$OUTDIR/cpu.raw" 100 \
+      && "$PYTHON" "$HERE/instr/top_functions.py" "$OUTDIR/cpu.raw" | tee -a "$REPORT"
+  else
+    say "   wall-clock profile: time is split across threads, waiting included — read the flame graph"
+  fi
+  say "   flame graph: $OUTDIR/$FLAME.svg"
+  say "   speedscope : $OUTDIR/$FLAME.speedscope.json  (drop it on https://www.speedscope.app)"
 fi
 
 say ""
@@ -266,7 +293,12 @@ fi
 
 say "==================== RESOURCES (CPU %, RAM MB) ===================="
 if [ -s "$OUTDIR/resources.csv" ]; then
-    "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" 2>/dev/null | tee -a "$REPORT"
+    "$PYTHON" "$HERE/instr/agg_resources.py" "$OUTDIR/resources.csv" "$(nproc)" \
+      --json "$OUTDIR/resources.json" 2>/dev/null | tee -a "$REPORT"
+    grep -a '^skipped' "$OUTDIR/resources.log" 2>/dev/null | sed 's/^/  /' | tee -a "$REPORT"
+    "$PYTHON" "$HERE/instr/plot_resources.py" "$OUTDIR/resources.csv" "$OUTDIR/resources.svg" \
+      "$LABEL — container memory" 2>/dev/null \
+      && say "   container memory graph: $OUTDIR/resources.svg"
 else
     say "  (resource sampler produced no data)"
 fi
@@ -300,7 +332,7 @@ fi
 # re-parsing the human report. PIPESHUB_ARM/TRIAL are set by the matrix driver.
 "$PYTHON" "$HERE/instr/make_summary.py" \
   --outdir "$OUTDIR" --label "$LABEL" --users "$USERS" --secs "$SECS" \
-  --workers "${WORKERS:-}" --arm "${PIPESHUB_ARM:-}" --trial "${PIPESHUB_TRIAL:-}" \
+  --workers "${WORKERS:-${PIPESHUB_WORKERS:-}}" --arm "${PIPESHUB_ARM:-}" --trial "${PIPESHUB_TRIAL:-}" \
   --wall "$WALL_SECS" --queries "${#QUERIES[@]}" 2>/dev/null \
   && say "   summary: $OUTDIR/summary.json"
 

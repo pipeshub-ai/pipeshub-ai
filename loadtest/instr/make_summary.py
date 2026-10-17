@@ -66,6 +66,10 @@ def main() -> int:
         "mem_peak_mb": max(mem) if mem else None,
         "mem_growth_mb": round(max(mem) - mem[0], 1) if mem else None,
     }
+    try:
+        summary["resources"] = json.loads((out / "resources.json").read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        summary["resources"] = None
     turns, samples = summary["turns"], summary["py_samples"]
     summary["py_samples_per_turn"] = round(samples / turns, 1) if turns and samples else None
 
