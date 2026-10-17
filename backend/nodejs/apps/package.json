@@ -112,6 +112,9 @@
   "overrides": {
     "bn.js": "4.12.3",
     "qs": "6.16.0",
-    "fast-xml-parser": "5.7.0"
+    "fast-xml-parser": "5.7.0",
+    "@pipeshub-ai/mcp": {
+      "@modelcontextprotocol/sdk": "1.31.0"
+    }
   }
 }
