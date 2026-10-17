@@ -160,6 +160,12 @@ NODE_ADMIN_ROUTES: tuple[AdminRoute, ...] = (
     AdminRoute("POST", "/api/v1/service-tokens", admin="invalid"),
     AdminRoute("GET", "/api/v1/service-tokens/scopes"),
     AdminRoute("DELETE", "/api/v1/service-tokens/:tokenId", admin="invalid"),
+    # No rows for /api/v1/service-account-delegations, deliberately. Letting a
+    # service account act as a named person is an Enterprise capability; this
+    # build mounts a stub that answers the capability probe and 501s the rest
+    # (oauth_provider/routes/delegation.routes.ts), with no admin check to
+    # test. The Enterprise overlay carries the admin-gated router, so the rows
+    # belong in whatever inventory covers that build, not this one.
     # tokens_manager/routes/connectors.routes.ts
     _no_admin("POST", "/api/v1/connectors/vector-store/cleanup",
               "drops and recreates the org's vector collection"),

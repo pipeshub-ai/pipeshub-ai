@@ -138,6 +138,11 @@ export class OIDCProviderController {
         ...(deviceEnabled
           ? ['urn:ietf:params:oauth:grant-type:device_code']
           : []),
+        // Service-account delegation. Advertised unconditionally because it
+        // needs no configuration to be safe: a service account with an empty
+        // allow-list can act as nobody, so the grant exists but grants
+        // nothing until an administrator names someone.
+        'urn:ietf:params:oauth:grant-type:token-exchange',
       ],
       token_endpoint_auth_methods_supported: [
         'none',
