@@ -1,7 +1,6 @@
 """Calls to the web services a provider speaks JSON with: hosted APIs and admin-run servers."""
 
 import hashlib
-from functools import lru_cache
 from typing import Any
 
 import httpx
@@ -17,7 +16,6 @@ from app.web.errors import (
 )
 
 
-@lru_cache(maxsize=256)
 def fingerprint(secret: str) -> str:
     """A short, one-way tag for a credential, to tell keys apart without keeping them."""
     # A key derivation function, not a bare hash: the tag must not make a short key easy to guess.

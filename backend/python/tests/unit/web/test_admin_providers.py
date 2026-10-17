@@ -178,12 +178,23 @@ class TestFirecrawlFetcher:
             await FirecrawlFetcher({"apiKey": "k"}).fetch("https://a.example/", deadline())
 
 
-def crawled(**result: object) -> Handler:
-    """A ``/crawl`` answer for one page, shaped like Crawl4AI's ``CrawlResult``."""
+def crawled(version: str = "0.9.4", **result: object) -> Handler:
+    """A Crawl4AI server: ``/health`` reports ``version``, ``/crawl`` answers one ``CrawlResult``."""
     page = {"url": "https://a.example/", "success": True, "status_code": 200,
             "markdown": {"raw_markdown": "## The Title\n\nAll of it.", "fit_markdown": "## The Title\n\nBody text."},
             "metadata": {}, **result}
-    return lambda r: httpx.Response(200, json={"success": True, "results": [page]})
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/health":
+            return httpx.Response(200, json={"status": "ok", "version": version})
+        return httpx.Response(200, json={"success": True, "results": [page]})
+
+    return answer
+
+
+@pytest.fixture(autouse=True)
+def unverified_servers(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("app.web.fetch.crawl4ai_server._VERIFIED", set())
 
 
 class TestCrawl4AI:
@@ -192,9 +203,32 @@ class TestCrawl4AI:
         page = await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235", "apiKey": "t"}).fetch("https://a.example/", deadline())
         assert page.title == "The Title"
         assert "Body text." in page.blocks[0].content
-        assert server.requests[0].url.path == "/crawl"
-        assert body(server.requests[0])["urls"] == ["https://a.example/"]
-        assert server.requests[0].headers["Authorization"] == "Bearer t"
+        assert [r.url.path for r in server.requests] == ["/health", "/crawl"]
+        assert body(server.requests[1])["urls"] == ["https://a.example/"]
+        assert server.requests[1].headers["Authorization"] == "Bearer t"
+
+    async def test_an_unsafe_version_is_never_sent_a_page(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(version="0.9.3")
+        with pytest.raises(NotConfigured):
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
+        assert [r.url.path for r in server.requests] == ["/health"]
+
+    async def test_the_version_is_checked_once_per_server(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled()
+        reader = Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"})
+        await reader.fetch("https://a.example/", deadline())
+        await reader.fetch("https://a.example/", deadline())
+        assert [r.url.path for r in server.requests] == ["/health", "/crawl", "/crawl"]
+
+    async def test_a_redirect_is_judged_by_the_page_it_landed_on(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(status_code=302, redirected_status_code=200, redirected_url="https://a.example/moved")
+        page = await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
+        assert page.url == "https://a.example/moved"
+
+    async def test_a_redirect_onto_an_internal_address_is_unsafe(self, server: Server, public_hosts: list[str]) -> None:
+        server.handler = crawled(status_code=302, redirected_status_code=200, redirected_url="http://metadata.internal/")
+        with pytest.raises(UnsafeUrl):
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
 
     async def test_the_page_title_and_landing_address_are_used(self, server: Server, public_hosts: list[str]) -> None:
         server.handler = crawled(redirected_url="https://a.example/moved", metadata={"title": "Moved page"})
@@ -220,10 +254,11 @@ class TestCrawl4AI:
             await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
 
     async def test_a_failed_read(self, server: Server, public_hosts: list[str]) -> None:
-        server.handler = crawled(success=False, error_message="navigation failed")
+        server.handler = crawled(success=False, error_message="navigation failed for https://a.example/?token=s3cret")
         with pytest.raises(UpstreamError) as info:
-            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/", deadline())
-        assert "navigation failed" in info.value.message
+            await Crawl4AIServerFetcher({"baseUrl": "http://crawl4ai:11235"}).fetch("https://a.example/?token=s3cret", deadline())
+        assert "could not read" in info.value.message
+        assert "s3cret" not in info.value.message
 
     async def test_an_internal_url_is_never_sent(self, server: Server, public_hosts: list[str]) -> None:
         with pytest.raises(UnsafeUrl):

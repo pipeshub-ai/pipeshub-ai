@@ -25,8 +25,12 @@ import {
 
 /** After the default is deleted the server promotes the next search provider; name whichever it chose. */
 async function newDefaultNotice(): Promise<string> {
-  const { providers } = await WebSearchApi.getConfig();
-  return `${defaultProviderLabel(providers)} is now the default web search provider.`;
+  try {
+    return `${defaultProviderLabel(await WebSearchApi.getProviders())} is now the default web search provider.`;
+  } catch {
+    // Unknown is better than wrong: an unread setting must not be reported as DuckDuckGo.
+    return 'The next search provider you added is now the default, or DuckDuckGo if there is none.';
+  }
 }
 
 // ============================================================
@@ -426,7 +430,7 @@ export default function WebSearchPage() {
             {!isCheckingUsage && deleteUsageAgents.length === 0 && (
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {deleteTarget?.isDefault
-                  ? 'This provider is currently the default. Deleting it will reset the default to DuckDuckGo.'
+                  ? 'This provider is currently the default. Deleting it makes the next search provider you added the default, or DuckDuckGo if there is none.'
                   : 'This will permanently remove the provider configuration. You can reconfigure it later.'}
               </Text>
             )}

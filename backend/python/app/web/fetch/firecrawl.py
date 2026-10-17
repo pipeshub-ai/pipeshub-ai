@@ -34,8 +34,8 @@ class FirecrawlFetcher:
         page = data.get("data") if isinstance(data.get("data"), dict) else {}
         metadata = page.get("metadata") if isinstance(page.get("metadata"), dict) else {}
         final = str(metadata.get("url") or metadata.get("sourceURL") or url)
+        await ensure_final_allowed(url, final, allow_hop)
         status = metadata.get("statusCode")
         if isinstance(status, int):
             check_page_status(FetchedBody(final, status, None, b""))
-        await ensure_final_allowed(url, final, allow_hop)
         return markdown_page(final, str(page.get("markdown") or ""), str(metadata.get("title") or ""), self.id)

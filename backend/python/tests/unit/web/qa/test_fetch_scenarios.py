@@ -100,7 +100,8 @@ class TestFallbackReaders:
         await agent.fetch("http://guarded.test/doc")
         call = await agent.fetch("http://open.test/doc")
         assert "explains the topic" in call.text
-        assert len(lab.engines.requests_to("crawl4ai")) == 1  # only for the refusing page
+        reads = [r for r in lab.engines.requests_to("crawl4ai") if r.url.path == "/crawl"]
+        assert len(reads) == 1  # only for the refusing page
 
     async def test_a_script_built_page_is_rendered(self, lab: WebLab) -> None:  # WP-6-CSR-01
         lab.site.add("http://app.test/docs", Page(body=SHELL, rendered=RENDERED))

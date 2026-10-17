@@ -1,5 +1,6 @@
 """What the providers behind a JSON API have in common."""
 
+from functools import cached_property
 from typing import Any, ClassVar
 
 import httpx
@@ -19,7 +20,7 @@ class KeyedProvider:
         self._api_key = str(configuration.get("apiKey") or "")
         self._http = http
 
-    @property
+    @cached_property
     def cooldown_key(self) -> str:
         # A rejected or exhausted key is remembered per key, never the key itself.
         return f"{self.id}:{fingerprint(self._api_key)}"
