@@ -38,7 +38,6 @@ from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
 )
 from app.modules.retrieval.context.units import (
     neighbour_anchors,
-    unit_block_indices,
     without_orphan_neighbours,
 )
 from app.modules.retrieval.record_cut import (
@@ -112,6 +111,26 @@ def focused_read_chars() -> int:
     return DEFAULT_FOCUSED_READ_CHARS if value is None else value
 
 
+# Request state: every block a search of this request has shown. Kept apart
+# from `final_results`, which holds one entry per section (keyed by its first
+# block) and so never learns of a later search's other slice of it.
+SHOWN_BLOCKS_STATE_KEY = "targeted_shown_blocks"
+
+
+def rendered_block_indices(unit: Mapping[str, Any]) -> list[int]:
+    """The block indices a unit puts in front of the model.
+
+    A section, list or table renders its children only; its own
+    ``block_index`` names its first child, which a trimmed section may no
+    longer hold, so it does not count. A block renders itself.
+    """
+    children = group_child_results(dict(unit))
+    if children is None:
+        index = _int(unit.get("block_index"))
+        return [] if index is None else [index]
+    return [index for child in children if (index := _int(child.get("block_index"))) is not None]
+
+
 def shown_block_keys(units: Iterable[Mapping[str, Any]] | None) -> set[tuple[str, int]]:
     """``(virtual record id, block index)`` of every block ``units`` render."""
     keys: set[tuple[str, int]] = set()
@@ -121,8 +140,26 @@ def shown_block_keys(units: Iterable[Mapping[str, Any]] | None) -> set[tuple[str
         vrid = unit.get("virtual_record_id")
         if not vrid:
             continue
-        keys.update((vrid, index) for index in unit_block_indices(unit))
+        keys.update((vrid, index) for index in rendered_block_indices(unit))
     return keys
+
+
+def already_shown(state: Mapping[str, Any]) -> set[tuple[str, int]]:
+    """Blocks this request has already shown: the first-turn context and
+    every earlier search."""
+    shown = shown_block_keys(state.get("final_results"))
+    recorded = state.get(SHOWN_BLOCKS_STATE_KEY)
+    if isinstance(recorded, set):
+        shown |= recorded
+    return shown
+
+
+def remember_shown(state: dict[str, Any], units: Iterable[Mapping[str, Any]]) -> None:
+    """Add the blocks of ``units``, as rendered, to what this request has shown."""
+    recorded = state.get(SHOWN_BLOCKS_STATE_KEY)
+    if not isinstance(recorded, set):
+        recorded = state[SHOWN_BLOCKS_STATE_KEY] = set()
+    recorded |= shown_block_keys(units)
 
 
 @dataclass
@@ -208,7 +245,7 @@ def cap_passages_per_record(
             return index is not None and (_vrid, index) in already_shown
 
         def unit_is_repeat(unit: Unit, _vrid: Any = vrid) -> bool:  # noqa: ANN401
-            indices = list(unit_block_indices(unit))
+            indices = rendered_block_indices(unit)
             return bool(indices) and all((_vrid, index) in already_shown for index in indices)
 
         room = per_record
@@ -327,13 +364,17 @@ __all__ = [
     "FOCUSED_READ_CHARS_ENV_VAR",
     "PASSAGES_PER_RECORD_ENV_VAR",
     "SEARCH_MAX_CHARS_ENV_VAR",
+    "SHOWN_BLOCKS_STATE_KEY",
     "TARGETED_RETRIEVAL_ENV_VAR",
     "PassageCap",
+    "already_shown",
     "cap_passages_per_record",
     "focused_read_chars",
     "more_passages_list",
     "more_passages_note",
     "passages_per_record",
+    "remember_shown",
+    "rendered_block_indices",
     "search_max_chars",
     "shown_block_keys",
     "targeted_retrieval_enabled",

@@ -180,6 +180,24 @@ class TestSearchFindsWithLess:
         assert "you already received from an earlier search in this request" in third
 
 
+    @pytest.mark.asyncio
+    async def test_every_slice_of_a_thread_counts_as_shown_not_just_the_first(self, targeted: None) -> None:
+        records = {"t0": _record("t0", blocks=40)}
+        state = _state()
+        with patch.dict("os.environ", {"TARGETED_SEARCH_PASSAGES_PER_RECORD": "2"}):
+            first = await _search(state, records, [_thread_unit("t0", 40, matched=5)])
+            second = await _search(state, records, [_thread_unit("t0", 40, matched=30)])
+            third = await _search(state, records, [{
+                **_thread_unit("t0", 40, matched=30), "hit_block_scores": {30: 0.95, 20: 0.9},
+            }])
+        assert "t0 reply 5 " in first
+        assert "t0 reply 30 " in second
+        # The second search's slice is known as shown, though the thread's
+        # first slice already stood for it in final_results.
+        assert "t0 reply 20 " in third and "t0 reply 30 " not in third
+        assert "you already received from an earlier search in this request" in third
+
+
 class TestPrefetch:
     @staticmethod
     async def _prefetch(records: dict[str, Any], units: list[dict[str, Any]]) -> Any:  # noqa: ANN401
@@ -314,6 +332,15 @@ class TestFocusedRead:
         retrieval.search_with_filters.assert_not_called()
 
 
+    @pytest.mark.asyncio
+    async def test_a_query_is_ignored_under_the_full_read_policy(self, targeted: None) -> None:
+        retrieval = _ranking("pr", [151])
+        context = _fetch_context(retrieval, tool_state={"read_records_in_full": True})
+        text = await _fetch(context, [_long_record("pr")], query="docker image tag")
+        assert len(text) > 100_000
+        assert "Focused read" not in text
+
+
 class TestToolAndPrompt:
     @staticmethod
     def _tool() -> _FetchFullRecordTool:
@@ -331,6 +358,12 @@ class TestToolAndPrompt:
         assert [p.name for p in tool.parameters][-1] == "query"
         assert "pass `query` naming it" in tool.description
         assert "16,000 characters per record" in tool.description
+
+    def test_under_the_full_read_policy_the_tool_offers_no_query(self, targeted: None) -> None:
+        context = SimpleNamespace(tool_state={"read_records_in_full": True})
+        tool = _FetchFullRecordTool(CitationCollector(context), context)  # type: ignore[arg-type]
+        assert "query" not in [p.name for p in tool.parameters]
+        assert "`query`" not in tool.description
 
     @pytest.mark.asyncio
     async def test_off_a_query_argument_is_refused_as_before(self, off: None) -> None:

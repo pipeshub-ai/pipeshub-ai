@@ -40,12 +40,13 @@ from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
 from app.modules.retrieval.context.targeted import (
     PassageCap,
+    already_shown,
     cap_passages_per_record,
     more_passages_list,
     more_passages_note,
     passages_per_record,
+    remember_shown,
     search_max_chars,
-    shown_block_keys,
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import unit_children
@@ -951,7 +952,7 @@ async def _execute_search(
             passage_cap = cap_passages_per_record(
                 knowledge.ranked,
                 per_record,
-                already_shown=shown_block_keys(state.get("final_results")),
+                already_shown=already_shown(state),
             )
             knowledge.ranked = passage_cap.units
 
@@ -1096,6 +1097,8 @@ async def _execute_search(
 
         _note_provenance(state, final_results, shown_records, raw_pattern_records)
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
+        if targeted:
+            remember_shown(state, final_results)
         text = (
             result_frame.summary
             + rendered.text
