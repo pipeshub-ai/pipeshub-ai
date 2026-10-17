@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.services.ai_models.decision.clients import (
     AzureOpenAIDecisionModel,
@@ -13,6 +12,9 @@ from app.services.ai_models.decision.clients import (
     TypeSafeDecisionModel,
 )
 from app.utils.aimodels import require_allowed_endpoint, select_model_name
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
 
 
 class DecisionProvider(str, Enum):

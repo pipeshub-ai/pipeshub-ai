@@ -42,7 +42,7 @@ def _as_text(value: DecisionInput) -> str:
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
 
 
-def _float(value: Any) -> float | None:
+def _float(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
@@ -317,9 +317,9 @@ def _typesafe_answer(row: dict[str, Any], question: DecisionQuestion) -> Decisio
     return answer
 
 
-def _level_label(labels: list[str], index: Any) -> str:
+def _level_label(labels: list[str], index: object) -> str:
     try:
-        return labels[int(index)]
+        return labels[int(index)]  # type: ignore[call-overload]
     except (TypeError, ValueError, IndexError):
         return str(index)
 
@@ -333,7 +333,7 @@ def _fill_missing(
     return answers
 
 
-def _usage(raw: Any) -> DecisionUsage:
+def _usage(raw: object) -> DecisionUsage:
     if not isinstance(raw, dict):
         return DecisionUsage()
     return DecisionUsage(

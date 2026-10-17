@@ -24,7 +24,7 @@ def _field_names(provider_id: str) -> list[str]:
     return [field["name"] for field in provider["fields"]["decision"]]
 
 
-def test_registry_lists_decision_providers():
+def test_registry_lists_decision_providers() -> None:
     assert CAPABILITY_TO_MODEL_TYPE["decision"] == "decision"
     ids = {p["providerId"] for p in ai_model_registry.list_providers() if "decision" in p["capabilities"]}
     assert ids == {"openAI", "azureOpenAI", "typesafe"}
@@ -33,21 +33,21 @@ def test_registry_lists_decision_providers():
     assert "apiKey" in _field_names("openAI")
 
 
-async def test_discovery_lists_jev_for_typesafe_without_a_key():
+async def test_discovery_lists_jev_for_typesafe_without_a_key() -> None:
     strategy = discovery_registry.get("typesafe")
     raw, _ = await strategy.list_models({}, None, None)
     assert [model.id for model in raw][:2] == ["jev-latest", "jev-preview"]
     assert all(model.capabilities == ["decision"] for model in raw)
 
 
-def test_openai_luna_is_both_a_chat_and_a_decision_model():
+def test_openai_luna_is_both_a_chat_and_a_decision_model() -> None:
     model = classify("openAI", RawModel(id="gpt-6-luna"))
     assert "decision" in model.capabilities
     other = classify("openAI", RawModel(id="gpt-6-sol"))
     assert "decision" not in other.capabilities
 
 
-def test_decision_tab_drops_unclassified_models():
+def test_decision_tab_drops_unclassified_models() -> None:
     def row(model_id: str, capabilities: list[str]) -> DiscoveredModel:
         return DiscoveredModel(id=model_id, display_name=model_id, capabilities=capabilities, source="heuristic")
 
@@ -68,7 +68,7 @@ def _entry(**overrides) -> dict:
     }
 
 
-async def test_health_check_asks_one_question_and_reports_healthy():
+async def test_health_check_asks_one_question_and_reports_healthy() -> None:
     assert "decision" in SUPPORTED_HEALTH_CHECK_TYPES
     model = MagicMock()
     model.decide = AsyncMock(return_value=DecisionResult(
@@ -82,7 +82,7 @@ async def test_health_check_asks_one_question_and_reports_healthy():
     model.decide.assert_awaited_once()
 
 
-async def test_health_check_reports_a_bad_key_as_a_settings_error():
+async def test_health_check_reports_a_bad_key_as_a_settings_error() -> None:
     request = httpx.Request("POST", "https://api.typesafe.ai/v1/systemone")
     response_401 = httpx.Response(401, request=request)
     error = DecisionModelError("typesafe decision request returned HTTP 401: invalid key", status_code=401)
@@ -95,12 +95,12 @@ async def test_health_check_reports_a_bad_key_as_a_settings_error():
     assert json.loads(response.body)["details"]["error_code"] == "auth_error"
 
 
-async def test_health_check_without_model_name_fails():
+async def test_health_check_without_model_name_fails() -> None:
     response = await perform_decision_health_check(_entry(configuration={"apiKey": "k"}), MagicMock())
     assert response.status_code == 500
 
 
-async def test_config_lookup_prefers_the_default_decision_model():
+async def test_config_lookup_prefers_the_default_decision_model() -> None:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={
         "llm": [],
@@ -115,7 +115,7 @@ async def test_config_lookup_prefers_the_default_decision_model():
     assert model.model_name == "jev-latest"
 
 
-async def test_config_lookup_without_decision_models_returns_none():
+async def test_config_lookup_without_decision_models_returns_none() -> None:
     config_service = MagicMock()
     config_service.get_config = AsyncMock(return_value={"llm": []})
     assert await get_decision_model_instance(config_service) is None

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
+from contextlib import AbstractContextManager
 from unittest.mock import patch
 
 import httpx
@@ -41,19 +43,19 @@ QUESTIONS = [
 ]
 
 
-def _mock(responses: list[httpx.Response], seen: list[httpx.Request]):
+def _mock(responses: list[httpx.Response], seen: list[httpx.Request]) -> AbstractContextManager[object]:
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         return responses.pop(0)
 
-    def factory(_url, *, timeout):
+    def factory(_url: str | None, *, timeout: float) -> httpx.AsyncClient:
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), timeout=timeout)
 
     return patch("app.services.ai_models.decision.clients.guarded_async_client", factory)
 
 
 @pytest.fixture(autouse=True)
-def _no_sleep():
+def _no_sleep() -> Iterator[None]:
     with patch("app.services.ai_models.decision.clients.asyncio.sleep", return_value=None):
         yield
 
@@ -85,7 +87,7 @@ OPENAI_RESPONSE = {
 }
 
 
-async def test_openai_sends_the_decisions_format_and_parses_answers():
+async def test_openai_sends_the_decisions_format_and_parses_answers() -> None:
     seen: list[httpx.Request] = []
     model = OpenAIDecisionModel("gpt-6-luna", api_key="sk-test", organization="org-1")
     with _mock([httpx.Response(200, json=OPENAI_RESPONSE)], seen):
@@ -109,7 +111,7 @@ async def test_openai_sends_the_decisions_format_and_parses_answers():
     assert result.answers["severity"].probabilities == {"Low": 0.7, "High": 0.3}
 
 
-async def test_openai_refusal_and_missing_answers_are_refused():
+async def test_openai_refusal_and_missing_answers_are_refused() -> None:
     seen: list[httpx.Request] = []
     payload = {"answers": [{"type": "refusal", "name": "urgent"}]}
     model = OpenAIDecisionModel("gpt-6-luna", api_key="sk-test")
@@ -119,7 +121,7 @@ async def test_openai_refusal_and_missing_answers_are_refused():
     assert result.answers["team"].choice is None
 
 
-async def test_openai_custom_base_url():
+async def test_openai_custom_base_url() -> None:
     seen: list[httpx.Request] = []
     model = OpenAIDecisionModel("gpt-6-luna", api_key="k", base_url="https://gateway.example.com/v1/")
     with _mock([httpx.Response(200, json={"answers": []})], seen):
@@ -127,7 +129,7 @@ async def test_openai_custom_base_url():
     assert str(seen[0].url) == "https://gateway.example.com/v1/decisions"
 
 
-async def test_azure_uses_deployment_api_key_header_and_v1_path():
+async def test_azure_uses_deployment_api_key_header_and_v1_path() -> None:
     seen: list[httpx.Request] = []
     model = get_decision_model(
         "azureOpenAI",
@@ -150,7 +152,7 @@ async def test_azure_uses_deployment_api_key_header_and_v1_path():
     assert json.loads(seen[0].content)["model"] == "luna-decisions"
 
 
-async def test_typesafe_sends_system_one_format_and_parses_answers():
+async def test_typesafe_sends_system_one_format_and_parses_answers() -> None:
     seen: list[httpx.Request] = []
     payload = {
         "model": "jev-1.13.0",
@@ -182,7 +184,7 @@ async def test_typesafe_sends_system_one_format_and_parses_answers():
     assert result.usage.input_tokens == 120
 
 
-async def test_retries_rate_limit_then_succeeds():
+async def test_retries_rate_limit_then_succeeds() -> None:
     seen: list[httpx.Request] = []
     model = TypeSafeDecisionModel("jev-latest", api_key="k")
     responses = [
@@ -196,7 +198,7 @@ async def test_retries_rate_limit_then_succeeds():
     assert result.answers["urgent"].probability == 0.1
 
 
-async def test_auth_failure_raises_with_status_the_health_check_can_classify():
+async def test_auth_failure_raises_with_status_the_health_check_can_classify() -> None:
     seen: list[httpx.Request] = []
     model = OpenAIDecisionModel("gpt-6-luna", api_key="bad")
     error = {"error": {"message": "Incorrect API key provided", "code": "invalid_api_key"}}
@@ -208,7 +210,7 @@ async def test_auth_failure_raises_with_status_the_health_check_can_classify():
     assert len(seen) == 1
 
 
-async def test_rejects_empty_and_duplicate_questions():
+async def test_rejects_empty_and_duplicate_questions() -> None:
     model = TypeSafeDecisionModel("jev-latest", api_key="k")
     with pytest.raises(ValueError):
         await model.decide("x", [])
@@ -216,7 +218,7 @@ async def test_rejects_empty_and_duplicate_questions():
         await model.decide("x", [QUESTIONS[0], QUESTIONS[0]])
 
 
-def test_question_validation():
+def test_question_validation() -> None:
     with pytest.raises(ValidationError):
         ChoiceQuestion(name="c", instructions="?", options=[DecisionOption(value="a")])
     with pytest.raises(ValidationError):
@@ -225,7 +227,7 @@ def test_question_validation():
         ScoreQuestion(name="s", instructions="?", levels=[ScoreLevel(label=str(i)) for i in range(11)])
 
 
-def test_factory_builds_each_provider_and_rejects_unknown():
+def test_factory_builds_each_provider_and_rejects_unknown() -> None:
     entry = {"configuration": {"model": "jev-latest", "apiKey": "k"}, "isDefault": True}
     assert isinstance(get_decision_model("typesafe", entry), TypeSafeDecisionModel)
     assert isinstance(get_decision_model("openAI", {**entry, "configuration": {"model": "gpt-6-luna", "apiKey": "k"}}), OpenAIDecisionModel)
@@ -237,7 +239,7 @@ def test_factory_builds_each_provider_and_rejects_unknown():
         get_decision_model("typesafe", {"configuration": {"apiKey": "k"}})
 
 
-def test_factory_refuses_metadata_endpoint():
+def test_factory_refuses_metadata_endpoint() -> None:
     entry = {"configuration": {"model": "jev-latest", "apiKey": "k", "endpoint": "http://169.254.169.254"}}
     with pytest.raises(ValueError, match="never allowed"):
         get_decision_model("typesafe", entry)
