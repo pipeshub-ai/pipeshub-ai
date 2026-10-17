@@ -260,6 +260,10 @@ jobs:
       # call log on the published port.
       MCP_FIXTURE_TEST_URL: http://localhost:8097
       MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
+      # API Toolsets tests add the openapi-fixture service from its OpenAPI spec:
+      # PipesHub calls it by service name, the test process reads its call log.
+      OPENAPI_FIXTURE_TEST_URL: http://localhost:8098
+      OPENAPI_FIXTURE_CONNECTOR_URL: http://openapi-fixture:8080
       # Nextcloud and BookStack run in the compose stack too, behind the
       # selfhosted-sources profile: only the shard that runs their tests
       # (connectors-1, or a dispatch of just one of them) starts them.
