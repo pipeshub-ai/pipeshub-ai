@@ -174,6 +174,7 @@ from app.agents.agent_loop.output_cap_transport import (
     with_output_cap,
 )
 from app.agents.agent_loop.parked_turn import ASK_USER_QUESTION_RESUME_PREFIX
+from app.agents.agent_loop.period_summary import period_summary_hint
 from app.agents.agent_loop.prompt_builder import PipesHubPromptBuilder
 from app.agents.agent_loop.prompt_cache import cache_strategy_for
 from app.agents.agent_loop.protocol.agui_emitter import AGUIEventEmitter
@@ -1132,6 +1133,7 @@ class PipesHubAgentFactory:
 
         # Answers an approval card: settles the stopped call before the loop starts.
         hooks.on(HookEvent.PRE_AGENT).use(resume_parked_call(context))
+        hooks.on(HookEvent.PRE_AGENT).use(period_summary_hint(context))
         hooks.on(HookEvent.PRE_TURN).use(conversation_enrichment(context))
         hooks.on(HookEvent.PRE_TURN).use(attachment_rehydration(context))
         hooks.on(HookEvent.PRE_TURN).use(artifact_context_reminder(context))

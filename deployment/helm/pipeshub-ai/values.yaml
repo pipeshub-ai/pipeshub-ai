@@ -367,6 +367,11 @@ config:
   # search_by_entities, which links named people, organizations, products or
   # places to extracted entities and searches the records that mention them.
   # It stays off under this mode unless set, and needs named-entity extraction.
+  # TIMELINE_SUMMARIES="true" (through extraEnv) offers the agent
+  # search_timeline, which searches a span of time period by period and
+  # returns the matches in date order, and points questions about a span
+  # ("between March and May", "how did X evolve") to it. Off under this mode
+  # unless set.
   # FETCH_SIZE_BY_CHARS is not part of this mode: it is on unless set to
   # "false" through extraEnv. With it on, fetch_record reads as much of each
   # record as fits a share of the context window instead of a block count.

@@ -14,6 +14,7 @@ from app.agent_loop_lib.tools.errors import ToolValidationError
 from app.agent_loop_lib.tools.toolset import ToolsetBuilder
 from app.agents.actions.knowledge_graph import entity_search_surface as surface
 from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_TOOL_NAME
 from app.agents.agent_loop.entity_search_tool import (
     ENTITY_SEARCH_OFFERED_STATE_KEY,
     SEARCH_BY_ENTITIES_TOOL_NAME,
@@ -28,7 +29,9 @@ _VARIED = {
 def _tools(offered: bool | None) -> tuple[list[Any], list[Any]]:
     state: dict[str, Any] = {} if offered is None else {ENTITY_SEARCH_OFFERED_STATE_KEY: offered}
     instance = KnowledgeGraph(state=state)
-    declared = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
+    built = ToolsetBuilder(instance, name="knowledgegraph", description="", path_prefix="/tools/knowledgegraph").tools
+    # The timeline tool has its own switch (test_timeline.py); these are about entity search.
+    declared = [t for t in built if t.name != TIMELINE_TOOL_NAME]
     return declared, instance.tools_for_request(list(declared))
 
 
