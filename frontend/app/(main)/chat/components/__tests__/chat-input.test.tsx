@@ -1164,7 +1164,7 @@ describe('ChatInput — keeping an unsent message', () => {
     fireEvent.click(sendButton());
     pause();
 
-    expect(onSend).toHaveBeenCalledWith('Which vendors renew in Q4?', undefined);
+    expect(onSend).toHaveBeenCalledWith('Which vendors renew in Q4?', undefined, undefined);
     expect(composer().value).toBe('');
     expect(window.localStorage.getItem(KEY_NEW)).toBeNull();
   });
@@ -1383,7 +1383,7 @@ describe('ChatInput — keeping an unsent message', () => {
     pause();
     fireEvent.click(sendButton());
 
-    expect(onSend).toHaveBeenCalledWith('Still works', undefined);
+    expect(onSend).toHaveBeenCalledWith('Still works', undefined, undefined);
     vi.restoreAllMocks();
   });
 
