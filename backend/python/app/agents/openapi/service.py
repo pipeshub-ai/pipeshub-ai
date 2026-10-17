@@ -279,11 +279,14 @@ async def test_call(
     tool_name: Optional[str] = None,
     arguments: Optional[dict[str, Any]] = None,
 ) -> ApiResponse:
-    """Run one operation: the one named, else the first read with no required arguments."""
+    """Run one read: the one named, else the first with no required arguments. Only reads,
+    because this route skips the approval an agent's writes and deletes go through."""
     if tool_name:
         op = next((o for o in instance.operations if o.tool_name == tool_name), None)
         if op is None:
             raise ApiToolsetError(f"The toolset has no operation {tool_name}.")
+        if op.kind != "read":
+            raise ApiToolsetError(f"{tool_name} changes data, so it can't be used to test the connection. Choose a read.")
     else:
         op = next((o for o in instance.operations
                    if o.kind == "read" and not o.input_schema.get("required")), None)

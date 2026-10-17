@@ -361,6 +361,13 @@ class TestTestCall:
         resp = api.call("POST", f"/instances/{created['id']}/test", json={"toolName": "get_ticket", "arguments": {"ticketId": "ACME-7312"}})
         assert resp.json()["ok"] is False and resp.json()["status"] == 401
 
+    def test_only_reads_can_be_test_calls(self, api: Harness, acme_url: str) -> None:
+        created = api.create(baseUrl=acme_url, useSharedCredential=True)
+        api.call("PUT", f"/instances/{created['id']}/shared-credentials", user=ADMIN, json={"apiKey": "acme-demo-key"})
+        resp = api.call("POST", f"/instances/{created['id']}/test",
+                        json={"toolName": "update_ticket", "arguments": {"ticketId": "ACME-7311", "body": {"status": "closed"}}})
+        assert resp.status_code == 400 and "changes data" in resp.json()["detail"]
+
     def test_unreachable_api_is_a_502(self, api: Harness, acme_url: str) -> None:
         created = api.create(baseUrl="http://127.0.0.1:9", authSchemeName="none")
         resp = api.call("POST", f"/instances/{created['id']}/test", json={})
