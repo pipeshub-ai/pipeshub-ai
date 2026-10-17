@@ -7,15 +7,22 @@ registry with the in-memory graph and blob fakes.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
 from app.services.artifact_registry import ArtifactRegistryService
-from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
-from app.services.artifact_registry.models import Actor
+from app.services.artifact_registry.access import (
+    AccessDeniedError,
+    ArtifactNotFoundError,
+)
+from app.services.artifact_registry.models import Actor, ArtifactMetadata
 
 from .fakes import FakeBlobStore, FakeGraphProvider
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 ORG = "org-1"
 USER = "user-1"
@@ -25,7 +32,7 @@ FORK = "conv-fork"
 
 
 @pytest.fixture
-def world():
+def world() -> tuple[FakeGraphProvider, FakeBlobStore, ArtifactRegistryService]:
     graph = FakeGraphProvider()
     graph.add_user(USER, key="ukey-1")
     graph.add_user(OTHER_USER, key="ukey-2")
@@ -34,10 +41,10 @@ def world():
 
 
 @pytest.fixture(autouse=True)
-def _blob_reads(world):
+def _blob_reads(world: tuple[FakeGraphProvider, FakeBlobStore, ArtifactRegistryService]) -> Iterator[None]:
     _, blob, _ = world
 
-    async def _fake_fetch(*, org_id, config_service, storage_document_id, version=None, **_kw):
+    async def _fake_fetch(*, org_id, config_service, storage_document_id, version=None, **_kw) -> bytes:
         return await blob.get_buffer(org_id, storage_document_id, version)
 
     with patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new=_fake_fetch):
@@ -48,7 +55,7 @@ def _actor(user: str = USER) -> Actor:
     return Actor(org_id=ORG, user_id=user)
 
 
-async def _make(service: ArtifactRegistryService, *versions: bytes, name: str = "report.md"):
+async def _make(service: ArtifactRegistryService, *versions: bytes, name: str = "report.md") -> ArtifactMetadata:
     from app.models.entities import ArtifactType
 
     meta = await service.register(
@@ -154,3 +161,31 @@ class TestCopyToConversation:
             await service.copy_to_conversation(
                 actor=_actor(), artifact_id="does-not-exist", up_to_version=1, conversation_id=FORK,
             )
+
+    async def test_deleting_the_original_chat_leaves_the_forks_copy(self, world) -> None:
+        _, _, service = world
+        source = await _make(service, b"v1 text")
+        copy = await service.copy_to_conversation(
+            actor=_actor(), artifact_id=source.artifact_id, up_to_version=1, conversation_id=FORK,
+        )
+
+        result = await service.delete_for_conversation(actor=_actor(), conversation_id=ORIGINAL)
+
+        assert (result.deleted, result.kept) == (1, 0)
+        with pytest.raises(ArtifactNotFoundError):
+            await service.resolve(actor=_actor(), ref=source.artifact_id)
+        assert await service.get_content(actor=_actor(), artifact_id=copy.artifact_id) == b"v1 text"
+
+    async def test_deleting_the_fork_removes_its_copy_and_not_the_original(self, world) -> None:
+        _, _, service = world
+        source = await _make(service, b"v1 text")
+        copy = await service.copy_to_conversation(
+            actor=_actor(), artifact_id=source.artifact_id, up_to_version=1, conversation_id=FORK,
+        )
+
+        result = await service.delete_for_conversation(actor=_actor(), conversation_id=FORK)
+
+        assert (result.deleted, result.kept) == (1, 0)
+        with pytest.raises(ArtifactNotFoundError):
+            await service.resolve(actor=_actor(), ref=copy.artifact_id)
+        assert await service.get_content(actor=_actor(), artifact_id=source.artifact_id) == b"v1 text"

@@ -131,6 +131,7 @@ import {
   userFacingChatError,
 } from '../utils/chat-error-messages';
 import {
+  copyArtifactsForFork,
   copySessionUpToMessage,
   ForkChatSessionResult,
   ForkSessionFields,
@@ -4019,6 +4020,8 @@ interface ForkTarget {
     conversationId: string,
   ) => Promise<IChatSessionDocument | null>;
   copyArtifacts: ArtifactCopier;
+  /** Removes the artifacts copied under a fork that could not be created. */
+  discardArtifacts: (forkId: string) => Promise<void>;
 }
 
 const FORK_ARTIFACT_COPY_BATCH = 50;
@@ -4069,6 +4072,10 @@ const runFork = async (
   let session: ClientSession | null = null;
   const conversationId = req.params.conversationId ?? '';
   const messageId = req.params.messageId ?? '';
+  // Allocated up front: the artifacts are copied under this id before the chat
+  // exists, and a retried transaction must reuse them, not copy again.
+  const forkId = new mongoose.Types.ObjectId();
+  const copy = { started: false };
   try {
     const userId = req.user?.userId as string | undefined;
     const orgId = req.user?.orgId as string | undefined;
@@ -4088,6 +4095,17 @@ const runFork = async (
       ...target.fields,
       projectId: await resolveForkProjectId(source, orgId, userId),
     };
+    // Outside the transaction: this call can take minutes, longer than MongoDB
+    // lets a transaction live.
+    const artifacts = await copyArtifactsForFork(
+      source,
+      messageId,
+      forkId,
+      (id, refs) => {
+        copy.started = true;
+        return target.copyArtifacts(id, refs);
+      },
+    );
     const performFork = (
       txnSession: ClientSession | null,
     ): Promise<ForkChatSessionResult> =>
@@ -4098,7 +4116,7 @@ const runFork = async (
         orgId,
         fields,
         txnSession,
-        target.copyArtifacts,
+        artifacts,
       );
 
     let result: ForkChatSessionResult;
@@ -4130,6 +4148,21 @@ const runFork = async (
       stack: failure.stack,
       duration: Date.now() - startTime,
     });
+    if (copy.started) {
+      // The artifacts live outside MongoDB, so no rollback reaches them.
+      try {
+        await target.discardArtifacts(String(forkId));
+      } catch (cleanupError) {
+        logger.warn('Could not remove the artifacts of a failed fork', {
+          requestId,
+          forkId: String(forkId),
+          error:
+            cleanupError instanceof Error
+              ? cleanupError.message
+              : String(cleanupError),
+        });
+      }
+    }
     next(error);
   } finally {
     if (session) {
@@ -4158,6 +4191,8 @@ export const forkConversation =
       label: 'conversation',
       fields: { sessionType: 'chat' },
       copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
       findSource: (orgId, userId, conversationId) =>
         ChatSession.findOne({
           ...(buildFilter(
@@ -4189,6 +4224,8 @@ export const forkAgentConversation =
       label: 'agent conversation',
       fields: { sessionType: 'agent', agentKey },
       copyArtifacts: forkArtifactCopier(appConfig, req),
+      discardArtifacts: (forkId) =>
+        deleteConversationArtifacts(appConfig, forkId, req),
       findSource: (orgId, userId, conversationId) =>
         ChatSession.findOne(
           buildAgentConversationFilter(

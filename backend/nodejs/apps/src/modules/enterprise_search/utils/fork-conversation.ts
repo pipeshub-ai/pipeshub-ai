@@ -158,7 +158,6 @@ async function copyForkArtifacts(
   sourceId: mongoose.Types.ObjectId,
   lastSeq: number,
   forkId: mongoose.Types.ObjectId,
-  sessionOption: { session: ClientSession } | undefined,
 ): Promise<ArtifactCopyMap> {
   const withMarkers = await ChatSessionMessage.find(
     {
@@ -167,7 +166,6 @@ async function copyForkArtifacts(
       content: { $regex: '::artifact\\[' },
     },
     { content: 1 },
-    sessionOption,
   ).lean();
   const refs = collectArtifactRefs(
     withMarkers.map((row) => {
@@ -189,6 +187,41 @@ async function copyForkArtifacts(
   return new ArtifactCopyMap(outcome.copies);
 }
 
+/** Artifacts copied for a fork before its chat is written. */
+export interface ForkArtifacts {
+  forkId: mongoose.Types.ObjectId;
+  copies: ArtifactCopyMap;
+}
+
+/**
+ * Copies the artifacts a fork will show, filed under `forkId`, before the
+ * fork's chat is written. Call it outside any MongoDB transaction: every
+ * version is uploaded again, so it can outlive MongoDB's 60-second transaction
+ * limit, and `withTransaction` reruns its callback on a transient error, which
+ * would copy everything a second time.
+ */
+export async function copyArtifactsForFork(
+  source: IChatSessionDocument,
+  messageId: string,
+  forkId: mongoose.Types.ObjectId,
+  copyArtifacts: ArtifactCopier,
+): Promise<ForkArtifacts> {
+  const forkPoint = await ChatSessionMessage.findOne(
+    { _id: messageId, sessionId: source._id },
+    { seq: 1 },
+  ).lean();
+  if (!forkPoint) {
+    throw new NotFoundError('Message not found');
+  }
+  const copies = await copyForkArtifacts(
+    copyArtifacts,
+    source._id,
+    forkPoint.seq,
+    forkId,
+  );
+  return { forkId, copies };
+}
+
 /**
  * Copy a chat session and every message up to `messageId` (inclusive) into a
  * new session owned by `userId`. The source is left unchanged. Share state is
@@ -196,8 +229,9 @@ async function copyForkArtifacts(
  * batches so a long thread is never held in memory whole. Without a
  * transaction, a failed copy removes what it already wrote.
  *
- * With `copyArtifacts`, the fork gets its own artifacts and its messages point
- * at them, so editing in one chat never changes the other.
+ * With `artifacts` (from `copyArtifactsForFork`), the fork is created under
+ * the id they were filed under and its messages point at them, so editing in
+ * one chat never changes the other.
  */
 export async function copySessionUpToMessage(
   source: IChatSessionDocument,
@@ -206,7 +240,7 @@ export async function copySessionUpToMessage(
   orgId: string,
   fields: ForkSessionFields,
   mongoSession?: ClientSession | null,
-  copyArtifacts?: ArtifactCopier,
+  artifacts?: ForkArtifacts,
 ): Promise<ForkChatSessionResult> {
   const sourceId = source._id;
   const sessionOption = mongoSession ? { session: mongoSession } : undefined;
@@ -248,22 +282,15 @@ export async function copySessionUpToMessage(
     sessionFields.projectVisibility = 'private';
   }
 
-  const conversation = (await new ChatSession(sessionFields).save(
-    sessionOption,
-  )) as IChatSessionDocument;
+  const conversation = (await new ChatSession({
+    ...sessionFields,
+    ...(artifacts && { _id: artifacts.forkId }),
+  }).save(sessionOption)) as IChatSessionDocument;
   const forkId = conversation._id;
+  const copies = artifacts?.copies ?? new ArtifactCopyMap([]);
 
   let messageCount = 0;
   try {
-    const copies = copyArtifacts
-      ? await copyForkArtifacts(
-          copyArtifacts,
-          sourceId,
-          forkPoint.seq,
-          forkId,
-          sessionOption,
-        )
-      : new ArtifactCopyMap([]);
     let nextSeq = 0;
     for (;;) {
       const batch = await ChatSessionMessage.find(

@@ -1,7 +1,7 @@
 """HTTP contract of `POST /api/v1/artifacts/copy`, which gives a forked chat its
 own copy of the artifacts it carried over."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -9,7 +9,10 @@ from fastapi import FastAPI, Request, Response
 from fastapi.testclient import TestClient
 
 from app.connectors.api.artifacts_router import artifacts_router, get_graph_provider
-from app.services.artifact_registry.access import AccessDeniedError, ArtifactNotFoundError
+from app.services.artifact_registry.access import (
+    AccessDeniedError,
+    ArtifactNotFoundError,
+)
 from app.services.artifact_registry.models import ArtifactCopy
 
 URL = "/api/v1/artifacts/copy"
@@ -28,13 +31,14 @@ def registry() -> AsyncMock:
 
 
 @pytest.fixture
-def make_client(registry: AsyncMock):
-    def _make(*, with_container: bool = True) -> TestClient:
+def make_client(registry: AsyncMock) -> Callable[..., TestClient]:
+    def _make(*, with_container: bool = True, token_claims: dict | None = None) -> TestClient:
         app = FastAPI()
+        user = {"userId": "auth-user", "orgId": "org-1", **(token_claims or {})}
 
         @app.middleware("http")
-        async def _session_user(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-            request.state.user = {"userId": "auth-user", "orgId": "org-1"}
+        async def _authenticated(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+            request.state.user = user
             return await call_next(request)
 
         app.include_router(artifacts_router)
@@ -47,12 +51,17 @@ def make_client(registry: AsyncMock):
 
 
 @pytest.fixture
-def client(make_client, registry: AsyncMock):
+def patched_registry(registry: AsyncMock) -> Iterator[None]:
     with (
-        patch("app.services.artifact_registry.registry.ArtifactRegistryService", return_value=registry),
-        patch("app.modules.transformers.blob_storage.BlobStorage"),
+        patch("app.connectors.api.artifacts_router.ArtifactRegistryService", return_value=registry),
+        patch("app.connectors.api.artifacts_router.BlobStorage"),
     ):
-        yield make_client()
+        yield
+
+
+@pytest.fixture
+def client(make_client: Callable[..., TestClient], patched_registry: None) -> TestClient:
+    return make_client()
 
 
 def test_copies_every_requested_artifact_for_the_caller(client: TestClient, registry: AsyncMock) -> None:
@@ -129,3 +138,24 @@ def test_fails_when_artifact_storage_is_not_wired(make_client) -> None:
         URL, json={"conversationId": "fork-1", "artifacts": [{"artifactId": "a1", "upToVersion": 1}]},
     )
     assert response.status_code == 500
+
+
+_ONE_ARTIFACT = {"conversationId": "fork-1", "artifacts": [{"artifactId": "a1", "upToVersion": 1}]}
+
+
+@pytest.mark.parametrize("scopes", [["conversation:chat"], ["agent:execute"]])
+def test_a_client_that_may_fork_may_copy(make_client, patched_registry, registry: AsyncMock, scopes: list[str]) -> None:
+    registry.copy_to_conversation = AsyncMock(return_value=_copy("a1", "n1", {1: 1}))
+    client = make_client(token_claims={"isOAuth": True, "oauthScopes": scopes})
+
+    assert client.post(URL, json=_ONE_ARTIFACT).status_code == 200
+
+
+@pytest.mark.parametrize("scopes", [["conversation:read"], ["connector:write", "kb:write"], []])
+def test_a_client_that_may_not_fork_may_not_copy(
+    make_client, patched_registry, registry: AsyncMock, scopes: list[str],
+) -> None:
+    client = make_client(token_claims={"isOAuth": True, "oauthScopes": scopes})
+
+    assert client.post(URL, json=_ONE_ARTIFACT).status_code == 403
+    registry.copy_to_conversation.assert_not_awaited()

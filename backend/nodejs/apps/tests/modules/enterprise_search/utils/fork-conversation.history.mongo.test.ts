@@ -14,7 +14,7 @@ import { expect } from 'chai'
 import mongoose from 'mongoose'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
-import { copySessionUpToMessage } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
+import { copyArtifactsForFork, copySessionUpToMessage } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import type { ArtifactCopier, ArtifactRef } from '../../../../src/modules/enterprise_search/utils/fork-artifacts'
 import { continueConversation } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
 import { saveCompleteConversation } from '../../../../src/modules/enterprise_search/utils/utils'
@@ -104,6 +104,10 @@ describeIfMongo(`history after a fork on a real MongoDB (transactions: ${useTran
     const rows = await ChatSessionMessage.find({ sessionId: chat._id }).sort({ seq: 1 }).lean()
     const point = String(rows[position - 1]!._id)
     const source = (await ChatSession.findById(chat._id)) as IChatSessionDocument
+    // Copied first, outside the transaction, the way the controller does it.
+    const artifacts = copyArtifacts
+      ? await copyArtifactsForFork(source, point, new mongoose.Types.ObjectId(), copyArtifacts)
+      : undefined
     const run = (mongoSession: mongoose.ClientSession | null) =>
       copySessionUpToMessage(
         source,
@@ -112,7 +116,7 @@ describeIfMongo(`history after a fork on a real MongoDB (transactions: ${useTran
         String(orgId),
         { sessionType: 'chat' },
         mongoSession,
-        copyArtifacts,
+        artifacts,
       )
     if (!useTransactions) return (await run(null)).conversation
     const session = await mongoose.startSession()

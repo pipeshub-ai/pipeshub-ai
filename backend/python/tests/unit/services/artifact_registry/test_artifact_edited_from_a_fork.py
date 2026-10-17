@@ -47,7 +47,7 @@ def _body(result: tuple[bool, str]) -> dict:
 
 
 @pytest.fixture
-def world():
+def world() -> tuple[FakeGraphProvider, FakeBlobStore]:
     graph = FakeGraphProvider()
     graph.add_user(USER, key="ukey-1")
     blob = FakeBlobStore()
@@ -55,7 +55,7 @@ def world():
 
 
 async def _read(blob: FakeBlobStore, service: ArtifactRegistryService, artifact_id: str, version: int | None) -> bytes:
-    async def _fake_fetch(*, org_id, config_service, storage_document_id, version=None, **_kw):
+    async def _fake_fetch(*, org_id, config_service, storage_document_id, version=None, **_kw) -> bytes:
         return await blob.get_buffer(org_id, storage_document_id, version)
 
     with patch("app.agents.actions.util.blob_staging.fetch_blob_bytes", new=_fake_fetch):

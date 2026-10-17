@@ -11,6 +11,7 @@ import mongoose from 'mongoose'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
+import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { Project } from '../../../../src/modules/projects/schema/project.schema'
 import {
   copySessionUpToMessage,
@@ -113,7 +114,8 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
     expect(copied.map((m) => m.content)).to.deep.equal(Array.from({ length: total }, (_, i) => `message ${i + 1}`))
     expect(copied.some((m) => (m as { feedback?: unknown[] }).feedback?.length)).to.equal(false)
     expect(String(copied[1]!.citations![0]!.citationId)).to.equal(String(citationId))
-    // Attachments and artifacts are copied as references to the same records, not duplicated.
+    // Attachments are copied as references to the same records, not duplicated. A tool part's own
+    // artifactId (a stored tool result, not a chat artifact) is left as it is.
     expect(copied[0]!.attachments).to.have.length(1)
     expect(copied[0]!.attachments![0]!.recordId).to.equal('rec-att-1')
     expect((copied[1]!.parts![0] as { artifactId?: string }).artifactId).to.equal('artifact-2')
@@ -387,8 +389,10 @@ describeIfMongo(`fork conversation on a real MongoDB (transactions: ${useTransac
         messageId: String(messages[3]!._id),
       })
       const forkId = String(forked.body!.id)
+      // Deleting a chat first asks the connectors service to delete its artifacts.
+      sinon.stub(conversationArtifacts, 'deleteConversationArtifacts').resolves()
 
-      const deleted = await run(deleteConversationById as never, owner, { conversationId: forkId })
+      const deleted = await run(deleteConversationById(APP_CONFIG) as never, owner, { conversationId: forkId })
       expect(deleted.error).to.equal(undefined)
       expect(deleted.status).to.equal(200)
 
