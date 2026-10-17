@@ -91,7 +91,7 @@ dependencies = [
   "numpy==2.3.2",
   "opencv-python-headless==4.11.0.86",
   "openpyxl==3.1.5",
-  "opik==1.10.60",
+  "opik==2.2.99",
   "pagerduty>=5.0.0",
   "pandas==2.2.3",
   "pdfplumber==0.11.9",
