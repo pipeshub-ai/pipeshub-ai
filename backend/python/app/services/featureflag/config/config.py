@@ -8,6 +8,10 @@ class CONFIG:
     # and whether MCP is shown anywhere in the UI.
     # Defaults to enabled; admins may opt out from Labs.
     ENABLE_MCP = "ENABLE_MCP"
+    # Controls whether admins can add API Toolsets (tools compiled from an
+    # OpenAPI spec of an internal REST API) and whether agents load them.
+    # Defaults to disabled; admins must opt in from Labs.
+    ENABLE_API_TOOLSETS = "ENABLE_API_TOOLSETS"
     # Controls whether agents can load/use toolset actions (connector
     # integrations) and whether Actions is shown anywhere in the UI.
     # Defaults to enabled; admins may opt out from Labs.

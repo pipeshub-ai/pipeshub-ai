@@ -125,6 +125,13 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
     defaultEnabled: true,
   },
   {
+    key: 'ENABLE_API_TOOLSETS',
+    label: 'Enable API Toolsets',
+    description:
+      'Allow admins to add tools from the OpenAPI spec of an internal REST API, and agents to call them. Disable to hide API Toolsets everywhere and stop agents from loading their tools.',
+    defaultEnabled: false,
+  },
+  {
     key: 'ENABLE_ACTIONS',
     label: 'Enable Actions',
     description:

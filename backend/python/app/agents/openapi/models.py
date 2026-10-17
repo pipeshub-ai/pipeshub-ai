@@ -101,6 +101,40 @@ class CompiledSpec(ApiToolsetModel):
     spec_hash: str
 
 
+class ApiToolsetInstance(ApiToolsetModel):
+    """An org's API Toolset: where to call, how to authenticate, and the operations the admin chose.
+
+    Holds no secrets. The uploaded spec itself isn't kept, only what was compiled from it.
+    """
+
+    id: str
+    org_id: str
+    created_by: str
+    name: str
+    description: str = ""
+    spec_title: str
+    spec_version: str = ""
+    openapi_version: str
+    spec_hash: str
+    base_url: str
+    auth_scheme: AuthScheme
+    # OAuth2 scopes to ask for; empty asks for none.
+    scopes: list[str] = Field(default_factory=list)
+    # One credential the admin stores for everyone, instead of one per user.
+    use_shared_credential: bool = False
+    timeout_seconds: float
+    operations: list[CompiledOperation]
+    created_at: int
+    updated_at: int
+
+
+class OAuthClient(ApiToolsetModel):
+    """The OAuth app an admin registered with the API, for the authorization-code flow."""
+
+    client_id: str
+    client_secret: Optional[str] = None
+
+
 class ApiToolsetCredentials(ApiToolsetModel):
     """What a user (or the admin, for a shared credential) stored for one toolset.
 
