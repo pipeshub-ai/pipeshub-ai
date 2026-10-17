@@ -26,7 +26,6 @@ from app.config.constants.service import (
 )
 from app.exceptions.storage_exceptions import (
     StorageRequestRejectedError,
-    StoredRecordDecodeBusyError,
     StoredRecordTooLargeError,
 )
 from app.modules.transformers.transformer import TransformContext, Transformer
@@ -69,7 +68,6 @@ DOWNLOAD_CONNECTION_LIMIT_DEFAULT = 100
 # the decode each hold their whole download while they wait.
 LARGE_DECODE_BYTES = 20 * 1024 * 1024
 LARGE_DECODE_SLOTS = 1
-DECODE_WAIT_SECONDS = 30
 # Measured on decoded (msgpack) bytes, which is what costs pod memory, not on
 # the stored size the upload limit applies to.
 MAX_DECODED_BYTES_DEFAULT = 256 * 1024 * 1024
@@ -504,15 +502,11 @@ class _DecodeSlotLease:
             self._slot.release()
 
 
-async def _acquire_decode_slot(what: str) -> asyncio.Semaphore:
+async def _acquire_decode_slot() -> asyncio.Semaphore:
+    # No time limit: a reader waits its turn rather than drop the record from an
+    # answer, and a cancelled reader leaves the queue at once.
     slot = _decode_slot_for(asyncio.get_running_loop())
-    try:
-        async with asyncio.timeout(DECODE_WAIT_SECONDS):
-            await slot.acquire()
-    except TimeoutError:
-        raise StoredRecordDecodeBusyError(
-            f"no large-record slot free within {DECODE_WAIT_SECONDS}s for {what}"
-        ) from None
+    await slot.acquire()
     return slot
 
 
@@ -948,7 +942,7 @@ class BlobStorage(Transformer):
         if lease is not None and not lease.handed_off:
             slot = lease.hand_off()
         else:
-            slot = await _acquire_decode_slot(f"a {size}-byte record")
+            slot = await _acquire_decode_slot()
         # Only zstd runs in the thread: it releases the GIL. msgpack holds it, so it
         # would stall the loop from a thread too, and there it would allocate the
         # record from the thread's malloc arena, which the process can't reuse.
@@ -2306,7 +2300,7 @@ class BlobStorage(Transformer):
             session = get_shared_session()
 
             lease = (
-                _DecodeSlotLease(await _acquire_decode_slot(f"a {file_size_bytes}-byte stored record"))
+                _DecodeSlotLease(await _acquire_decode_slot())
                 if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
                 else None
             )
@@ -2321,7 +2315,7 @@ class BlobStorage(Transformer):
                         )
                         if record is not None:
                             return record
-                    except (StoredRecordTooLargeError, StoredRecordDecodeBusyError):
+                    except StoredRecordTooLargeError:
                         # Refused after the download, not because of the URL: re-signing
                         # would only download the same record again.
                         raise
@@ -2358,7 +2352,7 @@ class BlobStorage(Transformer):
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
             )
             raise
-        except (StoredRecordTooLargeError, StoredRecordDecodeBusyError) as e:
+        except StoredRecordTooLargeError as e:
             # The reader skips this record; an expected refusal, not a fault worth a traceback.
             self.logger.warning("⚠️ Skipping stored record %s: %s", virtual_record_id, str(e))
             raise

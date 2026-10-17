@@ -24,7 +24,6 @@ import pytest
 import zstandard as zstd
 
 from app.exceptions.storage_exceptions import (
-    StoredRecordDecodeBusyError,
     StoredRecordTooLargeError,
 )
 from app.modules.transformers import blob_storage as bs_mod
@@ -135,10 +134,6 @@ class TestContentSizeProbe:
 
 
 class TestCeilingConfig:
-    def test_a_reader_waits_up_to_30s_for_a_slot(self) -> None:
-        """Waiting long enough that a record is only left out of an answer under a real pile-up."""
-        assert bs_mod.DECODE_WAIT_SECONDS == 30
-
     def test_default(self) -> None:
         assert max_decoded_record_bytes() == MAX_DECODED_BYTES_DEFAULT == 256 * 1024 * 1024
 
@@ -396,16 +391,31 @@ class TestGate:
             loop.set_exception_handler(previous)
         assert not [c for c in reported if "never retrieved" in str(c.get("message", ""))]
 
-    async def test_waiting_too_long_is_a_busy_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 0.05)
+    async def test_a_reader_waits_its_turn_however_long_it_takes(self) -> None:
+        """No time limit: under load a record is late, never dropped from the answer."""
         storage, fake = _bs(), _Blocking()
         envelope = _envelope(_record(5000))
         with patch.object(storage, "_decompressed_payload", side_effect=fake):
             holder = asyncio.create_task(storage._decode_record(envelope))
             await _until(fake.entered.is_set)
-            with pytest.raises(StoredRecordDecodeBusyError) as info:
-                await storage._decode_record(envelope)
-            assert isinstance(info.value, TimeoutError)
+            waiter = asyncio.create_task(storage._decode_record(envelope))
+            await asyncio.sleep(0.3)
+            assert not waiter.done()
+            fake.release.set()
+            assert await asyncio.gather(holder, waiter) == [fake.result, fake.result]
+        assert fake.calls == 2
+
+    async def test_a_cancelled_waiter_leaves_the_queue(self) -> None:
+        storage, fake = _bs(), _Blocking()
+        envelope = _envelope(_record(5000))
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
+            holder = asyncio.create_task(storage._decode_record(envelope))
+            await _until(fake.entered.is_set)
+            waiter = asyncio.create_task(storage._decode_record(envelope))
+            await asyncio.sleep(0.05)
+            waiter.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await waiter
             fake.release.set()
             await holder
         assert fake.calls == 1
@@ -463,9 +473,8 @@ class TestGate:
 
 
 class TestPerLoopSlots:
-    def test_each_event_loop_gets_its_own_slot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_each_event_loop_gets_its_own_slot(self) -> None:
         """One semaphore shared by two loops would park the second loop's waiter forever."""
-        monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 2)
         storage, fake = _bs(), _Blocking()
         results: list[object] = []
 
@@ -473,7 +482,7 @@ class TestPerLoopSlots:
             results.append(asyncio.run(storage._decode_record(_envelope(_record(5000)))))
 
         async def take_a_slot_on_another_loop() -> bool:
-            slot = await bs_mod._acquire_decode_slot("a test record")
+            slot = await asyncio.wait_for(bs_mod._acquire_decode_slot(), 2)
             slot.release()
             return True
 
@@ -542,12 +551,8 @@ class TestGetRecordFromStorage:
         spy.assert_awaited_once()
         assert _slot_taken()
 
-    @pytest.mark.parametrize(
-        "refusal", [StoredRecordTooLargeError("too big"), StoredRecordDecodeBusyError("busy")]
-    )
-    async def test_refused_decode_on_a_cached_url_is_not_downloaded_again(
-        self, refusal: Exception
-    ) -> None:
+    async def test_refused_decode_on_a_cached_url_is_not_downloaded_again(self) -> None:
+        refusal = StoredRecordTooLargeError("too big")
         storage = _reader(_bs(), cached_url="https://s3/cached")
         storage._record_from_signed_url = AsyncMock(side_effect=refusal)
         with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), pytest.raises(
@@ -692,16 +697,3 @@ class TestStoredSizeGatesTheDownload:
             assert slot._value == 0, "slot freed while the decode thread still runs"
             fake.release.set()
             await _until(lambda: slot._value == bs_mod.LARGE_DECODE_SLOTS)
-
-    async def test_busy_slot_refuses_before_downloading(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 0.05)
-        storage = _reader(_bs(), envelope=_envelope(_record(5000)))
-        slot = await self._hold_slot()
-        try:
-            with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), pytest.raises(
-                StoredRecordDecodeBusyError
-            ):
-                await storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})
-        finally:
-            slot.release()
-        storage._fetch_record_envelope.assert_not_awaited()

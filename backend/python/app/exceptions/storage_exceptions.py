@@ -28,11 +28,3 @@ class StoredRecordTooLargeError(Exception):
     request instead of risking the pod.
     """
 
-
-class StoredRecordDecodeBusyError(TimeoutError):
-    """Gave up waiting for a large-record decode slot.
-
-    A ``TimeoutError`` so callers that already treat a slow fetch as a skip keep
-    doing so; its own type so the storage client can tell it from a network
-    timeout and not retry the download.
-    """

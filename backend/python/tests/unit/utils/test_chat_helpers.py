@@ -15,7 +15,6 @@ from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import 
     is_jira_ticket_record,
 )
 from app.exceptions.storage_exceptions import (
-    StoredRecordDecodeBusyError,
     StoredRecordTooLargeError,
 )
 from app.models.blocks import BlockType, GroupType
@@ -3023,12 +3022,9 @@ class TestGetFlattenedResults:
         assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize(
-        "refusal",
-        [StoredRecordTooLargeError("decodes to 300 MiB"), StoredRecordDecodeBusyError("no slot in 5s")],
-    )
-    async def test_a_record_refused_by_the_decode_guard_is_skipped(self, refusal: Exception) -> None:
-        """A record too large to decode, or stuck behind one that is, drops out of this search."""
+    async def test_a_record_refused_by_the_decode_guard_is_skipped(self) -> None:
+        """A record too large to decode drops out of this search; the rest still answers."""
+        refusal = StoredRecordTooLargeError("decodes to 300 MiB")
         good = _make_record_blob()
         good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
 
