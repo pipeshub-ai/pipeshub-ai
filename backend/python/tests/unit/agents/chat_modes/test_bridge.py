@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
@@ -704,6 +705,54 @@ class TestRunChatStream:
         assert any(
             "Refunds are processed" in str(c) for c in captured["goal"].constraints
         )
+
+    async def _prefetch_ran_for(self, query: str) -> bool:
+        prefetch = AsyncMock(return_value=PrefetchResult(
+            formatted_context="", final_results=[], virtual_record_id_to_result={},
+            tool_records=[], citation_ref_mapper=CitationRefMapper(), is_empty=True,
+        ))
+
+        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None) -> tuple[Any, ...]:
+            agent = _stream_agent(MagicMock(success=True, error=None, output="ok"))
+            return agent, MagicMock(), MagicMock(constraints=[]), []
+
+        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_cancelled=False) -> dict[str, Any]:
+            await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
+            return {"answer": agent_output}
+
+        kwargs = self._base_kwargs(policy=INTERNAL_SEARCH_POLICY)
+        kwargs["query_info"]["query"] = query
+        sql_patch, slack_patch = _patch_connectors()
+        with (
+            patch(
+                "app.modules.agents.qna.chat_state.build_initial_state",
+                return_value={"org_id": "org-1", "user_id": "user-1", "query": query},
+            ),
+            sql_patch,
+            slack_patch,
+            patch("app.agents.chat_modes.bridge.PipesHubAgentFactory.create", new=_fake_create),
+            patch("app.agents.chat_modes.bridge.AnswerFinalizer.run", new=_fake_finalizer_run),
+            patch("app.agents.chat_modes.bridge.prefetch_retrieval", new=prefetch),
+        ):
+            events = [chunk async for chunk in run_chat_stream(**kwargs)]
+        assert events[-1].startswith("event: complete\n")
+        return prefetch.await_count > 0
+
+    @pytest.mark.parametrize(("switch", "query", "prefetched"), [
+        ("true", "Between March and May 2026, what problems came up with the Slack bot?", False),
+        ("true", "What is the redirect URI for the Dropbox team app?", True),
+        (None, "Between March and May 2026, what problems came up with the Slack bot?", True),
+    ])
+    async def test_a_span_question_skips_the_upfront_search_only_with_the_timeline_on(
+        self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,
+    ) -> None:
+        """The upfront search is the top matches overall, bunched around one
+        moment; with the timeline tool on, a span question is left to it."""
+        if switch is None:
+            monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
+        else:
+            monkeypatch.setenv(TIMELINE_SUMMARIES_ENV_VAR, switch)
+        assert await self._prefetch_ran_for(query) is prefetched
 
     async def _goal_constraints_for(self, prefetch_result: PrefetchResult) -> list[str]:
         captured: dict[str, Any] = {}
