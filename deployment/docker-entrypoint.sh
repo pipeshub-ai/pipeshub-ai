@@ -12,12 +12,47 @@ if [ "$(id -u)" != "0" ]; then
     exec "$@"
 fi
 
-# Volumes written by earlier root-running releases. Only mismatched entries are
-# touched, so after the first start this is a quick scan.
+# Volumes written by earlier root-running releases. Finding mismatched owners
+# means stat-ing every inode, and local storage keeps a file per record, so the
+# full pass runs until it has once finished on a volume; the marker, created by
+# the runtime user, records that. While it is there only the top two levels are
+# checked, which catches a volume restored or copied as root. docker-compose.yml
+# and process_monitor.sh delete the markers when services run as root (a
+# rollback to an older image); deleting one by hand forces a full pass.
+OWNERSHIP_MARKER=.pipeshub-ownership-v1
+
+log() {
+    echo "docker-entrypoint: $*" >&2
+}
+
+take_ownership() {
+    dir=$1
+    marker="$dir/$OWNERSHIP_MARKER"
+    if [ -f "$marker" ]; then
+        if [ -z "$(find "$dir" -xdev -maxdepth 2 \
+                \( ! -uid "$APP_UID" -o ! -gid "$APP_GID" \) -print -quit 2>/dev/null)" ]; then
+            return 0
+        fi
+        # Removed before the pass so that an interrupted pass resumes next start.
+        rm -f "$marker" || true
+    fi
+    started=$(date +%s)
+    if changed=$(find "$dir" -xdev \( ! -uid "$APP_UID" -o ! -gid "$APP_GID" \) \
+            -exec chown -h "$APP_UID:$APP_GID" {} + -printf . 2>/dev/null); then
+        # As the runtime user, so a planted symlink cannot make root write elsewhere.
+        if ! setpriv --reuid="$APP_UID" --regid="$APP_GID" --clear-groups \
+                touch "$marker" 2>/dev/null; then
+            log "$dir: could not write $OWNERSHIP_MARKER; the next start checks every file again"
+        fi
+        log "$dir: gave ${#changed} entries to $APP_UID:$APP_GID in $(($(date +%s) - started))s"
+    else
+        log "$dir: ownership pass did not finish; the next start retries it"
+    fi
+}
+
 for dir in /data/pipeshub /root/.local /root/.cache/huggingface; do
     if [ -d "$dir" ]; then
-        find "$dir" -xdev \( ! -uid "$APP_UID" -o ! -gid "$APP_GID" \) \
-            -exec chown -h "$APP_UID:$APP_GID" {} + 2>/dev/null || true
+        take_ownership "$dir"
     fi
 done
 
