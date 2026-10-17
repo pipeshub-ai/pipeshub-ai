@@ -7,7 +7,7 @@
     "gitlab": "Kept from the 2026-09-19 run: on 2026-10-12 its tests errored within seconds, so that run's 0.2 min says nothing.",
     "local_fs": "Kept from the 2026-09-19 run (nearer 19 min per its note then): every local_fs test skipped on 2026-10-12.",
     "google_drive": "google_drive_workspace and google_drive_individual measured from the connectors-2 job of manual run 38789665806 (2026-10-15): workspace 81.4 min (Neo4j, scenario matrix included) + 79.8 min (ArangoDB), individual 28.2 + 26.5 min. Workspace is the longest suite now, so it has a shard to itself.",
-    "notion": "One suite and the longest; it gets a shard to itself, and that shard sets the floor the others pack up to."
+    "notion": "One suite and the second longest; it gets a shard to itself, and that shard sets the length the multi-suite shards pack up to."
   },
   "minutes": {
     "notion": 80.6,
