@@ -41,10 +41,12 @@ from app.models.blocks import BlockGroup, DataFormat, GroupSubType, GroupType
 from app.models.entities import (
     AppUser,
     AppUserGroup,
+    ItemType,
     OriginTypes,
     RecordGroup,
     RecordGroupType,
     RecordType,
+    Status,
     TicketRecord,
     WebpageRecord,
 )
@@ -143,8 +145,10 @@ def zendesk_connector(mock_logger, mock_data_entities_processor,
             scope="team",
             created_by="test-user",
         )
-    # The admin check has its own tests; run_sync tests assume an admin connection.
+    # The admin check and status lookup have their own tests; run_sync tests assume an
+    # admin connection on an account without custom statuses.
     connector._ensure_admin_account = AsyncMock()
+    connector._fetch_custom_status_labels = AsyncMock(return_value={})
     # Groups sync before tickets, so the cache is populated by then.
     connector._group_id_to_data = {"7": {"id": 7, "name": "Technical Support"}}
     # Tickets and articles each keep their own checkpoint; tests that assert on one
@@ -1059,6 +1063,59 @@ class TestUnknownGroupIsNotInvented:
         # ticket of a deleted group.
         assert record.inherit_permissions is False
         assert [p.external_id for p in permissions if p.external_id] == [ALL_TICKETS_GROUP_ID, "group_999"]
+
+
+class TestTicketStatusAndType:
+    """``status`` is only the category a custom status sits in; the label is what agents see."""
+
+    async def test_a_custom_status_label_is_the_source_status(self, zendesk_connector) -> None:
+        zendesk_connector._custom_status_labels = {"501": "In Progress"}
+
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 600, "subject": "Working", "group_id": 7, "status": "open", "custom_status_id": 501,
+        })
+
+        assert record.status == Status.OPEN
+        assert record.source_status == "In Progress"
+        assert "(Zendesk: In Progress)" in record.to_llm_context()
+
+    async def test_without_custom_statuses_the_category_is_kept(self, zendesk_connector) -> None:
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 601, "subject": "Parked", "group_id": 7, "status": "hold", "custom_status_id": 999,
+        })
+
+        assert record.status == Status.BLOCKED
+        assert record.source_status == "hold"
+
+    @pytest.mark.parametrize("zendesk_type, stored", [
+        ("problem", ItemType.PROBLEM),
+        ("incident", ItemType.INCIDENT),
+        ("question", ItemType.QUESTION),
+        ("task", ItemType.TASK),
+        (None, ItemType.UNKNOWN),
+    ])
+    async def test_every_zendesk_ticket_type_maps_to_an_item_type(
+        self, zendesk_connector, zendesk_type, stored
+    ) -> None:
+        record, _ = await zendesk_connector._ticket_to_record({
+            "id": 602, "subject": "Typed", "group_id": 7, "status": "new", "type": zendesk_type,
+        })
+
+        assert record.type == stored
+
+    @pytest.mark.parametrize("response, labels", [
+        (_make_response(data={"custom_statuses": [
+            {"id": 501, "agent_label": "In Progress"}, {"id": 502, "agent_label": ""},
+        ]}), {"501": "In Progress"}),
+        (_make_response(success=False, status_code=403, error="Forbidden"), {}),
+    ])
+    async def test_custom_status_labels(self, zendesk_connector, response, labels) -> None:
+        """A plan without custom statuses is not an error: tickets keep their category."""
+        _ready(zendesk_connector)
+        del zendesk_connector._fetch_custom_status_labels
+        zendesk_connector._call_api_with_retry = AsyncMock(return_value=response)
+
+        assert await zendesk_connector._fetch_custom_status_labels() == labels
 
 
 class TestUnassignedTickets:
