@@ -198,8 +198,10 @@ log_available() {
 query_rss_mb() {
     if [ "$PIPESHUB_MODE" = "docker" ]; then
         $DOCKER exec "$CONTAINER" sh -c '
-            par=$(pgrep -f "python -m uvicorn app.query_main" | head -1)
-            [ -n "$par" ] || par=$(pgrep -f "python -m app.query_main" | head -1)
+            # Bracketed: this sh -c carries the pattern in its own argv, so a bare
+            # pattern matches the shell and reports its ~1 MB as the service.
+            par=$(pgrep -f "[p]ython -m uvicorn app.query_main" | head -1)
+            [ -n "$par" ] || par=$(pgrep -f "[p]ython -m app.query_main" | head -1)
             [ -n "$par" ] || { echo 0; exit 0; }
             tot=0
             for p in $par $(pgrep -P $par 2>/dev/null); do

@@ -19,6 +19,10 @@ it is the one that shows where the CPU went and which backend call queued.
 
 ## Quick start
 
+For a matrix of user counts and repeated trials in one command, use
+`./qprof.sh` — see [docs/query-profiling.md](../docs/query-profiling.md). The
+rest of this page covers the single-run tool it drives.
+
 On the machine running PipesHub:
 
 ```bash
@@ -61,8 +65,10 @@ That writes `results/baseline/`, printing the report to the terminal too:
 | file | what it is |
 |---|---|
 | `report.txt` | the printed report |
-| `cpu.svg` / `cpu.raw.gz` | flame graph, and the raw profile for re-analysis |
+| `cpu.svg` / `cpu.speedscope.json` | flame graph, and the same capture for speedscope.app |
+| `cpu.raw.gz` | collapsed stacks folded from the speedscope capture, for re-analysis |
 | `memory.svg` / `memory.csv` | RSS over the run |
+| `resources.svg` / `resources.csv` | CPU and memory of every container in the compose project |
 | `requests.csv` | every request: HTTP code, duration, curl exit |
 | `summary.json` | machine-readable, consumed by `aggregate.py` |
 
@@ -223,6 +229,9 @@ PIPESHUB_MODE=docker ./perftest.sh baseline 8 300
 | `PIPESHUB_QUERY_FILE` | `queries.txt` | the query set users rotate through |
 | `PIPESHUB_QUERY` | — | force a single query instead of the file |
 | `PIPESHUB_THINK_TIME` | `3` | seconds between a user's turns |
+| `PIPESHUB_FLAME` | `cpu` | `cpu` (GIL held), `wall` (all threads, waiting included) or `off` |
+| `PIPESHUB_SEED` | the label | seeds each user's query order; set it alike to replay the same sequence across labels |
+| `PIPESHUB_STACK_CONTAINERS` | the compose project | space-separated containers the resource sampler reads |
 | `PIPESHUB_TURN_MAX_SECONDS` | `300` | per-turn curl timeout. Raise it when turns outlast it — a cut SSE stream still reports HTTP 200, so truncation shows only as `curl_exit=28` and a missing completion marker |
 
 `perftest.sh` probes the token before starting and aborts if it is not
@@ -233,7 +242,8 @@ looks exactly like a throughput collapse.
 
 CPU profiling is skipped with a note; throughput, latency, memory and backend
 sections still work. py-spy must run on the host (the container has no
-`SYS_PTRACE`), which is why it attaches from outside.
+`SYS_PTRACE`), which is why it attaches from outside, and as root: the query
+service marks itself non-dumpable, which refuses a same-user attach.
 
 ### Load from a second machine
 
@@ -254,7 +264,8 @@ elsewhere and use this only to collect:
 
 | file | what it does |
 |---|---|
-| `perftest.sh` | the one command — runs load, collects everything, writes the report |
+| `qprof.sh` | runs `perftest.sh` over users × workers × trials and summarises — see `docs/query-profiling.md` |
+| `perftest.sh` | one run — runs load, collects everything, writes the report |
 | `instrument.sh` | `on` / `off` / `status` for the in-container probes |
 | `throughput.sh` | completed turns in a window (used by `perftest.sh`; usable alone) |
 | `query_rss.sh` | query-service RSS in MB, one number, for sampling |
