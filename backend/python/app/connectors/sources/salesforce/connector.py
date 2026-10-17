@@ -2336,6 +2336,35 @@ class SalesforceConnector(BaseConnector):
                     exc_info=True
                 )
 
+    async def _authenticated_user_id(self) -> Optional[str]:
+        """The user id that ends the identity URL Salesforce returns with every token."""
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        identity_url = ((config or {}).get("credentials") or {}).get("id")
+        if not isinstance(identity_url, str) or not identity_url:
+            self.logger.debug(
+                "Salesforce connector %s: the stored token has no identity URL yet; "
+                "it arrives with the next token refresh or reconnect", self.connector_id,
+            )
+            return None
+        return _sanitize_soql_id(identity_url.rstrip("/").rsplit("/", 1)[-1])
+
+    async def _register_authenticated_identity(self, api_version: str) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        try:
+            user_id = await self._authenticated_user_id()
+            if not user_id:
+                return
+            user = await self._fetch_first_record(
+                api_version=api_version,
+                soql=f"SELECT Id, Email FROM User WHERE Id = '{user_id}'",
+            )
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Salesforce user: %s", e)
+            return
+        user = user or {}
+        await self.register_authenticated_source_user(user.get("Email"), user.get("Id"))
+
     async def run_sync(self) -> None:
             """
             Runs a full synchronization from the Salesforce instance.
@@ -2388,6 +2417,7 @@ class SalesforceConnector(BaseConnector):
                     )
 
                 api_version = await self._get_api_version()
+                await self._register_authenticated_identity(api_version)
 
                 # Step 1: Incremental sync for users
                 self.logger.info("Syncing users (incremental)...")

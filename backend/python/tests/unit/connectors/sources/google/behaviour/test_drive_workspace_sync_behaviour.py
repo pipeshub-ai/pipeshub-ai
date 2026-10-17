@@ -155,6 +155,23 @@ async def test_service_account_sign_in_uses_delegated_tokens_and_writes_no_setti
     assert "credentials" not in ws.config
 
 
+async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Workspace) -> None:
+    await ws.sync()
+
+    admin_id = ws.world.users[ADMIN].user_id
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.app_users[ADMIN].source_user_id == admin_id
+
+
+async def test_an_admin_email_configured_as_an_alias_registers_the_primary_account(ws: Workspace) -> None:
+    ws.world.aliases["it@example.com"] = ADMIN
+    ws.config["auth"]["adminEmail"] = "it@example.com"
+
+    await ws.sync()
+
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, ws.world.users[ADMIN].user_id)]
+
+
 async def test_users_and_groups_are_read_to_the_last_page(ws: Workspace) -> None:
     for n in range(3):
         ws.world.add_user(f"extra{n}@example.com")

@@ -434,6 +434,29 @@ class NotionConnector(BaseConnector):
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
             return False
 
+    async def _register_authenticated_identity(self, datasource: NotionDataSource) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector.
+        Only an OAuth bot is owned by a person; an integration secret's bot belongs to the
+        workspace, so there is no account to link."""
+        client = self.notion_client.get_client() if self.notion_client else None
+        if not isinstance(client, NotionRESTClientViaOAuth):
+            return
+        owner: dict[str, Any] = {}
+        try:
+            response = await datasource.retrieve_bot_user()
+            if response and response.success and response.data:
+                bot_user = response.data.json()
+                if isinstance(bot_user, dict):
+                    owner = ((bot_user.get("bot") or {}).get("owner") or {}).get("user") or {}
+        except Exception as e:
+            self.logger.debug("Could not read the Notion user who authorized this connector: %s", e)
+            return
+        email = (owner.get("person") or {}).get("email")
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None, owner.get("id")
+        )
+
     async def run_sync(self) -> None:
         """
         Run full synchronization of Notion data.
@@ -454,6 +477,7 @@ class NotionConnector(BaseConnector):
 
             datasource = await self._get_fresh_datasource()
             await self._assert_required_capabilities(datasource)
+            await self._register_authenticated_identity(datasource)
 
             # Load filters
             self.sync_filters, self.indexing_filters = await load_connector_filters(

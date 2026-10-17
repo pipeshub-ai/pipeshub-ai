@@ -144,6 +144,7 @@ class OAuthToken:
     uid: Optional[str] = None   # used for dropbox
     account_id: Optional[str] = None
     team_id: Optional[str] = None
+    id: Optional[str] = None  # Salesforce identity URL, ending in /<orgId>/<userId>
 
     @property
     def is_expired(self) -> bool:
@@ -173,7 +174,8 @@ class OAuthToken:
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
             "account_id": self.account_id,
-            "team_id": self.team_id
+            "team_id": self.team_id,
+            "id": self.id,
         }
 
     @classmethod

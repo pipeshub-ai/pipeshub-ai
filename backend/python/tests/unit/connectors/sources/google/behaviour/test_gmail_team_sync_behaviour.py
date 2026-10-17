@@ -110,6 +110,14 @@ async def test_users_and_groups_are_read_to_the_last_page(ws: Harness) -> None:
     assert {m.email for m in ws.records.user_groups["team@example.com"][1]} == {ALICE, BOB, *extra}
 
 
+async def test_the_admin_the_service_account_acts_as_is_registered_as_the_authenticated_account(ws: Harness) -> None:
+    await ws.sync()
+
+    admin_id = ws.directory.users[ADMIN].user_id
+    assert ws.records.linked_authenticators == [(CONNECTOR_ID, "admin-user", ADMIN, admin_id)]
+    assert ws.records.app_users[ADMIN].source_user_id == admin_id
+
+
 async def test_a_failed_member_read_keeps_the_stored_group_and_the_rest_sync(ws: Harness, backoff_sleeps: list[float]) -> None:
     ws.directory.add_group("team@example.com", [ALICE, BOB])
     ws.directory.add_group("other@example.com", [BOB])

@@ -132,8 +132,15 @@ class TestOAuthTokenSerialization:
             "uid",
             "account_id",
             "team_id",
+            "id",
         }
         assert set(d.keys()) == expected_keys
+
+    def test_salesforce_identity_url_survives_storage(self) -> None:
+        """Salesforce names the authenticated user only through the token's identity URL."""
+        url = "https://login.salesforce.com/id/00Dx0000000BV7zEAG/005x00000012Q9PAAU"
+        token = OAuthToken.from_dict({"access_token": "tok", "id": url})
+        assert OAuthToken.from_dict(token.to_dict()).id == url
 
     def test_to_dict_created_at_is_iso_string(self):
         token = OAuthToken(
