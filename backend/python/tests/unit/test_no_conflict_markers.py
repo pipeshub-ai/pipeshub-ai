@@ -8,7 +8,8 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 # The outer lines and diff3's base line; a bare row of "=" is also a docstring underline.
-_MARKER = re.compile(r"^(<{7} |\|{7} |>{7} )", re.MULTILINE)
+# Seven or more: git merge-file --marker-size writes longer runs.
+_MARKER = re.compile(r"^(<{7,} |\|{7,} |>{7,} )", re.MULTILINE)
 _SOURCES = ("app", "tests", "scripts")
 
 
