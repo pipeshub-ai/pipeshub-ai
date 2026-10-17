@@ -15,7 +15,6 @@ import { PatService } from '../services/pat.service'
 import { ServiceTokenService } from '../services/service-token.service'
 import { DelegationService } from '../services/delegation.service'
 import { TokenExchangeService } from '../services/token-exchange.service'
-import { DelegationController } from '../controller/delegation.controller'
 import { OAuthDcrService } from '../services/oauth.dcr.service'
 import { OAuthDeviceService } from '../services/oauth.device.service'
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service'
@@ -163,16 +162,19 @@ export class OAuthProviderContainer {
       )
       container.bind<PatService>('PatService').toConstantValue(patService)
 
-      // Delegation: the allow-list an administrator maintains, and the
-      // exchange that turns a service token into a short-lived token for one
-      // named person.
+      // Delegation: the exchange that turns a service token into a
+      // short-lived token for one named person, and the allow-list it checks
+      // before it will do so.
+      //
+      // The service is bound in both editions because the exchange and the
+      // auth middleware read from it on every delegated request. What is not
+      // bound here is the controller behind the administrator routes, which
+      // is the only thing that can write an allow-list entry: it lives in the
+      // Enterprise overlay, and without it the exchange has nothing to find.
       const delegationService = new DelegationService(logger)
       container
         .bind<DelegationService>('DelegationService')
         .toConstantValue(delegationService)
-      container
-        .bind<DelegationController>('DelegationController')
-        .toConstantValue(new DelegationController(delegationService))
 
       const serviceTokenService = new ServiceTokenService(
         logger,

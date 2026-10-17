@@ -156,3 +156,17 @@ export interface DelegationEvent {
 export interface DelegationEventListApiResponse {
   events: DelegationEvent[];
 }
+
+/**
+ * Whether this deployment can delegate at all.
+ *
+ * Letting a service account act as a named person is an Enterprise
+ * capability. The Community build answers this probe with `available: false`
+ * and refuses the rest of the delegation routes, so the screen asks first and
+ * explains rather than failing when somebody reaches for it.
+ */
+export interface DelegationCapability {
+  available: boolean;
+  edition?: string;
+  capability?: string;
+}

@@ -70,6 +70,7 @@ vi.mock('../api', () => ({
     events: (...a: unknown[]) => listEvents(...a),
     grant: (...a: unknown[]) => grantDelegation(...a),
     revoke: (...a: unknown[]) => revokeDelegation(...a),
+    capability: () => Promise.resolve({ available: true }),
   },
 }));
 
@@ -357,5 +358,29 @@ describe('ServiceAccountDelegationsPanel', () => {
         copy.revokeDescription.replace('{{subject}}', 'person@example.com')
       )
     ).toBeTruthy();
+  });
+  it('explains instead of loading where the capability is not in the build', async () => {
+    render(
+      <Theme>
+        <ServiceAccountDelegationsPanel
+          open
+          available={false}
+          account={ACCOUNT}
+          onOpenChange={vi.fn()}
+        />
+      </Theme>
+    );
+
+    expect(screen.getByText(copy.unavailableTitle)).toBeTruthy();
+    expect(screen.getByText(copy.unavailableBody)).toBeTruthy();
+
+    // The point of the explanatory state is that nothing is asked for. A
+    // request here would come back 501 and surface as an error toast, which
+    // is the "looks broken" outcome this replaces.
+    expect(listDelegations).not.toHaveBeenCalled();
+    expect(listEvents).not.toHaveBeenCalled();
+
+    // The account is still named, so it is clear which one this is about.
+    expect(screen.getByText(ACCOUNT.email)).toBeTruthy();
   });
 });

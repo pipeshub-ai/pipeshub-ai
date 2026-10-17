@@ -9,7 +9,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EntityEmptyState, ConfirmationDialog } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { ServiceAccountsApi } from './api';
+import { DelegationsApi, ServiceAccountsApi } from './api';
 import type { ServiceAccount } from './types';
 import { CreateServiceAccountPanel } from './components/create-service-account-panel';
 import { ServiceAccountTokensPanel } from './components/service-account-tokens-panel';
@@ -34,6 +34,16 @@ function ServiceAccountsPageContent() {
   const [error, setError] = useState<string | null>(null);
   const [createPanelOpen, setCreatePanelOpen] = useState(false);
   const [tokensFor, setTokensFor] = useState<ServiceAccount | null>(null);
+  /**
+   * Whether this deployment can delegate at all.
+   *
+   * Asked once, because it is a property of the build rather than of any one
+   * account. `null` until the answer arrives; the panel treats that as "yes"
+   * so the usual path never flickers through the explanatory state.
+   */
+  const [delegationAvailable, setDelegationAvailable] = useState<
+    boolean | null
+  >(null);
   const [delegationsFor, setDelegationsFor] = useState<ServiceAccount | null>(
     null
   );
@@ -65,6 +75,26 @@ function ServiceAccountsPageContent() {
     if (!isProfileInitialized) return;
     void fetchAccounts();
   }, [isProfileInitialized, fetchAccounts]);
+
+  useEffect(() => {
+    if (!isProfileInitialized) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { available } = await DelegationsApi.capability();
+        if (!cancelled) setDelegationAvailable(available === true);
+      } catch {
+        // A probe that does not come back is not an edition answer, so this
+        // stays quiet rather than raising a toast about a capability nobody
+        // has asked for yet. Left as unavailable: offering a control that
+        // cannot work is worse than withholding one that could.
+        if (!cancelled) setDelegationAvailable(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isProfileInitialized]);
 
   const toggleDisabled = useCallback(
     async (account: ServiceAccount) => {
@@ -341,6 +371,7 @@ function ServiceAccountsPageContent() {
       />
 
       <ServiceAccountDelegationsPanel
+        available={delegationAvailable}
         open={delegationsFor !== null}
         onOpenChange={(open) => {
           if (!open) setDelegationsFor(null);

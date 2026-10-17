@@ -3706,6 +3706,9 @@
       "delegations": {
         "title": "代表他人执行操作",
         "explainer": "可以允许此服务账号代表指定的人员执行操作。此时它读取的内容与该人员完全一致，所获得的令牌有效期为五分钟。此处不能指定管理员。",
+        "unavailableTitle": "代表某个人行事属于企业版功能",
+        "unavailableBody": "允许此服务账户以指定同事的身份行事 —— 允许名单、以该人名义签发的五分钟令牌，以及每次尝试的记录 —— 属于企业版，本版本不包含该功能。",
+        "unavailableAvailableHere": "本版本包含：服务账户本身、它对您授予的知识库的自有访问权限，以及您可以签发和吠回的令牌。这足以满足任何使用自身权限而非他人权限的集成。",
         "addTitle": "允许代表某人",
         "subjectLabel": "人员",
         "subjectPlaceholder": "name@example.com",

@@ -63,6 +63,14 @@ export interface ServiceAccountDelegationsPanelProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   account: ServiceAccount | null;
+  /**
+   * Whether this deployment can delegate at all.
+   *
+   * `null` while the probe is in flight. `false` is the Community edition,
+   * where the panel explains the capability instead of loading a list that
+   * cannot exist.
+   */
+  available?: boolean | null;
 }
 
 /**
@@ -77,6 +85,7 @@ export function ServiceAccountDelegationsPanel({
   open,
   onOpenChange,
   account,
+  available = true,
 }: ServiceAccountDelegationsPanelProps) {
   const { t, i18n } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
@@ -163,6 +172,9 @@ export function ServiceAccountDelegationsPanel({
 
   useEffect(() => {
     if (!open || !accountId) return;
+    // Nothing to load where the capability is not built in, and asking would
+    // only produce the 501 as an error toast.
+    if (available === false) return;
     shownFor.current = accountId;
     // Cleared rather than left in place, so the previous account's people are
     // never on screen under this account's name.
@@ -172,7 +184,7 @@ export function ServiceAccountDelegationsPanel({
     setSubject('');
     setReason('');
     void refresh();
-  }, [open, accountId, refresh]);
+  }, [open, accountId, refresh, available]);
 
   const grant = useCallback(async () => {
     if (!accountId || subject.trim() === '') return;
@@ -226,6 +238,47 @@ export function ServiceAccountDelegationsPanel({
       setIsRevoking(false);
     }
   }, [accountId, revokeTarget, addToast, t, refresh]);
+
+  /**
+   * The Community edition explains rather than fails.
+   *
+   * The control that opens this panel is deliberately left in place. Hiding
+   * it would leave an administrator wondering whether a service account can
+   * act for a person at all; this way the answer, and where the capability
+   * lives, is in front of whoever went looking for it.
+   */
+  if (available === false) {
+    return (
+      <WorkspaceRightPanel
+        open={open}
+        onOpenChange={onOpenChange}
+        title={
+          account
+            ? account.fullName
+            : t('workspace.serviceAccounts.delegations.title')
+        }
+        icon={<MaterialIcon name="switch_account" size={18} />}
+        hideFooter
+      >
+        <Flex direction="column" gap="3">
+          {account && (
+            <Text size="1" style={{ color: 'var(--slate-10)', ...MONO }}>
+              {account.email}
+            </Text>
+          )}
+          <Text size="2" weight="medium">
+            {t('workspace.serviceAccounts.delegations.unavailableTitle')}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('workspace.serviceAccounts.delegations.unavailableBody')}
+          </Text>
+          <Text size="1" style={{ color: 'var(--slate-11)' }}>
+            {t('workspace.serviceAccounts.delegations.unavailableAvailableHere')}
+          </Text>
+        </Flex>
+      </WorkspaceRightPanel>
+    );
+  }
 
   return (
     <WorkspaceRightPanel

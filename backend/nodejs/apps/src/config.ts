@@ -56,6 +56,9 @@ export { createFeatureFlagRouter } from './modules/user_management/routes/featur
 export { createOrgConfigRouter } from './modules/user_management/routes/orgConfig.routes';
 export { createRequestRouter } from './modules/user_management/routes/request.routes';
 
+// --- Service account delegation (Community stub, real router in ee/) ---
+export { createDelegationRouter } from './modules/oauth_provider/routes/delegation.routes';
+
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';

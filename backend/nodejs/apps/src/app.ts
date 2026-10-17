@@ -59,6 +59,7 @@ import {
   createFeatureFlagRouter,
   createOrgConfigRouter,
   createRequestRouter,
+  createDelegationRouter,
   OAuthAppsContainer,
   createOAuthAppsRouter,
 } from './config';
@@ -92,7 +93,6 @@ import { createOAuthProviderRouter } from './modules/oauth_provider/routes/oauth
 import { createOAuthClientsRouter } from './modules/oauth_provider/routes/oauth.clients.routes';
 import { createServiceAccountsRouter } from './modules/user_management/routes/service-accounts.routes';
 import { createServiceTokenRouter } from './modules/oauth_provider/routes/service-token.routes';
-import { createDelegationRouter } from './modules/oauth_provider/routes/delegation.routes';
 import { ServiceAccountsService } from './modules/user_management/services/service-accounts.service';
 import { ServiceTokenService } from './modules/oauth_provider/services/service-token.service';
 import { createPatRouter } from './modules/oauth_provider/routes/pat.routes';
@@ -737,7 +737,11 @@ export class Application {
     );
 
     // Who each service account may act as, and the record of every time one
-    // tried (the delegation allow-list and its audit log)
+    // tried (the delegation allow-list and its audit log).
+    //
+    // Imported from `./config` rather than the module, because this is one of
+    // the routers that differs by edition: Community gets a stub that
+    // explains the capability is not built in, Enterprise gets the real one.
     this.app.use(
       '/api/v1/service-account-delegations',
       createDelegationRouter(this.oauthProviderContainer),

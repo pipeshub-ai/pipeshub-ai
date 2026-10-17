@@ -1,5 +1,15 @@
 # Acting on behalf of someone
 
+> **Enterprise edition.** Delegation — letting a service account act as a
+> named person — is part of the Enterprise edition. The Community build ships
+> a stub router in its place: the capability probe answers `available: false`
+> and the rest of the delegation routes answer `501 Not Implemented`, so the
+> screen can explain the capability rather than fail at it.
+>
+> A service account working with **its own** access is in both editions:
+> creating one, granting it narrow rights, and issuing or revoking its tokens.
+> This page describes the Enterprise half.
+
 A service account normally reads with its own permissions. Delegation lets it
 read as a named person instead, for a few minutes at a time, so an integration
 can answer "what can *this* person see" rather than returning the union of what

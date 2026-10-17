@@ -3632,6 +3632,9 @@
       "delegations": {
         "title": "Im Namen einer Person handeln",
         "explainer": "Dieses Dienstkonto kann die Erlaubnis erhalten, für namentlich genannte Personen zu handeln. Dabei liest es genau das, was diese Person lesen darf, und das ausgestellte Token gilt fünf Minuten. Administratoren können hier nicht genannt werden.",
+        "unavailableTitle": "Das Handeln im Namen einer Person ist eine Enterprise-Funktion",
+        "unavailableBody": "Diesem Dienstkonto zu erlauben, als benannte Kollegin oder benannter Kollege zu handeln — die Freigabeliste, das fünf Minuten gültige Token im Namen dieser Person und die Aufzeichnung jedes Versuchs — gehört zur Enterprise-Edition und ist in dieser Edition nicht enthalten.",
+        "unavailableAvailableHere": "Was diese Edition enthält: das Dienstkonto selbst, seinen eigenen Zugriff auf die von Ihnen freigegebenen Wissensdatenbanken sowie Token, die Sie ausstellen und widerrufen können. Das deckt jede Integration ab, die mit eigenen Berechtigungen arbeitet statt mit denen einer anderen Person.",
         "addTitle": "Erlauben, für jemanden zu handeln",
         "subjectLabel": "Person",
         "subjectPlaceholder": "name@beispiel.de",

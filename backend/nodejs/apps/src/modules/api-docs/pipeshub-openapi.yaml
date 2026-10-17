@@ -17043,12 +17043,45 @@ paths:
             rather than a user session, or the client is not authorized /
             the redirect URI is invalid.
 
+  /service-account-delegations/capability:
+    get:
+      tags:
+        - OAuth Provider
+      summary: Whether this deployment can delegate at all
+      description: |
+        Answers in both editions, which is the point: the screen that would
+        offer delegation asks this first, so the Community build can explain
+        the capability and where it lives rather than failing at the moment
+        somebody reaches for it.
+      operationId: getServiceAccountDelegationCapability
+      responses:
+        '200':
+          description: The edition's answer.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  available:
+                    type: boolean
+                    description: False in Community, true in Enterprise.
+                  edition:
+                    type: string
+                    example: community
+                  capability:
+                    type: string
+                    example: service-account-delegation
   /service-account-delegations:
     get:
       tags:
         - OAuth Provider
       summary: List who a service account may act as
       description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
         The service account's allow-list. Administrator only.
 
         Entries whose person has since left, been disabled or become an
@@ -17095,6 +17128,11 @@ paths:
         - OAuth Provider
       summary: Allow a service account to act as one named person
       description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
         Administrator only. Granting the same person twice returns the
         existing entry rather than failing.
 
@@ -17158,6 +17196,11 @@ paths:
         - OAuth Provider
       summary: Read the delegation log
       description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
         Every attempt a service account made to act as someone, newest first,
         including the ones that were refused. Administrator only.
 
@@ -17210,6 +17253,11 @@ paths:
         - OAuth Provider
       summary: Stop a service account acting as this person
       description: |
+        **Enterprise edition.** The Community build serves this path from a
+        stub that answers `501 Not Implemented`; only the capability probe
+        responds there. A service account acting with its own access is
+        available in both editions.
+
         Administrator only, and effective at once. Tokens already issued under
         the entry are not revoked because they do not need to be: the auth
         middleware reads this row on every request a delegated token makes, so

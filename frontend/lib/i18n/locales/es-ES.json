@@ -3659,6 +3659,9 @@
       "delegations": {
         "title": "Actuar en nombre de alguien",
         "explainer": "Esta cuenta de servicio puede autorizarse para actuar en nombre de personas concretas. Cuando lo hace, lee exactamente lo que esa persona puede leer, y el token que recibe dura cinco minutos. Aquí no se pueden indicar administradores.",
+        "unavailableTitle": "Actuar en nombre de una persona es una capacidad de Enterprise",
+        "unavailableBody": "Permitir que esta cuenta de servicio actúe como un compañero concreto — la lista de permitidos, el token de cinco minutos emitido a nombre de esa persona y el registro de cada intento — forma parte de la edición Enterprise y no está incluido en esta.",
+        "unavailableAvailableHere": "Lo que sí incluye esta edición: la propia cuenta de servicio, su acceso a las bases de conocimiento que le concedas y los tokens que puedes emitir y revocar. Eso cubre cualquier integración que funcione con sus propios permisos en lugar de los de otra persona.",
         "addTitle": "Permitir que actúe en nombre de alguien",
         "subjectLabel": "Persona",
         "subjectPlaceholder": "nombre@ejemplo.com",

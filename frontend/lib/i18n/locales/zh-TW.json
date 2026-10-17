@@ -3706,6 +3706,9 @@
       "delegations": {
         "title": "代表他人執行操作",
         "explainer": "可以允許此服務帳號代表指定的人員執行操作。此時它讀取的內容與該人員完全一致，所取得的權杖有效期為五分鐘。此處不能指定管理員。",
+        "unavailableTitle": "代表某個人行事屬於企業版功能",
+        "unavailableBody": "允許此服務帳號以指定同事的身分行事 —— 允許名單、以該人名義簽發的五分鐘權杖，以及每次嘗試的紀錄 —— 屬於企業版，本版本不包含該功能。",
+        "unavailableAvailableHere": "本版本包含：服務帳號本身、它對您授予的知識庫的自有存取權限，以及您可以簽發和撤銷的權杖。這足以滿足任何使用自身權限而非他人權限的整合。",
         "addTitle": "允許代表某人",
         "subjectLabel": "人員",
         "subjectPlaceholder": "name@example.com",

@@ -2,6 +2,7 @@ import { apiClient } from '@/lib/api';
 import type {
   CreateServiceAccountPayload,
   Delegation,
+  DelegationCapability,
   DelegationEventListApiResponse,
   DelegationListApiResponse,
   GrantDelegationPayload,
@@ -89,6 +90,21 @@ export const ServiceTokensApi = {
 };
 
 export const DelegationsApi = {
+  /**
+   * GET /api/v1/service-account-delegations/capability
+   *
+   * Answers in both editions, so a failure here means the request did not
+   * arrive rather than that the capability is missing. Treated as unavailable
+   * either way: offering a control that cannot work is worse than hiding one
+   * that could.
+   */
+  async capability(): Promise<DelegationCapability> {
+    const { data } = await apiClient.get<DelegationCapability>(
+      `${DELEGATIONS_URL}/capability`
+    );
+    return data;
+  },
+
   /** GET /api/v1/service-account-delegations?serviceAccountId= */
   async list(serviceAccountId: string): Promise<DelegationListApiResponse> {
     const { data } = await apiClient.get<DelegationListApiResponse>(
