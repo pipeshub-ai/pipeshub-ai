@@ -50,6 +50,24 @@ describe('streamingFetch (Electron bridge)', () => {
     expect(text).toContain('hello pdf');
   });
 
+  it('replaces a caller multipart Content-Type that has no boundary', async () => {
+    const streamFetch = installBridge();
+    const form = new FormData();
+    form.append('files', new File(['hello'], 'a.txt', { type: 'text/plain' }));
+
+    await streamingFetch('http://api/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'multipart/form-data' },
+      body: form,
+    });
+
+    const init = streamFetch.mock.calls[0][1];
+    const contentType = init.headers?.['content-type'] ?? '';
+    expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+    const boundary = contentType.split('boundary=')[1];
+    expect(new TextDecoder().decode(init.body as Uint8Array)).toContain(`--${boundary}`);
+  });
+
   it('passes string bodies through unchanged', async () => {
     const streamFetch = installBridge();
 
