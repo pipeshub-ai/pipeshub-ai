@@ -10,7 +10,7 @@ from app.agent_loop_lib.agent import observability as obs
 from app.agent_loop_lib.agent import resume as agent_resume
 from app.agent_loop_lib.agent import streaming as agent_streaming
 from app.agent_loop_lib.agent.loops import StepOutcome
-from app.agent_loop_lib.agent.prompt import build_system_prompt
+from app.agent_loop_lib.agent.prompt import build_system_blocks, build_system_prompt
 from app.agent_loop_lib.agent.tool_loop import (
     ToolCallOutcome,
     compute_duplicate_flags,
@@ -20,6 +20,7 @@ from app.agent_loop_lib.agent.tool_loop import (
 from app.agent_loop_lib.context.base import ContextBudget
 from app.agent_loop_lib.core.context import RunContext
 from app.agent_loop_lib.core.exceptions import AgentError, HookBlocked, RunCancelled
+from app.agent_loop_lib.core.tokens import count_schema_tokens, count_text_tokens
 from app.agent_loop_lib.core.messages import (
     AssistantMessage,
     ImagePart,
@@ -28,6 +29,7 @@ from app.agent_loop_lib.core.messages import (
     ThinkingPart,
     ToolMessage,
     UserMessage,
+    add_loop_note,
 )
 from app.agent_loop_lib.core.responses import RunUsage, StopReason
 from app.agent_loop_lib.core.scope import RunScope, TurnScope
@@ -77,6 +79,13 @@ def _content_to_json(content: Any) -> str:
 
 
 _PART_TYPES = (TextPart, ImagePart, ThinkingPart)
+
+_FINAL_ANSWER_NOTE = (
+    "[loop: You have reached the maximum number of steps for this request. "
+    "Do not call any more tools. Reply now with your final answer to the "
+    "user's question, using only the information you have already gathered. "
+    "If something could not be determined, say so briefly.]"
+)
 
 
 def _tool_result_content_to_message_content(content: Any) -> str | list[Part]:
@@ -560,7 +569,11 @@ class Agent:
         _resume_todos: list[Todo] | None = None,
         _resume_extensions: dict[str, Any] | None = None,
         _skip_start: bool = False,
+        _skip_user_message: bool = False,
     ) -> AgentResult:
+        """`_skip_user_message`: the goal's question is already in the history (a request that
+        continues a turn stopped on a tool call), so the run starts as usual but adds no new user
+        message for it. `_skip_start` also skips the start events and PRE_AGENT."""
         if self._model is None:
             self._resolve_model()
         if self._context is None:
@@ -610,7 +623,8 @@ class Agent:
                     await self._post_agent(result)
                     return result
 
-                await self._context.add(UserMessage(content=goal.description))
+                if not _skip_user_message:
+                    await self._context.add(UserMessage(content=goal.description))
 
             result = await self._spec.loop.run(self, goal)
             try:
@@ -638,7 +652,9 @@ class Agent:
         `final_answer_only=True` is the wrap-up turn after `max_turns` (see
         `loops.py::_finish_after_max_turns`): only calls to tools that end
         the run are executed (see `_drop_non_terminal_tool_calls`), so the
-        reply's text or a terminal call is the answer. A failed model call
+        reply's text or a terminal call is the answer. The request for that
+        answer rides on the latest tool result's loop footer, this call's
+        copy only (see `add_loop_note`). A failed model call
         or a reply with no answer returns `continue` instead of failing the
         run, so the caller can fall back to what it already has.
         """
@@ -649,6 +665,9 @@ class Agent:
         # makes, so middleware can reach `ctx.scope.turn.run...` uniformly
         # regardless of which event fired.
         turn_scope = TurnScope(run=self._scope, turn_index=turn_index)
+        # Created before anything is spawned this turn, so children inherit the same holder.
+        from app.agent_loop_lib.agent.tool_loop import PENDING_APPROVAL
+        approval_holder = self._scope.get(PENDING_APPROVAL)
 
         try:
             await hooks.dispatch_pre_turn(self._hooks, turn_index, scope=turn_scope)
@@ -669,30 +688,34 @@ class Agent:
 
         messages = await context.messages()
 
+        tool_schemas = tool_schemas_for_turn(self, spec, runtime)
+        # Stable and volatile blocks when the builder splits them, so the
+        # transport can end a cache breakpoint on the stable one; `system` is
+        # their join, for transports that take one string.
+        system_blocks = build_system_blocks(
+            spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections,
+        )
+        system_prompt = (
+            "\n\n".join(block for block in system_blocks if block) if system_blocks
+            else build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
+        )
+
         # --- Context shaping (pre_model hooks): the Phase-1 context-
         # engineering pipeline (budget reduction -> tool-result clearing ->
         # offload -> sliding window -> auto-compact) over what's about to be
         # sent, plus the deterministic deadline-warning guard. Stored
-        # history in `context` is untouched — shaping is per-call.
-        budget = ContextBudget.for_model(spec.model.model)
+        # history in `context` is untouched — shaping is per-call. The
+        # system prompt and tool schemas go on the same call, so the messages
+        # get only what they leave of the window; no shaper changes either.
+        budget = ContextBudget.for_model(
+            spec.model.model, context_window=spec.model.context_window,
+            reserved_prompt_tokens=count_text_tokens(system_prompt or "") + count_schema_tokens(tool_schemas),
+        )
         messages = await hooks.dispatch_pre_model(
             self._hooks, messages, budget, turn_index=turn_index, max_turns=spec.max_turns, scope=turn_scope,
         )
-
-        tool_schemas = tool_schemas_for_turn(self, spec, runtime)
-        system_prompt = build_system_prompt(spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections)
-
-        # When the builder supports `build_blocks()` (i.e. `PipesHubPromptBuilder`),
-        # pass the stable and volatile blocks separately so the transport can place
-        # the Anthropic cache breakpoint on the stable block only.  Other transports
-        # receive a plain `system` string and join internally when needed.
-        system_blocks: list[str] | None = None
-        _builder = spec.system_prompt
-        if hasattr(_builder, "build_blocks"):
-            _stable, _volatile = _builder.build_blocks(
-                spec, runtime, goal, self._scope.todos, self._scope.extra_prompt_sections
-            )
-            system_blocks = [_stable, _volatile]
+        if final_answer_only:
+            add_loop_note(messages, _FINAL_ANSWER_NOTE)
 
         cut_off_parts = self._cut_off_reply_parts()
 
@@ -1048,6 +1071,11 @@ class Agent:
                     final_confidence = outcome.confidence
                     final_record_ids = outcome.record_ids
                     final_needs_input = outcome.needs_input
+            # A sub-agent left a call waiting for a person: this run waits for the answer too.
+            pending = approval_holder.pending
+            if not task_done and pending is not None and pending.end_turn:
+                task_done = True
+                final_output = pending.message
 
             # Step footer — observable loop-control state appended to every
             # tool result so the model can make a reactive stop decision

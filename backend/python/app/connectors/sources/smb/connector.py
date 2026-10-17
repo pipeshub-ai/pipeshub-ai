@@ -153,6 +153,9 @@ if TYPE_CHECKING:
     )\
     .build_decorator()
 class SmbConnector(BaseConnector):
+    # An edition swaps these two by subclassing instead of copying init / create_connector.
+    processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
+
     def __init__(
         self,
         logger: Logger,
@@ -218,12 +221,7 @@ class SmbConnector(BaseConnector):
                 return False
             self.configured_share = (auth.get("share") or "").strip() or None
             await self._load_creator_email()
-            client = await SmbClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id,
-            )
-            self.data_source = SmbDataSource(client)
+            self.data_source = await self._build_data_source()
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, self.filter_key, self.connector_id, self.logger
             )
@@ -235,6 +233,14 @@ class SmbConnector(BaseConnector):
             self.logger.exception("SMB init failed")
             await self._auth_error("Connection failed", str(exc))
             return False
+
+    async def _build_data_source(self) -> INetworkShareDataSource:
+        client = await SmbClient.build_from_services(
+            logger=self.logger,
+            config_service=self.config_service,
+            connector_instance_id=self.connector_id,
+        )
+        return SmbDataSource(client)
 
     async def test_connection_and_access(self) -> bool:
         if not self.data_source:
@@ -312,7 +318,7 @@ class SmbConnector(BaseConnector):
             await self.notify(
                 type=NotificationType.CONNECTOR_SYNC_ERROR,
                 severity=NotificationSeverity.ERROR,
-                title="Sync could not read the share",
+                title=self._notification_title("Sync could not read the share"),
                 message=(
                     f"Nothing could be listed in {', '.join(unreadable)}. "
                     "Check that the server is reachable and the account still has access."
@@ -366,11 +372,16 @@ class SmbConnector(BaseConnector):
         if creator and getattr(creator, "email", None):
             await self.data_entities_processor.on_new_app_users(self.get_app_users([creator]))
 
+    def _notification_title(self, event: str) -> str:
+        label = Connectors.SMB.value
+        name = self.connector_instance_name
+        return f"{label} ({name}): {event}" if name and name != label else f"{label}: {event}"
+
     async def _auth_error(self, title: str, message: str) -> None:
         await self.notify(
             type=NotificationType.CONNECTOR_AUTH_ERROR,
             severity=NotificationSeverity.ERROR,
-            title=title,
+            title=self._notification_title(title),
             message=message,
             payload={"connectorId": self.connector_id, "connectorName": Connectors.SMB.value},
         )
@@ -385,7 +396,7 @@ class SmbConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         **kwargs: object,
     ) -> SmbConnector:
-        processor = NetworkShareEntitiesProcessor(logger, data_store_provider, config_service)
+        processor = cls.processor_cls(logger, data_store_provider, config_service)
         org_id = kwargs.get("org_id")
         if org_id:
             processor.org_id = org_id

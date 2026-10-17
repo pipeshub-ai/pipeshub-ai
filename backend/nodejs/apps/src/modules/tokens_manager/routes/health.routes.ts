@@ -8,6 +8,7 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
+import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -35,6 +36,7 @@ export interface HealthStatus {
     // via getDeploymentConfig()'s KV-store fresh/fallback path.
     redisMode: string;
   };
+  build: BuildInfo;
 }
 
 export function createHealthRouter(
@@ -51,6 +53,8 @@ export function createHealthRouter(
 
   const appConfig = container.get<AppConfig>('AppConfig');
   const configService = ConfigService.getInstance();
+  // Resolved here, at startup: from source it shells out to git once.
+  const build = getBuildInfo();
 
   async function getDeploymentConfig() {
     try {
@@ -166,15 +170,32 @@ export function createHealthRouter(
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
+          // Stay at 5s. Helm startup, readiness, and liveness probes call this
+          // route with timeoutSeconds 5; a longer wait here fails the probe
+          // and restarts the pod. The connector probe returns before this.
           const graphDbResp = await axios.get(
             `${appConfig.connectorBackend}/health/graph-db`,
             { timeout: 5000, validateStatus: () => true },
           );
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (graphDbResp.status !== 200) overallHealthy = false;
-        } catch (error) {
+          if (graphDbResp.status !== 200) {
+            overallHealthy = false;
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              'graph-db health check returned non-200',
+              { status: graphDbResp.status },
+            );
+          }
+        } catch (error: unknown) {
           services.graphDb = 'unhealthy';
           overallHealthy = false;
+          const axiosErr = error as { code?: string; message?: string };
+          const timedOut = axiosErr?.code === 'ECONNABORTED';
+          Logger.getInstance({ service: 'HealthStatus' }).error(
+            timedOut
+              ? 'graph-db health check timed out'
+              : 'graph-db health check failed',
+            axiosErr?.message ?? error,
+          );
         }
       }
 
@@ -209,6 +230,7 @@ export function createHealthRouter(
           vectorDbType: deployment.vectorDbType || 'pending',
           redisMode: process.env.REDIS_MODE || 'standalone',
         },
+        build,
       };
 
       res.status(200).json(health);

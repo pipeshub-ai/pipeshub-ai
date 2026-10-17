@@ -137,6 +137,9 @@ class TestFactoryWiring:
         source = inspect.getsource(factory.PipesHubAgentFactory.create)
         arm = source[source.index("def _direct_or_langchain"):]
         arm = arm[: arm.index("transport_registry.register(")]
+        builder = source[source.index("def _langchain_transport"):]
+        builder = builder[: builder.index("transport_registry = TransportRegistry()")]
 
         assert "with_image_cap(direct, image_cap)" in arm
-        assert "max_images_per_request=image_cap" in arm
+        assert "_langchain_transport()" in arm
+        assert "max_images_per_request=image_cap" in builder

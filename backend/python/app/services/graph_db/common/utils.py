@@ -1,5 +1,6 @@
 import re
 from collections.abc import Iterable
+from logging import Logger
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from app.config.constants.arangodb import (
@@ -8,6 +9,7 @@ from app.config.constants.arangodb import (
     OriginTypes,
     RecordRelations,
 )
+from app.services.graph_db.taxonomy import TAXONOMY_ENTITY_TYPE_BY_COLLECTION
 
 if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -431,6 +433,63 @@ def trash_purge_row(
             "origin": record.get("origin"),
         },
     }
+
+
+def cleans_taxonomy_points(record: dict[str, Any]) -> bool:
+    """Whether a deleted record's ``deleteRecord`` names its taxonomy entities
+    (``taxonomyRefs``): a knowledge-base record with vectors. Connector records
+    are left out: their deletes do not clean taxonomy points yet."""
+    return bool(record.get("virtualRecordId")) and (
+        record.get("origin") == OriginTypes.UPLOAD.value
+        or record.get("connectorName") == Connectors.KNOWLEDGE_BASE.value
+    )
+
+
+async def record_taxonomy_refs(
+    graph: "IGraphDBProvider", record_keys: Iterable[str], logger: Logger,
+) -> dict[str, list[dict[str, str]]]:
+    """The taxonomy entities each record links to, as ``{record key: [{"id",
+    "type"}]}``, read before a delete removes the edges so the indexing service
+    can then delete the entity points no other record reaches
+    (``EntityVectorStore.delete_unreached_entities``).
+
+    A failed read returns ``{}``: the delete must not fail over a cleanup, and
+    without refs the points stay as they always did.
+    """
+    keys = list(dict.fromkeys(str(key) for key in record_keys if key))
+    if not keys:
+        return {}
+    try:
+        links = await graph.get_record_taxonomy_links(keys, include_departments=True)
+    except Exception as exc:
+        logger.warning(
+            "Could not read the taxonomy links of %d deleted record(s); their entity points stay: %s",
+            len(keys), exc,
+        )
+        return {}
+    refs: dict[str, list[dict[str, str]]] = {}
+    for link in links:
+        entity_type = TAXONOMY_ENTITY_TYPE_BY_COLLECTION.get(link.get("collection"))
+        record_key, entity_id = link.get("recordId"), link.get("entityId")
+        if not entity_type or not record_key or not entity_id:
+            continue
+        ref = {"id": str(entity_id), "type": entity_type}
+        bucket = refs.setdefault(str(record_key), [])
+        if ref not in bucket:
+            bucket.append(ref)
+    return refs
+
+
+async def deleted_record_taxonomy_refs(
+    graph: "IGraphDBProvider", records: Iterable[dict[str, Any]], logger: Logger,
+) -> dict[str, list[dict[str, str]]]:
+    """``record_taxonomy_refs`` for the records in ``records`` that
+    ``cleans_taxonomy_points``, keyed by ``_key`` (ArangoDB) or ``id`` (Neo4j)."""
+    return await record_taxonomy_refs(
+        graph,
+        [record.get("_key") or record.get("id") for record in records if cleans_taxonomy_points(record)],
+        logger,
+    )
 
 
 def jira_issue_browse_url_regex(issue_key: str) -> str:

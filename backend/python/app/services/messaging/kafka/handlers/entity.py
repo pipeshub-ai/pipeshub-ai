@@ -11,9 +11,13 @@ from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
     ConnectorScopes,
+    OriginTypes,
     ProgressStatus,
 )
-from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
 from app.connectors.core.base.event_service.event_service import BaseEventService
 from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
@@ -23,11 +27,25 @@ from app.containers.connector import (
     ConnectorAppContainer,
 )
 from app.edition_services import get_data_entities_processor_cls
+from app.modules.indexing.record_republish import record_event
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import CONNECTOR_OFF
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
+
+_REQUEUE_PAGE_SIZE = 100
+# Parked by a turn-off, as opposed to AUTO_INDEX_OFF from the connector's own
+# indexing filters, which carries no such reason.
+_PARKED_WHILE_OFF = {
+    "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+    "reason": CONNECTOR_OFF,
+}
 
 
 class EntityEventService(BaseEventService):
@@ -211,6 +229,7 @@ class EntityEventService(BaseEventService):
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
+            await self._remove_mcp_data("org", payload["orgId"])
             return True
 
         except Exception as e:
@@ -390,11 +409,28 @@ class EntityEventService(BaseEventService):
                 [user_data], CollectionNames.USERS.value
             )
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            if payload.get("userId"):
+                await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
+
+    async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
+        """MCP servers and credentials go with their user or org, so nothing keeps refreshing
+        their tokens. The graph change is already done, so a failure here is logged, not raised."""
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+
+        try:
+            config_service = self.app_container.config_service()
+            if owner_kind == "org":
+                removed = await mcp_lifecycle.remove_org_mcp_data(config_service, org_id)
+            else:
+                removed = await mcp_lifecycle.remove_user_mcp_data(config_service, org_id, user_id or "")
+            self.logger.info(f"Removed {len(removed)} MCP keys for deleted {owner_kind} {user_id or org_id}")
+        except Exception as e:
+            self.logger.error(f"Could not remove MCP data for deleted {owner_kind} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:
@@ -430,6 +466,9 @@ class EntityEventService(BaseEventService):
                             "syncedBy": synced_by,
                         },
                     )
+
+            if connector_id:
+                await self._start_requeue_of_parked_records(connector_id)
 
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True
@@ -524,14 +563,19 @@ class EntityEventService(BaseEventService):
             # QUEUED for ever. Run this *after* cancelling the sync so nothing
             # re-queues behind the sweep. IN_PROGRESS is excluded deliberately;
             # those are mid-pipeline and are handled by stale recovery.
+            # Only QUEUED, and stamped CONNECTOR_OFF like every other turn-off
+            # path: that reason is what lets turning the connector on queue
+            # them again, so it must not land on records the connector's
+            # filters keep out of auto-indexing, or on FAILED/EMPTY outcomes.
+            # Not on trashed ones either: the resume skips the trash, so one
+            # restored afterwards would stay parked with the connector on.
             try:
                 await self.graph_provider.reset_indexing_status_for_connector(
                     connector_id,
                     ProgressStatus.AUTO_INDEX_OFF.value,
-                    exclude_statuses=[
-                        ProgressStatus.IN_PROGRESS.value,
-                        ProgressStatus.COMPLETED.value,
-                    ],
+                    only_statuses=[ProgressStatus.QUEUED.value],
+                    reason=CONNECTOR_OFF,
+                    visibility=RecordVisibility.LIVE,
                 )
                 self.logger.info(
                     f"✅ Moved queued records for connector {connector_id} to manual indexing"
@@ -580,6 +624,131 @@ class EntityEventService(BaseEventService):
                 f"❌ Failed to adopt existing person for {email}: {str(e)}",
                 exc_info=True,
             )
+
+    async def _start_requeue_of_parked_records(self, connector_id: str) -> None:
+        """Queue again, in the background, what was parked while the connector was off.
+
+        A background task because a long backlog would hold this serial
+        consumer. The ``reindex:<id>:`` key puts it under the stop that
+        turning the connector off already issues for that prefix.
+        """
+        try:
+            await reindex_task_manager.start_if_idle(
+                f"reindex:{connector_id}:parked-while-off",
+                self._requeue_records_parked_while_off(connector_id),
+            )
+        except Exception as e:
+            # Never fail the enable over it; the next one tries again.
+            self.logger.error(
+                f"❌ Could not start re-queuing records parked while connector "
+                f"{connector_id} was off: {e}"
+            )
+
+    async def _requeue_records_parked_while_off(self, connector_id: str) -> int:
+        """Re-publish the connector's records parked as AUTO_INDEX_OFF / CONNECTOR_OFF.
+
+        Every turn-off path parks queued and in-flight records that way, and
+        their message tells the user turning the connector on will index them.
+        A sync does not: an unchanged record is not sent again. Returns how
+        many were re-published.
+
+        Published first, then moved to QUEUED only while still parked, as
+        ``_mark_queued_after_publish`` does: the indexing service may already
+        have taken the record on, and that must not be overwritten.
+
+        Pages with a key cursor, not an offset: the result set changes under
+        the walk (the sync started beside this deletes records, trash purge
+        removes them, a write may not take), and an offset would then skip a
+        record or send one twice. The cursor visits each record at most once.
+        """
+        connector = await self.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
+        if not connector or not connector.get("isActive", False):
+            # A stale enable, or turned off again since: it would only be parked again.
+            return 0
+
+        producer = self.app_container.messaging_producer
+        filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
+        requeued = 0
+        # "" rather than None, so the first page has the key predicate too:
+        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
+        # when every property in it has one.
+        after_key = ""
+        while True:
+            page = await self.graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                limit=_REQUEUE_PAGE_SIZE,
+                filters=filters,
+                sort_field="_key",
+                raise_on_error=True,
+                after_key=after_key,
+            )
+            if not page:
+                break
+            # Advanced before any work, so nothing on this page is read again.
+            after_key = page[-1].get("_key") or page[-1].get("id")
+            if not after_key:
+                self.logger.error(
+                    f"Last parked record of connector {connector_id} has no key; "
+                    "stopping the re-queue rather than reading the page again"
+                )
+                break
+
+            candidates = [
+                (key, record)
+                for record in page
+                if (key := record.get("_key") or record.get("id"))
+                and record.get("origin") == OriginTypes.CONNECTOR.value
+                and is_live_record(record)
+            ]
+            now = get_epoch_timestamp_in_ms()
+            messages = []
+            for key, record in candidates:
+                event_type, payload = record_event(
+                    record, record_key=key, connector_id=connector_id
+                )
+                messages.append(
+                    (key, {"eventType": event_type, "timestamp": now, "payload": payload})
+                )
+            acked = (
+                await producer.send_messages("record-events", messages)
+                if messages
+                else []
+            )
+            sent = [pair for pair, ok in zip(candidates, acked) if ok]
+            if sent:
+                await self.graph_provider.update_nodes_fields_if_match(
+                    CollectionNames.RECORDS.value,
+                    [
+                        (key, self._requeued_fields(record, now), dict(_PARKED_WHILE_OFF))
+                        for key, record in sent
+                    ],
+                )
+            requeued += len(sent)
+
+            if len(page) < _REQUEUE_PAGE_SIZE:
+                break
+
+        if requeued:
+            self.logger.info(
+                f"✅ Re-queued {requeued} record(s) parked while connector {connector_id} was off"
+            )
+        return requeued
+
+    @staticmethod
+    def _requeued_fields(record: dict, now: int) -> dict:
+        fields: dict = {
+            "indexingStatus": ProgressStatus.QUEUED.value,
+            "queuedAtTimestamp": now,
+            "processingStartedAt": None,
+            "reason": None,
+        }
+        # Stale recovery parks these too when it parks an in-flight record.
+        for status_field in ("parsingStatus", "extractionStatus"):
+            if record.get(status_field) == ProgressStatus.AUTO_INDEX_OFF.value:
+                fields[status_field] = ProgressStatus.NOT_STARTED.value
+        return fields
 
     async def _wait_for_sync_to_stop(self, connector_id: str) -> bool:
         """Whether the connector's sync and reindex tasks ended within the wait."""
@@ -706,15 +875,16 @@ class EntityEventService(BaseEventService):
 
         if existing_kbs:
             self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-            # A create that failed partway on Neo4j (each statement commits on its
-            # own) left the App without some of its edges; finish it rather than
-            # hand it out unusable again. Create-only, so a complete one is untouched.
+            # A create that failed partway on Neo4j before creates ran in a real
+            # transaction (or with NEO4J_CREATE_TRANSACTIONS=false) left the App
+            # without some of its edges; finish it rather than hand it out unusable
+            # again. Create-only, so a complete one is untouched.
             # Every match, not the first: the lookup is unordered.
             for existing in existing_kbs:
                 existing_key = existing.get("id") or existing.get("_key")
                 if existing_key:
                     await self.graph_data_store.execute_idempotent_in_transaction(
-                        self._ensure_kb_edges, user_key, orgId, existing_key
+                        self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
                     )
             return existing_kbs[0]
 
@@ -741,13 +911,16 @@ class EntityEventService(BaseEventService):
         }
 
         async def write_kb(tx_store: "TransactionStore") -> None:
-            await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value)
+            ensure_written(
+                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the default knowledge base",
+            )
             await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
 
+        # explicit: a failure leaves no App without its edges on Neo4j either.
         # Every write is keyed by kb_key, so a re-run after a write conflict
         # (the org node is shared by every onboarding message) completes the
         # same App rather than starting a second one.
-        await self.graph_data_store.execute_idempotent_in_transaction(write_kb)
+        await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
 
         # Register per-KB connector instance at runtime
         try:

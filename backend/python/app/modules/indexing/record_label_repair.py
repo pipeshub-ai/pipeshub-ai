@@ -20,10 +20,10 @@ record the spelling (an edge copied onto a deduplicated record before copies
 carried it) is counted and left for a reindex, which writes the record's
 spellings onto its existing edges.
 
-Mechanics follow ``vector_membership_backfill``: one Redis leader, one page
-of one connector per tick, a resumable cursor on the app document, bounded
-attempts. The repaired, skipped and failure counters describe the latest
-pass. The loop ends once every connector is done.
+Mechanics are ``connector_sweep``'s: one Redis leader, one page of one
+connector per tick, a resumable cursor on the app document, bounded attempts.
+The repaired, skipped, missing and failure counters describe the latest pass. The loop
+ends once every connector is done.
 """
 
 from __future__ import annotations
@@ -34,13 +34,21 @@ from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.modules.entity_resolution.normalizer import normalize_name, spelling_key
+from app.modules.indexing.connector_sweep import (
+    ConnectorSweep,
+    PageResult,
+    SweepFields,
+    key_of,
+    run_connector_sweep_loop,
+)
 from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
-from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
+from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.services.graph_db.taxonomy import TaxonomyLink, taxonomy_links
 from app.services.messaging.utils import MessagingUtils
+from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
@@ -58,15 +66,16 @@ STARTUP_GRACE_SECONDS = 90.0
 BUSY_INTERVAL_SECONDS = 1.0
 # While no connector is listed (none yet, or the listing failed).
 IDLE_INTERVAL_SECONDS = 600.0
+ERROR_INTERVAL_SECONDS = 60.0
 _LEASE_RENEW_EVERY_N_RECORDS = 10
-_BACKOFF_FACTOR = 2
-_MAX_BACKOFF_MULTIPLIER = 16
+# Longest pause between two records while indexing is busy (see LoopShare).
+# Ten of them stay far inside the leader lease renewed every ten records.
+MAX_RECORD_PAUSE_SECONDS = 5.0
 
 # Set on a stored semantic_metadata whose labels are the record's own: by the
 # resolver on every record it indexes, and by this repair on what it restores.
 OWN_LABELS = "own_labels"
 
-_APPS = CollectionNames.APPS.value
 _RECORDS = CollectionNames.RECORDS.value
 _CATEGORIES = CollectionNames.CATEGORIES.value
 _SUBCATEGORY_SLOTS = (
@@ -87,21 +96,19 @@ class RecordLabelRepairState:
     AFTER_KEY = "recordLabelRepairAfterKey"
     REPAIRED = "recordLabelRepairRepaired"
     SKIPPED = "recordLabelRepairSkipped"
+    # Records whose stored copy no longer exists (see _MissingStoredCopy).
+    MISSING = "recordLabelRepairMissing"
     FAILURES = "recordLabelRepairFailures"
     ATTEMPTS = "recordLabelRepairAttempts"
     EXHAUSTED = "recordLabelRepairExhausted"
 
 
-def _int(value: Any) -> int:  # noqa: ANN401
-    try:
-        return max(0, int(value or 0))
-    except (TypeError, ValueError):
-        return 0
-
-
-def _key_of(doc: dict[str, Any]) -> str | None:
-    key = doc.get("_key") or doc.get("id")
-    return key if isinstance(key, str) and key else None
+class _MissingStoredCopy(Exception):
+    """The record's stored copy is gone. Deleting the connector that first
+    stored deduplicated content removed it while records of other connectors
+    still used it, until a reindex rebuilds it, and that reindex writes the
+    record's own labels too. Reading again cannot succeed, so this is not a
+    failure that a retry of the connector could fix."""
 
 
 def _ordered_spellings(current: object, links: list[TaxonomyLink]) -> list[str]:
@@ -191,8 +198,25 @@ def _patched(semantic_metadata: dict[str, Any], fields: dict[str, Any]) -> dict[
     return patched
 
 
-class RecordLabelRepair:
+class RecordLabelRepair(ConnectorSweep):
     """One tick repairs one page of one connector's records."""
+
+    name = "record_label_repair"
+    version = REPAIR_VERSION
+    fields = SweepFields(
+        state=RecordLabelRepairState.STATE,
+        after_key=RecordLabelRepairState.AFTER_KEY,
+        attempts=RecordLabelRepairState.ATTEMPTS,
+        exhausted=RecordLabelRepairState.EXHAUSTED,
+        failures=RecordLabelRepairState.FAILURES,
+        counters=(
+            RecordLabelRepairState.REPAIRED,
+            RecordLabelRepairState.SKIPPED,
+            RecordLabelRepairState.MISSING,
+        ),
+    )
+    max_attempts = MAX_ATTEMPTS
+    give_up_consequence = "those records keep their labels until reindexed"
 
     def __init__(
         self,
@@ -203,51 +227,28 @@ class RecordLabelRepair:
         lock: LeaderLock,
         cutoff_ms: int,
         page_size: int = PAGE_SIZE,
+        pacer: LoopShare | None = None,
     ) -> None:
-        self.logger = logger
-        self.graph = graph_provider
+        super().__init__(logger=logger, graph_provider=graph_provider, lock=lock, page_size=page_size)
         self.blob_store = blob_store
-        self.lock = lock
         self.cutoff_ms = cutoff_ms
-        self.page_size = max(1, page_size)
+        # Runs on the indexing worker loop on Neo4j; a page of repairs back to
+        # back held it for nearly half its time while records were indexing.
+        self.pacer = pacer or LoopShare(max_pause_seconds=MAX_RECORD_PAUSE_SECONDS)
 
-    async def tick(self) -> str:
-        """``not_leader``, ``no_apps``, ``idle`` (every connector done) or ``page``."""
-        if not await self.lock.try_acquire():
-            return "not_leader"
-        apps = await self.graph.get_all_documents(_APPS)
-        if not apps:
-            return "no_apps"
-        pending = sorted(
-            (
-                app for app in apps
-                if _key_of(app)
-                and app.get(RecordLabelRepairState.STATE) != REPAIR_VERSION
-                and app.get("status") != APP_STATUS_DELETING
-            ),
-            key=lambda app: _key_of(app) or "",
-        )
-        if not pending:
-            return "idle"
-        await self._page(pending[0])
-        return "page"
-
-    async def _page(self, app: dict[str, Any]) -> None:
-        app_key = _key_of(app) or ""
-        after_key = app.get(RecordLabelRepairState.AFTER_KEY)
-        after_key = after_key if isinstance(after_key, str) and after_key else None
-        rows = await self.graph.page_records_for_vector_membership_backfill(
-            app_key, after_key, self.page_size,
-        )
-        keys = [k for row in rows if (k := _key_of(row))]
+    async def process_page(
+        self, app: dict[str, Any], app_key: str, rows: list[dict[str, Any]],
+    ) -> PageResult:
+        keys = [k for row in rows if (k := key_of(row))]
         links_by_record: dict[str, list[TaxonomyLink]] = {}
         if keys:
             for link in taxonomy_links(await self.graph.get_record_taxonomy_links(keys)):
                 links_by_record.setdefault(link.record_id, []).append(link)
 
-        repaired = skipped = failed = 0
+        repaired = skipped = missing = failed = 0
+        self.pacer.begin()
         for processed, row in enumerate(rows, start=1):
-            key = _key_of(row)
+            key = key_of(row)
             links = links_by_record.get(key or "")
             if not key or not links:
                 continue
@@ -261,79 +262,32 @@ class RecordLabelRepair:
                     repaired += 1
             except asyncio.CancelledError:
                 raise
+            except _MissingStoredCopy:
+                missing += 1
             except Exception:
                 failed += 1
                 self.logger.warning(
                     "record_label_repair: record %s of connector %s failed; continuing the page",
                     key, app_key, exc_info=True,
                 )
+            await self.pacer.pause()
             if processed % _LEASE_RENEW_EVERY_N_RECORDS == 0 and not await self.lock.refresh():
-                self.logger.warning(
-                    "record_label_repair: lost leadership mid-page | connector=%s after=%s; "
-                    "the next leader resumes from the same cursor", app_key, after_key,
-                )
-                return
-        if not await self.lock.refresh():
-            return
-
-        # The counters describe one pass: the first page of a pass starts them
-        # again, whether the pass is new or a retry.
-        def _counted(field: str, page_count: int) -> int:
-            return page_count + (_int(app.get(field)) if after_key else 0)
-
-        totals = {
-            RecordLabelRepairState.REPAIRED: _counted(RecordLabelRepairState.REPAIRED, repaired),
-            RecordLabelRepairState.SKIPPED: _counted(RecordLabelRepairState.SKIPPED, skipped),
-            RecordLabelRepairState.FAILURES: _counted(RecordLabelRepairState.FAILURES, failed),
-        }
-        self.logger.info(
-            "record_label_repair: page done | connector=%s after=%s records=%d repaired=%d "
-            "skipped=%d failed=%d", app_key, after_key, len(rows), repaired, skipped, failed,
-        )
+                return PageResult(lost_leadership=True)
         if skipped:
             self.logger.info(
                 "record_label_repair: %d record(s) of connector %s have an edge without its "
                 "spelling; left for a reindex", skipped, app_key,
             )
-        last_key = keys[-1] if keys else None
-        if len(rows) >= self.page_size and last_key:
-            await self.graph.update_node(app_key, _APPS, {
-                RecordLabelRepairState.AFTER_KEY: last_key, **totals,
-            })
-            return
-        await self._finish(app, app_key, totals)
-
-    async def _finish(self, app: dict[str, Any], app_key: str, totals: dict[str, int]) -> None:
-        failures = totals[RecordLabelRepairState.FAILURES]
-        attempts = _int(app.get(RecordLabelRepairState.ATTEMPTS)) + (1 if failures else 0)
-        if failures and attempts < MAX_ATTEMPTS:
-            self.logger.warning(
-                "record_label_repair: connector %s had %d failure(s); retrying from the start "
-                "(attempt %d/%d)", app_key, failures, attempts, MAX_ATTEMPTS,
-            )
-            await self.graph.update_node(app_key, _APPS, {
-                RecordLabelRepairState.AFTER_KEY: None,
-                RecordLabelRepairState.ATTEMPTS: attempts,
-                **totals,
-            })
-            return
-        if failures:
-            self.logger.error(
-                "record_label_repair: giving up on connector %s after %d attempts with %d "
-                "failure(s); those records keep their labels until reindexed",
-                app_key, attempts, failures,
-            )
-        else:
+        if missing:
             self.logger.info(
-                "record_label_repair: connector %s done | repaired=%d skipped=%d",
-                app_key, totals[RecordLabelRepairState.REPAIRED], totals[RecordLabelRepairState.SKIPPED],
+                "record_label_repair: %d record(s) of connector %s have no stored copy (removed "
+                "with content they shared); left for the reindex that rebuilds it", missing, app_key,
             )
-        await self.graph.update_node(app_key, _APPS, {
-            RecordLabelRepairState.STATE: REPAIR_VERSION,
-            RecordLabelRepairState.AFTER_KEY: None,
-            RecordLabelRepairState.ATTEMPTS: attempts,
-            RecordLabelRepairState.EXHAUSTED: bool(failures),
-            **totals,
+        return PageResult(counts={
+            RecordLabelRepairState.REPAIRED: repaired,
+            RecordLabelRepairState.SKIPPED: skipped,
+            RecordLabelRepairState.MISSING: missing,
+            RecordLabelRepairState.FAILURES: failed,
         })
 
     def _settled(self, record: dict[str, Any]) -> bool:
@@ -357,7 +311,10 @@ class RecordLabelRepair:
         lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
         if not lookup or not lookup.get("record_doc_id"):
             return False
-        stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
+        try:
+            stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
+        except StorageDocumentNotFoundError as exc:
+            raise _MissingStoredCopy from exc
         # A virtual record id can be shared; its copy is repaired with the
         # record that wrote it.
         if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
@@ -378,9 +335,12 @@ class RecordLabelRepair:
             or latest.get("lastExtractionTimestamp") != record.get("lastExtractionTimestamp")
         ):
             return False
-        await self.blob_store.update_record_buffer(
-            org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
-        )
+        try:
+            await self.blob_store.update_record_buffer(
+                org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
+            )
+        except StorageDocumentNotFoundError as exc:
+            raise _MissingStoredCopy from exc
         return True
 
 
@@ -392,50 +352,32 @@ async def run_record_label_repair_loop(
 
     logger = app_container.logger()
     cutoff_ms = get_epoch_timestamp_in_ms()
-    logger.info("record_label_repair: starting in %.0fs", STARTUP_GRACE_SECONDS)
-    await asyncio.sleep(STARTUP_GRACE_SECONDS)
-
     owner = f"label-repair:{uuid4().hex}"
-    lock: VectorMembershipBackfillLeaderLock | None = None
-    repair: RecordLabelRepair | None = None
-    backoff = 1
-    try:
-        while True:
-            interval = IDLE_INTERVAL_SECONDS
-            try:
-                if lock is None:
-                    redis_config = await MessagingUtils._get_redis_config(app_container)
-                    lock = VectorMembershipBackfillLeaderLock(logger, redis_config, owner, key=LEADER_KEY)
-                    repair = None
-                if repair is None:
-                    repair = RecordLabelRepair(
-                        logger=logger,
-                        graph_provider=graph_provider,
-                        blob_store=BlobStorage(logger, app_container.config_service(), graph_provider),
-                        lock=lock,
-                        cutoff_ms=cutoff_ms,
-                    )
-                outcome = await repair.tick()
-                backoff = 1
-                if outcome == "idle":
-                    logger.info("record_label_repair: every connector is done")
-                    return
-                if outcome == "page":
-                    interval = BUSY_INTERVAL_SECONDS
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("record_label_repair: tick failed")
-                if lock is not None:
-                    await lock.close()
-                    lock = None
-                backoff = min(backoff * _BACKOFF_FACTOR, _MAX_BACKOFF_MULTIPLIER)
-                interval = BUSY_INTERVAL_SECONDS * 60 * backoff
-            await asyncio.sleep(interval)
-    finally:
-        if lock is not None:
-            await lock.release()
-            await lock.close()
+
+    async def make_lock() -> LeaderLock:
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        return VectorMembershipBackfillLeaderLock(logger, redis_config, owner, key=LEADER_KEY)
+
+    async def make_sweep(lock: LeaderLock) -> RecordLabelRepair:
+        return RecordLabelRepair(
+            logger=logger,
+            graph_provider=graph_provider,
+            blob_store=BlobStorage(logger, app_container.config_service(), graph_provider),
+            lock=lock,
+            cutoff_ms=cutoff_ms,
+        )
+
+    await run_connector_sweep_loop(
+        logger=logger,
+        name="record_label_repair",
+        make_lock=make_lock,
+        make_sweep=make_sweep,
+        startup_grace_seconds=STARTUP_GRACE_SECONDS,
+        busy_interval_seconds=BUSY_INTERVAL_SECONDS,
+        idle_interval_seconds=IDLE_INTERVAL_SECONDS,
+        deferred_interval_seconds=IDLE_INTERVAL_SECONDS,
+        error_interval_seconds=ERROR_INTERVAL_SECONDS,
+    )
 
 
 __all__ = [

@@ -29,6 +29,7 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -85,6 +86,7 @@ from app.connectors.sources.atlassian.core.auth_fields import (
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
+    listing_modified_after,
     unresolved_principal_permission,
     v1_next_start,
 )
@@ -145,8 +147,8 @@ from app.connectors.core.base.error.stream_errors import (
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
-# Time offset (in hours) applied to date filters to handle timezone differences
-# between the application and Confluence server, ensuring no data is missed during sync
+# How far back each incremental sync re-reads before its checkpoint. CQL reads dates
+# in the site's time zone, not UTC; the admin's date filters are used as set.
 TIME_OFFSET_HOURS = 24
 
 # Expand parameters for fetching pages and blogposts with required metadata
@@ -828,10 +830,15 @@ class ConfluenceConnector(BaseConnector):
         permissions = await self._fetch_page_permissions(folder_id)
         if permissions is None:
             return None
-        # Mirror _sync_folders: only drop space inheritance when READ restrictions exist.
-        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-        if len(read_permissions) > 0:
-            folder_record.inherit_permissions = False
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED
+        # instead: the node then needs its own grant as well as the space.
+        # EDIT-only restrictions stay STRICT.
+        folder_record.access_rule = (
+            AccessRule.RESTRICTED
+            if any(p.type == PermissionType.READ for p in permissions)
+            else AccessRule.STRICT
+        )
+        folder_record.rewrite_permissions = True
         return (folder_record, permissions)
 
     async def _sync_users(self) -> None:
@@ -1200,9 +1207,17 @@ class ConfluenceConnector(BaseConnector):
                             continue
 
                         # Get AppUser objects for members
-                        app_users = await self._resolve_group_app_users(
-                            member_emails, member_account_ids
-                        )
+                        try:
+                            app_users = await self._resolve_group_app_users(
+                                member_emails, member_account_ids
+                            )
+                        except Exception as lookup_error:
+                            # Saving the group now would replace its members with an empty list.
+                            self.logger.warning(
+                                f"Keeping the stored members of group {group_name}: "
+                                f"its members could not be looked up ({lookup_error})"
+                            )
+                            continue
 
                         # Save group with members
                         await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
@@ -1417,14 +1432,13 @@ class ConfluenceConnector(BaseConnector):
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after}")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching folders modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all folders (first time)")
@@ -1454,7 +1468,6 @@ class ConfluenceConnector(BaseConnector):
                     order_by="lastModified",
                     sort_order="asc",
                     expand=FOLDER_EXPAND_PARAMS,
-                    time_offset_hours=TIME_OFFSET_HOURS
                 )
 
                 # Check response
@@ -1487,10 +1500,11 @@ class ConfluenceConnector(BaseConnector):
                             external_record_id=item_id
                         )
 
-                        # Fetch folder permissions
+                        # Fetch folder permissions. None means the ACL could not
+                        # be read — skip rather than write the folder as STRICT,
+                        # which would expose a restricted one to the whole space.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
-                            # Saving it without its restrictions would open it to the whole space.
                             self.logger.warning(f"Skipping folder {item_id} this run: its restrictions could not be read")
                             listing_complete = False
                             continue
@@ -1504,10 +1518,14 @@ class ConfluenceConnector(BaseConnector):
                         if not folder_record:
                             continue
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            folder_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        folder_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
+                        folder_record.rewrite_permissions = True
 
                         # Add folder to batch
                         records_with_permissions.append((folder_record, permissions))
@@ -1626,14 +1644,13 @@ class ConfluenceConnector(BaseConnector):
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {modified_after}, checkpoint: {last_sync_time})")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching {content_type}s modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all {content_type}s (first time)")
@@ -1679,7 +1696,6 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS,
                         within_ids=within_ids,
                     )
                 else:  # CONFLUENCE_BLOGPOST
@@ -1697,7 +1713,6 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS,
                         within_ids=within_ids,
                     )
 
@@ -1742,10 +1757,11 @@ class ConfluenceConnector(BaseConnector):
                             external_record_id=item_id
                         )
 
-                        # Fetch page permissions
+                        # Fetch page permissions. None means the ACL could not be
+                        # read — skip rather than write the page as STRICT, which
+                        # would expose a restricted one to the whole space.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
-                            # Saving it without its restrictions would open it to the whole space.
                             self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
                             listing_complete = False
                             continue
@@ -1765,11 +1781,13 @@ class ConfluenceConnector(BaseConnector):
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        webpage_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
 
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
@@ -1945,9 +1963,10 @@ class ConfluenceConnector(BaseConnector):
                                     if attachment_record:
                                         if not content_attachments_indexing_enabled:
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                        # Attachments get the page's grants; the space's only if the page is open.
-                                        attachment_record.inherit_permissions = webpage_record.inherit_permissions
-                                        records_with_permissions.append((attachment_record, permissions))
+                                        # Attachments follow the page's access through inheritance.
+                                        attachment_record.inherit_permissions = True
+                                        attachment_record.rewrite_permissions = True
+                                        records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
 
                                 except Exception as att_error:
@@ -2210,8 +2229,6 @@ class ConfluenceConnector(BaseConnector):
                     kwargs[after_arg] = after
                 if before:
                     kwargs[before_arg] = before
-        if any(k in kwargs for k in ("modified_after", "modified_before", "created_after", "created_before")):
-            kwargs["time_offset_hours"] = TIME_OFFSET_HOURS
         return kwargs
 
     async def _filter_verdict(
@@ -2683,11 +2700,14 @@ class ConfluenceConnector(BaseConnector):
                                 continue
                             total_permissions += len(permissions)
 
-                            # Only set inherit_permissions to False if there are READ restrictions
-                            # EDIT-only restrictions should still inherit from space for READ access
-                            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                            if len(read_permissions) > 0:
-                                webpage_record.inherit_permissions = False
+                            # A READ restriction keeps inheriting and is recorded as
+                            # RESTRICTED instead; EDIT-only stays STRICT.
+                            webpage_record.access_rule = (
+                                AccessRule.RESTRICTED
+                                if any(p.type == PermissionType.READ for p in permissions)
+                                else AccessRule.STRICT
+                            )
+                            webpage_record.rewrite_permissions = True
 
                             # Add to batch for update
                             records_with_permissions.append((webpage_record, permissions))
@@ -3291,7 +3311,7 @@ class ConfluenceConnector(BaseConnector):
 
         try:
             operation = restriction_data.get("operation")
-            if not operation:
+            if operation != "read":
                 return permissions
 
             # Map operation to PermissionType
@@ -3332,6 +3352,7 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
+            raise
 
         return permissions
 
@@ -3384,6 +3405,14 @@ class ConfluenceConnector(BaseConnector):
                 web_url=web_url,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+                # Every space carries its own permission list, so app access
+                # alone must never reveal one: it inherits from the App, but the
+                # restriction means a grant is needed as well.
+                # Inheritance is not optional: it defaults to False, and without
+                # the edge the inherited half of the RESTRICTED rule is never
+                # met, so the space becomes invisible to everyone.
+                inherit_permissions=True,
+                access_rule=AccessRule.RESTRICTED,
             )
 
         except Exception as e:
@@ -3896,6 +3925,8 @@ class ConfluenceConnector(BaseConnector):
         webpage_record = self._transform_to_webpage_record(
             data, record_type, existing_record
         )
+        if webpage_record:
+            webpage_record.rewrite_permissions = True
 
         if not webpage_record:
             return RecordUpdate(
@@ -4019,10 +4050,15 @@ class ConfluenceConnector(BaseConnector):
             return None
 
     async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
-        """Build AppUser for a Confluence accountId linked to this connector."""
+        """Build AppUser for a Confluence accountId linked to this connector.
+
+        Returns None when no user is linked to the accountId. A failed read
+        raises instead: a group saved from it would lose its members.
+        """
         user = await self.data_entities_processor.get_user_by_source_id(
             source_user_id=account_id,
             connector_id=self.connector_id,
+            raise_on_error=True,
         )
         if not user or not user.email:
             return None
@@ -4062,33 +4098,32 @@ class ConfluenceConnector(BaseConnector):
 
         Returns:
             List of AppUser objects found in database
+
+        Raises:
+            Whatever the database read raised. A failed read is not "none of
+            these people are users": a group saved from it would lose its members.
         """
         if not emails:
             return []
 
-        try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
+        # Fetch all users from database
+        all_app_users = await self.data_entities_processor.get_all_app_users(
+            connector_id=self.connector_id, raise_on_error=True
+        )
 
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
+        self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
 
-            # Create email lookup map
-            email_set = set(emails)
+        # Create email lookup map
+        email_set = set(emails)
 
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email
+        filtered_users = [user for user in all_app_users if user.email in email_set]
 
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+        if len(filtered_users) < len(emails):
+            missing_count = len(emails) - len(filtered_users)
+            self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
 
-            return filtered_users
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
-            return []
+        return filtered_users
 
     def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """
@@ -5541,8 +5576,9 @@ class ConfluenceConnector(BaseConnector):
                             f"Not saving new attachment {attachment_id} yet: restrictions of page {page_id} could not be read"
                         )
                     else:
-                        file_record.inherit_permissions = not any(p.type == PermissionType.READ for p in page_permissions)
-                        new_file_records.append((file_record, page_permissions))
+                        file_record.inherit_permissions = True
+                        file_record.rewrite_permissions = True
+                        new_file_records.append((file_record, []))
                         existing_record = file_record
 
             if existing_record:
@@ -5652,8 +5688,10 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_content_update(updated_record)
 
                     # Update permissions if they exist
-                    if permissions:
-                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+                    if permissions or updated_record.rewrite_permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            updated_record, list(permissions or [])
+                        )
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
@@ -5753,11 +5791,14 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -5811,11 +5852,14 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {blogpost_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
@@ -5892,9 +5936,10 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {parent_page_id} could not be read; reindexing what is stored")
                 return None
-            attachment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
-
-            return (attachment_record, permissions)
+            # Attachments follow the page's access through inheritance.
+            attachment_record.inherit_permissions = True
+            attachment_record.rewrite_permissions = True
+            return (attachment_record, [])
 
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
@@ -6409,9 +6454,10 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            comment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
-
-            return (comment_record, permissions)
+            # Comments follow the page's access through inheritance.
+            comment_record.inherit_permissions = True
+            comment_record.rewrite_permissions = True
+            return (comment_record, [])
             
         except Exception as e:
             self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")

@@ -637,7 +637,7 @@ class Outlook:
                     "error": (
                         "Outlook toolset is not authenticated. "
                         "Please complete the OAuth flow first. "
-                        "Go to Settings > Toolsets to authenticate your Outlook account."
+                        "Authenticate your Outlook account under Your actions."
                     )
                 })
 
@@ -653,7 +653,7 @@ class Outlook:
                 "error": (
                     "Outlook toolset is not authenticated. "
                     "Please complete the OAuth flow first. "
-                    "Go to Settings > Toolsets to authenticate your Outlook account."
+                    "Authenticate your Outlook account under Your actions."
                 )
             })
 

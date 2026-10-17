@@ -14,6 +14,7 @@ from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
@@ -171,9 +172,7 @@ async def create_team(request: Request) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    # raise_on_error: the provider answers None to a failed read too, and a 404
-    # would tell a person who is there that they are not.
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"), raise_on_error=True)
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     # Generate a unique key for the team
@@ -256,10 +255,11 @@ async def create_team(request: Request) -> JSONResponse:
             raise RuntimeError("Failed to create creator permissions")
 
     # The edges lock the creator's and every member's user node, so two creates can
-    # collide. Every write is keyed by team_key, so the re-run completes the same
-    # team: on Neo4j the node may already have committed on its own.
+    # collide. explicit: a failure leaves no team behind on Neo4j either. Every write
+    # is keyed by team_key, so the re-run also completes the same team where the node
+    # committed on its own (NEO4J_CREATE_TRANSACTIONS=false).
     try:
-        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team)
+        await GraphDataStore(logger, graph_provider).execute_idempotent_in_transaction(write_team, explicit=True)
     except Exception as e:
         logger.error(f"Error in create_team: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=action_failed("create this team")) from e
@@ -269,7 +269,7 @@ async def create_team(request: Request) -> JSONResponse:
     # any error response makes the dashboard say "try again", which would create
     # the team a second time; so a failed read-back answers with the team as written.
     try:
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, user_key=user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'])
     except Exception as e:
         logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
         team_with_users = None
@@ -315,12 +315,12 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Use interface method to get team with users
-        result = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        result = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -349,7 +349,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -488,7 +488,7 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, user_key=user['_key'])
+        updated_team = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
 
         return JSONResponse(
             status_code=200,
@@ -515,7 +515,7 @@ async def delete_team(request: Request, team_id: str) -> JSONResponse:
         "userId": request.state.user.get("userId"),
         "orgId": request.state.user.get("orgId"),
     }
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
@@ -589,14 +589,14 @@ async def get_user_teams(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
     try:
         graph_created_by = created_by
         if created_by:
-            creator_user = await graph_provider.get_user_by_user_id(created_by)
+            creator_user = await get_user_or_503(graph_provider, created_by)
             org_id = user_info.get("orgId")
             creator_org = creator_user.get("orgId") if creator_user else None
             if (
@@ -743,7 +743,7 @@ async def get_team_users(
         "orgId": request.state.user.get("orgId"),
     }
 
-    user = await graph_provider.get_user_by_user_id(user_info.get("userId"))
+    user = await get_user_or_503(graph_provider, user_info.get("userId"))
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 

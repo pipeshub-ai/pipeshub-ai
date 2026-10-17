@@ -31,7 +31,13 @@ class CONFIG:
     # Defaults to enabled; admins may opt out from Labs. Agent Builder agents
     # use their own per-agent `sendUserContext` field instead of this flag.
     ENABLE_USER_CONTEXT = "ENABLE_USER_CONTEXT"
+    # Serves the knowledge hub's global listing (All records) from per-connector
+    # scopes precomputed at each sync, instead of walking every connector's tree
+    # on each request. Defaults to disabled; admins opt in from Labs.
+    ENABLE_KH_SCOPE_LISTING = "ENABLE_KH_SCOPE_LISTING"
     # Deleting a record moves it to the trash (kept, hidden, vectors removed)
     # instead of removing it; a scheduled purge removes it later. Defaults to
     # disabled; admins opt in from Labs.
     ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"
+    # Typed named-entity extraction during indexing. Defaults to disabled.
+    ENABLE_NAMED_ENTITY_EXTRACTION = "ENABLE_NAMED_ENTITY_EXTRACTION"

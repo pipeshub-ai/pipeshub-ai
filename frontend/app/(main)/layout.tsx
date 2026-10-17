@@ -36,6 +36,7 @@ import { AuthHydrator } from '@/lib/store/auth-hydrator'
 import { OrgUrlCleaner } from '@/lib/navigation'
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store'
 import { FullNameDialog } from './components/full-name-dialog'
+import { AppLayoutExtras, BrandProvider } from '@/config'
 import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
 import { NotificationsPanel } from './notifications/panel'
@@ -87,10 +88,15 @@ export default function RootLayout({
           href="https://fonts.googleapis.com/icon?family=Material+Icons+Outlined|Material+Icons"
           rel="stylesheet"
         />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200&display=block"
+          rel="stylesheet"
+        />
       </head>
       <body style={{ backgroundColor: 'var(--olive-1, #f8f8f5)' }}>
         <I18nextProvider i18n={i18n}>
-          <ThemeProvider>
+          <BrandProvider>
+            <ThemeProvider>
             <AuthHydrator />
             <Suspense fallback={null}>
               <OrgUrlCleaner />
@@ -115,6 +121,7 @@ export default function RootLayout({
                 during the blocking health-check loading screen too. */}
             <ToastContainer />
           </ThemeProvider>
+          </BrandProvider>
         </I18nextProvider>
       </body>
     </html>
@@ -296,6 +303,7 @@ function AppLayout({
           open={showFullNameDialog}
           onSuccess={handleFullNameSuccess}
         />
+        <AppLayoutExtras key="app-layout-extras" />
         {/* User background survey — shown once after login/onboarding */}
         <UserBackgroundSurvey key="user-background-survey" />
         {/* Onboarding tour card — bottom-left corner, guides new users through first steps.

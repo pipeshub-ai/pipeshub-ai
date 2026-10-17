@@ -1,8 +1,9 @@
-"""Every ArangoDB record delete path removes the record's taxonomy edges.
+"""Every ArangoDB record delete path removes the record's enrichment edges.
 
-Indexing links a record to departments, categories, languages and topics. The
-Drive, Gmail/Outlook, local-FS and generic connector deletes each built their
-own edge list without those collections, so the edges outlived the record.
+Indexing links a record to departments, categories, languages, topics and the
+named entities it mentions. The Drive, Gmail/Outlook, local-FS and generic
+connector deletes each built their own edge list without those collections, so
+the edges outlived the record.
 
   docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml \\
     up -d --wait arango-graph-it
@@ -37,7 +38,11 @@ TARGETS = {
     CollectionNames.BELONGS_TO_CATEGORY.value: CollectionNames.CATEGORIES.value,
     CollectionNames.BELONGS_TO_LANGUAGE.value: CollectionNames.LANGUAGES.value,
     CollectionNames.BELONGS_TO_TOPIC.value: CollectionNames.TOPICS.value,
+    CollectionNames.MENTIONS_ENTITY.value: CollectionNames.NAMED_ENTITIES.value,
 }
+# The fields the named-entity schemas require on top of the shared seed.
+NODE_FIELDS = {CollectionNames.NAMED_ENTITIES.value: {"kind": "organization", "normKey": "name:organization:acme"}}
+EDGE_FIELDS = {CollectionNames.MENTIONS_ENTITY.value: {"mentionCount": 1}}
 
 
 @pytest.fixture
@@ -67,13 +72,15 @@ async def _record_with_taxonomy_edges(provider, org_id: str) -> str:
     for edge_collection, target_collection in TARGETS.items():
         target = f"{org_id}-{edge_collection}"
         await provider.http_client.execute_aql(
-            f"UPSERT {{_key: @key}} INSERT {{_key: @key, name: @key, orgId: @org}} UPDATE {{}} IN {target_collection}",
-            {"key": target, "org": org_id},
+            f"UPSERT {{_key: @key}} INSERT MERGE({{_key: @key, name: @key, orgId: @org}}, @extra) "
+            f"UPDATE {{}} IN {target_collection}",
+            {"key": target, "org": org_id, "extra": NODE_FIELDS.get(target_collection, {})},
         )
+        extra = {**EDGE_FIELDS.get(edge_collection, {}), **({"orgId": org_id} if edge_collection in EDGE_FIELDS else {})}
         await provider.http_client.execute_aql(
-            f"INSERT {{_from: CONCAT('{RECORDS}/', @rec), _to: CONCAT('{target_collection}/', @target), "
-            f"createdAtTimestamp: 1}} INTO {edge_collection}",
-            {"rec": record, "target": target},
+            f"INSERT MERGE({{_from: CONCAT('{RECORDS}/', @rec), _to: CONCAT('{target_collection}/', @target), "
+            f"createdAtTimestamp: 1}}, @extra) INTO {edge_collection}",
+            {"rec": record, "target": target, "extra": extra},
         )
     return record
 

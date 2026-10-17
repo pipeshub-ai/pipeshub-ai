@@ -301,3 +301,43 @@ class TestBlockGroupsCountAsBlocks:
         _render(self._group_record("rec-g"), budget)
 
         assert budget.outcome("rec-g").complete is True
+
+
+class TestShownBlocks:
+    """Which blocks the model read. A rendered unit counts once however many
+    blocks it holds, and a selection is not contiguous, so neither the start
+    offset nor the unit count says which blocks were read."""
+
+    def test_a_selection_reports_exactly_the_selected_blocks(self) -> None:
+        record = _record("rec-s", [_text_block(i, f"block {i} body") for i in range(100)])
+        budget = RenderBudget(max_chars=100_000)
+
+        _render(record, budget, include_blocks={40, 41, 90})
+
+        assert budget.outcome("rec-s").shown_blocks == {40, 41, 90}
+
+    def test_a_cut_table_reports_the_rows_that_fit_not_one_unit(self) -> None:
+        budget = RenderBudget(max_chars=2_000)
+
+        _render(_table_record("rec-t", rows=200), budget)
+
+        outcome = budget.outcome("rec-t")
+        assert outcome.blocks_rendered == 1
+        assert outcome.table_truncation is not None
+        rows_shown = outcome.table_truncation.rows_shown
+        assert outcome.shown_blocks == set(range(rows_shown))
+
+    def test_a_group_reports_its_children(self) -> None:
+        budget = RenderBudget(max_chars=100_000)
+
+        _render(TestBlockGroupsCountAsBlocks._group_record("rec-g", lines=4), budget)
+
+        assert budget.outcome("rec-g").shown_blocks == {0, 1, 2, 3}
+
+    def test_a_clipped_block_is_not_reported_as_read(self) -> None:
+        record = _record("rec-1", [_text_block(0, "x" * 5_000), _text_block(1, "y")])
+        budget = RenderBudget(max_chars=1_000)
+
+        _render(record, budget)
+
+        assert budget.outcome("rec-1").shown_blocks == frozenset()

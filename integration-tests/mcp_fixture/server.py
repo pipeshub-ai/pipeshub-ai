@@ -42,6 +42,9 @@ TOOLS = [
             },
             "required": ["order_id"],
         },
+        # A lookup: without the hint the app treats it as a write tool, and an
+        # unattended API call to one is refused until someone approves it.
+        "annotations": {"readOnlyHint": True},
     },
 ]
 

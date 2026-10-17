@@ -9,6 +9,7 @@ in-memory fakes.
 import logging
 import re
 from collections.abc import Callable
+from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from unittest.mock import AsyncMock
 
@@ -34,7 +35,12 @@ from atlassian_cloud_fakes import (
 )
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+from app.config.constants.arangodb import (
+    AccessRule,
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+)
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.atlassian.confluence_cloud.connector import (
     ConfluenceConnector,
@@ -102,6 +108,15 @@ def v1_page(pid: str, *, version: int = 1, space_id: int = 77, attachments: Opti
         "children": {"attachment": {"results": attachments or [], "size": len(attachments or [])}},
         "_links": {"webui": f"/spaces/ENG/pages/{pid}", "self": f"{WIKI}/rest/api/content/{pid}"},
     }
+
+
+def epoch_ms(value: datetime) -> int:
+    return int(value.timestamp() * 1000)
+
+
+def cql_minute(iso: str, less_hours: int = 0) -> str:
+    when = datetime.fromisoformat(iso.replace("Z", "+00:00")) - timedelta(hours=less_hours)
+    return when.strftime("%Y-%m-%d %H:%M")
 
 
 def search_page(results: list, cursor: Optional[str] = None) -> dict[str, Any]:
@@ -308,9 +323,60 @@ class TestPageSync:
         search.by_cursor = {None: search_page([v1_page("10", version=2)])}
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert "lastModified >" in search.queries[0]["cql"]
+        since = cql_minute(checkpoint["last_sync_time"], less_hours=24)
+        assert f'lastModified > "{since}"' in search.queries[0]["cql"], "the checkpoint, looked back a day"
         assert db.records["10"].id == first_id and db.records["10"].version == 1
         assert len([r for r in db.records.values() if isinstance(r, WebpageRecord)]) == 3, "no duplicates"
+
+    async def test_date_filters_reach_the_search_as_set(self, api, db, checkpoints, search) -> None:
+        connector, _ = await ready_connector(db, checkpoints)
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_between", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2024, 3, 1, 9, 30, tzinfo=timezone.utc)),
+                "end": epoch_ms(datetime(2024, 6, 1, 18, 0, tzinfo=timezone.utc)),
+            }},
+            "created": {"operator": "is_between", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2023, 1, 1, tzinfo=timezone.utc)),
+                "end": epoch_ms(datetime(2024, 2, 1, 12, 0, tzinfo=timezone.utc)),
+            }},
+        })
+
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+
+        cql = search.queries[0]["cql"]
+        assert 'lastModified > "2024-03-01 09:30"' in cql
+        assert 'lastModified < "2024-06-01 18:00"' in cql, "not a day early"
+        assert 'created > "2023-01-01 00:00"' in cql
+        assert 'created < "2024-02-01 12:00"' in cql, "not a day early"
+
+    async def test_the_later_of_the_modified_filter_and_the_looked_back_checkpoint_bounds_the_search(
+        self, api, db, checkpoints, search
+    ) -> None:
+        search.by_cursor[None] = search_page([v1_page("10")])
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        checkpoint_at = datetime.fromisoformat(checkpoint.replace("Z", "+00:00"))
+
+        inside_look_back = (checkpoint_at - timedelta(hours=12)).replace(second=0, microsecond=0)
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_after", "type": "datetime", "value": {"start": epoch_ms(inside_look_back)}},
+        })
+        search.queries.clear()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        cql = search.queries[0]["cql"]
+        assert f'lastModified > "{inside_look_back.strftime("%Y-%m-%d %H:%M")}"' in cql, "nothing from before the filter date"
+        assert cql.count("lastModified >") == 1
+
+        connector.sync_filters = type(connector.sync_filters).from_dict({
+            "modified": {"operator": "is_after", "type": "datetime", "value": {
+                "start": epoch_ms(datetime(2020, 1, 1, tzinfo=timezone.utc)),
+            }},
+        })
+        checkpoint = checkpoints.values_for("confluence_pages/ENG")["last_sync_time"]
+        search.queries.clear()
+        await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
+        assert f'lastModified > "{cql_minute(checkpoint, less_hours=24)}"' in search.queries[0]["cql"]
 
     async def test_view_restricted_page_is_limited_to_the_named_people(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -330,7 +396,8 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         restricted, edit_only = db.records["10"], db.records["11"]
-        assert restricted.inherit_permissions is False
+        assert restricted.access_rule == AccessRule.RESTRICTED, "space access alone does not open it; a grant on the page is needed too"
+        assert restricted.inherit_permissions is True, "a RESTRICTED page that does not inherit is hidden from everyone"
         grants = {(p.entity_type, p.email or p.external_id, p.type) for p in db.record_permissions["10"]}
         assert grants == {
             (EntityType.USER, "ana@acme.com", PermissionType.READ),
@@ -338,8 +405,8 @@ class TestPageSync:
             (EntityType.GROUP, "grp-leads", PermissionType.READ),
         }
         assert [g.source_user_group_id for g, _ in db.user_groups] == ["acc-no-email"], "a stand-in group keeps the grant for a user without email"
-        assert edit_only.inherit_permissions is True, "an edit-only restriction does not hide the page from space members"
-        assert {p.type for p in db.record_permissions["11"]} == {PermissionType.WRITE}
+        assert edit_only.access_rule == AccessRule.STRICT, "an edit-only restriction does not hide the page from space members"
+        assert db.record_permissions["11"] == []
 
     async def test_a_failed_restriction_lookup_never_opens_a_page_to_the_whole_space(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
@@ -349,7 +416,7 @@ class TestPageSync:
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
         page = db.records.get("10")
-        assert page is None or page.inherit_permissions is False
+        assert page is None or page.access_rule == AccessRule.RESTRICTED
 
     async def test_one_bad_page_does_not_stop_the_rest(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10"), v1_page("11"), v1_page("12")])
@@ -514,6 +581,81 @@ class TestGroups:
         assert group.source_user_group_id == "grp-eng"
         assert [m.email for m in saved_members] == ["ana@acme.com"]
 
+    async def test_a_failed_user_lookup_does_not_empty_the_group(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        db.get_all_app_users = AsyncMock(side_effect=ConnectionError("database unavailable"))
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+    async def test_a_lookup_that_finds_no_users_still_empties_the_group(self, api, db, checkpoints) -> None:
+        db.app_users.append(AppUser(
+            app_name=Connectors.CONFLUENCE, connector_id=CONNECTOR_ID, source_user_id="acc-ana",
+            org_id="org-1", email="ana@acme.com", full_name="Ana",
+        ))
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana", "email": "ana@acme.com"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        db.app_users.clear()
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng"
+        assert saved_members == []
+
+    async def test_a_failed_account_id_lookup_does_not_empty_the_group(self, api, db, checkpoints) -> None:
+        # Confluence hides emails, so the members come back as account ids only.
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId", {"results": [{"accountId": "acc-ana"}], "size": 1})
+        connector, _ = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        saves = len(db.user_groups)
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+        async def failing_read(
+            source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+        ) -> None:
+            # Like the graph providers: a failed query answers None unless asked to raise.
+            if raise_on_error:
+                raise ConnectionError("database unavailable")
+            return None
+
+        db.get_user_by_source_id = failing_read
+        await connector._sync_user_groups()
+
+        assert len(db.user_groups) == saves, "the group is not saved when its members could not be looked up"
+        assert [m.email for m in db.user_groups[-1][1]] == ["ana@acme.com"]
+
+    async def test_an_account_id_with_no_linked_user_is_left_off_the_group(self, api, db, checkpoints) -> None:
+        db.add_user("acc-ana", "ana@acme.com")
+        api.on("GET", f"{V1}/group", {"results": [{"id": "grp-eng", "name": "eng"}], "size": 1})
+        api.on("GET", f"{V1}/group/grp-eng/membersByGroupId",
+               {"results": [{"accountId": "acc-ana"}, {"accountId": "acc-unknown"}], "size": 2})
+        connector, _ = await ready_connector(db, checkpoints)
+
+        await connector._sync_user_groups()
+
+        group, saved_members = db.user_groups[-1]
+        assert group.source_user_group_id == "grp-eng"
+        assert [m.email for m in saved_members] == ["ana@acme.com"]
+
     async def test_short_pages_that_say_more_follow_are_followed(self, api, db, checkpoints) -> None:
         for source_id, email in (("acc-ana", "ana@acme.com"), ("acc-bo", "bo@acme.com")):
             db.app_users.append(AppUser(
@@ -617,7 +759,7 @@ class TestRestrictedPageFiles:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
 
     async def test_files_of_a_restricted_page_stay_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -627,9 +769,12 @@ class TestRestrictedPageFiles:
 
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
 
-        assert db.records["10"].inherit_permissions is False
-        assert db.records["att2"].inherit_permissions is False
-        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
+        file = db.records["att2"]
+        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10"), (
+            "the file inherits from its page, never straight from the space"
+        )
+        assert db.record_permissions["att2"] == []
 
     async def test_a_reindexed_file_of_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -642,7 +787,12 @@ class TestRestrictedPageFiles:
         await connector.reindex_records([db.records["att2"]])
 
         (updated,) = db.content_updates
-        assert updated.external_record_id == "att2" and updated.inherit_permissions is False
+        assert updated.external_record_id == "att2"
+        assert (updated.inherit_permissions, updated.parent_external_record_id) == (True, "10"), (
+            "it still hangs under its restricted page and inherits from nothing else"
+        )
+        (update,) = db.permission_updates
+        assert update[1] == []
 
     async def test_a_reindexed_reply_on_a_restricted_page_stays_restricted(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -666,10 +816,10 @@ class TestRestrictedPageFiles:
         await connector.reindex_records([reply])
 
         (updated,) = db.content_updates
-        assert updated.inherit_permissions is False, "a reply gets its page's restriction, not its parent comment's"
+        assert updated.inherit_permissions is True
         assert (updated.parent_external_record_id, updated.parent_record_type) == ("201", RecordType.COMMENT)
         (update,) = db.permission_updates
-        assert [p.email for p in update[1]] == ["ana@acme.com"]
+        assert [p.email for p in update[1]] == []
 
     async def test_a_file_first_seen_while_opening_a_restricted_page_stays_restricted(self, api, db, checkpoints) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -678,8 +828,9 @@ class TestRestrictedPageFiles:
 
         await connector._process_page_attachments_for_children([SPEC], "10", "page-node-10", "77", None)
 
-        assert db.records["att2"].inherit_permissions is False
-        assert [p.email for p in db.record_permissions["att2"]] == ["ana@acme.com"]
+        file = db.records["att2"]
+        assert (file.inherit_permissions, file.parent_external_record_id) == (True, "10")
+        assert db.record_permissions["att2"] == []
 
 
 class TestAuditLog:
@@ -704,7 +855,7 @@ class TestAuditLog:
 
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False, "the change on the second audit page is applied"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "the change on the second audit page is applied"
 
     async def test_every_page_of_the_title_search_is_read(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -722,7 +873,7 @@ class TestAuditLog:
         await connector._sync_permission_changes_from_audit_log()
 
         assert [q.get("cursor") for q in search.queries if q["cql"].startswith("title IN")] == [None, "T2"]
-        assert db.records["10"].inherit_permissions is False, "the page on the search's second page gets its restriction"
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED, "the page on the search's second page gets its restriction"
 
     async def test_a_failed_second_page_of_the_title_search_keeps_the_audit_clock(self, api, db, checkpoints, search) -> None:
         db.add_user("acc-ana", "ana@acme.com")
@@ -743,7 +894,7 @@ class TestAuditLog:
             await connector._sync_permission_changes_from_audit_log()
 
         assert checkpoints.values_for("permissions/audit_log")["last_sync_time_ms"] == 1_000
-        assert db.records["10"].inherit_permissions is True, "page 10 was on the page that failed; the next run reads it"
+        assert db.records["10"].access_rule == AccessRule.STRICT, "page 10 was on the page that failed; the next run reads it"
 
     async def test_a_failed_title_search_does_not_move_the_audit_clock(self, api, db, checkpoints, search) -> None:
         search.by_cursor[None] = search_page([v1_page("10")])
@@ -778,7 +929,7 @@ class TestAuditLog:
         connector, _ = await ready_connector(db, checkpoints)
         await connector._sync_content("ENG", RecordType.CONFLUENCE_PAGE)
         await connector._sync_permission_changes_from_audit_log()
-        assert db.records["att2"].inherit_permissions is True
+        assert db.records["10"].access_rule == AccessRule.STRICT
 
         change = {"category": "Permissions", "associatedObjects": [
             {"objectType": "Page", "name": "Page 10"}, {"objectType": "Space", "name": "ENG"},
@@ -787,10 +938,12 @@ class TestAuditLog:
         api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
         (file_update,) = [(r, perms) for r, perms in db.permission_updates if r.external_record_id == "att2"]
-        assert file_update[0].inherit_permissions is False, "the page's file no longer inherits the space's access"
-        assert [p.email for p in file_update[1]] == ["ana@acme.com"]
+        assert (file_update[0].inherit_permissions, file_update[0].parent_external_record_id) == (True, "10"), (
+            "the file keeps inheriting from its page, which is now restricted"
+        )
+        assert file_update[1] == []
 
     async def test_a_folder_under_a_page_keeps_its_own_access_when_the_page_is_restricted(
         self, api, db, checkpoints, search
@@ -813,7 +966,7 @@ class TestAuditLog:
         api.on("GET", f"{V1}/content/10/restriction", read_restricted_to("acc-ana"))
         await connector._sync_permission_changes_from_audit_log()
 
-        assert db.records["10"].inherit_permissions is False
+        assert db.records["10"].access_rule == AccessRule.RESTRICTED
         assert not [r for r, _ in db.permission_updates if r.external_record_id == "500"], (
             "a folder has restrictions of its own and does not take the page's"
         )
@@ -854,7 +1007,7 @@ class TestPlaceholderSweep:
         assert page.id == page_stub.id
         assert page.parent_external_record_id == "500" and page.parent_record_type == RecordType.FILE
         assert folder.record_name == "Specs" and folder.is_placeholder is False
-        assert folder.inherit_permissions is False
+        assert folder.access_rule == AccessRule.RESTRICTED
         assert [p.email for p in db.record_permissions["500"]] == ["ana@acme.com"]
         assert gone.is_placeholder is True and db.record_permissions["404"] == [], "an unreachable ancestor fails closed"
         assert api.calls("GET", f"{V2}/folders/500"), "the folder was fetched via the folder API"

@@ -784,6 +784,30 @@ class TestMarkRecordOutcomes:
         proc.logger.warning.assert_called()
         assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
+    @staticmethod
+    def _written(gp) -> dict:
+        return next(a for a in gp.update_node.await_args.args if isinstance(a, dict))
+
+    @pytest.mark.asyncio
+    async def test_an_empty_record_no_longer_has_an_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+
+        assert self._written(gp)["hasIndexedCopy"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reindex_keeps_the_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FAILED)
+
+        assert "hasIndexedCopy" not in self._written(gp)
+
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""

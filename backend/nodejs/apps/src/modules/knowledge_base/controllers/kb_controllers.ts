@@ -104,6 +104,7 @@ export const getKnowledgeHubNodes =
         updatedAt: 'updated_at',
         size: 'size',
         include: 'include',
+        cursor: 'cursor',
       };
 
       for (const [key, snakeKey] of Object.entries(paramMapping)) {
@@ -1814,7 +1815,17 @@ export const createKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      // Both lists are optional in the request validators, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const {
+        userIds = [],
+        teamIds = [],
+        role,
+      } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+        role?: string;
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');
@@ -1894,7 +1905,17 @@ export const updateKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      // Both lists are optional in the request validators, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const {
+        userIds = [],
+        teamIds = [],
+        role,
+      } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+        role?: string;
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');
@@ -1964,7 +1985,12 @@ export const removeKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds } = req.body;
+      // Both lists are optional in the request validator, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const { userIds = [], teamIds = [] } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');

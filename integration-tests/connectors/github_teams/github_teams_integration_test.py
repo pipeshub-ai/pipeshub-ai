@@ -94,6 +94,7 @@ from connectors.github_teams.github_block_utils import (  # noqa: E402
     ISSUE_BLOCKS_PATH,
     PR_BLOCKS_PATH,
     bootstrap_expected,
+    keep_actual_if_different,
     load_expected,
     normalize_blocks_container,
     parse_connector_blocks_via_processor,
@@ -702,6 +703,7 @@ class TestGitHubTeamsIssues:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(ISSUE_BLOCKS_PATH, actual)
         expected = load_expected(ISSUE_BLOCKS_PATH)
+        keep_actual_if_different(ISSUE_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed issue blocks do not match the expected snapshot. If the fixture "
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -981,6 +983,7 @@ class TestGitHubTeamsPullRequests:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(PR_BLOCKS_PATH, actual)
         expected = load_expected(PR_BLOCKS_PATH)
+        keep_actual_if_different(PR_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed PR blocks do not match the expected snapshot. If the fixture PR was "
             f"edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -1917,8 +1920,10 @@ class TestGitHubTeamsIncremental:
         All five in one commit and one resync: a resync costs minutes, and the deltas
         are independent, so splitting them would quadruple the wall clock for no extra
         coverage. Every path is inside ``it/<run_id>/`` — concurrent runs share this
-        branch and their files land in the same compare, which is harmless precisely
-        because every assertion here is by external id.
+        branch and their files land in the same compare, which is harmless because
+        every assertion here is by external id and every added or deleted body carries
+        the run id: GitHub pairs a delete with any add of the same blob sha as a rename,
+        another run's add included.
         """
         state = github_connector
         org = state["org"]
@@ -1948,15 +1953,18 @@ class TestGitHubTeamsIncremental:
             # Artifacts are reaped by the module teardown (reap_own_artifacts), which
             # clears this run's whole namespace whether or not the test succeeded.
 
+            rename_content = f"rename me {GH_IT_RUN_ID}\n"  # same bytes at both paths → pure rename
+            move_content = f"move me {GH_IT_RUN_ID}\n"
+
             # --- baseline commit + sync ---
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
                     FileChange.upsert(steady, "leave me alone\n"),
                     FileChange.upsert(keep, "v1\n"),
-                    FileChange.upsert(renamed_from, "rename me\n"),
-                    FileChange.upsert(moved_from, "move me\n"),
-                    FileChange.upsert(doomed, "delete me\n"),
+                    FileChange.upsert(renamed_from, rename_content),
+                    FileChange.upsert(moved_from, move_content),
+                    FileChange.upsert(doomed, f"delete me {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 baseline ({GH_IT_RUN_ID})",
             )
@@ -1973,8 +1981,6 @@ class TestGitHubTeamsIncremental:
                 )
 
             # --- one commit carrying all five deltas ---
-            rename_content = "rename me\n"   # identical → same blob sha → pure rename
-            move_content = "move me\n"
             await commit_changes(
                 github_rest, org, repo_name, branch,
                 [
@@ -1984,7 +1990,7 @@ class TestGitHubTeamsIncremental:
                     FileChange.delete(moved_from),
                     FileChange.upsert(moved_to, move_content),
                     FileChange.delete(doomed),
-                    FileChange.upsert(fresh, "brand new\n"),
+                    FileChange.upsert(fresh, f"brand new {GH_IT_RUN_ID}\n"),
                 ],
                 message=f"TC-INCR-CODE-001 deltas ({GH_IT_RUN_ID})",
             )

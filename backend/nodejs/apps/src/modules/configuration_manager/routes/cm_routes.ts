@@ -75,6 +75,11 @@ import {
   getModelRoles,
   updateModelRoles,
 } from '../controller/cm_controller';
+import {
+  batchAddAIModels,
+  discoverAIModels,
+  rotateConnectionCredentials,
+} from '../controller/ai_models_batch.controller';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
 import {
@@ -95,6 +100,9 @@ import {
   updateDefaultModelSchema,
   deleteProviderSchema,
   addProviderRequestSchema,
+  batchAddModelsRequestSchema,
+  discoverModelsRequestSchema,
+  rotateConnectionCredentialsSchema,
   updateProviderRequestSchema,
   atlassianCredentialsSchema,
   onedriveCredentialsSchema,
@@ -366,7 +374,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/smtpConfig',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getSmtpConfig(keyValueStoreService),
+    getSmtpConfig(keyValueStoreService, false),
   );
 
   /**
@@ -394,7 +402,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/azureAd',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getAzureAdAuthConfig(keyValueStoreService),
+    getAzureAdAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -416,7 +424,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/microsoft',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getMicrosoftAuthConfig(keyValueStoreService),
+    getMicrosoftAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -439,7 +447,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/google',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getGoogleAuthConfig(keyValueStoreService),
+    getGoogleAuthConfig(keyValueStoreService, false),
   );
   router.post(
     '/authConfig/google',
@@ -483,7 +491,7 @@ export function createConfigurationManagerRouter(container: Container): Router {
   router.get(
     '/internal/authConfig/oauth',
     authMiddleware.scopedTokenValidator(TokenScopes.FETCH_CONFIG),
-    getOAuthConfig(keyValueStoreService),
+    getOAuthConfig(keyValueStoreService, false),
   );
 
   router.post(
@@ -892,6 +900,35 @@ export function createConfigurationManagerRouter(container: Container): Router {
     streamEmbeddingDownloadProgress(),
   );
 
+  // Literal paths before /ai-models/:modelType. Express matches the param
+  // route first otherwise, and the enum validator rejects the literal segment.
+  router.post(
+    '/ai-models/discover',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(discoverModelsRequestSchema),
+    discoverAIModels(keyValueStoreService, appConfig),
+  );
+
+  router.post(
+    '/ai-models/providers/batch',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(batchAddModelsRequestSchema),
+    batchAddAIModels(keyValueStoreService, aiConfigEventService, appConfig),
+  );
+
+  router.put(
+    '/ai-models/connections/:connectionId/credentials',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONFIG_WRITE),
+    userAdminCheck,
+    ValidationMiddleware.validate(rotateConnectionCredentialsSchema),
+    rotateConnectionCredentials(keyValueStoreService, appConfig),
+  );
+
   /**
    * @route GET /api/v1/configurationManager/ai-models/:modelType
    * @desc Get all AI models of a specific type
@@ -922,11 +959,6 @@ export function createConfigurationManagerRouter(container: Container): Router {
     getAvailableModelsByType(keyValueStoreService),
   );
 
-  /**
-   * @route POST /api/v1/configurationManager/ai-models/providers
-   * @desc Add a new AI model provider
-   * @access Private (admin)
-   */
   router.post(
     '/ai-models/providers',
     authMiddleware.authenticate,

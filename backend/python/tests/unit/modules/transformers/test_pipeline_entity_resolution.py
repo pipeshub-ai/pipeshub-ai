@@ -24,6 +24,8 @@ def _pipeline(order, metadata) -> tuple:
     sink.blob_storage.apply = AsyncMock(side_effect=lambda ctx: order.append("blob"))
     sink.vector_store.index_record_summary = AsyncMock(side_effect=lambda *a, **k: order.append("summary"))
     sink.enrich = AsyncMock(side_effect=lambda ctx: order.append("enrich"))
+    sink.extract_named_entities = AsyncMock(return_value=MagicMock())
+    sink.persist_named_entities = AsyncMock()
     return IndexingPipeline(doc_extraction, sink), sink
 
 
@@ -51,3 +53,17 @@ async def test_no_metadata_skips_resolution_and_writes_but_still_enriches() -> N
     await pipeline._enrich(_ctx())
     assert order == ["extract", "enrich"]
     sink.resolve_entities.assert_not_awaited()
+
+
+async def test_a_deferred_resolution_reaches_the_handler_before_any_write() -> None:
+    import pytest
+
+    from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
+
+    order: list[str] = []
+    pipeline, sink = _pipeline(order, _metadata())
+    sink.resolve_entities = AsyncMock(side_effect=EntityLookupUnavailableError("lookup could not run"))
+    with pytest.raises(EntityLookupUnavailableError):
+        await pipeline._enrich(_ctx())
+    assert order == ["extract"]
+    sink.persist_named_entities.assert_not_awaited()

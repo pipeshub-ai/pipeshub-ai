@@ -3,14 +3,10 @@ from logging import Logger
 from typing import TYPE_CHECKING, AsyncContextManager, Optional
 
 from app.models.entities import (
-    Anyone,
-    AnyoneSameOrg,
-    AnyoneWithLink,
     AppMetadata,
     AppRole,
     AppUser,
     AppUserGroup,
-    Domain,
     FileRecord,
     Org,
     Person,
@@ -33,9 +29,12 @@ class DataStoreProvider(ABC):
 
     """Base class for all data store providers"""
     @abstractmethod
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, *, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         """
         Return a transaction store context manager.
+
+        ``explicit=True`` asks for one real transaction for the block where the
+        backend would otherwise commit each statement; None is the backend setting.
 
         Usage:
             async with datastore.transaction() as tx_store:
@@ -210,7 +209,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> Optional[User]:
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> Optional[User]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers None."""
         pass
 
     @abstractmethod
@@ -234,7 +236,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_app_users(self, org_id: str, connector_id: str) -> list[AppUser]:
+    async def get_app_users(
+        self, org_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> list[AppUser]:
+        """A failed read raises only with ``raise_on_error``; otherwise it answers ``[]``."""
         pass
 
     @abstractmethod
@@ -292,7 +297,9 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_groups(self, connector_id: str, org_id: str) -> list[UserGroup]:
+    async def get_user_groups(
+        self, connector_id: str, org_id: str, *, raise_on_error: bool = False
+    ) -> list[UserGroup]:
         pass
 
     @abstractmethod
@@ -311,10 +318,6 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
-        pass
-
-    @abstractmethod
-    async def delete_record_group_by_external_id(self, connector_id: str, external_id: str) -> None:
         pass
 
     @abstractmethod
@@ -358,22 +361,6 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_domains(self, domains: list[Domain]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone(self, anyone: list[Anyone]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_with_link(self, anyone_with_link: list[AnyoneWithLink]) -> None:
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_same_org(self, anyone_same_org: list[AnyoneSameOrg]) -> None:
-        pass
-
-    @abstractmethod
     async def create_record_relation(
         self,
         from_record_id: str,
@@ -413,7 +400,16 @@ class BaseDataStore(ABC):
         pass
     
     @abstractmethod
-    async def get_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> Optional[dict]:
+    async def get_edge(
+        self,
+        from_id: str,
+        from_collection: str,
+        to_id: str,
+        to_collection: str,
+        collection: str,
+        *,
+        raise_on_error: bool = False,
+    ) -> Optional[dict]:
         pass
 
     @abstractmethod
@@ -482,6 +478,33 @@ class BaseDataStore(ABC):
 
     @abstractmethod
     async def get_record_by_weburl(self, weburl: str, org_id: Optional[str] = None) -> Optional[Record]:
+        pass
+
+    @abstractmethod
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        """Every app of the org, active or not; see IGraphDBProvider.get_org_apps."""
+        pass
+
+    @abstractmethod
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        """Records of the org stored under any of ``weburls``; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        """The Jira sites the org syncs; see IGraphDBProvider."""
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: Optional[str] = None,
+    ) -> list[str]:
+        """Records holding a link to any of ``weburls``; see IGraphDBProvider."""
         pass
 
     @abstractmethod

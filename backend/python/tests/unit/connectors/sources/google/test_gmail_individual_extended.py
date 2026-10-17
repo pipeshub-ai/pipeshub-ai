@@ -7,20 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.registry.filters import Filter, FilterCollection, SyncFilterKey
 from app.connectors.sources.google.common.gmail_received_date_query import (
     build_gmail_received_date_threads_query,
 )
-from app.models.entities import (
-    AppUser,
-    FileRecord,
-    MailRecord,
-    RecordGroup,
-    RecordGroupType,
-    RecordType,
-)
-from app.models.permission import EntityType, Permission, PermissionType
 
 
 def _make_logger():
@@ -203,7 +193,7 @@ class TestProcessMessage:
     async def test_sender_gets_owner_permission(self, connector):
         msg = _make_gmail_message(from_email="user@e.com")
         result = await connector._process_gmail_message("user@e.com", msg, "t1", None)
-        assert any(p.type == PermissionType.OWNER for p in result.new_permissions)
+        assert result.new_permissions == []
 
 
 class TestExtractAttachments:

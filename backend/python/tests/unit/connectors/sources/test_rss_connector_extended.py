@@ -1,15 +1,13 @@
 """Extended tests for RSSConnector covering more uncovered code paths."""
 
 import time
-from io import BytesIO
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import Connectors, MimeTypes
-from app.connectors.sources.rss.connector import RSSApp, RSSConnector
-from app.models.entities import AppUser, RecordGroupType, RecordType, User
-from app.models.permission import EntityType, PermissionType
+from app.config.constants.arangodb import MimeTypes
+from app.connectors.sources.rss.connector import RSSConnector
+from app.models.entities import RecordGroupType, User
 
 
 def _make_connector():
@@ -343,7 +341,7 @@ class TestProcessEntry:
         record, perms = result
         assert record.record_name == "Article"
         assert record.mime_type == MimeTypes.PLAIN_TEXT.value
-        assert len(perms) == 1
+        assert perms == []
 
     async def test_entry_with_html_summary(self):
         conn = _make_connector()
@@ -421,7 +419,8 @@ class TestCreateRecordGroup:
         call_args = conn.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = call_args[0]
         assert rg.group_type == RecordGroupType.RSS_FEED
-        assert perms[0].entity_type == EntityType.ORG
+        assert rg.inherit_permissions is True
+        assert perms == []
 
     async def test_error_raises(self):
         conn = _make_connector()

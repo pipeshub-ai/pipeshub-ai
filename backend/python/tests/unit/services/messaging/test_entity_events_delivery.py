@@ -121,7 +121,7 @@ class InMemoryGraph:
             CollectionNames.PERMISSION.value,
         )
 
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         return "txn-1"
 
     async def commit_transaction(self, txn_id: str) -> None:
@@ -134,7 +134,7 @@ class InMemoryGraph:
     def is_write_conflict(self, error: BaseException) -> bool:
         return False
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         return False
 
     async def reset_indexing_status_for_connector(self, connector_id: str, status: str, **_: Any) -> None:  # noqa: ANN401
@@ -156,6 +156,12 @@ def broker() -> Iterator[FakeKafkaBroker]:
 @pytest.fixture(autouse=True)
 def _fast_polls(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MESSAGE_TIMEOUT_MS", "10")
+
+
+@pytest.fixture(autouse=True)
+def _open_source_handler(monkeypatch: pytest.MonkeyPatch) -> None:
+    # These cases describe the open-source handler; an edition may install its own.
+    monkeypatch.setattr(KafkaUtils.__module__ + ".EntityEventService", entity_module.EntityEventService)
 
 
 @pytest.fixture

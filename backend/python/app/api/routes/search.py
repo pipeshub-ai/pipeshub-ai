@@ -1,4 +1,6 @@
 import asyncio
+import json
+import re
 from typing import TYPE_CHECKING, Any, Optional
 
 from dependency_injector.wiring import inject
@@ -6,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from app.agents.actions.knowledge_graph.ops.time_range import parse_time_range
 from app.api.middlewares.auth import deny_service_tokens, require_scopes
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import OAuthScopes
@@ -14,6 +17,7 @@ from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
+from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
@@ -37,6 +41,56 @@ class SearchQuery(BaseModel):
     query: str
     limit: Optional[int] = 5
     filters: Optional[dict[str, Any]] = {}
+    # Optional date bounds on the source's own created / last-modified time,
+    # named as on the knowledge-graph navigate endpoint (createdAfter, modifiedAfter):
+    # "YYYY-MM-DD" (a whole day, UTC) or an ISO 8601 datetime with an offset.
+    # Both ends are inclusive.
+    createdAfter: Optional[str] = None
+    createdBefore: Optional[str] = None
+    modifiedAfter: Optional[str] = None
+    modifiedBefore: Optional[str] = None
+
+
+# The parser names the assistant tool's parameters; this route receives the
+# camelCase fields of the request body.
+_REQUEST_FIELD_NAMES = {
+    "created_after": "createdAfter",
+    "created_before": "createdBefore",
+    "modified_after": "modifiedAfter",
+    "modified_before": "modifiedBefore",
+}
+_LABEL = "|".join(_REQUEST_FIELD_NAMES)
+# Only the parser's labels: the one that opens the message, and the second
+# bound of "x must be on or before y". A rejected value quoted later in the
+# message is left as the caller sent it.
+_LEADING_LABEL = re.compile(rf"^({_LABEL})\b")
+_RANGE_LABEL = re.compile(rf"^(\w+ must be on or before )({_LABEL})( — )")
+
+
+def _with_request_field_names(message: str) -> str:
+    message = _LEADING_LABEL.sub(lambda m: _REQUEST_FIELD_NAMES[m.group(1)], message)
+    return _RANGE_LABEL.sub(
+        lambda m: m.group(1) + _REQUEST_FIELD_NAMES[m.group(2)] + m.group(3), message
+    )
+
+
+def _search_time_range(body: SearchQuery) -> dict[str, int] | None:
+    """The request's date bounds as the retrieval service's ``time_range``.
+
+    Parsed by the same function as the assistant's search tool and the
+    navigate endpoint, so all three accept and refuse the same dates. A bad
+    date is a 400 that says what is wrong.
+    """
+    time_range, error = parse_time_range(
+        created_after=body.createdAfter,
+        created_before=body.createdBefore,
+        modified_after=body.modifiedAfter,
+        modified_before=body.modifiedBefore,
+    )
+    if error is not None:
+        message = json.loads(error).get("message", "Invalid date filter.")
+        raise HTTPException(status_code=400, detail=_with_request_field_names(message))
+    return time_range
 
 
 class SimilarDocumentQuery(BaseModel):
@@ -66,7 +120,7 @@ async def get_config_service(request: Request) -> ConfigurationService:
 
 
 async def _transform_query(
-    chain: "Runnable", query: str, step: str, logger: "Logger"
+    chain: "Runnable", query: str, step: str, logger: "Logger", config: dict | None = None
 ) -> str | None:
     """The model's output for one query-transformation step, or None if it failed.
 
@@ -74,7 +128,8 @@ async def _transform_query(
     (provider down, content filter, timeout) must not cost the whole search.
     """
     try:
-        return await asyncio.wait_for(chain.ainvoke(query), timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
+        call = chain.ainvoke(query, config=config) if config else chain.ainvoke(query)
+        return await asyncio.wait_for(call, timeout=QUERY_TRANSFORM_TIMEOUT_SECONDS)
     except HTTPException:
         raise
     except Exception as exc:
@@ -117,6 +172,7 @@ async def search(
     """Perform semantic search across documents"""
     container = request.app.container
     logger = container.logger()
+    time_range = _search_time_range(body)
     try:
         llm = await resolve_llm_for_search(request, retrieval_service)
 
@@ -126,10 +182,14 @@ async def search(
         # Setup query transformation
         rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
+        # OpikTracer is invoke-config only (not a constructor callback); without
+        # this, rewrite/expand LLM calls never appear in Opik.
+        invoke_config = get_llm_invoke_config(llm)
+
         # Run query transformations in parallel
         rewritten_query, expanded_queries = await asyncio.gather(
-            _transform_query(rewrite_chain, body.query, "rewrite", logger),
-            _transform_query(expansion_chain, body.query, "expansion", logger),
+            _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
+            _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
         )
 
         logger.debug(f"Rewritten query: {rewritten_query}")
@@ -143,6 +203,7 @@ async def search(
             limit=body.limit,
             filter_groups=updated_filters,
             knowledge_search=True,
+            time_range=time_range,
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

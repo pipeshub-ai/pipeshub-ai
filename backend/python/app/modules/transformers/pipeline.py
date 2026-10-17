@@ -12,6 +12,8 @@ from app.modules.transformers.transformer import (
     ReconciliationContext,
     TransformContext,
 )
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
+from app.utils.indexing_timing import stage
 from app.utils.logger import create_logger
 
 
@@ -164,6 +166,7 @@ class IndexingPipeline:
 
                 status_fields = {
                     "indexingStatus": ProgressStatus.EMPTY.value,
+                    **indexed_copy_fields(ProgressStatus.EMPTY),
                     "processingStartedAt": None,
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,
@@ -181,9 +184,10 @@ class IndexingPipeline:
                 return
 
             if ctx.reconciliation_context is None:
-                ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-                    ctx, self.logger, self.sink_orchestrator
-                )
+                with stage("reconcile"):
+                    ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                        ctx, self.logger, self.sink_orchestrator
+                    )
 
             # Phase 1: Index (VectorStore + BlobStorage)
             # Document becomes searchable after this call. Deferral is still a
@@ -208,15 +212,35 @@ class IndexingPipeline:
 
     async def _enrich(self, ctx: TransformContext) -> None:
         """Phase 2: DocumentExtraction + GraphDB.  Sets extractionStatus=COMPLETED."""
-        await self.document_extraction.apply(ctx)
+        import asyncio
+        import contextlib
+
+        ner_task = asyncio.create_task(self.sink_orchestrator.extract_named_entities(ctx))
+        try:
+            with stage("extract"):
+                await self.document_extraction.apply(ctx)
+            # Entity extraction runs alongside classification; only the wait
+            # left once classification is done counts here.
+            with stage("entities.extract"):
+                extraction = await ner_task
+        finally:
+            if not ner_task.done():
+                ner_task.cancel()
+                # Its own failure must not replace the one propagating here.
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await ner_task
 
         record = ctx.record
         if record.semantic_metadata:
             # Taxonomy names must be resolved before the blob, summary and
             # graph writes below all consume them.
-            await self.sink_orchestrator.resolve_entities(ctx)
-            await self.sink_orchestrator.blob_storage.apply(ctx)
+            with stage("entities.resolve"):
+                await self.sink_orchestrator.resolve_entities(ctx)
+            self.sink_orchestrator.attach_named_entities(ctx, extraction)
+            with stage("blob.write"):
+                await self.sink_orchestrator.blob_storage.apply(ctx)
             if (record.semantic_metadata.summary or "").strip():
+                # Not wrapped in a stage: it times its own steps.
                 await self.sink_orchestrator.vector_store.index_record_summary(
                     record.id,
                     record.virtual_record_id,
@@ -226,6 +250,14 @@ class IndexingPipeline:
                 )
 
         await self.sink_orchestrator.enrich(ctx)
+        with stage("entities.persist"):
+            await self.sink_orchestrator.persist_named_entities(ctx, extraction)
+        from app.modules.named_entities.stage import extraction_blob_holder
+
+        with extraction_blob_holder(record, extraction) as held:
+            if held:
+                with stage("blob.write"):
+                    await self.sink_orchestrator.blob_storage.apply(ctx)
 
     async def _publish_enrichment_event(self, ctx: TransformContext) -> None:
         """Stub: publish an event for deferred enrichment via Kafka.

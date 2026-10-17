@@ -3,13 +3,18 @@ import { User, Users } from '../schema/users.schema'; // Adjust path as needed
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import mongoose from 'mongoose';
 import { UserDisplayPicture } from '../schema/userDp.schema';
-import sharp from 'sharp';
+import {
+  assertRasterImage,
+  readImageUpload,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import {
   fetchConfigJwtGenerator,
   jwtGeneratorForNewAccountPassword,
   jwtGeneratorForValidateEmailLink,
   mailJwtGenerator,
 } from '../../../libs/utils/createJwt';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   BadRequestError,
   ForbiddenError,
@@ -1719,20 +1724,26 @@ export class UserController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const dpFile = req.body.fileBuffer;
+      const upload = readImageUpload(req.body as unknown);
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
 
-      if (!dpFile) {
+      if (upload === undefined) {
         throw new BadRequestError('DP File is required');
       }
+      const dpBuffer = upload.buffer;
+      assertRasterImage(
+        dpBuffer,
+        ['png', 'jpeg', 'webp', 'gif'],
+        'Profile photo must be a PNG, JPEG, WebP or GIF image',
+      );
       let quality = 100;
-      let compressedImageBuffer = await sharp(dpFile.buffer)
+      let compressedImageBuffer = await sharp(dpBuffer)
         .jpeg({ quality })
         .toBuffer();
       while (compressedImageBuffer.length > 100 * 1024 && quality > 10) {
         quality -= 10;
-        compressedImageBuffer = await sharp(dpFile.buffer)
+        compressedImageBuffer = await sharp(dpBuffer)
           .jpeg({ quality })
           .toBuffer();
       }
@@ -2853,7 +2864,7 @@ export class UserController {
           orgId: user.orgId?.toString(),
         },
         usersMails: [newEmail],
-        subject: 'PipesHub | Verify your email !',
+        subject: `${getBrandConfig().productName} | Verify your email !`,
         templateData: {
           orgName: org?.shortName || org?.registeredName,
           name: user.fullName,
@@ -2882,7 +2893,7 @@ export class UserController {
             orgId: String(user.orgId ?? ''),
           },
           usersMails: [currentEmail],
-          subject: 'PipesHub | Your email address is being changed',
+          subject: `${getBrandConfig().productName} | Your email address is being changed`,
           templateData: {
             orgName: org?.shortName ?? org?.registeredName,
             name: user.fullName,

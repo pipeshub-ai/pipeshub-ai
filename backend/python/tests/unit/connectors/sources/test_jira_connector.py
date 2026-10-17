@@ -746,6 +746,24 @@ class TestSyncProjectRoles:
         assert "PROJ" in connector.notify.await_args.kwargs["message"]
 
 
+class TestRelatedRecords:
+    def test_links_then_what_the_summary_and_description_name(self) -> None:
+        connector = _make_connector()
+        issue = {"fields": {
+            "summary": "Ship OPS-12 first",
+            "description": {"type": "doc", "content": [{"type": "paragraph", "content": [
+                {"type": "inlineCard", "attrs": {"url": "https://github.com/acme/api/pull/3081"}},
+            ]}]},
+            "issuelinks": [],
+        }}
+        related = connector._related_records(issue)
+        assert [r.weburl for r in related if r.weburl] == ["https://github.com/acme/api/pull/3081"]
+        assert [r.issue_key for r in related if r.issue_key] == ["OPS-12"]
+
+    def test_empty_issue(self) -> None:
+        assert _make_connector()._related_records(None) == []
+
+
 class TestParseIssueLinks:
 
     def test_empty_issue(self):

@@ -23,6 +23,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { redactSensitiveQueryParams } from '../../../libs/utils/log-redaction.utils';
 import {
   executeConnectorCommand,
   handleBackendError,
@@ -94,7 +95,19 @@ function queryString(query: Record<string, unknown>, keys: string[]): string {
  * Factory for the common case: forward method + path + (optional) body to
  * the Python connectors backend, return its response verbatim.
  */
-function proxyMcp(method: HttpMethodValue, pathBuilder: PathBuilder, action: string) {
+// Above the longest Python-side MCP work, so Python's own error arrives before this fires.
+// The longest is one server's tool discovery after an expired token: a refresh (15 s token
+// request) then a connect (at most 45 s, `connectTimeoutSeconds`) plus listing (15 s) — 75 s.
+// Listings that cover several servers cap each one at 10 s.
+export const MCP_PROXY_TIMEOUT_MS = 90_000;
+
+/** `sendsOnce`: a GET that changes state (an OAuth state claimed or created) — never resent. */
+function proxyMcp(
+  method: HttpMethodValue,
+  pathBuilder: PathBuilder,
+  action: string,
+  { sendsOnce = method !== HttpMethod.GET }: { sendsOnce?: boolean } = {},
+) {
   return (appConfig: AppConfig) =>
     async (
       req: AuthenticatedUserRequest,
@@ -107,7 +120,11 @@ function proxyMcp(method: HttpMethodValue, pathBuilder: PathBuilder, action: str
           throw new UnauthorizedError('User authentication required');
         }
 
-        logger.debug(`MCP servers proxy: ${action}`, { userId, path: pathBuilder(req) });
+        // The OAuth callback's path carries the authorization code and state.
+        logger.debug(`MCP servers proxy: ${action}`, {
+          userId,
+          path: redactSensitiveQueryParams(pathBuilder(req)),
+        });
 
         const headers = buildProxyHeaders(req);
 
@@ -116,6 +133,8 @@ function proxyMcp(method: HttpMethodValue, pathBuilder: PathBuilder, action: str
           method,
           headers,
           BODY_METHODS.has(method) ? req.body : undefined,
+          // A resent write could create a second instance or start a second authorization.
+          { timeoutMs: MCP_PROXY_TIMEOUT_MS, retries: sendsOnce ? 1 : 3 },
         );
 
         handleConnectorResponse(connectorResponse, res, action, `${action} failed`);
@@ -148,7 +167,7 @@ export const getMcpCatalogTemplate = proxyMcp(
 );
 
 // ============================================================================
-// Instances (admin-managed, org-scoped)
+// Instances — an admin's (org-wide) or a user's own (personal)
 // ============================================================================
 
 export const listMcpInstances = proxyMcp(
@@ -219,12 +238,14 @@ export const getMcpOAuthAuthorizationUrl = proxyMcp(
   HttpMethod.GET,
   (req) => `/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl'])}`,
   'Get MCP OAuth authorization URL',
+  { sendsOnce: true },
 );
 
 export const handleMcpOAuthCallback = proxyMcp(
   HttpMethod.GET,
   (req) => `/oauth/callback${queryString(req.query as Record<string, unknown>, ['code', 'state', 'error'])}`,
   'Handle MCP OAuth callback',
+  { sendsOnce: true },
 );
 
 export const refreshMcpOAuthToken = proxyMcp(
@@ -264,7 +285,7 @@ export const getMyMcpServers = proxyMcp(
 
 export const getMcpInstanceTools = proxyMcp(
   HttpMethod.GET,
-  (req) => `/instances/${encInstanceId(req)}/tools`,
+  (req) => `/instances/${encInstanceId(req)}/tools${queryString(req.query as Record<string, unknown>, ['cached'])}`,
   'Get MCP server instance tools',
 );
 
@@ -281,6 +302,20 @@ export const getMcpInstanceTools = proxyMcp(
 function encAgentKey(req: AuthenticatedUserRequest): string {
   return encodeURIComponent(String(req.params.agentKey));
 }
+
+// Tool approvals: a person's own rules for a server's tools. Python checks the server is theirs to see.
+
+export const getMyMcpToolRules = proxyMcp(
+  HttpMethod.GET,
+  (req) => `/instances/${encInstanceId(req)}/my-tool-rules`,
+  'Get my MCP tool rules',
+);
+
+export const updateMyMcpToolRules = proxyMcp(
+  HttpMethod.PUT,
+  (req) => `/instances/${encInstanceId(req)}/my-tool-rules`,
+  'Update my MCP tool rules',
+);
 
 export const getAgentMcpServers = proxyMcp(
   HttpMethod.GET,
@@ -318,4 +353,5 @@ export const getAgentMcpOAuthAuthorizationUrl = proxyMcp(
   (req) =>
     `/agents/${encAgentKey(req)}/instances/${encInstanceId(req)}/oauth/authorize${queryString(req.query as Record<string, unknown>, ['baseUrl'])}`,
   'Get agent MCP OAuth authorization URL',
+  { sendsOnce: true },
 );

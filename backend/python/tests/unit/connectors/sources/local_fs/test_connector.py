@@ -136,7 +136,6 @@ from app.models.entities import (  # noqa: E402
     RecordType,
     User,
 )
-from app.models.permission import PermissionType  # noqa: E402
 from app.utils.user_messages import action_failed  # noqa: E402
 
 
@@ -927,7 +926,7 @@ class TestLocalFsConnectorAsync:
         assert record.path == "notes/a.txt"
         assert record.record_name == "a.txt"
         assert record.external_revision_id == "2d119f1cd272958a492a144af600b9dc36531f73027b34073967345b027021b1"
-        assert permissions[0].type == PermissionType.OWNER
+        assert permissions == []
 
     async def test_apply_file_event_batch_skips_event_missing_sha256(
         self, folder_connector: LocalFsConnector, tmp_path: Path
@@ -3239,7 +3238,7 @@ class TestApplyFileEventBatchValidation:
         assert folder_record.local_fs_relative_path == "dir_placeholder"
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
-        assert permissions[0].email == "u@x.com"
+        assert permissions == []
 
     async def test_unsupported_event_type_is_skipped_not_fatal(
         self, folder_connector, tmp_path, monkeypatch
@@ -3544,7 +3543,9 @@ class TestApplyFileEventBatchOrdering:
         async def on_new(batch) -> None:
             calls.append("new:" + ",".join(r.local_fs_relative_path for r, _p in batch))
 
-        async def on_moved(batch) -> None:
+        async def on_moved(batch, *, permissions_fetched: bool = False) -> None:
+            # Local FS moves carry the record's whole permission list.
+            assert permissions_fetched is True
             calls.append("moved:" + ",".join(r.local_fs_relative_path for _o, r, _p in batch))
 
         async def on_deleted(external_ids, _user_id) -> list[str]:

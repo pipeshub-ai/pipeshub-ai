@@ -97,7 +97,9 @@ def _redis(logger):
     consumer.running = True
     pipeline = _Pipeline(consumer)
     consumer._start_processing_task = AsyncMock(
-        side_effect=lambda stream, mid, fields, parsed=None: pipeline.start(parsed)
+        side_effect=lambda stream, mid, fields, parsed=None, slot_key=None: (
+            pipeline.start(parsed)
+        )
     )
 
     async def enqueue(i: int, *, connector: str, heavy: bool) -> None:
@@ -125,7 +127,9 @@ def _kafka(logger):
     consumer.running = True
     pipeline = _Pipeline(consumer)
     consumer._IndexingKafkaConsumer__start_processing_task = AsyncMock(
-        side_effect=lambda message, parsed, in_flight, record_key: pipeline.start(parsed)
+        side_effect=lambda message, parsed, in_flight, record_key, slot_key=None: (
+            pipeline.start(parsed)
+        )
     )
     tp = TopicPartition("record-events", 0)
     offsets = iter(range(10_000))

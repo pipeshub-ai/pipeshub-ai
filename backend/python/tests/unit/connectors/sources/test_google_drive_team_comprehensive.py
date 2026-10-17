@@ -282,7 +282,7 @@ class TestPermissionMappingComprehensive:
         assert connector._map_drive_role_to_permission_type("writer") == PermissionType.WRITE
 
     def test_map_role_commenter(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_map_role_reader(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -297,16 +297,7 @@ class TestPermissionMappingComprehensive:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_map_perm_type_domain(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_map_perm_type_anyone(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_map_perm_type_anyone_with_link(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
-
-    def test_map_perm_type_anyone_with_link_underscore(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_map_perm_type_unknown(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("unknown") == EntityType.USER

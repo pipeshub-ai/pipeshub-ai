@@ -274,6 +274,20 @@ describe('UserGroupController', () => {
       expect(re.test('a(b).*')).to.be.true;
       expect(re.test('aXbYZ')).to.be.false;
     });
+
+    it('rejects a limit above the server maximum with a 400, not a 500', async () => {
+      const find = sinon.stub(UserGroups, 'find');
+      req.query = { limit: '200' };
+
+      try {
+        await controller.getAllUserGroups(req, res);
+        expect.fail('Should have thrown an error');
+      } catch (error: any) {
+        expect(error.statusCode).to.equal(400);
+        expect(error.message).to.include('at most 100');
+      }
+      expect(find.called).to.be.false;
+    });
   });
 
   describe('getUserGroupById', () => {

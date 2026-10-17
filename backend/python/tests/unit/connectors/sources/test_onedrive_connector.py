@@ -349,9 +349,9 @@ class TestConvertToPermissions:
         link.type = "read"
         perm.link = link
 
+        # An anonymous link names no grantee, so it yields no permission.
         permissions = await connector._convert_to_permissions([perm])
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -367,7 +367,9 @@ class TestConvertToPermissions:
 
         permissions = await connector._convert_to_permissions([perm])
         assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        # An organization link reaches the tenant's members, not every PipesHub user.
+        assert permissions[0].entity_type == EntityType.GROUP
+        assert permissions[0].external_id == "tenant-members"
 
 
 # ===========================================================================
@@ -2186,9 +2188,9 @@ class TestConvertToPermissionsIdentitiesAndRoles:
         good_perm.link.type = "read"
 
         result = await connector._convert_to_permissions([bad_perm, good_perm])
-        # bad_perm may or may not produce a permission depending on exact failure point,
-        # but good_perm should always produce one
-        assert any(p.entity_type == EntityType.ANYONE_WITH_LINK for p in result)
+        # Neither yields a permission: bad_perm fails, and an anonymous link
+        # names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_user_no_additional_data(self):
@@ -4405,9 +4407,9 @@ class TestConvertToPermissionsCoverage:
         perm.link.type = "view"
         perm.roles = []
 
+        # An anonymous link names no grantee, so it yields no permission.
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -4422,7 +4424,11 @@ class TestConvertToPermissionsCoverage:
 
         result = await connector._convert_to_permissions([perm])
         assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        # An organization link reaches the tenant's members, not every PipesHub user;
+        # with no roles listed, the link's own "edit" type decides.
+        assert result[0].entity_type == EntityType.GROUP
+        assert result[0].external_id == "tenant-members"
+        assert result[0].type == PermissionType.WRITE
 
     @pytest.mark.asyncio
     async def test_permission_conversion_error_skipped(self):

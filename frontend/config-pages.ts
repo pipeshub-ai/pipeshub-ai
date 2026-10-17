@@ -12,6 +12,7 @@ export { default as ConnectorsPersonalPage } from '@/app/(main)/workspace/connec
 export { default as ActionsTeamPage } from '@/app/(main)/workspace/actions/team/actionsTeamPage';
 export { default as ProfilePage } from '@/app/(main)/workspace/profile/profilePage';
 export { default as SamlSsoSuccessPage } from '@/app/(public)/auth/sign-in/samlSso/success/samlSsoSuccessPage';
+export { default as OAuthAuthCallbackPage } from '@/app/(public)/auth/oauth/callback/oauthCallbackPage';
 
 // Pages without implementations fall back to Next.js 404
 export { notFound as TenantsPage } from 'next/navigation';

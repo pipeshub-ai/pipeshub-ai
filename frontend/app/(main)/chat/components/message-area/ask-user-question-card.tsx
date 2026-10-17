@@ -24,6 +24,7 @@ import type {
 
 const SOMETHING_ELSE_ID = '__something_else__';
 const NO_PREFERENCE_ID = '__no_preference__';
+const NO_PREFERENCE_LABEL = '[No preference]';
 
 const SOMETHING_ELSE_OPTION: AskUserQuestionOption = {
   id: SOMETHING_ELSE_ID,
@@ -90,14 +91,19 @@ export function normalizeAskUserQuestionPayload(
   };
 }
 
+/** Two askings of one question differ in case, spacing or the closing mark. */
+export function normalizeQuestionText(text: string): string {
+  return text.toLowerCase().replace(/\s+/g, ' ').replace(/[\s?!.:]+$/, '').trim();
+}
+
 export function mergeAskUserQuestionPayloads(
   existing: AskUserQuestionPayload,
   incoming: AskUserQuestionPayload,
 ): AskUserQuestionPayload {
   const a = normalizeAskUserQuestionPayload(existing);
   const b = normalizeAskUserQuestionPayload(incoming);
-  const seen = new Set(a.questions.map((q) => q.question.trim().toLowerCase()));
-  const extra = b.questions.filter((q) => !seen.has(q.question.trim().toLowerCase()));
+  const seen = new Set(a.questions.map((q) => normalizeQuestionText(q.question)));
+  const extra = b.questions.filter((q) => !seen.has(normalizeQuestionText(q.question)));
   return {
     name: 'ask_user_question',
     userIntent: a.userIntent || b.userIntent,
@@ -114,7 +120,7 @@ export function buildAnswerMessage(
     const a = answerForQuestion(q, answers, questions);
     const parts = (a?.selectedOptionIds ?? [])
       .map((optId) => {
-        if (optId === NO_PREFERENCE_ID) return '[No preference]';
+        if (optId === NO_PREFERENCE_ID) return NO_PREFERENCE_LABEL;
         if (optId === SOMETHING_ELSE_ID) {
           return a?.userInputs?.[optId]?.trim() ?? '';
         }
@@ -127,6 +133,39 @@ export function buildAnswerMessage(
     return `${i + 1}. "${q.question}" → ${parts}`;
   });
   return `User selections:\n${lines.join('\n')}`;
+}
+
+function sameAnswer(a: AskUserQuestionAnswer, b: AskUserQuestionAnswer): boolean {
+  const ids = (x: AskUserQuestionAnswer) => [...(x.selectedOptionIds ?? [])].sort();
+  const left = ids(a);
+  const right = ids(b);
+  return (
+    left.length === right.length &&
+    left.every((id, i) => id === right[i]) &&
+    left.every((id) => (a.userInputs?.[id] ?? '').trim() === (b.userInputs?.[id] ?? '').trim())
+  );
+}
+
+/** Resume text for a submit: only questions the model has not been answered yet,
+ *  or whose answer the user changed since. Everything is sent when nothing was sent before. */
+export function buildResumeMessage(
+  payload: AskUserQuestionPayload,
+  answers: Record<string, AskUserQuestionAnswer>,
+  sentAnswers?: Record<string, AskUserQuestionAnswer>,
+): string {
+  const normalized = normalizeAskUserQuestionPayload(payload);
+  if (!sentAnswers || Object.keys(sentAnswers).length === 0) {
+    return buildAnswerMessage(normalized, answers);
+  }
+  const questions = normalized.questions.filter((q) => {
+    const sent = q.uuid ? sentAnswers[q.uuid] : undefined;
+    const current = answerForQuestion(q, answers, normalized.questions);
+    return !sent || !current || !sameAnswer(sent, current);
+  });
+  return buildAnswerMessage(
+    { ...normalized, questions: questions.length > 0 ? questions : normalized.questions },
+    answers,
+  );
 }
 
 /** True when `text` is the synthetic follow-up query built by `buildAnswerMessage`. */
@@ -159,6 +198,50 @@ function findOption(
   );
 }
 
+const LIST_SEPARATOR = ', ';
+
+/** `buildAnswerMessage` joins picks with ", ", and labels or typed text may hold
+ *  one too, so the line cannot simply be split. A single-select answer is one
+ *  piece; a multi-select one is read left to right, taking the longest option
+ *  label that fits and treating whatever lies between labels as typed text. */
+function splitSelections(raw: string, q: AskUserQuestionItem): string[] {
+  const text = raw.trim();
+  if (!text) return [];
+  if (!q.multiSelect) return [text];
+
+  const known = [NO_PREFERENCE_LABEL, ...q.options.map((o) => optionLabel(o))]
+    .filter(Boolean)
+    .sort((a, b) => b.length - a.length);
+  const lower = text.toLowerCase();
+  const labelAt = (i: number): string | undefined =>
+    known.find((label) => {
+      const end = i + label.length;
+      return (
+        lower.startsWith(label.toLowerCase(), i) &&
+        (end === text.length || text.startsWith(LIST_SEPARATOR, end))
+      );
+    });
+
+  const parts: string[] = [];
+  let i = 0;
+  while (i < text.length) {
+    const label = labelAt(i);
+    if (label) {
+      parts.push(text.slice(i, i + label.length));
+      i += label.length + LIST_SEPARATOR.length;
+      continue;
+    }
+    let next = text.indexOf(LIST_SEPARATOR, i);
+    while (next >= 0 && !labelAt(next + LIST_SEPARATOR.length)) {
+      next = text.indexOf(LIST_SEPARATOR, next + 1);
+    }
+    const end = next >= 0 ? next : text.length;
+    parts.push(text.slice(i, end).trim());
+    i = end + LIST_SEPARATOR.length;
+  }
+  return parts.filter(Boolean);
+}
+
 /** Inverse of `buildAnswerMessage` — recover structured answers from the saved resume query. */
 export function parseAnswerMessage(
   text: string,
@@ -176,8 +259,8 @@ export function parseAnswerMessage(
     if (!q?.uuid) continue;
     const selectedOptionIds: string[] = [];
     const userInputs: Record<string, string> = {};
-    for (const label of rawParts.split(', ').map((s) => s.trim()).filter(Boolean)) {
-      if (label === '[No preference]') {
+    for (const label of splitSelections(rawParts, q)) {
+      if (label === NO_PREFERENCE_LABEL) {
         selectedOptionIds.push(NO_PREFERENCE_ID);
         continue;
       }
@@ -343,6 +426,7 @@ export interface AskUserQuestionCardProps {
   payload: AskUserQuestionPayload;
   initialAnswers: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
+  sentAnswers?: Record<string, AskUserQuestionAnswer>;
   onAnswersChange?: (answers: Record<string, AskUserQuestionAnswer>) => void;
   onSubmit?: (message: string, answers: Record<string, AskUserQuestionAnswer>) => void;
 }
@@ -351,6 +435,7 @@ export function AskUserQuestionCard({
   payload,
   initialAnswers,
   status,
+  sentAnswers,
   onAnswersChange,
   onSubmit,
 }: AskUserQuestionCardProps) {
@@ -495,9 +580,9 @@ export function AskUserQuestionCard({
 
   const handleSubmit = useCallback(() => {
     if (!stepValid || status !== 'pending') return;
-    const msg = buildAnswerMessage(normalized, answers);
+    const msg = buildResumeMessage(normalized, answers, sentAnswers);
     onSubmit?.(msg, answers);
-  }, [stepValid, status, normalized, answers, onSubmit]);
+  }, [stepValid, status, normalized, answers, sentAnswers, onSubmit]);
 
   const handleSkip = useCallback(() => {
     if (!currentQ || status !== 'pending') return;
@@ -511,12 +596,12 @@ export function AskUserQuestionCard({
     };
     syncAnswers(next);
     if (isLast) {
-      const msg = buildAnswerMessage(normalized, next);
+      const msg = buildResumeMessage(normalized, next, sentAnswers);
       onSubmit?.(msg, next);
     } else {
       setStep((s) => Math.min(s + 1, total - 1));
     }
-  }, [currentQ, status, answers, syncAnswers, isLast, normalized, onSubmit, total]);
+  }, [currentQ, status, answers, syncAnswers, isLast, normalized, sentAnswers, onSubmit, total]);
 
   if (status === 'submitted' || status === 'persisted') {
     const heading =
@@ -645,11 +730,6 @@ export function AskUserQuestionCard({
       <Flex direction="column" gap="4" p="4">
         <Flex direction="column" gap="1">
           <Flex align="center" justify="between" gap="3" wrap="wrap">
-            {normalized.userIntent ? (
-              <Text size="2" color="gray" style={{ marginTop: 'var(--space-1)' }}>
-                {normalized.userIntent}
-              </Text>
-            ) : null}
             <Heading size="4" style={{ margin: 0 }}>
               {total === 1
                 ? t('askUserQuestion.quickQuestionSingular')
@@ -659,6 +739,11 @@ export function AskUserQuestionCard({
               {t('askUserQuestion.stepOf', { step: step + 1, total })}
             </Badge>
           </Flex>
+          {normalized.userIntent ? (
+            <Text size="2" color="gray">
+              {normalized.userIntent}
+            </Text>
+          ) : null}
 
         </Flex>
 

@@ -21,18 +21,12 @@ from urllib.parse import urlparse
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
-    MultiselectOperator,
     SyncFilterKey,
 )
 from app.models.entities import User
-from app.models.permission import EntityType, Permission, PermissionType
 import base64
-from datetime import timedelta
 from unittest.mock import PropertyMock
 from app.config.constants.arangodb import Connectors, OriginTypes, ProgressStatus
-from app.connectors.core.registry.filters import (
-    IndexingFilterKey,
-)
 from app.models.entities import RecordGroupType
 
 
@@ -714,7 +708,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.type == PermissionType.OWNER for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_personal_no_creator(self, connector):
@@ -725,7 +719,7 @@ class TestAzureFilesRecordGroups:
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
         args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
         rg, perms = args[0]
-        assert any(p.entity_type == EntityType.ORG for p in perms)
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_create_record_groups_empty(self, connector):
@@ -1519,6 +1513,18 @@ class TestProcessAzureFilesItem:
         assert record.is_internal is True
 
     @pytest.mark.asyncio
+    async def test_a_directory_is_text_directory_whatever_its_content_type(self, conn) -> None:
+        item = _file_item("subdir", "docs/subdir", is_directory=True, content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == MimeTypes.FOLDER.value
+
+    @pytest.mark.asyncio
+    async def test_a_file_keeps_its_content_type(self, conn) -> None:
+        item = _file_item("a.bin", "docs/a.bin", content_type="application/octet-stream")
+        record, _ = await conn._process_azure_files_item(item, "myshare")
+        assert record.mime_type == "application/octet-stream"
+
+    @pytest.mark.asyncio
     async def test_process_root_level_item(self, conn):
         item = _file_item("root.txt", "root.txt", size=50)
         record, perms = await conn._process_azure_files_item(item, "myshare")
@@ -1756,8 +1762,7 @@ class TestCreatePermissions:
     async def test_team_scope(self, conn):
         conn.scope = ConnectorScope.TEAM.value
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, conn):
@@ -1765,8 +1770,7 @@ class TestCreatePermissions:
         conn.creator_email = "creator@test.com"
         conn.created_by = "u-1"
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].type == PermissionType.OWNER
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator_falls_back_to_org(self, conn):
@@ -1774,8 +1778,7 @@ class TestCreatePermissions:
         conn.creator_email = None
         conn.created_by = None
         perms = await conn._create_azure_files_permissions("share", "path")
-        assert len(perms) == 1
-        assert perms[0].entity_type == EntityType.ORG
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_exception_returns_org_permission(self, conn):
@@ -2760,6 +2763,22 @@ class TestFolderFilter:
         assert complete is True
         # Parents of the chosen folder stay, or the removal step would drop them.
         assert {"s1", "s1/reports", "s1/reports/2026", "s1/reports/2026/q1.pdf"} == seen
+
+    @pytest.mark.asyncio
+    async def test_include_notes_the_chosen_folder_and_its_parents_as_kept(self, conn) -> None:
+        """Not written by the walk, so noted: otherwise the unlink after a full sync
+        cuts the links of everything under them to the app."""
+        conn.sync_filters = _folder_filter(["reports/2026"])
+        self._prepare(conn, {"reports/2026": [_file_item("q1.pdf", path="reports/2026/q1.pdf")]})
+        stored = {"s1/reports": "rec-reports", "s1/reports/2026": "rec-2026"}
+        conn.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda _cid, ext_id: MagicMock(id=stored[ext_id]) if ext_id in stored else None,
+        )
+
+        await conn._sync_share("s1")
+
+        kept = [c.args[1] for c in conn.data_entities_processor.note_kept_records.call_args_list]
+        assert ["rec-reports"] in kept and ["rec-2026"] in kept
 
     @pytest.mark.asyncio
     async def test_exclude_does_not_enter_the_excluded_folder(self, conn):

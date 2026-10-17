@@ -426,6 +426,8 @@ class TestFullSync:
         await connector.run_sync()
         assert {r.external_record_id: r.id for r in db.records.values()} == first
         assert len(db.batches) == writes, "unchanged files are not written again"
+        # Not written, so noted as kept: the unlink after the full sync leaves their links alone.
+        assert set(db.kept_records) == set(first.values())
 
         server.change("Docs/notes.txt", b"v2")
         server.activities.clear()

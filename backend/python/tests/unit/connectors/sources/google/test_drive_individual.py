@@ -710,10 +710,30 @@ class TestRunSync:
 class TestConnectionTest:
     """Tests for test_connection_and_access."""
 
-    async def test_returns_true_when_initialized(self, connector):
+    async def test_returns_true_when_drive_names_the_account(self, connector) -> None:
         connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(
+            return_value={"user": {"emailAddress": "me@example.com"}}
+        )
         result = await connector.test_connection_and_access()
         assert result is True
+        connector.drive_data_source.about_get.assert_awaited_once()
+
+    async def test_returns_false_when_google_rejects_the_token(self, connector) -> None:
+        connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock(
+            side_effect=Exception("invalid_grant: Token has been expired or revoked.")
+        )
+        result = await connector.test_connection_and_access()
+        assert result is False
+
+    async def test_returns_false_when_drive_returns_no_account(self, connector) -> None:
+        connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(return_value={})
+        result = await connector.test_connection_and_access()
+        assert result is False
 
     async def test_returns_false_when_data_source_not_initialized(self, connector):
         connector.drive_data_source = None

@@ -601,3 +601,62 @@ async def test_a_zammad_that_cannot_count_still_finds_deletions_and_is_asked_onc
 
     assert world.db.external_ids() == {"10", "20"}
     assert len(world.zammad.count_calls) == 1
+
+
+DAY_MS = 24 * 60 * 60 * 1000
+
+
+def _listings(world: World) -> list[str]:
+    return [q for q in world.zammad.search_queries if " AND id:[" in q]
+
+
+async def test_a_zammad_that_cannot_count_lists_held_tickets_at_most_once_a_day(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Before 6.5 a deletion check lists every held ticket, so it waits a day between full listings."""
+    world.zammad.supports_count = False
+    await world.sync()  # the first full listing on this Zammad
+    world.zammad.delete_ticket(11)
+    world.zammad.search_queries.clear()
+
+    _clock(monkeypatch, NOW + DAY_MS - 1)
+    await world.sync()
+
+    assert "11" in world.db.external_ids()
+    assert _listings(world) == []
+
+    _clock(monkeypatch, NOW + DAY_MS)
+    await world.sync()
+
+    assert world.db.external_ids() == {"10", "20"}
+
+
+async def test_a_failed_full_listing_is_tried_again_on_the_next_sync(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world.zammad.supports_count = False
+    world.zammad.delete_ticket(11)
+    world.zammad.fail_search = lambda query: " AND id:[" in query
+
+    await world.sync()
+    assert "11" in world.db.external_ids()
+
+    world.zammad.fail_search = lambda _query: False
+    _clock(monkeypatch, NOW + 60_000)
+    await world.sync()
+
+    assert world.db.external_ids() == {"10", "20"}
+
+
+async def test_a_zammad_that_can_count_checks_for_deletions_every_sync(
+    world: World, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    world.zammad.delete_ticket(11)
+    await world.sync()
+    world.zammad.delete_ticket(10)
+
+    _clock(monkeypatch, NOW + 60_000)
+    await world.sync()
+
+    assert world.db.external_ids() == {"20"}
+    assert not any("full_listing_at" in v for v in world.store.sync_points.values() if isinstance(v, dict))

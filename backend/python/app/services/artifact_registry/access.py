@@ -21,7 +21,51 @@ from .models import Actor
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["AccessPolicy", "AccessDeniedError", "ArtifactNotFoundError"]
+__all__ = [
+    "ARTIFACT_SHARE_GRANT",
+    "AccessPolicy",
+    "AccessDeniedError",
+    "ArtifactNotFoundError",
+    "is_direct_share",
+    "reader_edge",
+]
+
+# A user's READER edge on an artifact can come from a shared conversation, from
+# the owner sharing the artifact itself, or both, and there is only one edge per
+# (user, record). An untagged READER edge is a conversation grant alone. A direct
+# share sets `grantedVia` to this value, and `chatGranted` when a conversation
+# grant covers the same pair too, so taking either grant away keeps the other.
+ARTIFACT_SHARE_GRANT = "ARTIFACT_SHARE"
+
+
+def is_direct_share(edge: dict | None) -> bool:
+    return bool(edge) and edge.get("role") == "READER" and edge.get("grantedVia") == ARTIFACT_SHARE_GRANT
+
+
+def reader_edge(
+    user_key: str,
+    record_id: str,
+    *,
+    direct: bool,
+    chat: bool,
+    now: int,
+    created_at: int | None = None,
+) -> dict[str, Any]:
+    """The READER edge for whichever grants remain. Unset flags are written as
+    None, not left out: Arango merges an upserted edge's properties, so an omitted
+    flag would keep its old value."""
+    return {
+        "from_id": user_key,
+        "from_collection": CollectionNames.USERS.value,
+        "to_id": record_id,
+        "to_collection": CollectionNames.RECORDS.value,
+        "type": "USER",
+        "role": "READER",
+        "grantedVia": ARTIFACT_SHARE_GRANT if direct else None,
+        "chatGranted": True if direct and chat else None,
+        "createdAtTimestamp": created_at or now,
+        "updatedAtTimestamp": now,
+    }
 
 
 class AccessDeniedError(PermissionError):

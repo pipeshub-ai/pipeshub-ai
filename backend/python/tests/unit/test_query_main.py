@@ -772,6 +772,25 @@ class TestValidationExceptionHandler:
         assert body["detail"][0]["loc"] == ["body", "query"]
         assert body["detail"][1]["type"] == "int_parsing"
 
+    async def test_logged_url_has_no_credentials(self, caplog):
+        """The warning logs the request URL; a token in its query must not reach the log."""
+        import logging
+
+        from app.query_main import validation_exception_handler
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url = "http://test/api/v1/search?token=fake-token-value&page=2"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [{"loc": ["query", "q"], "msg": "field required"}]
+
+        with caplog.at_level(logging.WARNING):
+            await validation_exception_handler(mock_request, mock_exc)
+
+        assert "Request validation failed" in caplog.text
+        assert "fake-token-value" not in caplog.text
+        assert "page=2" in caplog.text
+
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""
         from app.query_main import validation_exception_handler

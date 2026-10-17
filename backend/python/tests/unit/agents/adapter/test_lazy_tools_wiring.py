@@ -280,11 +280,28 @@ class TestRegisterLazyToolMetaTools:
         register_lazy_tool_meta_tools(registry)
         assert set(META_TOOL_NAMES) <= set(registry.names())
 
+    def test_search_tools_ranks_with_the_toolset_aware_index(self) -> None:
+        """The model names the app as often as the action; tool_preloading keeps the plain index."""
+        from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+
+        registry = ToolRegistry()
+        register_lazy_tool_meta_tools(registry)
+        assert isinstance(registry.resolve_by_name("search_tools")._index, ToolsetAwareToolIndex)
+
     def test_second_call_on_same_registry_is_a_no_op(self) -> None:
         registry = ToolRegistry()
         register_lazy_tool_meta_tools(registry)
         register_lazy_tool_meta_tools(registry)  # must not raise
         assert set(META_TOOL_NAMES) <= set(registry.names())
+
+    def test_find_records_by_entity_is_reported_as_waiting_for_search_entities(self) -> None:
+        registry = ToolRegistry()
+        register_lazy_tool_meta_tools(registry)
+        deferral = registry.deferral("knowledgegraph__find_records_by_entity")
+        assert deferral is not None
+        assert (deferral.unlocked_by, deferral.condition) == (
+            "knowledgegraph__search_entities", "returns at least one entity",
+        )
 
 
 class TestMakeLazyToolsDecider:
@@ -325,6 +342,29 @@ class TestMakeLazyToolsDecider:
         assert set(original) <= set(names)
         assert set(META_TOOL_NAMES) <= set(names)
         assert {g.name for g in registry.children_of("connectors")} == {"jira", "slack"}
+
+    def test_uncounted_names_do_not_push_a_grant_over_the_threshold(self, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "2")
+        grant = ["jira_create_issue", "jira_search_issues", "slack_send_message"]
+
+        counted = make_lazy_tools_decider(apply=True)
+        uncounted = make_lazy_tools_decider(apply=True, uncounted_names=frozenset({"slack_send_message"}))
+
+        assert counted(_registry_with_connectors(), grant)[1] == "lazy"
+        names, disclosure = uncounted(_registry_with_connectors(), grant)
+        assert (names, disclosure) == (grant, "eager"), "still granted, just not counted"
+
+    def test_uncounted_names_change_nothing_once_the_rest_is_over(self, monkeypatch) -> None:
+        monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
+        monkeypatch.setenv("PIPESHUB_LAZY_TOOLS_THRESHOLD", "1")
+        decide = make_lazy_tools_decider(apply=True, uncounted_names=frozenset({"slack_send_message"}))
+
+        names, disclosure = decide(
+            _registry_with_connectors(), ["jira_create_issue", "jira_search_issues", "slack_send_message"],
+        )
+
+        assert disclosure == "lazy" and "slack_send_message" in names
 
     def test_essential_names_are_excluded_from_grouping(self, monkeypatch) -> None:
         monkeypatch.setenv("PIPESHUB_ENABLE_LAZY_TOOLS", "true")
@@ -447,6 +487,26 @@ class TestPipesHubGlobalCatalogFallback:
 
         assert hits[0].reason == "not_authenticated"
         assert "authenticate" in hits[0].description.lower()
+        assert "Your actions" in hits[0].description
+
+    async def test_a_service_account_agent_is_sent_to_the_agent_builder(self, monkeypatch) -> None:
+        fake_registry = _FakeToolsetRegistry({
+            "jira": _toolset_meta(tools=[
+                {"name": "create_issue", "description": "Create a Jira issue"},
+            ]),
+        })
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry", lambda: fake_registry,
+        )
+        context = SimpleNamespace(
+            toolset_load_failures={"jira": "not_authenticated"},
+            mcp_tool_load_failures=[], mcp_servers=[], is_service_account=True,
+        )
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira issue", limit=5)
+
+        assert "agent builder" in hits[0].description
+        assert "Your actions" not in hits[0].description
 
     async def test_search_defaults_to_not_attached_without_context(self, monkeypatch) -> None:
         fake_registry = _FakeToolsetRegistry({
@@ -487,14 +547,33 @@ class TestPipesHubGlobalCatalogFallback:
         hits = await fallback.search("jira issues", limit=5)
 
         assert len(hits) == 1
-        assert hits[0].name == "mcp_rovo__search_issues"
+        # The name the tool registers under once reachable, not the attachment's saved
+        # `fullName` (which reflects however names were built when the agent was saved).
+        assert hits[0].name == "mcp_rovomcp_search_issues"
         assert hits[0].reason == "mcp_unavailable"
         assert "unavailable" in hits[0].description.lower()
-        # `name`, not `displayName` — `mcp_tool_loader.py::_mcp_group_name`
-        # normalizes `ResolvedMCPServer.name`, so reporting
-        # `mcp_atlassian_rovo` here would name a group no later
-        # `fetch_tools` call could resolve.
+        # `name`, not `displayName` — the loader groups by `ResolvedMCPServer.name`, so
+        # reporting `mcp_atlassian_rovo` here would name a group no later `fetch_tools`
+        # call could resolve.
         assert hits[0].toolset == "mcp_rovomcp"
+
+    async def test_reports_the_names_the_loader_assigned_this_request(self, monkeypatch) -> None:
+        """A second same-type instance gets tagged names; the fallback must report those."""
+        monkeypatch.setattr(
+            "app.agents.registry.toolset_registry.get_toolset_registry",
+            lambda: _FakeToolsetRegistry({}),
+        )
+        context = make_context(
+            mcp_servers=[{
+                "instanceId": "inst-2", "name": "Rovo", "tools": [{"name": "search_issues", "description": "Search Jira"}],
+            }],
+            mcp_tool_load_failures=[{"instanceId": "inst-2", "name": "Rovo", "reason": "discovery_failed"}],
+        )
+        context.tool_state["mcp_names"] = {"inst-2": {"namespace": "atlassian_rovo_ab12", "group": "mcp_rovo_ab12"}}
+
+        hits = await PipesHubGlobalCatalogFallback(context).search("jira", limit=5)
+
+        assert (hits[0].name, hits[0].toolset) == ("mcp_atlassian_rovo_ab12_search_issues", "mcp_rovo_ab12")
 
     async def test_mcp_hit_without_full_name_falls_back_to_the_namespaced_name(
         self, monkeypatch,

@@ -5,7 +5,10 @@ record would quietly link to the hidden node again, whatever the winner's
 alias cap."""
 from __future__ import annotations
 
+import pytest
+
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import MAX_ALIASES_PER_NODE
 from app.modules.entity_resolution.normalizer import normalize_name
@@ -73,13 +76,16 @@ async def test_a_redirect_out_of_the_org_is_not_followed(
     assert entity.key == _english_key() and entity.is_new
 
 
-async def test_lookup_failure_keeps_the_new_node(
+async def test_a_failed_redirect_lookup_defers_instead_of_linking_the_merged_node(
     make_resolver, fake_graph, metadata_factory, ctx_factory,
 ) -> None:
+    _node(fake_graph, _english_key(), "English", merged_into="win")
+    _node(fake_graph, "win", "Anglais")
     fake_graph.fail_node_lookup = True
-    resolution = await make_resolver().resolve(ctx_factory("r1", ORG, metadata_factory(languages=["english"])))
-    (entity,) = resolution.entries.values()
-    assert entity.is_new and entity.key == _english_key()
+    ctx = ctx_factory("r1", ORG, metadata_factory(languages=["english"]))
+    with pytest.raises(EntityLookupUnavailableError):
+        await make_resolver().resolve(ctx)
+    assert ctx.entity_resolution is None
 
 
 async def test_two_names_redirecting_to_one_winner_become_one_entity(

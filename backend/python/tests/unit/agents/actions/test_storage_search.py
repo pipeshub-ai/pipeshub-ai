@@ -27,6 +27,7 @@ from app.agents.actions.storage_search.storage_search import (
     RunCommandInput,
     StoragePatternMatch,
     _ALLOWED_BINARIES,
+    _BYTE_CAP_MARKER,
     _MAX_OUTPUT_CHARS,
     _build_date_filtered_command,
     _force_xargs_null_delimited,
@@ -1538,8 +1539,11 @@ class TestReviewFindings:
         )
         success, output = await _run_subprocess("cat big.txt", cwd=str(tmp_path))
         assert success is True
-        assert len(output) <= 1_000
-        assert output.startswith("line of text\n")
+        body, _, marker = output.rpartition("\n")
+        assert len(body) <= 1_000
+        assert body.startswith("line of text\n")
+        # The cut is said in the output, so a reader knows files past it went unread.
+        assert marker == _BYTE_CAP_MARKER
 
     @pytest.mark.skipif(os.name != "posix", reason="process-group kill is POSIX-only")
     @pytest.mark.asyncio
@@ -1821,3 +1825,35 @@ class TestLogging:
         logged = [r.getMessage() for r in caplog.records if r.name == self._LOGGER]
         assert logged, "the calls should still log their metadata"
         assert not any(self._SECRET in m for m in logged)
+
+
+class TestFindRecordsSaysWhenOutputWasCut:
+    """Output cut at a size limit used to look like a complete answer, so a
+    record past the cut read as "does not match"."""
+
+    @pytest.mark.asyncio
+    async def test_output_reaching_the_callers_line_cap_is_reported(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {_VRID_ACCESSIBLE: "rec-ok", _VRID_FORBIDDEN: "rec-no"})
+
+        _, capped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=2)
+        _, uncapped = await tool.find_records("c", 'grep -rl "secretword" .', max_output_lines=3)
+
+        assert _json.loads(capped)["output_truncated"] is True
+        assert "may still match" in _json.loads(capped)["hint"]
+        assert _json.loads(uncapped)["output_truncated"] is False
+
+    @pytest.mark.asyncio
+    async def test_output_cut_at_the_byte_cap_is_reported_even_with_nothing_accessible(self, tmp_path) -> None:
+        import json as _json
+        _seed_two_records(tmp_path)
+        tool = _make_perm_tool(str(tmp_path), {})
+
+        # A first-stage cap below one line's length cuts the grep output.
+        success, output = await tool.find_records("c", 'grep -rl "secretword" .', max_stdout_bytes=10)
+
+        assert success is True
+        body = _json.loads(output)
+        assert body["records"] == []
+        assert body["output_truncated"] is True

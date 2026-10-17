@@ -1,5 +1,6 @@
 // Knowledge Base API - Action Operations (CRUD)
 
+import type { AxiosRequestConfig } from 'axios';
 import { apiClient } from '@/lib/api';
 import { streamSSEUpload, type SSEEvent } from '@/lib/api/streaming';
 import type {
@@ -13,6 +14,7 @@ import { DEFAULT_PAGE_SIZE } from './store';
 import { isKbCollectionsHubApp } from './utils/all-records-transformer';
 import { getReindexNodeFromHubItem, isKbCollectionNode } from './utils/reindex-label';
 import { normalizeKbId } from './utils/resolve-root-kb-id';
+import { quietRejectedCursor } from './utils/cursor-recovery';
 import { ConnectorsApi } from '../workspace/connectors/api';
 
 const BASE_URL = '/api/v1/knowledgeBase';
@@ -28,7 +30,7 @@ function getNodeChildrenCacheKey(
   nodeType: NodeType,
   nodeId: string,
   params?: {
-    page?: number;
+    cursor?: string;
     limit?: number;
     include?: string;
     onlyContainers?: boolean;
@@ -36,13 +38,13 @@ function getNodeChildrenCacheKey(
     sortOrder?: 'asc' | 'desc';
   }
 ) {
-  const page = params?.page ?? 1;
+  const cursor = params?.cursor ?? '';
   const limit = params?.limit ?? 50;
   const include = params?.include ?? '';
   const sortBy = params?.sortBy ?? '';
   const sortOrder = params?.sortOrder ?? '';
   const onlyContainers = params?.onlyContainers !== false;
-  return `${nodeType}\0${nodeId}\0${page}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}\0${sortBy}\0${sortOrder}`;
+  return `${nodeType}\0${nodeId}\0${cursor}\0${limit}\0${include}\0${onlyContainers ? '1' : '0'}\0${sortBy}\0${sortOrder}`;
 }
 
 function filterSidebarItems(items: KnowledgeHubApiResponse['items']) {
@@ -89,7 +91,6 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts',
         },
@@ -114,7 +115,6 @@ export const KnowledgeHubApi = {
       {
         params: {
           nodeId,
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
         },
       }
@@ -138,19 +138,19 @@ export const KnowledgeHubApi = {
     nodeType: NodeType,
     nodeId: string,
     params?: Partial<KnowledgeHubQueryParams>,
-    options?: { suppressErrorToast?: boolean }
+    options?: { suppressErrorToast?: boolean; signal?: AbortSignal }
   ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
       {
         params: {
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,breadcrumbs,availableFilters',
           // Data area: Never use onlyContainers (we need both folders AND files)
           ...params,
         },
-        ...(options?.suppressErrorToast ? { suppressErrorToast: true } : {}),
+        signal: options?.signal,
+        suppressErrorToast: options?.suppressErrorToast || quietRejectedCursor(params?.cursor),
       }
     );
     return data;
@@ -189,7 +189,6 @@ export const KnowledgeHubApi = {
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,availableFilters',
           // Data area: Never use onlyContainers (we need all record types)
@@ -217,11 +216,13 @@ export const KnowledgeHubApi = {
     nodeId: string,
     params?: {
       onlyContainers?: boolean;
-      page?: number;
+      cursor?: string;
       limit?: number;
       include?: string;
       sortBy?: string;
       sortOrder?: 'asc' | 'desc';
+      /** No error toast: the caller handles a failure itself. */
+      quiet?: boolean;
     }
   ) {
     const key = getNodeChildrenCacheKey(nodeType, nodeId, params);
@@ -236,13 +237,15 @@ export const KnowledgeHubApi = {
           `${BASE_URL}/knowledge-hub/nodes/${nodeType}/${nodeId}`,
           {
             params: {
-              page: params?.page ?? 1,
+              // Omitted, not defaulted: no cursor means the first page.
+              ...(params?.cursor ? { cursor: params.cursor } : {}),
               limit: params?.limit ?? 50,
               include: params?.include,
               onlyContainers,
               ...(params?.sortBy != null ? { sortBy: params.sortBy } : {}),
               ...(params?.sortOrder != null ? { sortOrder: params.sortOrder } : {}),
             },
+            ...(params?.quiet ? { suppressErrorToast: true } : {}),
           }
         );
 
@@ -257,6 +260,41 @@ export const KnowledgeHubApi = {
   },
 
   /**
+   * Nodes whose name contains `q`, at any depth: everywhere the user can
+   * reach, or under one node when `parent` is given.
+   */
+  async searchNodes(params: {
+    q: string;
+    parent?: { nodeType: string; id: string };
+    origins?: 'CONNECTOR' | 'COLLECTION';
+    limit?: number;
+    cursor?: string | null;
+    signal?: AbortSignal;
+    /** False keeps the search on this level. A global flatten only walks connectors, so a root collection is invisible to it. */
+    flattened?: boolean;
+  }): Promise<KnowledgeHubApiResponse> {
+    const path = params.parent
+      ? `${BASE_URL}/knowledge-hub/nodes/${params.parent.nodeType}/${params.parent.id}`
+      : `${BASE_URL}/knowledge-hub/nodes`;
+    const { data } = await apiClient.get<KnowledgeHubApiResponse>(path, {
+      params: {
+        q: params.q,
+        flattened: params.flattened !== false,
+        onlyContainers: false,
+        limit: params.limit ?? 20,
+        sortBy: 'name',
+        sortOrder: 'asc',
+        ...(params.origins ? { origins: params.origins } : {}),
+        ...(params.cursor ? { cursor: params.cursor } : {}),
+      },
+      signal: params.signal,
+      // The picker shows its own message when a search fails.
+      suppressErrorToast: true,
+    });
+    return data;
+  },
+
+  /**
    * Get node table data (all items in a folder for data table)
    *
    * Fetches top-level nodes. When onlyContainers is not false, delegates to
@@ -265,7 +303,7 @@ export const KnowledgeHubApi = {
    * @param params - Query parameters
    * @returns Root nodes
    */
-  async getRootNodes(params?: { page?: number; limit?: number; onlyContainers?: boolean }) {
+  async getRootNodes(params?: { cursor?: string; limit?: number; onlyContainers?: boolean }) {
     if (params?.onlyContainers !== false) {
       return this.initializeSidebar();
     }
@@ -283,17 +321,21 @@ export const KnowledgeHubApi = {
    * @param params - Optional filters, pagination, sorting
    * @returns All root-level items with metadata
    */
-  async getAllRootItems(params?: Partial<KnowledgeHubQueryParams>) {
+  async getAllRootItems(
+    params?: Partial<KnowledgeHubQueryParams>,
+    options?: { signal?: AbortSignal }
+  ) {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
       {
         params: {
-          page: 1,
           limit: DEFAULT_PAGE_SIZE,
           include: 'counts,permissions,breadcrumbs,availableFilters',
           // Data area: Never use onlyContainers (we need all root items including records)
           ...params,
         },
+        signal: options?.signal,
+        suppressErrorToast: quietRejectedCursor(params?.cursor),
       }
     );
     return data;
@@ -313,10 +355,13 @@ export const KnowledgeHubApi = {
    * @param params Query parameters for filtering, pagination, sorting
    * @returns Root nodes or filtered results with metadata
    */
-  async getNavigationNodes(params?: KnowledgeHubQueryParams): Promise<KnowledgeHubApiResponse> {
+  async getNavigationNodes(
+    params?: KnowledgeHubQueryParams,
+    options?: { signal?: AbortSignal }
+  ): Promise<KnowledgeHubApiResponse> {
     const { data } = await apiClient.get<KnowledgeHubApiResponse>(
       `${BASE_URL}/knowledge-hub/nodes`,
-      { params }
+      { params, signal: options?.signal, suppressErrorToast: quietRejectedCursor(params?.cursor) }
     );
     return data;
   },
@@ -594,7 +639,10 @@ export const KnowledgeBaseApi = {
     ) {
       return this.renameFolder(normalizedRootKbId, nodeId, newName);
     }
-    return this.renameKnowledgeBase(nodeId, newName);
+    if ((nodeType === 'folder' || nodeType === 'recordGroup') && normalizedRootKbId === nodeId) {
+      return this.renameKnowledgeBase(nodeId, newName);
+    }
+    throw new Error(`Cannot rename "${nodeId}": node type ${nodeType ?? 'unknown'} without its collection`);
   },
 
   /**
@@ -618,10 +666,10 @@ export const KnowledgeBaseApi = {
     ) {
       return this.deleteFolder(normalizedRootKbId, nodeId);
     }
-    if (nodeType === 'kb' || nodeType === 'app') {
+    if (nodeType === 'kb' || nodeType === 'app' || (nodeType === 'folder' && normalizedRootKbId === nodeId)) {
       return this.deleteKnowledgeBase(nodeId);
     }
-    return this.deleteKnowledgeBase(nodeId);
+    throw new Error(`Cannot delete "${nodeId}": node type ${nodeType ?? 'unknown'} without its collection`);
   },
 
   // Rename record (file)
@@ -699,7 +747,7 @@ export const KnowledgeBaseApi = {
   async streamDownloadRecord(
     recordId: string,
     fileName?: string,
-    options?: { version?: number }
+    options?: { version?: number; suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
   ): Promise<void> {
     const params: Record<string, number> = {};
     if (options?.version !== undefined) {
@@ -709,6 +757,7 @@ export const KnowledgeBaseApi = {
       responseType: 'blob',
       timeout: 300000,
       params,
+      suppressErrorToast: options?.suppressErrorToast,
     });
 
     // response.data is already a Blob with the correct MIME type when responseType is 'blob'
@@ -729,9 +778,13 @@ export const KnowledgeBaseApi = {
   /**
    * Get full record details including metadata and permissions
    */
-  async getRecordDetails(recordId: string) {
+  async getRecordDetails(
+    recordId: string,
+    options?: { suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
+  ) {
     const { data } = await apiClient.get<RecordDetailsResponse>(
-      `${BASE_URL}/record/${recordId}`
+      `${BASE_URL}/record/${recordId}`,
+      { suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
   },
@@ -749,7 +802,7 @@ export const KnowledgeBaseApi = {
    */
   async streamRecord(
     recordId: string,
-    options?: { convertTo?: string; version?: number }
+    options?: { convertTo?: string; version?: number; suppressErrorToast?: AxiosRequestConfig['suppressErrorToast'] }
   ): Promise<Blob> {
     const params: Record<string, string | number> = {};
     if (options?.convertTo) {
@@ -760,7 +813,7 @@ export const KnowledgeBaseApi = {
     }
     const { data } = await apiClient.get(
       `${BASE_URL}/stream/record/${recordId}`,
-      { responseType: 'blob', params }
+      { responseType: 'blob', params, suppressErrorToast: options?.suppressErrorToast }
     );
     return data;
   },

@@ -291,6 +291,7 @@ export function useAgentBuilderReconstruction(): {
                   connectorInstanceId: kbConnectorId,
                   filters: {
                     records,
+                    ...(Array.isArray(filtersParsed.nodes) ? { nodes: filtersParsed.nodes } : {}),
                   },
                   selectedRecords: records,
                   similarity: 0.8,
@@ -723,7 +724,7 @@ export function useAgentBuilderReconstruction(): {
           const displayName = mcpServer.displayName || mcpServer.name || t('agentBuilder.mcpServerDefaultName');
           const mcpTools = (mcpServer.tools || []).map((tool) => ({
             name: tool.name,
-            fullName: tool.fullName || `${mcpServer.name}.${tool.name}`,
+            fullName: tool.fullName || '',
             description: tool.description || '',
           }));
 
@@ -747,7 +748,9 @@ export function useAgentBuilderReconstruction(): {
                 name: mcpServer.name,
                 displayName,
                 typeId: mcpServer.typeId || undefined,
+                allTools: mcpServer.allTools === true,
                 tools: mcpTools,
+                availableTools: mcpTools,
                 isAuthenticated: true,
               },
               inputs: [],

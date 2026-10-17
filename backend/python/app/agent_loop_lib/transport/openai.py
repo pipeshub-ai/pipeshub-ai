@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -34,6 +34,10 @@ from app.agent_loop_lib.core.streaming import (
 )
 from app.agent_loop_lib.core.tool_schema import ToolSchema
 from app.agent_loop_lib.transport.base import LLMTransport
+from app.agent_loop_lib.transport.content_filter import (
+    CONTENT_FILTER_STOP_REASONS,
+    content_filter_error,
+)
 from app.agent_loop_lib.transport.openai_responses import (
     EVT_COMPLETED,
     EVT_ERROR,
@@ -55,6 +59,7 @@ from app.agent_loop_lib.transport.openai_responses import (
 )
 from app.agent_loop_lib.transport.provider_conflicts import (
     is_api_shape_conflict,
+    is_prompt_cache_param_conflict,
     is_reasoning_mandatory_conflict,
 )
 from app.utils.llm_api_mode_store import LLMApiMode, get_llm_api_mode_store
@@ -157,6 +162,8 @@ class OpenAITransport(LLMTransport):
         timeout: float | None = None,
         max_retries: int | None = None,
         model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None,
+        on_cache_rejected: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         try:
@@ -180,6 +187,7 @@ class OpenAITransport(LLMTransport):
         if max_retries is not None:
             client_kwargs["max_retries"] = max_retries
         self._client = _openai.AsyncOpenAI(**client_kwargs)
+        self._init_prompt_cache(cache_kwargs, on_cache_rejected)
         # Cumulative usage across all calls on this transport instance —
         # diagnostic only; see AnthropicTransport's equivalent fields.
         self.total_input_tokens: int = 0
@@ -192,6 +200,7 @@ class OpenAITransport(LLMTransport):
     @classmethod
     def from_langchain_model(
         cls, llm: Any, model_name: str = "", model_key: str | None = None,
+        cache_kwargs: dict[str, str] | None = None, on_cache_rejected: Callable[[], None] | None = None,
     ) -> "OpenAITransport":
         """Build from an already-configured `ChatOpenAI`.
 
@@ -239,7 +248,29 @@ class OpenAITransport(LLMTransport):
             timeout=timeout if isinstance(timeout, (int, float)) else None,
             max_retries=max_retries if isinstance(max_retries, int) else None,
             model_key=model_key,
+            cache_kwargs=cache_kwargs,
+            on_cache_rejected=on_cache_rejected,
         )
+
+    def _init_prompt_cache(
+        self, cache_kwargs: dict[str, str] | None, on_cache_rejected: Callable[[], None] | None,
+    ) -> None:
+        # prompt_cache_key / prompt_cache_retention, decided by the caller from
+        # the shared policy (`transport/prompt_cache.py`); dropped for good if
+        # the endpoint rejects them.
+        self._cache_kwargs: dict[str, str] = dict(cache_kwargs or {})
+        self._on_cache_rejected = on_cache_rejected
+
+    def _drop_cache_params(self, exc: Exception) -> bool:
+        """Whether `exc` is the endpoint refusing a cache parameter this
+        transport sends; if so, later requests (the retry included) go without."""
+        if not is_prompt_cache_param_conflict(exc, self._cache_kwargs):
+            return False
+        logger.warning("%s: prompt-cache parameters rejected; resending without them: %s", type(self).__name__, exc)
+        self._cache_kwargs = {}
+        if self._on_cache_rejected is not None:
+            self._on_cache_rejected()
+        return True
 
     @property
     def provider(self) -> str:
@@ -388,6 +419,7 @@ class OpenAITransport(LLMTransport):
             "model": self._responses_model_id(),
             "input": format_responses_input(messages, system),
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = format_responses_tools(tools)
         if formatted_tools:
@@ -413,6 +445,7 @@ class OpenAITransport(LLMTransport):
 
         message = parse_responses_output(response)
         usage = self._record_usage(*responses_usage_fields(response))
+        self._check_responses_output(response, message, usage, "complete")
         stop_reason = stop_reason_from_responses(response, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -528,6 +561,7 @@ class OpenAITransport(LLMTransport):
         if final_response is not None:
             message = parse_responses_output(final_response)
             usage = self._record_usage(*responses_usage_fields(final_response))
+            self._check_responses_output(final_response, message, usage, "stream")
             stop_reason = stop_reason_from_responses(final_response, bool(message.tool_calls))
         else:
             # Stream ended without a terminal event; salvage what arrived.
@@ -638,8 +672,43 @@ class OpenAITransport(LLMTransport):
         output_tokens = _int_field(usage, "completion_tokens")
         details = getattr(usage, "prompt_tokens_details", None)
         cached = _int_field(details, "cached_tokens")
+        written = _int_field(details, "cache_write_tokens")
 
-        return self._record_usage(input_tokens, output_tokens, cached)
+        return self._record_usage(input_tokens, output_tokens, cached, written)
+
+    def _check_responses_output(
+        self, response: Any, message: AssistantMessage, usage: TokenUsage, context: str,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        reason = getattr(getattr(response, "incomplete_details", None), "reason", None)
+        output_types = [
+            getattr(item, "type", None) for item in (getattr(response, "output", None) or [])
+        ]
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s status=%s "
+            "incomplete_reason=%s output_types=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, getattr(response, "id", None),
+            getattr(response, "status", None), reason, output_types,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"incomplete_details.reason={reason}")
+
+    def _check_chat_output(
+        self, message: AssistantMessage, usage: TokenUsage, context: str, *,
+        response_id: str | None, finish_reason: str | None,
+    ) -> None:
+        if message.text or message.tool_calls:
+            return
+        logger.warning(
+            "OpenAITransport.%s: model=%s returned no output (response_id=%s "
+            "finish_reason=%s input_tokens=%d output_tokens=%d)",
+            context, self._model, response_id, finish_reason,
+            usage.input_tokens, usage.output_tokens,
+        )
+        if finish_reason in CONTENT_FILTER_STOP_REASONS:
+            raise content_filter_error(context, f"finish_reason={finish_reason}")
 
     def _wrap_error(self, exc: Exception, context: str) -> TransportError:
         status_code = getattr(exc, "status_code", None)
@@ -689,6 +758,7 @@ class OpenAITransport(LLMTransport):
             "model": resolved_model,
             "messages": self._format_messages(messages, system),
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
@@ -708,6 +778,10 @@ class OpenAITransport(LLMTransport):
         usage = self._usage_from(response)
         message = self._parse_response(response.choices[0].message)
         finish_reason = getattr(response.choices[0], "finish_reason", None)
+        self._check_chat_output(
+            message, usage, "complete", response_id=getattr(response, "id", None),
+            finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(message.tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -781,6 +855,7 @@ class OpenAITransport(LLMTransport):
             "stream": True,
             "stream_options": {"include_usage": True},
             **self._default_request_kwargs(),
+            **self._cache_kwargs,
         }
         formatted_tools = self._format_tools(tools)
         if formatted_tools:
@@ -791,6 +866,7 @@ class OpenAITransport(LLMTransport):
         text_parts: list[str] = []
         usage = TokenUsage()
         finish_reason: str | None = None
+        response_id: str | None = None
         # Tool call deltas arrive fragmented across chunks, indexed by
         # position in the assistant's tool_calls list — accumulate by
         # index until the stream ends, same pattern every OpenAI streaming
@@ -800,6 +876,7 @@ class OpenAITransport(LLMTransport):
         try:
             stream = await self._client.chat.completions.create(**kwargs)
             async for chunk in stream:
+                response_id = response_id or getattr(chunk, "id", None)
                 if getattr(chunk, "usage", None) is not None:
                     usage = self._usage_from(chunk)
                 if not chunk.choices:
@@ -862,6 +939,9 @@ class OpenAITransport(LLMTransport):
             )
         final_text = "".join(text_parts) or None
         message = AssistantMessage(content=final_text, tool_calls=final_tool_calls or None)
+        self._check_chat_output(
+            message, usage, "stream", response_id=response_id, finish_reason=finish_reason,
+        )
         stop_reason = self._chat_stop_reason(finish_reason, bool(final_tool_calls))
         if stop_reason == StopReason.MAX_TOKENS:
             message.truncated = True
@@ -898,13 +978,13 @@ class OpenAITransport(LLMTransport):
                 d.reasoning = None
                 d.reasoning_effort = None
                 return LLMApiMode.NO_REASONING_WITH_TOOLS.value
-            # Reasoning combined with bound tools on Chat Completions: this
-            # deployment wants the Responses API for that combination.
+            # Tools refused on Chat Completions: this deployment wants the
+            # Responses API for them. Usually reasoning was set; a model that
+            # reasons by default (Azure's gpt-6) is refused without it, and
+            # then keeps its own default effort there, as on the LangChain arm.
             effort = d.reasoning_effort or (d.reasoning or {}).get("effort")
-            if not effort:
-                return None
             d.use_responses_api = True
-            d.reasoning = {"effort": effort}
+            d.reasoning = {"effort": effort} if effort else None
             d.reasoning_effort = None
             return LLMApiMode.RESPONSES.value
         if is_reasoning_mandatory_conflict(exc):
@@ -959,8 +1039,9 @@ class OpenAITransport(LLMTransport):
                 system_blocks=system_blocks,
             )
         except Exception as exc:
-            mode = self._shape_fallback(exc)
-            if mode is None:
+            dropped = self._drop_cache_params(exc)
+            mode = None if dropped else self._shape_fallback(exc)
+            if not dropped and mode is None:
                 raise
         result = await self._complete_once(
             messages=messages, tools=tools, system=system, model=model,
@@ -969,7 +1050,8 @@ class OpenAITransport(LLMTransport):
         )
         # Only after the retry actually worked -- recording a guess would make
         # every later request build the wrong shape from the start.
-        await self._record_api_mode(mode)
+        if mode is not None:
+            await self._record_api_mode(mode)
         return result
 
     async def stream(
@@ -1002,8 +1084,9 @@ class OpenAITransport(LLMTransport):
             # Retrying after deltas reached the client would replay them.
             if emitted:
                 raise
-            mode = self._shape_fallback(exc)
-            if mode is None:
+            dropped = self._drop_cache_params(exc)
+            mode = None if dropped else self._shape_fallback(exc)
+            if not dropped and mode is None:
                 raise
 
         async for event in self._stream_once(
@@ -1012,4 +1095,5 @@ class OpenAITransport(LLMTransport):
             system_blocks=system_blocks,
         ):
             yield event
-        await self._record_api_mode(mode)
+        if mode is not None:
+            await self._record_api_mode(mode)

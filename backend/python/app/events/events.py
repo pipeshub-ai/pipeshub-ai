@@ -30,13 +30,6 @@ from app.config.constants.arangodb import (
     get_mime_type_for_extension,
     normalize_file_extension,
 )
-from app.events.processor import Processor
-from app.exceptions.indexing_exceptions import IndexingError, ProcessingError
-from app.modules.parsers.code_parser.file_role import is_generated_file_name
-from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
-from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.modules.transformers.pipeline import IndexingPipeline
-from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.events.dedup import (
     DedupDecision,
     DuplicateMatch,
@@ -44,9 +37,24 @@ from app.events.dedup import (
     select_duplicate,
     will_promote_queued_copies,
 )
+from app.events.processor import Processor
+from app.exceptions.indexing_exceptions import (
+    EntityLookupUnavailableError,
+    IndexingError,
+    ProcessingError,
+)
+from app.modules.parsers.code_parser.file_role import is_generated_file_name
+from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
+from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+from app.modules.reconciliation.service import ReconciliationMetadata
+from app.modules.transformers.pipeline import IndexingPipeline
+from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.graph_db.common.record_visibility import is_live_record
+from app.services.graph_db.common.record_visibility import (
+    indexed_copy_fields,
+    is_live_record,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import (
     IndexingEvent,
@@ -65,6 +73,7 @@ from app.services.vector_db.strategy import (
 )
 from app.utils.cpu_offload import offload_if_large
 from app.utils.file_signatures import match_metadata_file_signature
+from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import ENRICHMENT_FAILED
 
@@ -470,14 +479,22 @@ class EventProcessor:
             self.logger.info(
                 "⚠️ Empty document for %s — marking EMPTY", record_id
             )
-            await self.update_record_fields(
+            await self._drop_the_previous_vectors_of_an_emptied_record(
+                record_doc, prev_virtual_record_id or virtual_record_id, event_type
+            )
+            self._require_persisted(
+                await self.update_record_fields(
+                    record_doc,
+                    {
+                        # parsingStatus is already COMPLETED from the write above.
+                        "indexingStatus": ProgressStatus.EMPTY.value,
+                        **indexed_copy_fields(ProgressStatus.EMPTY),
+                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                        "isDirty": False,
+                    },
+                ),
+                "Failed to persist EMPTY status for record",
                 record_doc,
-                {
-                    # parsingStatus is already COMPLETED from the write above.
-                    "indexingStatus": ProgressStatus.EMPTY.value,
-                    "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                    "isDirty": False,
-                },
             )
             yield PipelineEvent(
                 event=IndexingEvent.INDEXING_COMPLETE,
@@ -502,9 +519,10 @@ class EventProcessor:
             prev_virtual_record_id=prev_virtual_record_id,
         )
 
-        ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
-            ctx, self.logger, self.sink_orchestrator
-        )
+        with stage("reconcile"):
+            ctx.reconciliation_context = await IndexingPipeline.build_reconciliation_context(
+                ctx, self.logger, self.sink_orchestrator
+            )
 
         defer_extraction = (
             ctx.settings.get("defer_extraction")
@@ -519,6 +537,7 @@ class EventProcessor:
         self.logger.debug("✅ Record %s is now searchable (indexingStatus=COMPLETED)", record_id)
 
         # ── Step 3: Enrich (Extraction Service → GraphDB) ────────────────────
+        extraction = None
         if defer_extraction:
             await self.update_record_fields(
                 record_doc,
@@ -528,22 +547,34 @@ class EventProcessor:
                 "📨 Deferring graph enrichment for record %s", record_id
             )
         else:
+            ner_task = None
             try:
-                departments = await self.graph_provider.get_departments(org_id)
-                semantic_metadata = await self.extraction_client.classify(
-                    block_container=block_container,
-                    org_id=org_id,
-                    departments=departments or [],
-                    record_name=record.record_name,
-                    record_type=record.record_type.value,
+                ner_task = asyncio.create_task(
+                    self.sink_orchestrator.extract_named_entities(ctx, client=self.extraction_client)
                 )
+                with stage("extract"):
+                    departments = await self.graph_provider.get_departments(org_id)
+                    semantic_metadata = await self.extraction_client.classify(
+                        block_container=block_container,
+                        org_id=org_id,
+                        departments=departments or [],
+                        record_name=record.record_name,
+                        record_type=record.record_type.value,
+                    )
+                # Entity extraction runs alongside classification; only the wait
+                # left once classification is done counts here.
+                with stage("entities.extract"):
+                    extraction = await ner_task
 
                 record.semantic_metadata = semantic_metadata
                 if semantic_metadata:
                     # Taxonomy names must be resolved before the summary,
                     # blob and graph writes below all consume them.
-                    await self.sink_orchestrator.resolve_entities(ctx)
+                    with stage("entities.resolve"):
+                        await self.sink_orchestrator.resolve_entities(ctx)
+                    self.sink_orchestrator.attach_named_entities(ctx, extraction)
                 if semantic_metadata and (semantic_metadata.summary or "").strip():
+                    # Not wrapped in a stage: it times its own steps.
                     await self.sink_orchestrator.vector_store.index_record_summary(
                         record_id,
                         virtual_record_id,
@@ -553,9 +584,16 @@ class EventProcessor:
                     )
 
                 await self.sink_orchestrator.enrich(ctx)
+                with stage("entities.persist"):
+                    await self.sink_orchestrator.persist_named_entities(ctx, extraction)
                 self.logger.info(
                     "✅ Graph enrichment completed for record %s", record_id
                 )
+            except EntityLookupUnavailableError:
+                # Nothing of the enrichment is written yet and the record stays
+                # searchable; redelivery resumes the enrichment (extractionStatus
+                # is IN_PROGRESS), and its last attempt ends it FAILED.
+                raise
             except Exception as enrich_exc:
                 self.logger.error(
                     "❌ Enrichment failed for record %s (document remains searchable): %s",
@@ -571,9 +609,17 @@ class EventProcessor:
                         "processingStartedAt": None,
                     },
                 )
+            finally:
+                # A record timeout or a lost lease cancels the handler, and CancelledError
+                # is not an Exception: without this the agent run would go on unowned.
+                if ner_task is not None and not ner_task.done():
+                    ner_task.cancel()
 
         try:
-            await self.sink_orchestrator.blob_storage.apply(ctx)
+            from app.modules.named_entities.stage import extraction_blob_holder
+
+            with stage("blob.write"), extraction_blob_holder(record, extraction):
+                await self.sink_orchestrator.blob_storage.apply(ctx)
         except Exception as blob_exc:
             self.logger.error(
                 "❌ Blob storage status update failed for record %s (document remains searchable): %s",
@@ -616,11 +662,68 @@ class EventProcessor:
         if not success:
             raise IndexingError(what, details={"record_id": _record_key(doc)})
 
+    async def _drop_the_previous_vectors_of_an_emptied_record(
+        self, doc: dict[str, Any], virtual_record_id: str | None, event_type: str | None
+    ) -> None:
+        """An update that leaves a record empty must not leave its old content searchable.
+
+        Types not reconciled block by block lost their vectors before this
+        event ran; reconciled ones still hold them. A VRID another record also
+        holds is that record's content, so it is left alone.
+        """
+        if not virtual_record_id or event_type not in (
+            EventTypes.UPDATE_RECORD.value,
+            EventTypes.REINDEX_RECORD.value,
+        ):
+            return
+        # An unreadable graph also answers []; raising lets the event retry rather
+        # than reading the failure as "nobody else holds this content".
+        try:
+            holders = await self.graph_provider.get_records_by_virtual_record_id(
+                virtual_record_id, raise_on_error=True
+            )
+        except Exception as e:
+            raise IndexingError(
+                "Could not tell whether another record shares this content",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
+            ) from e
+        if set(holders or []) != {_record_key(doc)}:
+            return
+        pipeline = self._indexing_pipeline()
+        if pipeline is None:
+            # Completing anyway would leave the old content in the vector store for good.
+            raise IndexingError(
+                "No indexing pipeline to delete the previous vectors of an emptied record",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
+            )
+        await pipeline.delete_points_for_virtual_record(
+            virtual_record_id, RecordContext.from_graph_document(doc)
+        )
+        # The VRID is kept, so without this the next diff would pair unchanged
+        # blocks with the points just deleted and embed nothing.
+        orchestrator = self.sink_orchestrator or getattr(self.processor, "sink_orchestrator", None)
+        try:
+            if orchestrator is None:
+                raise RuntimeError("no sink orchestrator to reset the reconciliation metadata")
+            org_id = doc.get("orgId")
+            await orchestrator.blob_storage.save_reconciliation_metadata(
+                org_id, _record_key(doc), virtual_record_id, ReconciliationMetadata().to_dict(),
+                document_path=await orchestrator.blob_storage.get_actual_content_path(org_id, virtual_record_id),
+                connector_id=doc.get("connectorId"),
+                record_group_id=doc.get("recordGroupId"),
+            )
+        except Exception as e:
+            raise IndexingError(
+                "Could not reset the stored block list of an emptied record",
+                details={"record_id": _record_key(doc), "virtual_record_id": virtual_record_id},
+            ) from e
+
     async def mark_record_status(self, doc: dict[str, Any], status: ProgressStatus) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
         record_id = _record_key(doc) or "unknown"
         fields = {
             "indexingStatus": status.value,
+            **indexed_copy_fields(status),
             "processingStartedAt": (
                 get_epoch_timestamp_in_ms()
                 if status == ProgressStatus.IN_PROGRESS
@@ -1013,6 +1116,22 @@ class EventProcessor:
             "Failed to copy duplicate record relationships",
             doc,
         )
+        from app.services.featureflag.platform_settings import (
+            is_named_entity_extraction_enabled,
+        )
+
+        # With the flag off the copy is skipped, so a deployment that never turned
+        # it on cannot fail a duplicate over named entities.
+        if not await is_named_entity_extraction_enabled(self.config_service):
+            return
+        # Fatal like the taxonomy copy: a same-collection duplicate is marked
+        # COMPLETED and never indexed, so nothing else would copy the mentions.
+        try:
+            await self.graph_provider.copy_named_entity_mentions(_record_key(twin), _record_key(doc))
+        except Exception as exc:
+            raise IndexingError(
+                "Failed to copy duplicate record mentions", details={"record_id": _record_key(doc)}
+            ) from exc
 
     async def _attach_to_finished_twin(self, twin: Mapping[str, Any], doc: dict[str, Any]) -> None:
         """Make ``doc`` a copy of a finished twin in the same collection.
@@ -1064,6 +1183,7 @@ class EventProcessor:
                     {
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
+                        **indexed_copy_fields(twin.get("indexingStatus")),
                         "processingStartedAt": None,
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         # EMPTY duplicates never ran extraction, so this can be
@@ -1213,6 +1333,16 @@ class EventProcessor:
 
             doc: dict[str, Any] = dict(record)
 
+            # A successful attempt never clears `reason` (the status writer only
+            # sets it when non-empty), so drop the previous failure text here or
+            # it outlives a good reindex.
+            if doc.get("reason"):
+                self._require_persisted(
+                    await self.update_record_fields(doc, {"reason": None}),
+                    "Failed to clear the previous failure reason for record",
+                    doc,
+                )
+
             # Extract necessary data
             record_version = event_data.get("version", 0)
             connector = event_data.get("connectorName", "")
@@ -1282,6 +1412,9 @@ class EventProcessor:
                 file_content = file_content.strip()
 
             if not file_content or file_content == b"":
+                await self._drop_the_previous_vectors_of_an_emptied_record(
+                    doc, virtual_record_id, event_type
+                )
                 await self.mark_record_status(doc, ProgressStatus.EMPTY)
                 yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
                 yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))

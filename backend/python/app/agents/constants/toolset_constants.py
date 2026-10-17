@@ -92,6 +92,15 @@ def get_toolset_instances_path(org_id: str) -> str:
     return "/services/toolset-instances"
 
 
+def get_toolset_tool_rules_path(instance_id: str) -> str:
+    """etcd path for a toolset instance's tool approval rules, set by an admin.
+
+    Not under ``/services/toolsets/``: everything there is read as a user's credentials
+    (``{instanceId}/{userId}``) by the token refresh service.
+    """
+    return f"/services/toolset-tool-rules/{instance_id}"
+
+
 def get_toolset_oauth_config_path(toolset_type: str) -> str:
     """
     Get etcd path for the list of OAuth configurations for a toolset type.

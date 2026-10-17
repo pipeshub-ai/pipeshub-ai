@@ -206,6 +206,35 @@ export class MigrationService {
     }
   }
 
+  /**
+   * Recreate the BullMQ job of any scheduled connector that lost it. Run on a timer: a schedule
+   * written in the background after a save can fail, and nothing else would ever notice.
+   */
+  async repairConnectorSchedules(
+    scheduler: CrawlingSchedulerService,
+    appConfig: AppConfig,
+  ): Promise<void> {
+    try {
+      const result = await new ScheduledJobsBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        scheduler,
+        appConfig,
+        { maxAttempts: 1 },
+      ).run({ ignoreDoneFlag: true });
+      if (result.scheduled > 0 || result.errored > 0) {
+        this.logger.warn(
+          'Repaired connector sync schedules that were missing',
+          result,
+        );
+      }
+    } catch (error) {
+      this.logger.error('Connector sync schedule repair failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
   async aiModelsMigration(): Promise<void> {
     this.logger.info('Migrating ai models configurations');
     const encryptedAIConfig = await this.keyValueStoreService.get<string>(

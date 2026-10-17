@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
+import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import {
   InfoRow,
   DotSeparator,
@@ -16,7 +17,7 @@ import {
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
 import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
-import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel } from './utils';
+import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
 import type { ConnectorInstance, ConnectorConfig, ConnectorScope } from '../../types';
@@ -64,6 +65,7 @@ export function InstanceCard({
   const [enabledByName, setEnabledByName] = useState<string | null>(null);
   const [enabledByAvatar, setEnabledByAvatar] = useState<string | null>(null);
   const [syncToggleBusy, setSyncToggleBusy] = useState(false);
+  const [disableConfirmOpen, setDisableConfirmOpen] = useState(false);
 
   const updatedByEntry = useUserDirectoryEntry(instance.updatedBy);
 
@@ -102,7 +104,14 @@ export function InstanceCard({
     deriveSyncStatusState(instance, undefined, config);
   const syncStrategy = getSyncStrategyLabel(t, config);
   const syncInterval = getSyncIntervalLabel(t, config);
-  const lastSynced = formatRelativeTime(instance.updatedAtTimestamp);
+  const lastSyncedTime = formatRelativeTime(lastSyncedAt(instance));
+  const lastSynced =
+    instance.lastSyncOutcome && instance.lastSyncOutcome !== 'succeeded' && lastSyncedTime
+      ? t('workspace.connectors.overview.lastRun.lastSyncedWithOutcome', {
+          time: lastSyncedTime,
+          outcome: t(`workspace.connectors.overview.lastRun.outcome.${instance.lastSyncOutcome}`),
+        })
+      : lastSyncedTime;
 
   const canToggleSync =
     Boolean(instance._key) &&
@@ -130,19 +139,28 @@ export function InstanceCard({
     !oauthAuthIncomplete &&
     instance.status !== CONNECTOR_INSTANCE_STATUS.DELETING;
 
+  const runSyncToggle = async () => {
+    if (!onToggleSyncActive || !instance._key || syncToggleBusy) return;
+    setSyncToggleBusy(true);
+    try {
+      await onToggleSyncActive(instance);
+    } finally {
+      setSyncToggleBusy(false);
+      setDisableConfirmOpen(false);
+    }
+  };
+
   const syncSwitchControl = (
     <Switch
       size="1"
       checked={instance.isActive}
       disabled={syncSwitchDisabled}
-      onCheckedChange={async () => {
-        if (!onToggleSyncActive || !instance._key || syncToggleBusy) return;
-        setSyncToggleBusy(true);
-        try {
-          await onToggleSyncActive(instance);
-        } finally {
-          setSyncToggleBusy(false);
+      onCheckedChange={() => {
+        if (instance.isActive) {
+          if (onToggleSyncActive && instance._key && !syncToggleBusy) setDisableConfirmOpen(true);
+          return;
         }
+        void runSyncToggle();
       }}
     />
   );
@@ -332,6 +350,22 @@ export function InstanceCard({
             )}
           </Flex>
         )}
+
+        <ConfirmationDialog
+          open={disableConfirmOpen}
+          onOpenChange={(open) => {
+            if (!syncToggleBusy) setDisableConfirmOpen(open);
+          }}
+          title={t('workspace.connectors.disableSyncConfirm.title', {
+            name: instance.name?.trim() || instance.type,
+          })}
+          message={t('workspace.connectors.disabledSearchNotice', { source: instance.type })}
+          confirmLabel={t('workspace.connectors.disableSyncConfirm.confirm')}
+          confirmLoadingLabel={t('workspace.connectors.disableSyncConfirm.confirming')}
+          confirmVariant="primary"
+          isLoading={syncToggleBusy}
+          onConfirm={() => void runSyncToggle()}
+        />
 
         {showIndexingActions && (
           <Flex

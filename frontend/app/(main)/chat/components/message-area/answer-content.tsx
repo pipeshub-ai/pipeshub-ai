@@ -27,8 +27,11 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
+import { downloadCode } from '../../utils/code-download';
+import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
 
 /**
  * rehype-sanitize schema.
@@ -564,30 +567,64 @@ function MarkdownImage({ src, alt }: { src?: string; alt?: string }) {
   );
 }
 
+/** An icon-and-text button in a code block's header bar. `active` shows the confirmed state. */
+function CodeHeaderButton({
+  icon,
+  label,
+  active = false,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const color = active ? 'var(--accent-11)' : 'var(--slate-11)';
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        background: isHovered ? 'var(--slate-4)' : 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '3px 8px',
+        borderRadius: 'var(--radius-1)',
+        fontFamily: 'inherit',
+        color,
+        transition: 'background 0.15s ease, color 0.15s ease',
+      }}
+    >
+      <MaterialIcon name={icon} size={13} color={color} />
+      <Text size="1" style={{ color: 'inherit' }}>
+        {label}
+      </Text>
+    </button>
+  );
+}
+
 /**
- * Fenced code block with a header bar (language label + copy button)
+ * Fenced code block with a header bar (language label + download and copy buttons)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
 function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
-  const [copied, setCopied] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+  const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const { t } = useTranslation();
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(codeText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
 
   // CSS variables resolve light/dark automatically — no manual isDark checks needed.
   const headerBg = 'var(--slate-2)';
   const headerBorder = 'var(--slate-6)';
   const bodyBg = 'var(--slate-1)';
   const labelColor = 'var(--slate-11)';
-  const btnHoverBg = 'var(--slate-4)';
 
   return (
     <Box
@@ -620,34 +657,19 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         >
           {language || 'text'}
         </Text>
-        <button
-          type="button"
-          onClick={handleCopy}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            background: isHovered ? btnHoverBg : 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 8px',
-            borderRadius: 'var(--radius-1)',
-            fontFamily: 'inherit',
-            color: copied ? 'var(--accent-11)' : labelColor,
-            transition: 'background 0.15s ease, color 0.15s ease',
-          }}
-        >
-          <MaterialIcon
-            name={copied ? 'check' : 'content_copy'}
-            size={13}
-            color={copied ? 'var(--accent-11)' : labelColor}
+        <Flex align="center" gap="1">
+          <CodeHeaderButton
+            icon="download"
+            label={t('action.download')}
+            onClick={() => downloadCode(codeText, language)}
           />
-          <Text size="1" style={{ color: 'inherit' }}>
-            {copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-          </Text>
-        </button>
+          <CodeHeaderButton
+            icon={copied ? 'check' : 'content_copy'}
+            label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+            active={copied}
+            onClick={() => void copy(codeText)}
+          />
+        </Flex>
       </Flex>
 
       {/* Syntax-highlighted code body */}
@@ -979,8 +1001,9 @@ export function createMarkdownComponents(
             if (rows.length >= 1) {
               const [header, ...dataRows] = rows;
               return (
-                <TableFullscreenWrapper>
+                <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(rows)}>
                   <Box
+                    data-table-scroll-area
                     style={{
                       overflowX: 'auto',
                       overflowY: 'auto',
@@ -1154,9 +1177,10 @@ export function createMarkdownComponents(
         {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
       </a>
     ),
-    table: ({ children }: { children?: React.ReactNode }) => (
-      <TableFullscreenWrapper>
+    table: ({ children, node }: { children?: React.ReactNode; node?: TableNode }) => (
+      <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(tableNodeToRows(node))}>
         <Box
+          data-table-scroll-area
           style={{
             overflowX: 'auto',
             overflowY: 'auto',

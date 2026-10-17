@@ -756,22 +756,22 @@ class TestKBPermissionDelete:
             json={},
             timeout=self.client.timeout_seconds,
         )
-        # deletePermissionsSchema allows empty body; controller reads .length on
-        # undefined userIds/teamIds before its empty-array guard.
-        assert resp.status_code == 500, resp.text
+        # A missing list counts as empty, so naming nobody is refused.
+        assert resp.status_code == 400, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "deleteKBPermissions", status_code="500"
+            resp.json(), "deleteKBPermissions", status_code="400"
         )
 
+        # Without teamIds the grantee is looked up as usual; it holds no permission yet.
         resp = requests.delete(
             perms_url,
             headers=self.headers,
             json={"userIds": [grantee_id]},
             timeout=self.client.timeout_seconds,
         )
-        assert resp.status_code == 500, resp.text
+        assert resp.status_code == 404, resp.text
         assert_response_matches_openapi_operation(
-            resp.json(), "deleteKBPermissions", status_code="500"
+            resp.json(), "deleteKBPermissions", status_code="404"
         )
 
         resp = requests.delete(

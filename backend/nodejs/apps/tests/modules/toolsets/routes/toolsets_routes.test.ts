@@ -68,6 +68,15 @@ describe('toolsets/routes/toolsets_routes', () => {
     })
   })
 
+  describe('tool approval routes', () => {
+    it('should register GET and PUT /instances/:instanceId/tool-rules', () => {
+      const { container } = makeContainer()
+      const router = createToolsetsRouter(container)
+      expect(findRoute(router, '/instances/:instanceId/tool-rules', 'get')).to.exist
+      expect(findRoute(router, '/instances/:instanceId/tool-rules', 'put')).to.exist
+    })
+  })
+
   // -------------------------------------------------------------------------
   // Agent-scoped toolset routes
   // -------------------------------------------------------------------------

@@ -4,7 +4,7 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
-from app.config.redaction import can_reveal_secrets
+from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
     REDACTED_PLACEHOLDER,
@@ -51,10 +51,8 @@ from app.connectors.api.connector_resolvers import (
     ensure_oauth_default,
     filter_oauth_configs_for_list,
     forbid_inherited_oauth_mutation,
-    lookup_user_for_records,
     mask_oauth_config_for_response,
     oauth_create_extra_fields,
-    records_user_id_arg,
     resolve_config_service,
     resolve_oauth_config,
     resolve_oauth_configs,

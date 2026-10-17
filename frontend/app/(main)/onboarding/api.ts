@@ -1,14 +1,10 @@
 import { apiClient } from '@/lib/api';
 import type {
   OrgProfileFormData,
-  AiModelFormData,
-  EmbeddingModelFormData,
   StorageFormData,
   SmtpFormData,
   OnboardingStatus,
   OnboardingStatusResponse,
-  LlmConfigResponse,
-  EmbeddingConfigResponse,
   StorageConfigResponse,
   SmtpConfigResponse,
   OrgDetailsResponse,
@@ -69,82 +65,6 @@ export async function updateOrgProfile(data: OrgProfileFormData): Promise<void> 
       postCode: data.zipCode,
       country: data.country,
     },
-  });
-}
-
-// ===============================
-// Step 1 — LLM (AI Model) — REQUIRED
-// ===============================
-
-/**
- * GET /api/v1/configurationManager/ai-models/llm
- */
-export async function getLlmConfig(): Promise<LlmConfigResponse> {
-  const { data } = await apiClient.get<LlmConfigResponse>(
-    '/api/v1/configurationManager/ai-models/llm'
-  );
-  return data;
-}
-
-/**
- * POST /api/v1/configurationManager/ai-models/providers
- * modelType: 'llm'
- */
-export async function saveLlmConfig(form: AiModelFormData): Promise<void> {
-  const configuration: Record<string, unknown> = {
-    apiKey: form.apiKey,
-    model: form.model,
-  };
-  if (form.endpoint) configuration.endpoint = form.endpoint;
-  if (form.deploymentName) configuration.deploymentName = form.deploymentName;
-  if (form.apiVersion) configuration.apiVersion = form.apiVersion;
-  if (form.modelFriendlyName) configuration.modelFriendlyName = form.modelFriendlyName;
-
-  await apiClient.post('/api/v1/configurationManager/ai-models/providers', {
-    modelType: 'llm',
-    provider: form.provider,
-    configuration,
-    isMultimodal: form.isMultimodal,
-    isReasoning: form.isReasoning,
-    ...(form.contextLength ? { contextLength: form.contextLength } : {}),
-    isDefault: true,
-  });
-}
-
-// ===============================
-// Step 2 — Embedding Model — required for onboarding and skip adds the default model(configure or use system default when available)
-// ===============================
-
-/**
- * GET /api/v1/configurationManager/ai-models/embedding
- */
-export async function getEmbeddingConfig(): Promise<EmbeddingConfigResponse> {
-  const { data } = await apiClient.get<EmbeddingConfigResponse>(
-    '/api/v1/configurationManager/ai-models/embedding'
-  );
-  return data;
-}
-
-/**
- * POST /api/v1/configurationManager/ai-models/providers
- * modelType: 'embedding'
- * If providerType === 'default', skip this call (system embeddings are used).
- */
-export async function saveEmbeddingConfig(form: EmbeddingModelFormData): Promise<void> {
-  if (form.providerType === 'default') return;
-
-  const configuration: Record<string, unknown> = {
-    apiKey: form.apiKey,
-    model: form.model,
-  };
-  if (form.endpoint) configuration.endpoint = form.endpoint;
-
-  await apiClient.post('/api/v1/configurationManager/ai-models/providers', {
-    modelType: 'embedding',
-    provider: form.providerType,
-    configuration,
-    isMultimodal: form.isMultimodal,
-    isDefault: true,
   });
 }
 

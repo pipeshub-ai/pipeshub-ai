@@ -20,9 +20,13 @@ _TEARDOWN_TIMEOUT_SECONDS = 15.0
 _LAUNCH_TIMEOUT_SECONDS = 90.0
 _RELAUNCH_FAILURE_THRESHOLD = 3
 _RELAUNCH_COOLDOWN_SECONDS = 60.0
+# Pages in a row that ran out of time, with none answering, before the browser itself is checked.
+_HUNG_AFTER_TIMEOUTS = 3
+_LIVENESS_TIMEOUT_SECONDS = 10.0
 
 REASON_CRASH = "crash"
 REASON_RECYCLE = "recycle"
+REASON_HUNG = "hung"
 
 
 class BrowserUnavailableError(Exception):
@@ -38,6 +42,7 @@ class BrowserSupervisor(Generic[B]):
         teardown: Callable[[B], Awaitable[None]],
         is_connected: Callable[[B], bool],
         *,
+        is_responsive: Callable[[B], Awaitable[bool]] | None = None,
         recycle_after_pages: int = 0,
         breaker: CircuitBreaker | None = None,
         logger: logging.Logger | None = None,
@@ -45,6 +50,8 @@ class BrowserSupervisor(Generic[B]):
         self._launch = launch
         self._teardown = teardown
         self._is_connected = is_connected
+        self._is_responsive = is_responsive
+        self._timeouts_in_a_row = 0
         self._recycle_after_pages = recycle_after_pages
         self._logger = logger or logging.getLogger(__name__)
         self._breaker = breaker or CircuitBreaker(
@@ -65,8 +72,10 @@ class BrowserSupervisor(Generic[B]):
         return self._browser
 
     async def start(self) -> None:
-        self._browser = await self._launch()
-        self._launched_at = time.monotonic()
+        async with self._lock:
+            if self._browser is None:
+                self._browser = await asyncio.wait_for(self._launch(), timeout=_LAUNCH_TIMEOUT_SECONDS)
+                self._launched_at = time.monotonic()
 
     async def stop(self) -> None:
         browser, self._browser = self._browser, None
@@ -76,14 +85,43 @@ class BrowserSupervisor(Generic[B]):
     def note_pages(self, count: int) -> None:
         self._pages_served += count
 
-    def is_dead_error(self, error: str | None) -> bool:
-        """Whether a failed fetch means the browser is gone, rather than that one page failed."""
+    def is_dead_error(self, error: str | None, started_generation: int | None = None) -> bool:
+        """Whether a failed fetch means the browser is gone, rather than that one page failed.
+
+        ``started_generation`` is the generation the fetch ran on: once another caller has
+        relaunched since, "has been closed" means that relaunch took the page down.
+        """
         if not error:
             return False
         text = error.lower()
         if any(marker in text for marker in _DEAD_MARKERS):
             return True
-        return any(marker in text for marker in _MAYBE_DEAD_MARKERS) and not self._connected()
+        if not any(marker in text for marker in _MAYBE_DEAD_MARKERS):
+            return False
+        return (started_generation is not None and started_generation != self.generation) or not self._connected()
+
+    def note_timeouts(self, timed_out: int, answered: int) -> bool:
+        """Count pages that ran out of time; True once enough did in a row to check the browser."""
+        self._timeouts_in_a_row = 0 if answered else self._timeouts_in_a_row + timed_out
+        return self._timeouts_in_a_row >= _HUNG_AFTER_TIMEOUTS
+
+    async def recover_if_hung(self, seen_generation: int) -> bool:
+        """Relaunch a browser that is connected but no longer answers. True if it was relaunched since ``seen_generation``."""
+        async with self._lock:
+            if self.generation != seen_generation:
+                return True
+            if self._browser is None or self._is_responsive is None:
+                return False
+            try:
+                responsive = await asyncio.wait_for(self._is_responsive(self._browser), timeout=_LIVENESS_TIMEOUT_SECONDS)
+            except Exception:
+                responsive = False
+            self._timeouts_in_a_row = 0
+            if responsive:
+                return False
+            self._logger.warning("Headless browser stopped answering after %d page timeouts in a row", _HUNG_AFTER_TIMEOUTS)
+            await self._relaunch(REASON_HUNG)
+            return True
 
     async def ensure_ready(self) -> None:
         """Fail at once while relaunches keep failing; otherwise make sure a browser is up."""
@@ -158,6 +196,7 @@ class BrowserSupervisor(Generic[B]):
         self._breaker.record_success()
         self.generation += 1
         self._pages_served = 0
+        self._timeouts_in_a_row = 0
         self._launched_at = time.monotonic()
         metrics.record_restart(reason, ok=True)
         self._logger.warning(
@@ -169,5 +208,5 @@ class BrowserSupervisor(Generic[B]):
         try:
             await asyncio.wait_for(self._teardown(browser), timeout=_TEARDOWN_TIMEOUT_SECONDS)
         except Exception as e:
-            # A dead browser rarely closes cleanly, and there is nothing left to close.
-            self._logger.debug("Closing the old headless browser failed: %s", e)
+            # A dead browser rarely closes cleanly; logged louder because it can leave its driver behind.
+            self._logger.warning("Closing the old headless browser failed: %s", e)

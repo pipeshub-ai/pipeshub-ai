@@ -22,6 +22,10 @@ interface McpServerCardProps {
   onAddInstance?: () => void;
   /** Fired when the badge / card body (active) is clicked to manage existing instance(s). */
   onManage?: () => void;
+  /** Shown under the description, e.g. that the entry was replaced. */
+  notice?: string | null;
+  /** False hides "+" on an active card, for an entry that makes no new servers. */
+  canAddInstance?: boolean;
 }
 
 // ========================================
@@ -37,6 +41,8 @@ export function McpServerCard({
   onSetup,
   onAddInstance,
   onManage,
+  notice,
+  canAddInstance = true,
 }: McpServerCardProps) {
   const [isHovered, setIsHovered] = useState(false);
 
@@ -110,6 +116,11 @@ export function McpServerCard({
           >
             {description}
           </Text>
+          {notice ? (
+            <Text size="1" style={{ color: 'var(--amber-11)' }}>
+              {notice}
+            </Text>
+          ) : null}
         </Flex>
       </Flex>
 
@@ -118,7 +129,7 @@ export function McpServerCard({
       ) : (
         <InstanceCountBar
           count={instanceCount}
-          onAdd={onAddInstance}
+          onAdd={canAddInstance ? onAddInstance : undefined}
           onBadgeClick={onManage}
         />
       )}
@@ -216,34 +227,37 @@ function InstanceCountBar({
         </Text>
       </Flex>
 
-      <button
-        type="button"
-        onClick={(e) => {
-          e.stopPropagation();
-          onAdd?.();
-        }}
-        onMouseEnter={() => setIsAddHovered(true)}
-        onMouseLeave={() => setIsAddHovered(false)}
-        style={{
-          appearance: 'none',
-          margin: 0,
-          padding: 0,
-          border: 'none',
-          outline: 'none',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 32,
-          height: 32,
-          borderRadius: 'var(--radius-2)',
-          backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-          cursor: 'pointer',
-          flexShrink: 0,
-          transition: 'background-color 150ms ease',
-        }}
-      >
-        <MaterialIcon name="add" size={16} color="var(--gray-11)" />
-      </button>
+      {onAdd ? (
+        <button
+          type="button"
+          aria-label={t('workspace.mcpServers.details.addInstance')}
+          onClick={(e) => {
+            e.stopPropagation();
+            onAdd();
+          }}
+          onMouseEnter={() => setIsAddHovered(true)}
+          onMouseLeave={() => setIsAddHovered(false)}
+          style={{
+            appearance: 'none',
+            margin: 0,
+            padding: 0,
+            border: 'none',
+            outline: 'none',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: 32,
+            height: 32,
+            borderRadius: 'var(--radius-2)',
+            backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
+            cursor: 'pointer',
+            flexShrink: 0,
+            transition: 'background-color 150ms ease',
+          }}
+        >
+          <MaterialIcon name="add" size={16} color="var(--gray-11)" />
+        </button>
+      ) : null}
     </Flex>
   );
 }

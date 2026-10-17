@@ -24,7 +24,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
   order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
-  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_RELATION
+  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
   order 14 TC-JIRA-BLOCKS-001 — streamed application/blocks expected snapshot
   order 15 TC-BROWSE-001      — BROWSE_PROJECTS scheme → PERMISSION→RecordGroup
@@ -39,7 +39,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -61,8 +61,8 @@ from helper.assertions import ConnectorAssertions  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
+    async_poll_until,
     count_owned_records,
-    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
@@ -105,6 +105,8 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     preview_jira_role_member_counts,
     search_issues_jql,
     wait_until_jira_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
     wait_until_record_indexing_completed,
 )
 
@@ -126,6 +128,40 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
+
+
+_SYNC_ATTEMPTS = 3
+
+
+async def _sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    condition: Callable[[], Awaitable[bool]],
+    description: str,
+) -> None:
+    """Incremental-sync until ``condition`` holds.
+
+    The connector finds changes with a JQL search, which can lag a write the issue GET
+    already returns; that sync logs "No new/updated issues" and only a later one sees it.
+    """
+    for attempt in range(1, _SYNC_ATTEMPTS + 1):
+        _restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+        # An edit leaves the record counts the wait settles on unchanged, and the next
+        # restart would cancel a sync still writing it, so give the graph time first.
+        try:
+            await async_poll_until(condition, timeout=60, interval=5, description=description)
+            return
+        except TimeoutError:
+            logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
+    raise AssertionError(f"{description} not seen after {_SYNC_ATTEMPTS} incremental syncs")
+
+
+async def _record_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
+) -> bool:
+    return await graph_provider.get_record_by_external_id(connector_id, external_id) is not None
 
 
 async def _delete_artifact_issue(
@@ -384,8 +420,11 @@ class TestJiraConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, new_id),
+                    f"TC-INCR-001 new issue {new_key}",
+                )
 
                 # Assert the delta by external id (parallel-safe), not a global count delta.
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
@@ -454,13 +493,12 @@ class TestJiraConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
-
-                record_before = await wait_for_record_by_external_id(
-                    graph_provider, connector_id, target_id,
-                    timeout=120, description="TC-UPDATE-001 baseline record",
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, target_id),
+                    f"TC-UPDATE-001 baseline record {target_key}",
                 )
+                record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 old_version = int(record_before.version)
 
                 new_summary = artifact_summary("Edited")
@@ -472,9 +510,14 @@ class TestJiraConnector:
                 assert edit_resp.status in (200, 204), f"edit_issue failed: HTTP {edit_resp.status}"
                 pipeshub_client.wait(5)
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+                async def _edit_synced() -> bool:
+                    record = await graph_provider.get_record_by_external_id(connector_id, target_id)
+                    return record is not None and new_summary in (record.record_name or "")
 
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id, _edit_synced,
+                    f"TC-UPDATE-001 edited summary of {target_key}",
+                )
                 record_after = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 assert record_after is not None, "Record missing after sync"
                 assert record_after.version == old_version + 1, (
@@ -763,7 +806,7 @@ class TestJiraValidation:
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_RELATION edges."""
+        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_LINK edges."""
         connector_id = jira_connector["connector_id"]
         source_key = jira_connector.get("link_source_issue_key")
         if not source_key:

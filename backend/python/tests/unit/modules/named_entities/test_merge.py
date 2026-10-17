@@ -1,0 +1,128 @@
+import random
+import time
+
+from app.modules.named_entities.domain.kinds import EntityKind
+from app.modules.named_entities.graph_writer import edge_payload
+from app.modules.named_entities.mentions import RawMention
+from app.modules.named_entities.merge import (
+    _PRIORITY,
+    MAX_SURFACE_CHARS,
+    entity_identity,
+    mentions_to_entities,
+    resolve_overlaps,
+)
+from app.modules.named_entities.normalizers.dates import NormalizationContext
+from tests.unit.modules.named_entities.test_identity_golden import CTX, GOLDEN
+
+_EXTRACTORS = ["pattern", "value", "agent", "single_call"]
+
+
+def _mention(block: int, start: int, end: int, extractor: str) -> RawMention:
+    return RawMention(EntityKind.ORGANIZATION, "x", block, "b", start, end, extractor)  # type: ignore[arg-type]
+
+
+def _pairwise(mentions: list[RawMention]) -> list[RawMention]:
+    ordered = sorted(
+        mentions, key=lambda m: (_PRIORITY.get(m.extractor, 9), -(m.char_end - m.char_start), m.char_start)
+    )
+    kept: list[RawMention] = []
+    for m in ordered:
+        if not any(
+            m.block_index == k.block_index and m.char_start < k.char_end and k.char_start < m.char_end for k in kept
+        ):
+            kept.append(m)
+    return kept
+
+
+def test_matches_a_pairwise_check_on_random_spans() -> None:
+    rng = random.Random(7)
+    for _ in range(500):
+        mentions = []
+        for _ in range(rng.randint(0, 40)):
+            start = rng.randint(0, 60)
+            mentions.append(_mention(rng.randint(0, 2), start, start + rng.randint(0, 8), rng.choice(_EXTRACTORS)))
+        assert resolve_overlaps(mentions) == _pairwise(mentions)
+
+
+def test_the_same_span_in_another_block_is_kept() -> None:
+    first, second = _mention(0, 0, 4, "value"), _mention(1, 0, 4, "value")
+    assert resolve_overlaps([first, second]) == [first, second]
+
+
+def test_many_mentions_resolve_quickly() -> None:
+    mentions = [_mention(index % 50, (index // 50) * 3, (index // 50) * 3 + 2, "value") for index in range(50_000)]
+    started = time.perf_counter()
+    assert len(resolve_overlaps(mentions)) == 50_000
+    assert time.perf_counter() - started < 5
+
+
+
+def test_a_link_reaches_the_graph_without_its_credentials() -> None:
+    surface = "https://bob:hunter2@Example.com/a?b=1&token=secret"
+    raw = RawMention(EntityKind.URL, surface, 0, "b0", 0, len(surface), "pattern")
+    (entity,) = mentions_to_entities([raw], NormalizationContext(tz="UTC"))
+    assert entity.display_name == "https://example.com/a?b=1"
+    names = edge_payload("org", entity, 1)["extractedNames"]
+    assert names == ["https://example.com/a?b=1"]
+    assert not any("hunter2" in name or "secret" in name for name in names)
+
+
+
+def _raw(kind: EntityKind, surface: str) -> RawMention:
+    return RawMention(kind, surface, 0, "b0", 0, len(surface), "agent")
+
+
+def test_the_value_comes_from_the_text() -> None:
+    ctx = NormalizationContext(reference_time_ms=1773100800000, tz="UTC")
+    cases = [
+        (EntityKind.CURRENCY, "$5", "money:USD:5"),
+        (EntityKind.PERCENTAGE, "5%", "pct:0.05"),
+    ]
+    for kind, surface, expected in cases:
+        (entity,) = mentions_to_entities([_raw(kind, surface)], ctx)
+        assert entity.norm_key == expected
+
+
+def test_a_value_kind_whose_text_states_no_value_is_not_stored() -> None:
+    ctx = NormalizationContext(tz="UTC")
+    mentions = [_raw(EntityKind.CURRENCY, "Acme"), _raw(EntityKind.DATE, "the kickoff"), _raw(EntityKind.DATE, "3 days")]
+    assert mentions_to_entities(mentions, ctx) == []
+
+
+def test_a_long_link_keeps_the_offsets_true_and_a_bounded_key() -> None:
+    url = "https://example.com/" + "a" * 1500
+    text = f"see {url} now"
+    raw = RawMention(EntityKind.URL, url, 0, "b0", 4, 4 + len(url), "pattern")
+    (entity,) = mentions_to_entities([raw], NormalizationContext(tz="UTC"))
+    (mention,) = entity.mentions
+    assert text[mention.char_start:mention.char_end] == mention.surface
+    assert entity.norm_key.startswith("url:sha256:") and len(entity.norm_key) < 100
+
+
+def test_a_span_too_long_to_be_an_entity_is_dropped() -> None:
+    url = "https://example.com/" + "a" * 5000
+    raw = RawMention(EntityKind.URL, url, 0, "b0", 0, len(url), "pattern")
+    assert mentions_to_entities([raw], NormalizationContext(tz="UTC")) == []
+
+
+def test_a_link_that_cannot_be_made_canonical_is_not_stored_as_raw_text() -> None:
+    surface = "https://[tenant].sharepoint.com/sites?token=abc"
+    raw = RawMention(EntityKind.URL, surface, 0, "b0", 0, len(surface), "pattern")
+    assert mentions_to_entities([raw], NormalizationContext(tz="UTC")) == []
+
+
+def test_a_name_looked_up_at_query_time_gets_the_key_indexing_wrote() -> None:
+    for kind, surface, key, _node in GOLDEN:
+        identity = entity_identity(kind, surface, CTX)
+        assert identity is not None and identity.norm_key == key, surface
+        (entity,) = mentions_to_entities([RawMention(kind, surface, 0, "b", 0, len(surface), "agent")], CTX)  # type: ignore[arg-type]
+        assert (entity.norm_key, entity.display_name) == (identity.norm_key, identity.display[:256]), surface
+
+
+def test_no_identity_for_what_indexing_does_not_store() -> None:
+    ctx = NormalizationContext(tz="UTC")
+    assert entity_identity(EntityKind.CURRENCY, "a lot of money", ctx) is None
+    assert entity_identity(EntityKind.ORGANIZATION, "x" * (MAX_SURFACE_CHARS + 1), ctx) is None
+    assert entity_identity(EntityKind.ORGANIZATION, "4111111111111111", ctx) is None
+    # Indexing never stores a link it cannot make canonical, so a lookup builds no key for one.
+    assert entity_identity(EntityKind.URL, "https://[tenant].sharepoint.com/sites?token=abc", ctx) is None

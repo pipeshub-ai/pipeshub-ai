@@ -203,10 +203,10 @@ async def remove_records_outside_scope(
     if scope.is_everything:
         return CleanupResult(0, 0)
 
-    from app.config.constants.arangodb import MimeTypes
+    from app.config.constants.arangodb import FOLDER_MIME_TYPES
 
     def outside(record: Record, path: str) -> bool:
-        is_folder = record.mime_type == MimeTypes.FOLDER.value
+        is_folder = record.mime_type in FOLDER_MIME_TYPES
         return not (scope.includes_folder(path) if is_folder else scope.includes_file(path))
 
     return await _remove_records(

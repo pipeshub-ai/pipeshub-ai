@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
+import pypdfium2 as pdfium
 from PIL import Image
 
 from app.utils.worker_scaling import scaled
@@ -210,6 +211,23 @@ def _worker_render_page_from_bytes(
         return _page_to_rgb_array(pdf.pages[page_number - 1], resolution)
 
 
+def _worker_count_chars_from_bytes(pdf_bytes: bytes) -> list[int]:
+    pdf = pdfium.PdfDocument(pdf_bytes)
+    try:
+        counts: list[int] = []
+        for index in range(len(pdf)):
+            page = pdf[index]
+            textpage = page.get_textpage()
+            try:
+                counts.append(textpage.count_chars())
+            finally:
+                textpage.close()
+                page.close()
+        return counts
+    finally:
+        pdf.close()
+
+
 def _run_in_pool(fn, *args):
     try:
         return _get_pdf_raster_pool().submit(fn, *args).result()
@@ -291,6 +309,16 @@ def render_batch_from_bytes_sync(
     return _run_in_pool(
         _worker_render_batch_from_bytes, pdf_bytes, page_numbers, resolution
     )
+
+
+def count_chars_per_page_from_bytes_sync(pdf_bytes: bytes) -> list[int]:
+    """Characters in each page's text layer, read by pdfium in the raster pool.
+
+    pdfplumber extracts text with pure-Python pdfminer, which can take minutes
+    on a page whose glyphs are drawn as vector paths; pdfium answers in
+    milliseconds, and it runs here because it is not thread-safe.
+    """
+    return _run_in_pool(_worker_count_chars_from_bytes, pdf_bytes)
 
 
 def render_all_pages_as_pil_from_bytes_sync(

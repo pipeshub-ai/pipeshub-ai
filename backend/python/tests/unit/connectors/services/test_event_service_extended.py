@@ -9,6 +9,7 @@ Targets:
 - Lines 617-624: _run_reindex status-only mode dispatching
 """
 
+import asyncio
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -80,6 +81,12 @@ def _make_mock_record(record_id="r1", is_placeholder=False, indexing_status="NOT
 # Lines 216-217: process_event dispatches "delete" action
 # ===========================================================================
 
+
+
+async def _drain_storage_releases() -> None:
+    from app.connectors.services import event_service
+    while event_service._storage_release_tasks:
+        await asyncio.gather(*list(event_service._storage_release_tasks))
 
 class TestProcessEventDeleteAction:
     @pytest.mark.asyncio
@@ -415,61 +422,108 @@ class TestHandleDelete:
         with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
              patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
             mock_rtm.cancel_by_prefix = AsyncMock()
-            return await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+        await _drain_storage_releases()
+        return result
 
     @pytest.mark.asyncio
-    async def test_shared_content_is_found_before_delete_and_repaired_after(self, service):
-        calls = []
+    async def test_the_delete_returns_before_its_storage_release_finishes(self, service):
+        release_may_finish = asyncio.Event()
+
+        async def release(*_a):
+            from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+            await release_may_finish.wait()
+            return StorageReleaseResult(completed=True)
+
         helper = AsyncMock()
-        helper.find_shared_virtual_record_ids = AsyncMock(
-            side_effect=lambda cid: calls.append("find") or ["v-shared"]
+        helper.release_connector_storage = AsyncMock(side_effect=release)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await asyncio.wait_for(
+                service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}), timeout=5,
+            ) is True
+
+        helper.close.assert_not_awaited()
+        release_may_finish.set()
+        await _drain_storage_releases()
+        helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
+        helper.close.assert_awaited_once()
+
+    @staticmethod
+    def _helper(calls, completed=True):
+        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+
+        helper = AsyncMock()
+        helper.release_connector_storage = AsyncMock(
+            side_effect=lambda *a: calls.append("release") or StorageReleaseResult(completed=completed)
         )
-        helper.delete_connector_storage = AsyncMock(side_effect=lambda *a: calls.append("storage") or 3)
-        helper.repair_shared_records = AsyncMock(side_effect=lambda *a: calls.append("repair") or 1)
+        return helper
+
+    @pytest.mark.asyncio
+    async def test_storage_is_released_after_the_graph_delete_and_its_intent_cleared(
+        self, service, mock_container,
+    ):
+        calls = []
+        config = mock_container.config_service.return_value
+        config.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
+        config.delete_config = AsyncMock(side_effect=lambda key: calls.append(f"clear:{key}") or True)
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=lambda **kw: calls.append("graph") or {"success": True}
         )
+        helper = self._helper(calls)
 
         assert await self._delete_with_helper(service, helper) is True
 
-        assert calls == ["find", "graph", "storage", "repair"]
-        assert helper.repair_shared_records.await_args.args[:2] == ("org1", ["v-shared"])
+        assert [c for c in calls if "/services/connectors/" not in c][:4] == [
+            "/services/entityCleanup/pending/c1",
+            "/services/storageRelease/pending/c1",
+            "graph",
+            "release",
+        ]
+        assert "clear:/services/storageRelease/pending/c1" in calls
+        helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
         helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_nothing_shared_still_deletes_storage(self, service):
-        helper = AsyncMock()
-        helper.find_shared_virtual_record_ids = AsyncMock(return_value=[])
+    async def test_an_unfinished_release_keeps_its_intent_and_does_not_fail_the_delete(
+        self, service, mock_container,
+    ):
+        config = mock_container.config_service.return_value
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
 
-        assert await self._delete_with_helper(service, helper) is True
+        assert await self._delete_with_helper(service, self._helper([], completed=False)) is True
 
-        helper.delete_connector_storage.assert_awaited_once_with("org1", "c1")
+        cleared = [c.args[0] for c in config.delete_config.await_args_list]
+        assert "/services/storageRelease/pending/c1" not in cleared
+        key, intent = config.set_config.await_args.args
+        assert key == "/services/storageRelease/pending/c1" and intent["attempts"] == 1
 
     @pytest.mark.asyncio
-    async def test_unknown_shared_content_keeps_storage(self, service):
+    async def test_a_release_that_raises_does_not_fail_the_delete(self, service):
         helper = AsyncMock()
-        helper.find_shared_virtual_record_ids = AsyncMock(return_value=None)
+        helper.release_connector_storage = AsyncMock(side_effect=RuntimeError("storage down"))
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
 
         assert await self._delete_with_helper(service, helper) is True
-
-        helper.delete_connector_storage.assert_not_awaited()
-        helper.repair_shared_records.assert_not_awaited()
+        helper.close.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_repair_failure_does_not_fail_the_delete(self, service):
-        helper = AsyncMock()
-        helper.find_shared_virtual_record_ids = AsyncMock(return_value=["v1"])
-        helper.repair_shared_records = AsyncMock(side_effect=RuntimeError("kafka down"))
-        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+    async def test_no_graph_delete_without_a_recorded_storage_intent(self, service, mock_container):
+        config = mock_container.config_service.return_value
+        config.set_config = AsyncMock(side_effect=lambda key, _v: "storageRelease" not in key)
+        helper = self._helper([])
 
-        assert await self._delete_with_helper(service, helper) is True
-        service.logger.error.assert_called()
+        assert await self._delete_with_helper(service, helper) is False
+
+        service.graph_provider.delete_connector_instance.assert_not_called()
+        helper.release_connector_storage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_failure_reverts_status(self, service):
         """Failed graph DB delete reverts connector status."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False,
             "error": "test failure",

@@ -335,6 +335,7 @@ class TestPerformFullSync:
         )
         await connector._perform_full_sync("key", "org1", "u1", "u@t.com", "d1")
         connector.data_entities_processor.on_new_records.assert_not_awaited()
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -1746,7 +1747,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -1786,7 +1787,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise RuntimeError("no access")
             yield  # pragma: no cover - makes this an async generator
 
@@ -1809,7 +1810,7 @@ class TestSyncSharedWithMe:
             return_value={"files": [shared_folder]}
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(500)
             yield  # pragma: no cover - makes this an async generator
 

@@ -59,3 +59,6 @@ export { createRequestRouter } from './modules/user_management/routes/request.ro
 // --- OAuth Apps ---
 export { OAuthAppsContainer } from './modules/oauth_apps/container/oauth_apps.container';
 export { createOAuthAppsRouter } from './modules/oauth_apps/routes/oauth_apps.routes';
+
+// --- Edition boot hooks ---
+export { noopEditionBoot as editionBoot } from './libs/edition/edition-boot';

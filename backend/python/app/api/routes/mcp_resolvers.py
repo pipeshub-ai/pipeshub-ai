@@ -10,17 +10,21 @@ from app.config.configuration_service import ConfigurationService
 
 async def load_mcp_instances(
     config_service: ConfigurationService,
+    org_id: str,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """All MCP instances visible to the current org."""
-    return await mcp_service.load_org_instances(config_service)
+    """The org's MCP instances, plus `user_id`'s own personal ones when given."""
+    return await mcp_service.load_visible_instances(config_service, org_id, user_id)
 
 
 async def get_mcp_instance(
     instance_id: str,
     config_service: ConfigurationService,
+    org_id: str,
+    user_id: Optional[str] = None,
 ) -> Optional[dict[str, Any]]:
-    """Single MCP instance by ID."""
-    return await mcp_service.get_instance(instance_id, config_service)
+    """Single MCP instance by ID: an org instance, or `user_id`'s own personal one."""
+    return await mcp_service.get_instance(instance_id, config_service, org_id, user_id)
 
 
 def mask_mcp_instance_for_response(
@@ -39,9 +43,11 @@ def forbid_inherited_mcp_mutation(instance: dict[str, Any]) -> None:
 
 async def resolve_mcp_instances_with_inheritance(
     config_service: ConfigurationService,
+    org_id: str,
+    user_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
-    """All instances including inherited."""
-    return await load_mcp_instances(config_service)
+    """All instances visible to `org_id` (and `user_id`'s own), including inherited."""
+    return await load_mcp_instances(config_service, org_id, user_id)
 
 
 async def resolve_instance_owner_config_service(

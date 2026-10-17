@@ -8,6 +8,7 @@ from datetime import datetime, time
 from typing import Any
 
 from app.services.parsing.interface import ParseResult
+from app.exceptions.non_retryable import NonRetryableError
 from app.utils.llm import get_llm_for_role
 from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -46,6 +47,7 @@ from app.modules.parsers.excel.prompt_template import (
 )
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
@@ -1111,6 +1113,8 @@ class ExcelParser:
                 reasoning="LLM call failed, defaulting to no headers"
             )
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.warning(f"Error in Excel header detection: {e}, defaulting to no headers")
             return ExcelHeaderDetection(
@@ -1227,6 +1231,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
             return [f"Column_{i}" for i in range(1, column_count + 1)]
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.error(f"Error in Excel header generation: {e}", exc_info=True)
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
@@ -1280,7 +1286,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
     )
     async def _call_llm(self, messages: list[Any]) -> AIMessage:
         """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
+        return await self.llm.ainvoke(messages, config=get_llm_invoke_config(self.llm))  # type: ignore[return-value]
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation

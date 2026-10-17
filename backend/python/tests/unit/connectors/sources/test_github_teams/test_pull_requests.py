@@ -186,6 +186,20 @@ class TestProcessPullRequest:
         assert ru.record.creator_name == "author-carol"
         assert ru.record.review_name == ["rev-dave", "rev-erin"]
 
+    async def test_names_the_issues_and_addresses_in_its_text(self) -> None:
+        """A PR is joined to the Jira issue its title names and the records its
+        description links to, in whichever connector holds them."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        sync = PullRequestsSync(c)
+        pr = _pr(number=5, title="PA-1844: fix the export")
+        pr.body = "Follow-up of https://acme.atlassian.net/browse/PA-1718"
+        ru = await sync.process_pull_request(repo, pr)
+
+        related = ru.record.related_external_records
+        assert [r.weburl for r in related if r.weburl] == ["https://acme.atlassian.net/browse/PA-1718"]
+        assert [r.issue_key for r in related if r.issue_key] == ["PA-1844"]
+
     async def test_maps_fields_for_open_pr(self) -> None:
         c = make_mock_connector()
         repo = make_repo(repo_id=10)

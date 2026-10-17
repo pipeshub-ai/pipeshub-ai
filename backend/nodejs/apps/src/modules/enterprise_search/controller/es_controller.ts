@@ -16,9 +16,10 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import sharp from 'sharp';
+import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
-import mongoose, { ClientSession, Types } from 'mongoose';
+import type { Readable } from 'stream';
+import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -48,6 +49,7 @@ import {
   IMessage,
   IMessageCitation,
   IMessageDocument,
+  IMessagePart,
 } from '../types/conversation.interfaces';
 import { IConversation } from '../types/conversation.interfaces';
 import { ChatSession } from '../schema/chat.session.schema';
@@ -82,10 +84,14 @@ import {
   withoutErrorStacks,
   recordClassifiedFailureOnSession,
   savePartialConversation,
+  keepRunAlive,
+  releaseRun,
+  reserveRun,
+  type RunReservation,
 } from '../utils/utils';
 import {
   attachUpstreamAbort,
-  isUpstreamAbortError,
+  runGuarded,
   StreamedContentAccumulator,
 } from '../utils/stream-lifecycle';
 import {
@@ -101,6 +107,7 @@ import EnterpriseSemanticSearch, {
   IEnterpriseSemanticSearch,
 } from '../schema/search.schema';
 import { AppConfig } from '../../tokens_manager/config/config';
+import { deleteConversationArtifacts } from '../../artifacts/services/conversation-artifacts.service';
 import Citation, {
   AiSearchResponse,
   ICitation,
@@ -112,10 +119,7 @@ import {
 } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import {
-  validateNoXSS,
-  validateNoFormatSpecifiers,
-} from '../../../utils/xss-sanitization';
+import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
   applyProjectScope,
@@ -270,6 +274,7 @@ export async function fetchDeletedAgentKeysForUser(
 export {
   assignAgentCapabilitiesToPayload,
   assignCallerContextToAiPayload,
+  assignRetrievalContextToPayload,
   assignToolsToPayload,
   parseChatMode,
 } from '../utils/ai-chat-payload';
@@ -287,27 +292,32 @@ export {
   stableObjectIdHexForExternalEmail,
 } from '../utils/scoped-request';
 
-  export { handleBackendError };
-  
-  // Common helper to start AI streams with consistent error mapping and logging
-  export const startAIStream = async (
-    options: AICommandOptions,
-    operation: string,
-    logContext: Record<string, any> = {},
-    signal?: AbortSignal,
-  ) => {
-    const aiServiceCommand = new AIServiceCommand(options);
-    try {
-      return await aiServiceCommand.executeStream(signal);
-    } catch (error: any) {
-      const mappedError = handleBackendError(error, operation);
-      logger.error('AI service stream start failed', {
-        ...logContext,
-        message: error?.message,
-      });
-      throw mappedError;
+export { handleBackendError };
+
+// Common helper to start AI streams with consistent error mapping and logging
+export const startAIStream = async (
+  options: AICommandOptions,
+  operation: string,
+  logContext: Record<string, unknown> = {},
+  signal?: AbortSignal,
+): Promise<Readable | undefined> => {
+  const aiServiceCommand = new AIServiceCommand(options);
+  try {
+    return await aiServiceCommand.executeStream(signal);
+  } catch (error: unknown) {
+    // The caller's own cap abandoned the open (see `attachUpstreamAbort`): it already finalized the run.
+    if (signal?.aborted) {
+      logger.info('AI service stream open abandoned', logContext);
+      return undefined;
     }
-  };
+    const mappedError = handleBackendError(error, operation);
+    logger.error('AI service stream start failed', {
+      ...logContext,
+      message: error instanceof Error ? error.message : String(error),
+    });
+    throw mappedError;
+  }
+};
 
 // Image compression configuration: re-encode raster images that exceed the
 // per-file threshold so they fit comfortably within multimodal LLM image
@@ -359,6 +369,22 @@ export const compressImageIfNeeded = async (
     return passthrough;
   }
 
+  // Magic bytes reject SVG, but they also accept a bare PNG signature.
+  // Decode before the size shortcut: that shortcut returns the original
+  // bytes, and the catch below keeps the original when compression fails.
+  const invalidImageMessage =
+    `${file.originalname} is not a valid JPEG, PNG or WebP image`;
+  const format = assertRasterImage(
+    file.buffer,
+    ['jpeg', 'png', 'webp'],
+    invalidImageMessage,
+  );
+  try {
+    await sharp(file.buffer).raw().toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
+  }
+
   if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
     logger.info(
       `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
@@ -374,7 +400,7 @@ export const compressImageIfNeeded = async (
     const metadata = await sharp(file.buffer).metadata();
     const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
     const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
-    const hasAlpha = mime === 'image/png' && Boolean(metadata.hasAlpha);
+    const hasAlpha = format === 'png' && metadata.hasAlpha;
 
     const buildBase = () => {
       const base = sharp(file.buffer).rotate();
@@ -499,6 +525,9 @@ export const uploadChatAttachments =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        // Every attempt stores the files as new records, so a retry after a
+        // slow first attempt leaves duplicates the user never sees.
+        maxAttempts: 1,
       };
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -589,6 +618,8 @@ export const uploadChatAttachmentsInternal =
           'Content-Type': 'application/json',
         },
         body: aiPayload,
+        // Not retried, for the same reason as uploadChatAttachments.
+        maxAttempts: 1,
       };
 
       const aiServiceCommand = new AIServiceCommand(aiCommandOptions);
@@ -758,24 +789,23 @@ export const streamChat =
       let firstAiChunkSeen = false;
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !savedConversation) return;
+        if (streamSettled || !savedConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          runGuarded(finalizeRun, { requestId });
+          return;
+        }
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -783,34 +813,20 @@ export const streamChat =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Chat Stream',
-          { requestId },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Chat Stream',
+        { requestId },
+        upstreamAbort.signal,
+      );
       timer.mark('ai_stream_open');
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, savedConversation._id);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -841,6 +857,13 @@ export const streamChat =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
 
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
@@ -1072,7 +1095,7 @@ export const streamChat =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
@@ -1174,11 +1197,16 @@ export const streamChat =
         }
 
         res.end();
+      };
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -1288,6 +1316,7 @@ export const addMessageStream =
 
     let session: ClientSession | null = null;
     let existingConversation: IChatSessionDocument | null = null;
+    let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -1403,6 +1432,14 @@ export const addMessageStream =
         timestamp: new Date().toISOString(),
       });
 
+      reservation = await reserveRun({
+        _id: conversationId,
+        orgId,
+        userId,
+        isDeleted: false,
+        ...EXCLUDE_AGENT,
+      });
+
       // Get existing conversation and add user message
       if (rsAvailable) {
         session = await mongoose.startSession();
@@ -1460,24 +1497,23 @@ export const addMessageStream =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !existingConversation) return;
+        if (streamSettled || !existingConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          runGuarded(finalizeRun, { requestId });
+          return;
+        }
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -1485,33 +1521,19 @@ export const addMessageStream =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Add Message Stream',
-          { requestId },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Add Message Stream',
+        { requestId },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, confirmedConversation._id, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -1537,6 +1559,13 @@ export const addMessageStream =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
               // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
@@ -1766,7 +1795,7 @@ export const addMessageStream =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
@@ -1918,11 +1947,16 @@ export const addMessageStream =
         }
 
         res.end();
+      };
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -1973,6 +2007,8 @@ export const addMessageStream =
             'internal_error',
             error.stack,
           );
+        } else {
+          await releaseRun(reservation);
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -2459,7 +2495,17 @@ export const getConversationById =
   }
 };
 
-export const deleteConversationById = async (
+export const deleteConversationById =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    deleteConversation(appConfig, req, res, next);
+
+const deleteConversation = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -2481,24 +2527,33 @@ export const deleteConversationById = async (
       timestamp: new Date().toISOString(),
     });
 
+    const ownerOrWriter: Record<string, unknown>[] = [
+      { initiator: userId },
+      { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
+    ];
+    const deletable: Record<string, unknown> = {
+      _id: conversationId,
+      userId,
+      orgId,
+      isDeleted: false,
+      $or: ownerOrWriter,
+      ...EXCLUDE_AGENT,
+    };
+
+    // The chat's artifacts go first, outside the transaction (a network call
+    // would hold it open): if they cannot be deleted the chat stays, so a
+    // retry finishes the cleanup instead of orphaning them.
+    if (!(await ChatSession.findOne(deletable))) {
+      throw new NotFoundError('Conversation not found');
+    }
+    await deleteConversationArtifacts(appConfig, String(conversationId), req);
+
     // Common helper that performs the delete operation.
     async function performDeleteConversation(session?: ClientSession | null) {
       // Get conversation with access control
-      const conversation = await ChatSession.findOne(
-        {
-          _id: conversationId,
-          userId,
-          orgId,
-          isDeleted: false,
-          $or: [
-            { initiator: userId },
-            { 'sharedWith.userId': userId, 'sharedWith.accessLevel': 'write' },
-          ],
-          ...EXCLUDE_AGENT,
-        },
-        undefined,
-        { session },
-      );
+      const conversation = await ChatSession.findOne(deletable, undefined, {
+        session,
+      });
 
       if (!conversation) {
         throw new NotFoundError('Conversation not found');
@@ -3139,6 +3194,26 @@ interface RegenerationConfig {
   buildAIEndpoint: (appConfig: AppConfig, agentKey?: string) => string;
 }
 
+/** The app's answer to a tool approval card (Python `TOOL_APPROVAL_RESUME_PREFIX`): it carried on the turn that stopped on the card. */
+export function isToolApprovalAnswer(
+  query: string | undefined | null,
+): boolean {
+  return (
+    typeof query === 'string' && query.trimStart().startsWith('Tool approval:')
+  );
+}
+
+/** Whether a reply's transcript holds a tool call a person approved (`IMessagePart.approved`). */
+export function ranApprovedCall(
+  parts: IMessagePart[] | undefined | null,
+): boolean {
+  return (parts ?? []).some(
+    (part) =>
+      (part.type === 'tool_call' && part.approved === true) ||
+      ranApprovedCall(part.parts),
+  );
+}
+
 /**
  * Generic internal function to handle regeneration for both regular and agent conversations
  */
@@ -3156,6 +3231,7 @@ async function regenerateAnswersInternal(
   const orgId = req.user?.orgId;
 
   let existingConversation: IChatSessionDocument | null = null;
+  let reservation: RunReservation | null = null;
 
   const modelInfo = extractModelInfo(req.body);
   const protocol = resolveProtocol(
@@ -3214,6 +3290,11 @@ async function regenerateAnswersInternal(
         'Can only regenerate the last message in the conversation',
       );
     }
+    if (ranApprovedCall(lastBot.parts)) {
+      throw new BadRequestError(
+        'This reply ran an action you approved. Regenerating it could run that action again, so ask again instead.',
+      );
+    }
 
     const lastBotIdx = recentMessages.findIndex(
       (msg) => msg._id?.toString() === lastBot._id?.toString(),
@@ -3223,6 +3304,11 @@ async function regenerateAnswersInternal(
       .find((msg) => msg.messageType === 'user_query');
     if (!userQuery) {
       throw new BadRequestError('No user query found to regenerate response');
+    }
+    if (isToolApprovalAnswer(userQuery.content)) {
+      throw new BadRequestError(
+        'This reply came from your answer to an approval request, so it cannot be regenerated. Ask again instead.',
+      );
     }
 
     logger.debug('Regenerate answers validation passed', {
@@ -3252,6 +3338,18 @@ async function regenerateAnswersInternal(
       messageId,
       timestamp: new Date().toISOString(),
     });
+
+    if (!conversationId) {
+      throw new BadRequestError('Conversation ID is required');
+    }
+    reservation = await reserveRun(
+      config.buildQueryFilter(
+        conversationId,
+        orgId as string | undefined,
+        userId as string | undefined,
+        agentKey,
+      ) as FilterQuery<IChatSessionDocument>,
+    );
 
     // Validate conversation and message
     let validationResult: {
@@ -3321,6 +3419,8 @@ async function regenerateAnswersInternal(
       reasoningEffort: req.body.reasoningEffort || null,
       chatMode: parsedRegenChatMode,
       conversationId: conversationId || null,
+      // A new id per press, so the answer on screen is the newest id of the question.
+      regenerationId: new Types.ObjectId().toString(),
       timezone: req.body.timezone || null,
       currentTime: req.body.currentTime || null,
       runId: req.body.runId || null,
@@ -3360,60 +3460,48 @@ async function regenerateAnswersInternal(
     let buffer = '';
     /** True when the AI backend already sent a terminal error we forwarded and saved */
     let upstreamAiErrorEventForwarded = false;
-    /** Guards `onDisconnect` against also running after the normal
+    /** Guards `onAbandon` against also running after the normal
      * `stream.on('end')`/`'error'` path already finalized this run. */
     let streamSettled = false;
     const contentAccumulator = new StreamedContentAccumulator();
 
-    // Plain `let` would appear permanently `null` to the type checker's
-    // narrowing (it never sees the reassignment inside the closure below),
-    // so `no-unnecessary-condition` would flag the read as dead code even
-    // though it's live at runtime — a mutable holder sidesteps that.
-    const disconnectSave: { pending: Promise<void> | null } = {
-      pending: null,
-    };
     const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-      if (streamSettled || completeData || !existingConversation) return;
+      if (streamSettled || !existingConversation) return;
+      if (completeData || upstreamAiErrorEventForwarded) {
+        runGuarded(finalizeRun, { requestId });
+        return;
+      }
       streamSettled = true;
-      disconnectSave.pending = savePartialConversation(
+      void savePartialConversation(
         existingConversation,
         contentAccumulator.getText(),
         null,
-        { replaceMessageId: messageId || undefined },
-      ).catch((err: any) => {
-        logger.error('Failed to save partial conversation on disconnect', {
-          requestId,
-          error: err?.message,
-        });
-      });
+        {
+          replaceMessageId: messageId || undefined,
+          parts: contentAccumulator.getParts(),
+        },
+      )
+        .catch((err: unknown) => {
+          logger.error('Failed to save partial conversation on disconnect', {
+            requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        })
+        .finally(() => releaseRun(reservation));
     });
-    let stream: Awaited<ReturnType<typeof startAIStream>>;
-    try {
-      stream = await startAIStream(
-        aiCommandOptions,
-        'Regenerate Answers Stream',
-        { requestId },
-        upstreamAbort.signal,
-      );
-    } catch (streamOpenError) {
-      // Client disconnected while the AI backend request was still in
-      // flight — the disconnect callback above already started the STOPPED
-      // save; await it and bail out before the outer `catch` can race it
-      // with a FAILED save.
-      if (upstreamAbort.isClientDisconnected()) {
-        logger.debug('Client disconnected before AI stream opened', {
-          requestId,
-        });
-        if (disconnectSave.pending) await disconnectSave.pending;
-        return;
-      }
-      throw streamOpenError;
-    }
+    const stream = await startAIStream(
+      aiCommandOptions,
+      'Regenerate Answers Stream',
+      { requestId },
+      upstreamAbort.signal,
+    );
 
     if (!stream) {
+      if (upstreamAbort.isAborted()) return;
       throw new Error('Failed to get stream from AI service');
     }
     upstreamAbort.bindStream(stream);
+    keepRunAlive(stream, existingConversation._id, reservation?.runId);
 
     // Process SSE events, capture complete event, and forward non-complete events
     stream.on('data', (chunk: Buffer) => {
@@ -3445,7 +3533,7 @@ async function regenerateAnswersInternal(
       );
     });
 
-    stream.on('end', async () => {
+    const finalizeRun = async (): Promise<void> => {
       streamSettled = true;
       logger.debug('Stream ended successfully', { requestId });
       try {
@@ -3608,12 +3696,18 @@ async function regenerateAnswersInternal(
         }
       }
 
+      await releaseRun(reservation);
       res.end();
+    };
+    stream.on('end', () => {
+      runGuarded(finalizeRun, { requestId });
     });
 
     stream.on('error', async (error: Error) => {
-      if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-        logger.debug('Stream aborted due to client disconnect', { requestId });
+      if (upstreamAbort.isAborted()) {
+        logger.debug('Stream abandoned after the detached-run cap', {
+          requestId,
+        });
         return;
       }
       streamSettled = true;
@@ -3647,6 +3741,7 @@ async function regenerateAnswersInternal(
           protocol,
         );
       }
+      await releaseRun(reservation);
       res.end();
     });
   } catch (error: any) {
@@ -3688,6 +3783,7 @@ async function regenerateAnswersInternal(
         protocol,
       );
     }
+    await releaseRun(reservation);
     res.end();
   } finally {
     if (session) {
@@ -4538,6 +4634,14 @@ export const searchArchivedConversations =
   }
   };
 
+/** Optional date bounds on `POST /search`, checked and applied by the AI service. */
+const SEARCH_DATE_BOUNDS = [
+  'createdAfter',
+  'createdBefore',
+  'modifiedAfter',
+  'modifiedBefore',
+] as const;
+
 export const search =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -4547,10 +4651,19 @@ export const search =
     const userId = req.user?.userId;
     try {
       const { query, limit, filters } = req.body;
+      // Only the bounds the caller set, so a search without dates sends what it always did.
+      const body = req.body as Record<string, unknown>;
+      const dateBounds: Record<string, string> = {};
+      for (const key of SEARCH_DATE_BOUNDS) {
+        const value = body[key];
+        if (typeof value === 'string') dateBounds[key] = value;
+      }
 
-      // Validate query parameter for XSS and format specifiers
+      // The query is free text, like a chat question, so text in angle
+      // brackets such as "<id>" is allowed here as it is in chat. It is not
+      // rendered as HTML; see findQuestionField in
+      // libs/middlewares/xss-sanitization.middleware.ts.
       if (query && typeof query === 'string') {
-        validateNoXSS(query, 'search query');
         validateNoFormatSpecifiers(query, 'search query');
       }
 
@@ -4566,7 +4679,7 @@ export const search =
         uri: `${aiBackendUrl}/api/v1/search`,
         method: HttpMethod.POST,
         headers: req.headers as Record<string, string>,
-        body: { query, limit, filters },
+        body: { query, limit, filters, ...dateBounds },
       });
 
       let aiResponse;
@@ -4596,20 +4709,20 @@ export const search =
       const results = aiResponse.data.searchResults;
       let citationIds;
       if (results) {
-        // save the citations to the citations collection
-        citationIds = await Promise.all(
-          results.map(async (result: ICitation) => {
-            const citationDoc = new Citation({
-              content: result.content,
-              chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
-              citationType: result.citationType,
-              metadata: result.metadata,
-            });
-
-            const savedCitation = await citationDoc.save();
-            return savedCitation._id;
-          }),
+        // Save the citations to the citations collection in one ordered insert.
+        // A search can return hundreds of hits, and saving each one on its own
+        // cost a database round trip per hit. `ordered: true` returns the saved
+        // documents in hit order, so citationIds lines up with searchResults.
+        const savedCitations = await Citation.insertMany(
+          results.map((result: ICitation) => ({
+            content: result.content,
+            chunkIndex: result.chunkIndex ?? 0, // fallback to 0 if not present
+            citationType: result.citationType,
+            metadata: result.metadata,
+          })),
+          { ordered: true },
         );
+        citationIds = savedCitations.map((citation) => citation._id);
       }
 
       const recordsArray = aiResponse.data?.records || {};
@@ -5727,24 +5840,23 @@ export const deleteAgent =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !savedConversation) return;
+        if (streamSettled || !savedConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          runGuarded(finalizeRun, { requestId });
+          return;
+        }
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           savedConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -5752,33 +5864,19 @@ export const deleteAgent =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Agent Chat Stream',
-          { requestId, agentKey },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Agent Chat Stream',
+        { requestId, agentKey },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, savedConversation._id);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -5804,6 +5902,13 @@ export const deleteAgent =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
 
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
@@ -6039,7 +6144,7 @@ export const deleteAgent =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         streamSettled = true;
         logger.debug('Stream ended successfully', { requestId });
         try {
@@ -6143,11 +6248,16 @@ export const deleteAgent =
         }
 
         res.end();
+      };
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -6267,6 +6377,7 @@ export const addMessageStreamToAgentConversation =
 
     let session: ClientSession | null = null;
     let existingConversation: IChatSessionDocument | null = null;
+    let reservation: RunReservation | null = null;
 
     const modelInfo = extractModelInfo(req.body);
     const protocol = resolveProtocol(
@@ -6384,6 +6495,15 @@ export const addMessageStreamToAgentConversation =
         timestamp: new Date().toISOString(),
       });
 
+      reservation = await reserveRun({
+        _id: conversationId,
+        agentKey,
+        orgId,
+        userId,
+        isDeleted: false,
+        ...ONLY_AGENT,
+      });
+
       // Get existing conversation and add user message
       if (rsAvailable) {
         session = await mongoose.startSession();
@@ -6441,24 +6561,23 @@ export const addMessageStreamToAgentConversation =
       let buffer = '';
       /** True when AI backend already emitted a terminal `error` SSE we forwarded */
       let upstreamAiErrorEventForwarded = false;
-      /** Guards `onDisconnect` against also running after the normal
+      /** Guards `onAbandon` against also running after the normal
        * `stream.on('end')`/`'error'` path already finalized this run. */
       let streamSettled = false;
       const contentAccumulator = new StreamedContentAccumulator();
 
-      // Plain `let` would appear permanently `null` to the type checker's
-      // narrowing (it never sees the reassignment inside the closure below),
-      // so `no-unnecessary-condition` would flag the read as dead code even
-      // though it's live at runtime — a mutable holder sidesteps that.
-      const disconnectSave: { pending: Promise<void> | null } = {
-        pending: null,
-      };
       const upstreamAbort = attachUpstreamAbort(res, requestId, () => {
-        if (streamSettled || completeData || !existingConversation) return;
+        if (streamSettled || !existingConversation) return;
+        if (completeData || upstreamAiErrorEventForwarded) {
+          runGuarded(finalizeRun, { requestId });
+          return;
+        }
         streamSettled = true;
-        disconnectSave.pending = savePartialConversation(
+        void savePartialConversation(
           existingConversation,
           contentAccumulator.getText(),
+          null,
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -6466,33 +6585,19 @@ export const addMessageStreamToAgentConversation =
           });
         });
       });
-      let stream: Awaited<ReturnType<typeof startAIStream>>;
-      try {
-        stream = await startAIStream(
-          aiCommandOptions,
-          'Add Message Agent Stream',
-          { requestId, agentKey },
-          upstreamAbort.signal,
-        );
-      } catch (streamOpenError) {
-        // Client disconnected while the AI backend request was still in
-        // flight — the disconnect callback above already started the
-        // STOPPED save; await it and bail out before the outer `catch`
-        // can race it with a FAILED save.
-        if (upstreamAbort.isClientDisconnected()) {
-          logger.debug('Client disconnected before AI stream opened', {
-            requestId,
-          });
-          if (disconnectSave.pending) await disconnectSave.pending;
-          return;
-        }
-        throw streamOpenError;
-      }
+      const stream = await startAIStream(
+        aiCommandOptions,
+        'Add Message Agent Stream',
+        { requestId, agentKey },
+        upstreamAbort.signal,
+      );
 
       if (!stream) {
+        if (upstreamAbort.isAborted()) return;
         throw new Error('Failed to get stream from AI service');
       }
       upstreamAbort.bindStream(stream);
+      keepRunAlive(stream, confirmedConversation._id, reservation?.runId);
 
       // Process SSE events, capture complete event, and forward non-complete events
       stream.on('data', (chunk: Buffer) => {
@@ -6518,6 +6623,13 @@ export const addMessageStreamToAgentConversation =
               .filter((line) => line.startsWith('data:'))
               .map((line) => line.replace(/^data: ?/, ''));
             const dataLine = dataLines.join('\n');
+            if (
+              agui &&
+              eventType === AGUIEventType.TOOL_CALL_START &&
+              dataLine
+            ) {
+              contentAccumulator.feedToolCallStart(dataLine);
+            }
             if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
               // Root RUN_FINISHED's `result` IS `completion_data` — see
               // `AGUIFormatter.answer_final`. Nested (sub-agent) RUN_FINISHED
@@ -6746,7 +6858,7 @@ export const addMessageStreamToAgentConversation =
         }
       });
 
-      stream.on('end', async () => {
+      const finalizeRun = async (): Promise<void> => {
         logger.debug('Stream ended successfully', { requestId });
         streamSettled = true;
         try {
@@ -6897,11 +7009,16 @@ export const addMessageStreamToAgentConversation =
         }
 
         res.end();
+      };
+      stream.on('end', () => {
+        runGuarded(finalizeRun, { requestId });
       });
 
       stream.on('error', async (error: Error) => {
-        if (isUpstreamAbortError(error) || upstreamAbort.isClientDisconnected()) {
-          logger.debug('Stream aborted due to client disconnect', { requestId });
+        if (upstreamAbort.isAborted()) {
+          logger.debug('Stream abandoned after the detached-run cap', {
+            requestId,
+          });
           return;
         }
         streamSettled = true;
@@ -6952,6 +7069,8 @@ export const addMessageStreamToAgentConversation =
             'internal_error',
             error.stack,
           );
+        } else {
+          await releaseRun(reservation);
         }
       } catch (dbError: any) {
         logger.error('Failed to mark conversation as failed in catch block', {
@@ -7381,7 +7500,17 @@ export const getAgentConversationById = async (
   }
 };
 
-export const deleteAgentConversationById = async (
+export const deleteAgentConversationById =
+  (appConfig: AppConfig) =>
+  (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> =>
+    deleteAgentConversationOf(appConfig, req, res, next);
+
+const deleteAgentConversationOf = async (
+  appConfig: AppConfig,
   req: AuthenticatedUserRequest,
   res: Response,
   next: NextFunction,
@@ -7398,6 +7527,7 @@ export const deleteAgentConversationById = async (
       agentKey as string,
       userId as string,
       orgId as string,
+      () => deleteConversationArtifacts(appConfig, String(conversationId), req),
     );
 
     res.status(200).json({

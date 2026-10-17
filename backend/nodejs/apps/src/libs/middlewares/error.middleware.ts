@@ -4,6 +4,10 @@ import { BaseError } from '../errors/base.error';
 import { HttpError } from '../errors/http.errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
 import { jsonResponse, logError } from '../utils/error.middleware.utils';
+import {
+  redactHeadersForLog,
+  redactQueryForLog,
+} from '../utils/log-redaction.utils';
 
 /**
  * What a reader is told when the failure is in PipesHub's own plumbing (a
@@ -83,9 +87,18 @@ export class ErrorMiddleware {
     req: Request,
     res: Response,
   ) {
-    logError(this.logger, 'Application error', error, {
-      request: this.getRequestContext(req),
-    });
+    // A thrower may mark an answer it expects (a 4xx) as routine; a 5xx is always an error.
+    const level =
+      error.statusCode < 500 && error.metadata?.logLevel === 'warn'
+        ? 'warn'
+        : 'error';
+    logError(
+      this.logger,
+      'Application error',
+      error,
+      { request: this.getRequestContext(req) },
+      level,
+    );
 
     // Never expose stack traces to clients - security best practice
     const isDevelopment =
@@ -179,17 +192,12 @@ export class ErrorMiddleware {
     return {
       method: req.method,
       path: req.path,
-      query: req.query,
+      // An OAuth callback that fails auth still carries ?code= here, and the
+      // Referer of a request made from a callback page carries it too.
+      query: redactQueryForLog(req.query),
       params: req.params,
       ip: req.ip,
-      headers: this.sanitizeHeaders(req.headers),
+      headers: redactHeadersForLog(req.headers),
     };
-  }
-
-  private static sanitizeHeaders(headers: any) {
-    const sanitized = { ...headers };
-    delete sanitized.authorization;
-    delete sanitized.cookie;
-    return sanitized;
   }
 }

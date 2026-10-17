@@ -736,7 +736,7 @@ class TestOnNewRecordsSnapshotIntegration:
 
         captured_pre_old_path = []
 
-        async def capturing_process(rec, perms, store, moved_vrids=None, *, publishes_event=True, pre_old_path=_NO_OLD_PATH):
+        async def capturing_process(rec, perms, store, moved_vrids=None, *, publishes_event=True, pre_old_path=_NO_OLD_PATH, **_kwargs):
             captured_pre_old_path.append(pre_old_path)
             return (rec, [])
 
@@ -997,5 +997,7 @@ class TestOnNewRecordsDeadlockRetry:
         ):
             await proc.on_new_records([(rec_a, []), (rec_b, [])])
 
-        proc._flush_pending_blob_moves.assert_awaited_once_with([move_a, move_b])
+        # The failed attempt also flushes, but only slices that committed: none here.
+        flushed = [move for flush in proc._flush_pending_blob_moves.await_args_list for move in flush.args[0]]
+        assert flushed == [move_a, move_b]
         assert proc.data_store_provider.transaction.call_count == 2

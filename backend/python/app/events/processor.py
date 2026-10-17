@@ -48,6 +48,7 @@ from app.modules.transformers.transformer import TransformContext
 from app.services.docling.client import DoclingClient
 from app.services.parsing.interface import ParseError
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.image_utils import get_extension_from_mimetype
@@ -1502,6 +1503,7 @@ class Processor:
         timestamp = get_epoch_timestamp_in_ms()
         status_update: dict[str, Any] = {
             "indexingStatus": indexing_status.value,
+            **indexed_copy_fields(indexing_status),
             "processingStartedAt": None,
             "isDirty": False,
             "lastIndexTimestamp": timestamp,
