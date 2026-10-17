@@ -177,6 +177,8 @@ async def _finalize(
     *,
     full_sync_cut_short: bool = False,
     full_sync_still_requested: bool = False,
+    scope_generation: int | None = None,
+    stamp_scopes: bool = False,
     outcome: SyncRunOutcome | None = None,
     summary: dict[str, object] | None = None,
 ) -> None:
@@ -295,6 +297,35 @@ async def _finalize(
     # boot resumes every connector anyway.
     if resync_spec is not None and getattr(coordinator, "shutting_down", False) is not True:
         await _reissue_pending_resync(graph_provider, logger, connector_id, resync_spec)
+
+    # Last: a stamp of a large connector takes minutes, and nothing above may wait for it.
+    await _kh_scope_end(graph_provider, logger, connector_id, scope_generation, stamp=stamp_scopes)
+
+
+async def _kh_scope_begin(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
+) -> int | None:
+    """Mark the connector's knowledge hub scopes stale before a sync writes; the generation this run owns."""
+    try:
+        return await graph_provider.kh_scope_mark_stale(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Could not mark knowledge hub scopes stale for {connector_id}: {e}")
+        return None
+
+
+async def _kh_scope_end(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str,
+    generation: int | None, *, stamp: bool,
+) -> None:
+    """End this run's mark and, when the scope listing is enabled, re-stamp from what it left."""
+    if generation is None:
+        return
+    try:
+        await graph_provider.kh_scope_sync_ended(connector_id, generation)
+        if stamp and await graph_provider.kh_scope_enabled():
+            await graph_provider.kh_scope_stamp(connector_id)
+    except Exception as e:
+        logger.error(f"❌ Knowledge hub scope stamp failed for {connector_id}: {e}")
 
 
 # How long a queued connector may sit with its request already submitted before
@@ -661,6 +692,7 @@ async def run_sync_task(
     skipped_code: str | None = None
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
+    scope_generation: int | None = None
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
     run_sync_id = str(uuid4())
@@ -669,6 +701,7 @@ async def run_sync_task(
     try:
         # Inside the try: if it raised before it, the finalizer below would never
         # write IDLE or release the lease.
+        scope_generation = await _kh_scope_begin(graph_provider, logger, connector_id)
         # A cached connector still holds the last run's summary until run_sync starts;
         # a stop before then must not file it under this run.
         connector.last_sync_summary = None
@@ -791,6 +824,10 @@ async def run_sync_task(
                     and getattr(coordinator, "shutting_down", False) is True
                     and not (lease is not None and lease.stop_requested.is_set())
                 ),
+                scope_generation=scope_generation,
+                # A stopped sync is being replaced, or its connector disabled: it ends
+                # only its own mark, and the replacement or the scope keeper stamps.
+                stamp_scopes=not stopped,
             ),
             name=f"sync_cleanup_{connector_id}",
         )

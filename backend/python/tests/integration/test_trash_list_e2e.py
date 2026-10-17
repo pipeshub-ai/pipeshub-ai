@@ -185,7 +185,7 @@ async def _seed_big_folder(w: _World, files: int) -> list[str]:
     await w.graph.batch_create_edges(
         [restore_suite._edge(w.ids["big"], records, w.ids[name], records, relationshipType="PARENT_CHILD")
          for name in names[1:]],
-        collection=CollectionNames.RECORD_RELATIONS.value,
+        collection=CollectionNames.NODE_RELATIONS.value,
     )
     return names
 

@@ -25,8 +25,10 @@ import {
   SearchResponse,
   streamChatModeToAgentApiChatMode,
   AttachmentRef,
+  type ChatKnowledgeFilters,
   CHAT_ATTACHMENT_UPLOAD_TIMEOUT_MS,
 } from './types';
+import { hasAnyFilter } from './utils/tree-selection';
 import { getClientTimezone, getClientCurrentTime } from './utils/client-time';
 import { createAGUIEventHandler, type AGUIStreamTracking } from './agui-event-handler';
 
@@ -137,22 +139,35 @@ function sanitizeFilterIds(ids: unknown[] | null | undefined): string[] {
 }
 
 /**
- * Normalise an app/KB filter list and return a `{ filters }` spread fragment
- * for **non-agent** (assistant) streams.
+ * The `filters` object as sent: `apps` and `kb` always, and the keys that
+ * select below app level (record groups, folders, records) when not empty.
+ */
+function sanitizeFilters(filters: Partial<ChatKnowledgeFilters> | null | undefined): ChatKnowledgeFilters {
+  const recordGroups = sanitizeFilterIds(filters?.recordGroups);
+  const records = sanitizeFilterIds(filters?.records);
+  const recordsExact = sanitizeFilterIds(filters?.recordsExact);
+  return {
+    apps: sanitizeFilterIds(filters?.apps),
+    kb: sanitizeFilterIds(filters?.kb),
+    ...(recordGroups.length > 0 ? { recordGroups } : {}),
+    ...(records.length > 0 ? { records } : {}),
+    ...(recordsExact.length > 0 ? { recordsExact } : {}),
+  };
+}
+
+/**
+ * Normalise the filters and return a `{ filters }` spread fragment for
+ * **non-agent** (assistant) streams.
  *
  * Only emits the key when at least one valid ID remains — so the backend
  * treats the absence of `filters` as "search everything" (correct for the
  * assistant endpoint where no scope is intentional).
  */
 function buildFiltersPayload(
-  apps: unknown[] | null | undefined,
-  kb: unknown[] | null | undefined,
+  filters: Partial<ChatKnowledgeFilters> | null | undefined,
 ): Record<string, unknown> {
-  const validApps = sanitizeFilterIds(apps);
-  const validKb = sanitizeFilterIds(kb);
-  return validApps.length > 0 || validKb.length > 0
-    ? { filters: { apps: validApps, kb: validKb } }
-    : {};
+  const valid = sanitizeFilters(filters);
+  return hasAnyFilter(valid) ? { filters: valid } : {};
 }
 
 /**
@@ -163,10 +178,9 @@ function buildFiltersPayload(
  * `{ apps: [], kb: [] }` means "this agent has no knowledge scope."
  */
 function buildAgentFiltersPayload(
-  apps: unknown[] | null | undefined,
-  kb: unknown[] | null | undefined,
-): { filters: { apps: string[]; kb: string[] } } {
-  return { filters: { apps: sanitizeFilterIds(apps), kb: sanitizeFilterIds(kb) } };
+  filters: Partial<ChatKnowledgeFilters> | null | undefined,
+): { filters: ChatKnowledgeFilters } {
+  return { filters: sanitizeFilters(filters) };
 }
 
 // Chat API endpoints
@@ -307,7 +321,7 @@ export const ChatApi = {
         // "use every configured toolset", `[]` as an explicit empty
         // filter), the opposite of what an unfiltered selection means.
         ...(request.agentStreamTools !== undefined ? { tools: request.agentStreamTools } : {}),
-        ...buildAgentFiltersPayload(f.apps, f.kb),
+        ...buildAgentFiltersPayload(f),
         ...(request.appliedFilters ? { appliedFilters: request.appliedFilters } : {}),
         ...(request.agentCapabilities ? { agentCapabilities: request.agentCapabilities } : {}),
         ...(request.attachments?.length ? { attachments: request.attachments } : {}),
@@ -328,7 +342,7 @@ export const ChatApi = {
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
-        ...buildFiltersPayload(reqFilters?.apps, reqFilters?.kb),
+        ...buildFiltersPayload(reqFilters),
         ...(reqAttachments?.length ? { attachments: reqAttachments } : {}),
       };
     }
@@ -370,7 +384,7 @@ export const ChatApi = {
       modelName: request.modelName,
       modelFriendlyName: request.modelFriendlyName || request.modelName,
       chatMode: request.chatMode,
-      ...buildFiltersPayload(request.filters?.apps, request.filters?.kb),
+      ...buildFiltersPayload(request.filters),
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
     };
@@ -406,7 +420,7 @@ export const ChatApi = {
       chatMode: AgentStrategyApiSegment;
       /** Explicit tool subset for this agent context (all tools when omitted). */
       tools?: string[];
-      filters: { apps: string[]; kb: string[] };
+      filters: ChatKnowledgeFilters;
       agentCapabilities?: AgentCapabilities;
       reasoningEffort?: StreamChatRequest['reasoningEffort'];
       runId?: string;
@@ -421,7 +435,7 @@ export const ChatApi = {
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
-      ...buildAgentFiltersPayload(model.filters.apps, model.filters.kb),
+      ...buildAgentFiltersPayload(model.filters),
     };
     if (model.tools !== undefined) {
       agentRegenBody.tools = model.tools;
@@ -679,14 +693,15 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { page?: number; limit?: number }): Promise<ListCollectionsForChatResult> {
-    const page = params?.page ?? 1;
+  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
       {
         params: {
-          page,
+          // Only a cursor the server issued is ever sent back; one it did not
+          // issue is a 400.
+          ...(params?.cursor ? { cursor: params.cursor } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',
@@ -710,8 +725,8 @@ export const ChatApi = {
     }));
     return {
       knowledgeBases,
-      requestedPage: page,
       requestedLimit: limit,
+      nextCursor: data.pagination?.nextCursor ?? null,
       serverPagination: data.pagination ?? null,
     };
   },
@@ -780,16 +795,21 @@ interface KnowledgeHubNodesResponse {
     limit?: number;
     totalItems?: number;
     totalPages?: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext?: boolean;
     hasPrev?: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   } | null;
 }
 
 /** One page from {@link ChatApi.listCollectionsForChat}. */
 export interface ListCollectionsForChatResult {
   knowledgeBases: KnowledgeBaseForChat[];
-  requestedPage: number;
   requestedLimit: number;
+  /** The cursor for the next page, or null at the end of the result. */
+  nextCursor: string | null;
   serverPagination: KnowledgeHubNodesResponse['pagination'];
 }
 

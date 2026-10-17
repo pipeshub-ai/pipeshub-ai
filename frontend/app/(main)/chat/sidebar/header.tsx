@@ -2,7 +2,10 @@
 
 import { useTranslation } from 'react-i18next';
 
-import { Flex, IconButton, Tooltip } from '@radix-ui/themes';
+import { Flex, IconButton, Text, Tooltip } from '@radix-ui/themes';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useNotificationStore } from '@/app/(main)/notifications/store';
+import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { Link } from '@/lib/navigation';
 import { HEADER_ELEMENT_SIZE } from '@/app/components/sidebar';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
@@ -12,29 +15,54 @@ import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { toast } from '@/lib/store/toast-store';
 import { BrandMark } from '@/config';
 
-function SidebarPanelIcon({ size = 18, color = 'currentColor' }: { size?: number; color?: string }) {
+/** A count you check rather than a place you browse to, so it rides the bar with its number on the glyph. */
+function InboxButton() {
+  const { t } = useTranslation();
+  const unreadCount = useNotificationStore((s) => s.unreadCount);
+  const togglePanel = useNotificationStore((s) => s.togglePanel);
+  const isMobile = useIsMobile();
+  const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
+  const label = unreadCount > 9 ? '9+' : String(unreadCount);
   return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 24 24"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      style={{ display: 'block', flexShrink: 0, color }}
-      aria-hidden
-    >
-      <rect
-        x="3"
-        y="3"
-        width="20"
-        height="20"
-        rx="2.5"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinejoin="round"
-      />
-      <path d="M9 3v18" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" />
-    </svg>
+    <Tooltip content={t('nav.inbox')} side="bottom">
+      <IconButton
+        data-ph-notifications-trigger=""
+        variant="ghost"
+        color="gray"
+        size="1"
+        aria-label={unreadCount > 0 ? `${t('nav.inbox')}, ${unreadCount}` : t('nav.inbox')}
+        onClick={() => {
+          if (isMobile) closeMobileSidebar();
+          togglePanel();
+        }}
+        style={{ position: 'relative', width: 24, height: 24, padding: 0, margin: 0, cursor: 'pointer', overflow: 'visible' }}
+      >
+        <MaterialIcon name="inbox" size={16} color="var(--neutral-11)" />
+        {unreadCount > 0 && (
+          <Flex
+            align="center"
+            justify="center"
+            aria-hidden
+            style={{
+              position: 'absolute',
+              top: -3,
+              right: -2,
+              minWidth: 14,
+              height: 14,
+              paddingInline: 3,
+              borderRadius: 999,
+              backgroundColor: 'var(--red-9)',
+              // A ring in the rail's own ground so the badge sits on the glyph rather than merging with it.
+              boxShadow: '0 0 0 2px var(--olive-1)',
+              boxSizing: 'border-box',
+              pointerEvents: 'none',
+            }}
+          >
+            <Text style={{ fontSize: 9, lineHeight: 1, fontWeight: 500, color: 'var(--red-contrast)' }}>{label}</Text>
+          </Flex>
+        )}
+      </IconButton>
+    </Tooltip>
   );
 }
 
@@ -64,7 +92,7 @@ export function ChatSidebarHeader() {
   return (
     <Flex align="center" justify="between" gap="2" style={{ height: '100%', padding: 'var(--space-4)' }}>
       <BrandMark size={HEADER_ELEMENT_SIZE} color="var(--accent-11)" />
-      <Flex align="center" gap="2">
+      <Flex align="center" gap="1">
         {isMobile ? (
           <IconButton
             variant="ghost"
@@ -84,6 +112,7 @@ export function ChatSidebarHeader() {
             {avatar}
           </Link>
         )}
+        <InboxButton />
         {!isMobile && (
           <Tooltip content={t('sidebar.collapse')} side="right">
             <IconButton
@@ -92,9 +121,9 @@ export function ChatSidebarHeader() {
               size="1"
               aria-label={t('sidebar.collapse')}
               onClick={() => setNavCollapsed(true)}
-              style={{ margin: 0, cursor: 'pointer' }}
+              style={{ width: 24, height: 24, padding: 0, margin: 0, cursor: 'pointer' }}
             >
-              <SidebarPanelIcon size={18} color="var(--gray-10)" />
+              <MaterialIcon name="left_panel_close" size={16} color="var(--neutral-11)" />
             </IconButton>
           </Tooltip>
         )}

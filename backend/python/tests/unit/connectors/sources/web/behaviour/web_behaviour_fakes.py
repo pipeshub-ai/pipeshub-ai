@@ -21,6 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import shutil
+import socket
+import sys
+import tempfile
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -29,14 +33,18 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from aiohttp import web
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 
+from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
 from app.services.resource_governor.models import ResourceSnapshot
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+
+    import pytest
 
     from app.connectors.sources.web.connector import WebConnector
     from app.models.entities import FileRecord, Record
@@ -293,6 +301,88 @@ class FakeWeb:
         return url, Page(status=508)
 
 
+def isolate_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only Unix sockets (the fake websites) may be connected to; every host resolves to
+    SITE_ADDRESS except INTRANET_HOST."""
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def _guard(sock: socket.socket, address: object) -> None:
+        if sock.family != socket.AF_UNIX:
+            raise AssertionError(f"test tried to reach the network: {address!r}")
+
+    def connect(sock: socket.socket, address: object) -> None:
+        _guard(sock, address)
+        return real_connect(sock, address)
+
+    def connect_ex(sock: socket.socket, address: object) -> int:
+        _guard(sock, address)
+        return real_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+
+    def resolve_to_fake_site(host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
+        address = INTRANET_ADDRESS if host == INTRANET_HOST else SITE_ADDRESS
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_to_fake_site)
+    # As if curl_cffi and cloudscraper were not installed: the aiohttp strategy serves every fetch.
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", [])
+    monkeypatch.setitem(sys.modules, "cloudscraper", None)
+
+
+@asynccontextmanager
+async def serve_fake_web(fake: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """Serve ``fake`` on a Unix socket and point every ``aiohttp.ClientSession`` at it."""
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", fake.handle)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    sock_dir = tempfile.mkdtemp(prefix="webfake-")
+    sock_path = f"{sock_dir}/site.sock"
+    await web.UnixSite(runner, sock_path).start()
+
+    real_session = aiohttp.ClientSession
+
+    async def resolve_as_guarded(request: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
+        await address_guard.resolve_target(str(request.url))
+        return await handler(request)
+
+    def session_on_fake_web(*args: object, **kwargs: object) -> aiohttp.ClientSession:
+        if isinstance(kwargs.get("connector"), aiohttp.TCPConnector):
+            # The Unix socket skips the guarded session's resolver, so make its check here.
+            kwargs["middlewares"] = (*kwargs.get("middlewares", ()), resolve_as_guarded)
+        kwargs["connector"] = aiohttp.UnixConnector(path=sock_path)
+        return real_session(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(aiohttp, "ClientSession", session_on_fake_web)
+    try:
+        yield fake
+    finally:
+        await runner.cleanup()
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+@asynccontextmanager
+async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """crawl4ai's browser renders from ``site``; the shared fetcher starts fresh and is closed after."""
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
+    monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
+    monkeypatch.setattr(crawl4ai_fetcher, "build_probe", FakeMemoryProbe)
+    monkeypatch.setenv("WEB_BROWSER_MAX_PAGES", "5")
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    try:
+        yield site
+    finally:
+        leftover = crawl4ai_fetcher._shared_instance
+        if leftover is not None:
+            await leftover.close()
+
+
 def browser_crawler_class(site: FakeWeb) -> type:
     """A stand-in for ``crawl4ai.AsyncWebCrawler`` that renders from ``site``."""
 
@@ -419,6 +509,8 @@ class FakeRecordsDb:
         self.deleted: list[str] = []
         self.attached: list[tuple[str, list[str]]] = []
         self.record_groups: list[Any] = []
+        self.app_users: list[Any] = []
+        self.team_app_edges: list[str] = []
         self.fail_writes = False
         self.unreadable_file_records: set[str] = set()
         # ENABLE_SOFT_DELETE on: a delete keeps the record, marked, and says so.
@@ -502,10 +594,10 @@ class FakeRecordsDb:
         self.record_groups.extend(groups)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        pass
+        self.app_users.extend(users)
 
     async def ensure_team_app_edge(self, connector_id: str) -> None:
-        pass
+        self.team_app_edges.append(connector_id)
 
     async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace:
         return SimpleNamespace(id=user_id, email="owner@example.com", source_user_id=user_id,
@@ -542,7 +634,7 @@ class FakeCheckpointStore:
         self.sync_points.pop(key, None)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
 
 

@@ -446,6 +446,7 @@ class SlackConnector(BaseConnector):
         # Workspace identity (set in init())
         self.workspace_domain: Optional[str] = None
         self.team_id:          Optional[str] = None
+        self._guest_user_ids: set[str] = set()
 
         # ── Sync points ──────────────────────────────────────────────────────
         def _sp(t: SyncDataPointType) -> SyncPoint:
@@ -730,6 +731,7 @@ class SlackConnector(BaseConnector):
         # Set when a page fails: the caches above then miss users, and every
         # permission list built from them would be short (see _sync_channels).
         self._users_read_failed = False
+        self._guest_user_ids: set[str] = set()
 
         cursor: Optional[str] = None
         synced = skipped = bots_cached = 0
@@ -782,10 +784,13 @@ class SlackConnector(BaseConnector):
                 app_user = self._to_app_user(m)
                 if app_user:
                     batch.append(app_user)
+                    if m.get("deleted"):
+                        continue
                     self.user_id_to_email_cache[m["id"]] = email
-
                     is_guest = m.get("is_restricted", False) or m.get("is_ultra_restricted", False)
-                    if not is_guest:
+                    if is_guest:
+                        self._guest_user_ids.add(m["id"])
+                    else:
                         self._non_guest_app_users.append(app_user)
 
             if batch:
@@ -851,7 +856,7 @@ class SlackConnector(BaseConnector):
                 if u.source_user_id and u.id:
                     self.user_id_to_internal_id_cache[u.source_user_id] = u.id
                     self._source_id_to_app_user[u.source_user_id] = u
-                    if u.source_user_id not in self.user_id_to_email_cache and u.email:
+                    if u.source_user_id not in self.user_id_to_email_cache and u.email and u.is_active is not False:
                         self.user_id_to_email_cache[u.source_user_id] = u.email
                     # Populate name cache if not already set
                     if u.source_user_id not in self.user_id_to_name_cache and u.full_name:
@@ -1189,13 +1194,32 @@ class SlackConnector(BaseConnector):
                 )]
             return []
 
-        # Public channel — use workspace_member AppRole
+        # Public channel — workspace members, plus guests who were added to this channel.
         if not channel_data.get("is_private") and not channel_data.get("is_mpim"):
-            return [Permission(
+            try:
+                member_ids = await self._fetch_channel_members(cid)
+            except RuntimeError as exc:
+                # Only the guests depend on the member list: they get no grant this
+                # time, and the channel still syncs for the workspace.
+                self._full_sync_read_failed = True
+                self.logger.warning(f"Guests of {channel_data.get('name')} not read: {exc}")
+                member_ids = []
+            perms = [Permission(
                 entity_type=EntityType.ROLE,
                 external_id="workspace_member",
                 type=PermissionType.READ,
             )]
+            for uid in member_ids:
+                if uid not in self._guest_user_ids:
+                    continue
+                email = self.user_id_to_email_cache.get(uid)
+                if email:
+                    perms.append(Permission(
+                        email=email,
+                        entity_type=EntityType.USER,
+                        type=PermissionType.READ,
+                    ))
+            return perms
 
         # Private channel or group DM — resolve explicit member list
         member_ids = await self._fetch_channel_members(cid)
@@ -1235,7 +1259,6 @@ class SlackConnector(BaseConnector):
                 )
 
                 if not resp or not resp.success:
-                    # Connector may lack membership scope — log and bail
                     error = getattr(resp, "error", "no response")
                     # On the first page these mean the members cannot be read at
                     # all, and will not be next time either: fail closed, so a
@@ -1325,7 +1348,9 @@ class SlackConnector(BaseConnector):
                 updated_at=current_ts,
                 source_created_at=src_ts,
                 source_updated_at=upd_ts,
-                inherit_permissions=True,
+                # A channel is not open to everyone with the workspace app, so it
+                # must not inherit from the App: membership is the grant.
+                inherit_permissions=False,
                 hide_children=True,
             )
         except Exception as exc:
@@ -2682,6 +2707,17 @@ class SlackConnector(BaseConnector):
 
         return fname_ext
 
+    def _shared_conversation_ids(self, fd: dict[str, Any]) -> list[str]:
+        """Conversation ids a file is shared into. Slack lists them under shares."""
+        shares = fd.get("shares") or {}
+        if not isinstance(shares, dict):
+            return []
+        ids: list[str] = []
+        for bucket in shares.values():
+            if isinstance(bucket, dict):
+                ids.extend(str(cid) for cid in bucket if cid)
+        return list(dict.fromkeys(ids))
+
     async def _process_file_raw(
         self,
         fd: dict[str, Any],
@@ -2725,7 +2761,7 @@ class SlackConnector(BaseConnector):
         mime_type = self._resolve_file_mime_type(filename, fd.get("mimetype"))
 
         try:
-            return FileRecord(
+            record = FileRecord(
                 org_id=self.data_entities_processor.org_id,
                 record_name=filename,
                 record_type=RecordType.FILE,
@@ -2748,6 +2784,14 @@ class SlackConnector(BaseConnector):
                 is_dependent_node=True,
                 inherit_permissions=True,
             )
+            others = [
+                cid for cid in self._shared_conversation_ids(fd)
+                if cid and cid != ctx.channel_id
+            ]
+            record.shared_with_me_record_group_ids = others
+            # A file object without shares does not say which channels it left.
+            record.shared_groups_complete = isinstance(fd.get("shares"), dict)
+            return record
         except Exception as exc:
             self.logger.error(f"_process_file_raw({fid}): {exc}")
             return None
@@ -2764,6 +2808,12 @@ class SlackConnector(BaseConnector):
             fr.parent_node_id              = parent.id
             fr.parent_external_record_id   = parent.external_record_id
             fr.parent_record_type          = RecordType.MESSAGE
+            other_channels = [
+                cid for cid in self._shared_conversation_ids(fd)
+                if cid and cid != ctx.channel_id
+            ]
+            fr.shared_with_me_record_group_ids = other_channels
+            fr.shared_groups_complete = isinstance(fd.get("shares"), dict)
         return fr
 
 

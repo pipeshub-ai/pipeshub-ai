@@ -14,13 +14,15 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.chat import excluded_app_ids
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeItem,
     NodeType,
 )
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
+from app.modules.demo_data.chat import excluded_app_ids
 
 if TYPE_CHECKING:
     from app.modules.agents.qna.chat_state import ChatState
@@ -152,7 +154,14 @@ async def execute_list_files(
         if not graph_provider:
             return False, "Graph provider not available."
 
-        from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            list_selected_nodes,
+            resolve_scope,
+        )
+
+        selected = await list_selected_nodes(state, graph_provider, user_id, org_id)
+        if selected is not None:
+            return True, selected
 
         scope = await resolve_scope(state, allow_catalog_fallback=True)
         if scope.is_empty():
@@ -211,8 +220,8 @@ async def execute_list_files(
             node_types=node_types,
             record_types=record_types,
             connector_ids=use_connector_ids,
-            # An explicit False makes the service list and drop the query;
-            # an omitted flag plus connector_ids makes it search.
+            # An explicit False makes the service list; an omitted flag
+            # plus connector_ids makes it search.
             flattened=None if query else False,
             record_group_ids=use_record_group_ids,
         )

@@ -1,9 +1,10 @@
 'use client';
 
+import { useDemoDataActive } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import React, { useState } from 'react';
-import { Flex, Text, Button } from '@radix-ui/themes';
+import { Box, Flex, Text, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { TableSkeleton } from '@/app/components/data-display/table-skeleton';
 import { useKnowledgeBaseStore } from '../store';
 import { useTranslation } from 'react-i18next';
 import { DeleteConfirmationDialog } from './dialogs'; 
@@ -17,9 +18,13 @@ import type {
 } from '../types';
 import { AlertSquareIcon, EmptyIcon, NotFoundIcon } from '@/app/components/ui';
 import { resolveRootKbIdFromContext } from '../utils/resolve-root-kb-id';
+import { TableHeaderCell } from './kb-list-view';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // Union type for items that can be displayed
 type TableItem = KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem;
+
+const NO_ITEMS: TableItem[] = [];
 
 // Type guard to check if item is KnowledgeHubNode
 function isKnowledgeHubNode(item: TableItem): item is KnowledgeHubNode {
@@ -32,12 +37,14 @@ interface KbDataTableProps {
   isRefreshing?: boolean;
   error?: string | null;
   pagination?: {
-    page: number;
     limit: number;
     totalItems: number;
-    totalPages: number;
+    startIndex?: number;
+    endIndex?: number;
     hasNext: boolean;
     hasPrev: boolean;
+    nextCursor?: string | null;
+    prevCursor?: string | null;
   };
   permissions?: NodePermissions;
   currentNodeName?: string;
@@ -49,10 +56,11 @@ interface KbDataTableProps {
   hasCollections?: boolean;
   extrasRefreshKey?: number;
   onRefresh?: () => void;
-  onPageChange?: (page: number) => void;
+  onCursorChange?: (cursor: string | null, direction?: 'next' | 'prev') => void;
   onLimitChange?: (limit: number) => void;
   onItemClick: (item: TableItem) => void;
   onPreview?: (item: TableItem) => void;
+  onGoToParent?: (item: KnowledgeHubNode) => void;
   onRename?: (item: TableItem, newName: string) => Promise<void>;
   onReindex?: (item: TableItem, statusFilters?: string[]) => void;
   onReplace?: (item: TableItem) => void;
@@ -63,6 +71,8 @@ interface KbDataTableProps {
   onUpload?: () => void;
   onGoToCollection?: () => void;
   refreshData?: (deletedIds?: string[]) => Promise<void>;
+  /** False when no collection is open (a search at the Collections root): see `needsCollectionContext`. */
+  hasCollectionContext?: boolean;
 }
 
 export function KbDataTable({
@@ -81,10 +91,11 @@ export function KbDataTable({
   hasCollections = false,
   extrasRefreshKey = 0,
   onRefresh,
-  onPageChange,
+  onCursorChange,
   onLimitChange,
   onItemClick,
   onPreview,
+  onGoToParent,
   onRename,
   onReindex,
   onReplace,
@@ -95,8 +106,12 @@ export function KbDataTable({
   onUpload,
   onGoToCollection,
   refreshData,
+  hasCollectionContext = true,
 }: KbDataTableProps) {
   const { t } = useTranslation();
+  // Looked up here, not in the list or grid: those unmount behind the loader on
+  // every navigation, which would ask for the connectors again on every click.
+  useDemoDataActive();
   const { selectedItems, toggleItemSelection, selectItem, clearSelection, selectedRecords, toggleRecordSelection, selectRecord, clearRecordSelection, deleteNode, deletingNodeIds, viewMode, sort, setSort, allRecordsSort, setAllRecordsSort, tableData: storeTableData, allRecordsSidebarSelection, isLoadingFlatCollections, loadingAppIds, appNodes } =
     useKnowledgeBaseStore();
 
@@ -201,27 +216,22 @@ export function KbDataTable({
   };
 
   const getWarningMessage = (_item: TableItem): string | undefined => undefined;
+  const isMobile = useIsMobile();
 
-  // Show refreshing state
-  if (isRefreshing) {
+  const showSkeleton = isRefreshing || isLoading;
+  // The list keeps its header and shimmers its own body; the grid has no row skeleton.
+  if (showSkeleton && viewMode === 'grid') {
     return (
-      <Flex align="center" justify="center" style={{ flex: 1 }}>
-        <LottieLoader variant="loader" size={32} showLabel label={t('common.refreshing')} />
-      </Flex>
-    );
-  }
-
-  // Show loading state
-  if (isLoading) {
-    return (
-      <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
-        <LottieLoader variant="loader" size={32} showLabel />
-      </Flex>
+      <RecordsLoadingTable
+        label={isRefreshing ? t('common.refreshing') : t('common.loading', { defaultValue: 'Loading' })}
+        showSourceColumn={showSourceColumn}
+        isMobile={isMobile}
+      />
     );
   }
 
   // Show error state
-  if (error) {
+  if (error && !showSkeleton) {
     return (
       <Flex align="center" justify="center" direction="column" gap="3" style={{ flex: 1 }}>
         <AlertSquareIcon size={56} color="var(--red-11)" />
@@ -239,6 +249,7 @@ export function KbDataTable({
   // Show empty state when no node selected (no breadcrumbs) - Collections mode only
   const hasBreadcrumbs = !!storeTableData?.breadcrumbs?.length;
   if (
+    !showSkeleton &&
     items.length === 0 &&
     !hasBreadcrumbs &&
     pageViewMode === 'collections' &&
@@ -251,9 +262,11 @@ export function KbDataTable({
     // still responding.
     if (isLoadingCollections) {
       return (
-        <Flex align="center" justify="center" style={{ flex: 1, backgroundColor: 'var(--olive-2)' }}>
-          <LottieLoader variant="loader" size={32} showLabel />
-        </Flex>
+        <RecordsLoadingTable
+          label={t('common.loading', { defaultValue: 'Loading' })}
+          showSourceColumn={false}
+          isMobile={isMobile}
+        />
       );
     }
 
@@ -298,9 +311,9 @@ export function KbDataTable({
   }
 
   return (
-    <Flex direction="column" style={{ flex: 1, overflow: 'hidden', backgroundColor: 'var(--olive-2)' }}>
+    <Flex direction="column" style={{ flex: 1, overflow: 'hidden', background: 'linear-gradient(to bottom, var(--olive-2), var(--olive-1))' }}>
       {/* Conditional view rendering based on viewMode */}
-      {items.length === 0 ? (
+      {items.length === 0 && !showSkeleton ? (
         <Flex
           align="center"
           justify="center"
@@ -398,7 +411,7 @@ export function KbDataTable({
           selectedItems={activeSelectedItems}
           showCheckbox={showCheckbox}
           pagination={pagination}
-          onPageChange={onPageChange}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
@@ -409,30 +422,34 @@ export function KbDataTable({
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       ) : (
         <KbListView
-          items={items}
+          items={showSkeleton ? NO_ITEMS : items}
+          loading={showSkeleton}
           selectedItems={activeSelectedItems}
-          allSelected={allSelected}
+          allSelected={!showSkeleton && allSelected}
           showSourceColumn={showSourceColumn}
           showCheckbox={showCheckbox}
           extraColumns={extraColumns}
           sort={isAllRecords ? allRecordsSort : sort}
-          pagination={pagination}
-          onPageChange={onPageChange}
+          pagination={showSkeleton ? undefined : pagination}
+          onCursorChange={onCursorChange}
           onLimitChange={onLimitChange}
           onSelectAll={handleSelectAll}
           onSort={isAllRecords ? setAllRecordsSort : setSort}
           onSelectItem={activeToggleSelection}
           onItemClick={onItemClick}
           onPreview={onPreview}
+          onGoToParent={hasSearchQuery || hasActiveFilters ? onGoToParent : undefined}
           onRename={onRename}
           onReindex={onReindex}
           onReplace={onReplace}
           onMove={onMove}
           onDelete={_onDelete ? handleDeleteClick : undefined}
           onDownload={onDownload}
+          hasCollectionContext={hasCollectionContext}
         />
       )}
 
@@ -458,6 +475,64 @@ export function KbDataTable({
           isDeleting={deletingNodeIds.has(itemToDelete.id)}
         />
       )}
+    </Flex>
+  );
+}
+
+function RecordsLoadingTable({
+  label,
+  showSourceColumn,
+  isMobile,
+}: {
+  label: string;
+  showSourceColumn: boolean;
+  isMobile: boolean;
+}) {
+  return (
+    <Flex
+      direction="column"
+      role="status"
+      aria-busy="true"
+      aria-label={label}
+      style={{ flex: 1, minHeight: 0, backgroundColor: 'var(--olive-1)' }}
+    >
+      <Flex
+        align="center"
+        style={{
+          height: 36,
+          borderBottom: '1px solid var(--olive-3)',
+          backgroundColor: 'var(--olive-2)',
+          flexShrink: 0,
+        }}
+      >
+        <Box style={{ width: 36, flexShrink: 0 }} />
+        <TableHeaderCell label="File Name" flex={1} />
+        <TableHeaderCell label="Status" width="60px" />
+        {showSourceColumn && <TableHeaderCell label="Source" width="60px" />}
+        {!isMobile && <TableHeaderCell label="Size" width="89px" />}
+        {!isMobile && <TableHeaderCell label="Created" width="147px" />}
+        {!isMobile && <TableHeaderCell label="Updated" width="146px" />}
+        <Box style={{ width: 104, flexShrink: 0 }} />
+      </Flex>
+      <Box style={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+        <TableSkeleton
+          rows={18}
+          rowHeight={60}
+          actionsWidth={104}
+          columns={[
+            { barWidth: 0.62 },
+            { width: '60px', barWidth: 0.45 },
+            ...(showSourceColumn ? [{ width: '60px', barWidth: 0.45 }] : []),
+            ...(!isMobile
+              ? [
+                  { width: '89px', barWidth: 0.55 },
+                  { width: '147px', barWidth: 0.7 },
+                  { width: '146px', barWidth: 0.7 },
+                ]
+              : []),
+          ]}
+        />
+      </Box>
     </Flex>
   );
 }

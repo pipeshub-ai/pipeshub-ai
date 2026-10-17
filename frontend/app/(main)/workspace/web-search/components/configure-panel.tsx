@@ -52,8 +52,16 @@ export function ConfigurePanel({
   onDeleteSuccess,
 }: ConfigurePanelProps) {
   const { t } = useTranslation();
-  const [apiKey, setApiKey] = useState('');
+  const [values, setValues] = useState<Record<string, string>>({});
   const [showKey, setShowKey] = useState(false);
+  const apiKey = values.apiKey ?? '';
+  const setApiKey = (update: string | ((prev: string) => string)) =>
+    setValues((prev) => ({
+      ...prev,
+      apiKey: typeof update === 'function' ? update(prev.apiKey ?? '') : update,
+    }));
+  const fields = providerMeta?.fields ?? [];
+  const missingRequired = fields.some((field) => field.required && !(values[field.key] ?? '').trim());
   const revealAvailable = useSecretRevealAvailable(open);
   const [isSaving, setIsSaving] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -67,7 +75,7 @@ export function ConfigurePanel({
 
   useEffect(() => {
     if (!open) return;
-    setApiKey(existingProvider?.configuration?.apiKey ?? '');
+    setValues({ ...(existingProvider?.configuration ?? {}) });
     setShowKey(false);
     setErrorMessage(null);
     setIsSaving(false);
@@ -111,15 +119,20 @@ export function ConfigurePanel({
   };
 
   const handleSave = async () => {
-    if (!provider || !providerMeta || !apiKey.trim()) return;
+    if (!provider || !providerMeta || missingRequired) return;
 
     setIsSaving(true);
     setErrorMessage(null);
 
     try {
+      const configuration = Object.fromEntries(
+        fields
+          .map((field) => [field.key, (values[field.key] ?? '').trim()] as const)
+          .filter(([, value]) => value),
+      );
       const providerData = {
         provider,
-        configuration: { apiKey: apiKey.trim() },
+        configuration,
         isDefault: existingProvider?.isDefault ?? false,
       };
 
@@ -206,7 +219,7 @@ export function ConfigurePanel({
         headerActions={docButton}
         primaryLabel={isEdit ? 'Update' : 'Save'}
         secondaryLabel="Cancel"
-        primaryDisabled={!apiKey.trim()}
+        primaryDisabled={missingRequired}
         primaryLoading={isSaving}
         onPrimaryClick={handleSave}
         onSecondaryClick={() => handleOpen(false)}
@@ -231,48 +244,74 @@ export function ConfigurePanel({
             </Callout.Root>
           )}
 
-          <Flex direction="column" gap="1">
-            <Flex align="center" justify="between" gap="3">
-              <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
-                API Key
-              </Text>
-              {canReveal ? (
-                <ShowStoredValuesButton
-                  loading={isRevealing}
+          {fields.map((field) =>
+            field.key === 'apiKey' ? (
+              <Flex key={field.key} direction="column" gap="1">
+                <Flex align="center" justify="between" gap="3">
+                  <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                    {field.label}
+                  </Text>
+                  {canReveal ? (
+                    <ShowStoredValuesButton
+                      loading={isRevealing}
+                      disabled={isSaving || isDeleting}
+                      onClick={() => void handleReveal()}
+                    />
+                  ) : null}
+                </Flex>
+                <TextField.Root
+                  type={showKey ? 'text' : 'password'}
+                  placeholder={field.placeholder}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
                   disabled={isSaving || isDeleting}
-                  onClick={() => void handleReveal()}
-                />
-              ) : null}
-            </Flex>
-            <TextField.Root
-              type={showKey ? 'text' : 'password'}
-              placeholder={providerMeta.apiKeyPlaceholder}
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              disabled={isSaving || isDeleting}
-            >
-              <TextField.Slot>
-                <MaterialIcon name="key" size={16} color="var(--slate-9)" />
-              </TextField.Slot>
-              <TextField.Slot side="right">
-                <span
-                  onClick={() => setShowKey((v) => !v)}
-                  style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
                 >
-                  <MaterialIcon
-                    name={showKey ? 'visibility_off' : 'visibility'}
-                    size={16}
-                    color="var(--slate-9)"
-                  />
-                </span>
-              </TextField.Slot>
-            </TextField.Root>
-            {providerMeta.apiKeyHelperText && (
-              <Text size="1" style={{ color: 'var(--slate-10)' }}>
-                {providerMeta.apiKeyHelperText}
-              </Text>
-            )}
-          </Flex>
+                  <TextField.Slot>
+                    <MaterialIcon name="key" size={16} color="var(--slate-9)" />
+                  </TextField.Slot>
+                  <TextField.Slot side="right">
+                    <span
+                      onClick={() => setShowKey((v) => !v)}
+                      style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                    >
+                      <MaterialIcon
+                        name={showKey ? 'visibility_off' : 'visibility'}
+                        size={16}
+                        color="var(--slate-9)"
+                      />
+                    </span>
+                  </TextField.Slot>
+                </TextField.Root>
+                {field.helperText && (
+                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                    {field.helperText}
+                  </Text>
+                )}
+              </Flex>
+            ) : (
+              <Flex key={field.key} direction="column" gap="1">
+                <Text size="1" weight="medium" style={{ color: 'var(--slate-12)' }}>
+                  {field.label}
+                </Text>
+                <TextField.Root
+                  type="url"
+                  placeholder={field.placeholder}
+                  value={values[field.key] ?? ''}
+                  onChange={(e) => setValues((prev) => ({ ...prev, [field.key]: e.target.value }))}
+                  disabled={isSaving || isDeleting}
+                >
+                  <TextField.Slot>
+                    <MaterialIcon name="link" size={16} color="var(--slate-9)" />
+                  </TextField.Slot>
+                </TextField.Root>
+                {field.helperText && (
+                  <Text size="1" style={{ color: 'var(--slate-10)' }}>
+                    {field.helperText}
+                  </Text>
+                )}
+              </Flex>
+            ),
+          )}
 
           {errorMessage && (
             <Callout.Root color="red" size="1" variant="soft">
@@ -299,8 +338,8 @@ export function ConfigurePanel({
                 Danger zone
               </Text>
               <Text size="1" style={{ color: 'var(--slate-11)', fontWeight: 300 }}>
-                Remove this provider&apos;s configuration. If it is the default, DuckDuckGo will
-                be used instead.
+                Remove this provider&apos;s configuration. If it is the default, the next search
+                provider you added becomes the default, or DuckDuckGo if there is none.
               </Text>
               <Flex>
                 <Button
@@ -390,7 +429,7 @@ export function ConfigurePanel({
               <Text size="2" style={{ color: 'var(--slate-12)', lineHeight: '20px' }}>
                 {`This will permanently remove your ${providerMeta.label} API key. ${
                   existingProvider?.isDefault
-                    ? 'DuckDuckGo will become the default web search provider.'
+                    ? 'The next search provider you added will become the default, or DuckDuckGo if there is none.'
                     : 'You can reconfigure it later.'
                 }`}
               </Text>

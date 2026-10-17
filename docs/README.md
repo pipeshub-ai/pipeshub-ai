@@ -13,3 +13,4 @@ In-repo design docs:
 - [Retrieval context — how search hits become the ranked, cited records the agent reads](./retrieval-context.md)
 - [Search record cut — fusing deeper and spreading a search's results across records (`FUSION_RECORD_CUT`)](./search-record-cut.md)
 - [Answer rules — the ANSWER_COMPOSITION_RULES, THOROUGH_RETRIEVAL and MULTI_STEP_ANSWER_RULES switches](./answer-rules.md)
+- [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)

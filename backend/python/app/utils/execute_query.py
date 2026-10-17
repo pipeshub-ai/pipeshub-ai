@@ -673,13 +673,31 @@ async def _execute_query_impl(
         return result
 
 
+async def _connector_is_accessible(
+    graph_provider: IGraphDBProvider | None,
+    connector_id: str,
+    user_id: str,
+    org_id: str,
+) -> bool:
+    """The query runs with the connector's own credentials, so the connector must
+    be one of the caller's org that the user can reach."""
+    if graph_provider is None or not org_id:
+        return False
+    from app.utils.chat_helpers import accessible_node_ids
+
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if not app or app.get("orgId") != org_id:
+        return False
+    return connector_id in await accessible_node_ids(graph_provider, {connector_id}, user_id, org_id)
+
+
 def create_execute_query_tool(
     config_service: "ConfigurationService",
     graph_provider: Optional["IGraphDBProvider"] = None,
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
-    user_id: Optional[str] = None,
+    user_id: str | None = None,
     *,
     allowed_connector_ids: Collection[str],
 ) -> Callable:
@@ -687,8 +705,9 @@ def create_execute_query_tool(
     
     Args:
         config_service: Configuration service for retrieving connection details
-        graph_provider: Optional GraphDB service (used for BlobStorage fallback)
-        org_id: Optional organization ID for background CSV export
+        graph_provider: GraphDB service: checks the user can reach the connector,
+            and backs the BlobStorage fallback
+        org_id: The caller's organization: scopes the connector check and the CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
         user_id: Optional owner of the CSV export; without it the export has
@@ -753,6 +772,11 @@ def create_execute_query_tool(
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
 
         connector_id = (connector_id or "").strip()
+        if not connector_id:
+            return {
+                "ok": False,
+                "error": "connector_id is required: pass the Connector Id of the SQL_TABLE record in context.",
+            }
         if connector_id not in allowed:
             logger.warning(
                 "🔍 [execute_sql_query_tool] Rejected connector_id=%r: not attached to this agent",
@@ -767,6 +791,9 @@ def create_execute_query_tool(
             }
 
         try:
+            if not await _connector_is_accessible(graph_provider, connector_id, user_id or "", org_id or ""):
+                return {"ok": False, "error": f"Connector {connector_id!r} is not available to you."}
+
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,

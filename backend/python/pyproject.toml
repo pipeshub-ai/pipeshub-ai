@@ -201,6 +201,8 @@ dependencies = [
     "cloudscraper==1.2.71",
     "cryptography==50.0.0",
     "dateparser>=1.2.0",
+    # Free web search when no provider key is set: one query spread over several engines.
+    "ddgs==9.16.0",
     "crawl4ai==0.9.4",
     "curl-cffi==0.15.0",
     # "databricks-sdk>=0.85.0",
@@ -294,6 +296,10 @@ dependencies = [
     "python-arango==8.1.5",
     "python-docx==1.1.2",
     "neo4j>=5.0.0",
+    # Compiled PackStream for the neo4j driver; each release requires its matching
+    # driver version. Packing a large list parameter in pure Python costs tens of
+    # milliseconds on the event loop per statement.
+    "neo4j-rust-ext>=5.0.0",
     "python-dotenv==1.2.2",
     # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
     "PyJWT==2.15.0",

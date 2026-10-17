@@ -74,7 +74,7 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
         "toolset_oauth_name", "toolset_client_id", "toolset_secret",
     ),
     # A note in the admin's private knowledge base, and one in a member's.
-    "records": ("admin_record", "admin_record_text", "member_record", "member_record_text"),
+    "records": ("admin_record", "admin_record_text", "member_record", "member_record_text", "member_kb"),
     # A download link for the admin's note, made out to the admin.
     "signed_link": ("signed_token",),
     # A built-in skill, and a member's own skills: one switched on, one off.
@@ -431,6 +431,28 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
             Case("toolset", MEMBER, False, 200, words='"canEdit":false', absent=('"canEdit":true',)),
             Case("toolset", ADMIN, True, 200, words='"canEdit":true', absent=('"canEdit":false',)),
         ),
+    ),
+    # The knowledge hub lists what the caller may open; the admin flag only labels the
+    # root's `permissions` block and is unused below a parent.
+    ConditionalRoute(
+        "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_root_nodes",
+        "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes",
+        cases=(
+            Case("hub", MEMBER, True, 200, '"items"'),
+            Case("hub", ADMIN, True, 200, '"items"'),
+        ),
+        params={"limit": "50"},
+        same_for_everyone="the admin flag fills only the root permissions block",
+    ),
+    ConditionalRoute(
+        "connectors/sources/localKB/api/knowledge_hub_router.py::get_knowledge_hub_children_nodes",
+        "GET", "/api/v1/knowledgeBase/knowledge-hub/nodes/app/{target}",
+        # The member's own collection: its owner opens it, and being an admin opens nothing.
+        cases=(
+            Case("member_kb", CREATOR, True, 200, '"items"'),
+            Case("member_kb", ADMIN, False, 404, "Node not found"),
+        ),
+        params={"limit": "50"},
     ),
     # Being an admin opens no record: the admin is refused a member's private
     # note exactly as a member is refused the admin's.

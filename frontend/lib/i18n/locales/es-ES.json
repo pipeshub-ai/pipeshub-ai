@@ -550,6 +550,8 @@
     "noCollectionsAvailable": "No hay colecciones disponibles",
     "noCollectionsCreatePrompt": "No hay colecciones disponibles. Por favor, crea una nueva.",
     "seeMoreConnectors": "Ver más conectores",
+    "connectMoreApps": "Conectar más apps",
+    "connectMoreAppsHint": "Más fuentes, mejores respuestas.",
     "suggestedInWorkspace": "Sugerido en el espacio de trabajo",
     "createSubFolder": "Crear una subcarpeta",
     "more": "Más",
@@ -599,7 +601,12 @@
     "searchEmptyHint": "No se ha encontrado lo que busca. Pruebe a buscar otra cosa.",
     "adjustFiltersHint": "Seleccione otra fuente o ajuste los filtros",
     "addFromCollectionsHint": "Puede añadir los archivos o las carpetas de su empresa desde Colecciones",
-    "addFilesHint": "Añada sus archivos o carpetas"
+    "addFilesHint": "Añada sus archivos o carpetas",
+    "chatWithSelection": "Chat",
+    "chatSelectionLimit": "El chat admite hasta {{max}} elementos seleccionados. Desmarca algunos e inténtalo de nuevo.",
+    "chatTooManyCollections": "El chat puede buscar en hasta {{max}} colecciones a la vez y tienes más. Abre una colección o marca las que quieras consultar.",
+    "chatCollectionsLoadFailed": "No se pudieron cargar tus colecciones para el chat. Inténtalo de nuevo.",
+    "chatNoCollections": "Todavía no tienes colecciones sobre las que preguntar."
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -679,7 +686,8 @@
       "noMcpMatches": "Ningún servidor MCP coincide con su búsqueda.",
       "notConnected": "No conectado",
       "connect": "Conectar",
-      "actionConnected": "{{name}} está conectado"
+      "actionConnected": "{{name}} está conectado",
+      "limitedToCount": "· {{count}} seleccionados"
     },
     "projectResources": {
       "noConnectors": "No hay conectores habilitados para este proyecto.",
@@ -707,6 +715,12 @@
     "searchCollections": "Buscar conectores y colecciones",
     "loadingCollections": "Cargando colecciones…",
     "failedToLoadCollections": "Error al cargar colecciones",
+    "treeEmpty": "Aquí no hay nada",
+    "treeLoadFailed": "No se pudieron cargar estos elementos",
+    "treeRetry": "Reintentar",
+    "treeIncludedWith": "Incluido con {{name}}",
+    "treeExpand": "Mostrar el contenido de {{name}}",
+    "treeCollapse": "Ocultar el contenido de {{name}}",
     "noCollectionsAvailable": "No hay colecciones disponibles",
     "comingSoon": "Próximamente",
     "answer": "Respuesta",
@@ -1213,9 +1227,9 @@
     "configuredModels": "Modelos configurados",
     "reasoningEffort": {
       "label": "Esfuerzo de razonamiento",
-      "modelDefaultOption": "Predeterminado del modelo",
-      "modelDefaultOptionWithLevel": "Predeterminado del modelo ({{level}})",
-      "agentDefaultOption": "Predeterminado del agente ({{level}})",
+      "overrideHint": "Vuelva a hacer clic para usar el valor predeterminado.",
+      "defaultHintWithLevel": "Si no se define, se usa {{level}}.",
+      "modelDefaultHint": "Si no se define, se usa {{level}}, el valor predeterminado de este modelo.",
       "modelDefaultLabel": "Predeterminado ({{level}})",
       "low": "Bajo",
       "medium": "Medio",
@@ -1237,7 +1251,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "No configurado en este agente",
       "internalSearch": "Búsqueda interna",
-      "webSearch": "Búsqueda web"
+      "webSearch": "Búsqueda web",
+      "deepResearch": "Investigación a fondo",
+      "deepResearchNeedsWebSearch": "Activa la búsqueda web para usar la investigación a fondo"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
     "mobileProfileComingSoon": "La página de perfil en móvil estará disponible próximamente.",
@@ -1268,6 +1284,23 @@
         "allowedNotRun": "Permitiste {{tool}}, pero no se ejecutó"
       }
     },
+    "selectedAlone": "{{name}} (solo este elemento)",
+    "noConnectorsFound": "No se encontraron conectores",
+    "treeSearching": "Buscando…",
+    "treeSearchFailed": "No se pudo buscar. Inténtalo de nuevo.",
+    "treeSearchMatches": "Carpetas y elementos",
+    "nodeSearchTooShort": "Escribe al menos 2 caracteres",
+    "mentionNodes": "Elementos",
+    "mentionNodesLabel": "Elementos coincidentes",
+    "mentionTypeToSearch": "Escribe un nombre para buscar",
+    "mentionSearching": "Buscando…",
+    "mentionNone": "Ningún elemento coincide",
+    "mentionYourApps": "Sus aplicaciones",
+    "mentionCollections": "Colecciones",
+    "sourceUnavailable": "Una fuente que no puedes abrir",
+    "sourceLoading": "Cargando…",
+    "mentionBack": "Atrás",
+    "mentionRemove": "Quitar {{name}}",
     "artifactsPanel": {
       "generated_one": "{{count}} artefacto generado",
       "generated_many": "{{count}} artefactos generados",
@@ -1884,6 +1917,11 @@
         "video": {
           "label": "Vídeo",
           "badge": "Multimodal"
+        },
+        "decision": {
+          "label": "Decisión",
+          "badge": "Decisión",
+          "sectionTab": "Para decisiones"
         }
       },
       "fetchingModels": "Cargando modelos…",
@@ -4477,7 +4515,10 @@
     "mcpServerNeedsToolsBanner": "Elige al menos una herramienta para {{names}} o activa «Todas las herramientas».",
     "mcpPersonalOnSharedAgentNotify": "{{name}} es tu servidor MCP personal. No se puede añadir a un agente compartido con tu organización ni a uno que se ejecute como cuenta de servicio.",
     "mcpAgentApprovalsEnterprise": "Las aprobaciones de herramientas por agente forman parte de la Enterprise Edition. Aquí se aplican las aprobaciones propias de cada persona.",
-    "mcpAgentApprovals": "Aprobaciones de herramientas por agente"
+    "mcpAgentApprovals": "Aprobaciones de herramientas por agente",
+    "limitSource": "Elegir qué busca {{name}}",
+    "limitSourceHint": "Deja marcada toda la fuente, o desmárcala y marca las carpetas y elementos en los que el agente puede buscar.",
+    "limitSourceCount": "Limitado a {{count}} seleccionados"
   },
   "recordView": {
     "sections": {
@@ -4902,7 +4943,8 @@
     "isAnyOf": "es cualquiera de",
     "loadingOptions": "Cargando opciones…",
     "refreshingOptions": "Actualizando opciones…",
-    "loadingMore": "Cargando más…"
+    "loadingMore": "Cargando más…",
+    "clear": "Borrar filtro {{label}}"
   },
   "moveFolder": {
     "moving": "Moviendo...",

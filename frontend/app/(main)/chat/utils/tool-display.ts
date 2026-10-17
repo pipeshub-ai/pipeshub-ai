@@ -37,6 +37,13 @@ export function isMcpTool(toolName: string | undefined): boolean {
   return !!toolName && toolName.startsWith('mcp_') && !toolName.includes('__');
 }
 
+const WEB_TOOLS = new Set(['web_search', 'fetch_url']);
+
+/** The web search and page-reading tools, with or without their `dynamic__` prefix. */
+export function isWebTool(toolName: string | undefined): boolean {
+  return !!toolName && WEB_TOOLS.has(toolName.replace(/^dynamic__/, ''));
+}
+
 /** Drops any `{app}__` namespace prefix, splits on separators, title-cases. */
 export function humanizeToolName(name: string): string {
   const segment = name.includes('__') ? name.slice(name.lastIndexOf('__') + 2) : name;
@@ -91,7 +98,8 @@ function replaceToolCall(parts: MessagePart[], next: MessagePart): MessagePart[]
  * split out reliably; they get a generic "MCP" chip and the server name comes
  * from the backend's `displayName`. */
 export function extractToolsetLabel(toolName: string | undefined): string | undefined {
-  if (!toolName) return undefined;
+  // Built-in web tools are not a toolset: their `dynamic__` prefix would read as "Dynamic".
+  if (!toolName || isWebTool(toolName)) return undefined;
   if (!toolName.includes('__')) return isMcpTool(toolName) ? 'MCP' : undefined;
   const prefix = toolName.slice(0, toolName.lastIndexOf('__'));
   if (!prefix) return undefined;

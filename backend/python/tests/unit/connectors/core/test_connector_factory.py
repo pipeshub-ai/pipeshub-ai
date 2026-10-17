@@ -670,3 +670,16 @@ class TestCreateAndStartSync:
                 data_entities_processor_cls=mock_processor_cls,
             )
         assert result is mock_connector
+
+
+class TestEveryConnectorIsDecorated:
+    def test_every_registered_connector_carries_its_builder_metadata(self) -> None:
+        """A class without ``_connector_metadata`` never reaches the registry, so the
+        connector disappears from the Connectors page with no error. A helper placed
+        between ``@ConnectorBuilder(...).build_decorator()`` and the class takes the
+        decorator instead of the class."""
+        undecorated = sorted(
+            key for key, connector in ConnectorFactory._connector_registry.items()
+            if not getattr(connector, "_connector_metadata", None)
+        )
+        assert undecorated == []

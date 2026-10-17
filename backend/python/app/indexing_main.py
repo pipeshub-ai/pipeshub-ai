@@ -1353,6 +1353,9 @@ async def _republish_stranded_records(
                     not record_key
                     or not connector_id
                     or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
+                    # A stub for an ancestor that was never synced: nothing to
+                    # index, and the connector refuses to stream it.
+                    or record.get("isPlaceholder")
                 ):
                     continue
 

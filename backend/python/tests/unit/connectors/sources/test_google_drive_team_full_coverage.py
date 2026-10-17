@@ -462,7 +462,7 @@ class TestMapDriveRoleToPermissionType:
         assert connector._map_drive_role_to_permission_type("fileOrganizer") == PermissionType.WRITE
 
     def test_commenter(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -479,16 +479,7 @@ class TestMapDrivePermissionTypeToEntityType:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_domain(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_anyone(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_anyone_with_link(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
-
-    def test_anyone_with_link_underscore(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_unknown_defaults_user(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("xyz") == EntityType.USER

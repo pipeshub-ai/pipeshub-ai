@@ -54,6 +54,7 @@ from app.agents.actions.util.tool_summaries import (
     parse_json_maybe as _parse_json_maybe,
 )
 from app.modules.agents.context.tool_result_extractor import ToolResultExtractor
+from app.utils.citations import extract_tiny_ref
 
 if TYPE_CHECKING:
     from app.agent_loop_lib.core.types import ToolResult
@@ -166,6 +167,38 @@ register_result = PipesHubToolSummarizer.register_result
 # ---------------------------------------------------------------------------
 
 
+# What a failed web call's `error_type` means, in the words the step card shows.
+_WEB_SEARCH_FAILURES = {
+    "blocked": "The search engines blocked the request",
+    "rate_limited": "The search engines are limiting requests right now",
+    "timeout": "The search took too long",
+    "unreachable": "The search engines couldn't be reached",
+    "auth_failed": "The search provider rejected its API key",
+    "quota_exceeded": "The search provider's credits are used up",
+    "not_configured": "The search provider has no API key",
+    "unknown_provider": "The configured search provider isn't available",
+    "access_denied": "Web search isn't allowed here",
+    "budget_exhausted": "The searches for this answer are used up",
+}
+_FETCH_FAILURES = {
+    "blocked": "The site refused the request; it may need a sign-in",
+    "rate_limited": "The site is limiting requests right now",
+    "timeout": "The site didn't answer in time",
+    "unreachable": "The site couldn't be reached",
+    "unsafe_url": "That address isn't a public website",
+    "too_large": "The page is too large to read",
+    "too_many_redirects": "The page redirects too many times",
+    "invalid_url": "That isn't a web address that can be read",
+    "access_denied": "Reading this site isn't allowed",
+    "budget_exhausted": "The page reads for this answer are used up",
+}
+
+
+def _failure(parsed: dict[str, Any], reasons: dict[str, str], prefix: str) -> str:
+    reason = reasons.get(str(parsed.get("error_type") or ""))
+    return f"{prefix}: {reason or parsed.get('error') or 'Unknown error'}"
+
+
 @register_args("dynamic__web_search", "web_search")
 def _web_search_args(args: dict[str, Any]) -> str | None:
     query = args.get("query")
@@ -187,7 +220,7 @@ def _web_search_result(args: dict[str, Any], result: "ToolResult") -> str | None
     if not isinstance(parsed, dict):
         return None
     if parsed.get("ok") is False:
-        return f"Web search failed: {parsed.get('error') or 'Unknown error'}"
+        return _failure(parsed, _WEB_SEARCH_FAILURES, "Web search failed")
     web_results = parsed.get("web_results")
     if not isinstance(web_results, list):
         return None
@@ -214,7 +247,10 @@ def _web_search_result(args: dict[str, Any], result: "ToolResult") -> str | None
 @register_args("dynamic__fetch_url", "fetch_url", "web_scrape")
 def _fetch_url_args(args: dict[str, Any]) -> str | None:
     url = args.get("url")
-    return f"Reading {url.strip()}" if isinstance(url, str) and url.strip() else None
+    if not isinstance(url, str) or not url.strip():
+        return None
+    # A `refN.xyz` citation alias means nothing to a person; the result names the real page.
+    return "Reading a page from the results" if extract_tiny_ref(url.strip()) else f"Reading {url.strip()}"
 
 
 @register_result("dynamic__fetch_url", "fetch_url", "web_scrape")
@@ -223,15 +259,18 @@ def _fetch_url_result(args: dict[str, Any], result: "ToolResult") -> str | None:
     # page's URL as `result.sources[0]`; the JSON-parsing path is the
     # legacy loop's fallback.
     if result.sources:
-        url = result.sources[0].url or args.get("url") or ""
+        source = result.sources[0]
+        url = source.url or args.get("url") or ""
         domain = _domain(url) if url else ""
+        if source.title and domain:
+            return f"Read “{source.title}” ({domain})"
         return f"Fetched content from {domain}" if domain else "Fetched page content"
 
     parsed = _parse_json_maybe(result.content)
     if not isinstance(parsed, dict):
         return None
     if parsed.get("ok") is False:
-        return f"Failed to read: {parsed.get('error') or 'Unknown error'}"
+        return _failure(parsed, _FETCH_FAILURES, "Failed to read")
     url = parsed.get("url") or args.get("url") or ""
     domain = _domain(url) if url else ""
     return f"Fetched content from {domain}" if domain else "Fetched page content"

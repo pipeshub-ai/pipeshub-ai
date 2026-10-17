@@ -27,7 +27,7 @@ from app.agent_loop_lib.tools.decorators import tool
 from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import FOLDER_MIME_TYPES
+from app.config.constants.arangodb import FOLDER_MIME_TYPES
 from app.modules.agents.qna.chat_state import (
     ChatState,
     remember_record_ids,
@@ -39,7 +39,7 @@ from .catalog import ConnectorCatalog
 from .models import NavigationView
 from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
-from .ops.scope import resolve_scope
+from .ops.scope import ids_within_scope, resolve_scope, selection_browse_refusal
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
 from .views import render_lookup_result_with_ids, render_navigation_view_with_ids
@@ -462,6 +462,10 @@ class KnowledgeGraph:
                 if result.matches:
                     node_id = result.matches[0].id
 
+        refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
+        if refusal:
+            return False, refusal
+
         navigator = GraphNavigator(
             graph_provider=graph_provider,
             user_id=user_id,
@@ -487,6 +491,13 @@ class KnowledgeGraph:
                 node_types=node_types,
                 app_names=app_names,
             )
+            # A linked record is named from any source the user reads, not
+            # only from those the turn is limited to.
+            if view.related:
+                inside = await ids_within_scope(
+                    state, graph_provider, user_key, org_id, [row.id for row in view.related],
+                )
+                view.related = [row for row in view.related if row.id in inside]
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
@@ -617,9 +628,17 @@ class KnowledgeGraph:
 
         try:
             result = await resolver.resolve_many(idents)
+            # A match outside what the turn is limited to is not a match.
+            inside = await ids_within_scope(
+                state, graph_provider, user_key, org_id, [m.id for m in result.matches],
+            )
         except Exception:
             logger.exception("lookup_record resolve_many failed for %s", idents)
             return False, _NOT_FOUND_MSG
+        if len(inside) < len(result.matches):
+            kept = [m for m in result.matches if m.id in inside]
+            result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
+        remember_record_ids(state, [m.id for m in result.matches])
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`

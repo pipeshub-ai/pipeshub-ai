@@ -108,6 +108,7 @@ def _arango_recursive(
         patch.object(provider, "_delete_edges_by_node_ids", AsyncMock(side_effect=delete_edges)),
         patch.object(provider, "_delete_isoftype_targets_from_collected", AsyncMock()),
         patch.object(provider, "_delete_nodes_by_keys", AsyncMock(return_value=(len(records), 0))),
+        patch.object(provider, "_remove_records_or_raise", AsyncMock()),
     ]
 
 

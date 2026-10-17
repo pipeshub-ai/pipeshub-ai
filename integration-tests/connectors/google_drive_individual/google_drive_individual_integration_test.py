@@ -697,7 +697,7 @@ class TestDriveIndividualEntitySync:
             skip_compare=_FILE_SKIP,
         )
         assert seed_actual.is_file is False
-        assert seed_actual.mime_type == MimeTypes.GOOGLE_DRIVE_FOLDER.value
+        assert seed_actual.mime_type == MimeTypes.FOLDER.value
 
         for sample in sample_files:
             meta = await drive_files_get_personal(
@@ -897,7 +897,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_individual_ff_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -906,7 +906,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_individual_ff_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -1011,7 +1011,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=deeper_id,
                 record_name="deeper",
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -1207,7 +1207,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=movable_id,
                 record_name="movable",
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -1322,7 +1322,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=root_id,
                 record_name=drive_individual_ff_connector["root_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -1331,7 +1331,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_individual_ff_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=root_id,
             ),
         )
@@ -1423,7 +1423,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=oos_folder_id,
                 record_name=drive_individual_ff_connector["oos_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -1441,7 +1441,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_individual_ff_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
                 parent_external_record_id=seed_id,
             ),
         )
@@ -1492,7 +1492,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=nested_id,
                 record_name=drive_individual_ff_connector["nested_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -1520,7 +1520,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_individual_ff_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
 
@@ -1595,7 +1595,7 @@ class TestDriveIndividualFolderFilter:
             RecordAssertion(
                 external_record_id=oos_folder_id,
                 record_name=drive_individual_ff_connector["oos_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(
@@ -1632,7 +1632,7 @@ class TestDriveIndividualExtensionFilter:
             RecordAssertion(
                 external_record_id=seed_id,
                 record_name=drive_individual_ext_connector["seed_folder_name"],
-                mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
+                mime_type=MimeTypes.FOLDER.value,
             ),
         )
         await connector_assertions.assert_record_exists(

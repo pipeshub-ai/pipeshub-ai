@@ -623,6 +623,8 @@
     "noCollectionsAvailable": "没有可用的集合",
     "noCollectionsCreatePrompt": "没有可用的集合。请创建一个新集合。",
     "seeMoreConnectors": "查看更多连接器",
+    "connectMoreApps": "连接更多应用",
+    "connectMoreAppsHint": "接入更多来源，答案更准确。",
     "suggestedInWorkspace": "工作区推荐",
     "createSubFolder": "创建子文件夹",
     "more": "更多",
@@ -677,7 +679,12 @@
     "searchEmptyHint": "未找到您要查找的内容。请尝试搜索其他内容。",
     "adjustFiltersHint": "请选择其他来源或调整筛选条件",
     "addFromCollectionsHint": "您可以从合集中添加公司的文件或文件夹",
-    "addFilesHint": "添加您的文件或文件夹"
+    "addFilesHint": "添加您的文件或文件夹",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
+    "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
+    "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。",
+    "chatNoCollections": "您还没有可提问的集合。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -757,7 +764,8 @@
       "noMcpMatches": "没有与您的搜索匹配的 MCP 服务器。",
       "notConnected": "未连接",
       "connect": "连接",
-      "actionConnected": "{{name}} 已连接"
+      "actionConnected": "{{name}} 已连接",
+      "limitedToCount": "· 限定为 {{count}} 项"
     },
     "projectResources": {
       "noConnectors": "此项目未启用任何连接器。",
@@ -785,6 +793,12 @@
     "searchCollections": "搜索连接器和收藏集",
     "loadingCollections": "正在加载收藏集…",
     "failedToLoadCollections": "加载收藏集失败",
+    "treeEmpty": "这里没有内容",
+    "treeLoadFailed": "无法加载这些项目",
+    "treeRetry": "重试",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "显示 {{name}} 中的内容",
+    "treeCollapse": "隐藏 {{name}} 中的内容",
     "noCollectionsAvailable": "没有可用的收藏集",
     "comingSoon": "即将推出",
     "answer": "回答",
@@ -1282,9 +1296,9 @@
     "configuredModels": "已配置的模型",
     "reasoningEffort": {
       "label": "推理强度",
-      "modelDefaultOption": "模型默认",
-      "modelDefaultOptionWithLevel": "模型默认（{{level}}）",
-      "agentDefaultOption": "智能体默认（{{level}}）",
+      "overrideHint": "再次点击可使用默认值。",
+      "defaultHintWithLevel": "未设置时默认为{{level}}。",
+      "modelDefaultHint": "未设置时使用此模型自身的默认值：{{level}}。",
       "modelDefaultLabel": "默认（{{level}}）",
       "low": "低",
       "medium": "中",
@@ -1304,7 +1318,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此智能体未配置",
       "internalSearch": "内部搜索",
-      "webSearch": "网络搜索"
+      "webSearch": "网络搜索",
+      "deepResearch": "深度研究",
+      "deepResearchNeedsWebSearch": "开启网页搜索后才能使用深度研究"
     },
     "resizePanels": "调整聊天和预览面板大小",
     "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
@@ -1334,6 +1350,23 @@
         "allowedNotRun": "你允许了 {{tool}}，但它没有运行"
       }
     },
+    "selectedAlone": "{{name}}（仅此项目）",
+    "noConnectorsFound": "未找到连接器",
+    "treeSearching": "正在搜索…",
+    "treeSearchFailed": "搜索失败，请重试。",
+    "treeSearchMatches": "文件夹和项目",
+    "nodeSearchTooShort": "请至少输入 2 个字符",
+    "mentionNodes": "项目",
+    "mentionNodesLabel": "匹配的项目",
+    "mentionTypeToSearch": "输入名称进行搜索",
+    "mentionSearching": "正在搜索…",
+    "mentionNone": "没有匹配的项目",
+    "mentionYourApps": "你的应用",
+    "mentionCollections": "收藏集",
+    "sourceUnavailable": "你无法打开的来源",
+    "sourceLoading": "加载中…",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {
       "generated_other": "已生成 {{count}} 个产物",
       "newerVersion": "有更新的版本 (v{{version}})",
@@ -1996,6 +2029,11 @@
         "video": {
           "label": "视频",
           "badge": "多模态"
+        },
+        "decision": {
+          "label": "决策",
+          "badge": "决策",
+          "sectionTab": "用于决策"
         }
       },
       "fetchingModels": "正在加载模型…",
@@ -4512,7 +4550,10 @@
     "mcpServerNeedsToolsBanner": "请为 {{names}} 至少选择一个工具，或开启“全部工具”。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的个人 MCP 服务器，不能添加到与组织共享或以服务账号运行的智能体中。",
     "mcpAgentApprovalsEnterprise": "按智能体设置的工具审批属于企业版。在这里，适用每个人自己的工具审批设置。",
-    "mcpAgentApprovals": "按智能体设置工具审批"
+    "mcpAgentApprovals": "按智能体设置工具审批",
+    "limitSource": "选择 {{name}} 的搜索范围",
+    "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
+    "limitSourceCount": "仅限所选的 {{count}} 项"
   },
   "recordView": {
     "sections": {
@@ -4841,7 +4882,8 @@
     "isAnyOf": "是其中之一",
     "loadingOptions": "正在加载选项…",
     "refreshingOptions": "正在刷新选项…",
-    "loadingMore": "正在加载更多…"
+    "loadingMore": "正在加载更多…",
+    "clear": "清除{{label}}筛选"
   },
   "moveFolder": {
     "moving": "正在移动...",

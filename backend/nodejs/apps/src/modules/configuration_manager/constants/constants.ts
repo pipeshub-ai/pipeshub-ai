@@ -45,6 +45,7 @@ export const AI_MODEL_TYPES = [
   'imageGeneration',
   'tts',
   'stt',
+  'decision',
 ] as const;
 
 export type AIModelType = (typeof AI_MODEL_TYPES)[number];
@@ -63,6 +64,7 @@ export const aiModelsTypes = {
   IMAGE_GENERATION: 'imageGeneration',
   TTS: 'tts',
   STT: 'stt',
+  DECISION: 'decision',
 } as const;
 
 /**
@@ -182,5 +184,12 @@ export const PLATFORM_FEATURE_FLAGS: PlatformFeatureFlagDef[] = [
       "Include the current user's name, email, and organization name in the default assistant and Universal Agent system prompts. When disabled, those agents rely solely on tools, actions, and knowledge sources without knowing who is asking. Agent Builder agents have a separate per-agent toggle.",
     defaultEnabled: true,
     advanced: true,
+  },
+  {
+    key: 'ENABLE_KH_SCOPE_LISTING',
+    label: 'All Records Cache',
+    description:
+      'Store, for each connector, who can see which of its records and how they sort, refreshed after every sync, and build the All Records page from that instead of working out access on every request. The page shows the same records either way. The page is built the usual way for a connector that is syncing or cannot use the cache (permissions set on whole groups, items in several places), and for a search, a filter other than source or connector, or sorting by size or type. Neo4j only. Disable to always build the page on each request.',
+    defaultEnabled: false,
   },
 ];

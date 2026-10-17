@@ -907,3 +907,62 @@ describe('CollapsibleActivitySection', () => {
     expect(panel?.hasAttribute('inert')).toBe(false);
   });
 });
+
+describe('ToolCallCard — web tools list what they found', () => {
+  function expand(part: MessagePart) {
+    renderCard(part);
+    fireEvent.click(screen.getAllByRole('button')[0]);
+  }
+
+  const WEB_SEARCH: MessagePart = {
+    type: 'tool_call',
+    toolCallId: 'w',
+    toolName: 'dynamic__web_search',
+    status: 'completed',
+    argsSummary: 'Searched the web for "fed rates"',
+    resultSummary: 'Found 12 results',
+    resultView: {
+      kind: 'records',
+      columns: ['Title', 'Site', 'Date'],
+      rows: [
+        { cells: ['Fed holds rates', 'news.example.com', '2026-01-02'], url: 'https://news.example.com/fed' },
+        { cells: ['Second result', 'other.org', ''], url: 'https://other.org/a' },
+      ],
+      total: 12,
+    },
+  };
+
+  it('shows every search result with a link to it', () => {
+    expand(WEB_SEARCH);
+
+    const table = within(screen.getByTestId('tool-result-table'));
+    expect(table.getByRole('link', { name: 'Fed holds rates' }).getAttribute('href')).toBe('https://news.example.com/fed');
+    expect(table.getByText('other.org')).toBeTruthy();
+    expect(screen.getByText('Showing 2 of 12')).toBeTruthy();
+    // No raw payload toggle: the model-facing text isn't for people.
+    expect(screen.queryByRole('button', { name: /View raw/ })).toBeNull();
+  });
+
+  it('shows nothing extra while the search is still running', () => {
+    expand({ ...WEB_SEARCH, status: 'running' });
+
+    expect(screen.queryByTestId('tool-result-table')).toBeNull();
+  });
+
+  it('names the page a fetch read', () => {
+    expand({
+      type: 'tool_call',
+      toolCallId: 'f',
+      toolName: 'dynamic__fetch_url',
+      status: 'completed',
+      resultSummary: 'Read “Fed holds rates” (news.example.com)',
+      resultView: {
+        kind: 'fields',
+        fields: [{ label: 'Page', value: 'Fed holds rates' }, { label: 'Site', value: 'news.example.com' }],
+        url: 'https://news.example.com/fed',
+      },
+    });
+
+    expect(screen.getByText('news.example.com')).toBeTruthy();
+  });
+});

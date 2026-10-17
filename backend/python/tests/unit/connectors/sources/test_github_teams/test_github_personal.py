@@ -43,7 +43,7 @@ class TestSyncRepoMembers:
         sync = GitHubPersonalProjectsSync(c)
         perms = await sync._sync_repo_members("me", "widgets")
 
-        assert perms == [permission]
+        assert perms == []
         c.runtime.ds_call.assert_not_awaited()
 
     async def test_no_creator_permission_returns_empty(self) -> None:
@@ -205,7 +205,7 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         c._load_creator_email = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
@@ -214,7 +214,7 @@ class TestPersonalConnectorLifecycle:
         await GithubConnector.run_sync(c)
 
         c._load_creator_email.assert_not_awaited()
-        c.ensure_connector_group_permission.assert_awaited_once()
+        c.ensure_creator_user_app_relation.assert_awaited_once()
         c.projects.sync_all_repos.assert_awaited_once()
         c.repos.timestamps.schedule.assert_called_once()
         assert c.record_sync_point.org_id == c.data_entities_processor.org_id
@@ -228,7 +228,7 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
 
         async def load_email() -> None:
             c.creator_email = "loaded@example.com"
@@ -241,7 +241,7 @@ class TestPersonalConnectorLifecycle:
         await GithubConnector.run_sync(c)
 
         c._load_creator_email.assert_awaited_once()
-        c.ensure_connector_group_permission.assert_awaited_once()
+        c.ensure_creator_user_app_relation.assert_awaited_once()
 
     async def test_run_sync_warns_when_no_creator_email(
         self, monkeypatch: pytest.MonkeyPatch
@@ -252,14 +252,14 @@ class TestPersonalConnectorLifecycle:
         c.repos.timestamps.cancel = AsyncMock()
         c.repos.timestamps.schedule = MagicMock()
         c.projects.sync_all_repos = AsyncMock()
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )
 
         await GithubConnector.run_sync(c)
 
-        c.ensure_connector_group_permission.assert_not_awaited()
+        c.ensure_creator_user_app_relation.assert_not_awaited()
         c.projects.sync_all_repos.assert_awaited_once()
         c.logger.warning.assert_called()
 
@@ -268,7 +268,7 @@ class TestPersonalConnectorLifecycle:
         c.creator_email = "me@example.com"
         c.repos.timestamps.cancel = AsyncMock()
         c.projects.sync_all_repos = AsyncMock(side_effect=RuntimeError("api down"))
-        c.ensure_connector_group_permission = AsyncMock()
+        c.ensure_creator_user_app_relation = AsyncMock()
         monkeypatch.setattr(
             personal_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

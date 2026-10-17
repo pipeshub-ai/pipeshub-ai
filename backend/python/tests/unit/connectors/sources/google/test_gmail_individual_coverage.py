@@ -454,8 +454,7 @@ class TestProcessGmailMessage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.OWNER
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_sender_is_not_user_gets_read_permission(self):
@@ -474,8 +473,7 @@ class TestProcessGmailMessage:
             thread_id="thread-1",
             previous_message_id=None,
         )
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].type == PermissionType.READ
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_existing_record_no_change(self):

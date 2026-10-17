@@ -19,10 +19,6 @@ FAILED_GROUP_LOOKUP = (
     "Failed-read rule (#3521, #3528): projects.py answers a failed group lookup by saving the group "
     "with creator-only access, which replaces every member's stored access to it"
 )
-FAILED_GROUP_READ = (
-    "Failed-read rule (#3521, #3528): projects.py answers a failed group member read by saving the "
-    "members of the group's projects instead, which replaces the stored group access and adds people"
-)
 
 
 def project_audiences(db: FakeRecordsDb, project_id: int) -> dict[str, set[str]]:
@@ -247,7 +243,6 @@ async def test_a_failed_project_member_read_keeps_the_stored_project_access(harn
     assert project_audiences(db, WEB) == before
 
 
-@pytest.mark.xfail(strict=True, reason=FAILED_GROUP_READ)
 async def test_a_failed_group_member_read_keeps_the_stored_group_access(harness, gitlab, db) -> None:
     build_acme(gitlab)
     harness.set_sync_filter("group_ids", "in", ["acme"])
@@ -255,7 +250,7 @@ async def test_a_failed_group_member_read_keeps_the_stored_group_access(harness,
     before = db.group_access("acme")
     assert "alice@example.com" in before
 
-    gitlab.fail("GET", r"^/api/v4/groups/acme/members/all$", 503)
+    gitlab.fail("GET", r"^/api/v4/groups/acme/members$", 503)
     await harness.sync()
 
     assert db.group_access("acme") == before

@@ -9,7 +9,10 @@ import pytest
 import app.modules.retrieval.retrieval_service as mod
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.retrieval.lexical_search import LexicalSearchUnavailableError
-from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.models import (
     SearchResult,
@@ -52,6 +55,11 @@ def _service(vector_db, graph, *, containers_on: bool) -> mod.RetrievalService:
         vector_db_service=vector_db, graph_provider=graph, blob_store=MagicMock(),
     )
     svc._container_filter_enabled = AsyncMock(return_value=containers_on)
+    if not containers_on:
+        # The record-id path: the graph declines the container scope.
+        graph.get_accessible_containers = AsyncMock(return_value=AccessibleContainers(
+            app_ids=frozenset(), app_ids_trusted=frozenset(), fallback_reason="off in this test",
+        ))
     svc._excluded_demo_apps = AsyncMock(return_value=frozenset())
     svc._get_user_cached = AsyncMock(return_value={"_key": "u1"})
     svc._accessible_connector_names = AsyncMock(return_value=[])
@@ -65,6 +73,10 @@ def _graph(**overrides) -> AsyncMock:
         app_ids=frozenset({"wiki"}), app_ids_trusted=frozenset(),
     ))
     graph.filter_accessible_virtual_record_ids = AsyncMock(return_value={"vr-mine": "r-mine"})
+    # Every hit the enumeration admitted is checked again; this user may read all of them.
+    graph.check_access = AsyncMock(
+        side_effect=lambda *_a, node_ids=(), **_k: AccessCheck(node_ids=frozenset(node_ids)),
+    )
     for name, value in overrides.items():
         setattr(graph, name, value)
     return graph

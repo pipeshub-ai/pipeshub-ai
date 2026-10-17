@@ -17,7 +17,10 @@ import pytest
 
 import app.modules.retrieval.retrieval_service as mod
 from app.modules.retrieval.record_cut import FUSION_RECORD_CUT_ENV_VAR, RecordCut
-from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+from app.services.graph_db.interface.graph_db_provider import (
+    AccessCheck,
+    AccessibleContainers,
+)
 from app.services.vector_db.const.const import CONNECTOR_IDS_FIELD
 from app.services.vector_db.models import (
     HybridSearchRequest,
@@ -26,7 +29,7 @@ from app.services.vector_db.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterable, Iterator
 
 ORG_1, ORG_2 = "org-1", "org-2"
 
@@ -135,10 +138,27 @@ def _graph(readers: dict[tuple[str, str], set[str]] = _READERS) -> AsyncMock:
     async def records(record_ids: list[str], org_id: str) -> list[dict[str, Any]]:
         return [_record(rid.removeprefix("rec-"), org_id) for rid in record_ids]
 
+    # Hits are verified by the batch check, keyed by the user's graph key.
+    async def check(
+        user_key: str, org_id: str, *, node_ids: Iterable[str] = (),
+        virtual_record_ids: Iterable[str] = (), **_: object,
+    ) -> AccessCheck:
+        readable = readers.get((user_key, org_id), set())
+        nodes = frozenset(node for node in node_ids if node.removeprefix("rec-") in readable)
+        return AccessCheck(
+            node_ids=nodes,
+            records_by_vrid={vrid: f"rec-{vrid}" for vrid in virtual_record_ids if vrid in readable},
+            node_ids_in_scope=nodes,
+        )
+
+    async def user(user_id: str, **_: object) -> dict[str, str]:
+        return {"_key": user_id, "email": f"{user_id}@example.test"}
+
     graph.get_accessible_virtual_record_ids = AsyncMock(side_effect=accessible)
     graph.filter_accessible_virtual_record_ids = AsyncMock(side_effect=verify)
+    graph.check_access = AsyncMock(side_effect=check)
     graph.get_records_by_record_ids = AsyncMock(side_effect=records)
-    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "u", "email": "u@example.test"})
+    graph.get_user_by_user_id = AsyncMock(side_effect=user)
     return graph
 
 
@@ -344,7 +364,7 @@ class TestPermissions:
 
         assert "secret" not in _records(response)
         assert len(response["searchResults"]) == 10
-        verified = graph.filter_accessible_virtual_record_ids.await_args_list[0].args[0]
+        verified = graph.check_access.await_args_list[0].kwargs["virtual_record_ids"]
         assert "secret" in verified
 
     async def test_the_record_id_filter_is_the_same_with_the_switch_on(
@@ -371,8 +391,8 @@ class TestTheContainerPath:
             for i in range(20)
         ] + [{"score": 0.5, "content": "c", "metadata": {"virtualRecordId": "v1"}}]
         service = _service(_FakeStore(), _graph())
-        service.graph_provider.filter_accessible_virtual_record_ids = AsyncMock(
-            return_value={"v0": "r0", "v1": "r1"}
+        service.graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(records_by_vrid={"v0": "r0", "v1": "r1"})
         )
         service._execute_parallel_searches = AsyncMock(return_value=hits)
         containers = AccessibleContainers(app_ids=frozenset({"a"}))

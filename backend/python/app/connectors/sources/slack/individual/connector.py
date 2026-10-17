@@ -140,7 +140,6 @@ from app.models.entities import (
     RecordType,
     RelatedExternalRecord,
 )
-from app.models.permission import EntityType, Permission, PermissionType
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
@@ -152,6 +151,7 @@ if TYPE_CHECKING:
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    from app.models.permission import Permission
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -1222,15 +1222,9 @@ class SlackIndividualConnector(BaseConnector):
         """
         if not self.authenticated_user_email:
             self.logger.warning(
-                "⚠️  authenticated_user_email not set — cannot create permission"
+                "authenticated_user_email not set — channel will inherit the app with no grant"
             )
-            return []
-
-        return [Permission(
-            email=self.authenticated_user_email,
-            entity_type=EntityType.USER,
-            type=PermissionType.READ,
-        )]
+        return []
 
     async def _fetch_channel_members(self, channel_id: str) -> list[str]:
         """
@@ -2064,8 +2058,10 @@ class SlackIndividualConnector(BaseConnector):
                 record_name=f"{channel_name}_{self._slack_ts_to_utc_label(first_ts)}",
                 record_type=RecordType.MESSAGE,
                 external_record_id=burst_id,
-                external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
-                record_group_id=thread_rg_id,
+                external_record_group_id=ctx.channel_id,
+                parent_external_record_id=thread_ts,
+                parent_record_type=RecordType.MESSAGE,
+                record_group_id=ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
                 version=1,
                 origin=OriginTypes.CONNECTOR,
@@ -2158,18 +2154,18 @@ class SlackIndividualConnector(BaseConnector):
         )
 
         # -- Collect file records keyed by message ts --------------------------
-        thread_ext_group_id = f"thread_{ctx.channel_id}_{ts}"
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
         file_recs_by_ts: dict[str, list[FileRecord]] = {}
+        channel_rg_id = ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id
         for msg in all_msgs:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
-                    fr.record_group_id = thread_rg_id
+                    fr.record_group_id = channel_rg_id
                     fr.root_record_group_id       = self._root_rg_id(ctx)
-                    fr.external_record_group_id = thread_ext_group_id
-                    fr.record_group_type = RecordGroupType.SLACK_THREAD
+                    fr.external_record_group_id = ctx.channel_id
+                    fr.record_group_type = RecordGroupType.SLACK_CHANNEL
                     file_recs_by_ts.setdefault(mts, []).append(fr)
                     cr = ChildRecord(
                         child_type=ChildType.RECORD,
@@ -2279,18 +2275,18 @@ class SlackIndividualConnector(BaseConnector):
         )
 
         # -- Collect file records for new replies -----------------------------
-        thread_ext_group_id = f"thread_{ctx.channel_id}_{thread_ts}"
         file_children_by_ts: dict[str, list[ChildRecord]] = {}
         file_recs_by_ts: dict[str, list[FileRecord]] = {}
+        channel_rg_id = ctx.channel_groups_map.get(ctx.channel_id) or thread_rg_id
         for msg in new_replies:
             mts = msg.get("ts", "")
             for fd in msg.get("files", []):
                 fr = await self._process_file_raw(fd, ctx)
                 if fr:
-                    fr.record_group_id = thread_rg_id
+                    fr.record_group_id = channel_rg_id
                     fr.root_record_group_id       = self._root_rg_id(ctx)
-                    fr.external_record_group_id = thread_ext_group_id
-                    fr.record_group_type = RecordGroupType.SLACK_THREAD
+                    fr.external_record_group_id = ctx.channel_id
+                    fr.record_group_type = RecordGroupType.SLACK_CHANNEL
                     file_recs_by_ts.setdefault(mts, []).append(fr)
                     cr = ChildRecord(
                         child_type=ChildType.RECORD,

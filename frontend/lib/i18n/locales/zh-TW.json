@@ -623,6 +623,8 @@
     "noCollectionsAvailable": "沒有可用的集合",
     "noCollectionsCreatePrompt": "沒有可用的集合。請建立新的集合。",
     "seeMoreConnectors": "查看更多連接器",
+    "connectMoreApps": "連接更多應用程式",
+    "connectMoreAppsHint": "接入更多來源，答案更準確。",
     "suggestedInWorkspace": "工作區建議",
     "createSubFolder": "建立子資料夾",
     "more": "更多",
@@ -677,7 +679,12 @@
     "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
     "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
     "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
-    "addFilesHint": "新增您的檔案或資料夾"
+    "addFilesHint": "新增您的檔案或資料夾",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
+    "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
+    "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。",
+    "chatNoCollections": "您還沒有可提問的集合。"
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -757,7 +764,8 @@
       "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。",
       "notConnected": "未連線",
       "connect": "連線",
-      "actionConnected": "{{name}} 已連線"
+      "actionConnected": "{{name}} 已連線",
+      "limitedToCount": "· 限定為 {{count}} 項"
     },
     "projectResources": {
       "noConnectors": "此專案未啟用任何連接器。",
@@ -785,6 +793,12 @@
     "searchCollections": "搜尋連接器與集合",
     "loadingCollections": "正在載入集合…",
     "failedToLoadCollections": "無法載入集合",
+    "treeEmpty": "這裡沒有內容",
+    "treeLoadFailed": "無法載入這些項目",
+    "treeRetry": "重試",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "顯示 {{name}} 中的內容",
+    "treeCollapse": "隱藏 {{name}} 中的內容",
     "noCollectionsAvailable": "沒有可用的集合",
     "comingSoon": "即將推出",
     "answer": "回答",
@@ -1282,9 +1296,9 @@
     "configuredModels": "已設定的模型",
     "reasoningEffort": {
       "label": "推理強度",
-      "modelDefaultOption": "模型預設",
-      "modelDefaultOptionWithLevel": "模型預設（{{level}}）",
-      "agentDefaultOption": "代理預設（{{level}}）",
+      "overrideHint": "再次點選即可使用預設值。",
+      "defaultHintWithLevel": "未設定時預設為{{level}}。",
+      "modelDefaultHint": "未設定時使用此模型本身的預設值：{{level}}。",
       "modelDefaultLabel": "預設（{{level}}）",
       "low": "低",
       "medium": "中",
@@ -1304,7 +1318,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此代理程式未設定",
       "internalSearch": "內部搜尋",
-      "webSearch": "網路搜尋"
+      "webSearch": "網路搜尋",
+      "deepResearch": "深度研究",
+      "deepResearchNeedsWebSearch": "開啟網頁搜尋後才能使用深度研究"
     },
     "resizePanels": "調整對話與預覽面板大小",
     "mobileProfileComingSoon": "行動版個人資料頁面即將推出。",
@@ -1334,6 +1350,23 @@
         "allowedNotRun": "你允許了 {{tool}}，但它沒有執行"
       }
     },
+    "selectedAlone": "{{name}}（僅此項目）",
+    "noConnectorsFound": "找不到連接器",
+    "treeSearching": "正在搜尋…",
+    "treeSearchFailed": "搜尋失敗，請重試。",
+    "treeSearchMatches": "資料夾和項目",
+    "nodeSearchTooShort": "請至少輸入 2 個字元",
+    "mentionNodes": "項目",
+    "mentionNodesLabel": "相符的項目",
+    "mentionTypeToSearch": "輸入名稱以搜尋",
+    "mentionSearching": "正在搜尋…",
+    "mentionNone": "沒有相符的項目",
+    "mentionYourApps": "你的應用程式",
+    "mentionCollections": "集合",
+    "sourceUnavailable": "你無法開啟的來源",
+    "sourceLoading": "載入中…",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
     "artifactsPanel": {
       "generated_other": "已產生 {{count}} 個產物",
       "newerVersion": "有較新的版本 (v{{version}})",
@@ -1996,6 +2029,11 @@
         "video": {
           "label": "影片",
           "badge": "多模態"
+        },
+        "decision": {
+          "label": "決策",
+          "badge": "決策",
+          "sectionTab": "用於決策"
         }
       },
       "fetchingModels": "正在載入模型…",
@@ -4512,7 +4550,10 @@
     "mcpServerNeedsToolsBanner": "請為 {{names}} 至少選擇一個工具，或開啟「所有工具」。",
     "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的個人 MCP 伺服器，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
     "mcpAgentApprovalsEnterprise": "依代理程式設定的工具核准屬於企業版。在這裡，適用每個人自己的工具核准設定。",
-    "mcpAgentApprovals": "依代理程式設定工具核准"
+    "mcpAgentApprovals": "依代理程式設定工具核准",
+    "limitSource": "選擇 {{name}} 的搜尋範圍",
+    "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
+    "limitSourceCount": "僅限所選的 {{count}} 項"
   },
   "recordView": {
     "sections": {
@@ -4841,7 +4882,8 @@
     "isAnyOf": "是其中之一",
     "loadingOptions": "正在載入選項…",
     "refreshingOptions": "正在重新整理選項…",
-    "loadingMore": "正在載入更多…"
+    "loadingMore": "正在載入更多…",
+    "clear": "清除{{label}}篩選"
   },
   "moveFolder": {
     "moving": "正在移動...",

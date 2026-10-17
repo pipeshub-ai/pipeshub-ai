@@ -249,6 +249,8 @@ _SWITCHED_TOOL_NAMES: frozenset[str] = frozenset({SEARCH_BY_ENTITIES_TOOL_NAME})
 # tool_system.py / react_agent_node's `recursion_limit`); kept as one named
 # constant here rather than a magic number in `create()`.
 _MAX_TURNS = 15
+# Deep research searches, reads and cross-checks before answering; its web budget bounds the cost.
+_DEEP_RESEARCH_MAX_TURNS = 30
 
 
 DIRECT_TRANSPORT = "direct"
@@ -935,7 +937,7 @@ class PipesHubAgentFactory:
             pinned_toolsets=pinned_toolsets,
             model=ModelSpec(provider=_transport_provider(), model=model_name, context_window=configured_window),
             loop=loop,
-            max_turns=_MAX_TURNS,
+            max_turns=_DEEP_RESEARCH_MAX_TURNS if context.deep_research else _MAX_TURNS,
         )
         # Let `hooks/citations.py` grant `dynamic_fetch_full_record` to this
         # spec too once any nested search populates it — see

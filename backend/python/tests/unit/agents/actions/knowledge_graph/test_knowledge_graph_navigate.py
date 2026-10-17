@@ -16,6 +16,8 @@ from app.agents.actions.knowledge_graph.knowledge_graph import (
 )
 from app.agents.actions.knowledge_graph.ops.time_range import time_range_to_kh_filters
 from app.config.constants.arangodb import Connectors, OriginTypes
+from app.connectors.sources.localKB.api.knowledge_hub_models import BreadcrumbItem
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import RecordType, Status, TicketRecord
 
 
@@ -253,10 +255,8 @@ class TestNavigateRecordWithChildren:
             "webUrl": "https://example.atlassian.net/browse/PA-1787",
             "indexingStatus": "COMPLETED",
         })
-        graph_provider.get_knowledge_hub_breadcrumbs = AsyncMock(return_value=[
-            {"id": "app1", "name": "Jira", "nodeType": "app", "subType": "JIRA"},
-            {"id": "rg1", "name": "Payments", "nodeType": "recordGroup", "subType": "PROJECT"},
-        ])
+        graph_provider.get_knowledge_hub_breadcrumbs = AsyncMock(side_effect=AssertionError(
+            "the raw hierarchy names ancestors the user cannot open"))
         graph_provider.get_linked_records = AsyncMock(return_value=[
             {
                 "id": "rel1",
@@ -272,13 +272,21 @@ class TestNavigateRecordWithChildren:
 
         child_item = _make_node_item("child1", "PA-1801 Fix retry", "record", "TICKET", has_children=True)
         mock_resp = _make_knowledge_hub_response(items=[child_item], total=1)
+        mock_resp.breadcrumbs = [
+            BreadcrumbItem(id="app1", name="Jira", nodeType="app", subType="JIRA"),
+            BreadcrumbItem(id="rg1", name="Payments", nodeType="recordGroup", subType="PROJECT"),
+            BreadcrumbItem(id="rec1", name="PA-1787 Payment outage", nodeType="record", subType="TICKET"),
+        ]
+        get_nodes = AsyncMock(return_value=mock_resp)
 
         with patch(
             "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
-            new=AsyncMock(return_value=mock_resp),
+            new=get_nodes,
         ):
             tool = KnowledgeGraph(state=state)
             success, text = await tool.navigate(node_id="rec1")
+        # The placement trail the listing computes for this user.
+        assert get_nodes.await_args.kwargs["include"] == ["breadcrumbs"]
 
         assert success
         assert f"Record ID: {_short_id_for(state, 'rec1')}" in text
@@ -287,6 +295,68 @@ class TestNavigateRecordWithChildren:
         assert f"record_id={_short_id_for(state, 'child1')}" in text
         assert "Related:" in text
         assert f"record_id={_short_id_for(state, 'rel1')}" in text
+
+    @pytest.mark.asyncio
+    async def test_a_linked_record_outside_the_agents_sources_is_not_named(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        state = _make_state(filters={
+            "apps": ["conn-jira"], "kb": [],
+            "allowedApps": ["conn-jira"], "allowedRecordGroups": [], "allowedRecords": [],
+        })
+        gp = state["graph_provider"]
+        gp.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        gp.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "PA-1787", "nodeType": "record", "subType": "TICKET", "connector": "JIRA",
+        })
+        gp.get_linked_records = AsyncMock(return_value=[
+            {"id": "in-jira", "name": "Jira twin", "recordType": "TICKET", "relationshipType": "LINKED_TO"},
+            {"id": "in-wiki", "name": "Wiki page", "recordType": "CONFLUENCE_PAGE", "relationshipType": "LINKED_TO"},
+        ])
+        gp.check_access = AsyncMock(side_effect=lambda key, org, node_ids=(), scopes=(), **_: AccessCheck(
+            node_ids=frozenset(node_ids), node_ids_in_scope=frozenset(node_ids) & {"rec1", "in-jira"},
+        ))
+        mock_resp = _make_knowledge_hub_response(items=[], total=0)
+        mock_resp.breadcrumbs = []
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            success, text = await KnowledgeGraph(state=state).navigate(node_id="rec1")
+
+        assert success
+        assert "Jira twin" in text and "Wiki page" not in text
+
+    @staticmethod
+    async def _navigate_with_linked_failure(error: Exception) -> tuple[bool, str]:
+        state = _make_state()
+        graph_provider = state["graph_provider"]
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "user-key-1"})
+        graph_provider.get_knowledge_hub_node_access = AsyncMock(return_value={
+            "id": "rec1", "name": "PA-1787 Payment outage", "nodeType": "record", "subType": "TICKET",
+        })
+        graph_provider.get_linked_records = AsyncMock(side_effect=error)
+        child_item = _make_node_item("child1", "PA-1801 Fix retry", "record", "TICKET")
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=AsyncMock(return_value=_make_knowledge_hub_response(items=[child_item], total=1)),
+        ):
+            return await KnowledgeGraph(state=state).navigate(node_id="rec1")
+
+    @pytest.mark.asyncio
+    async def test_unverifiable_linked_record_access_fails_the_call(self) -> None:
+        success, text = await self._navigate_with_linked_failure(
+            PermissionVerificationUnavailableError("graph down")
+        )
+        assert not success
+        assert "PA-1801" not in text
+
+    @pytest.mark.asyncio
+    async def test_other_linked_record_failures_degrade_to_no_related(self) -> None:
+        success, text = await self._navigate_with_linked_failure(RuntimeError("boom"))
+        assert success
+        assert "PA-1801" in text
+        assert "Related:" not in text
 
 
 class TestNavigateExposesRecordMetadata:

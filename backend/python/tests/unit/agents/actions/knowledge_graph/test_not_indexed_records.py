@@ -93,6 +93,8 @@ def _graph(*, access: bool = True, status: str = OFF, typed: Any = None) -> Magi
     graph = MagicMock()
     graph.config_service = None
     graph.check_record_access_with_details = AsyncMock(return_value={"_key": PR_ID} if access else None)
+    graph.get_user_by_user_id = AsyncMock(return_value={"_key": "user-1"})
+    graph.check_access = AsyncMock(return_value=SimpleNamespace(node_ids={PR_ID} if access else set()))
     graph.get_document = AsyncMock(return_value=_doc(status))
     graph.get_record_by_id = AsyncMock(return_value=typed)
     return graph
