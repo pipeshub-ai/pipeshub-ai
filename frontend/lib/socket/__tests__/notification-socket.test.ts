@@ -74,13 +74,30 @@ describe('notification-socket', () => {
     const { connectNotificationSocket } = await import('../notification-socket');
     connectNotificationSocket('token-a');
 
-    expect(ioMock).toHaveBeenCalledWith('http://localhost:14000', expect.anything());
+    expect(ioMock).toHaveBeenCalledWith(
+      'http://localhost:14000',
+      expect.objectContaining({ path: '/socket.io' })
+    );
   });
 
   it('falls back to the page origin when no API base URL is configured', async () => {
     const { connectNotificationSocket } = await import('../notification-socket');
     connectNotificationSocket('token-a');
 
-    expect(ioMock).toHaveBeenCalledWith(window.location.origin, expect.anything());
+    expect(ioMock).toHaveBeenCalledWith(
+      window.location.origin,
+      expect.objectContaining({ path: '/socket.io' })
+    );
+  });
+
+  it('keeps a server sub-path in the engine path, not the namespace', async () => {
+    apiBaseUrlMock.mockReturnValue('https://host.example.com/pipes/');
+    const { connectNotificationSocket } = await import('../notification-socket');
+    connectNotificationSocket('token-a');
+
+    expect(ioMock).toHaveBeenCalledWith(
+      'https://host.example.com',
+      expect.objectContaining({ path: '/pipes/socket.io' })
+    );
   });
 });

@@ -16,6 +16,17 @@ function getSocketBaseUrl(): string {
   return window.location.origin;
 }
 
+/**
+ * Socket.IO reads a URL path as a namespace, and the server only serves the root
+ * one. A server behind a sub-path (https://host/pipes) serves its socket at
+ * https://host/pipes/socket.io, so connect to the origin and move the path into
+ * the engine `path`.
+ */
+function getSocketEndpoint(baseUrl: string): { origin: string; path: string } {
+  const url = new URL(baseUrl, window.location.origin);
+  return { origin: url.origin, path: `${url.pathname.replace(/\/+$/, '')}/socket.io` };
+}
+
 function bearerAuth(accessToken: string): { token: string } {
   return { token: `Bearer ${accessToken}` };
 }
@@ -47,8 +58,9 @@ export function connectNotificationSocket(accessToken: string | null): Socket | 
 
   teardownSocket();
 
-  socket = io(url, {
-    path: '/socket.io',
+  const { origin, path } = getSocketEndpoint(url);
+  socket = io(origin, {
+    path,
     transports: ['websocket', 'polling'],
     auth: bearerAuth(accessToken),
     autoConnect: true,
