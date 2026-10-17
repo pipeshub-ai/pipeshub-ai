@@ -254,14 +254,14 @@ PipesHub poskytuje vývojářská SDK pro Python, TypeScript a Go, abyste mohli 
 
 ## 👥 Přispívání
 
-Chcete se připojit k naší komunitě vývojářů? Podívejte se na našeho [průvodce přispíváním](https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CONTRIBUTING.md), kde najdete podrobnosti o nastavení vývojového prostředí, našich standardech kódu a postupu při přispívání.
+Chcete se připojit k naší komunitě vývojářů? Podívejte se na našeho [průvodce přispíváním](CONTRIBUTING.md), kde najdete podrobnosti o nastavení vývojového prostředí, našich standardech kódu a postupu při přispívání.
 <h3>Kam se obrátit</h3>
 
 <table>
 
 <tr><td>Položit dotaz nebo získat pomoc</td><td><a href="https://discord.com/invite/K5RskzJBm2">Discord</a></td></tr>
 <tr><td>Nahlásit chybu nebo navrhnout funkci</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/issues">GitHub Issues</a></td></tr>
-<tr><td>Nahlásit bezpečnostní problém</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/SECURITY.md">Nahlásit bezpečnostní problém</a></td></tr>
+<tr><td>Nahlásit bezpečnostní problém</td><td><a href="SECURITY.md">Nahlásit bezpečnostní problém</a></td></tr>
 <tr><td>Přečíst si dokumentaci</td><td><a href="https://docs.pipeshub.com/">Dokumentace PipesHub</a></td></tr>
 <tr><td>Zjistit, co se změnilo v jednotlivých verzích</td><td><a href="https://github.com/pipeshub-ai/pipeshub-ai/blob/main/CHANGELOG.md">Changelog</a></td></tr>
 </tbody>
