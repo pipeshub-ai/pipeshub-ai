@@ -413,7 +413,8 @@ async def _collect(
         whole: Any
         try:
             whole = await search({before_key: end_ms} if end_ms is not None else None, SPAN_SEARCH_LIMIT)
-        except Exception as exc:  # noqa: BLE001 - the period searches still run without it
+        except Exception as exc:
+            # Like a failed search in the gather below: the periods still run.
             whole = exc
         whole_failed = _failed(whole, log)
         end_ms = end_ms if end_ms is not None else _now_ms()

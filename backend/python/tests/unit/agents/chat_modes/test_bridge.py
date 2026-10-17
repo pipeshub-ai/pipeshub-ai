@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
+from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
@@ -743,12 +744,10 @@ class TestRunChatStream:
         (None, "Between March and May 2026, what problems came up with the Slack bot?", True),
     ])
     async def test_a_span_question_skips_the_upfront_search_only_with_the_timeline_on(
-        self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,  # noqa: FBT001
+        self, monkeypatch: pytest.MonkeyPatch, switch: str | None, query: str, prefetched: bool,
     ) -> None:
         """The upfront search is the top matches overall, bunched around one
         moment; with the timeline tool on, a span question is left to it."""
-        from app.agents.actions.knowledge_graph.ops.timeline import TIMELINE_SUMMARIES_ENV_VAR
-
         if switch is None:
             monkeypatch.delenv(TIMELINE_SUMMARIES_ENV_VAR, raising=False)
         else:
