@@ -9,6 +9,7 @@ import { AuthApi } from '../api';
 import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { desktopOAuthErrorMessage, isElectron, runDesktopOAuth } from '@/lib/electron';
 import { createPkcePair, makeDesktopState } from '@/lib/auth/desktop-oauth';
+import { beginSamlWebPkce } from '@/lib/auth/saml-web-pkce';
 import { getSamlErrorDescription } from '@/lib/auth/saml-errors';
 import {
   getUserAccountApiErrorMessage,
@@ -273,7 +274,13 @@ export function useAuthActions({
     const signInUrl = `${getApiBaseUrl()}/api/v1/saml/signIn`;
 
     if (!isElectron()) {
-      window.location.href = `${signInUrl}?${params}`;
+      void beginSamlWebPkce().then((challenge) => {
+        if (challenge) {
+          params.set('client', 'web');
+          params.set('code_challenge', challenge);
+        }
+        window.location.href = `${signInUrl}?${params}`;
+      });
       return;
     }
 

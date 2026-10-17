@@ -342,6 +342,7 @@ describe('createUserAccountRouter', () => {
         status: sinon.stub().returnsThis(),
         json: sinon.stub().returnsThis(),
         cookie: sinon.stub(),
+        clearCookie: sinon.stub().returnsThis(),
       };
       const mockNext = sinon.stub();
       return { mockReq, mockRes, mockNext };
@@ -433,6 +434,8 @@ describe('createUserAccountRouter', () => {
       await handler(mockReq, mockRes, mockNext);
 
       expect(mockUserAccountController.logoutSession.calledOnce).to.be.true;
+      expect(mockRes.clearCookie.calledWith('accessToken', sinon.match({ path: '/', sameSite: 'none' }))).to.be.true;
+      expect(mockRes.clearCookie.calledWith('refreshToken', sinon.match({ path: '/', sameSite: 'none' }))).to.be.true;
     });
 
     it('POST /password/reset/token handler should call userAccountController.resetPasswordViaEmailLink', async () => {

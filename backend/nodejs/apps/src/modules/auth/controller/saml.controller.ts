@@ -188,9 +188,22 @@ export class SamlController {
         req.query.client === 'desktop' &&
         isValidDesktopState(state) &&
         isValidCodeChallenge(codeChallenge);
+      // The login page sends a challenge when it could keep the verifier; without one the
+      // callback falls back to the binder cookie, which only works on the API's own site.
+      const webPkce =
+        !desktop &&
+        req.query.client === 'web' &&
+        isValidCodeChallenge(codeChallenge);
       const relayStateObj = desktop
         ? { orgId: orgAuthConfig.orgId, sessionToken, client: 'desktop', state, codeChallenge }
-        : { orgId: orgAuthConfig.orgId, sessionToken };
+        : webPkce
+          ? {
+              orgId: orgAuthConfig.orgId,
+              sessionToken,
+              client: 'web',
+              codeChallenge,
+            }
+          : { orgId: orgAuthConfig.orgId, sessionToken };
       const relayStateEncoded = Buffer.from(
         JSON.stringify(relayStateObj),
       ).toString('base64');
