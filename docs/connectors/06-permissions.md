@@ -139,7 +139,7 @@ In a full sync, the first write of an existing record replaces its grants, and a
 1. Unknown is not empty. An ACL you could not read is never written as "no grants, inherit".
 2. Never write a grant edge yourself, never pass another org's id, never call the graph provider to change access. Go through the processor.
 3. `APP_LEVEL` and `RECORD_GROUP_LEVEL` only where they are true for every record.
-4. An item with its own ACL does not inherit.
+4. An item whose ACL replaces its container's ("unique permissions", broken inheritance) does not inherit. An item whose sharing only adds people keeps inheritance.
 5. If the source's model cannot be expressed without over-sharing, stop and ask the human (`04-intake-questions.md`).
 
 ## Reference connectors

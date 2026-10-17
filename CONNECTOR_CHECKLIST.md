@@ -58,7 +58,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] Nested source groups are flattened into direct members (transitive membership); a group with no direct members is still written, so grants to it land.
 - [ ] A deactivated or suspended source user is left out of group members and record grants, so they lose access. The platform does not act on `AppUser.is_active`.
 - [ ] Source guests and external accounts are `AppUser(is_guest=True)`; `ensure_team_app_edge` is called only in team scope.
-- [ ] Items with their own ACL have `inherit_permissions=False` and carry only their own grants; `access_rule` matches the source (`RESTRICTED` where an item narrows its container, `STRICT` where visibility needs every ancestor).
+- [ ] Items whose ACL replaces the container's have `inherit_permissions=False` and carry only their own grants; items whose sharing only adds people keep `inherit_permissions=True`; `access_rule` matches the source (`RESTRICTED` where an item narrows its container, `STRICT` where visibility needs every ancestor).
 - [ ] Children of a restricted item (attachments, comments, sub-pages) inherit from that item, not from the container: no `inherit_permissions_from_group` on them.
 - [ ] No `DOMAIN`, `ANYONE` or `ANYONE_WITH_LINK` share becomes an `ORG` grant; `ORG` grants only for shares the source makes org-wide. `RECORD_GROUP_LEVEL` only on groups where every nested group and record has the group's audience.
 - [ ] A sharing-only change updates access without re-indexing (`on_updated_record_permissions` with the stored record, or `rewrite_permissions`). Revoked access and group membership changes take effect after the next sync. (Behaviour tests: share then unshare; add then remove a member.)
@@ -74,7 +74,7 @@ Copy this list into the PR description and tick each item, or say why it does no
 - [ ] An expired or invalid delta/history cursor re-lists that container in full and notifies the user, instead of skipping changes.
 - [ ] Date filters and checkpoints use UTC epoch milliseconds and are correct for a source in another time zone.
 - [ ] Every listing is paginated to the end: users, groups, members, containers, items, comments, attachments and permissions. (Behaviour test with more than one page of each.)
-- [ ] One bad item or container is logged, counted in `FailedItems` or `full_sync_coverage()`, and skipped; the sync continues. A failure that makes the whole run meaningless (auth, missing scope) fails the sync.
+- [ ] One bad item or container is logged, counted in `FailedItems` or reported as `FullSyncCoverage(complete=False)`, and skipped; the sync continues. A date-window filter is reported as `window_start_ms`, not `complete=False`. A failure that makes the whole run meaningless (auth, missing scope) fails the sync.
 - [ ] `SyncStrategy.WEBHOOK` is not declared: the platform does not call `handle_webhook_notification`.
 
 ## 8. Deletions in the source

@@ -60,10 +60,11 @@ The platform calls only `run_sync()`. Whether a run is full or incremental is th
 - Any other run is a normal run. The **first** run is normally one of these: it simply finds no checkpoint and lists everything, but the full-sync cleanup below does not run after it.
 - An **incremental sync** finds its checkpoints and lists only what changed since.
 
-During a full sync, the processor notes every node the connector writes. When the run finishes, and only if the connector reports that it read the whole source (`full_sync_coverage()`) and the run wrote at least one node, the platform removes the links of every node the run did not write. That is how deletions and revoked access are cleaned up for sources that cannot report them. It has two consequences:
+During a full sync, the processor notes every node the connector writes. When the run finishes, and only if the run wrote at least one node and `full_sync_coverage()` reports it complete, the platform removes the links of every node the run did not write. That is how deletions and revoked access are cleaned up for sources that cannot report them. It has these consequences:
 
 - In a full sync, write every node you can see, changed or not. A node you skip because it looks unchanged loses its links. To keep a stored node without re-writing it, note it with the processor's `note_kept_records` (Jira Cloud does this).
-- If you skip part of the source after an error, report it through `full_sync_coverage()`. Otherwise the skipped part is treated as deleted.
+- If you skip part of the source after an error, return `FullSyncCoverage(complete=False)`. Nothing is unlinked after that run, so the skipped part is not treated as deleted, and deletions elsewhere wait for the next complete full sync.
+- If the sync reads only a date window by design (a "sync from" filter), return `FullSyncCoverage(window_start_ms=...)` and leave `complete` true, adding `windowed_group_types` for group types read only inside the window (a Slack thread). Records created before the window keep their links; anything inside the window that the run did not write is still unlinked. Do not use `complete=False` for a window: deletions would then never be cleaned up.
 
 `run_incremental_sync()` and `handle_webhook_notification()` are abstract methods you must implement, but nothing in the platform calls them today. Do not rely on webhooks for freshness; scheduled sync is the supported path.
 
