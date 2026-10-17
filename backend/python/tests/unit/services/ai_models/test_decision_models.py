@@ -306,3 +306,12 @@ def test_azure_endpoint_is_reduced_to_the_resource_root() -> None:
         model = AzureOpenAIDecisionModel("decision-prod", api_key="k", endpoint=endpoint)
         host = endpoint.split("/")[2]
         assert model._url() == f"https://{host}/providers/microsoft/v1/systemone", endpoint
+
+
+async def test_a_yes_no_probability_outside_0_to_1_counts_as_missing() -> None:
+    seen: list[httpx.Request] = []
+    model = TypeSafeDecisionModel("jev-latest", api_key="k")
+    with _mock([httpx.Response(200, json={"answers": {"urgent": {"type": "noul", "noul": 1.7}}})], seen):
+        result = await model.decide("x", QUESTIONS[:1])
+    answer = result.answers["urgent"]
+    assert answer.missing and answer.probability is None and answer.confidence is None

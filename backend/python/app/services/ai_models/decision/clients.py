@@ -54,6 +54,11 @@ def _float(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
+def _probability(value: object) -> float | None:
+    number = _float(value)
+    return number if number is not None and 0.0 <= number <= 1.0 else None
+
+
 def _error_message(response: httpx.Response) -> str:
     if response.status_code in (401, 403):
         # Auth errors can echo part of the key; the status says enough.
@@ -288,7 +293,8 @@ def _openai_answer(row: dict[str, Any], question: DecisionQuestion) -> DecisionA
     answer = DecisionAnswer(name=question.name, type=question.type, confidence=_float(row.get("confidence")))
     probabilities = row.get("probabilities") if isinstance(row.get("probabilities"), list) else []
     if isinstance(question, PredicateQuestion):
-        answer.probability = _float(row.get("probability"))
+        answer.probability = _probability(row.get("probability"))
+        answer.missing = answer.probability is None
     elif isinstance(question, ChoiceQuestion):
         answer.choice = row.get("choice") if isinstance(row.get("choice"), str) else None
         answer.probabilities = {
@@ -333,7 +339,8 @@ def _typesafe_answer(row: dict[str, Any], question: DecisionQuestion) -> Decisio
     probabilities = _probability_map(row.get("probabilities"))
     if isinstance(question, PredicateQuestion):
         # TypeSafe documents the yes/no value as "noul"; Microsoft's Foundry docs don't name it.
-        answer.probability = _float(row.get("noul", row.get("probability")))
+        answer.probability = _probability(row.get("noul", row.get("probability")))
+        answer.missing = answer.probability is None
         if answer.probability is not None and answer.confidence is None:
             # Noul has no confidence of its own; TypeSafe's docs suggest |2p - 1|.
             answer.confidence = abs(2 * answer.probability - 1)
