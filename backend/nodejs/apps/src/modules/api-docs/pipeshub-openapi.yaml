@@ -2137,7 +2137,9 @@ components:
             - `refresh_token`: Get new access token using refresh token
             - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
               delegation (RFC 8693). Exchanges a service token for a
-              short-lived token that acts as one named person.
+              short-lived token that acts as one named person. Enterprise
+              edition; kept in this enum because the request shape is the same
+              wherever the grant is offered.
         code:
           type: string
           description: Authorization code (required for authorization_code grant)
@@ -2526,7 +2528,7 @@ components:
           items:
             type: string
           description: Supported grant types
-          example: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
+          example: ["authorization_code", "client_credentials", "refresh_token"]
         token_endpoint_auth_methods_supported:
           type: array
           items:
@@ -18928,7 +18930,9 @@ paths:
         - `urn:ietf:params:oauth:grant-type:token-exchange`: Service-account
           delegation (RFC 8693). A service account exchanges its own token for
           a five-minute token that acts as one named person from its
-          allow-list. **This grant sends no `client_id` or `client_secret`** —
+          allow-list. **Enterprise edition.** The Community build answers this
+          grant with `unsupported_grant_type` and leaves it out of discovery,
+          so check `grant_types_supported` rather than assuming it is there. **This grant sends no `client_id` or `client_secret`** —
           the `subject_token` is the authentication, since it already carries
           a verified identity and the scopes that bound it. Refusals about the
           person asked for all return `400 invalid_target` with one wording;
@@ -19191,7 +19195,7 @@ paths:
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
-                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
                 code_challenge_methods_supported: ["S256"]
 
@@ -19230,7 +19234,7 @@ paths:
                 jwks_uri: "https://api.pipeshub.com/.well-known/jwks.json"
                 scopes_supported: ["openid", "profile", "email", "read:records", "write:records"]
                 response_types_supported: ["code"]
-                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token", "urn:ietf:params:oauth:grant-type:token-exchange"]
+                grant_types_supported: ["authorization_code", "client_credentials", "refresh_token"]
                 token_endpoint_auth_methods_supported: ["client_secret_basic", "client_secret_post"]
                 code_challenge_methods_supported: ["S256"]
 
