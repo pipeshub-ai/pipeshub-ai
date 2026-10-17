@@ -274,3 +274,38 @@ async def test_address_links_count_records_not_edges(seeded: _Graph) -> None:
     assert links[ids["ticket"]]["mentioned_in"] == sorted([ids["message"], ids["pr"]])
     unlimited = await seeded.graph.get_address_links_batch([ids["ticket"]], seeded.org_id)
     assert unlimited[ids["ticket"]]["mentioned_in"] == sorted([ids["message"], ids["pr"]])
+
+
+async def test_linked_records_carry_their_merge_and_resolution_dates(seeded: _Graph) -> None:
+    """The dates stored with a pull request and a ticket come back through the
+    reads that build a linked record's status: the base records, then one read
+    per type collection. Arango's strict schemas accept the new fields."""
+    from app.utils.chat_helpers import status_summaries_by_id
+
+    ids = seeded.ids
+    merged, resolved = 1790379000000, 1780876800000  # 2026-09-25, 2026-06-08 UTC
+    pr = PullRequestRecord(
+        **_base(seeded.org_id, "pr", Connectors.GITHUB, PR), record_type=RecordType.PULL_REQUEST,
+        status="DONE", merged_at=merged, closed_at=merged, merged_by="alice",
+    )
+    pr.id = ids["pr"]
+    ticket = TicketRecord(
+        **_base(seeded.org_id, "ticket", Connectors.JIRA, JIRA), record_type=RecordType.TICKET,
+        status="DONE", source_status="Done", resolved_at=resolved, assignee="Bo",
+    )
+    ticket.id = ids["ticket"]
+    assert await seeded.graph.batch_upsert_nodes([pr.to_arango_record()], CollectionNames.PULLREQUESTS.value)
+    assert await seeded.graph.batch_upsert_nodes([ticket.to_arango_record()], CollectionNames.TICKETS.value)
+
+    docs = await seeded.graph.get_records_by_record_ids(
+        [ids["pr"], ids["ticket"], ids["message"]], seeded.org_id,
+    )
+    by_id = {doc.get("id") or doc.get("_key"): doc for doc in docs}
+
+    assert await status_summaries_by_id(seeded.graph, by_id) == {
+        ids["pr"]: "Merged 2026-09-25 by alice",
+        ids["ticket"]: "DONE, resolved 2026-06-08, assignee Bo",
+    }
+    stored = await seeded.graph.get_nodes_by_field_in(CollectionNames.PULLREQUESTS.value, "id", [ids["pr"]])
+    assert (stored[0]["mergedAtTimestamp"], stored[0]["closedAtTimestamp"]) == (merged, merged)
+

@@ -73,6 +73,7 @@ def _pr(
     return _ListedPR(
         number=number, title=title, state=state, _rawData=raw,
         merged_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if merged else None,
+        closed_at=datetime(2024, 1, 2, tzinfo=timezone.utc) if state == "closed" else None,
         labels=[SimpleNamespace(name="enhancement")],
         assignees=[SimpleNamespace(login="bob")],
         html_url=f"https://github.com/acme/widgets/pull/{number}",
@@ -236,6 +237,23 @@ class TestProcessPullRequest:
         # and reading it would fire a per-PR fetch.
         assert merged.record.status == "DONE"
         assert abandoned.record.status == "CANCELLED"
+
+    async def test_merge_and_close_dates_come_from_the_listing(self) -> None:
+        """Asked when a PR merged, the model had only "Merged". Both dates are on
+        the listing payload, so they cost no extra call."""
+        c = make_mock_connector()
+        repo = make_repo(repo_id=10)
+        sync = PullRequestsSync(c)
+        day = int(datetime(2024, 1, 2, tzinfo=timezone.utc).timestamp() * 1000)
+
+        merged = await sync.process_pull_request(repo, _pr(number=5, state="closed", merged=True))
+        abandoned = await sync.process_pull_request(repo, _pr(number=6, state="closed"))
+        still_open = await sync.process_pull_request(repo, _pr(number=7))
+
+        assert (merged.record.merged_at, merged.record.closed_at) == (day, day)
+        assert (abandoned.record.merged_at, abandoned.record.closed_at) == (None, day)
+        assert (still_open.record.merged_at, still_open.record.closed_at) == (None, None)
+        assert merged.record.status_summary() == "Merged 2024-01-02"
 
     async def test_full_payload_still_yields_merge_state(self) -> None:
         """The reindex path fetches the whole PR, so raw_data carries the

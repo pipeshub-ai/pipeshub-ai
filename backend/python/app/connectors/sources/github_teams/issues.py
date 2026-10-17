@@ -42,6 +42,7 @@ from app.models.blocks import (
     GroupType,
     wire_block_group_parent_children,
 )
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     ItemType,
     Priority,
@@ -397,6 +398,7 @@ class IssuesSync:
                 reporter_email=creator_email,
                 reporter_source_id=creator_id,
                 creator_source_timestamp=epoch_ms_or_now(issue.created_at),
+                resolved_at=datetime_to_epoch_ms(getattr(issue, "closed_at", None)),
                 is_email_hidden=True,
                 inherit_permissions=True,
             )

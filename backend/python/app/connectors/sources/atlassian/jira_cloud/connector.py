@@ -124,7 +124,7 @@ from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.jira.jira import JiraDataSource
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.streaming import create_stream_record_response
-from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.time_conversion import datetime_to_epoch_ms, get_epoch_timestamp_in_ms
 
 # API URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
@@ -217,7 +217,9 @@ ISSUE_SEARCH_FIELDS: list[str] = [
     "summary", "description", "status", "priority",
     "creator", "reporter", "assignee", "created", "updated",
     "issuetype", "project", "parent", "attachment",
-    "issuelinks", "comment"
+    "issuelinks", "comment",
+    # When the issue was resolved, and when it is due: shown with its status.
+    "resolutiondate", "duedate",
 ]
 
 # Deliberately narrower than ISSUE_SEARCH_FIELDS: an ancestor stub carries no content, so
@@ -226,7 +228,7 @@ ISSUE_SEARCH_FIELDS: list[str] = [
 ANCESTOR_STUB_FIELDS: list[str] = [
     "summary", "status", "priority", "issuetype",
     "project", "parent", "created", "updated",
-    "creator", "reporter", "assignee",
+    "creator", "reporter", "assignee", "resolutiondate", "duedate",
 ]
 
 
@@ -1084,6 +1086,8 @@ class JiraConnector(BaseConnector):
             priority=issue_data["priority"],
             status=issue_data["status"],
             source_status=issue_data.get("source_status"),
+            resolved_at=issue_data.get("resolved_at"),
+            due_date=issue_data.get("due_date"),
             type=issue_data["issue_type"],
             creator_email=issue_data["creator_email"],
             creator_name=issue_data["creator_name"],
@@ -3867,6 +3871,10 @@ class JiraConnector(BaseConnector):
 
         created_at = self._parse_jira_timestamp(fields.get("created"))
         updated_at = self._parse_jira_timestamp(fields.get("updated"))
+        # Set when the issue is resolved and cleared when it is reopened.
+        resolved_at = self._parse_jira_timestamp(fields.get("resolutiondate")) or None
+        # A calendar date ("2026-06-10"), stored as midnight UTC.
+        due_date = datetime_to_epoch_ms(fields.get("duedate"), "%Y-%m-%d")
 
         return {
             "issue_id": issue_id,
@@ -3886,6 +3894,8 @@ class JiraConnector(BaseConnector):
             "assignee_name": assignee_name,
             "created_at": created_at,
             "updated_at": updated_at,
+            "resolved_at": resolved_at,
+            "due_date": due_date,
         }
 
     async def _build_issue_records(
@@ -4043,6 +4053,8 @@ class JiraConnector(BaseConnector):
             priority=priority,
             status=status,
             source_status=issue_data.get("source_status"),
+            resolved_at=issue_data.get("resolved_at"),
+            due_date=issue_data.get("due_date"),
             type=issue_type,
             creator_email=creator_email,
             creator_name=creator_name,
@@ -5628,6 +5640,8 @@ class JiraConnector(BaseConnector):
                 priority=issue_data["priority"],
                 status=issue_data["status"],
                 source_status=issue_data.get("source_status"),
+                resolved_at=issue_data.get("resolved_at"),
+                due_date=issue_data.get("due_date"),
                 type=issue_data.get("issue_type"),
                 creator_email=issue_data["creator_email"],
                 creator_name=issue_data["creator_name"],

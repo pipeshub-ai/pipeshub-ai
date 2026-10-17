@@ -10436,6 +10436,48 @@ components:
         rowCount:
           type: number
           nullable: true
+        statusSummary:
+          type: string
+          description: |
+            Where a ticket, pull request or project stands, in one short phrase, on
+            `records` entries only: for example `Merged 2026-09-25 by alice`,
+            `Closed without merging 2026-09-26`, or
+            `DONE (Jira: Done), resolved 2026-06-06, assignee Bo, priority HIGH`.
+            Dates are days in UTC. Absent for record types with no state of their own.
+        linkedRecords:
+          type: array
+          description: |
+            On `records` entries only: the records that name this one (`mentionedIn`) and
+            that it names (`linksTo`) by web address or issue key, across connectors,
+            limited to records the caller may read, at most 10 per relation. Absent when
+            there are none.
+          items:
+            $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+
+    SemanticSearchLinkedRecord:
+      type: object
+      additionalProperties: false
+      required:
+        - relation
+        - recordId
+        - recordName
+        - recordType
+        - connector
+      properties:
+        relation:
+          type: string
+          enum: [mentionedIn, linksTo]
+        recordId:
+          type: string
+        recordName:
+          type: string
+        recordType:
+          type: string
+        connector:
+          type: string
+        status:
+          type: string
+          description: The linked record's `statusSummary`, when it has one.
 
     SemanticSearchAppliedFilters:
       type: object

@@ -42,6 +42,30 @@ async def test_every_issue_and_merge_request_is_read_across_all_pages(harness, g
     assert checkpoints.mrs_checkpoint(WEB) == ms("2026-09-03T11:00:00Z")
 
 
+async def test_merge_close_and_due_dates_are_kept(harness, gitlab, db, checkpoints) -> None:
+    """Asked when a merge request merged or an issue closed, the model had only
+    the state word. GitLab sends the dates on the listing; they are stored."""
+    build_acme(gitlab)
+    gitlab.add_issue(WEB, 1, "Closed issue", "2026-09-05T10:00:00Z", state="closed").update(
+        closed_at="2026-09-04T08:00:00Z", due_date="2026-09-10",
+    )
+    gitlab.add_issue(WEB, 2, "Open issue", "2026-09-05T10:00:00Z")
+    gitlab.add_merge_request(WEB, 1, "Merged MR", "2026-09-05T11:00:00Z").update(
+        state="merged", merged_at="2026-09-03T12:00:00Z", closed_at=None,
+    )
+
+    await harness.sync()
+
+    closed = db.records[str(WEB * 1000 + 1)]
+    assert closed.resolved_at == ms("2026-09-04T08:00:00Z")
+    assert closed.due_date == ms("2026-09-10T00:00:00Z")
+    assert db.records[str(WEB * 1000 + 2)].resolved_at is None
+    merged = db.records[str(WEB * 100000 + 1)]
+    assert merged.merged_at == ms("2026-09-03T12:00:00Z")
+    assert merged.closed_at is None
+    assert merged.status_summary() == "merged 2026-09-03"
+
+
 async def test_second_sync_reads_only_changes_since_the_checkpoint_without_duplicates(harness, gitlab, db, checkpoints) -> None:
     build_acme(gitlab)
     for iid in range(1, 4):
