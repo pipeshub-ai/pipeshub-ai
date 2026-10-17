@@ -2,7 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
-import { Flex, Box, IconButton, Text } from '@radix-ui/themes';
+import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
@@ -20,7 +20,6 @@ import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { buildMessagePairs, extractTextContent } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { findGroupStarts, GROUP_LABEL_KEY } from './message-day-separators';
 import { shouldShowJumpToNewest } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
@@ -252,8 +251,6 @@ export function MessageList() {
   // effect #2 to re-run and cancel its rAF on every render during streaming).
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
-
-  const groupStarts = useMemo(() => findGroupStarts(messagePairs), [messagePairs]);
 
   // ── Jump to newest ─────────────────────────────────────────────────
   const [showJumpToNewest, setShowJumpToNewest] = useState(false);
@@ -1091,19 +1088,9 @@ export function MessageList() {
 
           {messagePairs.map((pair, index) => {
             const isLast = index === messagePairs.length - 1;
-            const groupStart = groupStarts.get(pair.key);
             return (
-              <React.Fragment key={pair.key}>
-              {groupStart && (
-                <Flex align="center" gap="3" role="separator" data-testid="day-separator">
-                  <Box style={{ flex: 1, height: 1, background: 'var(--olive-5)' }} />
-                  <Text size="1" color="gray">
-                    {t(GROUP_LABEL_KEY[groupStart])}
-                  </Text>
-                  <Box style={{ flex: 1, height: 1, background: 'var(--olive-5)' }} />
-                </Flex>
-              )}
               <div
+                key={pair.key}
                 ref={(el) => setMessageRef(pair.key, el)}
               >
                 <ChatResponse
@@ -1156,7 +1143,6 @@ export function MessageList() {
                 )}
                 */}
               </div>
-              </React.Fragment>
             );
           })}
         </Flex>

@@ -183,15 +183,6 @@ afterEach(() => {
 function user(id: string, text: string): ThreadMessage {
   return { id, role: 'user', content: [{ type: 'text', text }] };
 }
-function userAt(id: string, text: string, createdAt?: string): ThreadMessage {
-  return { ...user(id, text), metadata: { custom: { createdAt } } };
-}
-function daysAgoIso(daysAgo: number): string {
-  const d = new Date();
-  d.setHours(12, 0, 0, 0);
-  d.setDate(d.getDate() - daysAgo);
-  return d.toISOString();
-}
 function assistant(id: string, text: string): ThreadMessage {
   return { id, role: 'assistant', content: [{ type: 'text', text }] };
 }
@@ -725,103 +716,11 @@ describe('MessageList — jump to newest', () => {
   });
 });
 
-describe('MessageList — day separators', () => {
-  const separators = () => screen.queryAllByTestId('day-separator');
-
-  function show(messages: ThreadMessage[]) {
-    thread.messages = messages;
-    openConversation('conv-1');
-    render(<MessageList />);
-    settle();
-  }
-
-  it('puts one label above the first message and none between messages from the same day', () => {
-    show([
-      userAt('u1', 'First', daysAgoIso(0)), assistant('a1', 'A'),
-      userAt('u2', 'Second', daysAgoIso(0)), assistant('a2', 'B'),
-    ]);
-
-    expect(separators().map((el) => el.textContent)).toEqual(['Today']);
-  });
-
-  it('adds a label whenever the group changes, oldest first', () => {
-    show([
-      userAt('u1', 'First', daysAgoIso(30)), assistant('a1', 'A'),
-      userAt('u2', 'Second', daysAgoIso(4)), assistant('a2', 'B'),
-      userAt('u3', 'Third', daysAgoIso(1)), assistant('a3', 'C'),
-      userAt('u4', 'Fourth', daysAgoIso(0)), assistant('a4', 'D'),
-    ]);
-
-    expect(separators().map((el) => el.textContent)).toEqual([
-      'Older',
-      'Last 7 days',
-      'Yesterday',
-      'Today',
-    ]);
-  });
-
-  it('shows one label for a chat used on several different days of the same group', () => {
-    show([
-      userAt('u1', 'First', daysAgoIso(8)), assistant('a1', 'A'),
-      userAt('u2', 'Second', daysAgoIso(6)), assistant('a2', 'B'),
-      userAt('u3', 'Third', daysAgoIso(4)), assistant('a3', 'C'),
-      userAt('u4', 'Fourth', daysAgoIso(2)), assistant('a4', 'D'),
-    ]);
-
-    expect(separators().map((el) => el.textContent)).toEqual(['Last 7 days']);
-  });
-
-  it('shows "Older" instead of a date for a chat from long ago', () => {
-    show([
-      userAt('u1', 'Ancient', daysAgoIso(400)), assistant('a1', 'A'),
-      userAt('u2', 'Old', daysAgoIso(40)), assistant('a2', 'B'),
-      userAt('u3', 'Older still', daysAgoIso(9)), assistant('a3', 'C'),
-    ]);
-
-    expect(separators().map((el) => el.textContent)).toEqual(['Older']);
-  });
-
-  it('places each label directly above the first question of its day', () => {
-    show([
-      userAt('u1', 'Old question', daysAgoIso(1)), assistant('a1', 'A'),
-      userAt('u2', 'New question', daysAgoIso(0)), assistant('a2', 'B'),
-    ]);
-
-    const [yesterday, today] = separators();
-    expect(yesterday.nextElementSibling?.textContent).toContain('Old question');
-    expect(today.nextElementSibling?.textContent).toContain('New question');
-  });
-
-  it('shows no label when messages have no timestamp', () => {
-    show(TWO_TURNS);
-
-    expect(separators()).toHaveLength(0);
-  });
-
-  it('shows no label for an unparsable timestamp and does not crash', () => {
-    show([userAt('u1', 'First', 'garbage'), assistant('a1', 'A')]);
-
-    expect(separators()).toHaveLength(0);
-    expect(screen.getByText('First')).toBeTruthy();
-  });
-
-  it('labels a question that has no answer yet', () => {
-    show([userAt('u1', 'Stopped early', daysAgoIso(0))]);
-
-    expect(separators().map((el) => el.textContent)).toEqual(['Today']);
-    expect(screen.getByText('Stopped early')).toBeTruthy();
-  });
-
-  it('exposes the label as a separator to assistive technology', () => {
-    show([userAt('u1', 'First', daysAgoIso(0)), assistant('a1', 'A')]);
-
-    expect(screen.getByRole('separator').textContent).toBe('Today');
-  });
-
-  it('does not change which question the view opens on', () => {
+describe('MessageList — opening a chat', () => {
+  it('lands on the latest question, with the jump button wrapper around the list', () => {
     thread.messages = [
-      userAt('u1', 'What is our refund policy?', daysAgoIso(1)), assistant('a1', 'Refunds.'),
-      userAt('u2', 'Who approves exceptions?', daysAgoIso(0)), assistant('a2', 'Finance.'),
+      user('u1', 'What is our refund policy?'), assistant('a1', 'Refunds.'),
+      user('u2', 'Who approves exceptions?'), assistant('a2', 'Finance.'),
     ];
     geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
     openConversation('conv-1');
