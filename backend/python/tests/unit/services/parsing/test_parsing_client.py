@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
-from jose import jwt
+import jwt
 
 from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer

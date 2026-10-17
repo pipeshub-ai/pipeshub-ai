@@ -12,7 +12,7 @@ import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 from httpx import ASGITransport, AsyncClient, Response
-from jose import jwt
+import jwt
 
 from app.api.middlewares.auth import authMiddleware
 from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus

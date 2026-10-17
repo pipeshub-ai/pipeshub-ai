@@ -18,7 +18,7 @@ import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
-from jose import jwt
+import jwt
 
 from app.api.middlewares import auth as auth_module
 from app.api.middlewares.auth import (
