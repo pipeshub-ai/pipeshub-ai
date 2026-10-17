@@ -148,8 +148,12 @@ async def seeded(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
         ids = {name: record.id for name, record in records.items()}
 
         async def remove() -> None:
-            with contextlib.suppress(Exception):
-                await graph.delete_nodes_and_edges(list(ids.values()), CollectionNames.RECORDS.value)
+            # The type documents too: some tests write tickets and pull requests.
+            for collection in (
+                CollectionNames.RECORDS.value, CollectionNames.PULLREQUESTS.value, CollectionNames.TICKETS.value,
+            ):
+                with contextlib.suppress(Exception):
+                    await graph.delete_nodes_and_edges(list(ids.values()), collection)
 
         cleanup.push_async_callback(remove)
         for record in records.values():
@@ -308,4 +312,44 @@ async def test_linked_records_carry_their_merge_and_resolution_dates(seeded: _Gr
     }
     stored = await seeded.graph.get_nodes_by_field_in(CollectionNames.PULLREQUESTS.value, "id", [ids["pr"]])
     assert (stored[0]["mergedAtTimestamp"], stored[0]["closedAtTimestamp"]) == (merged, merged)
+
+
+async def test_a_reopened_ticket_and_pr_lose_their_dates(seeded: _Graph) -> None:
+    """A date the source cleared (an issue reopened, a PR reopened) must not
+    survive the next write: the status would read "resolved" on an open ticket."""
+    from app.utils.chat_helpers import status_summaries_by_id
+
+    ids = seeded.ids
+    day = 1780876800000  # 2026-06-08 UTC
+
+    def ticket(**fields: object) -> TicketRecord:
+        record = TicketRecord(**_base(seeded.org_id, "ticket", Connectors.JIRA, JIRA), record_type=RecordType.TICKET, **fields)
+        record.id = ids["ticket"]
+        return record
+
+    def pr(**fields: object) -> PullRequestRecord:
+        record = PullRequestRecord(**_base(seeded.org_id, "pr", Connectors.GITHUB, PR), record_type=RecordType.PULL_REQUEST, **fields)
+        record.id = ids["pr"]
+        return record
+
+    async def summaries() -> dict[str, str]:
+        docs = await seeded.graph.get_records_by_record_ids([ids["pr"], ids["ticket"]], seeded.org_id)
+        return await status_summaries_by_id(seeded.graph, {doc.get("id") or doc.get("_key"): doc for doc in docs})
+
+    await seeded.graph.batch_upsert_records([
+        ticket(status="DONE", resolved_at=day, due_date=day), pr(status="CANCELLED", closed_at=day),
+    ])
+    assert await summaries() == {
+        ids["pr"]: "Closed without merging 2026-06-08",
+        ids["ticket"]: "DONE, resolved 2026-06-08",
+    }
+    await seeded.graph.batch_upsert_records([ticket(status="IN_PROGRESS"), pr(status="OPEN")])
+
+    stored = await seeded.graph.get_nodes_by_field_in(CollectionNames.TICKETS.value, "id", [ids["ticket"]])
+    assert stored[0].get("resolvedAtTimestamp") is None
+    assert stored[0].get("dueDateTimestamp") is None
+    assert await summaries() == {
+        ids["pr"]: "Open",
+        ids["ticket"]: "IN_PROGRESS",
+    }
 
