@@ -206,6 +206,32 @@ describe('OAuthAuthMiddleware', () => {
         .to.contain('no longer active')
     })
 
+    it('does not dress a failed read up as a withdrawn permission', async () => {
+      mockOAuthTokenService.verifyAccessToken.resolves(delegated)
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(mockQuery({ role: 'member', kind: 'human', isDisabled: false }))
+      users.onSecondCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().rejects(new Error('connection 7 to mongo timed out')),
+      } as any)
+
+      const req = { headers: { authorization: 'Bearer delegated' } } as any
+      await middleware.authenticate(req, mockRes, mockNext)
+
+      // Still refused, because failing open on an unreadable allow-list would
+      // be worse than any wording.
+      expect(mockNext.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+
+      // But not with the driver's text, and not silently: an outage must not
+      // read like an administrator having withdrawn a permission.
+      const description = mockRes.json.firstCall.args[0].error_description
+      expect(description).to.equal('Token validation failed')
+      expect(description).to.not.contain('mongo')
+      expect(mockLogger.error.called).to.be.true
+    })
+
     it('leaves an ordinary token alone, with no extra reads', async () => {
       mockOAuthTokenService.verifyAccessToken.resolves({
         client_id: 'cid',
