@@ -368,6 +368,7 @@ def image_marker_text(
 
     withheld = reason is not None and reason in (
         _Reason.TEXT_ONLY_MODEL, _Reason.OVER_REQUEST_CAP, _Reason.OVER_CONVERSATION_CAP,
+        _Reason.UNSUPPORTED_FORMAT,
     )
     # A duplicate's pixels are in the request already, attached to the first
     # copy. Saying "not shown" would send the model looking for an image it
@@ -386,6 +387,11 @@ def image_marker_text(
         return (
             f"{marker} (image block - visual content not shown due to "
             "conversation image limit)\n\n"
+        )
+    if reason is _Reason.UNSUPPORTED_FORMAT:
+        return (
+            f"{marker} (image block - visual content not shown; its format "
+            "could not be converted for this model)\n\n"
         )
     if withheld:
         return (

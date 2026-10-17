@@ -94,6 +94,7 @@ from connectors.github_teams.github_block_utils import (  # noqa: E402
     ISSUE_BLOCKS_PATH,
     PR_BLOCKS_PATH,
     bootstrap_expected,
+    keep_actual_if_different,
     load_expected,
     normalize_blocks_container,
     parse_connector_blocks_via_processor,
@@ -702,6 +703,7 @@ class TestGitHubTeamsIssues:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(ISSUE_BLOCKS_PATH, actual)
         expected = load_expected(ISSUE_BLOCKS_PATH)
+        keep_actual_if_different(ISSUE_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed issue blocks do not match the expected snapshot. If the fixture "
             f"issue was edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."
@@ -981,6 +983,7 @@ class TestGitHubTeamsPullRequests:
         if os.getenv(ENV_BLOCKS_BOOTSTRAP) == "1":
             bootstrap_expected(PR_BLOCKS_PATH, actual)
         expected = load_expected(PR_BLOCKS_PATH)
+        keep_actual_if_different(PR_BLOCKS_PATH, actual, expected)
         assert actual == expected, (
             "Parsed PR blocks do not match the expected snapshot. If the fixture PR was "
             f"edited, regenerate with {ENV_BLOCKS_BOOTSTRAP}=1 and review."

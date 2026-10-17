@@ -10,7 +10,7 @@ import { ThemeableAssetIcon } from '@/app/components/ui/themeable-asset-icon';
 import { aiModelsCapabilityLabel } from '../capability-i18n';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { LLM_SECTION_MODEL_TYPES, registryCapabilityForModelType } from '../types';
+import { modelTypesForSection, registryCapabilityForModelType } from '../types';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
 const EMBEDDING_BUILTIN_PLACEHOLDER_MODEL_KEY = 'builtin-default' as const;
@@ -34,14 +34,6 @@ function isEmbeddingBuiltinPlaceholder(model: ConfiguredModel): boolean {
     model.provider === 'default' &&
     model.configuration?.model === 'default'
   );
-}
-
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
 }
 
 function capabilityLabelForModelType(mt: string, t: TFunction): string {

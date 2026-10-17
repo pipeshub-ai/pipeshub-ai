@@ -333,6 +333,7 @@ def mock_vector_db_service():
         caps.supports_server_side_text_search = False
     service.get_capabilities = _MagicMock(return_value=caps)
     service.get_service_name = _MagicMock(return_value="mock")
+    service.transient_search_error = _MagicMock(return_value=None)
     return service
 
 

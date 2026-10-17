@@ -1,8 +1,8 @@
 'use client';
 
-import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
 import { useThread, useThreadRuntime } from '@assistant-ui/react';
-import { Flex, Box } from '@radix-ui/themes';
+import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
 import { useChatStore } from '../../store';
@@ -19,6 +19,8 @@ import { loadOlderMessagesForSlot } from '../../streaming';
 import { parseArtifactMarkers } from '../../utils/parse-download-markers';
 import { buildMessagePairs, extractTextContent } from './message-pairs';
 import type { MessagePair } from './message-pairs';
+import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { shouldShowJumpToNewest } from './jump-to-newest';
 
 // Stable empty references to avoid re-renders from selector fallbacks.
 // `?? []` or `?? null` in a selector body creates a new ref every call,
@@ -178,7 +180,7 @@ export function MessageList() {
     streamingScrollTopRef.current = scrollContainerRef.current.scrollTop;
   }
 
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
   // Use useThread to get reactive thread state
@@ -249,6 +251,24 @@ export function MessageList() {
   // effect #2 to re-run and cancel its rAF on every render during streaming).
   const messagePairsRef = useRef(messagePairs);
   messagePairsRef.current = messagePairs;
+
+  // ── Jump to newest ─────────────────────────────────────────────────
+  const [showJumpToNewest, setShowJumpToNewest] = useState(false);
+  const updateJumpToNewestVisibility = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const key = lastMessageKeyRef.current;
+    const lastEl = key ? messageRefs.current.get(key) : null;
+    if (!container || !lastEl) {
+      setShowJumpToNewest(false);
+      return;
+    }
+    setShowJumpToNewest(
+      shouldShowJumpToNewest(
+        lastEl.getBoundingClientRect().bottom,
+        container.getBoundingClientRect().bottom,
+      ),
+    );
+  }, []);
 
   // Clear orphaned inline-citation key when a message row is replaced (e.g. after stream complete)
   const citationOpenKey = useInlineCitationPopoverStore((s) => s.activeKey);
@@ -531,6 +551,8 @@ export function MessageList() {
     const { scrollTop, scrollHeight, clientHeight } = container;
     const distFromBottom = scrollHeight - scrollTop - clientHeight;
 
+    updateJumpToNewestVisibility();
+
     if (isStreamingRef.current) {
       const flushWithBottom = isStreamingFlushWithBottom(container);
 
@@ -575,7 +597,7 @@ export function MessageList() {
     ) {
       triggerLoadOlderMessages();
     }
-  }, [runStreamingBottomResume, triggerLoadOlderMessages]);
+  }, [runStreamingBottomResume, triggerLoadOlderMessages, updateJumpToNewestVisibility]);
 
   // Stream start: clear scroll lock in layout phase (before paint), not in useEffect,
   // so the first tail sync is not skipped. On every streaming commit, pin the tail
@@ -615,9 +637,10 @@ export function MessageList() {
         } else {
           recalcSpacerHeight();
         }
+        updateJumpToNewestVisibility();
       });
     };
-  }, [recalcSpacerHeight, syncStreamingMessageTail]);
+  }, [recalcSpacerHeight, syncStreamingMessageTail, updateJumpToNewestVisibility]);
 
   // ── Cleanup auto-scroll timeout on unmount ──
   useEffect(() => {
@@ -853,6 +876,10 @@ export function MessageList() {
     };
   }, [messagePairs.length, lastPairKey, recalcSpacerHeight, throttledResize]);
 
+  useEffect(() => {
+    if (messagePairs.length === 0) setShowJumpToNewest(false);
+  }, [messagePairs.length]);
+
   // ── 3. ResizeObserver on scroll container (window resize) ─────────
   useEffect(() => {
     const container = scrollContainerRef.current;
@@ -1004,7 +1031,19 @@ export function MessageList() {
     [threadRuntime]
   );
 
+  // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
+  const handleJumpToNewest = useCallback(() => {
+    lastTailSyncScrollTopRef.current = -1;
+    executeScroll({
+      target: 'bottom-of-container',
+      behavior: 'smooth',
+      chatBecameActive: true,
+    });
+  }, [executeScroll]);
+
+  // The button belongs to the viewport, so it sits beside the scroller, not inside it.
   return (
+    <Box style={{ position: 'relative', flex: 1, minHeight: 0, width: '100%', display: 'flex', flexDirection: 'column' }}>
     <Box
       ref={scrollContainerRef}
       onScroll={handleScroll}
@@ -1126,6 +1165,38 @@ export function MessageList() {
           driven by the zustand store so only one popover is ever rendered,
           even when the answer contains many citation badges. */}
       <InlineCitationPopoverHost />
+    </Box>
+
+    {showJumpToNewest && (
+      <Box
+        style={{
+          position: 'absolute',
+          bottom: 'var(--space-3)',
+          left: '50%',
+          transform: 'translateX(-50%)',
+          zIndex: 2,
+        }}
+      >
+        <IconButton
+          type="button"
+          variant="soft"
+          color="gray"
+          radius="full"
+          size="3"
+          title={t('chat.jumpToNewest')}
+          aria-label={t('chat.jumpToNewest')}
+          onClick={handleJumpToNewest}
+          style={{
+            cursor: 'pointer',
+            background: 'var(--color-panel-solid)',
+            boxShadow: 'var(--shadow-3)',
+            ...(isMobile ? { minWidth: 44, minHeight: 44 } : {}),
+          }}
+        >
+          <MaterialIcon name="arrow_downward" size={20} />
+        </IconButton>
+      </Box>
+    )}
     </Box>
   );
 }

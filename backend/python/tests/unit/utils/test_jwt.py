@@ -106,14 +106,14 @@ class TestGenerateJwt:
 
     @pytest.mark.asyncio
     async def test_stamps_one_hour_expiry(self):
-        from jose import jwt as jose_jwt
+        import jwt as pyjwt
 
         mock_config = AsyncMock()
         secret = "test-secret-key-12345"
         mock_config.get_config.return_value = {"scopedJwtSecret": secret}
 
         token = await generate_jwt(mock_config, {"sub": "user1"})
-        decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        decoded = pyjwt.decode(token, secret, algorithms=["HS256"])
         assert decoded["exp"] - decoded["iat"] == 3600
         assert abs(decoded["iat"] - int(time.time())) <= 5
 
@@ -129,7 +129,7 @@ class TestGenerateJwt:
     @pytest.mark.asyncio
     async def test_caller_cannot_extend_expiry(self):
         """A service token's lifetime is fixed by the minter, not the caller."""
-        from jose import jwt as jose_jwt
+        import jwt as pyjwt
 
         mock_config = AsyncMock()
         secret = "test-secret-key-12345"
@@ -137,12 +137,12 @@ class TestGenerateJwt:
 
         far_future = datetime.now(timezone.utc) + timedelta(days=365)
         token = await generate_jwt(mock_config, {"sub": "user1", "exp": far_future})
-        decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        decoded = pyjwt.decode(token, secret, algorithms=["HS256"])
         assert decoded["exp"] <= int(time.time()) + 3600 + 5
 
     @pytest.mark.asyncio
     async def test_caller_cannot_backdate_issued_at(self):
-        from jose import jwt as jose_jwt
+        import jwt as pyjwt
 
         mock_config = AsyncMock()
         secret = "test-secret-key-12345"
@@ -150,7 +150,7 @@ class TestGenerateJwt:
 
         backdated = datetime.now(timezone.utc) - timedelta(days=1)
         token = await generate_jwt(mock_config, {"sub": "user1", "iat": backdated})
-        decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        decoded = pyjwt.decode(token, secret, algorithms=["HS256"])
         assert abs(decoded["iat"] - int(time.time())) <= 5
 
     @pytest.mark.asyncio
@@ -192,7 +192,7 @@ class TestGenerateJwt:
     @pytest.mark.asyncio
     async def test_generated_token_is_decodable(self):
         """The generated token should be decodable with the same secret."""
-        from jose import jwt as jose_jwt
+        import jwt as pyjwt
 
         mock_config = AsyncMock()
         secret = "my-test-secret-for-jwt"
@@ -201,7 +201,7 @@ class TestGenerateJwt:
         payload = {"sub": "testuser", "scope": "admin"}
         token = await generate_jwt(mock_config, payload)
 
-        decoded = jose_jwt.decode(token, secret, algorithms=["HS256"])
+        decoded = pyjwt.decode(token, secret, algorithms=["HS256"])
         assert decoded["sub"] == "testuser"
         assert decoded["scope"] == "admin"
         assert "exp" in decoded

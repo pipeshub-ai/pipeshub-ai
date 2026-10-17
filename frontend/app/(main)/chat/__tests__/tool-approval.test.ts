@@ -27,7 +27,7 @@ function waiting(approval: unknown, overrides: Partial<MessagePart> = {}): Messa
 
 describe('toolApprovalDetails', () => {
   it('keeps a well-formed record', () => {
-    expect(toolApprovalDetails(WIRE)).toEqual({ ...WIRE, kind: null });
+    expect(toolApprovalDetails(WIRE)).toEqual({ ...WIRE, kind: null, canRemember: true });
     expect(toolApprovalDetails({ ...WIRE, kind: 'destructive' })).toMatchObject({ kind: 'destructive' });
     expect(toolApprovalDetails({ ...WIRE, kind: 'wipe-everything' })).toMatchObject({ kind: null });
   });
@@ -45,6 +45,12 @@ describe('toolApprovalDetails', () => {
   it('treats anything but true as false, and anything but an object as no arguments', () => {
     const details = toolApprovalDetails({ ...WIRE, readOnly: 1, arguments: ['x'] });
     expect(details).toMatchObject({ readOnly: false, arguments: null });
+  });
+
+  it("says whether \"Don't ask again\" can set a rule: not on a toolset's card, whose rules are its admin's", () => {
+    expect(toolApprovalDetails({ ...WIRE, canRemember: false })).toMatchObject({ canRemember: false });
+    // Cards saved before the flag was sent were MCP cards.
+    expect(toolApprovalDetails({ ...WIRE, canRemember: 'no' })).toMatchObject({ canRemember: true });
   });
 
   it('keeps the preview of arguments too large to send', () => {

@@ -8,6 +8,8 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 
 interface TableFullscreenWrapperProps {
   children: React.ReactNode;
+  /** Saves the table's rows as a CSV file. Leave out where the rows are not known. */
+  onDownloadCsv?: () => void;
 }
 
 /**
@@ -26,7 +28,7 @@ interface TableFullscreenWrapperProps {
  *   --table-cell-max-width   : none   (removes the 280 px per-column cap)
  *   --table-wrapper-max-height : none (removes the 55 vh row cap)
  */
-export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps) {
+export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscreenWrapperProps) {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation();
 
@@ -48,6 +50,19 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
         >
           <MaterialIcon name="open_in_full" size={ICON_SIZES.SECONDARY} />
         </IconButton>
+        {onDownloadCsv && (
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            title={t('chat.downloadCsv')}
+            aria-label={t('chat.downloadCsv')}
+            style={{ cursor: 'pointer', color: 'var(--slate-9)', marginLeft: 'var(--space-1)' }}
+            onClick={onDownloadCsv}
+          >
+            <MaterialIcon name="download" size={ICON_SIZES.SECONDARY} />
+          </IconButton>
+        )}
       </Flex>
 
       {/* ── Constrained table ── */}

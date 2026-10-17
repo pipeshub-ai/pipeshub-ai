@@ -54,6 +54,13 @@ class HealthStatus(Enum):
     UNHEALTHY = "unhealthy"
 
 
+class SearchFailureKind(Enum):
+    """Why a vector store could not answer a search, when trying again may help."""
+
+    TIMEOUT = "timeout"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass
 class SparseVector:
     indices: list[int]

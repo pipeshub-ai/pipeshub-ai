@@ -344,6 +344,8 @@ class TestAbstractMethodInventory:
         "create_record_group_relation",
         "create_record_groups_relation",
         "create_inherit_permissions_relation_record_group",
+        "backfill_indexed_copy_flags",
+        "records_accept_indexed_copy",
         "get_accessible_virtual_record_ids",
         "get_accessible_connector_types",
         "get_records_by_virtual_record_id",

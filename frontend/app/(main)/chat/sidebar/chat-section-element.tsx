@@ -17,6 +17,8 @@ import { SidebarItem } from './sidebar-item';
 import { ChatItemMenu } from './chat-item-menu';
 import { DeleteChatDialog, ArchiveChatDialog, MoveToProjectDialog } from './dialogs';
 import { Spinner } from '@/app/components/ui/spinner';
+import { toast } from '@/lib/store/toast-store';
+import { exportConversation } from '@/chat/utils/export-conversation';
 
 /** Duration must match `typing-reveal` animation duration in globals.css */
 const TYPING_ANIMATION_DURATION_MS = 400;
@@ -44,6 +46,36 @@ function StreamingTitleLabel({ title }: { title: string }) {
         {title}
       </span>
       <Spinner size={12} color="var(--accent-11)" />
+    </Flex>
+  );
+}
+
+/** Title text with a dot for an answer that finished while the chat was out of view. */
+function UnreadTitleLabel({ title, dotLabel }: { title: string; dotLabel: string }) {
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <span
+        style={{
+          flex: 1,
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {title}
+      </span>
+      <span
+        role="img"
+        aria-label={dotLabel}
+        data-testid="unread-dot"
+        style={{
+          flexShrink: 0,
+          width: 8,
+          height: 8,
+          borderRadius: '50%',
+          background: 'var(--accent-9)',
+        }}
+      />
     </Flex>
   );
 }
@@ -92,6 +124,14 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
   const isConversationStreaming = useChatStore((s) =>
     isConversationStreamingInScope(s.slots, conversation.id, agentId ?? null),
   );
+
+  const hasUnreadAnswer = useChatStore((s) => s.unreadConversationIds.has(conversation.id));
+  const markConversationRead = useChatStore((s) => s.markConversationRead);
+
+  // Covers every way a chat gets opened (click, URL, back button), not just a row click.
+  useEffect(() => {
+    if (isActive && hasUnreadAnswer) markConversationRead(conversation.id);
+  }, [isActive, hasUnreadAnswer, conversation.id, markConversationRead]);
 
   const convStreamingBlocksSidebarMutation = () =>
     isConversationStreamingInScope(
@@ -165,6 +205,30 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
       renameInputRef.current?.blur();
     } else if (e.key === 'Escape') {
       setIsRenaming(false);
+    }
+  };
+
+  const handleExport = async () => {
+    try {
+      await toast.promise(
+        exportConversation({
+          conversationId: conversation.id,
+          title: conversation.title,
+          agentId,
+          labels: {
+            you: t('common.you'),
+            assistant: t('chat.export.assistant'),
+            sources: t('chat.sources'),
+          },
+        }),
+        {
+          loading: t('chat.export.exporting'),
+          success: t('chat.export.done'),
+          error: t('chat.export.failed'),
+        },
+      );
+    } catch {
+      // error already shown via toast
     }
   };
 
@@ -305,6 +369,8 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
         label={
           isConversationStreaming ? (
             <StreamingTitleLabel title={conversation.title} />
+          ) : hasUnreadAnswer && !isActive ? (
+            <UnreadTitleLabel title={conversation.title} dotLabel={t('chat.answerReady.unread')} />
           ) : isTypingTitle ? (
             <TypingTitle title={conversation.title} />
           ) : (
@@ -325,6 +391,7 @@ export function ChatSectionElement({ conversation, isActive, onClick, agentId, p
               isParentHovered={isHovered}
               onOpenChange={setMenuOpen}
               onRename={handleStartRename}
+              onExport={() => void handleExport()}
               onArchive={() => setArchiveDialogOpen(true)}
               onDelete={() => setDeleteDialogOpen(true)}
               showRename={true}

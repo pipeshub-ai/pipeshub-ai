@@ -369,6 +369,7 @@ record_schema = {
             "duplicateReconcileDueAt": {"type": ["number", "null"]},
             "uploadedBy": {"type": ["string", "null"]},  # uploader userId
             "lastIndexTimestamp": {"type": ["number", "null"]},
+            "hasIndexedCopy": {"type": "boolean"},
             "lastExtractionTimestamp": {"type": ["number", "null"]},
             # A pattern, not an enum: widening an enum on this strict schema is a
             # release that must ship before any writer of the new value.

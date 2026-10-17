@@ -883,6 +883,7 @@ export function createConnectorRouter(
   /**
    * POST /instances/:connectorId/filters
    * Save filter selections for a connector instance
+   * @deprecated Use PUT /:connectorId/config/filters-sync; nothing in the app calls this.
    */
   router.post(
     '/:connectorId/filters',

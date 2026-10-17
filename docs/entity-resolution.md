@@ -450,14 +450,34 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 
 ## Failure policy
 
+A lookup that could not run is never read as "no match": answering it with a
+new node is how duplicates get minted. Every vector or graph lookup of the
+resolver (exact match, winner search, winner check, merge redirect) is retried
+once after 0.5 s; if it still fails, the resolver raises
+`EntityLookupUnavailableError` before anything is written. The error is always
+retryable (`MessageErrorClassifier`), so the consumer redelivers the record
+with its usual backoff and the enrichment runs again (the record is indexed
+with `extractionStatus` still `IN_PROGRESS`, which is how a resumed enrichment
+is recognised). The last attempt ends the enrichment `FAILED` and the record
+stays searchable. Only one quick retry runs in place: under a timeout storm
+each attempt can last the store's whole timeout, so more would only add load.
+
 | Failure | Behaviour |
 | --- | --- |
-| Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
+| Vector store unavailable | Retried once, then the record's resolution is deferred to redelivery; no name becomes new |
+| Winner check against the graph fails | Same as the vector store |
+| Exact-match or merge-redirect lookup fails | Same; shadow mode only logs it |
+| A lookup that ran and found nothing | The name becomes a new node, as before |
 | Model unavailable or malformed | Every name in that call becomes new; `model_error` counter; the cached model is rebuilt from config for the next record |
 | Model call slower than 60 s | Same as unavailable. The bound applies to each provider call (and each reflection retry), not to the wait for the shared indexing model slot, which is backpressure |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
-| Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
-| Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |
+
+Failed lookups are counted in
+`pipeshub_entity_resolution_lookup_errors_total{lookup,outcome}`: `failed` for
+each attempt that raised, `deferred` for each resolution given up for this
+delivery. The per-record stats keep `vector_failures` and `graph_failures`
+(failed attempts, so a record that resolved after one retry shows 1), and a
+deferred record logs `entity_resolution deferred: ...` with them.
 
 Metrics live in `app/telemetry/modules/entity_resolution_metrics.py`:
 names by outcome, model calls by result, fallbacks by reason and per-record

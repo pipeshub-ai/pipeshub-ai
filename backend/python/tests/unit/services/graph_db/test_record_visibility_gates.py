@@ -24,8 +24,10 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     aql_live_record,
     aql_record_visibility,
+    aql_searchable_record,
     cypher_live_record,
     cypher_record_visibility,
+    cypher_searchable_record,
     is_live_record,
     matches_visibility,
 )
@@ -180,7 +182,7 @@ class TestPermissionMap:
         provider = _arango()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _arango_queries(provider)
-        paths = query.count("FILTER record.indexingStatus == @completedStatus")
+        paths = query.count(f"FILTER {aql_searchable_record('record')}")
         # Seven since #3691 dropped the "anyone" path, which granted no access.
         assert paths == 7
         assert query.count(f"FILTER {aql_live_record('record')}") == paths
@@ -190,7 +192,7 @@ class TestPermissionMap:
         provider = _arango()
         await provider._get_kb_virtual_ids("u1", "o1", raise_on_error=True)
         (query,) = _arango_queries(provider)
-        paths = query.count("FILTER record.indexingStatus == @completedStatus")
+        paths = query.count(f"FILTER {aql_searchable_record('record')}")
         assert paths == 2
         assert query.count(f"FILTER {aql_live_record('record')}") == paths
 
@@ -198,7 +200,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_virtual_ids_for_connector("u1", "o1", "c1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("r.indexingStatus = $completedStatus")
+        paths = query.count(cypher_searchable_record("r"))
         assert paths == 7
         assert query.count(f"AND {cypher_live_record('r')}") == paths
 
@@ -206,7 +208,7 @@ class TestPermissionMap:
         provider = _neo4j()
         await provider._get_kb_virtual_ids("u1", "o1", raise_on_error=True)
         (query,) = _neo4j_queries(provider)
-        paths = query.count("r.indexingStatus = $completedStatus")
+        paths = query.count(cypher_searchable_record("r"))
         assert paths == 2
         assert query.count(f"AND {cypher_live_record('r')}") == paths
 

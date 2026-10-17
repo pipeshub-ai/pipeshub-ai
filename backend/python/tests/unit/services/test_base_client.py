@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import httpx
-from jose import jwt
+import jwt
 
 from app.config.constants.service import TokenScopes
 from app.services.base_client import (

@@ -2101,6 +2101,30 @@ class TestGetConnectorInstanceFilters:
 class TestSaveConnectorInstanceFilters:
     """Tests for save_connector_instance_filters route handler."""
 
+    def test_the_route_is_marked_deprecated(self) -> None:
+        from app.connectors.api.router import router
+
+        (route,) = [
+            r for r in router.routes
+            if getattr(r, "path", None) == "/api/v1/connectors/{connector_id}/filters" and "POST" in r.methods
+        ]
+        assert route.deprecated is True
+
+    async def test_a_call_logs_that_it_is_deprecated(self, caplog: pytest.LogCaptureFixture) -> None:
+        from app.connectors.api.router import save_connector_instance_filters
+
+        req = _make_request(is_admin=True, body={"filters": {}})
+        req.app.state.connector_registry.get_connector_instance = AsyncMock(return_value=_make_instance())
+
+        with caplog.at_level(logging.WARNING, logger="test"), pytest.raises(HTTPException):
+            await save_connector_instance_filters("c1", req, graph_provider=AsyncMock())
+
+        assert any(
+            "Deprecated POST /api/v1/connectors/c1/filters" in r.getMessage()
+            and "/api/v1/connectors/c1/config/filters-sync" in r.getMessage()
+            for r in caplog.records
+        )
+
     async def test_no_filters_raises_400(self):
         from app.connectors.api.router import save_connector_instance_filters
 

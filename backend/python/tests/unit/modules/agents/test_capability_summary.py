@@ -551,6 +551,18 @@ class TestBuildAuthStatusSection:
         assert "Needs Authentication" in combined
         assert "- jira" in combined and "- slack" in combined
         assert "gmail" not in combined
+        assert "Your actions" in combined
+        assert "Settings >" not in combined
+
+    def test_a_service_account_agent_is_sent_to_the_agent_builder(self) -> None:
+        parts = []
+        _build_auth_status_section(
+            state={"is_service_account": True, "toolset_load_failures": {"slack": "not_authenticated"}},
+            parts=parts,
+        )
+        combined = "\n".join(parts)
+        assert "agent builder" in combined
+        assert "Your actions" not in combined
 
     def test_sorted_alphabetically(self):
         parts = []

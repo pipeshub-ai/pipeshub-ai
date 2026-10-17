@@ -1,0 +1,76 @@
+# Weekly version updates, one grouped PR per ecosystem for minor and patch bumps.
+# Security updates are separate: Dependabot raises those as soon as an alert opens.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /backend/nodejs/apps
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      node-api-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      frontend-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: pip
+    directory: /backend/python
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+    # Upper bounds in pyproject.toml are deliberate; Dependabot would raise them. There is no
+    # lockfile here, so ignores are version ranges: update-types needs a current version.
+    ignore:
+      # 1.13 stopped setting request.options, so msgraph-core's 429/503 retry stopped running.
+      - dependency-name: "microsoft-kiota-http"
+        versions: [">=1.13"]
+      - dependency-name: "Pillow"
+        versions: [">=12"]
+      - dependency-name: "protobuf"
+        versions: [">=6"]
+      - dependency-name: "reportlab"
+        versions: [">=5"]
+      - dependency-name: "fpdf2"
+        versions: [">=3"]
+      - dependency-name: "mariadb"
+        versions: [">=3"]
+
+  - package-ecosystem: uv
+    directory: /integration-tests
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    groups:
+      integration-tests-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: "Pillow"
+        versions: [">=12"]
+      - dependency-name: "protobuf"
+        versions: [">=6"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directories: [/, /backend/nodejs/apps, /backend/python, /deployment/sandbox]
+    schedule: { interval: weekly, day: monday }
+    open-pull-requests-limit: 3
+    groups:
+      base-images:
+        update-types: [minor, patch]
+    ignore:
+      # python:3.12 is a two-part tag, so 3.12 -> 3.13 reads as a minor; the runtime moves on purpose only.
+      - dependency-name: "python"
+        update-types: ["version-update:semver-minor", "version-update:semver-major"]

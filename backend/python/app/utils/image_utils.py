@@ -254,6 +254,104 @@ def downscale_to_limits(
     return f"data:image/jpeg;base64,{encoded}"
 
 
+# The formats OpenAI, Azure OpenAI and Anthropic all accept. Anything else in
+# a request -- an SVG a connector inlined as an attachment, a BMP from a scan --
+# makes the provider reject the whole request, not just that image.
+LLM_IMAGE_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/gif", "image/webp"})
+
+
+def to_llm_image_format(image_uri: str, *, max_long_edge_px: int) -> str | None:
+    """`image_uri` in a format every LLM API accepts, or None.
+
+    Decided from the bytes, not the declared media type. A supported raster is
+    returned unchanged, or relabeled when its header names the wrong type.
+    SVG, BMP, TIFF and ICO are rasterized to PNG. None means the image is in
+    one of those formats and could not be converted, so the caller must fall
+    back to its text. URLs and bytes this cannot identify pass through as-is.
+    """
+    header, sep, payload = image_uri.partition(",")
+    if not (header.startswith("data:") and sep and ";base64" in header.lower()):
+        return image_uri
+    # Wrapped base64 (RFC 2045 line breaks) would fail the fixed-width header
+    # decode below and slip through unconverted.
+    if re.search(r"\s", payload):
+        payload = "".join(payload.split())
+        image_uri = f"{header},{payload}"
+    try:
+        media_type = get_mime_type_from_base64(payload[:20])
+        is_svg = media_type is None and _looks_like_svg(payload)
+    except Exception:
+        return image_uri
+    if media_type in LLM_IMAGE_MEDIA_TYPES:
+        if header[len("data:"):].split(";", 1)[0].lower() == media_type:
+            return image_uri
+        return f"data:{media_type};base64,{payload}"
+    if media_type is None and not is_svg:
+        declared = header[len("data:"):].split(";", 1)[0].lower()
+        # Declared as a format providers reject but unrecognizable (svgz, a
+        # long prolog): sending it would still 400 the request.
+        if declared.startswith("image/") and declared not in LLM_IMAGE_MEDIA_TYPES:
+            return None
+        return image_uri
+
+    b64 = normalize_image_to_base64(image_uri)
+    if not b64:
+        return None
+    try:
+        if is_svg:
+            png_b64 = _rasterize_svg(b64, max_long_edge_px)
+        else:
+            import io
+
+            from PIL import Image
+
+            with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
+                image = source.convert("RGBA") if source.mode not in ("RGB", "RGBA", "L") else source.copy()
+            # Bound it here: a full-size scan would otherwise be PNG-encoded
+            # only for downscale_to_limits to decode and shrink it again.
+            image.thumbnail((max_long_edge_px, max_long_edge_px))
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            png_b64 = base64.b64encode(buffer.getvalue()).decode("ascii")
+    except Exception as e:
+        logger.warning("Could not convert %s image to PNG for the LLM: %s", media_type or "svg", e)
+        return None
+    return f"data:image/png;base64,{png_b64}"
+
+
+def _looks_like_svg(b64: str) -> bool:
+    # 1368 base64 chars -> 1026 bytes: room for an XML prolog and a comment
+    # before the <svg> tag, and a multiple of 4 so the decoder accepts it.
+    chunk = b64[:1368]
+    head = base64.b64decode(chunk + "=" * (-len(chunk) % 4)).decode("utf-8", errors="ignore").lower()
+    return "<svg" in head or "<?xml" in head
+
+
+def _rasterize_svg(b64: str, max_long_edge_px: int) -> str:
+    """PNG base64 for an SVG.
+
+    The output is sized to the model's long-edge limit up front: an SVG may
+    declare any size, and rendering it at that size first would make cairo
+    allocate the full raster on the request path.
+    """
+    from app.modules.parsers.image_parser.image_parser import ImageParser
+
+    svg_text = base64.b64decode(b64).decode("utf-8", errors="ignore")
+    width, height = ImageParser._extract_svg_dimensions(svg_text)
+    if width and height and max(width, height) > max_long_edge_px:
+        ratio = max_long_edge_px / max(width, height)
+        width, height = max(1, int(width * ratio)), max(1, int(height * ratio))
+    # With one side undeclared the converter fills in a default for it, so
+    # the declared side alone still has to be capped.
+    width = min(width, max_long_edge_px) if width else None
+    height = min(height, max_long_edge_px) if height else None
+    # Transparent SVGs (diagrams usually are) read as black-on-black once a
+    # provider flattens the alpha channel.
+    return ImageParser.svg_base64_to_png_base64(
+        b64, output_width=width, output_height=height, background_color="white",
+    )
+
+
 def get_extension_from_mimetype(mime_type: str | None) -> str | None:
     return mime_to_extension.get(mime_type)
 

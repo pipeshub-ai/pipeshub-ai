@@ -131,3 +131,40 @@ async def test_summary_embedding_time_is_counted_once() -> None:
     # the wall time of the call.
     busy = sum(total for _count, total, _max in timeline.stage_totals().values())
     assert busy <= wall
+
+
+@pytest.mark.asyncio
+@patch.dict(os.environ, {"USE_PARSING_SERVICE": "true"})
+async def test_a_deferred_resolution_is_redelivered_not_failed() -> None:
+    """A lookup that could not run must reach the consumer, which redelivers
+    the record; marking the enrichment FAILED here would never retry it."""
+    from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
+
+    parsing_client = MagicMock()
+    parsing_client.circuit_open = False
+    parsing_client.parse = AsyncMock(return_value=_make_parse_result())
+    extraction_client = MagicMock()
+    extraction_client.classify = AsyncMock(return_value=_metadata())
+    sink = MagicMock()
+    sink.index = AsyncMock()
+    sink.resolve_entities = AsyncMock(side_effect=EntityLookupUnavailableError("lookup could not run"))
+    sink.vector_store.index_record_summary = AsyncMock()
+    sink.blob_storage.apply = AsyncMock()
+    sink.enrich = AsyncMock()
+    sink.extract_named_entities = AsyncMock(return_value=None)
+    sink.persist_named_entities = AsyncMock()
+    transform_pipeline = MagicMock()
+    transform_pipeline.build_reconciliation_context = AsyncMock(return_value=None)
+
+    ep = _make_event_processor(
+        parsing_client=parsing_client, extraction_client=extraction_client,
+        sink_orchestrator=sink, transform_pipeline=transform_pipeline,
+    )
+    with pytest.raises(EntityLookupUnavailableError):
+        async for _event in ep.on_event(_make_event_data()):
+            pass
+
+    sink.enrich.assert_not_awaited()
+    sink.persist_named_entities.assert_not_awaited()
+    updates = [call.args[2] for call in ep.graph_provider.update_node.await_args_list]
+    assert not any(update.get("extractionStatus") == "FAILED" for update in updates)

@@ -217,6 +217,7 @@ class TestTheGate:
         details = ctx.pending_approval.details
         (saved,) = store.pending()
         assert saved["approvalId"] == details["approvalId"]
+        assert saved["source"] == "mcp" and details["canRemember"] is True
         assert (saved["toolName"], saved["instanceId"], saved["arguments"]) == ("create_issue", "inst-1", {"title": "Bug"})
         assert (saved["userId"], saved["conversationId"], saved["orgId"]) == ("user-1", "conv-1", "org-1")
         assert details["arguments"] == {"title": "Bug"}
@@ -460,10 +461,18 @@ async def _request(
     })
     adapter = MCPToolAdapter(server, info, SimpleNamespace(call=mcp.call), context=context)  # type: ignore[arg-type]
     context.tool_state.setdefault(approvals.TOOLS_BY_PATH, {})[adapter.path] = adapter
+    return await run_request(context, [adapter], *model_calls, history=history, query=query, loop=loop)
 
+
+async def run_request(
+    context: Any, tools: list[Any], *model_calls: ToolCall | AssistantMessage,  # noqa: ANN401
+    history: list[dict[str, Any]] | None = None, query: str = _QUESTION, loop: Any = None,  # noqa: ANN401
+) -> _Request:
+    """A chat request with these tools, wired the way the factory wires one: history, resume, the two hooks."""
     registry = ToolRegistry()
     registry.register_tool(TaskCompleteTool())
-    registry.register_tool(adapter)
+    for tool in tools:
+        registry.register_tool(tool)
     hooks = HookRegistry()
     hooks.on(HookEvent.PRE_AGENT).use(approvals.resume_parked_call(context))
     hooks.on(HookEvent.PRE_TOOL_USE).use(approvals.approval_gate(context))

@@ -953,6 +953,8 @@ export interface ToolApprovalDetails {
   readOnly?: boolean;
   /** What the tool does to data; a deleting tool is marked on the card. */
   kind?: 'read' | 'write' | 'destructive' | null;
+  /** False when "Don't ask again" can't set a rule: a toolset's rules are its admin's. */
+  canRemember?: boolean;
   /** Epoch milliseconds. */
   expiresAt: number;
   /** Null when the arguments were too large to send; `argumentsPreview` holds their start. */

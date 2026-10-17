@@ -44,6 +44,10 @@ import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
 import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { streamRegenerateForSlot, cancelStreamForSlot } from '@/chat/streaming';
 import { useTranslation } from 'react-i18next';
+import { useAuthStore } from '@/lib/store/auth-store';
+import { getUserIdFromToken } from '@/lib/utils/jwt';
+import { useComposerDraft } from '@/chat/hooks/use-composer-draft';
+import { buildDraftKey } from '@/chat/utils/composer-draft';
 import { useChatSpeechRecognition } from '@/lib/hooks/use-chat-speech-recognition';
 import { PastedTextChip } from '@/chat/components/pasted-text-chip';
 import { TextPreviewDialog } from '@/chat/components/text-preview-dialog';
@@ -110,6 +114,8 @@ interface ChatInputProps {
    * is never overwritten since the effect only fires on `key` changes.
    */
   prefill?: { text: string; key: number } | null;
+  /** Keep unsent text per conversation across reloads and navigation (main chat only). */
+  persistDraft?: boolean;
 }
 
 function formatFileSize(bytes: number): string {
@@ -180,6 +186,7 @@ export function ChatInput({
   isAgentChat = false,
   agentId,
   prefill,
+  persistDraft = false,
 }: ChatInputProps) {
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
@@ -211,6 +218,31 @@ export function ChatInput({
   const isRegenerateMode = activeMessageAction?.type === 'regenerate';
   const isEditMode = activeMessageAction?.type === 'editQuery';
   const isActionMode = isRegenerateMode || isEditMode;
+
+  // Unsent text survives leaving the page, per conversation. Opt-in: the
+  // collection widget and agent builder reuse this composer and have no thread to key on.
+  // A reload restores only the tokens, not `user`, so the id comes from the token first.
+  const draftAccessToken = useAuthStore((s) => s.accessToken);
+  const draftStoreUserId = useAuthStore((s) => s.user?.id);
+  const draftUserId = useMemo(
+    () => getUserIdFromToken() ?? draftStoreUserId,
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- getUserIdFromToken reads the token this re-runs on
+    [draftAccessToken, draftStoreUserId],
+  );
+  const draftSlotId = useChatStore((s) => s.activeSlotId);
+  const draftConvId = useChatStore((s) =>
+    s.activeSlotId ? (s.slots[s.activeSlotId]?.convId ?? null) : null,
+  );
+  useComposerDraft({
+    draftKey: persistDraft
+      ? buildDraftKey({ userId: draftUserId, convId: draftConvId, agentId })
+      : null,
+    userId: draftUserId,
+    slotId: draftSlotId,
+    message,
+    setMessage,
+    paused: isActionMode,
+  });
   const fileInputRef = useRef<HTMLInputElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

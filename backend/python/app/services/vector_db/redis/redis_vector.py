@@ -64,6 +64,7 @@ from app.services.vector_db.models import (
     QuantizationType,
     ScrollResult,
     ScrollWindowExceededError,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
@@ -71,6 +72,7 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.redis.config import RedisVectorConfig
+from app.services.vector_db.redis.errors import classify_redis_search_error
 from app.services.vector_db.redis.utils import (
     coerce_payload_hash_value,
     decode_hash_doc,
@@ -262,6 +264,12 @@ class RedisVectorService(IVectorDBService):
 
     def get_capabilities(self) -> VectorDBCapabilities:
         return _REDIS_CAPABILITIES
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        # The client's own Retry (services/redis/standalone_provider.py) has
+        # already re-sent the command by the time an error gets here; the
+        # search retry's time budget is what keeps the two from compounding.
+        return classify_redis_search_error(error)
 
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()
