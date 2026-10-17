@@ -56,8 +56,12 @@ async function serializeBody(
 
   const encoded = new Response(body);
   const contentType = encoded.headers.get('content-type');
-  const hasContentType = Object.keys(headers).some((k) => k.toLowerCase() === 'content-type');
-  if (contentType && !hasContentType) headers['content-type'] = contentType;
+  // The bytes use the encoder's multipart boundary, so its header wins over a
+  // caller's (e.g. a bare `multipart/form-data` with no boundary).
+  const isMultipart = contentType?.startsWith('multipart/form-data') ?? false;
+  if (contentType && (isMultipart || !('content-type' in headers))) {
+    headers['content-type'] = contentType;
+  }
   return new Uint8Array(await encoded.arrayBuffer());
 }
 
