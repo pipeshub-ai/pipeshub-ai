@@ -70,7 +70,7 @@ def _slot_taken() -> bool:
 
 
 class _Blocking:
-    """Stands in for ``_process_downloaded_record``; parks each call until released."""
+    """Stands in for ``_decompressed_payload``, the decode thread's work; parks each call until released."""
 
     def __init__(self, result: dict | None = None, error: Exception | None = None) -> None:
         self.result = result if result is not None else {"ok": True}
@@ -82,7 +82,7 @@ class _Blocking:
         self.release = threading.Event()
         self._lock = threading.Lock()
 
-    def __call__(self, data: dict) -> dict:
+    def __call__(self, data: dict) -> bytes:
         with self._lock:
             self.calls += 1
             self.inside += 1
@@ -92,7 +92,7 @@ class _Blocking:
             assert self.release.wait(5), "test never released the decode"
             if self.error is not None:
                 raise self.error
-            return self.result
+            return msgspec.msgpack.encode(self.result)
         finally:
             with self._lock:
                 self.inside -= 1
@@ -268,7 +268,7 @@ class TestCeiling:
         storage = _bs()
         with (
             patch.object(storage, "_decompress_bytes", side_effect=AssertionError("decoded")),
-            patch.object(storage, "_process_downloaded_record", side_effect=AssertionError("decoded")),
+            patch.object(storage, "_decompressed_payload", side_effect=AssertionError("decoded")),
             pytest.raises(StoredRecordTooLargeError, match=str(_msgpack_len(record))),
         ):
             await storage._decode_record(_envelope(record))
@@ -285,37 +285,67 @@ class TestGate:
         """Default-executor threads each keep a malloc arena; one thread keeps one."""
         storage = _bs()
         names: set[str] = set()
-        real = storage._process_downloaded_record
+        real = storage._decompressed_payload
 
-        def spy(data: dict) -> dict:
+        def spy(data: dict) -> bytes:
             names.add(threading.current_thread().name)
             return real(data)
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=spy):
+        with patch.object(storage, "_decompressed_payload", side_effect=spy):
             for _ in range(5):
                 await storage._decode_record(_envelope(_record(5000)))
         assert len(names) == 1
         assert next(iter(names)).startswith("record-decode")
+
+    async def test_only_decompression_leaves_the_loop_thread(self) -> None:
+        """msgpack holds the GIL anyway; built on the loop thread, the record uses the main malloc arena."""
+        storage = _bs()
+        where: dict[str, int] = {}
+        real_payload, real_unpack = storage._decompressed_payload, storage._unpack_payload
+
+        def payload(data: dict) -> bytes:
+            where["decompress"] = threading.get_ident()
+            return real_payload(data)
+
+        def unpack(raw: bytes) -> dict:
+            where["unpack"] = threading.get_ident()
+            return real_unpack(raw)
+
+        with patch.object(storage, "_decompressed_payload", side_effect=payload), patch.object(
+            storage, "_unpack_payload", side_effect=unpack
+        ):
+            assert await storage._decode_record(_envelope(_record(5000))) == _record(5000)
+        assert where["unpack"] == threading.get_ident()
+        assert where["decompress"] != threading.get_ident()
+
+    async def test_slot_is_released_when_unpacking_fails(self) -> None:
+        storage = _bs()
+        with patch.object(storage, "_decompressed_payload", return_value=b"\xc1 not msgpack"), pytest.raises(
+            Exception, match="Decompression failed"
+        ):
+            await storage._decode_record(_envelope(_record(5000)))
+        assert _decode_slot_for(asyncio.get_running_loop())._value == bs_mod.LARGE_DECODE_SLOTS
+        assert await storage._decode_record(_envelope(_record(5000))) == _record(5000)
 
     async def test_large_record_round_trips_through_a_thread(self) -> None:
         record = _record(50_000)
         main_thread = threading.get_ident()
         storage = _bs()
         seen: list[int] = []
-        real = storage._process_downloaded_record
+        real = storage._decompressed_payload
 
-        def spy(data: dict) -> dict:
+        def spy(data: dict) -> bytes:
             seen.append(threading.get_ident())
             return real(data)
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=spy):
+        with patch.object(storage, "_decompressed_payload", side_effect=spy):
             assert await storage._decode_record(_envelope(record)) == record
         assert seen and seen[0] != main_thread
 
     async def test_one_large_decode_at_a_time(self) -> None:
         storage, fake = _bs(), _Blocking()
         envelope = _envelope(_record(5000))
-        with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
             first = asyncio.create_task(storage._decode_record(envelope))
             second = asyncio.create_task(storage._decode_record(envelope))
             await _until(fake.entered.is_set)
@@ -328,7 +358,7 @@ class TestGate:
     async def test_cancelled_caller_holds_the_slot_until_its_thread_finishes(self) -> None:
         storage, fake = _bs(), _Blocking()
         envelope = _envelope(_record(5000))
-        with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
             first = asyncio.create_task(storage._decode_record(envelope))
             await _until(fake.entered.is_set)
             first.cancel()
@@ -350,7 +380,7 @@ class TestGate:
         loop.set_exception_handler(lambda _loop, ctx: reported.append(ctx))
         try:
             storage, fake = _bs(), _Blocking(error=ValueError("boom"))
-            with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+            with patch.object(storage, "_decompressed_payload", side_effect=fake):
                 task = asyncio.create_task(storage._decode_record(_envelope(_record(5000))))
                 await _until(fake.entered.is_set)
                 task.cancel()
@@ -370,7 +400,7 @@ class TestGate:
         monkeypatch.setattr(bs_mod, "DECODE_WAIT_SECONDS", 0.05)
         storage, fake = _bs(), _Blocking()
         envelope = _envelope(_record(5000))
-        with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
             holder = asyncio.create_task(storage._decode_record(envelope))
             await _until(fake.entered.is_set)
             with pytest.raises(StoredRecordDecodeBusyError) as info:
@@ -386,7 +416,7 @@ class TestGate:
         broken = _Blocking(error=ValueError("corrupt"))
         broken.release.set()
         envelope = _envelope(_record(5000))
-        with patch.object(storage, "_process_downloaded_record", side_effect=broken), pytest.raises(
+        with patch.object(storage, "_decompressed_payload", side_effect=broken), pytest.raises(
             ValueError, match="corrupt"
         ):
             await storage._decode_record(envelope)
@@ -394,13 +424,13 @@ class TestGate:
 
     async def test_small_records_are_not_held_up_by_a_large_one(self) -> None:
         storage, fake = _bs(), _Blocking()
-        real = storage._process_downloaded_record
+        real = storage._decompressed_payload
         small = _envelope(_record(10))
 
-        def route(data: dict) -> dict:
+        def route(data: dict) -> bytes:
             return fake(data) if data is not small else real(data)
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=route):
+        with patch.object(storage, "_decompressed_payload", side_effect=route):
             large = asyncio.create_task(storage._decode_record(_envelope(_record(5000))))
             await _until(fake.entered.is_set)
             assert await asyncio.wait_for(storage._decode_record(small), 1) == _record(10)
@@ -410,9 +440,9 @@ class TestGate:
     async def test_event_loop_keeps_running_during_a_large_decode(self) -> None:
         storage = _bs()
 
-        def slow(data: dict) -> dict:
+        def slow(data: dict) -> bytes:
             time.sleep(0.3)
-            return {"ok": True}
+            return msgspec.msgpack.encode({"ok": True})
 
         lags: list[float] = []
 
@@ -424,7 +454,7 @@ class TestGate:
 
         stop = asyncio.Event()
         tick = asyncio.create_task(ticker(stop))
-        with patch.object(storage, "_process_downloaded_record", side_effect=slow):
+        with patch.object(storage, "_decompressed_payload", side_effect=slow):
             await storage._decode_record(_envelope(_record(5000)))
         stop.set()
         await tick
@@ -447,7 +477,7 @@ class TestPerLoopSlots:
             slot.release()
             return True
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=fake):
+        with patch.object(storage, "_decompressed_payload", side_effect=fake):
             holder = threading.Thread(target=first_loop)
             holder.start()
             assert fake.entered.wait(5)
@@ -649,7 +679,7 @@ class TestStoredSizeGatesTheDownload:
     async def test_cancelled_mid_decode_keeps_the_slot_until_the_thread_finishes(self) -> None:
         storage, fake = _reader(_bs(), envelope=_envelope(_record(5000))), _Blocking()
         with patch.object(bs_mod, "get_shared_session", return_value=MagicMock()), patch.object(
-            storage, "_process_downloaded_record", side_effect=fake
+            storage, "_decompressed_payload", side_effect=fake
         ):
             task = asyncio.create_task(
                 storage.get_record_from_storage("vr-1", "org", {"record_doc_id": "doc-1", "fileSizeBytes": LARGE + 1})

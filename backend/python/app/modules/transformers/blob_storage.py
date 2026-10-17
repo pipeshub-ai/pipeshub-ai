@@ -898,20 +898,7 @@ class BlobStorage(Transformer):
         """
         # NEW FORMAT: Check for isCompressed flag
         if data.get("isCompressed"):
-            compressed_base64 = data.get("record")
-            if not compressed_base64:
-                self.logger.error("❌ isCompressed is true but no record found")
-                raise Exception("Missing record in compressed record")
-
-            try:
-                compressed_bytes = base64.b64decode(compressed_base64)
-                decompressed_bytes = self._decompress_bytes(compressed_bytes)
-                record = msgspec.msgpack.decode(decompressed_bytes)
-                return record
-
-            except Exception as e:
-                self.logger.error("❌ Failed to decompress record: %s", str(e))
-                raise Exception(f"Decompression failed: {str(e)}")
+            return self._unpack_payload(self._decompressed_payload(data))
 
         # OLD FORMAT: Uncompressed record
         elif data.get("record"):
@@ -921,6 +908,25 @@ class BlobStorage(Transformer):
             # Unknown format
             self.logger.error("❌ Unknown record format in S3")
             raise Exception("Unknown record format")
+
+    def _decompressed_payload(self, data: dict) -> bytes:
+        """The msgpack bytes of a compressed envelope: base64 and zstd decode."""
+        compressed_base64 = data.get("record")
+        if not compressed_base64:
+            self.logger.error("❌ isCompressed is true but no record found")
+            raise Exception("Missing record in compressed record")
+        try:
+            return self._decompress_bytes(base64.b64decode(compressed_base64))
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
+
+    def _unpack_payload(self, payload: bytes) -> dict:
+        try:
+            return msgspec.msgpack.decode(payload)
+        except Exception as e:
+            self.logger.error("❌ Failed to decompress record: %s", str(e))
+            raise Exception(f"Decompression failed: {str(e)}") from e
 
     async def _decode_record(
         self, data: dict[str, Any], lease: _DecodeSlotLease | None = None
@@ -943,14 +949,35 @@ class BlobStorage(Transformer):
             slot = lease.hand_off()
         else:
             slot = await _acquire_decode_slot(f"a {size}-byte record")
+        # Only zstd runs in the thread: it releases the GIL. msgpack holds it, so it
+        # would stall the loop from a thread too, and there it would allocate the
+        # record from the thread's malloc arena, which the process can't reuse.
         work = asyncio.get_running_loop().run_in_executor(
-            _DECODE_EXECUTOR, self._process_downloaded_record, data
+            _DECODE_EXECUTOR, self._decompressed_payload, data
         )
-        # Release on thread completion: a cancelled caller must not free the slot mid-decode.
-        work.add_done_callback(lambda _: slot.release())
+        released = abandoned = False
+
+        def release() -> None:
+            nonlocal released
+            if not released:
+                released = True
+                slot.release()
+
+        # A cancelled caller must not free the slot mid-decode: the thread does, when it ends.
+        work.add_done_callback(lambda _: abandoned and release())
         # Read the exception so a cancelled caller doesn't leave "exception never retrieved" noise.
         work.add_done_callback(lambda f: f.cancelled() or f.exception())
-        return await asyncio.shield(work)
+        try:
+            payload = await asyncio.shield(work)
+        except BaseException:
+            abandoned = True
+            if work.done():
+                release()
+            raise
+        try:
+            return self._unpack_payload(payload)
+        finally:
+            release()
 
     async def _get_content_length(self, session: aiohttp.ClientSession, url: str) -> int:
         """

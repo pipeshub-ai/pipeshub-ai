@@ -130,9 +130,9 @@ class TestCloudStorageReads:
 
         inside = peak = 0
         threads: set[int] = set()
-        real = storage._process_downloaded_record
+        real = storage._decompressed_payload
 
-        def counting(data: dict) -> dict:
+        def counting(data: dict) -> bytes:
             nonlocal inside, peak
             threads.add(threading.get_ident())
             inside += 1
@@ -142,7 +142,7 @@ class TestCloudStorageReads:
             finally:
                 inside -= 1
 
-        with patch.object(storage, "_process_downloaded_record", side_effect=counting):
+        with patch.object(storage, "_decompressed_payload", side_effect=counting):
             results = await asyncio.gather(
                 *(storage.get_record_from_storage("vr-deck", "org-1", lookup) for _ in range(4))
             )
