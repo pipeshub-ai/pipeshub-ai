@@ -4344,22 +4344,6 @@ wheels = [
 ]
 
 [[package]]
-name = "nltk"
-version = "3.10.3"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "click" },
-    { name = "defusedxml" },
-    { name = "joblib" },
-    { name = "regex" },
-    { name = "tqdm" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/e0/e6/fe51d2bb1a3b446f59c5c8165999a9fee208bc346af90a7cbf7657bc0d75/nltk-3.10.3.tar.gz", hash = "sha256:bb9327a461c3811c2fa4900e03840401f2126adfb30c0072827c433bd2444ea4", size = 5137152, upload-time = "2026-08-12T23:46:37.258Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/b6/6d/ebd2af4640b12168fdf0cb74b6118df2f32a2f62ec7e0c06fbfd80706639/nltk-3.10.3-py3-none-any.whl", hash = "sha256:ff9598a8e20518ee0d557745890cc4435b9578489e2dcbc69c4f81fa060caf7c", size = 1798643, upload-time = "2026-08-12T23:44:13.478Z" },
-]
-
-[[package]]
 name = "notion-client"
 version = "2.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -5249,7 +5233,6 @@ dependencies = [
     { name = "msgspec" },
     { name = "nats-py" },
     { name = "neo4j" },
-    { name = "nltk" },
     { name = "notion-client" },
     { name = "numpy" },
     { name = "opencv-python-headless" },
@@ -5369,7 +5352,6 @@ requires-dist = [
     { name = "msgspec", specifier = "==0.20.0" },
     { name = "nats-py", specifier = "==2.1.0" },
     { name = "neo4j", specifier = ">=5.0.0" },
-    { name = "nltk", specifier = "==3.10.3" },
     { name = "notion-client", specifier = "==2.2.1" },
     { name = "numpy", specifier = "==2.3.2" },
     { name = "opencv-python-headless", specifier = "==4.11.0.86" },
