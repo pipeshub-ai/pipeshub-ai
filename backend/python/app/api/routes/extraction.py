@@ -32,6 +32,8 @@ from app.modules.named_entities.domain.config import (
     NamedEntityBudgets,  # noqa: TC001  # pydantic field type
 )
 from app.modules.named_entities.domain.kinds import EntityKind
+from app.services.model_identity.propagation import scope_from_claims
+from app.services.model_identity.workload import Workload
 from app.modules.transformers.document_extraction import (
     semantic_metadata_from_classification,
 )
@@ -46,6 +48,11 @@ router = APIRouter(
     tags=["extraction"],
     dependencies=[Depends(authMiddleware), Depends(require_classify_token)],
 )
+
+
+def _config_service(request: Request) -> Any:  # noqa: ANN401
+    container = getattr(request.app, "container", None)
+    return container.config_service() if container is not None else None
 
 
 # ---------------------------------------------------------------------------
@@ -91,13 +98,19 @@ async def classify(
     document_extraction = request.app.state.document_extraction
 
     try:
-        classification = await document_extraction.classify(
-            blocks=body.block_container.blocks,
-            org_id=org_id,
-            departments=body.departments or None,
-            record_name=body.record_name,
-            record_type=body.record_type,
-        )
+        async with scope_from_claims(
+            claims,
+            Workload.EXTRACTION,
+            fallback_service="extraction",
+            config_service=_config_service(request),
+        ):
+            classification = await document_extraction.classify(
+                blocks=body.block_container.blocks,
+                org_id=org_id,
+                departments=body.departments or None,
+                record_name=body.record_name,
+                record_type=body.record_type,
+            )
         metadata = None if classification is None else semantic_metadata_from_classification(classification)
     except Exception as exc:
         logger.exception(

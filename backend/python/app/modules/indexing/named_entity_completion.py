@@ -43,6 +43,10 @@ from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.messaging.utils import MessagingUtils
+from app.services.model_identity.boundary import config_service_of
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.concurrency import (
     MAX_CONCURRENT_INDEXING_LLM_CALLS,
     indexing_llm_slots_remaining,
@@ -80,6 +84,7 @@ async def complete_named_entities(
     page_size: int = PAGE_SIZE,
     concurrency_manager=None,  # noqa: ANN001 - the indexing concurrency manager, when distributed
     still_leader: Callable[[], bool] | None = None,
+    config_service=None,  # noqa: ANN001 - reads the org's identity policy for the model gateway
 ) -> int:
     """Work the due re-extraction jobs. Returns how many records were written.
     ``still_leader``: checked before each record; the pass stops once it is false."""
@@ -103,7 +108,15 @@ async def complete_named_entities(
             await graph_provider.clear_named_entity_persist_retry(record_id, due)
             continue
         try:
-            outcome = await _complete_one(graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts)
+            async with call_scope(
+                service_principal("named-entity-completion", str(org_id or "")),
+                Workload.EXTRACTION,
+                config_service=config_service,
+                record_id=str(record_id),
+            ):
+                outcome = await _complete_one(
+                    graph_provider, sink, concurrency_manager, record_id, org_id, due, attempts,
+                )
         except Exception as exc:
             logger.warning("named_entity_completion: record %s failed: %s", record_id, type(exc).__name__)
             await _count_failure(graph_provider, logger, org_id, record_id, type(exc).__name__, attempts)
@@ -200,6 +213,7 @@ async def _pass_as_leader(
             logger=logger,
             concurrency_manager=_record_lease_manager(app_container),
             still_leader=lambda: not lost.is_set(),
+            config_service=config_service_of(app_container),
         )
     finally:
         keeper.cancel()

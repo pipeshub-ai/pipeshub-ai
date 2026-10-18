@@ -15,6 +15,7 @@ import httpx
 
 from app.services.model_identity import metrics
 from app.services.model_identity.forwarders.registry import get_forwarder_registry
+from app.services.model_identity.runtime import note_forwarding
 from app.services.model_identity.settings import ConnectionForwardingSettings
 from app.services.model_identity.transport.client_paths import iter_client_slots, iter_http_clients
 from app.services.model_identity.transport.httpx_hook import (
@@ -76,6 +77,7 @@ def instrument_model(model: Any, provider: str, config: Optional[Mapping[str, An
             settings.mode,
         )
         return model
+    note_forwarding(requires_groups=forwarder.requires_groups(settings))
     slots = iter_client_slots(model)
     if not slots:
         # A provider that does not speak httpx (Bedrock's boto, Vertex's gRPC)

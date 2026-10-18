@@ -15,6 +15,9 @@ from app.config.constants.service import OAuthScopes
 from app.edition_config import resolve_llm_for_search
 from app.modules.retrieval.retrieval_service import RetrievalService
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.opik import get_llm_invoke_config
@@ -174,52 +177,58 @@ async def search(
     logger = container.logger()
     time_range = _search_time_range(body)
     try:
-        llm = await resolve_llm_for_search(request, retrieval_service)
+        async with call_scope(
+            principal_from_request_user(request.state.user),
+            Workload.SEARCH,
+            config_service=container.config_service(),
+            container=container,
+        ):
+            llm = await resolve_llm_for_search(request, retrieval_service)
 
-        # Extract KB IDs from filters if present
-        updated_filters = body.filters
+            # Extract KB IDs from filters if present
+            updated_filters = body.filters
 
-        # Setup query transformation
-        rewrite_chain, expansion_chain = setup_query_transformation(llm)
+            # Setup query transformation
+            rewrite_chain, expansion_chain = setup_query_transformation(llm)
 
-        # OpikTracer is invoke-config only (not a constructor callback); without
-        # this, rewrite/expand LLM calls never appear in Opik.
-        invoke_config = get_llm_invoke_config(llm)
+            # OpikTracer is invoke-config only (not a constructor callback); without
+            # this, rewrite/expand LLM calls never appear in Opik.
+            invoke_config = get_llm_invoke_config(llm)
 
-        # Run query transformations in parallel
-        rewritten_query, expanded_queries = await asyncio.gather(
-            _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
-            _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
-        )
+            # Run query transformations in parallel
+            rewritten_query, expanded_queries = await asyncio.gather(
+                _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
+                _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
+            )
 
-        logger.debug(f"Rewritten query: {rewritten_query}")
-        logger.debug(f"Expanded queries: {expanded_queries}")
+            logger.debug(f"Rewritten query: {rewritten_query}")
+            logger.debug(f"Expanded queries: {expanded_queries}")
 
-        queries = _queries_for_search(body.query, rewritten_query, expanded_queries)
-        results = await retrieval_service.search_with_filters(
-            queries=queries,
-            org_id=request.state.user.get("orgId"),
-            user_id=request.state.user.get("userId"),
-            limit=body.limit,
-            filter_groups=updated_filters,
-            knowledge_search=True,
-            time_range=time_range,
-        )
-        custom_status_code = results.get("status_code", 500)
-        logger.info(f"Custom status code: {custom_status_code}")
+            queries = _queries_for_search(body.query, rewritten_query, expanded_queries)
+            results = await retrieval_service.search_with_filters(
+                queries=queries,
+                org_id=request.state.user.get("orgId"),
+                user_id=request.state.user.get("userId"),
+                limit=body.limit,
+                filter_groups=updated_filters,
+                knowledge_search=True,
+                time_range=time_range,
+            )
+            custom_status_code = results.get("status_code", 500)
+            logger.info(f"Custom status code: {custom_status_code}")
 
-        _su_email = request.state.user.get("email")
-        record_event("search_performed", {
-            "orgId": request.state.user.get("orgId"),
-            "userId": request.state.user.get("userId"),
-            "email": _su_email,
-            "domain": domain_from_email(_su_email),
-            "status_code": custom_status_code,
-            "num_queries": len(queries),
-            "search_type": "search",
-        })
+            _su_email = request.state.user.get("email")
+            record_event("search_performed", {
+                "orgId": request.state.user.get("orgId"),
+                "userId": request.state.user.get("userId"),
+                "email": _su_email,
+                "domain": domain_from_email(_su_email),
+                "status_code": custom_status_code,
+                "num_queries": len(queries),
+                "search_type": "search",
+            })
 
-        return JSONResponse(status_code=custom_status_code, content=results)
+            return JSONResponse(status_code=custom_status_code, content=results)
 
     except HTTPException:
         raise

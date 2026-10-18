@@ -74,6 +74,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     _unsupported_container_filters,
     requested_scope_ids,
 )
+from app.services.model_identity.call_context import narrow_workload
+from app.services.model_identity.workload import Workload
 from app.services.vector_db.collection_registry import CollectionRegistry
 from app.services.vector_db.const.const import (
     CONNECTOR_IDS_FIELD,
@@ -2091,16 +2093,19 @@ class RetrievalService:
         ]
         supports_sparse = self._capabilities.supports_sparse_vectors
 
-        if sparse_embedder is not None and supports_sparse:
-            # Parallelise dense and sparse embedding generation
-            sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
-            (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
-                asyncio.gather(*dense_tasks),
-                asyncio.gather(*sparse_tasks),
-            )
-        else:
-            dense_query_embeddings = await asyncio.gather(*dense_tasks)
-            sparse_query_embeddings = [None] * len(queries)
+        # The tasks gather() starts copy the context when they are created, so the
+        # scope has to be open across the awaits, not just where the coroutines are built.
+        with narrow_workload(Workload.QUERY_EMBEDDING):
+            if sparse_embedder is not None and supports_sparse:
+                # Parallelise dense and sparse embedding generation
+                sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
+                (dense_query_embeddings, sparse_query_embeddings) = await asyncio.gather(
+                    asyncio.gather(*dense_tasks),
+                    asyncio.gather(*sparse_tasks),
+                )
+            else:
+                dense_query_embeddings = await asyncio.gather(*dense_tasks)
+                sparse_query_embeddings = [None] * len(queries)
 
         if plan is not None:
             plan.dense = dense_query_embeddings

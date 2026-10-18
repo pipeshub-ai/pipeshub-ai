@@ -78,6 +78,9 @@ from app.services.graph_db.interface.graph_db_provider import (
     SELECTION_APPS_FILTER_KEY,
     IGraphDBProvider,
 )
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import assert_identity_allowed, call_scope
+from app.services.model_identity.workload import Workload
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.aimodels import model_default_reasoning_effort
@@ -3835,7 +3838,15 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 enabled=bool(agent.get("sendUserContext", True)),
             )
 
-        async def _run() -> AsyncGenerator[str, None]:
+        caller_principal = principal_from_request_user(
+            user_context, agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+        )
+        await assert_identity_allowed(
+            caller_principal, Workload.AGENT,
+            config_service=config_service, container=request.app.container,
+        )
+
+        async def _run_unbound() -> AsyncGenerator[str, None]:
             """Everything below the authorization checks. Runs after the
             response headers are already on the wire, so the client sees the
             stream open immediately instead of waiting out the config fan-out.
@@ -4390,6 +4401,20 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                 logger.error(f"Error in chat_stream body: {exc}", exc_info=True)
                 error_code, user_message = classify_exception(exc)
                 yield _stream_error_frame(protocol, user_message, error_code)
+
+        async def _run() -> AsyncGenerator[str, None]:
+            # Bound in the task that iterates the stream; see the same wrapper in chatbot.py.
+            async with call_scope(
+                caller_principal, Workload.AGENT,
+                config_service=config_service, container=request.app.container,
+                agent_id=None if agent_id == "agentIdPlaceholder" else agent_id,
+                conversation_id=chat_query.conversationId,
+            ):
+                # Closed with this wrapper: a disconnect closes only the outer generator,
+                # and the inner one must stop its producer task now, not at GC.
+                async with aclosing(_run_unbound()) as inner:
+                    async for event in inner:
+                        yield event
 
         return StreamingResponse(
             _run(),

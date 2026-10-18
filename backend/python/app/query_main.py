@@ -15,6 +15,9 @@ import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imp
 from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.chatbot import warm_up_entity_vector_store
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.api.routes.records import router as records_router
 from app.edition_config import (
     agent_router,
@@ -225,7 +228,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _warmup_embedding_model() -> None:
             try:
                 logger.info("🔥 Warming up embedding model in background")
-                await retrieval_service.get_embedding_model_instance()
+                async with call_scope(
+                    service_principal("warmup"),
+                    Workload.SYSTEM,
+                    config_service=container.config_service(),
+                    container=container,
+                ):
+                    await retrieval_service.get_embedding_model_instance()
                 logger.info("✅ Embedding model warmup complete")
             except Exception as warmup_error:
                 logger.error(

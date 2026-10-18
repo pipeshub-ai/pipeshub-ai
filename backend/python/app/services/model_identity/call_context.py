@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextvars
 import logging
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field, replace
 from typing import Any, Dict, Optional
 
@@ -146,3 +147,14 @@ def workload_scope(workload: Workload) -> _Binding:
             f"cannot scope a {current.workload_class.value} call to {workload.value}"
         )
     return _Binding(replace(current, workload=workload))
+
+
+def narrow_workload(workload: Workload) -> AbstractContextManager[Any]:
+    """``workload_scope`` for code shared by interactive and background callers.
+
+    A search runs under chat and under unbound system work; the same helper
+    marks its embedding step in both without raising in the second.
+    """
+    if workload_class(workload) is current_call_context().workload_class:
+        return workload_scope(workload)
+    return nullcontext()
