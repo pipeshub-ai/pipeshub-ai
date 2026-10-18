@@ -702,7 +702,11 @@ export class CrawlingSchedulerService {
           job.data.orgId === orgId,
       );
 
-      if (matchingJobs.length === 0) {
+      const mostRecentJob = matchingJobs.sort(
+        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+      )[0];
+
+      if (!mostRecentJob) {
         this.logger.debug('No jobs found', {
           jobId,
           connector,
@@ -711,11 +715,6 @@ export class CrawlingSchedulerService {
         });
         return null;
       }
-
-      // Get the most recent job
-      const mostRecentJob = matchingJobs.sort(
-        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
-      )[0];
 
       const jobState = await mostRecentJob.getState();
 
