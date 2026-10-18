@@ -60,7 +60,11 @@ export function ToolsetToolRulesDialog({
     };
   }, [open, toolsetType]);
 
-  const editor = useToolRulesEditor(instanceId, tools ?? [], open, { api: TOOLSET_RULES_API, listedOnly: true });
+  const editor = useToolRulesEditor(instanceId, tools ?? [], open, {
+    api: TOOLSET_RULES_API,
+    listedOnly: true,
+    source: 'toolset',
+  });
   const ready = tools !== null && !editor.loading && !editor.loadError;
   const editable = ready && editor.canEdit;
 

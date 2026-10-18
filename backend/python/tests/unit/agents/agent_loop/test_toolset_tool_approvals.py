@@ -38,6 +38,7 @@ class _Jira:
     """A connector toolset as the loader builds one: a client, and `@tool` methods."""
 
     created: list[str] = []
+    deleted: list[str] = []
 
     def __init__(self, client: Any = None) -> None:  # noqa: ANN401
         self.client = client
@@ -56,12 +57,14 @@ class _Jira:
     @tool(path="/tools/jira/delete_issue", short_description="Delete an issue", description="Delete a Jira issue.",
           tags=[Tag(key="type", value="destructive")])
     async def delete_issue(self, key: str) -> tuple[bool, str]:
+        _Jira.deleted.append(key)
         return True, f"deleted {key}"
 
 
 @pytest.fixture(autouse=True)
 def _nothing_created() -> None:
     _Jira.created = []
+    _Jira.deleted = []
 
 
 _INSTANCE = ("inst-j", "Jira (Engineering)")
@@ -161,31 +164,29 @@ class TestTheGate:
     async def test_a_read_only_tool_runs(self) -> None:
         assert (await _gate(_context(), "jira__search_issues", jql="x")).decision == PreDecision.ALLOW
 
-    async def test_a_tool_that_changes_data_asks_with_a_card_that_cant_set_rules(self) -> None:
+    async def test_a_tool_that_changes_data_runs(self) -> None:
         store = _Store()
-        ctx = await _gate(_context(store), "jira__create_issue", title="Bug")
+        for overrides in ({}, {"client_name": "api"}, {"is_service_account": True}):
+            ctx = await _gate(_context(store, **overrides), "jira__create_issue", title="Bug")
+            assert ctx.decision == PreDecision.ALLOW
+        assert store.pending() == []
+
+    async def test_a_deleting_tool_asks_with_a_card_that_cant_set_rules(self) -> None:
+        store = _Store()
+        ctx = await _gate(_context(store), "jira__delete_issue", key="ENG-1")
 
         assert ctx.decision == PreDecision.ASK
         assert ctx.pending_approval is not None
         details = ctx.pending_approval.details
         assert (details["serverName"], details["instanceId"], details["toolName"], details["kind"]) == (
-            "Jira (Engineering)", "inst-j", "create_issue", "write",
+            "Jira (Engineering)", "inst-j", "delete_issue", "destructive",
         )
         assert details["canRemember"] is False
         (saved,) = store.pending()
-        assert (saved["source"], saved["instanceId"], saved["arguments"]) == ("toolset", "inst-j", {"title": "Bug"})
+        assert (saved["source"], saved["instanceId"], saved["arguments"]) == ("toolset", "inst-j", {"key": "ENG-1"})
 
-    async def test_a_deleting_tool_is_denied_and_the_model_is_told_an_admin_can_allow_it(self) -> None:
-        store = _Store()
-        ctx = await _gate(_context(store), "jira__delete_issue", key="ENG-1")
-
-        assert ctx.decision == PreDecision.DENY
-        reason = ctx.decision_reason or ""
-        assert "the organization's tool approval rules" in reason and "an admin can change its rule" in reason
-        assert store.pending() == []
-
-    async def test_nobody_watching_blocks_and_says_an_admin_can_pre_approve_it(self) -> None:
-        ctx = await _gate(_context(client_name="api"), "jira__create_issue", title="Bug")
+    async def test_nobody_watching_blocks_a_deleting_tool_and_says_an_admin_can_pre_approve_it(self) -> None:
+        ctx = await _gate(_context(client_name="api"), "jira__delete_issue", key="ENG-1")
 
         assert ctx.decision == PreDecision.DENY
         reason = ctx.decision_reason or ""
@@ -193,17 +194,17 @@ class TestTheGate:
 
     async def test_a_tool_the_admin_pre_approved_runs_where_nobody_is_watching(self) -> None:
         store = _Store()
-        await _set_rules(store, create_issue="allow")
+        await _set_rules(store, delete_issue="allow")
         for overrides in ({"client_name": "api"}, {"is_service_account": True}):
-            ctx = await _gate(_context(store, **overrides), "jira__create_issue", title="Bug")
+            ctx = await _gate(_context(store, **overrides), "jira__delete_issue", key="ENG-1")
             assert ctx.decision == PreDecision.ALLOW
 
     async def test_the_instances_rules_apply_to_everyone(self) -> None:
         store = _Store()
-        await _set_rules(store, create_issue="allow", delete_issue="ask")
+        await _set_rules(store, create_issue="ask", delete_issue="allow")
         for user in ("user-1", "user-2"):
-            assert (await _gate(_context(store, user_id=user), "jira__create_issue", title="Bug")).decision == PreDecision.ALLOW
-            assert (await _gate(_context(store, user_id=user), "jira__delete_issue", key="ENG-1")).decision == PreDecision.ASK
+            assert (await _gate(_context(store, user_id=user), "jira__create_issue", title="Bug")).decision == PreDecision.ASK
+            assert (await _gate(_context(store, user_id=user), "jira__delete_issue", key="ENG-1")).decision == PreDecision.ALLOW
 
     async def test_an_admins_deny_refuses_even_a_read_only_tool(self) -> None:
         store = _Store()
@@ -215,8 +216,8 @@ class TestTheGate:
 
     async def test_a_persons_own_mcp_rules_dont_apply_to_a_toolset(self) -> None:
         store = _Store()
-        await approvals.save_own_rules(store, ToolRules(tools={"create_issue": "allow"}), user_id="user-1", instance_id="inst-j")  # type: ignore[arg-type]
-        ctx = await _gate(_context(store), "jira__create_issue", title="Bug")
+        await approvals.save_own_rules(store, ToolRules(tools={"delete_issue": "allow"}), user_id="user-1", instance_id="inst-j")  # type: ignore[arg-type]
+        ctx = await _gate(_context(store), "jira__delete_issue", key="ENG-1")
         assert ctx.decision == PreDecision.ASK
 
     async def test_rules_that_cant_be_read_refuse_every_tool(self) -> None:
@@ -233,7 +234,8 @@ class TestTheGate:
         store.reads_fail = True
         context = _context(store)
         assert (await _gate(context, "jira__search_issues", instance=None, jql="x")).decision == PreDecision.ALLOW
-        ctx = await _gate(context, "jira__create_issue", instance=None, title="Bug")
+        assert (await _gate(context, "jira__create_issue", instance=None, title="Bug")).decision == PreDecision.ALLOW
+        ctx = await _gate(context, "jira__delete_issue", instance=None, key="ENG-1")
         assert ctx.decision == PreDecision.ASK
         assert ctx.pending_approval is not None and ctx.pending_approval.details["serverName"] == "jira"
 
@@ -243,7 +245,7 @@ class TestTheGate:
 
     async def test_the_mcp_switch_doesnt(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("MCP_TOOL_APPROVALS", "false")
-        assert (await _gate(_context(), "jira__delete_issue", key="ENG-1")).decision == PreDecision.DENY
+        assert (await _gate(_context(), "jira__delete_issue", key="ENG-1")).decision == PreDecision.ASK
 
 
 class TestASavedCall:
@@ -259,10 +261,10 @@ class TestASavedCall:
 # End to end: a request stops on the card; the answer resumes it.
 # ---------------------------------------------------------------------------
 
-_QUESTION = "file a bug"
-_FILE_IT = ToolCall(id="c1", name="jira__create_issue", arguments={"title": "Login is broken"})
+_QUESTION = "delete the duplicate issue"
+_FILE_IT = ToolCall(id="c1", name="jira__delete_issue", arguments={"key": "ENG-1"})
 _DONE = ToolCall(id="c2", name="task_complete", arguments={"output": "done"})
-_WAITING = "Waiting for your approval to run create_issue on Jira (Engineering)."
+_WAITING = "Waiting for your approval to run delete_issue on Jira (Engineering)."
 
 
 def _stopped_turn() -> list[dict[str, Any]]:
@@ -270,7 +272,7 @@ def _stopped_turn() -> list[dict[str, Any]]:
     return [
         {"role": "user_query", "content": _QUESTION},
         {"role": "bot_response", "content": _WAITING, "tool_results": [{
-            "tool_id": "c1", "tool_name": "jira__create_issue", "args": {"title": "Login is broken"},
+            "tool_id": "c1", "tool_name": "jira__delete_issue", "args": {"key": "ENG-1"},
             "result": _WAITING, "status": "error",
         }]},
     ]
@@ -279,7 +281,7 @@ def _stopped_turn() -> list[dict[str, Any]]:
 async def _ask(store: _Store) -> str:
     context = _context(store)
     asked = await run_request(context, list(_tools(context).values()), _FILE_IT, _DONE)
-    assert _Jira.created == []
+    assert _Jira.deleted == []
     assert asked.result.output == _WAITING
     (blocked,) = asked.events.of(EventType.TOOL_BLOCKED)
     assert blocked["status"] == ToolCallStatus.AWAITING_APPROVAL
@@ -310,8 +312,8 @@ class TestAnsweringTheCard:
 
         answered = await _answer(store, approval_id, "allow")
 
-        assert _Jira.created == ["Login is broken"]
-        assert "created Login is broken" in str(_result_of(answered.sent[0]).content)
+        assert _Jira.deleted == ["ENG-1"]
+        assert "deleted ENG-1" in str(_result_of(answered.sent[0]).content)
         (started,) = answered.events.of(EventType.TOOL_CALL_START, "c1")
         assert (started["approved"], started["approval_answer"]) == (True, "allowed")
         (ended,) = answered.events.of(EventType.TOOL_CALL_END, "c1")
@@ -338,18 +340,18 @@ class TestAnsweringTheCard:
 
         answered = await _answer(store, approval_id, "deny")
 
-        assert _Jira.created == []
+        assert _Jira.deleted == []
         result = _result_of(answered.sent[0])
         assert "declined" in result.content and result.is_error
 
     async def test_an_admins_deny_set_since_the_card_was_shown_still_stops_it(self) -> None:
         store = _Store()
         approval_id = await _ask(store)
-        await _set_rules(store, create_issue="block")
+        await _set_rules(store, delete_issue="block")
 
         answered = await _answer(store, approval_id, "allow")
 
-        assert _Jira.created == []
+        assert _Jira.deleted == []
         assert "blocked in the organization's tool approval rules" in _result_of(answered.sent[0]).content
 
     async def test_a_tool_the_request_no_longer_has_doesnt_run(self) -> None:
@@ -359,5 +361,5 @@ class TestAnsweringTheCard:
 
         answered = await _answer(store, approval_id, "allow", instance=("inst-new", "Jira"))
 
-        assert _Jira.created == []
+        assert _Jira.deleted == []
         assert "no longer available" in _result_of(answered.sent[0]).content

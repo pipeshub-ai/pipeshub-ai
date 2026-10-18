@@ -5,8 +5,8 @@ Each tool has a rule — Allow ("Pre-approved"), Ask ("Allow on approval") or Bl
 MCP tool the rule is the person's own, set for their MCP servers, and it applies in every chat they
 have, agent chats included. For a toolset tool (Jira, Slack, ...) it is the toolset instance's, set
 by an admin for everyone in the organization. Without one, a tool starts from what it does to data
-(`mcp/tool_kind.py`): a read-only tool at Allow, one that changes data at Ask, one that deletes
-data at Block.
+(`mcp/tool_kind.py`). An MCP tool: a read-only one at Allow, one that changes data at Ask, one that
+deletes data at Block. A toolset tool: reads and changes at Allow, one that deletes data at Ask.
 
 - **Block**: the call doesn't run, and the model is told why.
 - **Ask**: the call is saved and the turn stops on it, with an approval card on the tool's row.
@@ -185,18 +185,25 @@ class Verdict:
     reason: str = ""
 
 
-_STARTING_RULES: dict[str, Rule] = {"read": "allow", "write": "ask", "destructive": "block"}
+# An MCP tool comes from a third-party server; a toolset tool is one of PipesHub's own integrations,
+# set up for the organization, so its writes run and only a deleting call waits for a person.
+_STARTING_RULES: dict[Source, dict[str, Rule]] = {
+    "mcp": {"read": "allow", "write": "ask", "destructive": "block"},
+    "toolset": {"read": "allow", "write": "allow", "destructive": "ask"},
+}
 
 
-def starting_rule(*, kind: ToolKind) -> Rule:
+def starting_rule(*, kind: ToolKind, source: Source) -> Rule:
     """A tool's rule where nobody set one."""
-    return _STARTING_RULES[kind]
+    return _STARTING_RULES[source][kind]
 
 
-def decide(*, own: Optional[Rule], kind: ToolKind, watched: bool, approved_call: bool = False) -> Verdict:
+def decide(
+    *, own: Optional[Rule], kind: ToolKind, source: Source, watched: bool, approved_call: bool = False,
+) -> Verdict:
     """The rule for one call. `approved_call`: this is the call a person just approved (it runs
     unless something now blocks it)."""
-    effective = own or starting_rule(kind=kind)
+    effective = own or starting_rule(kind=kind, source=source)
     if effective == "block":
         return Verdict("block", "own" if own else "default")
     if effective == "allow" or approved_call:
@@ -395,6 +402,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         verdict = decide(
             own=rules.rules.tools.get(target.tool_name),
             kind=target.kind,
+            source=target.source,
             watched=watched(context),
             approved_call=context.tool_state.get(_APPROVED_CALL) == _identity(target),
         )

@@ -95,36 +95,59 @@ _ASK, _ALLOW, _BLOCK = "ask", "allow", "block"
 class TestDecide:
     @pytest.mark.parametrize("kind,expected", [("read", _ALLOW), ("write", _ASK), ("destructive", _BLOCK)])
     def test_the_starting_rule_follows_what_the_tool_does(self, kind: str, expected: str) -> None:
-        assert decide(own=None, kind=kind, watched=True).rule == expected  # type: ignore[arg-type]
+        assert decide(source="mcp", own=None, kind=kind, watched=True).rule == expected  # type: ignore[arg-type]
 
     def test_a_deleting_tool_is_denied_by_default_until_someone_allows_it(self) -> None:
-        assert decide(own=None, kind="destructive", watched=True) == approvals.Verdict(_BLOCK, "default")
-        assert decide(own=_ASK, kind="destructive", watched=True).rule == _ASK
-        assert decide(own=_ALLOW, kind="destructive", watched=True).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="destructive", watched=True) == approvals.Verdict(_BLOCK, "default")
+        assert decide(source="mcp", own=_ASK, kind="destructive", watched=True).rule == _ASK
+        assert decide(source="mcp", own=_ALLOW, kind="destructive", watched=True).rule == _ALLOW
 
     @pytest.mark.parametrize("own", [_ALLOW, _ASK, _BLOCK])
     def test_the_own_rule_replaces_the_starting_one(self, own: str) -> None:
-        assert decide(own=own, kind="read", watched=True).rule == own  # type: ignore[arg-type]
+        assert decide(source="mcp", own=own, kind="read", watched=True).rule == own  # type: ignore[arg-type]
 
     def test_a_block_says_whose_it_is(self) -> None:
-        assert decide(own=_BLOCK, kind="write", watched=True).reason == "own"
-        assert decide(own=_BLOCK, kind="destructive", watched=True).reason == "own"
-        assert decide(own=None, kind="destructive", watched=True).reason == "default"
+        assert decide(source="mcp", own=_BLOCK, kind="write", watched=True).reason == "own"
+        assert decide(source="mcp", own=_BLOCK, kind="destructive", watched=True).reason == "own"
+        assert decide(source="mcp", own=None, kind="destructive", watched=True).reason == "default"
 
     def test_the_approved_call_runs(self) -> None:
         """Answering the card is the asking."""
-        assert decide(own=None, kind="write", watched=True, approved_call=True).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="write", watched=True, approved_call=True).rule == _ALLOW
 
     def test_the_approved_call_is_still_stopped_by_a_block(self) -> None:
-        verdict = decide(own=_BLOCK, kind="write", watched=True, approved_call=True)
+        verdict = decide(source="mcp", own=_BLOCK, kind="write", watched=True, approved_call=True)
         assert verdict.rule == _BLOCK
 
     def test_nobody_watching_turns_ask_into_block(self) -> None:
-        assert decide(own=None, kind="write", watched=False) == approvals.Verdict(_BLOCK, "unattended")
+        assert decide(source="mcp", own=None, kind="write", watched=False) == approvals.Verdict(_BLOCK, "unattended")
         # Only what the person pre-approved runs where nobody can answer.
-        assert decide(own=_ALLOW, kind="write", watched=False).rule == _ALLOW
-        assert decide(own=None, kind="read", watched=False).rule == _ALLOW
-        assert decide(own=_BLOCK, kind="write", watched=False).rule == _BLOCK
+        assert decide(source="mcp", own=_ALLOW, kind="write", watched=False).rule == _ALLOW
+        assert decide(source="mcp", own=None, kind="read", watched=False).rule == _ALLOW
+        assert decide(source="mcp", own=_BLOCK, kind="write", watched=False).rule == _BLOCK
+
+
+class TestToolsetStartingRules:
+    """A toolset tool is one of PipesHub's own integrations: its writes run, a deleting call asks."""
+
+    @pytest.mark.parametrize("watched", [True, False])
+    def test_a_write_runs_watched_or_not(self, watched: bool) -> None:
+        assert decide(source="toolset", own=None, kind="write", watched=watched).rule == _ALLOW
+
+    @pytest.mark.parametrize("watched", [True, False])
+    def test_a_read_runs(self, watched: bool) -> None:
+        assert decide(source="toolset", own=None, kind="read", watched=watched).rule == _ALLOW
+
+    def test_a_deleting_call_asks_where_someone_can_answer(self) -> None:
+        assert decide(source="toolset", own=None, kind="destructive", watched=True).rule == _ASK
+
+    def test_a_deleting_call_is_blocked_where_nobody_can_answer(self) -> None:
+        verdict = decide(source="toolset", own=None, kind="destructive", watched=False)
+        assert verdict == approvals.Verdict(_BLOCK, "unattended")
+
+    def test_mcp_tools_keep_their_own_starting_rules(self) -> None:
+        assert decide(source="mcp", own=None, kind="write", watched=True).rule == _ASK
+        assert decide(source="mcp", own=None, kind="destructive", watched=True).rule == _BLOCK
 
 
 def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN401

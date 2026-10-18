@@ -69,7 +69,7 @@ describe('ruleToolsFromSchema', () => {
     expect(ruleToolsFromSchema(SCHEMA)[0]).toEqual({ name: 'search_issues', description: 'Search Jira issues.', kind: 'read' });
   });
 
-  it('leaves an unknown kind out (it starts at "Allow on approval") and skips nameless tools', () => {
+  it('leaves an unknown kind out (it starts as a tool that changes data) and skips nameless tools', () => {
     expect(ruleToolsFromSchema({ toolset: { tools: [{ name: 'x', kind: 'wipe' }, { kind: 'read' }, null] } })).toEqual([{ name: 'x' }]);
     expect(ruleToolsFromSchema(null)).toEqual([]);
   });
@@ -85,8 +85,9 @@ describe('ToolsetToolRulesDialog', () => {
     expect(toolsets.getToolRules).toHaveBeenCalledWith('inst-j');
     expect(screen.getByText('Tool approvals: Jira (Engineering)')).toBeTruthy();
     expect(chosen('search_issues')).toBe('Deny');
-    expect(chosen('create_issue')).toBe('Allow on approval');
-    expect(chosen('delete_issue')).toBe('Deny');
+    // A toolset's writes start Pre-approved and its deleting tools on approval.
+    expect(chosen('create_issue')).toBe('Pre-approved');
+    expect(chosen('delete_issue')).toBe('Allow on approval');
     expect(screen.queryByText('Only an admin can change these.')).toBeNull();
   });
 
@@ -96,12 +97,12 @@ describe('ToolsetToolRulesDialog', () => {
 
     await screen.findByRole('group', { name: 'create_issue' });
     expect(screen.queryByRole('group', { name: 'retired_tool' })).toBeNull();
-    fireEvent.click(ruleRow('create_issue').getByRole('radio', { name: 'Pre-approved' }));
+    fireEvent.click(ruleRow('create_issue').getByRole('radio', { name: 'Allow on approval' }));
     fireEvent.click(ruleRow('search_issues').getByRole('radio', { name: 'Pre-approved' }));
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
 
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
-    expect(toolsets.updateToolRules).toHaveBeenCalledWith('inst-j', { tools: { create_issue: 'allow' } });
+    expect(toolsets.updateToolRules).toHaveBeenCalledWith('inst-j', { tools: { create_issue: 'ask' } });
   });
 
   it('shows a member the rules without letting them change them', async () => {
@@ -112,10 +113,10 @@ describe('ToolsetToolRulesDialog', () => {
     expect(screen.queryByRole('radio')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Close' })).toBeTruthy();
-    // search_issues starts there and create_issue was set there; delete_issue starts at Deny.
+    // search_issues and create_issue are Pre-approved; delete_issue starts on approval.
     expect(screen.getAllByText('Pre-approved')).toHaveLength(2);
-    expect(screen.getAllByText('Deny')).toHaveLength(1);
-    expect(screen.queryByText('Allow on approval')).toBeNull();
+    expect(screen.getAllByText('Allow on approval')).toHaveLength(1);
+    expect(screen.queryByText('Deny')).toBeNull();
   });
 
   it("says so when the toolset's tools can't be loaded", async () => {
