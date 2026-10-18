@@ -390,6 +390,19 @@ cases:
       - not_state: "Purchases above $250 need no manager approval."
         expect: [contradicted, missing]
 
+  # Every f2 answer on 2026-10-17 put the receipt rule in the same sentence as the
+  # band, and all were failed as a condition on the approval. The receipt is a separate rule.
+  - id: expense-manager-band-with-receipt-in-the-same-sentence
+    about: the receipt requirement in the band's own sentence
+    answer: |
+      You can spend up to $250 per purchase without manager approval, as long as you submit the receipt within 30 days.
+      Purchases over $250 and up to $2,500 require manager approval.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
   - id: expense-manager-band-and-the-next-band
     about: the manager band, then who approves above it
     answer: |

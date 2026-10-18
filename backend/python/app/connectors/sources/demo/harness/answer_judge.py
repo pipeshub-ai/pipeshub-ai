@@ -105,9 +105,13 @@ cancellation" does conflict, because a cancelled migration is not on schedule \
 now. Limits work the same way: "Up to $250, but your manager approves above \
 that" is about amounts beyond the claim and does not conflict with "A purchase \
 of up to $250 needs no approval", while an exception inside the claim's limits, \
-like the card refunds above, does. A step still ahead never makes a claim that \
-the step has already happened true: "Marcus will approve it" still does not \
-support "Marcus approved it".
+like the card refunds above, does. A requirement about something the claim \
+doesn't speak of doesn't take it back either: "You can spend up to $250 without \
+manager approval, as long as you submit the receipt within 30 days" still \
+supports "A purchase of up to $250 needs no manager approval", because the \
+receipt is a separate rule, not a manager's approval. A step still ahead never \
+makes a claim that the step has already happened true: "Marcus will approve it" \
+still does not support "Marcus approved it".
 
 Be strict. None of these supports a claim:
 - a hedged or uncertain statement ("may", "might", "I think", "probably", \
