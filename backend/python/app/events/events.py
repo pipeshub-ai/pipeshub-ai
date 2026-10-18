@@ -112,6 +112,15 @@ def _record_key(doc: dict[str, Any] | None) -> str | None:
     return (doc.get("_key") or doc.get("id")) if doc is not None else None
 
 
+_PARSE_DONE = frozenset({ProgressStatus.COMPLETED.value, ProgressStatus.EMPTY.value})
+
+
+def _parsed_like(twin: dict[str, Any]) -> dict[str, str]:
+    """A duplicate shares its twin's parse, so it takes a finished twin's parsing status."""
+    status = twin.get("parsingStatus")
+    return {"parsingStatus": status} if status in _PARSE_DONE else {}
+
+
 def shutdown_pdf_ocr_pool() -> bool:
     """Shut down the PDF OCR detection process pool if it was initialised.
 
@@ -655,7 +664,12 @@ class EventProcessor:
             ) from e
 
     async def mark_record_status(
-        self, doc: dict[str, Any], status: ProgressStatus, *, content_rev: str | None = None
+        self,
+        doc: dict[str, Any],
+        status: ProgressStatus,
+        *,
+        content_rev: str | None = None,
+        parsing_starts: bool = False,
     ) -> None:
         """Persist the legacy pipeline's indexing and extraction status."""
         record_id = _record_key(doc) or "unknown"
@@ -668,9 +682,10 @@ class EventProcessor:
                 else None
             ),
         }
-        if status == ProgressStatus.IN_PROGRESS:
+        if parsing_starts:
             # In-process, parsing and indexing run as one step: until the indexed write marks it
-            # COMPLETED, a re-index must not keep showing the previous run's parse as done.
+            # COMPLETED, a re-index must not keep showing the previous run's parse as done. Only
+            # where parsing really starts: the stale-record scan requeues a parse left IN_PROGRESS.
             fields["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
         if content_rev is not None:
             fields["contentRev"] = content_rev
@@ -1132,6 +1147,7 @@ class EventProcessor:
                         "isDirty": False,
                         "indexingStatus": twin.get("indexingStatus"),
                         **indexed_copy_fields(twin.get("indexingStatus")),
+                        **_parsed_like(twin),
                         "processingStartedAt": None,
                         "lastIndexTimestamp": get_epoch_timestamp_in_ms(),
                         # EMPTY duplicates never ran extraction, so this can be
@@ -1439,7 +1455,9 @@ class EventProcessor:
             else:
                 # Legacy inline pipeline: parse+index run in-process without a
                 # phase boundary we can hook, keep the historical behaviour.
-                await self.mark_record_status(doc, ProgressStatus.IN_PROGRESS, content_rev=content_rev)
+                await self.mark_record_status(
+                    doc, ProgressStatus.IN_PROGRESS, content_rev=content_rev, parsing_starts=True
+                )
 
             if self.stage_ingress is not None and bool(event_data.get("forceReindex")):
                 self.stage_ingress.mark_forced(record_id)

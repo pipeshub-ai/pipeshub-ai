@@ -371,3 +371,22 @@ class TestPromotedExtractionStatus:
     def test_empty_and_failed_indexing_map_directly(self) -> None:
         assert promoted_duplicate_extraction_status(ProgressStatus.EMPTY.value, {}) == ProgressStatus.EMPTY.value
         assert promoted_duplicate_extraction_status(FAILED, {}) == FAILED
+
+
+class TestAttachedDuplicateParsingStatus:
+    """The stale-record scan requeues a record whose parse is IN_PROGRESS while its indexing is
+    not, so an attached duplicate must never be left there (it would be requeued and attached again)."""
+
+    @pytest.mark.parametrize("parsed", [COMPLETED, ProgressStatus.EMPTY.value])
+    async def test_a_duplicate_takes_its_finished_twins_parse(self, store, processor, parsed) -> None:
+        add_twin(store, processor, COMPLETED, parsingStatus=parsed)
+        decision = await dedup(store, processor)
+        assert decision.skip_indexing is True
+        assert store.records["dup"]["parsingStatus"] == parsed
+
+    async def test_a_twin_with_no_parse_status_leaves_the_duplicates_alone(self, store, processor) -> None:
+        add_twin(store, processor, COMPLETED)
+        store.records.setdefault("dup", {"_key": "dup", "orgId": ORG, "recordType": "FILE"})
+        store.records["dup"].update(indexingStatus=QUEUED, extractionStatus=NOT_STARTED, parsingStatus=NOT_STARTED)
+        await dedup(store, processor)
+        assert store.records["dup"]["parsingStatus"] == NOT_STARTED
