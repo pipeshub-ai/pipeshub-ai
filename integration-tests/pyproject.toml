@@ -45,7 +45,7 @@ dependencies = [
   # Starlette comes in through FastAPI, whose range admits releases with known advisories.
   "starlette==1.7.0",
   "fastmcp==3.2.0",
-  "fastembed==0.5.1",
+  "fastembed==0.7.4",
   "feedparser>=6.0.0",
   "trafilatura>=2.0.0",
   "html-to-markdown==2.3.0",
@@ -68,7 +68,7 @@ dependencies = [
   "langchain-google-genai==4.2.1",
   "langchain-google-vertexai==2.1.2",
   "langchain-groq==1.1.0",
-  "langchain-huggingface==1.1.0",
+  "langchain-huggingface==1.2.1",
   "langchain-mistralai==0.2.12",
   "langchain-ollama==1.0.0",
   "langchain-openai==1.1.14",
@@ -117,6 +117,8 @@ dependencies = [
   "requests-toolbelt==1.0.0",
   "requests==2.33.0",
   "sentence-transformers==5.6.0",
+  # 5.10.0 was yanked; 5.10.1 fixes GHSA-29pf-2h5f-8g72, -fgcw-684q-jj6r, -xrqw-3rrv-vx5w and -x9r9-c232-4q39.
+  "transformers==5.10.1",
   "slack-sdk==3.27.0",
   "tenacity==8.5.0",
   "thrift>=0.16.0",
