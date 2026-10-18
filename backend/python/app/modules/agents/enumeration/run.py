@@ -14,6 +14,7 @@ from typing import Any
 
 from app.modules.agents.enumeration.answer import build_enumeration_answer
 from app.modules.agents.enumeration.policy import is_enumeration_query
+from app.modules.demo_data.chat import excluded_app_ids
 
 logger = logging.getLogger(__name__)
 
@@ -152,9 +153,14 @@ async def try_answer_enumeration(
     if not org_id or not user_id or graph_provider is None:
         return False
 
+    # Without raise_on_error a failed read, or one source that failed, comes
+    # back as {} or a partial map, which would be answered as "no documents"
+    # or as a complete count. Switched-off demo records are not the user's.
     try:
         accessible = await graph_provider.get_accessible_virtual_record_ids(
             user_id=user_id, org_id=org_id, filters=filters or {},
+            raise_on_error=True,
+            exclude_app_ids=excluded_app_ids(getattr(context, "tool_state", None)),
         )
     except Exception as exc:  # noqa: BLE001 - fall back to the agent rather than fail
         log.warning("enumeration: accessible-record lookup failed, deferring: %s", exc)

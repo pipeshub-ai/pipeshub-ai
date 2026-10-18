@@ -177,9 +177,35 @@ def _parse_clarify_block(text: str) -> list["AskUserQuestionItemInput"] | None:
         return None
 
 
+# Asked on every intent call, routed or not: the census classifier trusts a
+# model "no" over its pattern match, which only helps if the model was asked.
+_CORPUS_CENSUS_QUESTION = (
+    "write ONLY `CORPUS_CENSUS: yes` or "
+    "`CORPUS_CENSUS: no`, answering this question about the request:\n"
+    "Is it asking which records exist across the whole knowledge base, with no "
+    "condition that narrows which ones count?\n"
+    "- `yes` only for a plain census: how many documents there are, what "
+    "documents exist, list every file. The answer is the record set itself.\n"
+    "- `no` for everything else, and in particular whenever any condition "
+    "narrows the set: a topic (\"about onboarding\", \"that mention "
+    "indemnity\"), a container (\"in this folder\", \"in this contract\"), a "
+    "time window (\"updated last week\"), or a specific thing (\"do we have "
+    "the Acme NDA\"). Also `no` when the count is of something inside one "
+    "document, such as pages or clauses or how many times a word appears.\n"
+    "For CORPUS_CENSUS, the examples are illustrations, but when unsure, answer "
+    "`no`. A census that ignores a condition returns a confident answer about "
+    "the wrong records.\n"
+)
+
+
 def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verify_override: str, n_knowledge: int) -> str:
     if not include_routing:
-        return _INTENT_INSTRUCTIONS + _CLARIFY_INSTRUCTIONS
+        return (
+            _INTENT_INSTRUCTIONS
+            + "\nAfter your restatement, on a NEW line, "
+            + _CORPUS_CENSUS_QUESTION
+            + _CLARIFY_INSTRUCTIONS
+        )
     return (
         _INTENT_INSTRUCTIONS
         + "\nAfter your restatement, on a NEW line, write ONLY one of the words "
@@ -203,21 +229,8 @@ def _build_intent_prompt(include_routing: bool, capability_block: str, sql_verif
         "are illustrations of the question above, not an exhaustive list. When "
         "genuinely torn, answer `yes`: over-reading a document is recoverable, "
         "answering a whole-document question from fragments is not.\n"
-        "\nOn ANOTHER new line, write ONLY `CORPUS_CENSUS: yes` or "
-        "`CORPUS_CENSUS: no`, answering this question about the request:\n"
-        "Is it asking which records exist across the whole knowledge base, with no "
-        "condition that narrows which ones count?\n"
-        "- `yes` only for a plain census: how many documents there are, what "
-        "documents exist, list every file. The answer is the record set itself.\n"
-        "- `no` for everything else, and in particular whenever any condition "
-        "narrows the set: a topic (\"about onboarding\", \"that mention "
-        "indemnity\"), a container (\"in this folder\", \"in this contract\"), a "
-        "time window (\"updated last week\"), or a specific thing (\"do we have "
-        "the Acme NDA\"). Also `no` when the count is of something inside one "
-        "document, such as pages or clauses or how many times a word appears.\n"
-        "For CORPUS_CENSUS, the examples are illustrations too, but the tie-break is "
-        "the opposite: when unsure, answer `no`. A census that ignores a condition "
-        "returns a confident answer about the wrong records.\n"
+        + "\nOn ANOTHER new line, "
+        + _CORPUS_CENSUS_QUESTION
         + _CLARIFY_INSTRUCTIONS
     )
 
@@ -320,7 +333,10 @@ def _decision_from_text(text: str, *, include_routing: bool) -> IntentRouteDecis
             route=None,
         )
     if not include_routing:
-        return IntentRouteDecision(rewritten_query=text.strip(), route=None)
+        census_marker, cleaned = _extract_corpus_census_and_clean(text)
+        return IntentRouteDecision(
+            rewritten_query=cleaned.strip(), route=None, corpus_census=census_marker,
+        )
     # Strip WHOLE_DOCUMENT marker first so it is not present when the route
     # marker is extracted (both must be stripped before becoming goal text).
     whole_doc_marker, text = _extract_whole_document_and_clean(text)

@@ -95,13 +95,42 @@ def _alt(pattern: str) -> re.Pattern[str]:
     return re.compile(rf"\b(?:{pattern})\b", re.IGNORECASE | re.VERBOSE)
 
 
-# The thing counted is a record, and nothing but set words stands between it
-# and the operation. "How many contracts", "how many people are there" and
-# "count the whole team" count something else, and "how many PDF files" or
-# "how many Slack documents" count a subset, which an unfiltered census would
-# answer with every record.
+# A polite or framing lead-in that leaves the question unchanged.
+_LEAD_IN = r"""
+      please | can \s+ you | could \s+ you | would \s+ you
+    | give \s+ me | show \s+ me | tell \s+ me | what \s+ is \s+ the
+"""
+
+# What may follow the record noun without narrowing the set: where the records
+# are, that they exist, and the per-record summary #2975 asks for. Any other
+# leftover word ("contain the word", "from Slack", "in Drive", "are PDFs",
+# "types", "should I read") is a condition or a different question.
+_SCOPE_TAIL = r"""
+      (?: are | is ) \s+ there
+    | (?: do | did ) \s+ (?: we | i | you ) \s+ have
+    | (?: we | i ) \s+ have
+    | (?: are | is ) \s+ (?: in | stored \s+ in | indexed \s+ in )
+        \s+ (?: the | our | my ) \s+ (?: knowledge \s+ base | corpus )
+    | in \s+ (?: the | our | my ) \s+ (?: knowledge \s+ base | corpus )
+"""
+_SUMMARY_TAIL = r"""
+      what \s+ (?: is \s+ each \s+ one | each \s+ one \s+ is | is \s+ each | each \s+ is
+        | are \s+ they | they \s+ are ) \s+ about
+"""
+
+# The whole question is a census: an optional lead-in, the operation, set
+# words, the record noun, then only scope words or the summary request. The
+# thing counted has to be a record with nothing but set words before it, so
+# "how many contracts", "how many PDF files" and "how many Slack documents"
+# fail too: an unfiltered census would answer each with every record.
 _CENSUS_RE = re.compile(
-    rf"\b(?:{_ENUMERATION_OPERATION}) \s+ (?: (?:{_SET_WORDS}) \s+ )* (?:{_RECORD_NOUN}) \b",
+    rf"""
+    \s* (?: (?:{_LEAD_IN}) \s+ )? (?: (?: a | an | the ) \s+ )?
+    (?:{_ENUMERATION_OPERATION}) \s+ (?: (?:{_SET_WORDS}) \s+ )* (?:{_RECORD_NOUN})
+    (?: \s+ (?:{_SCOPE_TAIL}) )*
+    (?: \s* ,? \s+ and \s+ (?:{_SUMMARY_TAIL}) )?
+    \s* [?.!]* \s*
+    """,
     re.IGNORECASE | re.VERBOSE,
 )
 
@@ -164,4 +193,4 @@ def is_enumeration_query(marker: str | None, *texts: str) -> bool:
     if marker is not None:
         return marker.lower().strip() == "yes"
 
-    return bool(_CENSUS_RE.search(combined))
+    return bool(_CENSUS_RE.fullmatch(combined))

@@ -70,3 +70,40 @@ class TestAMalformedAccessibleMapDefersToTheAgent:
         # Asserted so a query that never qualifies cannot pass this vacuously.
         graph.get_accessible_virtual_record_ids.assert_awaited_once()
 
+
+
+class TestTheReadIsStrict:
+    """An unreadable or partly read record set must not be answered as the
+    whole corpus: "no documents" or a short count would be confidently wrong."""
+
+    @staticmethod
+    async def _run(graph: MagicMock, tool_state: dict) -> bool:
+        context = SimpleNamespace(tool_state=tool_state, org_id="org-1", user_id="user-1")
+        return await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters=None,
+            event_sink=MagicMock(),
+            log=MagicMock(),
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_defers_to_the_agent(self) -> None:
+        graph = MagicMock()
+        graph.get_accessible_virtual_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        assert await self._run(graph, {}) is False
+
+    @pytest.mark.asyncio
+    async def test_it_asks_for_errors_and_leaves_out_switched_off_demo_records(self) -> None:
+        graph = MagicMock()
+        # An unusable shape defers right after the read, so only the call is checked.
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value=[])
+
+        await self._run(graph, {"excluded_app_ids": frozenset({"acme-demo"})})
+
+        kwargs = graph.get_accessible_virtual_record_ids.await_args.kwargs
+        assert kwargs["raise_on_error"] is True
+        assert kwargs["exclude_app_ids"] == frozenset({"acme-demo"})

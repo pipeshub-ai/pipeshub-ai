@@ -2,7 +2,8 @@
 
 No surface on a default deployment produces this marker: every chat mode runs
 the loop in `quick`, which sets `skip_intent=True` and therefore never makes the
-intent call. The marker only appears for callers running react/deep or auto.
+intent call. The marker appears on every intent call: auto, react, deep and
+planExecute.
 
 That makes it exactly the kind of code that rots unnoticed, so the chain is
 pinned here: what the model writes, what the parser returns, what survives into
@@ -12,8 +13,35 @@ from __future__ import annotations
 
 import pytest
 
-from app.agents.agent_loop.intent import _extract_corpus_census_and_clean
+from app.agents.agent_loop.intent import (
+    _build_intent_prompt,
+    _decision_from_text,
+    _extract_corpus_census_and_clean,
+)
 from app.modules.agents.enumeration.policy import is_enumeration_query
+
+
+class TestEveryIntentCallAsksForTheMarker:
+    """An explicit react/deep/planExecute turn makes the intent call without
+    routing. A model "no" can only decline a pattern match if that call asks
+    for the marker too, and the answer is read on that path."""
+
+    @pytest.mark.parametrize("include_routing", [True, False])
+    def test_the_prompt_asks_for_it(self, include_routing: bool) -> None:
+        assert "CORPUS_CENSUS" in _build_intent_prompt(include_routing, "", "", 0)
+
+    def test_an_unrouted_decision_reads_and_strips_it(self) -> None:
+        decision = _decision_from_text(
+            "Find every document.\nCORPUS_CENSUS: no", include_routing=False,
+        )
+        assert decision.corpus_census == "no"
+        assert decision.route is None
+        assert "CORPUS_CENSUS" not in decision.rewritten_query
+        assert decision.rewritten_query == "Find every document."
+
+    def test_an_unrouted_decision_without_it_leaves_the_marker_unset(self) -> None:
+        decision = _decision_from_text("Find every document.", include_routing=False)
+        assert decision.corpus_census is None
 
 
 class TestMarkerParsing:

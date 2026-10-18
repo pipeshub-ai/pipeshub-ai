@@ -25,6 +25,9 @@ SHOULD_MATCH = [
     "Give me an inventory of all records",
     "Count the documents",
     "What is the total number of documents?",
+    "Please list all documents.",
+    "Can you list every file?",
+    "How many documents are there?",
 ]
 
 # Each of these carries a constraint a whole-corpus census cannot honour.
@@ -71,6 +74,13 @@ NOT_A_RECORD_CENSUS = [
     "Count the whole team",
     "How many PDF files do we have?",
     "How many Slack documents are there?",
+    # Words left after the record noun are a condition or another question.
+    "How many documents contain the word indemnity?",
+    "List all the files from Slack",
+    "How many documents in Drive?",
+    "How many files are PDFs?",
+    "How many document types do we have?",
+    "What file should I read?",
 ]
 
 # Existence questions. "Do we have X" asks whether one thing is present, which
