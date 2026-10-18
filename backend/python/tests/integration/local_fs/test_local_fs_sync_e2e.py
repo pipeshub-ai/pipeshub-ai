@@ -793,6 +793,12 @@ class TestRunSync:
             assert doc is not None, f"{rel_path} was not indexed"
             node = f"{CollectionNames.RECORDS.value}/{doc['_key']}"
             assert node not in granted_to, f"{rel_path} carries a grant of its own"
+            if rel_path == "nested/a.txt":
+                folder = _record_for(connector, graph_store, "nested")
+                assert folder is not None, "nested was not indexed"
+                assert inherits.get(node) == f"{CollectionNames.RECORDS.value}/{folder['_key']}", (
+                    f"{rel_path} does not inherit from its folder"
+                )
             chain = [node]
             while chain[-1] in inherits and len(chain) < 10:
                 chain.append(inherits[chain[-1]])
