@@ -802,8 +802,7 @@ class TestChannelHelpers:
         assert await c._channel_permissions({}) == []
 
         c.authenticated_user_email = "a@b.com"
-        perms = await c._channel_permissions({"id": "C1"})
-        assert len(perms) == 1
+        assert await c._channel_permissions({"id": "C1"}) == [], "channels inherit the app; no per-channel grant"
 
         mock_ds = MagicMock()
         mock_ds.conversations_members = AsyncMock(
@@ -1246,6 +1245,8 @@ class TestThreadBurstRecord:
         )
         rec = await c._build_thread_burst_record(burst, "1.0", "rg", ctx)
         assert rec is not None
+        # In the thread's group: a full sync keeps a windowed thread group's records it did not read.
+        assert (rec.external_record_group_id, rec.record_group_id) == ("thread_C1_1.0", "rg")
 
         burst2 = ConversationalBurst(
             messages=[{"ts": "", "user": "U1"}],
