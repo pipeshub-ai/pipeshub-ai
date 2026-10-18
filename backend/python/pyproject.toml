@@ -183,14 +183,14 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aioboto3>=12.0.0",
+    "aiobotocore==3.9.2",
     "aiohttp==3.14.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
     "azure-storage-blob==12.28.0",
     "azure-storage-file-share==12.19.0",
-    "beautifulsoup4==4.12.3",
+    "beautifulsoup4==4.15.0",
     "box-sdk-gen==1.12.0",
     "Brotli==1.2.0",
     "CairoSVG==2.9.1",
@@ -259,7 +259,8 @@ dependencies = [
     "langchain-xai==1.3.0",
     "langchain==1.3.9",
     "linkedin-api-client>=0.3.0",
-    "lxml>=4.9.0",
+    # 6.1 stops resolving entities by default (GHSA-vfmq-68hx-4jfw).
+    "lxml>=6.1.0",
     "lxml_html_clean>=0.4.0",
     "mail-parser-reply==1.36",
     "markdown==3.8.1",
@@ -303,7 +304,7 @@ dependencies = [
     # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
     "PyJWT==2.15.0",
     "pyyaml>=6.0",
-    "redshift_connector==2.1.8",
+    "redshift_connector==2.1.17",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI

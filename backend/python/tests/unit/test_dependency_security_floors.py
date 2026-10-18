@@ -23,6 +23,10 @@ SECURITY_FLOORS = {
     "docling": Version("2.132.0"),
     # GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r, GHSA-xrqw-3rrv-vx5w, GHSA-x9r9-c232-4q39
     "transformers": Version("5.10.0"),
+    # GHSA-29h4-r29x-hchv
+    "redshift-connector": Version("2.1.14"),
+    # GHSA-vfmq-68hx-4jfw
+    "lxml": Version("6.1.0"),
 }
 
 

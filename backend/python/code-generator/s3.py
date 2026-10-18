@@ -99,14 +99,6 @@ S3_METHOD_SIGNATURES = {
         'required': ['Bucket'],
         'optional': ['ExpectedBucketOwner']
     },
-    'download_file': {
-        'required': ['Bucket', 'Key', 'Filename'],
-        'optional': ['ExtraArgs', 'Callback', 'Config']
-    },
-    'download_fileobj': {
-        'required': ['Bucket', 'Key', 'Fileobj'],
-        'optional': ['ExtraArgs', 'Callback', 'Config']
-    },
     'generate_presigned_post': {
         'required': ['Bucket', 'Key'],
         'optional': ['Fields', 'Conditions', 'ExpiresIn']
@@ -403,14 +395,6 @@ S3_METHOD_SIGNATURES = {
         'required': ['Bucket', 'Key', 'Expression', 'ExpressionType', 'InputSerialization', 'OutputSerialization'],
         'optional': ['RequestProgress', 'ScanRange', 'SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5', 'ExpectedBucketOwner']
     },
-    'upload_file': {
-        'required': ['Filename', 'Bucket', 'Key'],
-        'optional': ['ExtraArgs', 'Callback', 'Config']
-    },
-    'upload_fileobj': {
-        'required': ['Fileobj', 'Bucket', 'Key'],
-        'optional': ['ExtraArgs', 'Callback', 'Config']
-    },
     'upload_part': {
         'required': ['Bucket', 'Key', 'PartNumber', 'UploadId'],
         'optional': ['Body', 'ContentLength', 'ContentMD5', 'ChecksumAlgorithm', 'ChecksumCRC32', 'ChecksumCRC32C', 'ChecksumSHA1', 'ChecksumSHA256', 'SSECustomerAlgorithm', 'SSECustomerKey', 'SSECustomerKeyMD5', 'RequestPayer', 'ExpectedBucketOwner']
@@ -615,7 +599,7 @@ def generate_method_docstring(method_name: str, method_def: Dict[str, List[str]]
 
 
 def generate_method_body(method_name: str, method_def: Dict[str, List[str]]) -> str:
-    """Generate method body with proper parameter handling using aioboto3."""
+    """Generate method body with proper parameter handling using aiobotocore."""
     required_params = method_def.get('required', [])
     optional_params = method_def.get('optional', [])
     
@@ -642,8 +626,8 @@ def generate_method_body(method_name: str, method_def: Dict[str, List[str]]) -> 
     return f'''{kwargs_setup}
         
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3') as s3_client:
+            session = await self._get_session()
+            async with session.create_client('s3') as s3_client:
                 response = await getattr(s3_client, '{method_name}')(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
@@ -663,24 +647,22 @@ import json
 from dataclasses import asdict
 from datetime import datetime
 
-try:
-    import aioboto3  # type: ignore
-    from botocore.exceptions import ClientError, BotoCoreError  # type: ignore
-except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
+import aiobotocore
+from aiobotocore.session import AioSession
+from botocore.exceptions import ClientError, BotoCoreError
 
 from app.sources.client.s3.s3 import S3Client, S3Response
 
 
 class S3DataSource:
     """
-    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aioboto3.
+    Complete Amazon S3 API client wrapper with EXPLICIT METHOD SIGNATURES using aiobotocore.
     
     All {len(S3_METHOD_SIGNATURES)} S3 methods with proper parameter signatures:
     - Required parameters are explicitly typed (e.g., Bucket: str, Key: str)
     - Optional parameters use Optional[Type] = None
     - No **kwargs - every parameter is explicitly defined
-    - Matches aioboto3 S3 client signatures exactly
+    - Matches the botocore S3 client signatures exactly
     - Each parameter on separate line for better readability
     """
     
@@ -689,19 +671,10 @@ class S3DataSource:
         self._s3_client = s3_client
         self._session = None
 
-    async def _get_aioboto3_session(self):
-        """Get or create the aioboto3 session."""
+    async def _get_session(self) -> AioSession:
+        """Get or create the aiobotocore session."""
         if self._session is None:
-            # Option 1: Get the existing session directly from S3Client (recommended)
             self._session = self._s3_client.get_session()
-            
-            # Option 2: Create new session from credentials (if needed)
-            # credentials = self._s3_client.get_credentials()
-            # self._session = aioboto3.Session(
-            #     aws_access_key_id=credentials['aws_access_key_id'],
-            #     aws_secret_access_key=credentials['aws_secret_access_key'],
-            #     region_name=credentials['region_name']
-            # )
         return self._session
 
     def _handle_s3_response(self, response: Any) -> S3Response:
@@ -740,9 +713,9 @@ class S3DataSource:
     
     # Add utility methods
     class_code += '''    # Utility Methods
-    async def get_aioboto3_session(self):
-        """Get the underlying aioboto3 session."""
-        return await self._get_aioboto3_session()
+    async def get_session(self) -> AioSession:
+        """Get the underlying aiobotocore session."""
+        return await self._get_session()
     
     def get_s3_client(self) -> S3Client:
         """Get the S3Client wrapper."""
@@ -752,7 +725,7 @@ class S3DataSource:
         """Get information about the wrapped SDK methods."""
         info = {
             'total_methods': ''' + str(len(S3_METHOD_SIGNATURES)) + ''',
-            'sdk_version': aioboto3.__version__,
+            'sdk_version': aiobotocore.__version__,
             'service': 's3'
         }
         return S3Response(success=True, data=info)
