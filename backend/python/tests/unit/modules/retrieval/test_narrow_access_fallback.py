@@ -497,6 +497,45 @@ class TestFailures:
         assert not mod.narrow_access_memo._entries
 
 
+class TestTheBetterPageStands:
+    async def test_a_record_id_search_that_admits_less_does_not_replace_the_page(self) -> None:
+        """The record list over-admits (RESTRICTED pages, a revoked grant still
+        cached): its search can be denied wholesale. The container page the
+        check admitted stands, and the scope is not remembered."""
+        corpus = _corpus(15, records=400)
+        rnd = random.Random(15)
+        readable = set(rnd.sample(corpus.vrids, 120))
+        stale = set(rnd.sample(sorted(set(corpus.vrids) - readable), 40))
+        store = _FakeStore(list(corpus.points))
+
+        response = await _search(_service(store, _graph(_Access(readable, stale))), 10)
+
+        assert store.used_record_ids() == [False, True]
+        assert response["searchResults"]
+        assert _vrids(response) <= readable
+        assert not mod.narrow_access_memo._entries
+
+    async def test_an_unreadable_record_list_on_a_remembered_scope_falls_back_to_containers(self) -> None:
+        corpus, readable = _half_readable(16)
+        store = _FakeStore(list(corpus.points))
+        access = _Access(readable, set(readable))
+        graph = _graph(access)
+        service = _service(store, graph)
+        await _search(service, 10)
+        key = mod.narrow_access_memo.key(ORG, "alice", {})
+        assert mod.narrow_access_memo.is_narrow(key)
+        access.enumerate_fails = True
+        store.requests.clear()
+
+        response = await _search(service, 10)
+
+        assert response["status"] == mod.Status.SUCCESS.value
+        assert response["searchResults"]
+        assert _vrids(response) <= readable
+        assert store.used_record_ids()[0] is False
+        assert not mod.narrow_access_memo.is_narrow(key)
+
+
 class TestBroadUsersStay:
     """A user who reads nearly everything in trusted containers: the first fetch
     is exactly ``limit``, so one denied record leaves the page short. That is
@@ -522,26 +561,49 @@ class TestBroadUsersStay:
         assert first not in _vrids(response)
         assert {req.limit for req in store.requests} <= {20, 60}
 
+    async def test_three_overlapping_queries_at_the_cap_stay(self) -> None:
+        """limit 100 rewritten into three queries: a 300 budget. The retry fetches
+        300 per query, the overlapping queries merge to fewer than 300, and one
+        record is denied. That is not narrow access."""
+        corpus = _corpus(14, records=600)
+        first = corpus.points[1].payload["metadata"]["virtualRecordId"]
+        readable = set(corpus.vrids) - {first}
+        store = _FakeStore(list(corpus.points))
+        graph = _graph(_Access(readable, set(readable)))
+        graph.get_accessible_containers = AsyncMock(return_value=AccessibleContainers(
+            app_ids=frozenset(APPS), app_ids_trusted=frozenset(APPS),
+        ))
+
+        response = await _service(store, graph).search_with_filters(
+            ["q", "q two", "q three"], "alice", ORG, limit=100,
+        )
+
+        graph.get_accessible_virtual_record_ids.assert_not_awaited()
+        assert not any(store.used_record_ids())
+        assert not mod.narrow_access_memo._entries
+        assert response["searchResults"]
+        assert first not in _vrids(response)
+
 
 class TestTheRule:
     @pytest.mark.parametrize(
-        ("surviving", "limit", "raw", "fetch", "max_batch", "denied", "allow", "moved"),
+        ("surviving", "raw", "fetch", "max_batch", "denied", "allow", "moved"),
         [
-            (40, 20, 40, 40, 40, 0, True, False),       # nothing denied: same points either way
-            (5, 20, 10, 40, 10, 5, True, False),        # corpus exhausted
-            (5, 20, 40, 40, 40, 35, False, False),      # tool-scoped search
-            (5, 20, 40, 40, 40, 35, True, True),        # short page, 12% admitted
-            (25, 20, 40, 40, 40, 15, True, True),       # full page, 62% admitted
-            (36, 20, 40, 40, 40, 4, True, False),       # full page, 90% admitted
-            (0, 20, 40, 40, 40, 40, True, True),        # everything denied
-            (18, 20, 20, 20, 20, 2, True, False),       # trusted 1x fetch, one denied: the retry's job
-            (57, 60, 60, 60, 60, 3, True, False),       # three overlapping queries, short: the retry's job
-            (280, 300, 300, 300, 300, 20, True, True),  # short at the cap, 93% admitted: nothing wider to try
+            (40, 40, 40, 40, 0, True, False),        # nothing denied: same points either way
+            (5, 10, 40, 10, 5, True, False),         # corpus exhausted
+            (5, 40, 40, 40, 35, False, False),       # tool-scoped search
+            (5, 40, 40, 40, 35, True, True),         # 12% admitted
+            (25, 40, 40, 40, 15, True, True),        # 62% admitted
+            (36, 40, 40, 40, 4, True, False),        # 90% admitted
+            (0, 40, 40, 40, 40, True, True),         # everything denied
+            (18, 20, 20, 20, 2, True, False),        # trusted 1x fetch, one denied: the retry's job
+            (57, 60, 60, 60, 3, True, False),        # overlapping queries, short: the retry's job
+            (280, 300, 300, 300, 20, True, False),   # short at the cap, 93% admitted: stays
         ],
     )
-    def test_when_a_search_moves(self, surviving, limit, raw, fetch, max_batch, denied, allow, moved) -> None:
+    def test_when_a_search_moves(self, surviving, raw, fetch, max_batch, denied, allow, moved) -> None:
         assert mod.RetrievalService._narrow_shortfall(
-            surviving=surviving, limit=limit, raw=raw, fetch_limit=fetch,
+            surviving=surviving, raw=raw, fetch_limit=fetch,
             max_batch=max_batch, denied=denied, allow_requery=allow,
         ) is moved
 

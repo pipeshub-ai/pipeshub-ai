@@ -218,6 +218,9 @@ class _NarrowAccessMemo:
             return False
         return True
 
+    def forget(self, key: tuple) -> None:
+        self._entries.pop(key, None)
+
     def clear(self) -> None:
         self._entries.clear()
 
@@ -701,13 +704,28 @@ class RetrievalService:
 
             fallback_on = narrow_access_fallback_enabled()
             memo_key = narrow_access_memo.key(org_id, user_id, filters)
+            remembered = fallback_on and narrow_access_memo.is_narrow(memo_key)
             try:
-                containers, accessible_virtual_id_to_record_id, user = (
-                    await self._resolve_search_scope(
-                        user_id, org_id, filters, time_range,
-                        prefer_record_ids=fallback_on and narrow_access_memo.is_narrow(memo_key),
+                try:
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(
+                            user_id, org_id, filters, time_range, prefer_record_ids=remembered,
+                        )
                     )
-                )
+                except PermissionVerificationUnavailableError as exc:
+                    if not remembered:
+                        raise
+                    # The remembered record-id route could not read the record
+                    # list; the container route checks hits without it. Forget
+                    # the scope and try that once.
+                    narrow_access_memo.forget(memo_key)
+                    self.logger.warning(
+                        "record list unreadable for remembered scope (user=%s org=%s); "
+                        "trying the container search: %s", user_id, org_id, exc,
+                    )
+                    containers, accessible_virtual_id_to_record_id, user = (
+                        await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                    )
             except PermissionVerificationUnavailableError as exc:
                 self.logger.warning(
                     "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
@@ -845,6 +863,19 @@ class RetrievalService:
                         # org-wide search. What the access check admitted stands.
                         if not search_results:
                             return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    elif len(replacement.results) < len(search_results):
+                        # The record list over-admits (RESTRICTED pages, a revoked
+                        # grant not yet expired), so its search can come back with
+                        # less than the check already admitted. A servable answer
+                        # is never replaced by a smaller one, and the scope is not
+                        # remembered for a route that served it worse.
+                        self.logger.info(
+                            "record-id search admitted %d hits, the container search %d "
+                            "(user=%s org=%s); keeping the container results",
+                            len(replacement.results), len(search_results), user_id, org_id,
+                        )
+                        search_results, accessible_virtual_id_to_record_id = adjudicated
+                        plan.failed_collections, plan.collections_searched = kept_failed, kept_searched
                     else:
                         search_results = replacement.results
                         accessible_virtual_id_to_record_id = replacement.accessible
@@ -1707,7 +1738,6 @@ class RetrievalService:
     def _narrow_shortfall(
         *,
         surviving: int,
-        limit: int,
         raw: int,
         fetch_limit: int,
         max_batch: int,
@@ -1716,34 +1746,29 @@ class RetrievalService:
     ) -> bool:
         """Whether this search should move to the record-id filter.
 
-        True when the access check denied a real share of what the container
-        filter returned and more was there to fetch. Two shapes qualify:
+        True when the access check admitted less than
+        ``_NARROW_ACCESS_MIN_SURVIVAL`` of what the container filter returned
+        and more was there to fetch. A user who reads a small slice of a large
+        connector cannot be served within the over-fetch cap (measured: 6% of
+        the record-id results at 1% readable, 17% at 5%), and even a full page
+        drifts from the record-id search's order when much was denied (86%
+        overlap at 20% readable, against 98% when nearly everything is).
 
-        * The page is short. A wider container fetch is the retry's answer, but
-          a user who reads a small slice of a large connector cannot be served
-          within the over-fetch cap (measured: 6% of the record-id results at
-          1% readable, 28% at 5%).
-        * The page is full but a large share was denied. Ranks under the
-          container filter are then interleaved with unreadable points, and the
-          fused order drifts from the record-id search's (85% overlap at 20%
-          readable, against 98% when nearly everything is readable).
+        The admitted share alone decides. A short page with most hits admitted
+        is the retry's to fill: one denied chunk, or overlap between expanded
+        queries judged against their combined budget, leaves a page short for a
+        user who reads nearly everything, and the retry already stops at the
+        cap.
 
         Never True when nothing was denied: then the container filter selected
-        what the record-id filter would have, and a different ranking cannot be
-        a permission effect. Never True when the corpus is exhausted: the
-        record-id filter selects a subset of the same points.
+        what the record-id filter would have. Never True when the corpus is
+        exhausted: the record-id filter selects a subset of the same points.
         """
         if not allow_requery or denied <= 0 or raw <= 0:
             return False
         if max_batch < fetch_limit:
             return False
-        if surviving / raw < _NARROW_ACCESS_MIN_SURVIVAL:
-            return True
-        # Most hits were admitted. A short page is then the retry's to fill: a
-        # single denied chunk, or overlap between expanded queries, leaves a
-        # page short for a user who reads nearly everything. Only when the
-        # fetch is already at the cap can no wider container fetch fill it.
-        return surviving < limit and fetch_limit >= _OVERFETCH_ABSOLUTE_CAP
+        return surviving / raw < _NARROW_ACCESS_MIN_SURVIVAL
 
     async def _search_and_adjudicate(
         self,
@@ -1875,7 +1900,6 @@ class RetrievalService:
 
             if narrow_access_fallback_enabled() and self._narrow_shortfall(
                 surviving=surviving,
-                limit=budget,
                 raw=len(search_results),
                 fetch_limit=asked,
                 max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
