@@ -2229,6 +2229,29 @@ class TestSearchWithFilters:
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio
+    async def test_search_api_records_carry_status_and_links(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """An API caller gets each record's status and the records it links to,
+        as the assistant does in its record headers, read for the asking user."""
+
+        async def describe(records: list, graph: object, org_id: str, *, user_id: str) -> None:
+            for record in records:
+                record["statusSummary"] = f"seen by {user_id} in {org_id}"
+
+        with patch(
+            "app.modules.retrieval.retrieval_service.describe_search_records",
+            new=AsyncMock(side_effect=describe),
+        ) as described:
+            result = await self._knowledge_search_over_a_thread(
+                retrieval_service, mock_graph_provider, passages=4, hit=2
+            )
+
+        described.assert_awaited_once()
+        assert described.await_args.args[1] is mock_graph_provider
+        assert result["records"][0]["statusSummary"] == "seen by u1 in o1"
+
+    @pytest.mark.asyncio
     async def test_every_matched_passage_of_a_section_is_kept_before_its_neighbours(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
     ) -> None:

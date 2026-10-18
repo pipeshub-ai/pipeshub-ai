@@ -85,3 +85,88 @@ export interface CreateServiceTokenApiResponse {
   message?: string;
   token: ServiceToken & { accessToken: string };
 }
+
+/**
+ * One entry on a service account's allow-list: permission for it to act as
+ * one named person for a few minutes at a time.
+ *
+ * Delegation is how an integration answers "what can *this person* see"
+ * instead of reading with its own access. It is granted one person at a time
+ * on purpose — an account allowed to act as anyone would be a master key.
+ */
+export interface Delegation {
+  id: string;
+  serviceAccountId: string;
+  subjectUserId: string;
+  subjectEmail?: string;
+  subjectFullName?: string;
+  /**
+   * True when the person can no longer be acted as — they left, were
+   * disabled, or became an administrator. The entry is still shown, because
+   * hiding it would leave this list disagreeing with what the system does.
+   */
+  inactive: boolean;
+  inactiveReason?: string;
+  grantedBy: string;
+  reason?: string;
+  createdAt: string;
+}
+
+export interface DelegationListApiResponse {
+  delegations: Delegation[];
+}
+
+/** POST /api/v1/service-account-delegations */
+export interface GrantDelegationPayload {
+  serviceAccountId: string;
+  /** A user id or an email address. */
+  subject: string;
+  reason?: string;
+}
+
+/**
+ * One thing that happened to this service account's delegation.
+ *
+ * Two kinds share the log. `issued` and `refused` are the exchange itself;
+ * refusals are kept as deliberately as successes, because an account
+ * repeatedly asking for people it may not act as is the clearest sign a
+ * credential has been taken. `granted` and `revoked` are the allow-list, so
+ * withdrawing a permission does not erase the record of who gave it.
+ */
+export interface DelegationEvent {
+  id: string;
+  serviceAccountId: string;
+  serviceAccountEmail?: string;
+  subjectUserId?: string;
+  subjectEmail?: string;
+  requestedSubject: string;
+  outcome: 'issued' | 'refused' | 'granted' | 'revoked';
+  refusedReason?: string;
+  /** The administrator behind a `granted` or `revoked` entry. */
+  actedBy?: string;
+  actedByEmail?: string;
+  /** The reason given when the permission was granted. */
+  note?: string;
+  scopes: string[];
+  jti?: string;
+  expiresAt?: string;
+  createdAt: string;
+}
+
+export interface DelegationEventListApiResponse {
+  events: DelegationEvent[];
+}
+
+/**
+ * Whether this deployment can delegate at all.
+ *
+ * Letting a service account act as a named person is an Enterprise
+ * capability. The Community build answers this probe with `available: false`
+ * and refuses the rest of the delegation routes, so the screen asks first and
+ * explains rather than failing when somebody reaches for it.
+ */
+export interface DelegationCapability {
+  available: boolean;
+  edition?: string;
+  capability?: string;
+}

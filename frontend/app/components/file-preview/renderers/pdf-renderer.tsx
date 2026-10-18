@@ -24,6 +24,10 @@ const NAVIGATION_SETTLE_MS = 500;
 // PDF font from running script in the page.
 const PDF_LOADER_SAFE_OPTIONS = { isEvalSupported: false };
 
+// The worker ships with the app. PdfLoader's default is a CDN copy of another pdf.js
+// version, which pdf.js refuses, the CSP's worker-src blocks, and an offline install can't reach.
+const PDF_WORKER_SRC = new URL('pdfjs-dist/build/pdf.worker.min.mjs', import.meta.url).toString();
+
 type PdfJsViewer = {
   currentPageNumber: number;
   currentScaleValue: string;
@@ -40,11 +44,6 @@ function toValidPageNumber(value: unknown): number | null {
         : NaN;
   if (!Number.isFinite(normalized) || normalized < 1) return null;
   return Math.trunc(normalized);
-}
-
-/** `window.PdfViewer` is the PdfHighlighter instance; `.viewer` is the pdf.js `PDFViewer`. */
-function getPdfJsViewer() {
-  return (window as unknown as { PdfViewer?: { viewer?: PdfJsViewer } }).PdfViewer?.viewer;
 }
 
 function clampToPageBounds(
@@ -138,8 +137,8 @@ function citationToHighlight(citation: PreviewCitation): IHighlight | null {
  * Citation highlights are positioned using bounding box coordinates,
  * and the active citation is scrolled into view.
  *
- * Page tracking and navigation work by accessing the internal PDFViewer
- * exposed by react-pdf-highlighter via window.PdfViewer.
+ * Page tracking and navigation work through the pdf.js PDFViewer that the
+ * PdfHighlighter instance holds as `.viewer` (read through a ref).
  */
 export function PDFRenderer({
   fileUrl,
@@ -151,6 +150,12 @@ export function PDFRenderer({
   onHighlightClick,
 }: PDFRendererProps) {
   const scrollViewerTo = useRef<(highlight: IHighlight) => void>(() => {});
+  const highlighterRef = useRef<PdfHighlighter<IHighlight> | null>(null);
+  // The pdf.js viewer, once PdfHighlighter has built it.
+  const getPdfJsViewer = useCallback(
+    () => highlighterRef.current?.viewer as PdfJsViewer | undefined,
+    [],
+  );
   const [viewerReadyEpoch, setViewerReadyEpoch] = useState(0);
 
   // Stable ref to latest pagination callbacks — avoids effects re-running on every render
@@ -221,7 +226,7 @@ export function PDFRenderer({
 
       clearNavigatingSoon();
     },
-    [clearNavigatingSoon],
+    [clearNavigatingSoon, getPdfJsViewer],
   );
 
   // Convert citations to highlights
@@ -334,7 +339,7 @@ export function PDFRenderer({
       if (rafId !== null) cancelAnimationFrame(rafId);
       if (scrollEl) scrollEl.removeEventListener('scroll', handleScroll);
     };
-  }, []);
+  }, [getPdfJsViewer]);
 
   // New document: reset the viewer; keep lastReported at 0 so the page sync effect
   // runs and applies `currentPage` (e.g. citation initial page) once `pagesinit` is done.
@@ -370,7 +375,7 @@ export function PDFRenderer({
     }
 
     clearNavigatingSoon();
-  }, [pagination?.currentPage, pagination?.totalPages, viewerReadyEpoch, clearNavigatingSoon]);
+  }, [pagination?.currentPage, pagination?.totalPages, viewerReadyEpoch, clearNavigatingSoon, getPdfJsViewer]);
 
   // react-pdf-highlighter only applies `pdfScaleValue` on `pagesinit`; re-apply when
   // scale (or a new document) changes once the global pdf.js viewer is present.
@@ -390,7 +395,7 @@ export function PDFRenderer({
     } catch {
       // Ignore transient pdf.js layout errors while the viewer is mounting/unmounting.
     }
-  }, [scale, fileUrl]);
+  }, [scale, fileUrl, getPdfJsViewer]);
 
   // Scroll to a citation when activeCitationId changes or when highlights load.
   // If the viewer isn't ready yet (PDF still loading), park the scroll in
@@ -459,6 +464,7 @@ export function PDFRenderer({
     >
       <PdfLoader
         url={fileUrl}
+        workerSrc={PDF_WORKER_SRC}
         {...PDF_LOADER_SAFE_OPTIONS}
         beforeLoad={
           <Flex
@@ -504,6 +510,7 @@ export function PDFRenderer({
               onReport={handleDocumentLoaded}
             />
             <PdfHighlighter<IHighlight>
+              ref={highlighterRef}
               pdfDocument={pdfDocument}
               enableAreaSelection={(event: MouseEvent) => event.altKey}
               onScrollChange={() => {}}

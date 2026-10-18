@@ -13,6 +13,7 @@ from app.services.vector_db.models import (
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
+    VectorDBMemoryReport,
     VectorPoint,
 )
 
@@ -79,6 +80,14 @@ class IVectorDBService(ABC):
     async def health_check(self) -> VectorDBHealth:
         """Perform a live health check and return a structured result."""
         raise NotImplementedError
+
+    async def memory_report(self) -> VectorDBMemoryReport | None:
+        """Estimate the memory search needs to stay fast, against what the store has.
+
+        None when the provider cannot estimate it. Concrete so providers that
+        manage their own memory (OpenSearch, Redis) need not implement it.
+        """
+        return None
 
     def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
         """Whether ``error``, raised by this provider's client during a search,

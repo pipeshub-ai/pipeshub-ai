@@ -24,6 +24,7 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
     AUDIT_PAGE_SIZE,
     BATCH_PROCESSING_SIZE,
     DEFAULT_MAX_RESULTS,
+    ISSUE_SEARCH_FIELDS,
     JiraConnector,
 )
 from app.models.entities import (
@@ -504,6 +505,31 @@ class TestBuildIssueRecords:
         assert rec.source_status == "Backlog"
         assert rec.to_arango_record()["sourceStatus"] == "Backlog"
         assert "* Status: NEW (Jira: Backlog)" in rec.to_llm_context()
+
+    @pytest.mark.asyncio
+    async def test_done_issue_keeps_its_resolution_and_due_dates(self) -> None:
+        """The search asks Jira for both dates, and the record stores them, so
+        "Done on 2026-06-12" is answerable from the record alone."""
+        assert {"resolutiondate", "duedate"} <= set(ISSUE_SEARCH_FIELDS)
+        connector = _make_connector()
+        connector.site_url = "https://company.atlassian.net"
+        connector.indexing_filters = None
+
+        issue = _issue_dict()
+        issue["fields"]["status"] = {"name": "Done"}
+        issue["fields"]["resolutiondate"] = "2026-06-12T10:00:00.000+0000"
+        issue["fields"]["duedate"] = "2026-06-10"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+        connector._handle_attachment_deletions_from_changelog = AsyncMock(return_value=[])
+        connector._fetch_issue_attachments = AsyncMock(return_value=[])
+
+        records, _ = await connector._build_issue_records([issue], "p-1", [_app_user()])
+
+        rec = records[0][0]
+        assert rec.resolved_at == 1781258400000
+        assert rec.due_date == 1781049600000
+        doc = rec.to_arango_record()
+        assert (doc["resolvedAtTimestamp"], doc["dueDateTimestamp"]) == (1781258400000, 1781049600000)
 
     @pytest.mark.asyncio
     async def test_existing_unchanged_issue_skipped(self):

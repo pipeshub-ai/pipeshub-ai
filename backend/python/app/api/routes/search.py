@@ -19,6 +19,7 @@ from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
 from app.utils.opik import get_llm_invoke_config
 from app.utils.query_transform import setup_query_transformation
+from app.utils.stage_timer import StageTimer
 from app.utils.user_errors import provider_error_code
 from app.utils.user_messages import action_failed
 
@@ -49,6 +50,10 @@ class SearchQuery(BaseModel):
     createdBefore: Optional[str] = None
     modifiedAfter: Optional[str] = None
     modifiedBefore: Optional[str] = None
+    # False searches the query exactly as sent: no model rewrite and no
+    # expanded variants. For callers that write their own search queries,
+    # such as an agent. Left out, the rewrite and expansion run as before.
+    rewriteQuery: bool = True
 
 
 # The parser names the assistant tool's parameters; this route receives the
@@ -161,6 +166,29 @@ def _queries_for_search(
     return queries
 
 
+async def _rewritten_queries(
+    request: Request, retrieval_service: RetrievalService, query: str, logger: "Logger"
+) -> list[str]:
+    """The query rewritten and expanded by the model, for retrieval."""
+    llm = await resolve_llm_for_search(request, retrieval_service)
+    rewrite_chain, expansion_chain = setup_query_transformation(llm)
+
+    # OpikTracer is invoke-config only (not a constructor callback); without
+    # this, rewrite/expand LLM calls never appear in Opik.
+    invoke_config = get_llm_invoke_config(llm)
+
+    # Run query transformations in parallel
+    rewritten_query, expanded_queries = await asyncio.gather(
+        _transform_query(rewrite_chain, query, "rewrite", logger, invoke_config),
+        _transform_query(expansion_chain, query, "expansion", logger, invoke_config),
+    )
+
+    logger.debug(f"Rewritten query: {rewritten_query}")
+    logger.debug(f"Expanded queries: {expanded_queries}")
+
+    return _queries_for_search(query, rewritten_query, expanded_queries)
+
+
 @router.post("/search", dependencies=[Depends(require_scopes(OAuthScopes.SEMANTIC_WRITE))])
 @inject
 async def search(
@@ -173,37 +201,27 @@ async def search(
     container = request.app.container
     logger = container.logger()
     time_range = _search_time_range(body)
+    timer = StageTimer()
     try:
-        llm = await resolve_llm_for_search(request, retrieval_service)
+        if body.rewriteQuery:
+            queries = await _rewritten_queries(request, retrieval_service, body.query, logger)
+        else:
+            queries = _queries_for_search(body.query, None, None)
+        timer.mark("query_transform")
 
-        # Extract KB IDs from filters if present
-        updated_filters = body.filters
-
-        # Setup query transformation
-        rewrite_chain, expansion_chain = setup_query_transformation(llm)
-
-        # OpikTracer is invoke-config only (not a constructor callback); without
-        # this, rewrite/expand LLM calls never appear in Opik.
-        invoke_config = get_llm_invoke_config(llm)
-
-        # Run query transformations in parallel
-        rewritten_query, expanded_queries = await asyncio.gather(
-            _transform_query(rewrite_chain, body.query, "rewrite", logger, invoke_config),
-            _transform_query(expansion_chain, body.query, "expansion", logger, invoke_config),
-        )
-
-        logger.debug(f"Rewritten query: {rewritten_query}")
-        logger.debug(f"Expanded queries: {expanded_queries}")
-
-        queries = _queries_for_search(body.query, rewritten_query, expanded_queries)
         results = await retrieval_service.search_with_filters(
             queries=queries,
             org_id=request.state.user.get("orgId"),
             user_id=request.state.user.get("userId"),
             limit=body.limit,
-            filter_groups=updated_filters,
+            filter_groups=body.filters,
             knowledge_search=True,
             time_range=time_range,
+        )
+        timer.mark("retrieval")
+        timer.emit(
+            logger, "search",
+            rewrite="on" if body.rewriteQuery else "off", queries=len(queries),
         )
         custom_status_code = results.get("status_code", 500)
         logger.info(f"Custom status code: {custom_status_code}")

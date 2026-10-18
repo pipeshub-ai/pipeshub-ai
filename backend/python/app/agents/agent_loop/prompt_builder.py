@@ -433,7 +433,12 @@ def _build_finding_information(
 
     if surfaces.can_fetch_full_record:
         from app.modules.agents.record_escalation.policy import policy_text
-        parts.append(policy_text(_FETCH_FULL_RECORD_TOOL_NAME, read_in_full=read_in_full))
+        from app.modules.retrieval.context.targeted import targeted_retrieval_enabled
+        parts.append(policy_text(
+            _FETCH_FULL_RECORD_TOOL_NAME,
+            read_in_full=read_in_full,
+            focused_reads=targeted_retrieval_enabled(),
+        ))
 
     return "\n## Finding Information\n\n" + "\n\n".join(parts)
 

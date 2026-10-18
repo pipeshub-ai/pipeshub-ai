@@ -12,6 +12,14 @@ export enum OAuthGrantType {
   CLIENT_CREDENTIALS = 'client_credentials',
   REFRESH_TOKEN = 'refresh_token',
   DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code',
+  /**
+   * RFC 8693 token exchange, used only by service-account delegation.
+   *
+   * Never added to an app's `allowedGrantTypes`: the exchange authenticates
+   * with the service token itself rather than with client credentials, so
+   * there is no registered client whose grant list could permit it.
+   */
+  TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange',
 }
 
 export interface IOAuthApp extends Document {

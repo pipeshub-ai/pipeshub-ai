@@ -977,6 +977,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "creator_name": graph_doc.get("creatorName"),
                 "creator_email": graph_doc.get("creatorEmail"),
                 "labels": graph_doc.get("labels"),
+                "resolved_at": graph_doc.get("resolvedAtTimestamp"),
+                "due_date": graph_doc.get("dueDateTimestamp"),
             }
             return TicketRecord(**base_args, **specific_args)
 
@@ -1086,6 +1088,8 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 "review_email": graph_doc.get("reviewEmail"),
                 "labels": graph_doc.get("labels"),
                 "last_commit_sha": graph_doc.get("lastCommitSha"),
+                "merged_at": graph_doc.get("mergedAtTimestamp"),
+                "closed_at": graph_doc.get("closedAtTimestamp"),
             }
             return PullRequestRecord(**base_args, **specific_args)
         else:
@@ -1978,6 +1982,60 @@ MAX_ADDRESS_LINKS_PER_HIT = 10
 _MAX_LINKED_NAME_CHARS = 200
 _ADDRESS_LINK_SECTIONS = (("mentioned_in", "Mentioned in"), ("links_to", "Links to"))
 
+# The record types that carry a state of their own: open or done, merged or
+# closed, and when. Every other type (a page, a message, a file) has none, so
+# its type-specific document is never read for a status.
+_STATUS_RECORD_TYPES = frozenset({
+    RecordType.TICKET.value,
+    RecordType.PULL_REQUEST.value,
+    RecordType.PROJECT.value,
+})
+# A status phrase is one line of data, like a linked record's name.
+_MAX_STATUS_CHARS = 160
+
+
+def status_summary_from_graph(
+    base_doc: dict[str, Any], type_doc: dict[str, Any] | None,
+) -> str | None:
+    """``Record.status_summary`` of a record read from the graph: its base
+    document (``records``) and its type-specific one (``tickets``, ``prs``)."""
+    if not type_doc or base_doc.get("recordType") not in _STATUS_RECORD_TYPES:
+        return None
+    record = create_record_instance_from_dict(_build_record_dict_from_graph_base(base_doc), type_doc)
+    summary = record.status_summary() if record else None
+    if not summary:
+        return None
+    return " ".join(summary.split())[:_MAX_STATUS_CHARS]
+
+
+async def status_summaries_by_id(
+    graph_provider: IGraphDBProvider,
+    base_docs: dict[str, dict[str, Any]],
+) -> dict[str, str]:
+    """Each record's status phrase, by id, for those that have one.
+
+    One query per type collection, for the records whose type has a state.
+    A status is never what decides whether a record is shown, so a read that
+    fails leaves those records without one rather than failing the caller.
+    """
+    wanted = [
+        rid for rid, doc in base_docs.items()
+        if isinstance(doc, dict) and doc.get("recordType") in _STATUS_RECORD_TYPES
+    ]
+    if not wanted:
+        return {}
+    try:
+        type_docs = await _fetch_type_specific_docs_batched(graph_provider, wanted, base_docs)
+    except Exception as e:
+        logger.warning("Record status read skipped: %s", e)
+        return {}
+    summaries: dict[str, str] = {}
+    for rid in wanted:
+        summary = status_summary_from_graph(base_docs[rid], type_docs.get(rid))
+        if summary:
+            summaries[rid] = summary
+    return summaries
+
 
 async def enrich_records_with_address_links(
     virtual_record_id_to_result: dict[str, dict[str, Any]],
@@ -1995,7 +2053,9 @@ async def enrich_records_with_address_links(
     records ``user_id`` may read are shown; if that check cannot run, nothing
     is added. Sets ``record["address_links"]`` to
     ``{"mentioned_in": [...], "links_to": [...]}``, each item
-    ``{"record_id", "record_name", "connector_name"}``.
+    ``{"record_id", "record_name", "connector_name", "record_type"}`` and,
+    for a ticket, pull request or project, ``"status"``: "the pull request
+    this thread links was merged on X" needs no second search.
     """
     if not graph_provider or not user_id or not org_id:
         return
@@ -2063,18 +2123,27 @@ async def enrich_records_with_address_links(
     by_id = {
         (doc.get("id") or doc.get("_key")): doc for doc in docs or [] if isinstance(doc, dict)
     }
+    statuses = await status_summaries_by_id(graph_provider, by_id)
+
+    def _row(rid: str) -> dict[str, Any]:
+        row = {
+            "record_id": rid,
+            "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
+                :_MAX_LINKED_NAME_CHARS
+            ],
+            "connector_name": by_id[rid].get("connectorName") or "",
+            "record_type": by_id[rid].get("recordType") or "",
+        }
+        if rid in statuses:
+            row["status"] = statuses[rid]
+        return row
+
     for record_id, record in hits.items():
         found = (links or {}).get(record_id) or {}
         attached: dict[str, list[dict[str, Any]]] = {}
         for direction, _title in _ADDRESS_LINK_SECTIONS:
             rows = [
-                {
-                    "record_id": rid,
-                    "record_name": " ".join(_record_name_from_graph_doc(by_id[rid]).split())[
-                        :_MAX_LINKED_NAME_CHARS
-                    ],
-                    "connector_name": by_id[rid].get("connectorName") or "",
-                }
+                _row(rid)
                 for rid in found.get(direction) or []
                 if rid in by_id and rid != record_id
             ][:MAX_ADDRESS_LINKS_PER_HIT]
@@ -2082,6 +2151,79 @@ async def enrich_records_with_address_links(
                 attached[direction] = rows
         if attached:
             record["address_links"] = attached
+
+
+async def enrich_read_records_with_address_links(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str | None,
+    *,
+    user_id: str | None,
+) -> None:
+    """``enrich_records_with_address_links`` for records read by id (a fetch,
+    the record-content API), which do not pass through the search pipeline:
+    the pull request a thread links, with whether and when it merged."""
+    if not records:
+        return
+    await enrich_records_with_address_links(
+        {str(i): record for i, record in enumerate(records) if isinstance(record, dict)},
+        graph_provider,
+        org_id or "",
+        user_id=user_id or "",
+    )
+
+
+# How a linked record's direction is named in the search API's JSON.
+_SEARCH_LINK_RELATIONS = {"mentioned_in": "mentionedIn", "links_to": "linksTo"}
+
+
+async def describe_search_records(
+    records: list[dict[str, Any]],
+    graph_provider: IGraphDBProvider | None,
+    org_id: str,
+    *,
+    user_id: str,
+) -> None:
+    """Add to each record document the search API returns where it stands
+    and what it links to, so an API caller sees what the assistant sees.
+
+    Sets ``statusSummary`` on a ticket, pull request or project ("Merged
+    2026-09-25 by alice"), and ``linkedRecords`` on a record that names, or
+    is named by, records the user may read: each ``{relation, recordId,
+    recordName, recordType, connector, status?}``. Both keys are left out
+    when there is nothing to say.
+    """
+    docs: dict[str, dict[str, Any]] = {}
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        record.pop("statusSummary", None)
+        record.pop("linkedRecords", None)
+        rid = record.get("_key") or record.get("id")
+        if rid:
+            docs[rid] = record
+    if not docs or not graph_provider:
+        return
+    for rid, summary in (await status_summaries_by_id(graph_provider, docs)).items():
+        docs[rid]["statusSummary"] = summary
+    holders = {rid: {"id": rid} for rid in docs}
+    await enrich_records_with_address_links(holders, graph_provider, org_id, user_id=user_id)
+    for rid, holder in holders.items():
+        links = holder.get("address_links") or {}
+        linked = [
+            {
+                "relation": relation,
+                "recordId": row["record_id"],
+                "recordName": row["record_name"],
+                "recordType": row.get("record_type") or "",
+                "connector": row.get("connector_name") or "",
+                **({"status": row["status"]} if row.get("status") else {}),
+            }
+            for direction, relation in _SEARCH_LINK_RELATIONS.items()
+            for row in links.get(direction) or []
+        ]
+        if linked:
+            docs[rid]["linkedRecords"] = linked
 
 
 def build_address_links_info(record: dict[str, Any]) -> str:
@@ -2102,11 +2244,28 @@ def build_address_links_info(record: dict[str, Any]) -> str:
             record_id = html.escape(str(row.get("record_id", "")), quote=True)
             source = html.escape(str(row.get("connector_name") or ""), quote=True)
             name = html.escape(str(row.get("record_name") or "Unknown"), quote=False)
+            # Type and status only when known, so a row from an older
+            # enrichment renders exactly as it did.
+            extra = ""
+            if row.get("record_type"):
+                extra += f' type="{html.escape(str(row["record_type"]), quote=True)}"'
+            if row.get("status"):
+                extra += f' status="{html.escape(str(row["status"]), quote=True)}"'
             lines.append(
-                f'  <linked_record record_id="{record_id}" source="{source}">'
+                f'  <linked_record record_id="{record_id}" source="{source}"{extra}>'
                 f"<record_name>{name}</record_name></linked_record>"
             )
     return "\n".join(lines) + "\n" if lines else ""
+
+
+def record_header_metadata(record: dict[str, Any]) -> str:
+    """A read record's metadata as its header shows it: its own fields, then
+    the records that name it and that it names, when those were attached."""
+    metadata = record.get("context_metadata")
+    if not isinstance(metadata, str):
+        metadata = ""
+    links = build_address_links_info(record)
+    return f"{metadata}{links.rstrip()}" if links else metadata
 
 
 def build_node_relations_info(record: dict[str, Any]) -> str:
@@ -4488,7 +4647,7 @@ def record_to_message_content(
 
     try:
         content = []
-        context_metadata = record.get("context_metadata", "") or ""
+        context_metadata = record_header_metadata(record)
         fk_text = _fk_lines_text(record)
         trailer_reserve = record_trailer_reserve(
             record, selection=include_blocks is not None, hints=hints,
@@ -5115,7 +5274,7 @@ def record_to_text(record: dict[str, Any]) -> str:
     """
     try:
         content: list[str] = []
-        context_metadata = record.get("context_metadata", "")
+        context_metadata = record_header_metadata(record)
         content.append(f"""<record>\n{context_metadata}\n\nRecord blocks (sorted):\n\n""")
 
         block_containers = record.get("block_containers", {})
