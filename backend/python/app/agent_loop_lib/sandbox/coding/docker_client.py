@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import atexit
 import logging
+import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, TypeVar
@@ -123,8 +124,20 @@ class DockerClientProvider:
             self._network_cidrs[network_name] = cidrs
         return cidrs
 
+    @staticmethod
+    def docker_host() -> str:
+        """The endpoint `docker.from_env()` builds the client from, named in
+        errors so the reader knows which address did not answer."""
+        return os.environ.get("DOCKER_HOST") or "unix:///var/run/docker.sock"
+
     async def ping(self) -> bool:
-        """Check Docker daemon reachability."""
+        """Check Docker daemon reachability.
+
+        `ensure_image` returning False cannot tell an absent image from an
+        endpoint nothing is listening on, since a dead `DOCKER_HOST` fails
+        `images.get` the same way; callers about to blame the image ask
+        this first.
+        """
         try:
             await self.run_blocking(self.client.ping)
             return True
