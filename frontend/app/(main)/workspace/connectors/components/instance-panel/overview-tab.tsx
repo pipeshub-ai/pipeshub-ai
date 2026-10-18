@@ -328,6 +328,7 @@ export function OverviewTab({
         }
         isReindexFailedBusy={isReindexFailedBusy}
         isManualIndexBusy={isManualIndexBusy}
+        isRetryClassificationBusy={isRetryClassificationBusy}
       />
 
       <ConfirmationDialog

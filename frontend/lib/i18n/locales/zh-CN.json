@@ -686,7 +686,21 @@
     "chatSelectionLimit": "聊天最多可带入 {{max}} 个所选项目。请取消勾选部分项目后重试。",
     "chatTooManyCollections": "聊天一次最多可搜索 {{max}} 个集合，而您的集合更多。请打开一个集合，或勾选要提问的集合。",
     "chatCollectionsLoadFailed": "无法为聊天加载您的集合。请重试。",
-    "chatNoCollections": "您还没有可提问的集合。"
+    "chatNoCollections": "您还没有可提问的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "进行中",
+      "failed": "失败",
+      "fileTypeNotSupported": "不支持的文件类型",
+      "notStarted": "未开始",
+      "queued": "已排队",
+      "manualIndexing": "手动索引",
+      "empty": "空",
+      "paused": "已暂停",
+      "needsMultimodalModel": "需要多模态模型",
+      "skipped": "已跳过",
+      "pending": "待处理"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",

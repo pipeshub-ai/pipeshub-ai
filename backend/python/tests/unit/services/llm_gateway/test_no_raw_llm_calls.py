@@ -11,6 +11,12 @@ INDEXING_PATHS = [APP / "modules" / "parsers", APP / "modules" / "transformers",
 QUERY_TIME_PATHS = [APP / "modules" / "named_entities" / "linking"]
 
 
+def test_every_scanned_path_exists() -> None:
+    # A renamed or moved path would otherwise be scanned as empty and pass.
+    missing = [str(path.relative_to(APP)) for path in INDEXING_PATHS + QUERY_TIME_PATHS if not path.exists()]
+    assert not missing, f"update the scanned paths: {missing}"
+
+
 def test_no_indexing_code_calls_a_model_directly() -> None:
     offenders = []
     for root in INDEXING_PATHS:

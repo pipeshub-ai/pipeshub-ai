@@ -197,6 +197,18 @@ class TestMarkRecordStatusEdgeCases:
         assert doc["other"] == "data"
 
     @pytest.mark.asyncio
+    async def test_in_progress_also_marks_parsing_in_progress(self) -> None:
+        """In-process, parse and index are one step: a re-index must not show the old parse as done."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k7", "parsingStatus": ProgressStatus.COMPLETED.value}
+
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+        assert doc["parsingStatus"] == ProgressStatus.IN_PROGRESS.value
+
+        await ep.mark_record_status(doc, ProgressStatus.FAILED)
+        assert doc["parsingStatus"] == ProgressStatus.IN_PROGRESS.value  # only IN_PROGRESS touches it
+
+    @pytest.mark.asyncio
     async def test_error_with_non_empty_status_raises(self):
         ep, _, _, gp = _make_event_processor()
         gp.update_node.side_effect = Exception("fail")

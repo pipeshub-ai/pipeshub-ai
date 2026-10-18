@@ -106,6 +106,8 @@ class TestApplyEmpty:
         assert fields["indexingStatus"] == ProgressStatus.EMPTY.value
         assert fields["isDirty"] is False
         assert fields["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+        # The in-process path has no other write that ends the parse step.
+        assert fields["parsingStatus"] == ProgressStatus.COMPLETED.value
         # An empty record has nothing left to serve from an earlier version.
         assert fields["hasIndexedCopy"] is False
         sink_orchestrator.index.assert_not_awaited()

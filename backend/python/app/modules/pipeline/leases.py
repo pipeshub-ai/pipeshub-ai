@@ -26,6 +26,11 @@ class RecordBusy(Exception):
     """The record's lease stayed held for longer than the job could wait."""
 
 
+class LeaseLost(RecordBusy):
+    """The held lease could not be renewed: a re-index may own the record now, so the holder
+    stopped before its next write. A ``RecordBusy``, so the job is retried."""
+
+
 class RecordLeases:
     """Bound when the consumers start, which is when the lease manager exists. Unbound (no
     distributed concurrency), holding only re-checks the revision."""
@@ -53,7 +58,9 @@ class RecordLeases:
         """Hold ``record_id``'s lease, with the record still on the job's revision.
 
         Raises ``RevisionSuperseded`` as soon as it is not (a re-index started while this waited),
-        and ``RecordBusy`` when the lease stays held for ``wait_s``.
+        and ``RecordBusy`` when the lease stays held for ``wait_s``. When the held lease is lost
+        (``LeaseLost``), the task that entered the hold is cancelled at its next await, so the
+        body writes nothing more.
         """
         manager = self._manager
         if manager is None:
@@ -73,22 +80,77 @@ class RecordLeases:
         # Held across a record's enrichment writes (graph, vectors), which can outlast one lease
         # term: renew it so a re-index cannot take the record while those writes are landing.
         lease_s = messaging_env.concurrency_lease_seconds
-        renewer = asyncio.create_task(_keep_renewed(manager, pool, holder, lease_s))
+        task = asyncio.current_task()
+        lost: list[str] = []
+        holding = True
+        cancel_sent = False
+
+        def on_lost(reason: str) -> None:
+            nonlocal cancel_sent
+            # Only while the body may still write: past it, the cleanup below must not be cut short.
+            if holding and not lost and task is not None:
+                lost.append(reason)
+                cancel_sent = True
+                _ = task.cancel()
+
+        def absorb_own_cancel() -> bool:
+            # Called only where a CancelledError was just delivered: it was ours when on_lost sent
+            # one and no other cancellation is still counted (uncancel leaves those in place).
+            nonlocal cancel_sent
+            if not cancel_sent or task is None:
+                return False
+            cancel_sent = False
+            return task.uncancel() == 0
+
+        renewer = asyncio.create_task(_keep_renewed(manager, pool, holder, lease_s, on_lost))
         try:
             if not await still_current():
                 raise RevisionSuperseded(record_id)
             yield
+        except asyncio.CancelledError:
+            if not absorb_own_cancel():
+                raise
         finally:
+            holding = False
             _ = renewer.cancel()
-            with contextlib.suppress(asyncio.CancelledError, Exception):
-                await renewer
+            try:
+                # A loss noticed as the body returned may not have been delivered yet: take it here,
+                # at a suspension point that is certain, rather than in the release below.
+                _ = await asyncio.wait({renewer})
+                await asyncio.sleep(0)
+            except asyncio.CancelledError:
+                if not absorb_own_cancel():
+                    raise
             with contextlib.suppress(Exception):
                 await manager.release(pool, holder)
+        # Writes may have landed after the lease lapsed, however the body ended: retry the job.
+        if lost:
+            if cancel_sent and task is not None:
+                # The body swallowed the cancellation and ran on: take back the request it consumed.
+                _ = task.uncancel()
+            raise LeaseLost(f"record {record_id}: {lost[0]}")
 
 
-async def _keep_renewed(manager: IDistributedLeaseManager, pool: str, holder: str, lease_s: float) -> None:
+async def _keep_renewed(
+    manager: IDistributedLeaseManager, pool: str, holder: str, lease_s: float, on_lost: Callable[[str], None]
+) -> None:
+    """Renew every third of the term; lost when the manager says this holder no longer has the
+    lease, or when renewals keep failing until one interval before the term ends (the same rule
+    as ``LeaseRenewer``)."""
     interval = max(_MIN_RENEW_S, lease_s / 3)
+    deadline = max(interval, lease_s - interval)
+    loop = asyncio.get_running_loop()
+    last_success = loop.time()
     while True:
         await asyncio.sleep(interval)
-        with contextlib.suppress(Exception):
-            _ = await manager.renew(pool, holder, lease_s)
+        try:
+            renewed = await manager.renew(pool, holder, lease_s)
+        except Exception as exc:
+            if loop.time() - last_success >= deadline:
+                on_lost(f"lease renewals kept failing ({exc!r})")
+                return
+            continue
+        if not renewed:
+            on_lost("the lease is no longer held")
+            return
+        last_success = loop.time()

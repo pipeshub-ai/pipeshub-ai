@@ -668,6 +668,10 @@ class EventProcessor:
                 else None
             ),
         }
+        if status == ProgressStatus.IN_PROGRESS:
+            # In-process, parsing and indexing run as one step: until the indexed write marks it
+            # COMPLETED, a re-index must not keep showing the previous run's parse as done.
+            fields["parsingStatus"] = ProgressStatus.IN_PROGRESS.value
         if content_rev is not None:
             fields["contentRev"] = content_rev
         success = await self.update_record_fields(doc, fields)

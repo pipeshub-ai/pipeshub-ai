@@ -722,7 +722,21 @@
     "chatSelectionLimit": "Chat může pracovat nejvýše s {{max}} vybranými položkami. Zrušte výběr některých z nich a zkuste to znovu.",
     "chatTooManyCollections": "Chat může najednou prohledávat nejvýše {{max}} kolekcí a vy jich máte více. Otevřete jednu kolekci, nebo zaškrtněte ty, na které se chcete ptát.",
     "chatCollectionsLoadFailed": "Nepodařilo se načíst vaše kolekce pro chat. Zkuste to znovu.",
-    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát."
+    "chatNoCollections": "Zatím nemáte žádné kolekce, na které byste se mohli ptát.",
+    "indexingStatus": {
+      "completed": "Dokončeno",
+      "inProgress": "Probíhá",
+      "failed": "Selhalo",
+      "fileTypeNotSupported": "Nepodporovaný typ souboru",
+      "notStarted": "Nezahájeno",
+      "queued": "Ve frontě",
+      "manualIndexing": "Ruční indexování",
+      "empty": "Prázdné",
+      "paused": "Pozastaveno",
+      "needsMultimodalModel": "Vyžaduje multimodální model",
+      "skipped": "Přeskočeno",
+      "pending": "Čeká"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",

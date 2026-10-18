@@ -493,6 +493,9 @@ class SinkOrchestrator(Transformer):
             "virtualRecordId": record.virtual_record_id,
             "indexingStatus": ProgressStatus.COMPLETED.value,
             **indexed_copy_fields(ProgressStatus.COMPLETED),
+            # An indexed record was parsed. The parsing service already wrote
+            # this; the in-process pipeline has no other place that does.
+            "parsingStatus": ProgressStatus.COMPLETED.value,
             "lastIndexTimestamp": timestamp,
             "processingStartedAt": None,
             "isDirty": False,
@@ -515,6 +518,7 @@ class SinkOrchestrator(Transformer):
             return
         record.record_status = ProgressStatus.COMPLETED
         record.indexing_status = ProgressStatus.COMPLETED.value
+        record.parsing_status = ProgressStatus.COMPLETED.value
         self.logger.debug(
             "✅ indexingStatus=COMPLETED recorded for %s", record.id
         )

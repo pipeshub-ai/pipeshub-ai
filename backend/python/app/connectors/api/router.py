@@ -2376,9 +2376,10 @@ def _parse_status_filters(request_body: dict | None) -> list[str] | None:
 def _parse_stages(request_body: dict[str, Any] | None) -> list[str] | None:
     """Parse optional ``stages``: only these stages re-run, on records selected by their own status."""
     body = cast("dict[str, object]", request_body or {})
-    raw = body.get("stages")
-    if raw is None:
+    if "stages" not in body:
         return None
+    # An explicit null is not "omitted": it would turn a stage retry into a full reindex.
+    raw = body["stages"]
     items = cast("list[object]", raw) if isinstance(raw, list) else []
     names = [s for s in items if isinstance(s, str)]
     if not names or len(names) != len(items):

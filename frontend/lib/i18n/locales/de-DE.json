@@ -599,7 +599,21 @@
     "chatSelectionLimit": "Der Chat kann bis zu {{max}} ausgewählte Elemente übernehmen. Wählen Sie einige ab und versuchen Sie es erneut.",
     "chatTooManyCollections": "Der Chat kann höchstens {{max}} Sammlungen auf einmal durchsuchen, und Sie haben mehr. Öffnen Sie eine Sammlung oder wählen Sie die gewünschten aus.",
     "chatCollectionsLoadFailed": "Ihre Sammlungen konnten für den Chat nicht geladen werden. Versuchen Sie es erneut.",
-    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können."
+    "chatNoCollections": "Sie haben noch keine Sammlungen, zu denen Sie fragen können.",
+    "indexingStatus": {
+      "completed": "Abgeschlossen",
+      "inProgress": "In Bearbeitung",
+      "failed": "Fehlgeschlagen",
+      "fileTypeNotSupported": "Dateityp nicht unterstützt",
+      "notStarted": "Nicht gestartet",
+      "queued": "In der Warteschlange",
+      "manualIndexing": "Manuelle Indizierung",
+      "empty": "Leer",
+      "paused": "Pausiert",
+      "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "skipped": "Übersprungen",
+      "pending": "Ausstehend"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",

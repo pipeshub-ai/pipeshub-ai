@@ -21,7 +21,11 @@ from app.modules.named_entities.strategies.base import (
     StrategyResult,
 )
 from app.modules.named_entities.wire import EntitySubmission, WireEntity
-from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.llm_gateway.gateway import (
+    ProviderUnavailableError,
+    get_llm_gateway,
+    provider_key,
+)
 from app.telemetry.modules.named_entity_metrics import record_step_down
 
 if TYPE_CHECKING:
@@ -231,9 +235,11 @@ class SingleCallExtractionStrategy:
                 result = await runners[mode](llm, prompt)
             except Exception as exc:
                 error, result = exc, None
-                # A call that ran out of time says nothing about the schema: the
-                # next mode is only a retry, and must not become the start mode.
-                if isinstance(exc, TimeoutError):
+                # A call that ran out of time, or that the provider could not
+                # serve (an open circuit, an outage), says nothing about the
+                # schema: the next mode is only a retry, and must not become the
+                # start mode.
+                if isinstance(exc, (TimeoutError, ProviderUnavailableError)):
                     continue
             if result is None:
                 failed.append(mode)

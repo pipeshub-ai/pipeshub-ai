@@ -30,9 +30,9 @@ class TestDeterministicPointId:
     def test_same_block_gets_the_same_id(self) -> None:
         assert deterministic_point_id(_meta(), "text") == deterministic_point_id(_meta(), "text")
 
-    def test_whole_block_point_is_keyed_by_block_not_text(self) -> None:
-        # An edited block keeps its point, so the upsert replaces it in place.
-        assert deterministic_point_id(_meta(), "old") == deterministic_point_id(_meta(), "new")
+    def test_pieces_of_one_whole_block_are_distinct(self) -> None:
+        # An over-long row is split into pieces that share the block's metadata.
+        assert deterministic_point_id(_meta(), "piece one") != deterministic_point_id(_meta(), "piece two")
 
     def test_sub_chunks_of_one_block_are_distinct(self) -> None:
         chunk = _meta(isBlock=False)
@@ -49,18 +49,19 @@ class TestDeterministicPointId:
         }
         assert len(ids) == 4
 
-    def test_summary_point_is_one_per_record(self) -> None:
+    def test_summary_pieces_are_distinct(self) -> None:
         summary = {
             "virtualRecordId": "vr",
             "blockId": "vr_summary",
             "isBlock": False,
             "isRecordSummary": True,
         }
-        assert deterministic_point_id(summary, "a") == deterministic_point_id(summary, "b")
+        assert deterministic_point_id(summary, "a") == deterministic_point_id(summary, "a")
+        assert deterministic_point_id(summary, "a") != deterministic_point_id(summary, "b")
 
-    def test_block_group_point_is_one_per_group(self) -> None:
+    def test_block_group_pieces_are_distinct(self) -> None:
         group = {"virtualRecordId": "vr", "blockId": "g1", "isBlockGroup": True, "isBlock": False}
-        assert deterministic_point_id(group, "a") == deterministic_point_id(group, "b")
+        assert deterministic_point_id(group, "a") != deterministic_point_id(group, "b")
 
     def test_id_is_a_uuid(self) -> None:
         uuid.UUID(deterministic_point_id(_meta(), "t"))
@@ -171,3 +172,56 @@ class TestReconciliationReplacesStoredPoints:
         deleted_after = set().union(*(ids for name, ids in ordered[upsert:] if name == "delete"))
         assert "b-1" not in deleted_after
         assert "b-gone" in deleted_after
+
+
+class TestSplitBlocksKeepEveryPiece:
+    """`_bounded_documents` splits over-long table and SQL text into pieces that share one
+    block's metadata. Each piece needs its own point, or the upsert keeps only one."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["table_row", "table_group", "sql_row", "sql_table", "sql_view"])
+    async def test_every_piece_of_a_split_block_is_stored(
+        self, source: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from app.models.blocks import (
+            BlockGroup,
+            BlocksContainer,
+            BlockType,
+            DataFormat,
+            GroupSubType,
+            GroupType,
+        )
+        from tests.unit.modules.transformers.test_vectorstore_point_metadata import (
+            _capturing_vectorstore,
+        )
+
+        monkeypatch.setenv("PIPESHUB_EMBED_TOKEN_LIMIT", "512")
+        vs, points = _capturing_vectorstore()
+        # Numbered rows, so no two pieces carry the same text.
+        text = " ".join(f"row {i}: value {i * 7}," for i in range(1_500))
+        blocks, groups = [], []
+        if source in ("table_row", "sql_row"):
+            row = Block(index=0, type=BlockType.TABLE_ROW, format=DataFormat.JSON,
+                        data={"row_natural_language_text": text})
+            if source == "sql_row":
+                row.sub_type = "sql_table"
+            blocks.append(row)
+        elif source == "table_group":
+            groups.append(BlockGroup(type=GroupType.TABLE, index=0, data={"table_summary": text}))
+        elif source == "sql_table":
+            groups.append(BlockGroup(type=GroupType.TABLE, sub_type=GroupSubType.SQL_TABLE, index=0,
+                                     data={"fqn": "db.s.t", "ddl": text}))
+        else:
+            groups.append(BlockGroup(type=GroupType.VIEW, sub_type=GroupSubType.SQL_VIEW, index=0,
+                                     data={"fqn": "db.s.v", "definition": text}))
+
+        await vs.index_documents(
+            BlocksContainer(blocks=blocks, block_groups=groups), "org-1", "rec-1", "vr-1",
+        )
+
+        stored = {p.id: p for p in points}  # an upsert keeps one point per id
+        assert len(points) > 1
+        assert len(stored) == len(points)
+        assert text in "".join(p.payload["page_content"] for p in points)
+        position = "blockIndex" if blocks else "blockGroupIndex"
+        assert all(p.payload["metadata"][position] == 0 for p in points)

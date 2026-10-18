@@ -162,6 +162,8 @@ class IndexingPipeline:
                 status_fields = {
                     "indexingStatus": ProgressStatus.EMPTY.value,
                     **indexed_copy_fields(ProgressStatus.EMPTY),
+                    # The parse finished and found nothing to index.
+                    "parsingStatus": ProgressStatus.COMPLETED.value,
                     "processingStartedAt": None,
                     "isDirty": False,
                     "extractionStatus": ProgressStatus.NOT_STARTED.value,

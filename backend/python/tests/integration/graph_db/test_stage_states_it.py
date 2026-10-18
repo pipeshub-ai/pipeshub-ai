@@ -20,7 +20,7 @@ import pytest
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
 from app.config.constants.neo4j import collection_to_label
-from app.modules.pipeline.models import Priority, StageJob, StageState
+from app.modules.pipeline.models import Priority, StageJob, StageState, StageStatePatch
 from app.schema.arango.documents import stage_state_schema
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
@@ -208,3 +208,30 @@ async def test_a_compare_and_set_for_an_earlier_run_is_refused(provider: IGraphD
     # The owner settles; no attempt given still means status alone, as before.
     assert await provider.stage_state_compare_and_set(key, "IN_PROGRESS", "COMPLETED", {}, expected_attempt=2)
     assert await provider.stage_state_compare_and_set(key, "COMPLETED", "COMPLETED", {})
+
+
+@pytest.mark.asyncio
+async def test_a_null_field_clears_the_stored_value(provider: IGraphDBProvider) -> None:
+    """A claim wipes the previous run's fingerprint, output and reason, and a COMPLETED
+    headline clears the record's reason: a null in the patch must remove the stored value
+    (Neo4j `SET n += {k: null}` removes `k`; Arango `UPDATE` stores null)."""
+    document = _document(str(uuid.uuid4()), status=ProgressStatus.COMPLETED)
+    document.update(fingerprint="fp-old", output="{\"kept\": true}", reason="old", workerId="w0", finishedAtMs=5)
+    assert await provider.stage_state_create(document)
+    key = str(document["id"])
+    claim = StageStatePatch(
+        worker_id="w1", attempt=1, started_at_ms=6, finished_at_ms=None, fingerprint=None, output=None, reason=None
+    )
+    assert await provider.stage_state_compare_and_set(
+        key, "COMPLETED", "IN_PROGRESS", claim.fields(), expected_attempt=0
+    )
+    stored = await provider.stage_state_get(key)
+    assert stored is not None and stored["workerId"] == "w1"
+    for cleared in ("fingerprint", "output", "reason", "finishedAtMs"):
+        assert stored.get(cleared) is None, cleared
+
+    record_id = f"rec-{uuid.uuid4()}"
+    await _insert_record(provider, record_id, "rev-a")
+    assert await provider.compare_and_set_record_fields([record_id], "rev-a", {"reason": "failed once"}) == [record_id]
+    assert await provider.compare_and_set_record_fields([record_id], "rev-a", {"reason": None}) == [record_id]
+    assert (await provider.get_document(record_id, RECORDS) or {}).get("reason") is None

@@ -291,6 +291,26 @@ async def test_the_sweeper_reclaims_a_running_job_only_when_its_lease_is_free() 
 
 
 @pytest.mark.asyncio
+async def test_without_a_liveness_check_a_running_job_is_reclaimed_on_age_past_its_budget() -> None:
+    registry = _classify_after_embed()
+    h = _Harness(registry)
+    await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="newRecord")
+    key = stage_state_key(VRID, REV, "classify")
+    h.states.states[key] = h.states.states[key].model_copy(
+        update={"status": ProgressStatus.IN_PROGRESS, "worker_id": "w1"}
+    )
+    budget_ms = int(registry.get("classify").budget_s * 1000)
+    # Older than the threshold but still inside the stage's budget: the run may be going.
+    h.clock.advance(budget_ms // 2)
+    report = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10, in_progress_older_than_ms=1_000)
+    assert report.reclaimed == 0 and h.status("classify") is ProgressStatus.IN_PROGRESS
+    h.clock.advance(budget_ms)
+    report = await h.coordinator.sweep(queued_older_than_ms=60_000, limit=10, in_progress_older_than_ms=1_000)
+    assert report.reclaimed == 1 and h.status("classify") is ProgressStatus.QUEUED
+    assert h.states.states[key].worker_id is None
+
+
+@pytest.mark.asyncio
 async def test_redrive_re_queues_a_failed_stage_but_not_a_running_one() -> None:
     h = _Harness(_classify_after_embed())
     await h.coordinator.on_external_done("embed", _view(), priority=Priority.BULK, trigger="newRecord")

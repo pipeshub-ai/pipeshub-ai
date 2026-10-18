@@ -186,6 +186,10 @@ class Coordinator:
         and reclaim jobs whose worker is gone.
 
         Callers run this under the cluster-wide recovery lease, so one sweeper acts at a time.
+        A running job untouched for ``in_progress_older_than_ms`` is reclaimed once
+        ``is_job_active`` says nobody runs it or, without that check, once it is also past its
+        stage's budget: the worker times a run out at its budget, and the attempt fence
+        refuses a late settle.
         """
         now = self._clock_ms()
         scanned = republished = reclaimed = 0
@@ -218,7 +222,7 @@ class Coordinator:
             ):
                 await self._mark_published(job)
                 republished += 1
-        if in_progress_older_than_ms is not None and is_job_active is not None:
+        if in_progress_older_than_ms is not None:
             running = await self._states.stale(
                 statuses=(ProgressStatus.IN_PROGRESS,),
                 updated_before_ms=now - in_progress_older_than_ms,
@@ -226,8 +230,13 @@ class Coordinator:
             )
             for state in running:
                 scanned += 1
+                if not self._registry.has(state.stage):
+                    continue
                 job = state.to_job()
-                if not self._registry.has(state.stage) or await is_job_active(job.job_id):
+                if is_job_active is not None:
+                    if await is_job_active(job.job_id):
+                        continue
+                elif now - state.updated_at_ms <= self._registry.get(state.stage).budget_s * 1000:
                     continue
                 reclaimed_state = await self._states.cas(
                     state.key,

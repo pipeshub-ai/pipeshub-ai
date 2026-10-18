@@ -9,6 +9,7 @@ import { formatFileSize } from '@/app/components/file-preview/utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon, resolveConnectorType } from '@/app/components/ui/ConnectorIcon';
 import type { RecordDetailsResponse } from '@/app/(main)/knowledge-base/types';
+import { parsedStepStatus } from './parsed-step-status';
 
 interface RecordMetadataPanelProps {
   recordDetails: RecordDetailsResponse;
@@ -429,8 +430,9 @@ function StageTrack({
         .join(' · ')
     : undefined;
 
+  const parsedStatus = parsedStepStatus(record.parsingStatus, record.indexingStatus);
   const steps: StageTrackStep[] = [
-    { key: 'parsed', label: t('recordView.stageParsed'), status: record.parsingStatus },
+    ...(parsedStatus ? [{ key: 'parsed', label: t('recordView.stageParsed'), status: parsedStatus }] : []),
     { key: 'searchable', label: t('recordView.stageSearchable'), status: record.indexingStatus },
     {
       key: 'classified',

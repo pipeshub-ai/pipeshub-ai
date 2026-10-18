@@ -87,9 +87,12 @@ _POINT_ID_NAMESPACE = uuid.uuid5(uuid.NAMESPACE_URL, "pipeshub:vector-point")
 def deterministic_point_id(metadata: dict[str, object], page_content: str) -> str:
     """Stable id for the point *metadata*/*page_content* becomes.
 
-    Whole-block, block-group, image and summary points are one per
-    (virtual record, block). A block also yields several sentence/window
-    sub-chunks, so those additionally key on their text.
+    Keyed on (virtual record, block, kind, text): the same point written twice
+    gets one id, while every piece of one block keeps its own. Whole-block,
+    group and summary points are not one per block -- `_bounded_documents`
+    splits an over-long table, row or SQL text into several pieces sharing one
+    metadata. An edited block is not overwritten in place by id; every write
+    path deletes the block's stored points first.
 
     Missing identity still hashes canonical metadata and text so a retry
     overwrites the same point instead of inserting a duplicate.
@@ -105,10 +108,8 @@ def deterministic_point_id(metadata: dict[str, object], page_content: str) -> st
             and not metadata.get("isBlockGroup")
             and not metadata.get("isRecordSummary")
         )
-        if is_sub_chunk:
-            name = f"{virtual_record_id}|{block_id}|chunk|{page_content}"
-        else:
-            name = f"{virtual_record_id}|{block_id}|unit"
+        kind = "chunk" if is_sub_chunk else "unit"
+        name = f"{virtual_record_id}|{block_id}|{kind}|{page_content}"
     return str(uuid.uuid5(_POINT_ID_NAMESPACE, name))
 
 _DEFAULT_DOCUMENT_BATCH_SIZE = 50

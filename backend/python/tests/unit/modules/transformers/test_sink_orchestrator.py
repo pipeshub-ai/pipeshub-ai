@@ -596,6 +596,8 @@ class TestIndexedWriteWhenEnrichmentFollows:
         (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
         assert row["indexingStatus"] == "COMPLETED"
         assert row["extractionStatus"] == "QUEUED"
+        # An indexed record was parsed, whichever pipeline parsed it.
+        assert row["parsingStatus"] == "COMPLETED"
         # Nothing on the record path is still running; the stage runtime owns the rest.
         assert row["processingStartedAt"] is None
 

@@ -1330,6 +1330,48 @@ class TestStageTopicsUnavailable:
         assert runtime.publisher.bind.call_args.args[0] is producer
         stage_consumer.start.assert_awaited_once_with(runtime.handler)
 
+    async def test_a_failed_stage_start_is_retried_without_running_a_stage_twice(self) -> None:
+        from app.indexing_main import start_kafka_consumers
+
+        mock_container = _make_container()
+        runtime = mock_container.pipeline_runtime.return_value
+        runtime.registry.names.return_value = ("classify", "entities")
+        runtime.stage_limits = {"classify": 2, "entities": 2}
+        record_consumer = MagicMock(start=AsyncMock())
+        classify_first = MagicMock(start=AsyncMock(), stop=AsyncMock())
+        entities_first = MagicMock(start=AsyncMock(side_effect=RuntimeError("broker blip")), stop=AsyncMock())
+        classify, entities = MagicMock(start=AsyncMock()), MagicMock(start=AsyncMock())
+        admin = MagicMock(ensure_topics_exist=AsyncMock(side_effect=[RuntimeError("denied"), None, None]))
+
+        with (
+            patch("app.indexing_main.get_message_broker_type", return_value=MessageBrokerType.KAFKA),
+            patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
+            patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_producer_config_from_service", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_producer", return_value=MagicMock(initialize=AsyncMock())),
+            patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.KafkaUtils.create_record_message_handler", new_callable=AsyncMock, return_value=MagicMock()),
+            patch(
+                "app.indexing_main.MessagingFactory.create_consumer",
+                side_effect=[record_consumer, classify_first, entities_first, classify, entities],
+            ),
+            patch("app.indexing_main.MessagingUtils.create_consumer_config", new_callable=AsyncMock, return_value={}),
+            patch("app.indexing_main.MessagingFactory.create_admin", return_value=admin),
+            patch("app.indexing_main._TOPIC_RETRY_FIRST_S", 0.0),
+            patch.dict("os.environ", {"DATA_STORE": "arangodb"}),
+        ):
+            consumers = await start_kafka_consumers(mock_container)
+            await mock_container.stage_startup_task
+
+        # The first start failed half-way: what it started is stopped and dropped, then all start.
+        classify_first.stop.assert_awaited_once()
+        entities_first.stop.assert_awaited_once()
+        assert [(entry[0], entry[1]) for entry in consumers] == [
+            ("record", record_consumer), ("pipeline.classify", classify), ("pipeline.entities", entities),
+        ]
+        classify.start.assert_awaited_once()
+        entities.start.assert_awaited_once()
+
     async def test_shutdown_cancels_a_stage_start_still_waiting_for_its_topics(self) -> None:
         from app.indexing_main import stop_kafka_consumers
 
@@ -3626,3 +3668,27 @@ class TestWorkerLoopClosesAfterItsClients:
         consumer.stop.assert_awaited_once()
         worker.aclose.assert_not_awaited()
         assert container.worker_loop is worker
+
+
+class TestPipelineStageSweep:
+    """The stage sweep reclaims abandoned running jobs with or without distributed concurrency."""
+
+    async def _sweep(self, manager: object) -> AsyncMock:
+        from app.indexing_main import _STAGE_IN_PROGRESS_SWEEP_MS, _sweep_pipeline_stages
+
+        container = MagicMock()
+        runtime = _stage_runtime()
+        runtime.coordinator.sweep = AsyncMock(return_value=MagicMock(republished=0, reclaimed=1, scanned=1))
+        container.pipeline_runtime.return_value = runtime
+        assert await _sweep_pipeline_stages(container, manager, MagicMock()) == 1  # type: ignore[arg-type]
+        assert runtime.coordinator.sweep.await_args.kwargs["in_progress_older_than_ms"] == _STAGE_IN_PROGRESS_SWEEP_MS
+        return runtime.coordinator.sweep
+
+    async def test_without_a_lease_manager_running_jobs_are_reclaimed_on_age(self) -> None:
+        sweep = await self._sweep(None)
+        assert sweep.await_args.kwargs["is_job_active"] is None
+
+    async def test_with_a_lease_manager_a_held_job_lease_keeps_the_job(self) -> None:
+        manager = MagicMock(try_acquire=AsyncMock(return_value=False), release=AsyncMock())
+        sweep = await self._sweep(manager)
+        assert await sweep.await_args.kwargs["is_job_active"]("job-1") is True

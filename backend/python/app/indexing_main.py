@@ -772,8 +772,9 @@ _orphan_sweep_cursor = 0
 
 
 
-# Stage sweep thresholds: a claim unpublished this long is re-sent; a running job this far
-# past the longest stage budget is reclaimed once its lease is found free.
+# Stage sweep thresholds: a claim unpublished this long is re-sent; a running job untouched
+# this long (past the longest stage budget plus a lease term) is reclaimed once its lease is
+# found free, or on age alone without distributed concurrency.
 _STAGE_QUEUED_SWEEP_MS = 120_000
 _STAGE_IN_PROGRESS_SWEEP_MS = 1_800_000
 _STAGE_SWEEP_LIMIT = 200
@@ -817,7 +818,7 @@ async def _sweep_pipeline_stages(
     report = await runtime.coordinator.sweep(
         queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
         limit=_STAGE_SWEEP_LIMIT,
-        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS if is_job_active is not None else None,
+        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS,
         is_job_active=is_job_active,
     )
     if report.republished or report.reclaimed:
@@ -1681,20 +1682,23 @@ async def _start_stages_when_topics_exist(
     start_stages: Callable[[], Awaitable[None]],
     logger: logging.Logger,
 ) -> None:
+    # ``start_stages`` stops what it started when it fails, so each attempt starts every stage.
     delay = _TOPIC_RETRY_FIRST_S
     while True:
         await asyncio.sleep(delay)
         try:
             await admin.ensure_topics_exist(topics)
-            break
         except Exception as e:
             delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
             logger.error("❌ Pipeline stage topics %s are still not available (%s); retrying in %.0fs", topics, e, delay)
-    try:
-        await start_stages()
-        logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
-    except Exception:
-        logger.exception("❌ Starting the pipeline stage consumers failed")
+            continue
+        try:
+            await start_stages()
+            logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
+            return
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Starting the pipeline stage consumers failed (%s); retrying in %.0fs", e, delay)
 
 
 async def start_kafka_consumers(
@@ -1811,38 +1815,51 @@ async def start_kafka_consumers(
             # Bound only once the topics exist: Kafka holds a send to a missing topic for its
             # metadata timeout, and the record handler's hand-off would wait with it.
             pipeline_runtime.publisher.bind(stage_producer, main_loop)
-            for stage_name in registry.names():
-                topic = registry.topic_for(stage_name)
-                stage_config = await MessagingUtils.create_consumer_config(
-                    app_container,
-                    f"pipeline_{stage_name}_client",
-                    f"pipeline_{stage_name}_group",
-                    [topic],
-                    is_indexing=True,
-                )
-                stage_consumer = MessagingFactory.create_consumer(
-                    broker_type=broker_type,
-                    logger=logger,
-                    config=stage_config,
-                    consumer_type=ConsumerType.INDEXING,
-                    retry_manager=retry_manager,
-                    producer=stage_producer,
-                    concurrency_manager=concurrency_manager,
-                    backpressure_coordinator=get_default_backpressure_coordinator(),
-                    disposition_sink=pipeline_runtime.handler,
-                    # Its cluster lease pool is sized for every worker process, as the record
-                    # leases are.
-                    stage_admission=StageAdmission(
-                        stage=stage_name,
-                        limit=pipeline_runtime.stage_limits[stage_name],
-                        workers=_indexing_worker_count(),
-                    ),
-                    worker=worker,
-                )
-                # The retry producer is owned by the record consumer's entry, so it is closed once.
-                consumers.append((topic, stage_consumer, None))
-                await stage_consumer.start(pipeline_runtime.handler)  # type: ignore[arg-type]
-                logger.info("✅ Pipeline stage consumer started: %s", topic)
+            started: list[tuple[str, Any, Any]] = []
+            try:
+                for stage_name in registry.names():
+                    topic = registry.topic_for(stage_name)
+                    stage_config = await MessagingUtils.create_consumer_config(
+                        app_container,
+                        f"pipeline_{stage_name}_client",
+                        f"pipeline_{stage_name}_group",
+                        [topic],
+                        is_indexing=True,
+                    )
+                    stage_consumer = MessagingFactory.create_consumer(
+                        broker_type=broker_type,
+                        logger=logger,
+                        config=stage_config,
+                        consumer_type=ConsumerType.INDEXING,
+                        retry_manager=retry_manager,
+                        producer=stage_producer,
+                        concurrency_manager=concurrency_manager,
+                        backpressure_coordinator=get_default_backpressure_coordinator(),
+                        disposition_sink=pipeline_runtime.handler,
+                        # Its cluster lease pool is sized for every worker process, as the record
+                        # leases are.
+                        stage_admission=StageAdmission(
+                            stage=stage_name,
+                            limit=pipeline_runtime.stage_limits[stage_name],
+                            workers=_indexing_worker_count(),
+                        ),
+                        worker=worker,
+                    )
+                    # The retry producer is owned by the record consumer's entry, so it is closed once.
+                    entry = (topic, stage_consumer, None)
+                    consumers.append(entry)
+                    started.append(entry)
+                    await stage_consumer.start(pipeline_runtime.handler)  # type: ignore[arg-type]
+                    logger.info("✅ Pipeline stage consumer started: %s", topic)
+            except Exception:
+                # Stopped and dropped, so a retry starts each stage once.
+                for entry in started:
+                    consumers.remove(entry)
+                    try:
+                        await entry[1].stop()
+                    except Exception as exc:
+                        logger.error("Error stopping %s consumer after a failed start: %s", entry[0], exc)
+                raise
 
         admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
         try:
