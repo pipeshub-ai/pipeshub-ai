@@ -226,8 +226,14 @@ class AnswerFinalizer:
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
                 record_named_span_output(span, {"error": str(exc)})
+                # Classified from the real exception, like the agent-failure
+                # path above: the response carries `errorCode` and nothing
+                # else about the cause, so a fixed sentence reported every
+                # assembly failure as `unknown` and left a client unable to
+                # tell a timeout from a content filter. The user still sees
+                # only the canned message for that code.
                 return await self._emit_error_response(
-                    "I encountered an issue. Please try again.", event_sink=event_sink
+                    f"Answer assembly failed: {exc}", event_sink=event_sink,
                 )
             record_named_span_output(span, result)
             return result
