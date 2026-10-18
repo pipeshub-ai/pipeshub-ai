@@ -5945,6 +5945,26 @@ class TestSlackTeamConnectorCoverageBoost:
         assert lr.url == pasted
 
     @pytest.mark.asyncio
+    async def test_a_link_in_a_thread_reply_sits_in_the_thread_group(self) -> None:
+        from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes
+        from app.connectors.sources.slack.team.connector import ProcessingContext
+        from app.models.entities import MessageRecord, RecordType
+
+        c = _connector_pipeline_ready()
+        ctx = ProcessingContext("C1", {"C1": "rg"}, {}, {}, {"C1": "g"}, c.rate_limiter)
+        reply = MessageRecord(
+            org_id="org-test", record_name="r", record_type=RecordType.MESSAGE,
+            external_record_id="thread_burst_C1_1.0_1.5", external_record_group_id="thread_C1_1.0",
+            record_group_id="rg-thread", version=1, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.SLACK_WORKSPACE, connector_id=c.connector_id,
+            mime_type=MimeTypes.BLOCKS.value,
+        )
+
+        link = await c._process_link("https://example.com/doc", reply, ctx, {})
+
+        assert (link.external_record_group_id, link.record_group_id) == ("thread_C1_1.0", "rg-thread")
+
+    @pytest.mark.asyncio
     async def test_a_reindexed_message_leaves_its_link_edges_alone(self) -> None:
         from app.connectors.sources.slack.team.connector import ProcessingContext
 
