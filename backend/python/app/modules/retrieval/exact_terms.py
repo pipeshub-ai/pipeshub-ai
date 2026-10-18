@@ -1,0 +1,135 @@
+"""Whether a search runs its exact-text pass (``run_pattern_match_with_llm_grep``).
+
+That pass earns its cost on codes, ids, versions, file names, quoted phrases
+and measured values: tokens an embedding blurs into their neighbours. On a
+plain-language query it adds little: its lexical index is the one the hybrid
+search's keyword leg already ranks, and it still costs an LLM call to write
+its commands, plus a file scan on a small store or on an index miss.
+
+``EXACT_TEXT_SEARCH_GATE=true`` runs it only for a query that holds such a
+token, or when the agent asks for it (``exact_match``). Off by default, and
+``HIGH_ACCURACY_MODE`` does not turn it on: that mode never trades the exact-text
+search's time for a faster answer (``pattern_match_wait_budget``).
+"""
+
+from __future__ import annotations
+
+import re
+
+from app.utils.env_utils import env_bool
+
+EXACT_TEXT_SEARCH_GATE_ENV_VAR = "EXACT_TEXT_SEARCH_GATE"
+
+_QUOTED = re.compile(
+    r"\"[^\"\n]{2,}\"|“[^”\n]{2,}”|`[^`\n]{2,}`"
+    # Single quotes only at word edges, so "the team's on-call" is not one.
+    r"|(?<![\w'])'[^'\n]{2,}'(?![\w'])"
+)
+
+_EXACT_REQUEST = re.compile(
+    r"\b(?:verbatim|exact\s+(?:match|phrase|wording|string|text|error|message|code|name)|literal(?:ly)?)\b",
+    re.IGNORECASE,
+)
+
+_FILE_EXTENSIONS = (
+    "py|js|ts|tsx|jsx|java|kt|go|rb|rs|c|cc|cpp|h|hpp|cs|php|swift|scala|sh|ps1|bat"
+    "|ya?ml|json|toml|ini|cfg|conf|env|xml|html?|css|scss|md|rst|txt|csv|tsv|log|sql|proto"
+    "|xlsx?|docx?|pptx?|pdf|odt|rtf|zip|tar|gz|tgz|jar|war|whl|dll|so|exe|dmg|apk|ipa"
+    "|png|jpe?g|gif|svg|webp|mp4|mov|wav|mp3|tf|lock|gradle|dockerfile"
+)
+
+_SUB_DAY_UNITS = r"ms|µs|us|ns|secs?|seconds?|mins?|minutes?|h|hrs?|hours?"
+_MEASURE_UNITS = (
+    r"%|percent|[kmgtp]i?b|kbps|mbps|gbps|rps|qps|tps|rpm|iops|req/s|ops/s"
+    r"|[kmgt]hz|v?cpus?|cores?|x|°[cf]|usd|eur|gbp|inr|jpy|bn|[km]"
+)
+
+_ID_KEYWORDS = (
+    r"error|status|code|http|port|pr|issue|ticket|incident|case|order|invoice|build|release"
+    r"|sprint|ref|po|sku|account|acct|no\.?|number|id"
+)
+
+_IDENTIFIER_PATTERNS = (
+    # Issue and ticket keys, advisories: ABC-123, CVE-2024-1234.
+    re.compile(r"\b[A-Z][A-Z0-9]{1,9}-\d+\b"),
+    re.compile(r"(?<![\w&])#\d+\b"),
+    # Versions and dotted numbers: v2, v1.4, 3.12, 10.0.0.1.
+    re.compile(r"\bv\d+(?:\.\d+)*\b", re.IGNORECASE),
+    re.compile(r"\b\d+\.\d+(?:\.\d+)*\b"),
+    # File names and paths.
+    re.compile(rf"\b[\w-]+\.(?:{_FILE_EXTENSIONS})\b", re.IGNORECASE),
+    re.compile(r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+|\b[\w.-]+/[\w.-]+/[\w./-]+"),
+    re.compile(r"\bhttps?://\S+", re.IGNORECASE),
+    # camelCase, PascalCase with an inner capital, snake_case, SCREAMING_CASE.
+    re.compile(r"\b\w*[a-z][A-Z]\w*\b"),
+    re.compile(r"\b[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+\b"),
+    # A number tied to an id-like noun: "error 503", "PR 18421", "order no. 77".
+    re.compile(rf"\b(?:{_ID_KEYWORDS})\s*[#:]?\s*\d{{2,}}\b", re.IGNORECASE),
+    # Long bare numbers. Four digits are mostly years, so five or more.
+    re.compile(r"(?<![\d.,])\d{5,}(?![\d.,])"),
+    # A measured value: "150 ms", "99%", "16 GB", "$20k". Days and longer are
+    # left out: "the last 2 weeks" is a time window, not a value to match.
+    re.compile(rf"(?<![\w.])\d+(?:[.,]\d+)?\s?(?:{_SUB_DAY_UNITS}|{_MEASURE_UNITS})(?![\w])", re.IGNORECASE),
+    re.compile(r"[$€£¥₹]\s?\d"),
+)
+
+# Letters and digits in one token (p95, S3, SOC2, 4xx, k8s, a3f9c21), minus the
+# calendar and ordinal words that look like it.
+_MIXED_TOKEN = re.compile(r"\b(?=[A-Za-z]*\d)(?=\d*[A-Za-z])[A-Za-z0-9]{2,}\b")
+_MIXED_NOT_IDENTIFIER = re.compile(
+    r"\d+(?:st|nd|rd|th|s)|[QH]\d|FY\d{2,4}|\d{1,2}(?:am|pm)|\d{4}s",
+    re.IGNORECASE,
+)
+
+# Kebab ids (us-east-1, pr-18421) share a shape with dates and "30-day".
+_KEBAB_WITH_DIGIT = re.compile(r"\b(?=[\w-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b")
+_KEBAB_NOT_IDENTIFIER = re.compile(
+    r"\d{4}-\d{2}(?:-\d{2})?|\d+-(?:days?|weeks?|months?|years?|quarters?)",
+    re.IGNORECASE,
+)
+
+
+def _has_mixed_token(query: str) -> bool:
+    return any(
+        not _MIXED_NOT_IDENTIFIER.fullmatch(token)
+        for token in _MIXED_TOKEN.findall(query)
+    )
+
+
+def _has_kebab_identifier(query: str) -> bool:
+    return any(
+        not _KEBAB_NOT_IDENTIFIER.fullmatch(match.group(0))
+        for match in _KEBAB_WITH_DIGIT.finditer(query)
+    )
+
+
+def has_exact_terms(query: str | None) -> bool:
+    """True when ``query`` holds an identifier-like token or a quoted phrase,
+    or asks for an exact match in words."""
+    if not query or not query.strip():
+        return False
+    if _QUOTED.search(query) or _EXACT_REQUEST.search(query):
+        return True
+    if any(pattern.search(query) for pattern in _IDENTIFIER_PATTERNS):
+        return True
+    return _has_mixed_token(query) or _has_kebab_identifier(query)
+
+
+def exact_text_search_gated() -> bool:
+    """Whether the deployment runs exact-text search only where it is wanted."""
+    return env_bool(EXACT_TEXT_SEARCH_GATE_ENV_VAR, False)
+
+
+def exact_text_search_wanted(query: str | None, *, exact_match: bool = False) -> bool:
+    """Whether a search for ``query`` runs its exact-text pass: always with
+    the gate off; with it on, when the agent asked (``exact_match``) or the
+    query holds an exact anchor."""
+    return not exact_text_search_gated() or exact_match or has_exact_terms(query)
+
+
+__all__ = [
+    "EXACT_TEXT_SEARCH_GATE_ENV_VAR",
+    "exact_text_search_gated",
+    "exact_text_search_wanted",
+    "has_exact_terms",
+]
