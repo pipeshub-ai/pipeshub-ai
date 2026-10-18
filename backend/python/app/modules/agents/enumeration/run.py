@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from app.modules.agents.enumeration.answer import RecordLookup, build_enumeration_answer
 from app.modules.agents.enumeration.policy import is_enumeration_query
 from app.modules.demo_data.chat import excluded_app_ids
+from app.modules.retrieval.selection_scope import allowed_filters, has_selection
 
 if TYPE_CHECKING:
     from app.agents.agent_loop.context import AgentContext
@@ -152,6 +153,10 @@ async def try_answer_enumeration(
     """Return True when this query was answered here and the agent should not run."""
     marker = getattr(context, "tool_state", {}).get("corpus_census_marker")
     if not is_enumeration_query(marker, query):
+        return False
+    # The read below scopes by apps and kb only. A folder or item selection, or a
+    # saved agent's or project's allow-list, would be miscounted, so the agent answers.
+    if has_selection(filters) or allowed_filters(filters):
         return False
 
     org_id = getattr(context, "org_id", "") or ""

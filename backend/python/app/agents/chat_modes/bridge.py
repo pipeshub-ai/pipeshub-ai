@@ -577,11 +577,13 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             #
             # It runs after `factory.create()`, whose intent call stores the
             # CORPUS_CENSUS marker; before it, a model "no" could not decline a
-            # pattern match. A question that needs clarifying is not a census.
+            # pattern match. A question that needs clarifying is not a census, and
+            # one with attachments is about them (kb now holds their ids).
             from app.modules.agents.enumeration.run import answer_census_if_asked
             if (
                 not clarifying_questions
                 and policy.has_knowledge
+                and not resolved_attachments.virtual_record_ids
                 and await answer_census_if_asked(
                     query=query_info.get("query", ""), context=context,
                     retrieval_service=retrieval_service, graph_provider=graph_provider,

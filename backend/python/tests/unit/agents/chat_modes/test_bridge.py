@@ -19,6 +19,7 @@ import pytest
 
 from app.agents.actions.knowledge_graph.ops.id_recovery import unresolved_id_hint
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+from app.agents.chat_modes.attachments import ResolvedAttachments
 from app.agents.chat_modes.bridge import (
     _apply_mode_instructions,
     _apply_policy_to_chat_state,
@@ -1482,6 +1483,18 @@ class TestCensusRunsAfterTheIntentCall:
         with patch("app.agents.chat_modes.bridge.emit_pre_run_clarification", new=AsyncMock()):
             await self._drive(AGENT_POLICY, seen, create, census, finalizer)
         assert seen["markers"] == []
+
+    async def test_a_question_with_attachments_is_not_a_census(self) -> None:
+        """Attachment ids are added to the kb filter, so a census would count
+        only them; the question is about the attachments anyway."""
+        seen, create, census, finalizer = self._run(AGENT_POLICY, marker="yes")
+        attachments = patch(
+            "app.agents.chat_modes.bridge.resolve_attachments",
+            new=AsyncMock(return_value=ResolvedAttachments(context_text="", virtual_record_ids=["att-vr"])),
+        )
+        await self._drive(AGENT_POLICY, seen, create, census, finalizer, extra=(attachments,))
+        assert seen["markers"] == []
+        assert seen["streamed"] is True
 
     async def test_a_census_answer_cancels_the_prefetch(self) -> None:
         started = asyncio.Event()

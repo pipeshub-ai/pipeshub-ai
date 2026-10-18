@@ -107,3 +107,61 @@ class TestTheReadIsStrict:
         kwargs = graph.get_accessible_virtual_record_ids.await_args.kwargs
         assert kwargs["raise_on_error"] is True
         assert kwargs["exclude_app_ids"] == frozenset({"acme-demo"})
+
+
+class TestAScopedQuestionIsLeftToTheAgent:
+    """The census read scopes by apps and kb only, so a folder or item selection,
+    or a saved agent's or project's allow-list, would be counted as the whole
+    app or as nothing. Those questions go to the agent without the read."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "filters",
+        [
+            {"recordGroups": ["g1"], "strictScope": True},
+            {"apps": ["drive"], "recordGroups": ["g1"]},
+            {"records": ["r1"]},
+            {"allowedRecordGroups": ["g1"]},
+            {"projectApps": []},
+        ],
+        ids=["folder-pick", "app-and-folder", "record-pick", "agent-allow-list", "empty-project-bound"],
+    )
+    async def test_defers_without_reading(self, filters: dict) -> None:
+        graph = MagicMock()
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value={"vr1": "rec1"})
+        event_sink = MagicMock()
+        event_sink.write = AsyncMock()
+        context = SimpleNamespace(tool_state={}, org_id="org-1", user_id="user-1")
+
+        answered = await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters=filters,
+            event_sink=event_sink,
+            log=MagicMock(),
+        )
+
+        assert answered is False
+        graph.get_accessible_virtual_record_ids.assert_not_awaited()
+        event_sink.write.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_scope_is_still_read(self) -> None:
+        graph = MagicMock()
+        # An unusable shape defers right after the read, so only the call is checked.
+        graph.get_accessible_virtual_record_ids = AsyncMock(return_value=[])
+        context = SimpleNamespace(tool_state={}, org_id="org-1", user_id="user-1")
+
+        await try_answer_enumeration(
+            query="How many documents do we have?",
+            context=context,
+            retrieval_service=MagicMock(),
+            graph_provider=graph,
+            filters={"apps": ["drive"]},
+            event_sink=MagicMock(),
+            log=MagicMock(),
+        )
+
+        graph.get_accessible_virtual_record_ids.assert_awaited_once()
