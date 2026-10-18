@@ -19,13 +19,17 @@ resolvers on every edition; an edition's own resolvers are covered by its own
 tests.
 """
 
+import importlib
 import inspect
 
 import pytest
 
-import app.connectors.api.connector_resolvers as base_resolvers
-import app.connectors.api.router as router_module
-import app.edition_config  # noqa: F401
+# Imported for its side effect (see above), so through importlib rather than
+# as an unused name.
+importlib.import_module("app.edition_config")
+
+import app.connectors.api.connector_resolvers as base_resolvers  # noqa: E402
+import app.connectors.api.router as router_module  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
