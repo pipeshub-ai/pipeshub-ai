@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from app.modules.retrieval.context.unshown import (
+    MAX_TITLE_CHARS,
     MAX_UNSHOWN_MATCHES,
     UNSHOWN_MATCHES_LIST_ENV_VAR,
     UnshownMatch,
@@ -42,6 +43,15 @@ class TestUnshownMatches:
         found = unshown_matches(["v0", *vrids], set(), _permitted(*vrids))
 
         assert [m.virtual_record_id for m in found] == vrids[:MAX_UNSHOWN_MATCHES]
+
+    def test_a_long_title_is_cut_so_the_list_stays_small(self) -> None:
+        """A record name can be a whole message or subject line; ten of them must
+        not crowd the records out of the result."""
+        found = unshown_matches(["a"], set(), {"a": {"_key": "r-a", "recordName": "x" * 5000}})
+
+        assert len(found[0].name) == MAX_TITLE_CHARS
+        assert found[0].name.endswith("…")
+        assert len(render_unshown_matches(found * MAX_UNSHOWN_MATCHES)) < 3_000
 
     def test_graph_ids_and_snake_case_names_are_read_too(self) -> None:
         found = unshown_matches(["a"], set(), {"a": {"id": "r-a", "record_name": "Runbook"}})

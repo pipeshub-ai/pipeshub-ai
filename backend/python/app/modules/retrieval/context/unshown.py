@@ -25,8 +25,10 @@ if TYPE_CHECKING:
     from collections.abc import Collection, Iterable, Mapping
 
 UNSHOWN_MATCHES_LIST_ENV_VAR = "UNSHOWN_MATCHES_LIST"
-# Each line is about 80 characters; ten keep the list under 1,000.
 MAX_UNSHOWN_MATCHES = 10
+# A record name can be a whole message or subject line. Cut, ten lines stay
+# near 2,000 characters, so the list cannot crowd the records out.
+MAX_TITLE_CHARS = 160
 
 
 @dataclass(frozen=True)
@@ -58,8 +60,10 @@ def unshown_matches(
             continue
         record_id = record.get("_key") or record.get("id")
         if record_id:
-            name = record.get("recordName") or record.get("record_name") or ""
-            found.append(UnshownMatch(vrid, str(record_id), str(name)))
+            name = " ".join(str(record.get("recordName") or record.get("record_name") or "").split())
+            if len(name) > MAX_TITLE_CHARS:
+                name = name[: MAX_TITLE_CHARS - 1] + "…"
+            found.append(UnshownMatch(vrid, str(record_id), name))
     return found
 
 
