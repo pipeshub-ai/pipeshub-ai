@@ -75,8 +75,8 @@ not fit. It is on by default and does not follow `HIGH_ACCURACY_MODE`.
 ## Finding with less, then reading the right part (`TARGETED_RETRIEVAL`)
 
 Search results are most of what a knowledge question writes into the prompt:
-each search fills the 64,000-character tool-result cap, and a question
-usually runs about three. Yet when an answer misses a fact, the record that
+with `TARGETED_RETRIEVAL` off, each search fills the 64,000-character
+tool-result cap, and a question usually runs about three. Yet when an answer misses a fact, the record that
 holds it was usually found; the fact sat in a part of it the passages did not
 show. `TARGETED_RETRIEVAL` (on by default, and not tied to
 `HIGH_ACCURACY_MODE`) moves characters from breadth to depth:
