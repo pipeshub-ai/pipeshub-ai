@@ -38,7 +38,7 @@ _SUPERSESSION = "a record saying it updates, corrects or replaces the other"
 _SECOND_VALUE = "Present a second value for what was asked only when"
 _PARAPHRASE = "A paraphrase is not a false premise"
 _SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pending or in progress"
-_SHIPPED = "a shipped change (a merged pull request, a released config or changelog)"
+_SHIPPED = "an implemented change (a merged pull request, a released config or changelog)"
 _SETTLED = "Once this order settles it, give the preferred value as the answer"
 _CONDITIONAL = "a rule that applies only under a condition"
 _GENERATED_SUMMARY = "is written by a model when the record is indexed"
@@ -208,14 +208,14 @@ class TestStatusFraming:
         assert "do not open with what you yourself cannot do, produce or send" in text
 
     def test_recorded_outcomes_are_not_reopened(self) -> None:
-        text = _text(composition=True)
-        assert "one the records mark done or merged is done" in text
+        assert "one the records mark done is done" in _text(composition=True)
 
-    def test_approval_is_not_delivery(self) -> None:
-        """A fix approved but awaiting deployment is not done."""
+    def test_merged_or_approved_is_not_delivery(self) -> None:
+        """A fix merged or approved but awaiting deployment is not done."""
         text = _text(composition=True)
-        assert "one they mark approved is approved, not yet delivered" in text
-        assert "approved is done" not in text
+        assert "one they mark merged or approved is merged or approved, and delivered only where a source says so" in text
+        for claim in ("approved is done", "merged is done", "shipped change"):
+            assert claim not in text, claim
 
     def test_a_paraphrase_is_not_a_false_premise(self) -> None:
         text = _text(composition=True)
@@ -230,7 +230,7 @@ class TestStatusFraming:
 
 
 class TestConflictOrder:
-    def test_shipped_beats_proposed_before_supersession(self) -> None:
+    def test_implemented_beats_proposed_before_supersession(self) -> None:
         """A draft that says it replaces a deployed config is still a proposal:
         for what a system does, it must not win on supersession."""
         text = _text(composition=True)

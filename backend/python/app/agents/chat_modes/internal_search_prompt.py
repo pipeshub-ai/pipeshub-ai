@@ -123,8 +123,8 @@ _COMPOSE = (
     "sentence after it, never as the opening or as a reason the question cannot be answered; "
     "do not open with what you yourself cannot do, produce or send. Call a fix, decision or "
     "exception open, unconfirmed or unapproved only when a source says so and nothing else you "
-    "read settles it; one the records mark done or merged is done, and one they mark approved "
-    "is approved, not yet delivered."
+    "read settles it; one the records mark done is done, and one they mark merged or approved "
+    "is merged or approved, and delivered only where a source says so."
 )
 
 _SEEK_OTHER_VERSIONS = (
@@ -139,7 +139,7 @@ _REPORT_VERSIONS = (
     "people, teams or sources said, report each version with its source."
 )
 
-# Shipped over proposed (for system behaviour), then supersession, then scope,
+# Implemented over proposed (for system behaviour), then supersession, then scope,
 # then corroboration, then recency: "authoritative or most recent" let a formal
 # page beat the draft that explicitly replaced it, and a proposal's names beat
 # the ones that shipped; a draft saying it replaces a deployed config is still a
@@ -147,11 +147,11 @@ _REPORT_VERSIONS = (
 # between values for one item and scope: a settled conflict otherwise made one
 # tier's rule the answer for a case no source placed in that tier.
 _RESOLVE_CONFLICTS = (
-    "When sources disagree, prefer in order: for what a system does or shows its users, a "
-    "shipped change (a merged pull request, a released config or changelog) over a proposal, "
-    "draft or plan for it, even one that says it replaces it; a record saying it updates, "
-    "corrects or replaces the other (updated, final, vN, deprecated, change log); a narrower "
-    "record applying a broader rule to the exact scope asked (an ADR or exception under a "
+    "When sources disagree, prefer in order: for what a system does or shows its users, an "
+    "implemented change (a merged pull request, a released config or changelog) over a "
+    "proposal, draft or plan for it, even one that says it replaces it; a record saying it "
+    "updates, corrects or replaces the other (updated, final, vN, deprecated, change log); a "
+    "narrower record applying a broader rule to the exact scope asked (an ADR or exception under a "
     "standard); the value most independent sources state; the most recent. Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
     "said, where, and why it was not used. Once this order settles it, give the preferred "
