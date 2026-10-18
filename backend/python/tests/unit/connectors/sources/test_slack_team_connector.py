@@ -4836,15 +4836,29 @@ class TestSlackTeamConnectorCoverageBoost:
             org_id="org-test",
             email="db@x.com",
             full_name="Db User",
+            is_active=True,
         )
         u.id = "int-db"
+        gone = AppUser(
+            app_name=Connectors.SLACK_WORKSPACE,
+            connector_id=c.connector_id,
+            source_user_id="Ugone",
+            org_id="org-test",
+            email="gone@x.com",
+            full_name="Gone User",
+            is_active=False,
+        )
+        gone.id = "int-gone"
         c.user_id_to_email_cache.clear()
         c.user_id_to_name_cache.clear()
-        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[u])
+        c.data_entities_processor.get_all_app_users = AsyncMock(return_value=[u, gone])
         await c._build_user_id_caches()
         assert c.user_id_to_internal_id_cache["Udb"] == "int-db"
         assert c.user_id_to_email_cache["Udb"] == "db@x.com"
         assert c.user_id_to_name_cache["Udb"] == "Db User"
+        # A deactivated user keeps their id and name, but no email to be granted access by.
+        assert c.user_id_to_internal_id_cache["Ugone"] == "int-gone"
+        assert "Ugone" not in c.user_id_to_email_cache
 
     @pytest.mark.asyncio
     async def test_sync_user_groups_fetches_members_when_users_missing(self):
