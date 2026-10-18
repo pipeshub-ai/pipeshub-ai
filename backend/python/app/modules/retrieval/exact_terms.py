@@ -20,6 +20,9 @@ from app.utils.env_utils import env_bool
 
 EXACT_TEXT_SEARCH_GATE_ENV_VAR = "EXACT_TEXT_SEARCH_GATE"
 
+# Search queries are a sentence or two; this bounds the patterns' cost.
+_MAX_READ_CHARS = 2000
+
 _QUOTED = re.compile(
     r"\"[^\"\n]{2,}\"|“[^”\n]{2,}”|`[^`\n]{2,}`"
     # Single quotes only at word edges, so "the team's on-call" is not one.
@@ -57,8 +60,10 @@ _IDENTIFIER_PATTERNS = (
     re.compile(r"\bv\d+(?:\.\d+)*\b", re.IGNORECASE),
     re.compile(r"\b\d+\.\d+(?:\.\d+)*\b"),
     # File names and paths.
-    re.compile(rf"\b[\w-]+\.(?:{_FILE_EXTENSIONS})\b", re.IGNORECASE),
-    re.compile(r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+|\b[\w.-]+/[\w.-]+/[\w./-]+"),
+    # Each starts only where its run of name characters starts, not at every
+    # word inside it, which made long hyphenated or dotted text quadratic.
+    re.compile(rf"(?<![\w-])[\w-]+\.(?:{_FILE_EXTENSIONS})\b", re.IGNORECASE),
+    re.compile(r"(?<![\w/])/[\w.-]+(?:/[\w.-]+)+|(?<![\w.-])[\w.-]+/[\w.-]+/[\w./-]+"),
     re.compile(r"\bhttps?://\S+", re.IGNORECASE),
     # camelCase, PascalCase with an inner capital, snake_case, SCREAMING_CASE.
     re.compile(r"\b\w*[a-z][A-Z]\w*\b"),
@@ -82,7 +87,8 @@ _MIXED_NOT_IDENTIFIER = re.compile(
 )
 
 # Kebab ids (us-east-1, pr-18421) share a shape with dates and "30-day".
-_KEBAB_WITH_DIGIT = re.compile(r"\b(?=[\w-]*\d)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b")
+# No lookahead for the digit: one at every start made long hyphenated text quadratic.
+_KEBAB = re.compile(r"\b[A-Za-z0-9]+(?:-[A-Za-z0-9]+)+\b")
 _KEBAB_NOT_IDENTIFIER = re.compile(
     r"\d{4}-\d{2}(?:-\d{2})?|\d+-(?:days?|weeks?|months?|years?|quarters?)",
     re.IGNORECASE,
@@ -98,16 +104,19 @@ def _has_mixed_token(query: str) -> bool:
 
 def _has_kebab_identifier(query: str) -> bool:
     return any(
-        not _KEBAB_NOT_IDENTIFIER.fullmatch(match.group(0))
-        for match in _KEBAB_WITH_DIGIT.finditer(query)
+        any(char.isdigit() for char in token) and not _KEBAB_NOT_IDENTIFIER.fullmatch(token)
+        for token in (match.group(0) for match in _KEBAB.finditer(query))
     )
 
 
 def has_exact_terms(query: str | None) -> bool:
     """True when ``query`` holds an identifier-like token or a quoted phrase,
-    or asks for an exact match in words."""
+    or asks for an exact match in words. A query too long to read cheaply
+    counts as one, so the gate never drops exact text it did not look at."""
     if not query or not query.strip():
         return False
+    if len(query) > _MAX_READ_CHARS:
+        return True
     if _QUOTED.search(query) or _EXACT_REQUEST.search(query):
         return True
     if any(pattern.search(query) for pattern in _IDENTIFIER_PATTERNS):

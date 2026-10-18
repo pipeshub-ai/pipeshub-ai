@@ -1,5 +1,8 @@
+import time
+
 import pytest
 
+from app.modules.retrieval import exact_terms
 from app.modules.retrieval.exact_terms import (
     EXACT_TEXT_SEARCH_GATE_ENV_VAR,
     exact_text_search_gated,
@@ -60,6 +63,26 @@ def test_identifier_like_queries_ask_for_exact_matching(query: str) -> None:
 ])
 def test_plain_language_queries_do_not(query: str | None) -> None:
     assert not has_exact_terms(query)
+
+
+@pytest.mark.parametrize("query", [
+    "x " * 1001,
+    "how do we handle refunds " * 100,
+])
+def test_a_query_too_long_to_read_cheaply_counts_as_an_anchor(query: str) -> None:
+    """Fail open: past the cap the gate has not looked, so it must not drop exact text."""
+    assert has_exact_terms(query)
+
+
+@pytest.mark.parametrize("unit", ["a-", "1-", "Ab-", "a."])
+def test_reading_a_long_query_takes_linear_time(monkeypatch: pytest.MonkeyPatch, unit: str) -> None:
+    """Patterns that restarted at every word of a hyphenated or dotted run took
+    seconds on 20k characters and would block the event loop."""
+    monkeypatch.setattr(exact_terms, "_MAX_READ_CHARS", 10**6)
+    query = (unit * 20000)[:20000]
+    started = time.perf_counter()
+    has_exact_terms(query)
+    assert time.perf_counter() - started < 0.5
 
 
 @pytest.mark.parametrize(("value", "gated"), [
