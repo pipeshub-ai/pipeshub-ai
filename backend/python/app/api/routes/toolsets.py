@@ -1254,7 +1254,13 @@ async def _validated_personal_settings(
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="Enter the client ID and client secret of your own OAuth app.",
         )
+    url_fields = {
+        field["name"]
+        for field in _declared_schema_fields(request, toolset_type, auth_type)
+        if str(field.get("fieldType") or "").upper() == "URL"
+    }
     try:
+        settings = toolset_store.with_url_schemes(settings, url_fields & set(settings))
         await toolset_store.assert_public_addresses(settings)
     except toolset_store.AddressNotAllowedError as e:
         raise HTTPException(status_code=HttpStatusCode.BAD_REQUEST.value, detail=str(e)) from e

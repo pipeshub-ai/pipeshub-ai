@@ -5,6 +5,8 @@
 - Personal instances, which a user adds for themselves, get one key each:
   ``/services/toolset-user-instances/{orgId}/{userId}/{instanceId}``. Only their owner sees them,
   signs in to them and uses them; administrators don't manage them.
+- ``/services/toolset-personal-owners/{instanceId}`` names a personal instance's org and owner,
+  for code that has only its id.
 - Sign-ins are at ``/services/toolsets/{instanceId}/{userId}`` and tool approval rules at
   ``/services/toolset-tool-rules/{instanceId}``, for both kinds.
 """
@@ -18,6 +20,7 @@ from typing import TYPE_CHECKING, Any
 from app.agents.constants.toolset_constants import (
     get_toolset_instance_users_prefix,
     get_toolset_org_user_instances_prefix,
+    get_toolset_personal_owner_path,
     get_toolset_tool_rules_path,
     get_toolset_user_instance_path,
     get_toolset_user_instances_prefix,
@@ -108,6 +111,20 @@ async def find_personal_instance(
     client reading its settings, token refresh, the check that keeps one off a shared agent.
     `org_id` None searches every org. `raise_on_error` makes a store failure raise rather than
     read as "none", for a caller that would otherwise let something through on it."""
+    async def read(key: str) -> dict[str, Any] | None:
+        if not raise_on_error:
+            return await _read(config_service, key)
+        data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
+        return data if isinstance(data, dict) else None
+
+    def match(record: dict[str, Any] | None) -> dict[str, Any] | None:
+        return record if _personal_record(record, org_id) and record.get("_id") == instance_id else None
+
+    owner = await read(get_toolset_personal_owner_path(instance_id))
+    if owner and owner.get("orgId") and owner.get("userId"):
+        return match(await read(get_toolset_user_instance_path(owner["orgId"], owner["userId"], instance_id)))
+
+    # No owner pointer: list every user's instances, which on Redis scans the whole keyspace.
     prefix = get_toolset_org_user_instances_prefix(org_id)
     try:
         keys = await config_service.list_keys_in_directory(prefix)
@@ -117,19 +134,14 @@ async def find_personal_instance(
             raise
         return None
     for key in keys:
-        if not key.endswith(f"/{instance_id}"):
-            continue
-        if raise_on_error:
-            data = await config_service.get_config(key, default=None, use_cache=False, raise_on_error=True)
-            record = data if isinstance(data, dict) else None
-        else:
-            record = await _read(config_service, key)
-        if _personal_record(record, org_id) and record.get("_id") == instance_id:
-            return record
+        if key.endswith(f"/{instance_id}") and (found := match(await read(key))):
+            return found
     return None
 
 
 async def save_personal_instance(config_service: ConfigurationService, instance: dict[str, Any]) -> bool:
+    owner = {"orgId": instance["orgId"], "userId": instance["createdBy"]}
+    await config_service.set_config(get_toolset_personal_owner_path(instance["_id"]), owner)
     return bool(await config_service.set_config(personal_instance_path(instance), instance))
 
 
@@ -191,6 +203,10 @@ async def delete_personal_instance(config_service: ConfigurationService, instanc
     if not await config_service.delete_config(personal_instance_path(instance)):
         raise RuntimeError(f"Couldn't delete personal toolset instance {instance['_id']}")
     await delete_instance_rules(config_service, instance["_id"])
+    try:
+        await config_service.delete_config(get_toolset_personal_owner_path(instance["_id"]))
+    except Exception as e:
+        logger.warning(f"Couldn't delete the owner pointer of toolset instance {instance['_id']}: {e}")
     return deleted
 
 
@@ -228,6 +244,27 @@ async def remove_org_personal_instances(config_service: ConfigurationService, or
 class AddressNotAllowedError(ValueError):
     """A personal instance's setting points at an address it may not reach. The message is safe to
     show; it doesn't say what the name resolved to."""
+
+
+def with_url_schemes(settings: dict[str, Any], url_fields: set[str]) -> dict[str, Any]:
+    """`settings` with each URL field given without a scheme written as https, the way its client
+    reads it (Salesforce adds one itself). Stored that way, the address check on save and on every
+    read sees the host that will be called.
+
+    Raises:
+        AddressNotAllowedError: a URL field names a scheme other than http(s).
+    """
+    out = dict(settings)
+    for key in url_fields:
+        text = out[key].strip() if isinstance(out.get(key), str) else ""
+        if not text:
+            continue
+        if not text.lower().startswith(("http://", "https://")):
+            if "://" in text:
+                raise AddressNotAllowedError(f"{key} must be an http or https address.")
+            text = f"https://{text}"
+        out[key] = text
+    return out
 
 
 async def assert_public_addresses(settings: dict[str, Any]) -> None:

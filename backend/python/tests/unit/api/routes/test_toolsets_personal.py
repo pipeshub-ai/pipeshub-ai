@@ -31,6 +31,7 @@ ORG_LIST = "/services/toolset-instances"
 USER_PATH = "/services/toolset-user-instances/org-1/{}/{}"
 CRED_PATH = "/services/toolsets/{}/{}"
 RULES_PATH = "/services/toolset-tool-rules/{}"
+OWNER_PATH = "/services/toolset-personal-owners/{}"
 
 _OAUTH_FIELDS = [{"name": "clientId", "usage": "BOTH"}, {"name": "clientSecret", "usage": "BOTH", "isSecret": True}]
 _METADATA: dict[str, dict[str, Any]] = {
@@ -157,13 +158,13 @@ class TestAMemberAddsTheirOwn:
         assert (instance["scope"], instance["createdBy"], instance["auth"]) == (
             "personal", "u-carol", {"baseUrl": "https://me.atlassian.net"},
         )
-        assert store.writes == [USER_PATH.format("u-carol", instance["_id"])]
+        assert store.writes == [OWNER_PATH.format(instance["_id"]), USER_PATH.format("u-carol", instance["_id"])]
         assert [i["_id"] for i in store.data[ORG_LIST]] == ["org-jira"]
 
     async def test_an_administrator_can_ask_for_one_too(self) -> None:
         store = _store()
         result = await toolsets.create_toolset_instance(_as(store, "admin-1", _jira(scope="personal")), config_service=store)
-        assert store.writes == [USER_PATH.format("admin-1", result["instance"]["_id"])]
+        assert store.writes == [OWNER_PATH.format(result["instance"]["_id"]), USER_PATH.format("admin-1", result["instance"]["_id"])]
 
     async def test_an_administrators_instance_is_otherwise_the_orgs(self) -> None:
         store = _store()
@@ -197,6 +198,22 @@ class TestAMemberAddsTheirOwn:
     async def test_a_private_address_is_refused(self) -> None:
         store = _store()
         body = _jira(authConfig={"baseUrl": "https://jira.corp.internal"})
+        assert await _status(toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)) == 400
+
+    async def test_an_address_without_a_scheme_is_checked_and_kept_as_https(self) -> None:
+        # Clients read a bare address as https (Salesforce adds it itself), so the check must too.
+        store = _store()
+        body = _jira(authConfig={"baseUrl": "jira.corp.internal"})
+        assert await _status(toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)) == 400
+
+        body = _jira(authConfig={"baseUrl": " me.atlassian.net "})
+        result = await toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)
+        saved = store.data[USER_PATH.format("u-carol", result["instance"]["_id"])]
+        assert saved["auth"]["baseUrl"] == "https://me.atlassian.net"
+
+    async def test_an_address_of_another_kind_is_refused(self) -> None:
+        store = _store()
+        body = _jira(authConfig={"baseUrl": "ftp://me.atlassian.net"})
         assert await _status(toolsets.create_toolset_instance(_as(store, "u-carol", body), config_service=store)) == 400
 
     async def test_a_person_has_a_limited_number(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -289,12 +306,28 @@ class TestTheOwnerManagesIt:
         store = _store(**{
             CRED_PATH.format("alice-jira", "u-alice"): {"isAuthenticated": True},
             RULES_PATH.format("alice-jira"): {"tools": {"create_issue": "allow"}},
+            OWNER_PATH.format("alice-jira"): {"orgId": "org-1", "userId": "u-alice"},
         })
         result = await toolsets.delete_toolset_instance("alice-jira", _as(store, "u-alice"), config_service=store)
 
         assert result["deletedCredentialsCount"] == 1
-        for key in (USER_PATH.format("u-alice", "alice-jira"), CRED_PATH.format("alice-jira", "u-alice"), RULES_PATH.format("alice-jira")):
+        for key in (
+            USER_PATH.format("u-alice", "alice-jira"), CRED_PATH.format("alice-jira", "u-alice"),
+            RULES_PATH.format("alice-jira"), OWNER_PATH.format("alice-jira"),
+        ):
             assert key not in store.data
+
+    async def test_a_new_one_is_found_by_its_id_without_listing_anyones(self) -> None:
+        # Tool clients and token refresh have only the id; listing keys is a full scan on Redis.
+        store = _store()
+        result = await toolsets.create_toolset_instance(_as(store, "u-carol", _jira()), config_service=store)
+        instance_id = result["instance"]["_id"]
+        store.list_keys_in_directory = AsyncMock(side_effect=AssertionError("listed keys"))  # type: ignore[method-assign]
+
+        found = await toolset_store.find_personal_instance(store, "org-1", instance_id)  # type: ignore[arg-type]
+
+        assert found and found["createdBy"] == "u-carol"
+        assert await toolset_store.find_personal_instance(store, "org-2", instance_id) is None  # type: ignore[arg-type]
 
     async def test_one_an_agent_uses_isnt_deleted(self) -> None:
         store = _store()

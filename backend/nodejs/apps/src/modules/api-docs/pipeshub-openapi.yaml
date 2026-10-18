@@ -1849,9 +1849,10 @@ components:
             type: string
             enum: [allow, ask, block]
           description: >-
-            Tool name → rule, for everyone in the organization. Each name must be a tool of the
-            instance's toolset. A tool without one starts from its kind: `read` at allow, `write`
-            at ask, `destructive` at block.
+            Tool name → rule: for everyone in the organization on an organization instance, for
+            its owner on a personal one. Each name must be a tool of the instance's toolset. A tool
+            without one starts from its kind: `read` at allow, `write` at ask, `destructive` at
+            block.
     ToolsetToolRules:
       allOf:
         - $ref: '#/components/schemas/ToolsetToolRulesUpdate'
@@ -1859,7 +1860,9 @@ components:
           properties:
             canEdit:
               type: boolean
-              description: Whether the caller may change the rules (an admin).
+              description: >-
+                Whether the caller may change the rules: an admin on an organization instance,
+                the owner on a personal one.
     McpToolInfo:
       type: object
       properties:
@@ -41181,6 +41184,12 @@ paths:
                         createdBy:
                           type: string
                           description: User ID that created the instance. Absent on registry-only entries.
+                        scope:
+                          type: string
+                          enum: [org, personal]
+                          description: >-
+                            `org` for the organization's instances, `personal` for the caller's own. Absent on
+                            registry-only entries.
                         createdAtTimestamp:
                           type: integer
                           format: int64
@@ -42028,9 +42037,9 @@ paths:
         '401':
           description: Unauthorized
         '403':
-          description: Only administrators can change them
+          description: An organization instance's rules, and the caller isn't an administrator
         '404':
-          description: Instance not found
+          description: Instance not found, or someone else's personal instance
 
   /toolsets/oauth-configs/{toolsetType}:
     get:

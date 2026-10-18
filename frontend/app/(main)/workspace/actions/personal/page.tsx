@@ -372,11 +372,14 @@ function PersonalActionsPageContent() {
     [refreshToolsetLists]
   );
 
+  // A new row on each render would reset the open edit form (the panel resets on registryRow).
+  const editRegistryRow = useMemo(() => (editAction ? registryRowForInstance(editAction) : null), [editAction]);
+
   const setupPanel = (
     <ActionSetupPanel
       open={Boolean(setupRow || editAction)}
       scope="personal"
-      registryRow={editAction ? registryRowForInstance(editAction) : setupRow}
+      registryRow={editRegistryRow ?? setupRow}
       editInstance={editAction}
       onOpenChange={(o) => {
         if (o) return;

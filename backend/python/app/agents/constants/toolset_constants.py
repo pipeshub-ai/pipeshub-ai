@@ -107,6 +107,12 @@ def get_toolset_user_instances_prefix(org_id: str, user_id: str) -> str:
     return f"/services/toolset-user-instances/{org_id}/{user_id}/"
 
 
+def get_toolset_personal_owner_path(instance_id: str) -> str:
+    """etcd path naming the org and owner of personal instance `instance_id`, so code without the
+    owner at hand (a tool client, token refresh) reads one key instead of listing every user's."""
+    return f"/services/toolset-personal-owners/{instance_id}"
+
+
 def get_toolset_org_user_instances_prefix(org_id: str | None = None) -> str:
     """etcd prefix of every user's personal toolset instances in `org_id`, or in every org."""
     return f"/services/toolset-user-instances/{org_id}/" if org_id else "/services/toolset-user-instances/"
