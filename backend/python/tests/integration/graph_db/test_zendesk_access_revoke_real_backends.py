@@ -160,7 +160,7 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         now = get_epoch_timestamp_in_ms()
         assert await graph.batch_upsert_nodes(
             [{
-                "id": connector_id, "name": "Zendesk", "type": Connectors.ZENDESK.value,
+                "id": connector_id, "orgId": org_id, "name": "Zendesk", "type": Connectors.ZENDESK.value,
                 "appGroup": "Zendesk", "scope": "team", "isActive": True,
                 "createdAtTimestamp": now, "updatedAtTimestamp": now,
             }],
