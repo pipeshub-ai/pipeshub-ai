@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from app.agent_loop_lib.hooks.middleware.builtin.budget_reduction import (
@@ -45,7 +45,10 @@ from app.agents.actions.knowledge_graph.ops.results import (
 from app.agents.actions.knowledge_graph.ops.scope import KnowledgeScope, search_scope
 from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
 from app.agents.agent_loop.protocol.run_usage import grep_generation_usage_reporter
-from app.modules.agents.qna.chat_state import remember_shown_results
+from app.modules.agents.qna.chat_state import (
+    remember_record_ids,
+    remember_shown_results,
+)
 from app.modules.retrieval.context.builder import KnowledgeContextBuilder
 from app.modules.retrieval.context.ordering import relevance_ordered_context
 from app.modules.retrieval.context.renderer import KnowledgeRenderer, Selection
@@ -61,6 +64,12 @@ from app.modules.retrieval.context.targeted import (
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import unit_children
+from app.modules.retrieval.context.unshown import (
+    UnshownMatch,
+    render_unshown_matches,
+    unshown_matches,
+    unshown_matches_enabled,
+)
 from app.modules.retrieval.entity_permissions import (
     SEARCH_SCOPE_MAX_ENTITIES,
     EntityAccessError,
@@ -188,6 +197,10 @@ class _ResultFrame:
     final_results: list[dict[str, Any]]
     coverage: dict[str, tuple[int, int]]
     plan: FetchPlan
+    unshown: list[UnshownMatch] = field(default_factory=list)
+    """Matched records the result leaves out (``UNSHOWN_MATCHES_LIST``)."""
+    unshown_list: str = ""
+    """Their list, with full record ids (shortened when used)."""
 
     @property
     def chars(self) -> int:
@@ -206,6 +219,8 @@ def _result_frame(
     preamble: str = "",
     passage_cap: PassageCap | None = None,
     per_record: int = 0,
+    matched_record_ids: list[str] | None = None,
+    permitted_records: dict[str, Any] | None = None,
 ) -> _ResultFrame:
     """The summary, fetch plan and tail a result showing ``selection`` gets.
 
@@ -215,6 +230,11 @@ def _result_frame(
     ``passage_cap`` (``TARGETED_RETRIEVAL``) says which records lost passages
     to the per-record cap; the ones shown are named at the end, with how to
     read the rest, and a line at the top points there.
+
+    ``matched_record_ids`` (``UNSHOWN_MATCHES_LIST``) are the records the hits
+    matched, best first; those neither shown nor held from earlier in the
+    request are listed at the end, named from ``permitted_records`` (the
+    retrieval service's permission-checked map) and only if they are in it.
     """
     from app.modules.agents.record_escalation import (
         analyze_coverage,
@@ -296,7 +316,16 @@ def _result_frame(
             "one(s) directly.\n\n"
             f"{entity_notes}"
         )
-    tail_chars = len(compose_result_tail(shown_records, shown_candidates)) + len(pm_hint)
+    unshown = unshown_matches(
+        matched_record_ids or [], shown_vrids | set(full_map), permitted_records or {},
+    )
+    unshown_list = render_unshown_matches(unshown)
+    shown_unshown = unshown_list
+    if unshown_list and selection.record_id_shortener is not None:
+        shown_unshown = selection.record_id_shortener.copy().shorten_record_ids_in_text(unshown_list)
+    tail_chars = (
+        len(compose_result_tail(shown_records, shown_candidates)) + len(shown_unshown) + len(pm_hint)
+    )
     return _ResultFrame(
         summary=summary,
         candidate_suffix=candidate_suffix,
@@ -305,6 +334,8 @@ def _result_frame(
         final_results=final_results,
         coverage=coverage,
         plan=plan,
+        unshown=unshown,
+        unshown_list=unshown_list,
     )
 
 
@@ -1196,6 +1227,8 @@ async def _execute_search(
             image_admission=image_admission,
         )
 
+        matched_record_ids = knowledge.matched_record_ids if unshown_matches_enabled() else None
+
         def frame(selection: Selection) -> _ResultFrame:
             pm_shown, pm_hint = keyword_hint(selection)
             return _result_frame(
@@ -1209,6 +1242,8 @@ async def _execute_search(
                 preamble=preamble,
                 passage_cap=passage_cap,
                 per_record=per_record,
+                matched_record_ids=matched_record_ids,
+                permitted_records=virtual_to_record_map,
             )
 
         # Everything else in the result is sized first, so the records are cut
@@ -1264,10 +1299,20 @@ async def _execute_search(
         remember_shown_results(state, [*final_results, *pm_shown], shown_records)
         if targeted:
             remember_shown(state, final_results)
+        unshown_list = result_frame.unshown_list
+        if result_frame.unshown:
+            remember_record_ids(
+                state,
+                [match.record_id for match in result_frame.unshown],
+                names={match.record_id: match.name for match in result_frame.unshown},
+            )
+            if record_id_shortener is not None:
+                unshown_list = record_id_shortener.shorten_record_ids_in_text(unshown_list)
         text = (
             result_frame.summary
             + rendered.text
             + compose_result_tail(shown_records, candidate_suffix)
+            + unshown_list
             + pm_hint
             + outside_dates_text
         )
