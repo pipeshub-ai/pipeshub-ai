@@ -33,6 +33,8 @@ import re
 from http import HTTPStatus
 from typing import TYPE_CHECKING
 
+from app.services.model_identity.errors import classify_for_user
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -231,6 +233,13 @@ def classify_error(error_msg: str) -> tuple[str, str]:
             continue
         if hit is not None:
             return hit
+
+    # A gateway that enforces per-user budgets and model access answers with the
+    # statuses broken providers use; read before the generic 429/403 hints, whose
+    # advice ("wait a minute", "the API key is wrong") would be wrong for these.
+    gateway = classify_for_user(error_msg)
+    if gateway is not None:
+        return gateway
 
     lower = error_msg.lower()
 

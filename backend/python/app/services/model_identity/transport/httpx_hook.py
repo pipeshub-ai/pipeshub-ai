@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Optional, Set
 import httpx
 
 from app.services.model_identity import metrics
+from app.services.model_identity.errors import classify_gateway_error, record_refusal
 from app.services.model_identity.call_context import (
     ModelCallContext,
     current_call_context,
@@ -33,6 +34,7 @@ from app.services.model_identity.workload import Workload
 logger = logging.getLogger(__name__)
 
 HOOK_MARKER = "_pipeshub_identity_hook"
+_REFUSAL_STATUSES = frozenset({400, 401, 403, 429})
 
 # Re-render a little before a token actually expires so one never goes out stale.
 _EXPIRY_SKEW_SECONDS = 5.0
@@ -110,6 +112,35 @@ class IdentityHook:
             groups = None
         self._apply(request, lambda: self._headers(ctx, groups))
 
+    def sync_response(self, response: httpx.Response) -> None:
+        if response.status_code not in _REFUSAL_STATUSES:
+            return
+        try:
+            response.read()
+            self._mark_refusal(response)
+        except Exception as exc:
+            _log_once(exc)
+
+    async def async_response(self, response: httpx.Response) -> None:
+        if response.status_code not in _REFUSAL_STATUSES:
+            return
+        try:
+            await response.aread()
+            self._mark_refusal(response)
+        except Exception as exc:
+            _log_once(exc)
+
+    @staticmethod
+    def _mark_refusal(response: httpx.Response) -> None:
+        refusal = classify_gateway_error(response.status_code, response.content, response.headers)
+        if refusal is None:
+            return
+        record_refusal(refusal, current_call_context().workload_class.value)
+        if not refusal.retryable:
+            # The OpenAI and Anthropic SDKs both honour this: a budget or model-access
+            # refusal comes back identical on every attempt, so retrying only delays the answer.
+            response.headers["x-should-retry"] = "false"
+
     def _sync_groups(self, ctx: ModelCallContext) -> Optional[GroupMembership]:
         if not ctx.principal.is_user:
             return None
@@ -147,6 +178,8 @@ def install_identity_hook(
     fn: Callable[..., Any] = hook.async_hook if isinstance(client, httpx.AsyncClient) else hook.sync_hook
     hooks = client.event_hooks
     hooks["request"] = [*hooks.get("request", []), fn]
+    response_fn = hook.async_response if isinstance(client, httpx.AsyncClient) else hook.sync_response
+    hooks["response"] = [*hooks.get("response", []), response_fn]
     client.event_hooks = hooks
     setattr(client, HOOK_MARKER, hook)
     return True

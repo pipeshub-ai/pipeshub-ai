@@ -29,6 +29,7 @@ from app.agents.agent_loop.prompt_cache import (
     without_cache_markers,
 )
 from app.config.constants.http_status_code import HttpStatusCode
+from app.services.model_identity.errors import policy_error_from_exception, report_background_refusal
 from app.connectors.core.base.error.stream_errors import map_source_status
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.excel.prompt_template import RowDescriptions
@@ -59,10 +60,16 @@ MAX_REFLECTION_RETRIES_DEFAULT = 2
 MAX_CITATION_REFLECTION_RETRIES = 2
 MAX_TOOL_HOPS = 6
 MAX_RATE_LIMIT_RETRIES = 3
+MAX_GATEWAY_RETRY_AFTER_SECONDS = 60.0
 _RATE_LIMIT_MARKERS = ("rate limit", "rate_limit", "429", "too many requests", "quota exceeded")
 
 
 def _is_rate_limit_error(exc: Exception) -> bool:
+    # A budget or model-access refusal from the gateway looks like a 429 or 4xx but
+    # comes back unchanged however often it is retried.
+    policy = policy_error_from_exception(exc)
+    if policy is not None:
+        return policy.retryable
     if getattr(exc, "status_code", None) == HttpStatusCode.TOO_MANY_REQUESTS.value:
         return True
     message = str(exc).lower()
@@ -101,11 +108,17 @@ async def _ainvoke_throttled(
                 note_llm_call()
                 return result
             except Exception as e:
+                policy = policy_error_from_exception(e)
+                if policy is not None:
+                    report_background_refusal(policy)
                 if not _is_rate_limit_error(e) or attempt == MAX_RATE_LIMIT_RETRIES - 1:
                     raise
                 note_rate_limit_retry()
                 note_indexing_llm_rate_limit()
                 delay = 2 ** attempt + random.uniform(0, 1)
+                if policy is not None and policy.retry_after is not None:
+                    # The gateway said when; waiting less only earns another refusal.
+                    delay = max(delay, min(policy.retry_after, MAX_GATEWAY_RETRY_AFTER_SECONDS))
         logger.warning(
             f"Rate limited (attempt {attempt + 1}/{MAX_RATE_LIMIT_RETRIES}), "
             f"retrying in {delay:.1f}s"
