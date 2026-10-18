@@ -22,6 +22,7 @@ import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
 from logging import Logger
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Dict, Optional, TypeVar
 
 from fastapi import Request
@@ -6536,6 +6537,55 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return None
+
+    async def get_user_directory_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        app_names: Sequence[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, str]]:
+        """See :meth:`IGraphDBProvider.get_user_directory_groups`."""
+        query = f"""
+        LET caller = FIRST(
+            FOR user IN {CollectionNames.USERS.value}
+                FILTER user.userId == @user_id
+                RETURN user
+        )
+        LET principals = caller == null ? [] : APPEND([caller], (
+            FOR link IN {CollectionNames.AUTHENTICATED_AS.value}
+                FILTER link._from == caller._id
+                RETURN DOCUMENT(link._to)
+        ))
+        FOR principal IN principals
+            FILTER principal != null
+            FOR g, edge IN 1..1 OUTBOUND principal._id {CollectionNames.PERMISSION.value}
+                FILTER edge.type == 'USER'
+                FILTER IS_SAME_COLLECTION("{CollectionNames.GROUPS.value}", g)
+                FILTER g.orgId == @org_id
+                FILTER @app_names == null OR g.connectorName IN @app_names
+                COLLECT id = g._key, externalId = g.externalGroupId, name = g.name,
+                        connectorId = g.connectorId, appName = g.connectorName
+                SORT externalId
+                LIMIT @limit
+                RETURN {{id, externalId, name, connectorId, appName}}
+        """
+        rows = await self.http_client.execute_aql(
+            query,
+            {
+                "user_id": user_id,
+                "org_id": org_id,
+                "app_names": list(app_names) if app_names else None,
+                "limit": max(1, int(limit)),
+            },
+        )
+        return [
+            {
+                key: "" if row.get(key) is None else str(row[key])
+                for key in ("id", "externalId", "name", "connectorId", "appName")
+            }
+            for row in rows or []
+        ]
 
     async def get_user_groups(
         self,

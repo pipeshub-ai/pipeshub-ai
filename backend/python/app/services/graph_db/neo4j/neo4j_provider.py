@@ -20,6 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from functools import lru_cache
 from logging import Logger
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, Optional
 
 from fastapi import Request
@@ -524,6 +525,13 @@ def _purge_walk_query(hint: str) -> str:
            }} AS held
     ORDER BY r.deletedAtTimestamp, r.id
     """
+
+
+def _directory_group_row(row: Any) -> dict[str, str]:  # noqa: ANN401 - a driver record or a dict
+    return {
+        key: str(row[key]) if row[key] is not None else ""
+        for key in ("id", "externalId", "name", "connectorId", "appName")
+    }
 
 
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
@@ -5029,6 +5037,38 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if raise_on_error:
                 raise
             return []
+
+    async def get_user_directory_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        app_names: Sequence[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, str]]:
+        """See :meth:`IGraphDBProvider.get_user_directory_groups`."""
+        query = """
+        MATCH (u:User {userId: $user_id})
+        WITH u LIMIT 1
+        OPTIONAL MATCH (u)-[:AUTHENTICATED_AS]->(source:User)
+        WITH [u] + collect(source) AS principals
+        UNWIND principals AS principal
+        MATCH (principal)-[:PERMISSION {type: 'USER'}]->(g:Group {orgId: $org_id})
+        WHERE $app_names IS NULL OR g.connectorName IN $app_names
+        RETURN DISTINCT g.id AS id, g.externalGroupId AS externalId, g.name AS name,
+               g.connectorId AS connectorId, g.connectorName AS appName
+        ORDER BY externalId
+        LIMIT $limit
+        """
+        rows = await self.client.execute_query(
+            query,
+            parameters={
+                "user_id": user_id,
+                "org_id": org_id,
+                "app_names": list(app_names) if app_names else None,
+                "limit": max(1, int(limit)),
+            },
+        )
+        return [_directory_group_row(row) for row in rows or []]
 
     async def get_app_role_by_external_id(
         self,
