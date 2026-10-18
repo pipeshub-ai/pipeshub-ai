@@ -115,8 +115,9 @@ def _has_kebab_identifier(query: str) -> bool:
 
 
 def _has_two_part_path(query: str) -> bool:
+    # rstrip: a sentence's closing period is not part of the path.
     return any(
-        not _PATH_NAME_CHARS.isdisjoint(match.group(0))
+        not _PATH_NAME_CHARS.isdisjoint(match.group(0).rstrip("."))
         for match in _TWO_PART_PATH.finditer(query)
     )
 

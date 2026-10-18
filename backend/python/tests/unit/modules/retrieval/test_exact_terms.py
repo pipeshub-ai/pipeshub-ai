@@ -20,6 +20,7 @@ from app.modules.retrieval.exact_terms import (
     "settings under /etc/app/conf",
     "configs in deploy/docker-compose",
     "the charts/pipeshub-ai values",
+    "who owns deploy/docker-compose.",
     "https://wiki.example.com/x",
     "retryPolicy default",
     "MAX_RETRIES for the uploader",
@@ -64,6 +65,8 @@ def test_identifier_like_queries_ask_for_exact_matching(query: str) -> None:
     "standup at 9am",
     "docs on and/or conditions",
     "the client/server split",
+    "who owns the client/server.",
+    "who owns the client/server...",
     "CI/CD pipeline owners",
 ])
 def test_plain_language_queries_do_not(query: str | None) -> None:
