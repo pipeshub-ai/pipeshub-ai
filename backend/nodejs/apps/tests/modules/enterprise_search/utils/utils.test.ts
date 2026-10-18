@@ -1201,7 +1201,7 @@ describe('Enterprise Search Utils', () => {
       expect(res.writeHead.calledOnce).to.be.true
       const headArgs = res.writeHead.firstCall.args
       expect(headArgs[0]).to.equal(200)
-      expect(headArgs[1]).to.have.property('Content-Type', 'text/event-stream')
+      expect(headArgs[1]).to.have.property('Content-Type', 'text/event-stream; charset=utf-8')
       expect(headArgs[1]).to.have.property('Cache-Control', 'no-cache')
       expect(headArgs[1]).to.have.property('Connection', 'keep-alive')
       expect(headArgs[1]).to.have.property('X-Accel-Buffering', 'no')

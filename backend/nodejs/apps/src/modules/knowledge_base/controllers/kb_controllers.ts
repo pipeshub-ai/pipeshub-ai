@@ -836,7 +836,7 @@ const placeholderErrorMessage = (err: unknown): string => {
 // buffering, and the per-response socket timeout is cleared so a long upload
 // stream is not closed by Node's default 120s timeout.
 const UPLOAD_SSE_HEADERS = {
-  'Content-Type': 'text/event-stream',
+  'Content-Type': 'text/event-stream; charset=utf-8',
   'Cache-Control': 'no-cache, no-transform',
   Connection: 'keep-alive',
   'X-Accel-Buffering': 'no',
