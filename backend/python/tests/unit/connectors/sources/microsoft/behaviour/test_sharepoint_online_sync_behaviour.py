@@ -298,7 +298,7 @@ class TestDriveDelta:
 
 
 class TestPermissions:
-    async def test_item_sharing_is_mapped_to_users_groups_and_org_links_and_an_anonymous_link_names_no_one(
+    async def test_item_sharing_is_mapped_to_users_and_groups_and_an_org_or_anonymous_link_alone_names_no_one(
         self, connector, api, db
     ) -> None:
         delta_pages(api, {None: page([file_item("i1", "plan.pdf")], delta_link=delta_url("d1"))})
@@ -315,7 +315,6 @@ class TestPermissions:
         assert mapped == {
             (EntityType.USER, "u1", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", PermissionType.WRITE),
-            (EntityType.ORG, "anyone_in_org", PermissionType.READ),
         }
         assert next(p.email for p in db.record_permissions["i1"] if p.external_id == "u1") == "ana@contoso.com"
 

@@ -3011,17 +3011,9 @@ class SharePointConnector(BaseConnector):
                                 link_grant=True,
                             ))
 
-                # An org-scoped link is an org grant; an anonymous one names no
-                # grantee and is not stored.
-                if hasattr(perm, 'link') and perm.link:
-                    link = perm.link
-                    if link.scope == "organization":
-                        permissions.append(Permission(
-                            external_id="anyone_in_org",
-                            email=None,
-                            type=map_msgraph_role_to_permission_type(link.type),
-                            entity_type=EntityType.ORG
-                        ))
+                # A link grants only the identities listed above. An organization or
+                # anonymous link alone is not a grant: SharePoint opens it only to people
+                # who redeem it, and they are listed in granted_to_identities_v2.
 
             except Exception as e:
                 self.logger.error(f"❌ Error converting permission: {e}", exc_info=True)
