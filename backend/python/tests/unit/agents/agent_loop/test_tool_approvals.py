@@ -150,6 +150,60 @@ class TestToolsetStartingRules:
         assert decide(source="mcp", own=None, kind="destructive", watched=True).rule == _BLOCK
 
 
+class TestSqlStatements:
+    """Free-form SQL tools: a statement that only reads or makes an ordinary write keeps the tool's
+    kind; anything else asks first, as a call that can't be undone."""
+
+    @pytest.mark.parametrize("sql", [
+        "SELECT * FROM orders WHERE id = 1",
+        "  select count(*) from t;  ",
+        "SHOW TABLES",
+        "DESCRIBE orders",
+        "EXPLAIN SELECT * FROM t",
+        "WITH recent AS (SELECT * FROM orders) SELECT * FROM recent",
+        "INSERT INTO t (a) VALUES (1)",
+        "UPDATE t SET a = 2 WHERE id = 1",
+        "SELECT 'drop table x; delete from y' AS note",
+        "SELECT 1 -- delete everything later\n",
+        "SELECT /* drop */ 1",
+    ])
+    def test_reads_and_ordinary_writes_keep_their_kind(self, sql: str) -> None:
+        assert approvals.sql_keeps_its_kind(sql)
+
+    @pytest.mark.parametrize("sql", [
+        "DELETE FROM orders",
+        "DROP TABLE orders",
+        "TRUNCATE orders",
+        "ALTER TABLE orders DROP COLUMN note",
+        "GRANT ALL ON orders TO bob",
+        "REVOKE SELECT ON orders FROM bob",
+        "REPLACE INTO t VALUES (1)",
+        "CREATE TABLE t (a int)",
+        "SELECT 1; DELETE FROM orders",
+        "WITH gone AS (DELETE FROM t RETURNING *) SELECT * FROM gone",
+        "",
+        "   ;  ",
+        None,
+        # Read one way by MariaDB and another by Redshift, so where they end is unclear.
+        "SELECT 'a\\'; DELETE FROM t; --'",
+        "SELECT `x;DELETE FROM t`",
+        "SELECT 1 /*! ; DROP TABLE t */",
+        "SELECT 1 --x; DELETE FROM t",
+        "SELECT 1 # ; DROP TABLE t",
+    ])
+    def test_anything_else_cant_be_undone(self, sql: Any) -> None:  # noqa: ANN401
+        assert not approvals.sql_keeps_its_kind(sql)
+
+    def test_a_sql_tool_call_takes_the_kind_of_its_statement(self) -> None:
+        target = SimpleNamespace(kind="write")
+        path = "/tools/mariadb/execute_query"
+        assert approvals.call_kind(target, path, {"query": "SELECT 1"}) == "write"
+        assert approvals.call_kind(target, path, {"query": "DELETE FROM t"}) == "destructive"
+        assert approvals.call_kind(target, path, {}) == "destructive"
+        # Other tools keep their own kind, whatever their arguments say.
+        assert approvals.call_kind(target, "/tools/jira/create_issue", {"query": "DROP TABLE t"}) == "write"
+
+
 def _context(store: _Store | None = None, **overrides: Any) -> Any:  # noqa: ANN401
     defaults: dict[str, Any] = {
         "config_service": store or _Store(), "client_name": "pipeshub-ai", "chat_streaming": True,

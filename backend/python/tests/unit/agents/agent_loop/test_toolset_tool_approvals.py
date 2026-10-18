@@ -278,6 +278,37 @@ class TestWithoutOrganizationRules:
         assert "approve it in the PipesHub app" in reason and "admin" not in reason
 
 
+class _MariaDb:
+    @tool(path="/tools/mariadb/execute_query", short_description="Run SQL", description="Run a SQL query.",
+          tags=[Tag(key="type", value="write")])
+    async def execute_query(self, query: str) -> tuple[bool, str]:
+        return True, "[]"
+
+
+async def _sql_gate(context: Any, query: str) -> ToolCallContext:  # noqa: ANN401
+    (sql_tool,) = ToolsetBuilder(_MariaDb(), name="mariadb", description="MariaDB", path_prefix="/tools/mariadb").tools
+    _record_for_approvals(context, sql_tool, ("inst-m", "MariaDB"), fallback_owner="mariadb")
+    ctx = ToolCallContext(tool_path=sql_tool.path, tool_input={"query": query})
+
+    async def _next() -> None:
+        return None
+
+    await approvals.approval_gate(context)(ctx, _next)
+    return ctx
+
+
+class TestFreeFormSql:
+    async def test_a_query_that_reads_runs_and_one_that_deletes_asks(self) -> None:
+        assert (await _sql_gate(_context(), "SELECT * FROM orders")).decision == PreDecision.ALLOW
+        ctx = await _sql_gate(_context(), "DELETE FROM orders")
+        assert ctx.decision == PreDecision.ASK
+        assert ctx.pending_approval is not None and ctx.pending_approval.details["kind"] == "destructive"
+
+    async def test_a_query_that_deletes_doesnt_run_where_nobody_can_answer(self) -> None:
+        ctx = await _sql_gate(_context(client_name="api"), "DROP TABLE orders")
+        assert ctx.decision == PreDecision.DENY
+
+
 class TestASavedCall:
     def test_one_saved_before_toolsets_were_checked_is_an_mcp_call(self) -> None:
         pending = PendingCall.model_validate({

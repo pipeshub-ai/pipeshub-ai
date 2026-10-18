@@ -1247,7 +1247,7 @@
       "showAll": "Alles anzeigen",
       "showLess": "Weniger anzeigen",
       "partial": "Nur der Anfang der Details wird angezeigt: Der vollständige Aufruf ist länger.",
-      "deletesData": "Löscht Daten",
+      "cantBeUndone": "Nicht rückgängig zu machen",
       "allow": "Zulassen",
       "dontAskAgain": "Für dieses Tool nicht mehr fragen",
       "answerFailed": "Ihre Antwort konnte nicht gesendet werden. Versuchen Sie es erneut.",
@@ -3160,7 +3160,7 @@
           "none": "Der Server gibt nicht an, was dieses Tool tut, daher gilt es als datenändernd."
         },
         "group": {
-          "destructive": "Löscht Daten",
+          "destructive": "Nicht rückgängig zu machen",
           "write": "Ändert Daten",
           "read": "Nur lesend",
           "notOffered": "Derzeit nicht angeboten",

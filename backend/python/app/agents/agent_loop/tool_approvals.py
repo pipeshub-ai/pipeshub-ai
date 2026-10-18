@@ -29,9 +29,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from pydantic import Field, ValidationError
@@ -184,6 +185,49 @@ def _mcp_target(adapter: "MCPToolAdapter") -> ApprovalTarget:
         owner=adapter.server.display_name, kind=adapter.kind, tool=adapter,
         title=title if isinstance(title, str) else None,
     )
+
+
+# Tools that run any SQL they're given: what one call does depends on its statement.
+_SQL_TOOL_PATHS: dict[str, str] = {
+    "/tools/mariadb/execute_query": "query",
+    "/tools/redshift/execute_query": "query",
+}
+# Only what reads the same in MariaDB and Redshift is stripped. Backticks, `#`, MySQL's
+# executable /*! */ comments and "--" with no space after it are left in, so a statement they
+# could hide still counts.
+_SQL_STRING_OR_COMMENT = re.compile(r"'(?:''|[^'])*'|\"(?:\"\"|[^\"])*\"|--(?=\s)[^\n]*|/\*(?![!M])[\s\S]*?\*/")
+_SQL_READS = frozenset({"select", "show", "describe", "desc", "explain"})
+_SQL_ORDINARY_WRITES = frozenset({"insert", "update"})
+_SQL_WORD = re.compile(r"[a-z_]+")
+
+
+def sql_keeps_its_kind(sql: str) -> bool:
+    """Whether a statement only reads, or makes an ordinary write (INSERT, UPDATE). Anything else,
+    such as DELETE, DROP, TRUNCATE, ALTER or GRANT, more than one statement, or text that can't be
+    read this way, counts as a call that can't be undone."""
+    if not isinstance(sql, str) or "\\" in sql:
+        # A backslash escapes a quote in one dialect and not the other: where a string ends is unclear.
+        return False
+    code = _SQL_STRING_OR_COMMENT.sub(" ", sql).lower()
+    statements = [part for part in code.split(";") if part.strip()]
+    if len(statements) != 1:
+        return False
+    words = _SQL_WORD.findall(statements[0])
+    if not words:
+        return False
+    if words[0] == "with":
+        # A CTE: what runs is what the statement does once its named queries are read.
+        return not ({"delete", "drop", "truncate", "alter", "grant", "revoke", "create", "merge", "replace", "call"} & set(words))
+    return words[0] in _SQL_READS or words[0] in _SQL_ORDINARY_WRITES
+
+
+def call_kind(target: "ApprovalTarget", tool_path: str, arguments: Any) -> ToolKind:  # noqa: ANN401
+    """What this one call does to data: the tool's kind, unless its SQL can't be undone."""
+    field = _SQL_TOOL_PATHS.get(tool_path)
+    if field is None or target.kind == "destructive":
+        return target.kind
+    sql = arguments.get(field) if isinstance(arguments, dict) else None
+    return target.kind if sql_keeps_its_kind(sql) else "destructive"
 
 
 @dataclass(frozen=True)
@@ -401,6 +445,7 @@ def approval_gate(context: "AgentContext") -> Any:  # noqa: ANN401
         if target is None:
             await next_fn()
             return
+        target = replace(target, kind=call_kind(target, ctx.tool_path, ctx.tool_input))
         rules = await _rules_for(context, target.source, target.instance_id)
         if rules.unavailable:
             ctx.deny(

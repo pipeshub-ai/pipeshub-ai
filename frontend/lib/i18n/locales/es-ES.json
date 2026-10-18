@@ -1263,7 +1263,7 @@
       "showAll": "Mostrar todo",
       "showLess": "Mostrar menos",
       "partial": "Solo se muestra el principio de los detalles: la llamada completa es más larga.",
-      "deletesData": "Elimina datos",
+      "cantBeUndone": "No se puede deshacer",
       "allow": "Permitir",
       "dontAskAgain": "No volver a preguntar por esta herramienta",
       "answerFailed": "No se pudo enviar tu respuesta. Inténtalo de nuevo.",
@@ -3184,7 +3184,7 @@
           "none": "El servidor no indica qué hace esta herramienta, así que se trata como si cambiara datos."
         },
         "group": {
-          "destructive": "Elimina datos",
+          "destructive": "No se puede deshacer",
           "write": "Cambia datos",
           "read": "Solo lectura",
           "notOffered": "No disponible ahora",
