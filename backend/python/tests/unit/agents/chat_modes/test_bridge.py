@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1405,10 +1405,19 @@ class TestCensusRunsAfterTheIntentCall:
     is always absent and a model "no" can never decline a pattern match."""
 
     @staticmethod
-    def _run(policy, *, marker: str | None, clarifying: list | None = None, census_answers: bool = True):
+    def _run(
+        policy, *, marker: str | None, clarifying: list | None = None, census_answers: bool = True,
+    ) -> tuple[
+        dict[str, Any],
+        Callable[..., Awaitable[tuple[Any, Any, Any, list[Any]]]],
+        Callable[..., Awaitable[bool]],
+        Callable[..., Awaitable[dict[str, Any]]],
+    ]:
         seen: dict[str, Any] = {"markers": [], "streamed": False}
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", model_key=None):
+        async def _fake_create(
+            self, context, llm, chat_mode, *, query, model_name="", model_key=None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
             # The real create() awaits the intent call, which lets a
             # prefetch started before it get going.
             await asyncio.sleep(0)
@@ -1416,24 +1425,27 @@ class TestCensusRunsAfterTheIntentCall:
             agent = _stream_agent(MagicMock(success=True, error=None, output="from the agent"))
             original_stream = agent.stream
 
-            def _tracking_stream(goal, **kwargs):
+            def _tracking_stream(goal, **kwargs) -> object:
                 seen["streamed"] = True
                 return original_stream(goal, **kwargs)
 
             agent.stream = _tracking_stream
             return agent, MagicMock(tool_registry=MagicMock()), MagicMock(constraints=[], description="q"), clarifying or []
 
-        async def _fake_census(*, context, **kwargs):
+        async def _fake_census(*, context, **kwargs) -> bool:
             seen["markers"].append(context.tool_state.get("corpus_census_marker"))
             return census_answers
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None):
+        async def _fake_finalizer_run(
+            self, *, agent_success, agent_error, event_sink, agent_output=None,
+            streamed_answer="", reasoning_turns=None,
+        ) -> dict[str, Any]:
             await event_sink.write({"event": "complete", "data": {"answer": agent_output}})
             return {"answer": agent_output}
 
         return seen, _fake_create, _fake_census, _fake_finalizer_run
 
-    async def _drive(self, policy, seen, fake_create, fake_census, fake_finalizer, extra=()):
+    async def _drive(self, policy, seen, fake_create, fake_census, fake_finalizer, extra=()) -> list[str]:
         sql_patch, slack_patch = _patch_connectors()
         kwargs = TestRunChatStream._base_kwargs(policy=policy)
         kwargs["query_info"]["query"] = "How many documents do we have?"
@@ -1475,7 +1487,7 @@ class TestCensusRunsAfterTheIntentCall:
         started = asyncio.Event()
         cancelled = asyncio.Event()
 
-        async def _slow_prefetch(**kwargs):
+        async def _slow_prefetch(**kwargs) -> None:
             started.set()
             try:
                 await asyncio.sleep(3600)

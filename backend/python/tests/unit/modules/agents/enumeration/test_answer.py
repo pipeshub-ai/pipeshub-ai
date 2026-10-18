@@ -9,7 +9,7 @@ Two properties carry the whole design and are easy to regress:
 """
 from __future__ import annotations
 
-import pytest
+from typing import TYPE_CHECKING
 
 from app.modules.agents.enumeration.answer import (
     MAX_LISTED,
@@ -18,6 +18,9 @@ from app.modules.agents.enumeration.answer import (
     compose_text,
     record_landing_url,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
 
 
 class FakeMapper:
@@ -36,8 +39,10 @@ def _record(rid: str, name: str, **extra) -> dict:
     return {"id": rid, "record_name": name, **extra}
 
 
-def _lookup_from(records: dict[str, dict]):
-    async def lookup(vrid: str, record_id: str):
+def _lookup_from(
+    records: dict[str, dict],
+) -> Callable[[str, str], Awaitable[dict | None]]:
+    async def lookup(vrid: str, record_id: str) -> dict | None:
         return records.get(vrid)
     return lookup
 

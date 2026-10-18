@@ -19,8 +19,16 @@ Two details matter and are easy to get wrong:
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.utils.chat_helpers import CitationRefMapper
+
+# Resolves (virtual record id, record id) to the fields a listed record shows,
+# or None when the record cannot be read.
+RecordLookup = Callable[[str, str], Awaitable[dict[str, Any] | None]]
 
 # How many records the answer will name. A census over a large corpus is a
 # number plus a way to narrow it, not a wall of rows: at 200 rows with summaries
@@ -108,8 +116,8 @@ def compose_text(
 async def build_enumeration_answer(
     *,
     accessible: dict[str, str],
-    record_lookup: Any,
-    ref_mapper: Any,
+    record_lookup: RecordLookup,
+    ref_mapper: CitationRefMapper,
     org_id: str,
     limit: int = MAX_LISTED,
     scoped: bool = False,

@@ -10,11 +10,17 @@ about event emission, citation normalisation or persistence is duplicated here.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from app.modules.agents.enumeration.answer import build_enumeration_answer
+from app.modules.agents.enumeration.answer import RecordLookup, build_enumeration_answer
 from app.modules.agents.enumeration.policy import is_enumeration_query
 from app.modules.demo_data.chat import excluded_app_ids
+
+if TYPE_CHECKING:
+    from app.agents.agent_loop.context import AgentContext
+    from app.modules.agents.event_sink import EventSink
+    from app.modules.retrieval.retrieval_service import RetrievalService
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +37,7 @@ class EnumerationFinalizationError(RuntimeError):
 
 
 async def _fetch_summaries(
-    retrieval_service: Any,
+    retrieval_service: RetrievalService,
     org_id: str,
     virtual_ids: list[str],
 ) -> dict[str, str]:
@@ -68,7 +74,7 @@ async def _fetch_summaries(
             limit=max(len(virtual_ids) * 2, 10),
         )
         points = getattr(result, "points", None) or []
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         logger.warning("enumeration: summary scroll failed, listing without them: %s", exc)
         return summaries
 
@@ -90,10 +96,10 @@ async def _fetch_summaries(
 
 
 async def _record_lookup_factory(
-    graph_provider: Any,
+    graph_provider: IGraphDBProvider,
     org_id: str,
     summaries: dict[str, str] | None = None,
-) -> Any:
+) -> RecordLookup:
     """Resolve a record id to the fields an enumeration answer needs.
 
     Reads the record node directly rather than going through retrieval: this
@@ -111,7 +117,7 @@ async def _record_lookup_factory(
             doc = await graph_provider.get_document(
                 record_id, CollectionNames.RECORDS.value
             )
-        except Exception as exc:  # noqa: BLE001 - one bad record must not fail the count
+        except Exception as exc:  # one bad record must not fail the count
             logger.debug("enumeration: record fetch failed for %s: %s", record_id, exc)
             return None
         if not isinstance(doc, dict) or not doc:
@@ -136,12 +142,12 @@ async def _record_lookup_factory(
 async def try_answer_enumeration(
     *,
     query: str,
-    context: Any,
-    retrieval_service: Any,
-    graph_provider: Any,
+    context: AgentContext,
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
     filters: dict[str, Any] | None,
-    event_sink: Any,
-    log: Any = logger,
+    event_sink: EventSink,
+    log: logging.Logger = logger,
 ) -> bool:
     """Return True when this query was answered here and the agent should not run."""
     marker = getattr(context, "tool_state", {}).get("corpus_census_marker")
@@ -162,7 +168,7 @@ async def try_answer_enumeration(
             raise_on_error=True,
             exclude_app_ids=excluded_app_ids(getattr(context, "tool_state", None)),
         )
-    except Exception as exc:  # noqa: BLE001 - fall back to the agent rather than fail
+    except Exception as exc:  # fall back to the agent rather than fail
         log.warning("enumeration: accessible-record lookup failed, deferring: %s", exc)
         return False
 
@@ -186,7 +192,7 @@ async def try_answer_enumeration(
     state = context.tool_state
     ref_mapper = state.get("citation_ref_mapper") or CitationRefMapper()
 
-    from app.modules.agents.enumeration.answer import MAX_LISTED  # noqa: PLC0415
+    from app.modules.agents.enumeration.answer import MAX_LISTED
     listed_ids = [vrid for vrid, _ in sorted(accessible.items())[:MAX_LISTED]]
     summaries = await _fetch_summaries(retrieval_service, org_id, listed_ids)
     lookup = await _record_lookup_factory(graph_provider, org_id, summaries)
@@ -247,12 +253,12 @@ async def try_answer_enumeration(
 async def answer_census_if_asked(
     *,
     query: str,
-    context: Any,
-    retrieval_service: Any,
-    graph_provider: Any,
+    context: AgentContext,
+    retrieval_service: RetrievalService,
+    graph_provider: IGraphDBProvider,
     filters: dict[str, Any] | None,
-    event_sink: Any,
-    log: Any = logger,
+    event_sink: EventSink,
+    log: logging.Logger = logger,
 ) -> bool:
     """`try_answer_enumeration` for a chat bridge, which must not break on it.
 

@@ -11,14 +11,19 @@ import json
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from app.agent_loop_lib.events.base import AgentEvent, EventType, RunContext, ToolCallStatus
+from app.agent_loop_lib.events.base import (
+    AgentEvent,
+    EventType,
+    RunContext,
+    ToolCallStatus,
+)
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.sse_emitter import SSEEventEmitter
 from app.agents.agent_loop.stream_bridge import (
     QueueEventSink,
+    _heartbeat,
     run_agent_loop_stream,
     sse_queue_maxsize,
-    _heartbeat
 )
 
 _RUN_CTX = RunContext(role_name="pipeshub-agent", model="gpt-4")
@@ -823,7 +828,9 @@ class TestRunAgentLoopStream:
         `_produce()` must call `emit_pre_run_clarification()` instead of
         `agent.stream()`/`AnswerFinalizer.run()` — see `clarification.py`."""
         from app.agent_loop_lib.core.types import Goal
-        from app.agents.actions.internal_tools.intrim_tools import AskUserQuestionItemInput
+        from app.agents.actions.internal_tools.intrim_tools import (
+            AskUserQuestionItemInput,
+        )
 
         question = AskUserQuestionItemInput(
             question="Which project should this apply to?",
@@ -1389,15 +1396,20 @@ class TestCensusRunsAfterTheIntentCall:
         `factory.create()`, whose intent call stores CORPUS_CENSUS."""
         seen: list[Any] = []
 
-        async def _fake_create(self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None):
+        async def _fake_create(
+            self, context, llm, chat_mode, *, query, model_name="", session_id=None, model_key=None,
+        ) -> tuple[Any, Any, Any, list[Any]]:
             context.tool_state["corpus_census_marker"] = "no"
             return _stream_agent(MagicMock(success=True, error=None)), MagicMock(), MagicMock(), []
 
-        async def _fake_census(*, context, **kwargs):
+        async def _fake_census(*, context, **kwargs) -> bool:
             seen.append(context.tool_state.get("corpus_census_marker"))
             return False
 
-        async def _fake_finalizer_run(self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="", reasoning_turns=None, agent_confidence=None, agent_cancelled=False, agent_needs_input=None):
+        async def _fake_finalizer_run(
+            self, *, agent_success, agent_error, event_sink, agent_output=None, streamed_answer="",
+            reasoning_turns=None, agent_confidence=None, agent_cancelled=False, agent_needs_input=None,
+        ) -> dict[str, str]:
             await event_sink.write({"event": "complete", "data": {"answer": "42"}})
             return {"answer": "42"}
 
