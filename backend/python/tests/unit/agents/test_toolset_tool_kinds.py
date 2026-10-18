@@ -53,6 +53,11 @@ _IRREVERSIBLE_WITHOUT_A_DELETING_NAME = {
     "/tools/outlook/reply_to_message",
     "/tools/outlook/reply_all_to_message",
     "/tools/outlook/forward_message",
+    "/tools/calendar/create_calendar_event",  # emails the attendees
+    "/tools/calendar/update_calendar_event",  # emails the attendees
+    "/tools/calendar/create_meet_link",  # emails the attendees
+    "/tools/outlook/create_calendar_event",  # emails the attendees
+    "/tools/outlook/update_calendar_event",  # emails the attendees
 }
 
 

@@ -1332,7 +1332,7 @@
       "showAll": "Show all",
       "showLess": "Show less",
       "partial": "Only the start of the details is shown: the full call is longer.",
-      "deletesData": "Deletes data",
+      "cantBeUndone": "Can't be undone",
       "allow": "Allow",
       "dontAskAgain": "Don't ask again for this tool",
       "answerFailed": "Couldn't send your answer. Try again.",
@@ -3303,7 +3303,7 @@
           "none": "The server doesn't say what this tool does, so it's treated as changing data."
         },
         "group": {
-          "destructive": "Deletes data",
+          "destructive": "Can't be undone",
           "write": "Changes data",
           "read": "Read-only",
           "notOffered": "Not offered now",

@@ -1490,7 +1490,7 @@ class Outlook:
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Recurrence pattern and range dict matching MS Graph API format", required=False),
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def create_calendar_event(
         self,
@@ -1593,7 +1593,7 @@ class Outlook:
             ToolParameter(name="is_online_meeting", type=ParameterType.BOOLEAN, description="Whether to create an online meeting link", required=False),
             ToolParameter(name="recurrence", type=ParameterType.DICT, description="Updated recurrence settings (same structure as create_calendar_event)", required=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def update_calendar_event(
         self,

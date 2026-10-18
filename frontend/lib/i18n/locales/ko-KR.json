@@ -1330,7 +1330,7 @@
       "showAll": "모두 보기",
       "showLess": "간단히 보기",
       "partial": "세부 정보의 앞부분만 표시됩니다. 전체 호출은 더 깁니다.",
-      "deletesData": "데이터 삭제",
+      "cantBeUndone": "되돌릴 수 없음",
       "allow": "허용",
       "dontAskAgain": "이 도구는 다시 묻지 않기",
       "answerFailed": "답변을 보내지 못했습니다. 다시 시도하세요.",
@@ -3293,7 +3293,7 @@
           "none": "서버가 이 도구의 동작을 알려주지 않아 데이터를 변경하는 도구로 취급합니다."
         },
         "group": {
-          "destructive": "데이터 삭제",
+          "destructive": "되돌릴 수 없음",
           "write": "데이터 변경",
           "read": "읽기 전용",
           "notOffered": "현재 제공되지 않음",

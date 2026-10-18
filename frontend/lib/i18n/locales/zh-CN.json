@@ -1330,7 +1330,7 @@
       "showAll": "显示全部",
       "showLess": "收起",
       "partial": "仅显示详细信息的开头部分：完整调用更长。",
-      "deletesData": "删除数据",
+      "cantBeUndone": "无法撤销",
       "allow": "允许",
       "dontAskAgain": "此工具不再询问",
       "answerFailed": "无法发送你的回答，请重试。",
@@ -3293,7 +3293,7 @@
           "none": "服务器没有说明此工具的作用，因此将其视为会更改数据。"
         },
         "group": {
-          "destructive": "删除数据",
+          "destructive": "无法撤销",
           "write": "更改数据",
           "read": "只读",
           "notOffered": "当前未提供",

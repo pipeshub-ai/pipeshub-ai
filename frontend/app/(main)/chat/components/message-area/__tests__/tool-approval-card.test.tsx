@@ -59,7 +59,7 @@ describe('ToolApprovalCard', () => {
     expect(screen.getByText(/^Needs your approval · expires in 15 min$/)).toBeTruthy();
     expect(screen.getByText('Login fails')).toBeTruthy();
     expect(screen.getByText('["bug"]')).toBeTruthy();
-    expect(screen.queryByText('Deletes data')).toBeNull();
+    expect(screen.queryByText("Can't be undone")).toBeNull();
   });
 
   it('names a tool without a title readably', () => {
@@ -69,7 +69,7 @@ describe('ToolApprovalCard', () => {
 
   it('marks a tool that deletes data', () => {
     renderInTheme(<ToolApprovalCard approval={approval({ kind: 'destructive' })} isLatest />);
-    expect(screen.getByText('Deletes data')).toBeTruthy();
+    expect(screen.getByText("Can't be undone")).toBeTruthy();
   });
 
   it.each([

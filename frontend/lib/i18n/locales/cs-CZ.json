@@ -1386,7 +1386,7 @@
       "showAll": "Zobrazit vše",
       "showLess": "Zobrazit méně",
       "partial": "Je zobrazen pouze začátek podrobností: celé volání je delší.",
-      "deletesData": "Maže data",
+      "cantBeUndone": "Nelze vrátit zpět",
       "allow": "Povolit",
       "dontAskAgain": "U tohoto nástroje se už znovu neptat",
       "answerFailed": "Vaši odpověď se nepodařilo odeslat. Zkuste to znovu.",
@@ -3385,7 +3385,7 @@
           "none": "Server neuvádí, co tento nástroj dělá, proto se považuje za nástroj měnící data."
         },
         "group": {
-          "destructive": "Maže data",
+          "destructive": "Nelze vrátit zpět",
           "write": "Mění data",
           "read": "Pouze pro čtení",
           "notOffered": "Nyní nenabízeno",
