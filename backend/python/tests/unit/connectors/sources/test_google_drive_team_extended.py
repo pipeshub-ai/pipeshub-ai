@@ -411,7 +411,7 @@ class TestFetchPermissionsExtended:
         perms, is_fallback, _ = await connector._fetch_permissions(
             "file-1", is_drive=False, user_email="user@example.com"
         )
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert len(perms) == 0
 
     async def test_non_403_http_error_for_file(self, connector):
@@ -784,9 +784,8 @@ class TestTeamProcessDriveItemExtended:
             drive_id="drive-1", is_shared_drive=True,
         )
         assert result is not None
-        # _fetch_permissions returns ([], False, []) for non-drive generic errors (doesn't raise),
-        # so permissions_changed is True (non-fallback)
-        assert result.permissions_changed is True
+        assert result.permissions_changed is False, "a failed read must not replace the stored grants"
+        assert result.new_permissions == []
 
     async def test_fallback_permissions_adds_to_existing_record(self, connector):
         """Fallback permissions are added to existing record."""

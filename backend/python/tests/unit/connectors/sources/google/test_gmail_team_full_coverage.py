@@ -587,14 +587,15 @@ class TestExtractAttachmentInfos:
 
     def test_drive_attachment(self, connector):
         msg = _make_gmail_message(has_drive_attachment=True)
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["isDriveFile"] is True
         assert infos[0]["driveFileId"] == "drive-file-1"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:drive-file-1"
 
     def test_both_attachment_types(self, connector):
         msg = _make_gmail_message(has_attachments=True, has_drive_attachment=True)
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 2
 
     def test_no_attachments(self, connector):
@@ -613,9 +614,10 @@ class TestExtractAttachmentInfos:
                 "parts": [],
             }
         }
-        infos = connector._extract_attachment_infos(msg)
+        infos = connector._extract_attachment_infos(msg, "u@t.com", google_user_id="g-1")
         assert len(infos) == 1
         assert infos[0]["driveFileId"] == "abc123"
+        assert infos[0]["stableAttachmentId"] == "gdrive:g-1:abc123"
 
     def test_nested_parts(self, connector):
         msg = {

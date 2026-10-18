@@ -1,6 +1,6 @@
 from io import BytesIO
 
-from docling.datamodel.base_models import DocumentStream
+from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
@@ -9,7 +9,7 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 
 class PPTXParser:
     def __init__(self) -> None:
-        self.converter = DocumentConverter()
+        self.converter = DocumentConverter(allowed_formats=[InputFormat.PPTX])
 
     def parse_binary(self, pptx_binary: bytes) -> DoclingDocument:
         """

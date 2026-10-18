@@ -537,7 +537,7 @@ class TestFetchPermissions:
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert perms == []
 
     @pytest.mark.asyncio
@@ -548,7 +548,7 @@ class TestFetchPermissions:
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
         assert perms == []
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):

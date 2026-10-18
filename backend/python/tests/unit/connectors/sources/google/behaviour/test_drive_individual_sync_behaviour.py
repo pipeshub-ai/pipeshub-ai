@@ -118,9 +118,11 @@ async def test_full_sync_reads_every_page_and_saves_the_token_taken_before_listi
     listing = [r for r in drive.http.calls("GET", "/drive/v3/files") if "sharedWithMe" not in r.query.get("q", "")]
     assert len(listing) == 3
     assert drive.checkpoint() == token_before
-    owner = drive.records.permissions["f0"]
-    assert [(p.email, p.type) for p in owner] == [(ME, PermissionType.OWNER)]
+    assert drive.records.permissions["f0"] == [], "the file inherits the drive instead of granting its owner"
+    assert drive.records.records["f0"].inherit_permissions is True
     assert drive.records.record_groups[ROOT].name == f"Google Drive - {ME}"
+    assert drive.records.record_groups[ROOT].inherit_permissions is True
+    assert drive.records.record_group_permissions[ROOT] == []
 
 
 async def test_trashed_files_are_not_synced_on_full_sync(drive: Harness) -> None:
@@ -273,7 +275,9 @@ async def test_items_shared_from_a_shared_drive_are_synced_as_read_with_their_fo
     await drive.sync()
 
     assert drive.names() == {"Shared folder", "inside.txt", "from-a-colleague.txt"}
-    assert [p.type for p in drive.records.permissions["sd-child"]] == [PermissionType.READ]
+    assert drive.records.permissions["sd-child"] == []
+    assert drive.records.records["sd-child"].inherit_permissions is True
+    assert drive.records.records["sd-child"].parent_external_record_id == "sd-folder"
 
 
 async def test_a_rate_limited_shared_folder_walk_fails_the_run_instead_of_skipping_its_contents(drive: Harness) -> None:
@@ -1044,9 +1048,10 @@ async def test_a_file_shared_out_by_the_user_stays_indexed_when_shared_indexing_
     await drive.sync()
 
     assert drive.records.records["mine"].indexing_status != "AUTO_INDEX_OFF"
-    assert [p.type for p in drive.records.permissions["mine"]] == [PermissionType.OWNER]
+    assert drive.records.permissions["mine"] == []
     assert drive.records.records["theirs"].indexing_status == "AUTO_INDEX_OFF"
-    assert [p.type for p in drive.records.permissions["theirs"]] == [PermissionType.READ]
+    assert drive.records.permissions["theirs"] == []
+    assert drive.records.records["theirs"].inherit_permissions is True
 
 
 async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_membership_ends(drive: Harness) -> None:
@@ -1058,7 +1063,9 @@ async def test_a_member_shared_drive_syncs_as_its_own_group_and_leaves_when_memb
     assert drive.records.record_groups["sd-1"].name == "Engineering"
     assert [p.type for p in drive.records.record_group_permissions["sd-1"]] == [PermissionType.WRITE]
     assert "spec.txt" in drive.names()
-    assert [p.type for p in drive.records.permissions["spec"]] == [PermissionType.WRITE]
+    assert drive.records.permissions["spec"] == [], "the file takes the user's role from the drive's group"
+    assert drive.records.records["spec"].inherit_permissions is True
+    assert drive.records.records["spec"].external_record_group_id == "sd-1"
 
     drive.world.add_item("later", "later.txt", parent="sd-1")
     await drive.sync()

@@ -584,10 +584,12 @@ class TestCifsConnectorSync:
         await cifs_connector.run_sync()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.OWNER
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "user@test.com"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True and record.rewrite_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
+        ]
 
         mock_processor.on_new_app_users.reset_mock()
         team = _connector(
@@ -598,10 +600,12 @@ class TestCifsConnectorSync:
         await team.run_sync()
         mock_processor.ensure_team_app_edge.assert_awaited_with("cifs-1")
         mock_processor.on_new_app_users.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-        assert perms[0].external_id == "org-1"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_incremental_sync_lists_directories_older_than_the_checkpoint(

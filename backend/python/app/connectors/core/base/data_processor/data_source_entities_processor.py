@@ -6056,10 +6056,12 @@ class DataSourceEntitiesProcessor:
                     )
                 if marked is False:
                     raise RuntimeError(f"Could not mark record group {record_group.id} for the purge")
-                return True
-
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.delete_nodes_and_edges(group_ids, CollectionNames.RECORD_GROUPS.value)
+            else:
+                async with self.data_store_provider.transaction() as tx_store:
+                    await tx_store.delete_nodes_and_edges(group_ids, CollectionNames.RECORD_GROUPS.value)
+            # A connector's record delete leaves the access cache to the end of its
+            # sync; a group taken away at the source drops it now.
+            await self._access_changed([connector_id])
             return True
 
         except Exception as e:

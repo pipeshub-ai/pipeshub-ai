@@ -15,6 +15,7 @@ from app.models.blocks import (
     ImageMetadata,
     Point,
     TableMetadata,
+    summary_with_captions,
 )
 from app.utils.indexing_metrics import track_indexing_enrichment
 from app.utils.llm import get_llm_for_role
@@ -340,13 +341,13 @@ class DoclingDocToBlocksConverter():
                     logger=self.logger,
                 )
 
-            table_summary = enrichment.summary
             column_headers = enrichment.headers
             table_rows_text = enrichment.descriptions
 
             # Convert caption and footnote references to text strings
             _captions = item.get("captions", [])
             _captions = _resolve_ref_list(_captions)
+            table_summary = summary_with_captions(enrichment.summary, _captions)
             _footnotes = item.get("footnotes", [])
             _footnotes = _resolve_ref_list(_footnotes)
 

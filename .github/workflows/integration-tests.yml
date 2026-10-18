@@ -31,6 +31,7 @@ on:
             - sharepoint
             - confluence
             - jira
+            - zendesk
             - linear
             - github_teams
             - github

@@ -1275,10 +1275,11 @@ class GraphDataStore(DataStoreProvider):
         is off. It holds its locks until commit, so keep such a block to a few
         writes, with no slow calls inside.
         """
+        options = {} if explicit is None else {"explicit": explicit}
         txn = await self.graph_provider.begin_transaction(
             read=read_collections,
             write=write_collections,
-            explicit=explicit,
+            **options,
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 

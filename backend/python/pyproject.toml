@@ -183,14 +183,14 @@ version = "0.1"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "aioboto3>=12.0.0",
+    "aiobotocore==3.9.2",
     "aiohttp==3.14.3",
     "aiokafka==0.12.0",
     "aiolimiter==1.2.1",
     "azure-ai-formrecognizer==3.3.3",
     "azure-storage-blob==12.28.0",
     "azure-storage-file-share==12.19.0",
-    "beautifulsoup4==4.12.3",
+    "beautifulsoup4==4.15.0",
     "box-sdk-gen==1.12.0",
     "Brotli==1.2.0",
     "CairoSVG==2.9.1",
@@ -211,7 +211,7 @@ dependencies = [
     "defusedxml>=0.7.1",
     "discord.py==2.6.3",
     "docker>=7.0.0",
-    "docling==2.94.0",
+    "docling==2.133.0",
     "einops>=0.8.0",
     "dropbox==12.0.2",
     "docx2python==3.5.0",
@@ -250,7 +250,6 @@ dependencies = [
     "langchain-google-genai==4.3.2",
     "langchain-google-vertexai==3.2.4",
     "langchain-groq==1.1.0",
-    "langchain-huggingface==1.1.0",
     "langchain-mistralai==0.2.12",
     "langchain-ollama==1.0.0",
     "langchain-openai==1.4.1",
@@ -260,7 +259,8 @@ dependencies = [
     "langchain-xai==1.3.0",
     "langchain==1.3.9",
     "linkedin-api-client>=0.3.0",
-    "lxml>=4.9.0",
+    # 6.1 stops resolving entities by default (GHSA-vfmq-68hx-4jfw).
+    "lxml>=6.1.0",
     "lxml_html_clean>=0.4.0",
     "mail-parser-reply==1.36",
     "markdown==3.8.1",
@@ -294,7 +294,7 @@ dependencies = [
     "pydantic==2.12.5",
     "py-trello==0.20.1",
     "python-arango==8.1.5",
-    "python-docx==1.1.2",
+    "python-docx==1.2.0",
     "neo4j>=5.0.0",
     # Compiled PackStream for the neo4j driver; each release requires its matching
     # driver version. Packing a large list parameter in pure Python costs tens of
@@ -304,7 +304,7 @@ dependencies = [
     # Signs and verifies PipesHub JWTs; replaces python-jose (GHSA-3qf3-8w2g-rqmx, no fixed release).
     "PyJWT==2.15.0",
     "pyyaml>=6.0",
-    "redshift_connector==2.1.8",
+    "redshift_connector==2.1.17",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
@@ -318,9 +318,13 @@ dependencies = [
     "qdrant-client==1.13.1",
     "redis==5.2.1",
     "requests-toolbelt==1.0.0",
-    "requests==2.33.0",
+    "requests==2.34.2",
     "selectolax>=0.3.21",
     "sentence-transformers==5.6.0",
+    # Pinned rather than left to sentence-transformers and docling: both still accept 4.x,
+    # and an install over the published base image keeps the 4.57 already in it
+    # (GHSA-29pf-2h5f-8g72, GHSA-fgcw-684q-jj6r).
+    "transformers==5.18.0",
     "slack-sdk==3.27.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",

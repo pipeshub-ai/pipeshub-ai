@@ -7,7 +7,6 @@ the service passes that context through untouched.
 """
 
 import logging
-from collections.abc import Awaitable
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -54,39 +53,44 @@ async def test_every_gated_app_the_provider_returns_is_listed(service, provider)
 
 
 class TestSearch:
-    def _search(self, service, **kwargs) -> Awaitable:
-        defaults = {
-            "user_key": USER_KEY, "org_id": ORG, "skip": 0, "limit": 2, "sort_by": "updatedAt",
-            "sort_order": "desc", "q": "x", "node_types": None, "record_types": None, "origins": None,
-            "connector_ids": None, "indexing_status": None, "created_at": None, "updated_at": None,
-            "size": None, "only_containers": False,
+    @pytest.fixture(autouse=True)
+    def _empty_pages(self, provider) -> None:
+        provider.get_knowledge_hub_connector_page_v3.return_value = {
+            "rows": [], "hasMore": False, "total": 0, "counts": None,
+            "scope": {"admitted": True, "nodeId": LINKED},
         }
-        defaults.update(kwargs)
-        return service._search_nodes(**defaults)
 
-    async def test_search_is_a_single_provider_call_as_the_caller(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
+    def _pages(self, provider) -> dict[str, dict]:
+        return {
+            call.kwargs["app_id"]: call.kwargs
+            for call in provider.get_knowledge_hub_connector_page_v3.await_args_list
+        }
 
-        await self._search(service)
+    async def test_a_global_search_reaches_the_linked_connector_with_its_grants(self, service, provider) -> None:
+        await service.get_nodes(user_id="u1", org_id=ORG, q="x")
 
-        provider.get_knowledge_hub_search.assert_awaited_once()
-        assert provider.get_knowledge_hub_search.await_args.kwargs["user_key"] == USER_KEY
+        assert provider.get_knowledge_hub_access_v3.await_args.kwargs["user_key"] == USER_KEY
+        pages = self._pages(provider)
+        assert set(pages) == {"own-1", LINKED}
+        assert {tuple(kwargs["grantee_ids"]) for kwargs in pages.values()} == {(USER_KEY,)}
+        assert pages[LINKED]["granted_ids"] == ["issue-1"]
+        assert pages[LINKED]["gated_app_ids"] == ["own-1", LINKED]
+        assert pages[LINKED]["filters"]["search_query"] == "x"
 
     async def test_scoped_search_passes_the_parent_through(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
+        await service.get_nodes(user_id="u1", org_id=ORG, q="x", parent_id=LINKED, parent_type="app")
 
-        await self._search(service, parent_id="jira-1", parent_type="app")
+        provider.get_knowledge_hub_connector_page_v3.assert_awaited_once()
+        call = provider.get_knowledge_hub_connector_page_v3.await_args.kwargs
+        assert (call["app_id"], call["start_id"], call["flatten"]) == (LINKED, LINKED, True)
+        assert call["user_key"] == USER_KEY
+        assert call["gated_app_ids"] == ["own-1", LINKED]
+        assert call["filters"]["search_query"] == "x"
 
-        provider.get_knowledge_hub_search.assert_awaited_once()
-        assert provider.get_knowledge_hub_search.await_args.kwargs["parent_id"] == "jira-1"
+    async def test_the_page_size_reaches_the_provider_unchanged(self, service, provider) -> None:
+        await service.get_nodes(user_id="u1", org_id=ORG, q="x", limit=2)
 
-    async def test_paging_arguments_reach_the_provider_unchanged(self, service, provider) -> None:
-        provider.get_knowledge_hub_search = AsyncMock(return_value={"nodes": [], "total": 0})
-
-        await self._search(service, skip=2, limit=2)
-
-        call = provider.get_knowledge_hub_search.await_args.kwargs
-        assert (call["skip"], call["limit"]) == (2, 2)
+        assert {kwargs["limit"] for kwargs in self._pages(provider).values()} == {2}
 
 
 class TestAppLookupFailure:

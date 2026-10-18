@@ -8033,7 +8033,8 @@ components:
             Optional list of tool identifiers (fully-qualified action names such as
             "jira.create_issue") that the AI agent is permitted to invoke for this
             request. When omitted the agent may use any configured tool. Applicable
-            only when `chatMode` is `agent`.
+            only when `chatMode` is `agent`. Web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8261,7 +8262,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:
@@ -8408,7 +8410,13 @@ components:
           description: |
             Optional list of tool identifiers (fully-qualified action names
             such as `jira.create_issue`) the agent may invoke when
-            regenerating. Applicable only in agent chat modes.
+            regenerating. Applicable only in agent chat modes. Regenerating
+            in the assistant's agent mode, web search is not governed by this
+            list; `agentCapabilities.webSearch` turns it on or off.
+            Regenerating a named agent's message (`AgentRegenerateRequest`),
+            a list that leaves out `web_search` turns off the agent's web
+            search for the turn, even when `agentCapabilities.webSearch` is
+            true.
           example: ["jira.create_issue", "confluence.search_content"]
         protocol:
           type: string
@@ -8707,7 +8715,8 @@ components:
           description: |
             Allowed tool ids for this turn, such as `jira.create_issue`. Omit
             to let the agent use its default toolset; send `[]` to disable
-            tools for this turn.
+            tools for this turn. A list that leaves out `web_search` turns off
+            the agent's web search for the turn.
         protocol:
           type: string
           enum:

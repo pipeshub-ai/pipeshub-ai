@@ -638,7 +638,6 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
-        remember_record_ids(state, [m.id for m in result.matches])
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`

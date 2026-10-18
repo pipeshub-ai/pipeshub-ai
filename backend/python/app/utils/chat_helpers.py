@@ -23,7 +23,12 @@ from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import 
     is_jira_ticket_record,
 )
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
-from app.models.blocks import BlockType, GroupType, SemanticMetadata
+from app.models.blocks import (
+    BlockType,
+    GroupType,
+    SemanticMetadata,
+    summary_with_captions,
+)
 from app.models.entities import (
     CodeFileRecord,
     Connectors,
@@ -219,13 +224,25 @@ def build_record_page_web_url(frontend_url: str, record_id: str) -> str:
     return f"{base}/record/{record_id}"
 
 
-def table_summary_text(group_data: object) -> str:
-    """A table's summary as the model reads it, led by its DDL for a SQL table."""
+def table_summary_text(group_data: object, captions: list[str] | None = None) -> str:
+    """A table's summary as the model reads it: led by its DDL for a SQL table,
+    and by any of *captions* the summary lacks."""
     if not isinstance(group_data, dict):
-        return ""
-    summary = group_data.get("table_summary", "") or ""
+        return summary_with_captions("", captions)
+    summary = summary_with_captions(group_data.get("table_summary", "") or "", captions)
     ddl = group_data.get("ddl", "") or ""
     return f"DDL:\n{ddl}\n\n{summary}" if ddl else summary
+
+
+def table_group_summary_text(group: dict[str, Any]) -> str:
+    """``table_summary_text`` for a stored table group, with its captions.
+
+    The captions are read from ``table_metadata``, not the summary, so a table
+    indexed before enrichment kept them still shows which table a row is from.
+    """
+    metadata = group.get("table_metadata") or {}
+    captions = metadata.get("captions") if isinstance(metadata, dict) else None
+    return table_summary_text(group.get("data"), captions)
 
 
 def flattened_result_sort_key(result: dict[str, Any]) -> tuple[str, int]:
@@ -3074,7 +3091,6 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             on_repeat_hit[chunk_id] = functools.partial(_raise_pending_row, chunk_id)
             continue
         elif block_type == GroupType.TABLE.value:
-            table_data = block.get("data",{})
             table_metadata = block.get("table_metadata", {})
             children = block.get("children")
 
@@ -3106,10 +3122,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
                     is_large_table = True
                 else:
                     is_large_table = num_of_cells > MAX_CELLS_IN_TABLE_THRESHOLD
-                table_summary = table_data.get("table_summary","")
-                ddl = table_data.get("ddl", "") or ""
-                if ddl:
-                    table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+                table_summary = table_group_summary_text(block)
 
                 if not is_large_table:
                     child_results=[]
@@ -3269,11 +3282,7 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             )
             continue
         block_group = block_groups[block_group_index]
-        data = block_group.get("data", {})
-        table_summary = data.get("table_summary","")
-        ddl = data.get("ddl", "") or ""
-        if ddl:
-            table_summary = f"DDL:\n{ddl}\n\n{table_summary}"
+        table_summary = table_group_summary_text(block_group)
         child_results = []
         for row_index, row_score, qdrant_content in sorted_rows_tuple:
             if row_index < len(blocks):
@@ -4926,7 +4935,7 @@ def record_to_message_content(
                         # `[index|ref]` prefix are part of what the model reads,
                         # so they are charged with the rows, along with room for
                         # the "rest did not fit" line should the rows run out.
-                        summary = _TABLE_CONTINUED if continuing else table_summary_text(data)
+                        summary = _TABLE_CONTINUED if continuing else table_group_summary_text(corresponding_block_group)
                         framing = _TableFraming(block_group_index, summary)
                         image_table_header = f"[Table #{block_group_index}: {summary}]\n"
                         truncation_reserve = framing.row(
