@@ -322,8 +322,8 @@ class TestAuthenticatedAs:
 
     @pytest.mark.order(13)
     async def test_the_container_filter_covers_the_linked_connector(self, graph_provider, seeded_graph) -> None:
-        """TC-AA-CONTAINER-001: with ENABLE_CONTAINER_PERMISSION_FILTER on, chat builds its
-        vector filter from the containers a user reaches and never calls
+        """TC-AA-CONTAINER-001: chat builds its vector filter from the containers
+        a user reaches and never calls
         get_accessible_virtual_record_ids, so the link has to hold here too."""
         org = seeded_graph["org"]
 

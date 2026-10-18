@@ -26,13 +26,6 @@ const FLAGS: AvailableFlag[] = [
     advanced: true,
   },
   {
-    key: 'ENABLE_CONTAINER_PERMISSION_FILTER',
-    label: 'Enable Container Permission Filter',
-    description: 'filter',
-    defaultEnabled: false,
-    advanced: true,
-  },
-  {
     key: 'ENABLE_SOFT_DELETE',
     label: 'Move Deleted Records to the Trash',
     description: 'trash',
@@ -138,7 +131,6 @@ import { useLabsStore } from '../store';
 
 const ADVANCED_LABELS = [
   'Enable Vector Store Rebuild',
-  'Enable Container Permission Filter',
   'Move Deleted Records to the Trash',
   'Extract Named Entities',
   'Send User & Organization Context to Agents',
