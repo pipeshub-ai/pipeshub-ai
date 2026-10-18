@@ -33,6 +33,15 @@ function stubUsersFindOne(role: 'admin' | 'member' | null | undefined) {
   } as any);
 }
 
+/** Like stubUsersFindOne, but for a record that is a machine identity. */
+function stubServiceAccountFindOne(role: 'admin' | 'member') {
+  return sinon.stub(Users, 'findOne').returns({
+    select: sinon.stub().returns({
+      lean: sinon.stub().resolves({ role, kind: 'service' }),
+    }),
+  } as any);
+}
+
 describe('user-admin.service', () => {
   const userId = new mongoose.Types.ObjectId().toString();
   const orgId = new mongoose.Types.ObjectId().toString();
@@ -164,6 +173,13 @@ describe('user-admin.service', () => {
     });
   });
 
+  describe('isUserOrgAdmin with a service account', () => {
+    it('refuses, even when the stored role is admin', async () => {
+      stubServiceAccountFindOne('admin');
+      expect(await isUserOrgAdmin(userId, orgId)).to.equal(false);
+    });
+  });
+
   describe('getActiveUserOrgRole', () => {
     it('returns admin for an active admin', async () => {
       stubUsersFindOne('admin');
@@ -183,6 +199,28 @@ describe('user-admin.service', () => {
     it('returns null for a missing or deleted user', async () => {
       stubUsersFindOne(undefined);
       expect(await getActiveUserOrgRole(userId, orgId)).to.equal(null);
+    });
+
+    /**
+     * A service account reads as a member whatever its record says.
+     *
+     * The schema refuses it the admin role on every write path, so a record
+     * like this should not exist. These hold the clamp in place anyway: the
+     * two sibling queries in the repository already drop service accounts,
+     * and this one cannot, because the same lookup answers
+     * `GET /api/v1/users/me/role` for the service account itself.
+     */
+    it('reads a service account as a member even if its record says admin', async () => {
+      stubServiceAccountFindOne('admin');
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
+    });
+
+    it('still answers for a service account rather than refusing it', async () => {
+      // Filtering service accounts out of this query would return null here,
+      // and the route turns null into "User not found, please login again" —
+      // signing out every service account that asks what it is.
+      stubServiceAccountFindOne('member');
+      expect(await getActiveUserOrgRole(userId, orgId)).to.equal('member');
     });
 
     it('returns null for invalid ObjectIds without querying', async () => {
