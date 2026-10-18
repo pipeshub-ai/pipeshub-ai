@@ -1761,22 +1761,29 @@ class BlobStorage(Transformer):
         try:
             collection_name = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
 
-            # The mapping is keyed by the vrid. The field match only finds nodes
-            # older releases keyed f"{vrid}_{documentId}".
+            # The mapping is keyed by the vrid. Older releases keyed it
+            # f"{vrid}_{documentId}", one node per upload, reachable only by the
+            # field; a metadata write since may have left a keyed node with no
+            # document id beside them.
             doc = await self.graph_provider.get_document(
                 virtual_record_id,
                 collection_name
             )
-            nodes = [doc] if doc else await self.graph_provider.get_nodes_by_filters(
+            if doc and self._mapped_document_id(doc):
+                return self._shape_document_lookup(doc)
+            nodes = await self.graph_provider.get_nodes_by_filters(
                 collection_name,
                 {"virtualRecordId": virtual_record_id}
-            )
-
-            if nodes:
-                return self._shape_document_lookup(nodes[0])
-            else:
-                self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
-                return None
+            ) or []
+            mapped = [node for node in nodes if self._mapped_document_id(node)]
+            if mapped:
+                newest = max(mapped, key=lambda node: node.get("updatedAt") or node.get("createdAt") or 0)
+                return self._shape_document_lookup(newest)
+            fallback = doc or (nodes[0] if nodes else None)
+            if fallback:
+                return self._shape_document_lookup(fallback)
+            self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
+            return None
         except Exception as e:
             self.logger.exception(
                 "❌ Error getting document ID by virtual record ID: %s",
@@ -1785,10 +1792,14 @@ class BlobStorage(Transformer):
             raise e
 
     @staticmethod
+    def _mapped_document_id(doc: dict) -> str | None:
+        return doc.get("record_doc_id") or doc.get("documentId")
+
+    @staticmethod
     def _shape_document_lookup(doc: dict) -> dict:
         """Project a virtual-record mapping node onto the lookup result shape."""
         result = {
-            "record_doc_id": doc.get("record_doc_id") or doc.get("documentId"),
+            "record_doc_id": BlobStorage._mapped_document_id(doc),
             "fileSizeBytes": doc.get("fileSizeBytes"),
         }
         record_metadata_doc_id = doc.get("record_metadata_doc_id")

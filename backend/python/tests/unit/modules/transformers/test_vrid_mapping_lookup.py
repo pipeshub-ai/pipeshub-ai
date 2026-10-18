@@ -37,6 +37,45 @@ class TestLookupOrder:
         graph.get_nodes_by_filters.assert_not_awaited()
 
     @pytest.mark.asyncio
+    async def test_a_keyed_metadata_stub_does_not_hide_a_legacy_mapping(self) -> None:
+        """save_reconciliation_metadata upserts {_key: vrid, record_metadata_doc_id}
+        when the keyed read misses, which it does for a legacy-keyed mapping."""
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={"id": "vr-1", "record_metadata_doc_id": "meta"})
+        graph.get_nodes_by_filters = AsyncMock(
+            return_value=[{"id": "vr-1_doc-old", "virtualRecordId": "vr-1", "documentId": "doc-old"}]
+        )
+
+        result = await _blob_storage(graph).get_document_id_by_virtual_record_id("vr-1")
+
+        assert result["record_doc_id"] == "doc-old"
+
+    @pytest.mark.asyncio
+    async def test_a_keyed_stub_alone_is_still_returned(self) -> None:
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value={"id": "vr-1", "record_metadata_doc_id": "meta"})
+        graph.get_nodes_by_filters = AsyncMock(return_value=[])
+
+        result = await _blob_storage(graph).get_document_id_by_virtual_record_id("vr-1")
+
+        assert result == {"record_doc_id": None, "fileSizeBytes": None, "record_metadata_doc_id": "meta"}
+
+    @pytest.mark.asyncio
+    async def test_of_several_legacy_mappings_the_newest_with_a_document_wins(self) -> None:
+        """Older releases wrote one node per upload, so a vrid can hold several."""
+        graph = AsyncMock()
+        graph.get_document = AsyncMock(return_value=None)
+        graph.get_nodes_by_filters = AsyncMock(return_value=[
+            {"id": "vr-1_a", "virtualRecordId": "vr-1", "documentId": "doc-a", "createdAt": 1},
+            {"id": "vr-1_c", "virtualRecordId": "vr-1", "createdAt": 9},
+            {"id": "vr-1_b", "virtualRecordId": "vr-1", "documentId": "doc-b", "createdAt": 5},
+        ])
+
+        result = await _blob_storage(graph).get_document_id_by_virtual_record_id("vr-1")
+
+        assert result["record_doc_id"] == "doc-b"
+
+    @pytest.mark.asyncio
     async def test_no_mapping_under_either_lookup_is_none(self) -> None:
         graph = AsyncMock()
         graph.get_document = AsyncMock(return_value=None)

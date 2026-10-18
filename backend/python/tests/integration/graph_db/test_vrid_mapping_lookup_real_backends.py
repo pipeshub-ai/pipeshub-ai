@@ -90,10 +90,15 @@ def _blob_storage(provider: IGraphDBProvider) -> BlobStorage:
 @pytest.mark.asyncio
 async def test_resolves_current_legacy_and_missing_mappings(graph: tuple[IGraphDBProvider, str]) -> None:
     provider, run = graph
-    current, legacy, both, missing = (f"{run}-{name}" for name in ("current", "legacy", "both", "missing"))
+    current, legacy, both, stubbed, missing = (
+        f"{run}-{name}" for name in ("current", "legacy", "both", "stubbed", "missing")
+    )
     assert await provider.batch_upsert_nodes(
         [_current(current, "doc-current"), _legacy(legacy, "doc-legacy"),
-         _legacy(both, "doc-old"), _current(both, "doc-new")],
+         _legacy(both, "doc-old"), _current(both, "doc-new"),
+         # What save_reconciliation_metadata writes when the keyed read misses.
+         {"id": stubbed, "record_metadata_doc_id": "meta", "updatedAt": 2},
+         _legacy(stubbed, "doc-stubbed")],
         MAPPING,
     )
     lookup = _blob_storage(provider).get_document_id_by_virtual_record_id
@@ -101,6 +106,7 @@ async def test_resolves_current_legacy_and_missing_mappings(graph: tuple[IGraphD
     assert (await lookup(current))["record_doc_id"] == "doc-current"
     assert (await lookup(legacy))["record_doc_id"] == "doc-legacy"
     assert (await lookup(both))["record_doc_id"] == "doc-new"
+    assert (await lookup(stubbed))["record_doc_id"] == "doc-stubbed"
     assert await lookup(missing) is None
 
 
@@ -148,7 +154,7 @@ async def test_both_lookups_are_anchored(graph: tuple[IGraphDBProvider, str], mo
         monkeypatch.undo()
 
         assert len(sent) == 2, sent
-        keyed, by_field = (await _neo4j_plan(provider, q, p) for q, p in sent)
+        keyed, by_field = [await _neo4j_plan(provider, q, p) for q, p in sent]
         assert "NodeUniqueIndexSeek" in keyed, keyed
         assert "NodeIndexSeek" in by_field, by_field
         for plan in (keyed, by_field):
