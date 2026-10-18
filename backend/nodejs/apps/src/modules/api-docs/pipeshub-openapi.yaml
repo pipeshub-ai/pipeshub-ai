@@ -574,6 +574,55 @@ components:
             crawl:write: Create and manage crawling jobs
 
   schemas:
+    AIGatewayIdentityPolicy:
+      type: object
+      additionalProperties: false
+      properties:
+        subjectSource:
+          type: string
+          enum: [userId, email, idpObjectId]
+          default: userId
+        includeEmail:
+          type: boolean
+          default: false
+        includeDisplayName:
+          type: boolean
+          default: false
+        groups:
+          type: object
+          additionalProperties: false
+          properties:
+            enabled:
+              type: boolean
+              default: true
+            allowList:
+              type: array
+              maxItems: 500
+              items:
+                type: string
+              description: Forward only these group ids. Empty forwards all, up to maxForwarded.
+            maxForwarded:
+              type: integer
+              minimum: 1
+              maximum: 500
+              default: 50
+        pseudonymize:
+          type: boolean
+          default: false
+        onMissingIdentity:
+          type: string
+          enum: [service, block]
+          default: service
+          description: With block, an interactive call that has no person is refused instead of sent as the service.
+        queryEmbeddingIdentity:
+          type: string
+          enum: [user, service]
+          default: user
+        serviceIdentityPrefix:
+          type: string
+          minLength: 1
+          maxLength: 64
+          default: svc:pipeshub
     BuildInfo:
       type: object
       description: The build that the deployment runs. A value that is not known is null.
@@ -45144,6 +45193,219 @@ paths:
           description: Health check rejected the new credentials, or the body included a non-credential field
         '404':
           description: Connection not found
+
+  /configurationManager/ai-models/connections/{connectionId}/identity-forwarding:
+    put:
+      tags:
+        - AI Models Providers
+      summary: Set identity forwarding for every model in a connection
+      description: Writes the same forwarding settings to every entry of the connection in one compare-and-set, so its models never disagree. Credentials, endpoint and model id are left as stored. serviceApiKey is never returned; a read lists it under configuredFields.
+      operationId: setConnectionIdentityForwarding
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      parameters:
+        - name: connectionId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled:
+                  type: boolean
+                mode:
+                  type: string
+                  enum: [headers, template, signedJwt]
+                  default: headers
+                  description: signedJwt needs the enterprise edition.
+                preset:
+                  type: string
+                  enum: [litellm, portkey, helicone, cloudflare, apim, custom]
+                  default: litellm
+                headerTemplates:
+                  type: object
+                  maxProperties: 16
+                  additionalProperties:
+                    type: string
+                    maxLength: 512
+                  description: 'Header name to template, for example the value {{subject}}. Used with mode template.'
+                jwtAudience:
+                  type: string
+                  maxLength: 256
+                serviceAuth:
+                  type: string
+                  enum: [apiKey, jwt]
+                  default: apiKey
+                serviceApiKey:
+                  type: string
+                  maxLength: 512
+                  description: Gateway key for background work. Omit to keep the stored key; send an empty string to clear it.
+      responses:
+        '200':
+          description: Settings written
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  connectionId:
+                    type: string
+                  updated:
+                    type: integer
+        '400':
+          description: Invalid settings
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '404':
+          description: Connection not found
+
+  /configurationManager/ai-models/identity-policy:
+    get:
+      tags:
+        - AI Models Providers
+      summary: Get the identity governance policy
+      description: What PipesHub may forward to a model gateway about the person asking. Answers the restrictive default when nothing is saved.
+      operationId: getAIGatewayIdentityPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      responses:
+        '200':
+          description: The policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  policy:
+                    $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+    put:
+      tags:
+        - AI Models Providers
+      summary: Save the identity governance policy
+      description: Replaces the policy. Takes effect for new requests within about 30 seconds.
+      operationId: putAIGatewayIdentityPolicy
+      security:
+        - bearerAuth: []
+        - oauth2: [config:write]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+      responses:
+        '200':
+          description: The saved policy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                  policy:
+                    $ref: '#/components/schemas/AIGatewayIdentityPolicy'
+        '400':
+          description: Invalid policy
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '409':
+          description: The policy changed while saving
+
+  /configurationManager/ai-models/identity/preview:
+    post:
+      tags:
+        - AI Models Providers
+      summary: Preview what a connection would send for a person
+      description: Runs the real projector and forwarder and returns the headers with credentials redacted. No model call is made. With connectionId the stored settings (including the service key, never shown) are used, and configuration overrides them.
+      operationId: previewAIGatewayIdentity
+      security:
+        - bearerAuth: []
+        - oauth2: [config:read]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                userId:
+                  type: string
+                  description: A user of the same organisation. Defaults to the caller.
+                workload:
+                  type: string
+                  default: chat
+                  description: A workload name such as chat, agent, search or indexing. Background workloads preview as the service identity.
+                connectionId:
+                  type: string
+                configuration:
+                  type: object
+                  additionalProperties: true
+      responses:
+        '200':
+          description: The identity and headers that would be sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  forwarding:
+                    type: object
+                    additionalProperties: true
+                  principal:
+                    type: object
+                    additionalProperties: true
+                  workload:
+                    type: object
+                    additionalProperties: true
+                  identity:
+                    type: object
+                    additionalProperties: true
+                  headers:
+                    type: object
+                    nullable: true
+                    additionalProperties:
+                      type: string
+                  removedHeaders:
+                    type: array
+                    items:
+                      type: string
+                  notes:
+                    type: array
+                    items:
+                      type: string
+        '401':
+          description: Authentication required
+        '403':
+          description: Admin access required
+        '404':
+          description: Connection or user not found
+        '422':
+          description: Unknown workload
 
   /configurationManager/ai-models/providers:
     post:

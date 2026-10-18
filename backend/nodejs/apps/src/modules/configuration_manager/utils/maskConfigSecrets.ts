@@ -31,6 +31,13 @@ export const AI_PUBLIC_CONFIG_KEYS = [
   'modelFriendlyName',
   'dimensions',
   'defaultReasoningEffort',
+  // Settings only. The service API key stays out and shows up in `configuredFields`.
+  'identityForwardingEnabled',
+  'identityForwardingMode',
+  'identityForwardingPreset',
+  'identityForwardingHeaderTemplates',
+  'identityForwardingJwtAudience',
+  'identityForwardingServiceAuth',
 ] as const;
 
 export function stripAiModelSecrets(entry: AIModelConfiguration): AIModelConfiguration {
@@ -100,6 +107,17 @@ export function stripAiModelsStoredConfig<T extends object>(
  * (e.g. dropping `awsAccessKeyId` to fall back to the EC2 IAM role) and is left
  * alone.
  */
+/** Keys the identity forwarding route owns on a connection's entries. Flat, so the model dialog renders them. */
+export const IDENTITY_FORWARDING_KEYS = {
+  enabled: 'identityForwardingEnabled',
+  mode: 'identityForwardingMode',
+  preset: 'identityForwardingPreset',
+  headerTemplates: 'identityForwardingHeaderTemplates',
+  jwtAudience: 'identityForwardingJwtAudience',
+  serviceAuth: 'identityForwardingServiceAuth',
+  serviceApiKey: 'identityForwardingServiceApiKey',
+} as const;
+
 /** Fields a credential rotation may replace. Endpoints and model settings are not credentials. */
 export const AI_MODEL_CREDENTIAL_KEYS = [
   'apiKey',

@@ -47,6 +47,9 @@ _FLAT_KEYS = {
     "identityForwardingMode": "mode",
     "identityForwardingPreset": "preset",
     "identityForwardingServiceApiKey": "serviceApiKey",
+    "identityForwardingHeaderTemplates": "headerTemplates",
+    "identityForwardingJwtAudience": "jwtAudience",
+    "identityForwardingServiceAuth": "serviceAuth",
 }
 
 
