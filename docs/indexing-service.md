@@ -75,7 +75,7 @@ stateDiagram-v2
     IN_PROGRESS --> EMPTY: parser produced no blocks
     IN_PROGRESS --> QUEUED: transient failure, retry scheduled (record.py finally)
     IN_PROGRESS --> FAILED: terminal error, or retries exhausted / dead-lettered
-    IN_PROGRESS --> QUEUED: stale (> max record timeout + lease) → recovery republishes
+    IN_PROGRESS --> QUEUED: stale (lease interval with leases, else max record timeout + lease) → recovery republishes
     NOT_STARTED --> FILE_TYPE_NOT_SUPPORTED
     NOT_STARTED --> AUTO_INDEX_OFF: connector deleted / inactive
     IN_PROGRESS --> ENABLE_MULTIMODAL_MODELS: image with no multimodal LLM/embedding
@@ -139,7 +139,7 @@ Failure paths from the same wrapper (`redis_streams/indexing_consumer.py::_proce
 | Content fetch answered 429 with a `Retry-After` (the source, or the connector's quota reserve, will not serve it yet) | Not a failure. The handler writes the record `QUEUED` with `retryNotBefore` and a reason naming the source and the time, and ends normally, so the message is ACKed, no attempt is counted and no worker slot is held while it waits. The stranded-record sweep sends it again once that time has passed (section 4.6). A wait that would end more than `INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS` (24h) after the first one began ends the record FAILED with a reason saying so. A 429 without `Retry-After` takes the transient row above. |
 | `RECORD_PROCESSING_TIMEOUT` (1800s; `PDF_RECORD_PROCESSING_TIMEOUT`, 5400s, for PDFs) elapsed inside the handler | Task cancelled, handler leaves the record IN_PROGRESS, counted as a transient failure. |
 | Lease lost (renewer could not prove ownership) | Handler cancelled, message left un-ACKed for redelivery. |
-| Process crash | Entry stays in the PEL; `XAUTOCLAIM` after `claim_min_idle_ms`, and the stale-record scan republishes IN_PROGRESS records older than ~92 min. |
+| Process crash | Entry stays in the PEL; `XAUTOCLAIM` after `claim_min_idle_ms`, and the stale-record scan republishes IN_PROGRESS records whose `processingStartedAt` is older than the cutoff `is_stale` applies: with a concurrency manager that is one lease interval (`INDEXING_CONCURRENCY_LEASE_SECONDS`, 120s), since a live holder keeps proving ownership; without one it is `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + lease` (~92 min). |
 
 ---
 
@@ -313,7 +313,7 @@ Responsibilities by layer:
 | --- | --- | --- |
 | `ResourceGovernor.run` | 15s ± 1s | sample cgroup/CPU/memory, adjust pool limits |
 | `LeaseRenewer` (worker loop) | 30s | renew every held Redis lease in one pipeline; marks holders lost after ~90s of failures |
-| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS for longer than `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + lease` (~92 min); park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); keep the Redis lane map in step (section 4.9); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
+| `run_stale_recovery_loop` | 60s, after a startup grace of `SHUTDOWN_TASK_TIMEOUT + 90s` | republish records IN_PROGRESS past the cutoff `is_stale` applies — one lease interval (120s) when a concurrency manager is present, because ownership is proven by the lease rather than by age, and `max(RECORD_PROCESSING_TIMEOUT, PDF_RECORD_PROCESSING_TIMEOUT) + lease` (~92 min) when it is not; park records of gone/inactive connectors as AUTO_INDEX_OFF; republish QUEUED/NOT_STARTED records whose event the broker no longer holds (section 4.6); keep the Redis lane map in step (section 4.9); retry duplicate reconciles still pending 10 min after their promotion (`duplicateReconcileDueAt`), backing off 20/40/80/160 min and giving up after 5 attempts. It takes no `record:` lease, since the consumer drops an event whose lease it cannot take within `record_lease_wait_seconds`; the flag clear is fenced on the due time instead (`app/modules/indexing/duplicate_reconcile.py`) |
 | `run_vector_membership_backfill_loop` | 30s | repair `connectorIds`/`recordGroupIds` on vector points |
 | `run_entity_index_rebuild_loop` | 2s while working, 60s idle, after a 60s startup grace | project the graph into the `entities` collection, one page per tick under its own Redis leader key; see `docs/entity-resolution.md` (Entity index rebuild) |
 
@@ -535,7 +535,7 @@ Heavy is capped at its own ceiling, every page indexed, and the remaining attach
 | Downstream 429 backpressure | Would log `Downstream backpressure from ParsingService: pausing new stream reads`; only fires on `429 + Retry-After`, and pauses at most 30s per signal. |
 | Redis lease failures | Would log `Distributed concurrency acquire:… failed; indexing remains paused` every 30s; capacity leases fail open after 5 errors anyway. |
 | Retry backoff holding pending slots | With fair scheduling the `_retry_not_before` stamp is honoured inside the DRR buffer; a sleeping retry is never dispatched. |
-| Stale-record recovery flooding | Only touches records IN_PROGRESS for > ~92 min; runs under a single cluster lock; republishes at most 100 per pass. |
+| Stale-record recovery flooding | Only touches records past `is_stale`'s cutoff (one lease interval with a concurrency manager, else ~92 min); runs under a single cluster lock; republishes at most 100 per pass. |
 | Heavy `StartRateLimiter` | 0.5 admits/s sustained; orders of magnitude above the heavy completion rate. |
 | Circuit breaker open | Would fail records fast with `circuit breaker open`, not stall them. |
 | Kafka vs Redis Streams | Both consumers share `consumer_concurrency.py` and have the identical dispatch-phase check (`kafka/consumer/indexing_consumer.py::__dispatch_phase`). |

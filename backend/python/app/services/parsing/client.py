@@ -174,7 +174,16 @@ class ParsingClient(BaseServiceClient):
                 files={"file": (record_name, file_content, mime_type or "application/octet-stream")},
                 data=form_data,
                 operation="parse",
-                budget_seconds=messaging_env.record_processing_timeout_for(extension, mime_type),
+                # Deliberately the generic timeout, not the PDF one. This is
+                # only the retry budget: the socket read timeout is fixed when
+                # the client is built (min(2400, RECORD_PROCESSING_TIMEOUT *
+                # 0.8) = 1440s), so widening the budget here would not let one
+                # attempt run longer -- it would only let a second 1440s
+                # attempt start that cannot finish either. Making the service
+                # path honour the PDF budget needs a per-request read timeout
+                # threaded through BaseServiceClient; the in-process Docling
+                # path is what the record-level PDF budget covers.
+                budget_seconds=messaging_env.record_processing_timeout,
                 org_id=org_id,
             )
         except ServiceBackpressureError as exc:
