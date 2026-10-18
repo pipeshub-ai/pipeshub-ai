@@ -160,6 +160,70 @@ _OVERFETCH_MAX_MULTIPLIER = 3.0
 # deeper fusion (`record_cut.py`) stays under it as well.
 _OVERFETCH_ABSOLUTE_CAP = 300
 
+# How long a search scope that the container filter could not fill keeps going
+# straight to the record-id filter. Matches the accessible-records cache TTL, so
+# the enumeration it needs is usually still warm.
+NARROW_ACCESS_MEMO_TTL_SECONDS = 300
+_NARROW_ACCESS_MEMO_MAX_ENTRIES = 10_000
+# Share of container-filtered hits the access check must admit for the
+# container search to stand. Below it, the search moves to the record-id filter.
+_NARROW_ACCESS_MIN_SURVIVAL = 0.8
+
+
+def narrow_access_fallback_enabled() -> bool:
+    """``SEARCH_NARROW_ACCESS_FALLBACK``: on unless set to a false value.
+
+    Read on every search, so a change needs no restart. Off restores the plain
+    container search with its single wider retry.
+    """
+    raw = os.getenv("SEARCH_NARROW_ACCESS_FALLBACK", "true").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+class _NarrowAccessMemo:
+    """Search scopes whose container filter recently came back mostly unreadable.
+
+    A user who can read a small share of the connectors they can enter gets
+    candidates under the container filter that the access check then denies,
+    so a page cannot be filled within the over-fetch cap. For such a scope the
+    record-id filter is both cheaper and complete. This remembers that, per
+    process, for a few minutes.
+
+    It only ever routes a search to the record-id path, which ends in the same
+    access check, so a stale or wrong entry costs latency and never access.
+    """
+
+    def __init__(self) -> None:
+        self._entries: dict[tuple, float] = {}
+
+    @staticmethod
+    def key(org_id: str, user_id: str, filters: dict[str, Any] | None) -> tuple:
+        scope = requested_scope_ids(filters)
+        return (org_id, user_id, frozenset(scope) if scope is not None else None)
+
+    def mark(self, key: tuple, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        if len(self._entries) >= _NARROW_ACCESS_MEMO_MAX_ENTRIES and key not in self._entries:
+            # Drop the entry closest to expiry; a forgotten entry only costs one
+            # container attempt on that scope's next search.
+            del self._entries[min(self._entries, key=self._entries.__getitem__)]
+        self._entries[key] = now + NARROW_ACCESS_MEMO_TTL_SECONDS
+
+    def is_narrow(self, key: tuple, now: float | None = None) -> bool:
+        expires = self._entries.get(key)
+        if expires is None:
+            return False
+        if (time.monotonic() if now is None else now) >= expires:
+            self._entries.pop(key, None)
+            return False
+        return True
+
+    def clear(self) -> None:
+        self._entries.clear()
+
+
+narrow_access_memo = _NarrowAccessMemo()
+
 @dataclass
 class _QueryPlan:
     """Per-search cache so a re-query does not pay for embeddings twice.
@@ -183,6 +247,10 @@ class _QueryPlan:
     # Collections the kept attempt could not search, of how many it asked.
     failed_collections: list[str] = field(default_factory=list)
     collections_searched: int = 0
+    # Set by `_search_and_adjudicate` when the container filter could not fill
+    # the page because the access check denied too much of it: the caller
+    # searches again with the record-id filter.
+    narrow_shortfall: bool = False
 
     def incomplete_notice(self) -> str | None:
         if not self.failed_collections:
@@ -617,9 +685,14 @@ class RetrievalService:
                     filters = {k: v for k, v in filters.items() if k not in CONTAINER_SCOPE_FILTER_KEYS}
                     filters["apps"] = sorted(selection.connector_ids)
 
+            fallback_on = narrow_access_fallback_enabled()
+            memo_key = narrow_access_memo.key(org_id, user_id, filters)
             try:
                 containers, accessible_virtual_id_to_record_id, user = (
-                    await self._resolve_search_scope(user_id, org_id, filters, time_range)
+                    await self._resolve_search_scope(
+                        user_id, org_id, filters, time_range,
+                        prefer_record_ids=fallback_on and narrow_access_memo.is_narrow(memo_key),
+                    )
                 )
             except PermissionVerificationUnavailableError as exc:
                 self.logger.warning(
@@ -692,6 +765,7 @@ class RetrievalService:
             if permission_filter is None:
                 return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
             filter, scope_virtual_ids = permission_filter
+            vector_filter = filter
 
             record_cut = _record_cut_for(scope_virtual_ids)
             if use_containers:
@@ -715,9 +789,41 @@ class RetrievalService:
                         PERMISSION_CHECK_UNAVAILABLE_MESSAGE,
                         Status.PERMISSION_CHECK_UNAVAILABLE,
                     )
-            else:
+                if plan.narrow_shortfall:
+                    # This user reads too small a share of these containers for
+                    # their filter to serve the page. Search again under the
+                    # record-id filter, exactly as the record-id path does, hits
+                    # checked the same way below; and send this scope's next
+                    # searches straight there for a while.
+                    narrow_access_memo.mark(memo_key)
+                    self.logger.info(
+                        "container search denied too much (user=%s org=%s); "
+                        "using the record-id filter for this scope for %ds",
+                        user_id, org_id, NARROW_ACCESS_MEMO_TTL_SECONDS,
+                    )
+                    try:
+                        accessible_virtual_id_to_record_id = await self._get_accessible_virtual_ids_task(
+                            user_id, org_id, filters, self.graph_provider, time_range=time_range,
+                        )
+                    except PermissionVerificationUnavailableError as exc:
+                        self.logger.warning(
+                            "Could not read what user %s may access in org %s: %s", user_id, org_id, exc
+                        )
+                        return self._create_empty_response(
+                            PERMISSION_CHECK_UNAVAILABLE_MESSAGE, Status.PERMISSION_CHECK_UNAVAILABLE
+                        )
+                    permission_filter = await self._permission_filter(
+                        org_id, None, accessible_virtual_id_to_record_id,
+                        virtual_record_ids_from_tool, selection,
+                    )
+                    if permission_filter is None:
+                        return empty(ACCESSIBLE_RECORDS_NOT_FOUND_MESSAGE, Status.ACCESSIBLE_RECORDS_NOT_FOUND)
+                    vector_filter, scope_virtual_ids = permission_filter
+                    record_cut = _record_cut_for(scope_virtual_ids)
+                    use_containers = False
+            if not use_containers:
                 search_results = await self._execute_parallel_searches(
-                    queries, filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
+                    queries, vector_filter, limit, org_id, user_id, plan=plan, record_cut=record_cut
                 )
                 try:
                     enumerated = accessible_virtual_id_to_record_id
@@ -1266,6 +1372,8 @@ class RetrievalService:
         org_id: str,
         filters: dict[str, list[str]],
         time_range: dict[str, int] | None,
+        *,
+        prefer_record_ids: bool = False,
     ) -> tuple["AccessibleContainers | None", dict[str, str], dict[str, Any] | None]:
         """Decide how this search's permission filter is built.
 
@@ -1288,8 +1396,10 @@ class RetrievalService:
         user_task = self._get_user_cached(user_id)
 
         # A container scope cannot leave one app out, so an exclusion keeps the
-        # record-id path.
-        if excluded:
+        # record-id path. So does a scope the container filter recently could
+        # not serve (``narrow_access_memo``): the record-id path is the exact
+        # one, so preferring it never widens what a search may return.
+        if excluded or prefer_record_ids:
             accessible, user = await asyncio.gather(_legacy(), user_task)
             return None, accessible, user
 
@@ -1513,6 +1623,42 @@ class RetrievalService:
         # records. That is the common shape of a narrow scope.
         return True
 
+    @staticmethod
+    def _narrow_shortfall(
+        *,
+        surviving: int,
+        limit: int,
+        raw: int,
+        fetch_limit: int,
+        max_batch: int,
+        denied: int,
+        allow_requery: bool,
+    ) -> bool:
+        """Whether this search should move to the record-id filter.
+
+        True when the access check denied a real share of what the container
+        filter returned and more was there to fetch. Two shapes qualify:
+
+        * The page is short. A wider container fetch is the retry's answer, but
+          a user who reads a small slice of a large connector cannot be served
+          within the over-fetch cap (measured: 6% of the record-id results at
+          1% readable, 28% at 5%).
+        * The page is full but a large share was denied. Ranks under the
+          container filter are then interleaved with unreadable points, and the
+          fused order drifts from the record-id search's (85% overlap at 20%
+          readable, against 98% when nearly everything is readable).
+
+        Never True when nothing was denied: then the container filter selected
+        what the record-id filter would have, and a different ranking cannot be
+        a permission effect. Never True when the corpus is exhausted: the
+        record-id filter selects a subset of the same points.
+        """
+        if not allow_requery or denied <= 0 or raw <= 0:
+            return False
+        if max_batch < fetch_limit:
+            return False
+        return surviving < limit or surviving / raw < _NARROW_ACCESS_MIN_SURVIVAL
+
     async def _search_and_adjudicate(
         self,
         queries: list[str],
@@ -1542,6 +1688,7 @@ class RetrievalService:
         ``plan``, when given, is left describing the attempt that was kept.
         """
         plan = plan if plan is not None else _QueryPlan()
+        plan.narrow_shortfall = False
         fetch_limit = self._overfetch_limit(limit, containers)
         # `limit` is per query — `_run_searches` issues one request per expanded
         # query and concatenates the deduped batches — so every comparison below
@@ -1638,6 +1785,20 @@ class RetrievalService:
 
             if attempt_degraded:
                 # Retrying would hammer a graph that has just failed to answer.
+                break
+
+            if narrow_access_fallback_enabled() and self._narrow_shortfall(
+                surviving=surviving,
+                limit=budget,
+                raw=len(search_results),
+                fetch_limit=asked,
+                max_batch=plan.max_batch if plan.max_batch is not None else len(search_results),
+                denied=denied,
+                allow_requery=allow_requery,
+            ):
+                # The caller searches again under the record-id filter; the
+                # wider container retry would cost more and still fall short.
+                plan.narrow_shortfall = True
                 break
 
             if not self._should_requery(

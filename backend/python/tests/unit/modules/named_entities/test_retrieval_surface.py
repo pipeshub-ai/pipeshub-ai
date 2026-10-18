@@ -50,7 +50,8 @@ async def test_entity_filters_narrow_the_record_id_search_without_widening_scope
     )
 
     assert scope.await_args.args == ("u1", "org", {"departments": ["Legal"]}, None)
-    assert scope.await_args.kwargs == {}
+    # Nothing marked this scope as narrow, so the containers may be tried.
+    assert scope.await_args.kwargs == {"prefer_record_ids": False}
     must = svc.vector_db_service.filter_collection.await_args.kwargs["must"]
     assert must == {"orgId": "org", "virtualRecordId": ["v1"]}
 
