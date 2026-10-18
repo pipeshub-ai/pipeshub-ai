@@ -21,6 +21,9 @@ info:
 
     ## Base URLs
     All endpoints use the `/api/v1` prefix unless otherwise noted.
+
+    ## Query parameter names
+    On every `/api/v1` and `/mcp` endpoint, a query parameter whose name starts with `$` or contains `.` (including a nested name such as `filter[$ne]` or `a.b`) is refused with `400` and error code `VALIDATION_ERROR`. Only names are checked: values may contain dots, such as file names.
   version: 1.0.0
   contact:
     name: API Support

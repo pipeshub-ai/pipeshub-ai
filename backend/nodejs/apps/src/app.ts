@@ -23,6 +23,7 @@ import { startOrgMetricsRefresh } from './modules/user_management/services/metri
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
 import { xssSanitizationMiddleware } from './libs/middlewares/xss-sanitization.middleware';
+import { operatorKeyGuardMiddleware } from './libs/middlewares/operator-key-guard.middleware';
 
 import { loadConfigurationManagerConfig } from './modules/configuration_manager/config/config';
 import { MigrationService } from './modules/configuration_manager/services/migration.service';
@@ -517,6 +518,7 @@ export class Application {
     // Body parsing
     this.app.use(express.json({ limit: '10mb' }));
     this.app.use(express.urlencoded({ extended: true }));
+    this.app.use(operatorKeyGuardMiddleware);
     this.app.use(xssSanitizationMiddleware);
 
     // Logging — only log API requests, skip static assets.
