@@ -28,12 +28,12 @@ graph is built in ``conftest.py``:
   order 5  TC-AA-KH-001        — browsing shows records only the source account can see
   order 6  TC-AA-SEARCH-001    — all-records search returns own and linked together
   order 7  TC-AA-SEARCH-002    — scoped search and the connector filter stay scoped
-  order 8  TC-AA-RETRIEVAL-001 — chat retrieval covers the linked connector
+  order 8  TC-AA-RETRIEVAL-001 — record-id retrieval covers the linked connector
   order 9  TC-AA-RECORD-001    — opening one record: allowed, denied, and the role shown
   order 10 TC-AA-REINDEX-001   — both reindex gates: the checkers AND the worker listing
   order 11 TC-AA-PROC-001      — the connector-side hook writes the stub and the link
   order 12 TC-AA-NEG-001       — a user with no link is unaffected
-  order 13 TC-AA-CONTAINER-001 — the container permission filter, chat's other search path
+  order 13 TC-AA-CONTAINER-001 — searches that take the container path cover it too
 """
 
 from __future__ import annotations
@@ -215,7 +215,10 @@ class TestAuthenticatedAs:
 
     @pytest.mark.order(8)
     async def test_chat_retrieval_covers_the_linked_connector(self, graph_provider, seeded_graph) -> None:
-        """TC-AA-RETRIEVAL-001: the gate every chat answer passes through."""
+        """TC-AA-RETRIEVAL-001: the record-id path. A search takes it when no
+        container scope applies: an excluded demo connector, a time range or
+        metadata filter, an app whose vector membership is not ready, or a
+        scope the provider did not echo."""
         org, uid = seeded_graph["org"], seeded_graph["creator_uid"]
 
         everything = await graph_provider.get_accessible_virtual_record_ids(uid, org)
@@ -322,8 +325,8 @@ class TestAuthenticatedAs:
 
     @pytest.mark.order(13)
     async def test_the_container_filter_covers_the_linked_connector(self, graph_provider, seeded_graph) -> None:
-        """TC-AA-CONTAINER-001: chat builds its vector filter from the containers
-        a user reaches and never calls
+        """TC-AA-CONTAINER-001: a search that takes the container path builds
+        its vector filter from the containers a user reaches and does not call
         get_accessible_virtual_record_ids, so the link has to hold here too."""
         org = seeded_graph["org"]
 
