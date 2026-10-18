@@ -120,15 +120,24 @@ _REPORT_VERSIONS = (
     "people, teams or sources said, report each version with its source."
 )
 
-# Supersession, then scope, then corroboration, then recency: "authoritative or
-# most recent" let a formal page beat the draft that explicitly replaced it.
+# Supersession, then shipped over proposed, then scope, then corroboration, then
+# recency: "authoritative or most recent" let a formal page beat the draft that
+# explicitly replaced it, and a proposal's names beat the ones that shipped. Only
+# between values for one item and scope: a settled conflict otherwise made one
+# tier's rule the answer for a case no source placed in that tier.
 _RESOLVE_CONFLICTS = (
     "When sources disagree, prefer in order: a record saying it updates, corrects or "
-    "replaces the other (updated, final, vN, deprecated, change log); a narrower record "
+    "replaces the other (updated, final, vN, deprecated, change log); for what a system does "
+    "or shows its users, a shipped change (a merged pull request, a released config or "
+    "changelog) over a proposal, draft or plan for it; a narrower record "
     "applying a broader rule to the exact scope asked (an ADR or exception under a "
     "standard); the value most independent sources state; the most recent. Title or "
     "formality never decides. Name each other version as a labelled difference: what it "
-    "said, where, and why it was not used."
+    "said, where, and why it was not used. Once this order settles it, give the preferred "
+    "value as the answer, not as an open question. Apply the order only to sources stating a "
+    "value for the same item and scope: a rule that applies only under a condition (a risk "
+    "tier, plan, region or size) stays conditional: state it with its condition, and do not "
+    "make it the answer for a case the sources do not place under that condition."
 )
 
 # A looser mention in the same record (a weekday beside a dated deadline) was

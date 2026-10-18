@@ -40,6 +40,9 @@ _CONFLICT_ORDER = (
 _SECOND_VALUE = "Present a second value for what was asked only when"
 _PARAPHRASE = "A paraphrase is not a false premise"
 _SUBSTANCE_FIRST = "answer with that substance even if it is still requested, pending or in progress"
+_SHIPPED = "a shipped change (a merged pull request, a released config or changelog)"
+_SETTLED = "Once this order settles it, give the preferred value as the answer"
+_CONDITIONAL = "a rule that applies only under a condition"
 _REPORT_ONLY = "said, report each version with its source."
 _READ_IN_FULL = "read in full the records your answer will rest on"
 _BLOCKS_SUFFICE = "the blocks are sufficient"
@@ -50,7 +53,7 @@ _ENTITY_TOOLS = ("knowledgegraph__search_entities", "entity_ids")
 
 _COMPOSITION_MARKERS = (
     _COMPOSE, _SPEAKER, _QUALIFIERS, _PREMISE, _DEFINING_RECORD, _CONFLICT_ORDER, _SECOND_VALUE,
-    _PARAPHRASE, _SUBSTANCE_FIRST,
+    _PARAPHRASE, _SUBSTANCE_FIRST, _SHIPPED, _SETTLED, _CONDITIONAL,
 )
 _THOROUGH_MARKERS = (_READ_IN_FULL, _SEARCH_AGAIN, _LIST_THE_SET, _SEEK_OTHER)
 
@@ -202,3 +205,28 @@ class TestStatusFraming:
         text = _text(thorough=thorough)
         assert _PARAPHRASE not in text
         assert _SUBSTANCE_FIRST not in text
+
+
+class TestConflictOrder:
+    def test_shipped_beats_proposed_after_explicit_supersession(self) -> None:
+        text = _text(composition=True)
+        supersede = text.index(_CONFLICT_ORDER)
+        scope = text.index("a narrower record applying a broader rule")
+        assert supersede < text.index(_SHIPPED) < scope
+
+    def test_a_settled_conflict_is_answered_not_left_open(self) -> None:
+        assert _SETTLED in _text(composition=True)
+
+    def test_a_conditional_rule_stays_conditional(self) -> None:
+        """A settled conflict must not turn one tier's rule into the answer for a
+        case the sources do not place in that tier."""
+        text = _text(composition=True)
+        assert text.index(_SETTLED) < text.index(_CONDITIONAL)
+        assert "only to sources stating a value for the same item and scope" in text
+        assert "stays conditional: state it with its condition" in text
+
+    @pytest.mark.parametrize("thorough", [False, True])
+    def test_only_with_composition(self, thorough: bool) -> None:
+        text = _text(thorough=thorough)
+        for marker in (_SHIPPED, _SETTLED, _CONDITIONAL):
+            assert marker not in text, marker
