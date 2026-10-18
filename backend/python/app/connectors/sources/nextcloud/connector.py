@@ -2441,8 +2441,9 @@ class NextcloudConnector(BaseConnector):
                     path = record.record_name or file_record.record_name
 
                 # Records inherit from the app and carry no user grant to look up; the
-                # drive is only ever read as the connecting user.
-                if not self.current_user_id or not self.current_user_email or not file_record or not path:
+                # drive is only ever read as the connecting user, whose email a reindex
+                # does not need.
+                if not self.current_user_id or not file_record or not path:
                     failed_count += 1
                     continue
 
