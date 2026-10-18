@@ -31,6 +31,9 @@ class config_node_constants(Enum):
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
     NAMED_ENTITIES = "/services/namedEntities"
+    # Org-wide rules for which identity fields may be sent to a model gateway.
+    # Written by the Node admin API; read-only from Python.
+    AI_GATEWAY_IDENTITY_POLICY = "/services/aiGateway/identityPolicy"
 
 
     # Non-service paths
