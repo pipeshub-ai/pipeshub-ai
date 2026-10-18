@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import (
+    CollectionNames,
     Connectors,
     MimeTypes,
     OriginTypes,
@@ -54,6 +55,7 @@ def _make_mock_deps():
     data_entities_processor.on_user_group_member_removed = AsyncMock(return_value=True)
     data_entities_processor.get_all_active_users = AsyncMock(return_value=[])
     data_entities_processor.reindex_existing_records = AsyncMock()
+    data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
 
     data_store_provider = MagicMock()
     config_service = MagicMock()
@@ -726,6 +728,11 @@ class TestCheckAndFetchUpdatedPageRecord:
         result = await connector._check_and_fetch_updated_page_record(record)
         assert result is not None
         assert result[0].id == record.id
+        # The page scope is unreadable here, so the stored page's inherit edge (none) decides.
+        assert result[0].inherit_permissions is False
+        connector.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
+            CollectionNames.RECORDS.value, record.id
+        )
 
     @pytest.mark.asyncio
     async def test_page_access_denied(self):
